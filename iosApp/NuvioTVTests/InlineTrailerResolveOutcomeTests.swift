@@ -30,6 +30,24 @@ final class InlineTrailerResolveOutcomeTests: XCTestCase {
         XCTAssertNil(InlineTrailerResolveOutcome.playbackURL(for: .playable("")))
     }
 
+    // MARK: Cache-hit listener plan (review r1, A-5)
+
+    /// Only a missing token re-resolves. A listener that is not up within the waits keeps the cached
+    /// resolution (no YouTube re-extraction for a slow start); a ready port serves.
+    func testCacheHitPlanInvalidatesOnlyWhenTheTokenIsGone() {
+        XCTAssertEqual(InlineTrailerCacheHitPlan.action(tokenStored: false, readyPort: nil), .reresolve)
+        XCTAssertEqual(InlineTrailerCacheHitPlan.action(tokenStored: false, readyPort: 8230), .reresolve)
+        XCTAssertEqual(InlineTrailerCacheHitPlan.action(tokenStored: true, readyPort: nil), .waitForListener)
+        XCTAssertEqual(InlineTrailerCacheHitPlan.action(tokenStored: true, readyPort: 8231), .serve(port: 8231))
+    }
+
+    /// One retry, not a loop: each wait is bounded by the listener's own attempt deadline, so the
+    /// whole cache-hit hop stays bounded too. (`.serve`'s rebase onto a moved port is pinned by
+    /// `TrailerLocalHLSListenerTests`' `servableURL` cases.)
+    func testCacheHitPlanRetriesTheListenerOnce() {
+        XCTAssertEqual(InlineTrailerCacheHitPlan.listenerWaits, 2)
+    }
+
     func testATimeoutNeverMapsToTheNextCandidate() {
         // A slow repack says nothing about the candidate: walking on would burn the three-candidate
         // budget on a title whose first trailer is fine.

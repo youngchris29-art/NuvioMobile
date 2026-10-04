@@ -613,14 +613,16 @@ final class InlineTrailerCardModel: ObservableObject {
                 } else {
                     restBegan = nil
                 }
-                // R2 (critique #6): the tile-art prefetch starts at the first at-rest reading or
-                // `artPrefetchAfter` into the dwell — never at focus, so a horizontal scrub across a
-                // row fires no banner fetch per card it passes.
+                let restAge = restBegan.map { now - $0 }
+                // R2 (critique #6): the tile-art prefetch never starts at focus, so a horizontal
+                // scrub across a row fires no banner fetch per card it passes. beta.19-rc1 verdict
+                // (review r1, A-3): "the first at-rest reading" WAS focus whenever the rows were
+                // already still (a held Right across cards already in view), so the rest branch now
+                // also needs `artPrefetchMinDwell` on this card; `artPrefetchAfter` is unchanged.
                 if model.hostsTile, model.artTask == nil,
-                   restBegan != nil || now - focusAt >= TrailerStartGate.artPrefetchAfter {
+                   TrailerStartGate.shouldStartArtPrefetch(focusAge: now - focusAt, restAge: restAge) {
                     model.startArtPrefetch()
                 }
-                let restAge = restBegan.map { now - $0 }
                 switch TrailerStartGate.step(delay: delay, focusAge: now - focusAt, restAge: restAge) {
                 case .start(let via):
                     model.noteGateStart(key: key, delay: delay, focusAt: focusAt,
@@ -1082,9 +1084,14 @@ final class InlineTrailerCardModel: ObservableObject {
         }
     }
 
-    /// Focus left: forget this dwell's art. The load itself is not cancelled — `ArtworkStore`'s
-    /// shared work runs on and lands in the memory cache for the next dwell (or the hero/Detail).
+    /// Focus left: forget this dwell's art and cancel the load. beta.19-rc1 verdict (review r1,
+    /// A-3): the loader stops at its next step (`InlineTileArtLoader.load` checks cancellation after
+    /// each fetch), so a card left mid-load starts no poster-fallback fetch and no letterbox scan. A
+    /// download already in flight is `ArtworkStore`'s shared work, which a waiter's cancellation
+    /// does not stop (a coalesced fetch the hero or Detail also waits on must never fail early,
+    /// critique #6); it lands in the memory cache for the next dwell.
     private func dropArtPrefetch() {
+        artTask?.cancel()
         artTask = nil
         artToken &+= 1
         artDone = false
@@ -1122,12 +1129,49 @@ final class InlineTrailerCardModel: ObservableObject {
             // onto the ready port when only the port moved and the token is still stored (no YouTube
             // re-extraction), and nil when the token is gone or no listener could be bound — which is
             // "re-resolve, exactly like a cache miss". A non-loopback URL passes through untouched.
-            if TrailerLocalHLS.token(inPlaybackURL: url) != nil {
+            //
+            // beta.19-rc1 verdict (review r1, A-5): "the listener did not come up within the wait"
+            // is NOT "the token is gone". It used to invalidate the still-valid `.resolved` entry
+            // and re-extract from YouTube (the BUG-46 cost critique #4 meant to avoid) whenever
+            // `readyPort()` came back nil on its 2 s attempt deadline (H2, or a rebuild still
+            // waiting on the old socket). Now, per `InlineTrailerCacheHitPlan`: the token is checked
+            // FIRST (gone → re-resolve at once, without starting the listener for nothing); a nil
+            // port is retried once (the server is already on its next candidate, so the second wait
+            // answers with that attempt); and a listener still not ready after that keeps the
+            // cached resolution untouched and goes back to idle — the next dwell retries against a
+            // listener that is up by then.
+            if let token = TrailerLocalHLS.token(inPlaybackURL: url) {
                 let generationAtStart = generation
-                let ready = await TrailerLocalHLS.shared.readyPort()
-                // Focus can leave during the await: `reset()` bumped `generation` and cleared `activeKey`.
-                guard generation == generationAtStart, activeKey == key else { return }
-                guard let servable = TrailerLocalHLS.shared.servableURL(url, readyPort: ready) else {
+                var tokenStored = TrailerLocalHLS.shared.hasToken(token)
+                var ready: UInt16?
+                var waits = 0
+                while tokenStored, ready == nil, waits < InlineTrailerCacheHitPlan.listenerWaits {
+                    if waits > 0, TrailerProbe.enabled {
+                        NSLog("[TrailerPipeline] expand branch=resolvedListenerRetry key=%@ wait=%d", key, waits + 1)
+                    }
+                    ready = await TrailerLocalHLS.shared.readyPort()
+                    waits += 1
+                    // Focus can leave during the await: `reset()` bumped `generation` and cleared `activeKey`.
+                    guard generation == generationAtStart, activeKey == key else { return }
+                    // An eviction during the wait makes the token's answer final.
+                    tokenStored = TrailerLocalHLS.shared.hasToken(token)
+                }
+                let servable: String?
+                switch InlineTrailerCacheHitPlan.action(tokenStored: tokenStored, readyPort: ready) {
+                case .reresolve:
+                    servable = nil
+                case .waitForListener:
+                    if TrailerProbe.enabled {
+                        NSLog("[TrailerPipeline] expand skip=listenerNotReady key=%@ waits=%d (cache kept)", key, waits)
+                    }
+                    setPhase(.idle)
+                    return
+                case .serve(let port):
+                    // Re-checks the token under the server's lock: nil here means it was evicted
+                    // between the check above and now, which is a real stale token.
+                    servable = TrailerLocalHLS.shared.servableURL(url, readyPort: port)
+                }
+                guard let servable else {
                     if TrailerProbe.enabled { NSLog("[TrailerPipeline] expand branch=resolvedStale key=%@", key) }
                     TrailerResolutionCache.shared.invalidate(key: key)
                     startResolution(item, key: key)
@@ -1777,6 +1821,36 @@ nonisolated enum InlineTrailerResolveOutcome {
     }
 }
 
+// MARK: - B2 cache-hit listener plan (pure)
+
+/// beta.19-rc1 verdict (review r1, A-5): what `expand()`'s cache-hit branch does with a cached
+/// LOOPBACK playback URL, given whether its token is still stored and the listener's ready port
+/// after the bounded waits. Only a missing token invalidates the `.resolved` entry; a listener that
+/// is merely slow is transient and keeps it, so a slow start never costs a YouTube re-extraction.
+nonisolated enum InlineTrailerCacheHitPlan {
+    nonisolated enum Action: Equatable, Sendable {
+        /// Token gone: invalidate the entry and re-resolve, exactly like a cache miss.
+        case reresolve
+        /// Token stored, no listener within the waits: keep the entry, go idle; the next dwell
+        /// retries.
+        case waitForListener
+        /// Token stored and a ready port: serve (unchanged, or rebased onto `port`).
+        case serve(port: UInt16)
+    }
+
+    /// `readyPort()` calls per dwell: the first, plus one retry. Each is bounded by the listener's own
+    /// 2 s attempt deadline. After a deadline the server moves straight on to its next candidate
+    /// port, so the retry joins that attempt (or a rebuild still waiting on the old socket); only
+    /// when every port was exhausted does it start a fresh cycle.
+    static let listenerWaits = 2
+
+    static func action(tokenStored: Bool, readyPort: UInt16?) -> Action {
+        guard tokenStored else { return .reresolve }
+        guard let readyPort else { return .waitForListener }
+        return .serve(port: readyPort)
+    }
+}
+
 // MARK: - R2 tile art
 
 /// The decoded art the tile reveals: the image, its measured baked-bar zoom (`ArtworkLetterbox`,
@@ -1857,9 +1931,14 @@ enum InlineTileArtLoader {
             .normalized
     }
 
+    /// beta.19-rc1 verdict (review r1, A-3): returns nil as soon as the calling task is cancelled
+    /// (the card's `dropArtPrefetch` on focus loss), checked before each candidate and after each
+    /// fetch: no fallback fetch and no letterbox scan for a card the user has left. A fetch already
+    /// awaited runs to completion either way (shared `ArtworkStore` work) and warms the cache.
     static func load(_ source: InlineTileArtSource) async -> InlineTileArt? {
         let scale = ArtworkDecodeMath.screenScale
         for step in steps(primary: source.primary, fallback: source.fallback) {
+            if Task.isCancelled { return nil }
             guard let url = URL(string: step.url) else { continue }
             let request = request(for: step.role, tile: source.tileSize, scale: scale)
             let image: UIImage
@@ -1887,6 +1966,8 @@ enum InlineTileArtLoader {
             if let memo = ArtworkLetterbox.cachedZoom(forKey: key) {
                 zoom = memo
             } else {
+                // Review r1, A-3: the card was left during the fetch; skip the scan.
+                if Task.isCancelled { return nil }
                 zoom = await Task.detached(priority: .utility) {
                     ArtworkLetterbox.zoom(for: image, cacheKey: key)
                 }.value

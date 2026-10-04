@@ -43,11 +43,18 @@ struct RowEdgeEffectStyleModifier: ViewModifier {
     let leadingClipAllowance: CGFloat
     let marginsOverride: RowEdgeMargins?
     let rampLengthOverride: CGFloat?
+    /// beta.19-rc1 verdict (review r1, B P2-2): true while the row hosts a wide inline trailer tile
+    /// that its morph scroll could not bring clear of the trailing ramp (clamped at the row's end).
+    /// Soft then draws the trailing side solid to the bezel, so the tile's right edge is never
+    /// faded. Inert in System and Off.
+    let holdsTrailingFade: Bool
 
-    init(leadingClipAllowance: CGFloat = 0, margins: RowEdgeMargins? = nil, rampLength: CGFloat? = nil) {
+    init(leadingClipAllowance: CGFloat = 0, margins: RowEdgeMargins? = nil, rampLength: CGFloat? = nil,
+         holdsTrailingFade: Bool = false) {
         self.leadingClipAllowance = leadingClipAllowance
         self.marginsOverride = margins
         self.rampLengthOverride = rampLength
+        self.holdsTrailingFade = holdsTrailingFade
     }
 
     private var setting: RowEdgeFadeSetting { RowEdgeFadeSetting.resolve(rawSetting) }
@@ -90,6 +97,7 @@ struct RowEdgeEffectStyleModifier: ViewModifier {
             // acceptable. The `.mask` never changes the ScrollView's frame or layout (it paints
             // enlarged, see `RowSoftEdgeMask`).
             .modifier(RowSoftEdgeMaskModifier(active: setting == .soft, leadingActive: scrolled,
+                                              trailingActive: !holdsTrailingFade,
                                               restClipAllowance: leadingClipAllowance,
                                               margins: margins, rampLength: rampLength))
             // A UI test cannot tell the legs apart from the accessibility tree, so the hidden
@@ -98,7 +106,9 @@ struct RowEdgeEffectStyleModifier: ViewModifier {
             // every other `debug_*` probe; `test70RowEdgeFadeSpike` builds Debug.
             #if DEBUG
             .overlay(alignment: .topTrailing) {
-                Text("row_edge_fade_probe mode=\(setting.rawValue) ramp=\(Int(rampLength)) margin=\(Int(margins.leading))")
+                // Append-only fields (harness-parsed by key): `hold=` is review r1 B P2-2's
+                // trailing-fade hold.
+                Text("row_edge_fade_probe mode=\(setting.rawValue) ramp=\(Int(rampLength)) margin=\(Int(margins.leading)) hold=\(holdsTrailingFade ? 1 : 0)")
                     .font(.system(size: 4))
                     .opacity(0.011)
                     .accessibilityIdentifier("row_edge_fade_probe")
@@ -111,6 +121,7 @@ struct RowEdgeEffectStyleModifier: ViewModifier {
 private struct RowSoftEdgeMaskModifier: ViewModifier {
     let active: Bool
     let leadingActive: Bool
+    let trailingActive: Bool
     let restClipAllowance: CGFloat
     let margins: RowEdgeMargins
     let rampLength: CGFloat
@@ -120,10 +131,13 @@ private struct RowSoftEdgeMaskModifier: ViewModifier {
         if active {
             content.mask {
                 RowSoftEdgeMask(restClipAllowance: restClipAllowance, leadingActive: leadingActive,
-                                margins: margins, rampLength: rampLength)
+                                trailingActive: trailingActive, margins: margins, rampLength: rampLength)
                     // beta.18 verdict (BUG-118, R3): softens the rest-cut -> ramp flip when the row
                     // first scrolls; the device pass may remove it.
                     .animation(.easeOut(duration: 0.15), value: leadingActive)
+                    // beta.19-rc1 verdict (review r1, B P2-2): the same ease for the trailing hold,
+                    // which flips once at a morph's `.wide` edge and once at its collapse.
+                    .animation(.easeOut(duration: 0.15), value: trailingActive)
             }
         } else {
             content
@@ -166,6 +180,19 @@ nonisolated enum RowEdgeFade {
     /// (Medium, `bug118-auto-12.png`), where the curve is already 0.987. If the Wave-0 measurement
     /// finds a focused card closer to the edge, lower THIS until alpha there is ≥ 0.94.
     static let rampLength: CGFloat = 250
+
+    /// beta.19-rc1 verdict (review r1, B P2-2): how far inside a row's trailing edge an expanded
+    /// inline trailer tile must end so the Soft ramp never touches it — the trailing ramp's inner
+    /// extent (110 pt with the standard 140 pt margin and 250 pt ramp), 0 in System and Off. The
+    /// host passes the SAME margins and ramp length its `rowEdgeEffectStyle()` reads (the
+    /// `rowEdgeMargins` / `rowEdgeRampLength` environment), so a host with other chrome (the Stage
+    /// strip) inherits the right inset with no row change. `rowWidth` is the row ScrollView's frame
+    /// width (the mask is proposed exactly that size).
+    static func trailingTileInset(setting: RowEdgeFadeSetting, rowWidth: CGFloat, margins: RowEdgeMargins,
+                                  rampLength: CGFloat) -> CGFloat {
+        guard setting == .soft else { return 0 }
+        return RowSoftEdgeMask.trailingInnerExtent(width: rowWidth, margins: margins, rampLength: rampLength)
+    }
 }
 
 /// F (FEAT-54): the row edge fade setting, `row_edge_fade` (device-local, not synced — like every
@@ -284,6 +311,9 @@ extension EnvironmentValues {
 struct RowSoftEdgeMask: View {
     let restClipAllowance: CGFloat
     let leadingActive: Bool
+    /// beta.19-rc1 verdict (review r1, B P2-2): false while the host holds the trailing fade off
+    /// (a wide inline trailer tile its morph scroll could not bring clear of the ramp).
+    var trailingActive: Bool = true
     var margins: RowEdgeMargins = .standard
     var rampLength: CGFloat = RowEdgeFade.rampLength
 
@@ -308,20 +338,32 @@ struct RowSoftEdgeMask: View {
         max(0, min(rampLength, margin + max(width, 0) / 2))
     }
 
+    /// beta.19-rc1 verdict (review r1, B P2-2): how far INSIDE the row frame the trailing ramp
+    /// starts (the drawn ramp minus the margin outside the frame), 0 when it ends at or outside the
+    /// frame. With the standard 140 pt margin and 250 pt ramp: 110.
+    nonisolated static func trailingInnerExtent(width: CGFloat, margins: RowEdgeMargins, rampLength: CGFloat) -> CGFloat {
+        let mt = max(margins.trailing, 0)
+        return max(0, effectiveRamp(rampLength, margin: mt, width: width) - mt)
+    }
+
     /// Pure geometry in row-local x: the leading piece starts at −margins.leading (the bezel), the
     /// trailing one ends at width + margins.trailing.
     ///
     /// - Scrolled: `[−ml, −ml + L] rampIn`, then `solid` up to `width + mt − L`.
     /// - At rest: unchanged since BUG-92 — `[−ml, −allowance] clear` + `[−allowance, 0] solid`
     ///   (or `[−ml, 0] solid` with no allowance), then `solid` from 0.
-    /// - Always: `[width + mt − L, width + mt] rampOut`.
+    /// - Trailing active (the normal case): `[width + mt − L, width + mt] rampOut`.
+    /// - Trailing held (review r1, B P2-2): `solid` all the way to `width + mt`, then a zero-width
+    ///   `rampOut` there, so the segment count never changes and the hold eases in and out as a
+    ///   width change instead of a piece appearing.
     nonisolated static func segments(width: CGFloat, margins: RowEdgeMargins, rampLength: CGFloat,
-                                     restClipAllowance: CGFloat, leadingActive: Bool) -> [Segment] {
+                                     restClipAllowance: CGFloat, leadingActive: Bool,
+                                     trailingActive: Bool = true) -> [Segment] {
         let width = max(width, 0)
         let ml = max(margins.leading, 0)
         let mt = max(margins.trailing, 0)
         let leadRamp = effectiveRamp(rampLength, margin: ml, width: width)
-        let trailRamp = effectiveRamp(rampLength, margin: mt, width: width)
+        let trailRamp = trailingActive ? effectiveRamp(rampLength, margin: mt, width: width) : 0
         let trailStart = width + mt - trailRamp
 
         var out: [Segment] = []
@@ -351,7 +393,8 @@ struct RowSoftEdgeMask: View {
         // the ScrollView's frame, which does not change while the row scrolls.
         GeometryReader { geo in
             let parts = Self.segments(width: geo.size.width, margins: margins, rampLength: rampLength,
-                                      restClipAllowance: restClipAllowance, leadingActive: leadingActive)
+                                      restClipAllowance: restClipAllowance, leadingActive: leadingActive,
+                                      trailingActive: trailingActive)
             HStack(spacing: 0) {
                 ForEach(Array(parts.enumerated()), id: \.offset) { _, seg in
                     Self.piece(seg.kind)
@@ -389,9 +432,12 @@ extension View {
     /// which Soft's mask reproduces itself; 0 for rows with no leading clip.
     /// `margins` / `rampLength`: override the environment (`rowEdgeMargins`, `rowEdgeRampLength`)
     /// for this one row when non-nil. Prefer setting the environment on the host container.
+    /// `holdsTrailingFade`: Soft draws the trailing side solid while true (a wide inline trailer
+    /// tile the row could not scroll clear of the ramp, review r1 B P2-2). Default false.
     func rowEdgeEffectStyle(leadingClipAllowance: CGFloat = 0, margins: RowEdgeMargins? = nil,
-                            rampLength: CGFloat? = nil) -> some View {
+                            rampLength: CGFloat? = nil, holdsTrailingFade: Bool = false) -> some View {
         modifier(RowEdgeEffectStyleModifier(leadingClipAllowance: leadingClipAllowance,
-                                            margins: margins, rampLength: rampLength))
+                                            margins: margins, rampLength: rampLength,
+                                            holdsTrailingFade: holdsTrailingFade))
     }
 }

@@ -41,6 +41,33 @@ final class TrailerStartGateTests: XCTestCase {
         XCTAssertTrue(TrailerStartGate.isAtRest(sinceMotion: .greatestFiniteMagnitude, restPending: false))
     }
 
+    // MARK: Tile-art prefetch start (review r1, A-3)
+
+    /// The rows read "rest" at focus whenever nothing moved for `restQuiet`, so the rest branch must
+    /// still wait out a short dwell on the card: a held Right across cards already in view must not
+    /// start one banner fetch per card.
+    func testArtPrefetchNeverStartsAtFocusEvenAtRest() {
+        XCTAssertFalse(TrailerStartGate.shouldStartArtPrefetch(focusAge: 0, restAge: 0))
+        XCTAssertFalse(TrailerStartGate.shouldStartArtPrefetch(focusAge: 0.15, restAge: 0.15))
+        XCTAssertTrue(TrailerStartGate.shouldStartArtPrefetch(focusAge: 0.2, restAge: 0.2))
+        // Rest that began after focus counts once the card itself has dwelled long enough.
+        XCTAssertTrue(TrailerStartGate.shouldStartArtPrefetch(focusAge: 0.25, restAge: 0.01))
+    }
+
+    func testArtPrefetchStartsAtTheCeilingWithoutRest() {
+        XCTAssertFalse(TrailerStartGate.shouldStartArtPrefetch(focusAge: 0.25, restAge: nil))
+        XCTAssertTrue(TrailerStartGate.shouldStartArtPrefetch(focusAge: TrailerStartGate.artPrefetchAfter, restAge: nil))
+        XCTAssertTrue(TrailerStartGate.shouldStartArtPrefetch(focusAge: 2, restAge: nil))
+    }
+
+    func testArtPrefetchStillBeatsTheEarliestStart() {
+        // The prefetch must start before Automatic's earliest start (rest + 1 s at focus) so the
+        // art can land inside `beginMorph`'s wait.
+        XCTAssertLessThan(TrailerStartGate.artPrefetchMinDwell, TrailerStartGate.artPrefetchAfter)
+        XCTAssertLessThan(TrailerStartGate.artPrefetchAfter, TrailerStartGate.automaticAfterRest)
+        XCTAssertGreaterThanOrEqual(TrailerStartGate.artPrefetchMinDwell, 0.15)
+    }
+
     // MARK: TrailerStartDelay
 
     func testDelayCurrentFallsBack() throws {
@@ -117,6 +144,67 @@ final class TrailerStartGateTests: XCTestCase {
         // bound is 1008 when it says so, 1164 (2408 + 156 − 1400) when it does not.
         XCTAssertEqual(target(index: 9, gap: 40, content: 2408, grown: true), 1008)
         XCTAssertEqual(target(index: 9, gap: 40, content: 2408, grown: false), 1116)
+    }
+
+    // MARK: RowMorphScroll.plan with a trailing inset (review r1, B P2-2)
+
+    // Same geometry as above. The inset is the Soft fade's inner extent: 110 pt with the standard
+    // 140 pt margin and 250 pt ramp (`RowEdgeFade.trailingTileInset`).
+
+    private func plan(index: Int, visibleMinX: CGFloat = 0, viewport: CGFloat = 1400,
+                      content: CGFloat = 2252, trailingInset: CGFloat) -> RowMorphScroll.Plan {
+        RowMorphScroll.plan(index: index, restingWidth: 200, expandedWidth: 356, gap: 28,
+                            visibleMinX: visibleMinX, viewportWidth: viewport, contentWidth: content,
+                            insetLeading: 0, contentAlreadyGrown: false, trailingInset: trailingInset)
+    }
+
+    func testTrailingInsetPushesTheTileClearOfTheRamp() {
+        // Card 5 (trailing 1496) used to land exactly on the viewport edge (96); now 110 further.
+        XCTAssertEqual(plan(index: 5, trailingInset: 110),
+                       .init(offset: 206, endsInsideInset: false, overflowsViewport: true))
+        // `target` is the plan's offset, and the default inset keeps the old answer.
+        XCTAssertEqual(RowMorphScroll.target(index: 5, restingWidth: 200, expandedWidth: 356, gap: 28,
+                                             visibleMinX: 0, viewportWidth: 1400, contentWidth: 2252,
+                                             insetLeading: 0, contentAlreadyGrown: false, trailingInset: 110), 206)
+        XCTAssertEqual(plan(index: 5, trailingInset: 0).offset, 96)
+        // A negative inset is no inset.
+        XCTAssertEqual(plan(index: 5, trailingInset: -50).offset, 96)
+        // Card 2 (trailing 812) is clear of a 1290 limit: no scroll.
+        XCTAssertEqual(plan(index: 2, trailingInset: 110), .init(offset: nil, endsInsideInset: false))
+    }
+
+    func testATileThatFitsButEndsInTheRampNowScrolls() {
+        // Card 4 (trailing 1268) fits a 1300 viewport, but inside its last 110 pt: it used to stay
+        // put and fade; now the row scrolls 78 so it ends at 1190.
+        XCTAssertNil(plan(index: 4, viewport: 1300, trailingInset: 0).offset)
+        XCTAssertEqual(plan(index: 4, viewport: 1300, trailingInset: 110),
+                       .init(offset: 78, endsInsideInset: false, overflowsViewport: false))
+        // Already scrolled 100 (the old "fits" case): still inside the ramp, so it scrolls to 206.
+        XCTAssertNil(plan(index: 5, visibleMinX: 100, trailingInset: 0).offset)
+        XCTAssertEqual(plan(index: 5, visibleMinX: 100, trailingInset: 110).offset, 206)
+    }
+
+    func testClampedAtTheRowEndReportsEndsInsideInset() {
+        // The last card (no See All): the scroll is clamped at 2408 − 1400 = 1008, so the tile ends
+        // ON the viewport edge and the host must hold the trailing fade.
+        XCTAssertEqual(plan(index: 9, trailingInset: 110),
+                       .init(offset: 1008, endsInsideInset: true, overflowsViewport: true))
+        // One card earlier there is room: 2180 − 1290 = 890 < 1008.
+        XCTAssertEqual(plan(index: 8, trailingInset: 110),
+                       .init(offset: 890, endsInsideInset: false, overflowsViewport: true))
+        // A row too short to scroll at all (3 cards, 656 → 812 grown, in a 900 viewport): card 2 ends
+        // at 812, inside the 790 limit, with nowhere to go.
+        XCTAssertEqual(plan(index: 2, viewport: 900, content: 656, trailingInset: 110),
+                       .init(offset: 0, endsInsideInset: true, overflowsViewport: false))
+    }
+
+    func testInsetNeverPushesTheTilePastTheLeadingEdge() {
+        // A 400 pt viewport holds a 356 pt tile with only 44 pt to spare: the inset shrinks to 44,
+        // so the tile's leading edge lands exactly on the viewport's (1140 − 1140 = 0), never past it.
+        XCTAssertEqual(RowMorphScroll.effectiveTrailingInset(110, viewportWidth: 400, expandedWidth: 356), 44)
+        XCTAssertEqual(RowMorphScroll.effectiveTrailingInset(110, viewportWidth: 300, expandedWidth: 356), 0)
+        XCTAssertEqual(RowMorphScroll.effectiveTrailingInset(-5, viewportWidth: 1400, expandedWidth: 356), 0)
+        XCTAssertEqual(plan(index: 5, viewport: 400, trailingInset: 110).offset, 1140)
     }
 
     // MARK: CatalogRowView.rowPlayingKey

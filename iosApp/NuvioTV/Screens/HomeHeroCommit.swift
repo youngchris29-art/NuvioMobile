@@ -46,7 +46,11 @@ struct ArtworkStoreHeroFetcher: HeroCommitArtworkFetching {
     // position).
     nonisolated init() {}
 
-    @MainActor func cachedImage(_ url: URL?) -> UIImage? { ArtworkStore.cached(url) }
+    /// beta.19-rc1 verdict (review r1, B P2-1): the legacy-size lookup (`cached(_:decode: .legacy)`),
+    /// not the any-bucket seed: a card's 768 px decode of the head's backdrop must not stand in for
+    /// the hero's own bitmap. A card-only entry is a miss, and `fetchImage` re-decodes from the
+    /// URLCache bytes.
+    @MainActor func cachedImage(_ url: URL?) -> UIImage? { ArtworkStore.cached(url, decode: .legacy) }
     /// `.head` admission (Codex r3, P2): these are only ever the committed hero's own backdrop and
     /// logo, the two images the whole first Home paint waits on, so they jump the six-slot gate's
     /// waiter queue ahead of the row-poster and carousel prefetches this same `prepare(_:)` call
@@ -602,10 +606,11 @@ enum HomeHeroOffArgs {
 /// smaller than the 3840 px it fills. Fetching the bigger file up front would put more bytes inside
 /// the deadlines the hero commit protocol lives on (the 400 ms swap, the 1.5 s launch and folder
 /// budgets; critique #2), so every one of those fetches, every hero prefetch and the launch head keep
-/// today's URLs and sizes. Instead, once a hero has stayed committed for `dwell`, `HeroArtResolver`
-/// fetches the sharper rendition of the SAME picture with no deadline (TMDB `original`, or the same
-/// file decoded at the size the hero form draws) and adopts it as a same-identity update: the
-/// backdrop cross-fades between two versions of one picture and the text does not move
+/// today's URLs and sizes. Instead, once a hero has stayed committed for `dwell` and the rows have
+/// rested (review r1, A P2: `restStep`), `HeroArtResolver` fetches the sharper rendition of the SAME
+/// picture with no deadline (TMDB `original`, or the same file decoded at the size the hero form
+/// draws) and adopts it, at the next rest, as a same-identity update: the backdrop cross-fades
+/// between two versions of one picture and the text does not move
 /// (`TextSwapModel` treats a same-identity presentation as a silent gap-fill). The title logo
 /// sharpens the same way, from TMDB `original` at the slot size, while the data keeps `w500` so the
 /// deadline-bound logo fetch is unchanged.
@@ -635,6 +640,74 @@ enum HeroSharpen {
     static let fetchCeiling: TimeInterval = 20
     /// A bitmap at least this fraction of what the form draws is sharp enough: nothing is fetched.
     static let adequateFraction: CGFloat = 0.9
+
+    // beta.19-rc1 verdict (review r1, A P2): the sharpen's rest gate. The adoption re-evaluates
+    // HomeView's whole body and cross-fades a 21–33 MB bitmap across the screen, and when it landed
+    // was up to the network: inside the 1.15 s engine slide, the settle and title-slide window, or
+    // the next press's slide (the BUG-126 stutter class). Its `original` fetch also ran for every
+    // hero held 0.6 s, on the six-slot gate the row posters share, and is never cancelled once
+    // started. So both steps now wait for the rows to rest (`RowRestSource.isAtRest`, the same signal
+    // the trailer start gate reads): the fetch starts only once the rows have been at rest for
+    // `fetchRestHold` (a walk, which keeps them moving, starts none), and the adoption lands only at
+    // an at-rest reading. A rest decision that never comes while the rows are still (a phantom-armed
+    // settle corrector, the rc13 class) gives way at `restCeiling`, as the trailer gate's does; real
+    // motion never does. A held-Down scroll can hop faster than the hero's 0.2 s commit dwell, and
+    // then the hero on screen keeps ONE identity (nothing cancels its sharpen) through seconds of
+    // motion; a ceiling that released on time alone would start the fetch, and land the adoption, in
+    // the middle of it.
+
+    /// How long the rows must have been at rest before the sharpen fetch starts. Past the first rest
+    /// reading (which already means 0.12 s of quiet), so a pause between two presses of a walk does
+    /// not start a download the next press throws away.
+    nonisolated static let fetchRestHold: TimeInterval = 0.3
+    /// The adoption lands at the first at-rest reading: the bitmap is already decoded.
+    nonisolated static let adoptRestHold: TimeInterval = 0
+    /// Rest is polled at this interval, the cadence of every other rest wait in Home.
+    nonisolated static let restPoll: TimeInterval = TrailerStartGate.poll
+    /// No rest for this long, but the rows have been still for the hold (only the settle decision is
+    /// outstanding): proceed anyway (`via=ceiling`). = `TrailerStartGate.restCeiling`.
+    nonisolated static let restCeiling: TimeInterval = TrailerStartGate.restCeiling
+
+    /// How one rest wait ended, for the probe (`restToken`).
+    nonisolated struct RestOutcome: Equatable {
+        /// `rest` or `ceiling`.
+        let via: String
+        let waitedMs: Int
+    }
+
+    /// One step of a rest wait.
+    nonisolated enum RestStep: Equatable {
+        /// Proceed; `via` is the probe token (`rest` or `ceiling`).
+        case go(via: String)
+        /// Poll again after this many seconds.
+        case wait(TimeInterval)
+    }
+
+    /// The pure rest planner (unit-tested in `HeroSharpenTests`).
+    /// - Parameters:
+    ///   - restAge: seconds the rows have been at rest continuously (`RowRestSource.isAtRest`: still
+    ///     for `TrailerStartGate.restQuiet` AND no settle decision to come), as the poll observed it;
+    ///     nil while they are not.
+    ///   - quietAge: seconds the rows have been still (`RowRestSource.rowsQuiet`: no motion for
+    ///     `restQuiet`, whatever the settle corrector says), as the poll observed it; nil while they
+    ///     move. Past the ceiling, a quiet stretch of `hold` passes in place of a rest.
+    ///   - hold: how long the rest (or, past the ceiling, the quiet) must have lasted
+    ///     (`fetchRestHold` / `adoptRestHold`).
+    ///   - waited: seconds since this wait began.
+    nonisolated static func restStep(restAge: TimeInterval?, quietAge: TimeInterval?, hold: TimeInterval,
+                                     waited: TimeInterval) -> RestStep {
+        if let restAge, restAge >= hold { return .go(via: "rest") }
+        let pastCeiling = waited >= restCeiling
+        if pastCeiling, let quietAge, quietAge >= hold { return .go(via: "ceiling") }
+        var next = restPoll
+        if !pastCeiling { next = min(next, restCeiling - waited) }
+        if let restAge {
+            next = min(next, hold - restAge)
+        } else if pastCeiling, let quietAge {
+            next = min(next, hold - quietAge)
+        }
+        return .wait(max(next, 0.001))
+    }
 
     /// The backdrop decode for a hero form at `scale`. Nuvio: the 1250 × 820 pt panel, fill (a 16:9
     /// picture needs 2915 px on its long side at scale 2, the 3072 bucket, 21 MB decoded). Classic:
@@ -740,6 +813,12 @@ enum HeroSharpen {
     static func log(_ line: @autoclosure () -> String) {
         guard HomeHeroProbe.enabled else { return }
         NSLog("[HomeHero] sharpen %@", line())
+    }
+
+    /// beta.19-rc1 verdict (review r1, A P2): ` rest=<rest|ceiling> restMs=<n>`, appended LAST to the
+    /// `start`, `adopt` and `skip` lines (append-only vocabulary).
+    static func restToken(_ outcome: RestOutcome) -> String {
+        " rest=\(outcome.via) restMs=\(outcome.waitedMs)"
     }
 
     /// `<w>x<h>`, or `-`.

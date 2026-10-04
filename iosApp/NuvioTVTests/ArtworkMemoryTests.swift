@@ -44,6 +44,27 @@ final class ArtworkMemoryTests: XCTestCase {
         XCTAssertTrue(memory.serving(in: ArtworkURLUpgrade.family(w500), atLeast: 896) === stored)
     }
 
+    /// beta.19-rc1 verdict (review r1, B P2-1): the `.legacy` lookup's memory half — the largest
+    /// decode of the family, but only among decodes at the floor or larger.
+    func testLargestAtLeastRefusesDecodesUnderTheFloor() {
+        let memory = makeMemory()
+        let card = image()
+        memory.store(image: card, url: w780, bucket: 768, cost: megabyte)
+        XCTAssertNil(memory.largest(in: ArtworkURLUpgrade.family(w780), atLeast: 1280),
+                     "a card-sized decode is not a legacy hit")
+        XCTAssertTrue(memory.largest(in: ArtworkURLUpgrade.family(w780), atLeast: 768) === card)
+        XCTAssertTrue(memory.largest(in: ArtworkURLUpgrade.family(w780)) === card, "the unfloored form is unchanged")
+
+        let legacy = image()
+        memory.store(image: legacy, url: w780, bucket: 1280, cost: 4 * megabyte)
+        XCTAssertTrue(memory.largest(in: ArtworkURLUpgrade.family(w780), atLeast: 1280) === legacy)
+
+        // A sharper rendition at a larger bucket wins over the legacy decode beside it.
+        let sharp = image()
+        memory.store(image: sharp, url: original, bucket: 3072, cost: 21 * megabyte)
+        XCTAssertTrue(memory.largest(in: ArtworkURLUpgrade.family(w780), atLeast: 1280) === sharp)
+    }
+
     func testPlaceholderFindsSmallerAndLargerDecodes() {
         let memory = makeMemory()
         let smaller = image()
@@ -117,5 +138,103 @@ final class ArtworkMemoryTests: XCTestCase {
         XCTAssertEqual(ArtworkMemory.identity(url), ArtworkMemory.identity(URL(string: "data:image/png;base64,\(payload)")!))
         let other = URL(string: "data:image/png;base64,\(String(repeating: "B", count: 100_000))")!
         XCTAssertNotEqual(ArtworkMemory.identity(url), ArtworkMemory.identity(other))
+    }
+}
+
+/// beta.19-rc1 verdict (review r1, B P2-1): the lookup contract end to end through `ArtworkStore`'s
+/// process-wide memory (`ArtworkStore.storeForTesting`, DEBUG). Cards decode at their drawn size, so
+/// one URL can be resident only as a card's 768 px decode; the `.legacy` lookup (the Home hero, the
+/// launch head, every call site that has not opted into a size) must refuse it, while the seed,
+/// placeholder and colour lookups keep answering with it. Every URL is unique to its test.
+@MainActor
+final class ArtworkLegacyLookupTests: XCTestCase {
+
+    private func image() -> UIImage {
+        UIGraphicsImageRenderer(size: CGSize(width: 2, height: 2)).image { _ in }
+    }
+
+    /// A TMDB `w1280` backdrop URL and its `original` sibling, unique to the caller.
+    private func tmdbBackdrop() -> (w1280: URL, original: URL) {
+        let file = "\(UUID().uuidString).jpg"
+        return (URL(string: "https://image.tmdb.org/t/p/w1280/\(file)")!,
+                URL(string: "https://image.tmdb.org/t/p/original/\(file)")!)
+    }
+
+    private func otherHost() -> URL {
+        URL(string: "https://artwork.example.com/\(UUID().uuidString).jpg")!
+    }
+
+    /// Review r1's scenario: a Continue Watching card (`LandscapeCard`, 360 × 203 pt) decoded the
+    /// entry's backdrop at 768 px. The hero's legacy lookup misses (so its fetch re-decodes from the
+    /// URLCache bytes); the card's own request, the seed, the placeholder and colour sampling still
+    /// find the card's bitmap.
+    func testLegacyLookupRefusesACardSizedDecode() {
+        let url = tmdbBackdrop().w1280
+        let source = CGSize(width: 1280, height: 720)
+        let card = image()
+        ArtworkStore.storeForTesting(card, url: url, bucket: 768, sourceSize: source)
+
+        XCTAssertNil(ArtworkStore.cached(url, decode: .legacy), "a card decode must not become the hero's bitmap")
+        XCTAssertTrue(ArtworkStore.cached(url) === card, "the first-frame seed still finds it")
+        XCTAssertTrue(ArtworkStore.cachedLargest(url) === card)
+        XCTAssertTrue(ArtworkStore.cachedImage(for: url) === card, "colour sampling still finds it")
+        XCTAssertTrue(ArtworkStore.cachedPlaceholder(url, decode: .legacy) === card, "and it is the placeholder")
+        let cardRequest = ArtworkDecodeRequest(size: .points(width: 360, height: 203), fill: true, scale: 2).normalized
+        XCTAssertTrue(ArtworkStore.cached(url, decode: cardRequest) === card, "the card's own request is unchanged")
+
+        // The legacy decode (min(1920, 1280) = 1280 px, stored at 1280) is the hit once it lands.
+        let legacy = image()
+        ArtworkStore.storeForTesting(legacy, url: url, bucket: 1280, sourceSize: source)
+        XCTAssertTrue(ArtworkStore.cached(url, decode: .legacy) === legacy)
+    }
+
+    /// The hero sharpen's `original` decode serves the `w1280` URL's legacy lookup, ahead of the
+    /// legacy decode beside it, so a re-presented hero commits sharp.
+    func testLegacyLookupTakesTheLargestAdequateRendition() {
+        let urls = tmdbBackdrop()
+        ArtworkStore.storeForTesting(image(), url: urls.w1280, bucket: 768, sourceSize: CGSize(width: 1280, height: 720))
+        let sharp = image()
+        ArtworkStore.storeForTesting(sharp, url: urls.original, bucket: 3072, sourceSize: CGSize(width: 3840, height: 2160))
+        XCTAssertTrue(ArtworkStore.cached(urls.w1280, decode: .legacy) === sharp)
+
+        ArtworkStore.storeForTesting(image(), url: urls.w1280, bucket: 1280, sourceSize: CGSize(width: 1280, height: 720))
+        XCTAssertTrue(ArtworkStore.cached(urls.w1280, decode: .legacy) === sharp, "largest adequate first")
+    }
+
+    /// No recorded source: the floor is the full 1920 bucket.
+    func testLegacyLookupWithAnUnknownSourceNeeds1920() {
+        let url = otherHost()
+        ArtworkStore.storeForTesting(image(), url: url, bucket: 1536, sourceSize: nil)
+        XCTAssertNil(ArtworkStore.cached(url, decode: .legacy))
+        let legacy = image()
+        ArtworkStore.storeForTesting(legacy, url: url, bucket: 1920, sourceSize: nil)
+        XCTAssertTrue(ArtworkStore.cached(url, decode: .legacy) === legacy)
+    }
+
+    /// A source smaller than 1920: the legacy decode is the whole source, stored at the source's own
+    /// bucket, and a card decode that already holds the whole source is just as good.
+    func testLegacyLookupForASmallSourceAcceptsTheWholeSource() {
+        let whole = otherHost()
+        let poster = CGSize(width: 500, height: 750)
+        let full = image()
+        ArtworkStore.storeForTesting(full, url: whole, bucket: 768, sourceSize: poster)
+        XCTAssertTrue(ArtworkStore.cached(whole, decode: .legacy) === full)
+
+        let partial = otherHost()
+        ArtworkStore.storeForTesting(image(), url: partial, bucket: 640, sourceSize: poster)
+        XCTAssertNil(ArtworkStore.cached(partial, decode: .legacy), "640 px of a 750 px source is short")
+    }
+
+    /// The launch head (`HeroCommitCoordinator.prepare`) looks up through the same legacy floor.
+    func testHeroFetcherUsesTheLegacyLookup() {
+        let url = tmdbBackdrop().w1280
+        let source = CGSize(width: 1280, height: 720)
+        let fetcher = ArtworkStoreHeroFetcher()
+        ArtworkStore.storeForTesting(image(), url: url, bucket: 768, sourceSize: source)
+        XCTAssertNil(fetcher.cachedImage(url), "the head must not commit a card decode")
+        let legacy = image()
+        ArtworkStore.storeForTesting(legacy, url: url, bucket: 1280, sourceSize: source)
+        XCTAssertTrue(fetcher.cachedImage(url) === legacy)
+        XCTAssertNil(fetcher.cachedImage(nil))
     }
 }

@@ -392,9 +392,14 @@ enum ArtworkStore {
     /// views seed their first frame without an async hop, avoiding a placeholder flash.
     ///
     /// beta.19-rc1 verdict (I1): ANY bucket, ANY family member — the largest decode of any URL in
-    /// `ArtworkURLUpgrade.family(url)`. That is exactly today's one-entry-per-URL behaviour widened to
-    /// the family: a poster a card decoded at 896 px from its `w780` variant is a hit for a caller
-    /// that asks with the original `w500` URL. Same as `cachedLargest`.
+    /// `ArtworkURLUpgrade.family(url)`: a poster a card decoded at 896 px from its `w780` variant is
+    /// a hit for a caller that asks with the original `w500` URL. Same as `cachedLargest`.
+    ///
+    /// beta.19-rc1 verdict (review r1, B P2-1): this is a FIRST-FRAME SEED ("anything of this
+    /// picture to show right now"), and it is no longer the same answer as
+    /// `cached(url, decode: .legacy)`. Cards now decode at their drawn size, so the largest entry of a
+    /// URL can be a 768 px Continue Watching decode of a backdrop. A caller that will DRAW the bitmap
+    /// at legacy size (the Home hero) asks `cached(url, decode: .legacy)`, which refuses it.
     nonisolated static func cached(_ url: URL?) -> UIImage? {
         guard let url else { return nil }
         return cachedLargest(url)
@@ -414,14 +419,28 @@ enum ArtworkStore {
         cachedLargest(url)
     }
 
-    /// Bucket-aware lookup. `.legacy` → `cachedLargest`; `.points` / `.fullBleed` / `.pixels` →
-    /// the bucket the request would be stored under (`b`), then `servingOrder(from: b)` over the
-    /// family, largest URL first: a larger decode serves a smaller request.
+    /// Bucket-aware lookup: the bucket the request would be stored under (`b`), then
+    /// `servingOrder(from: b)` over the family, largest URL first: a larger decode serves a smaller
+    /// request.
+    ///
+    /// beta.19-rc1 verdict (review r1, B P2-1): `.legacy` too. It used to return `cachedLargest`
+    /// (any bucket), which was safe while every decode was legacy-sized, and stopped being safe once
+    /// cards decoded at their drawn size: a Continue Watching card's 768 px decode of a backdrop
+    /// became the Home hero's committed bitmap for the same URL (3.3× upscaled on the Nuvio form, 5×
+    /// on classic). `b` for `.legacy` is `bucket(min(1920, source))` (`ArtworkDecodeMath.lookupBucket`),
+    /// the bucket a legacy decode of the URL is stored under, so a legacy caller gets exactly what it
+    /// got before cards were sized (or a sharper rendition, e.g. the hero sharpen's `original`), and a
+    /// miss re-decodes from the URLCache bytes, no second download. Among the adequate decodes the
+    /// legacy lookup still prefers the LARGEST (its old rule), so a hero the sharpen upgraded is
+    /// re-presented sharp. Placeholders and colour sampling keep "any bucket" (`cachedPlaceholder`,
+    /// `cachedLargest`, the no-request `cached(_:)` seed).
     nonisolated static func cached(_ url: URL?, decode request: ArtworkDecodeRequest) -> UIImage? {
         guard let url else { return nil }
         let normalized = request.normalized
-        if normalized.size == .legacy { return cachedLargest(url) }
-        return memory.serving(in: ArtworkURLUpgrade.family(url), atLeast: requestBucket(url, normalized))
+        let family = ArtworkURLUpgrade.family(url)
+        let minimumBucket = requestBucket(url, normalized)
+        if normalized.size == .legacy { return memory.largest(in: family, atLeast: minimumBucket) }
+        return memory.serving(in: family, atLeast: minimumBucket)
     }
 
     nonisolated static func cached(_ url: URL?, _ request: ArtworkDecodeRequest) -> UIImage? {
@@ -451,10 +470,20 @@ enum ArtworkStore {
     /// The bucket a decode of `url` for `request` is (or would be) stored under, using the source
     /// size an earlier decode recorded.
     nonisolated private static func requestBucket(_ url: URL, _ request: ArtworkDecodeRequest) -> Int {
-        let source = sourceSizes.object(forKey: url as NSURL)?.cgSizeValue
-        let needed = ArtworkDecodeMath.neededLongSide(request, source: source)
-        return ArtworkDecodeMath.storeBucket(needed: needed, sourceLongSide: source.map { max($0.width, $0.height) })
+        ArtworkDecodeMath.lookupBucket(request, source: sourceSizes.object(forKey: url as NSURL)?.cgSizeValue)
     }
+
+    #if DEBUG
+    /// beta.19-rc1 verdict (review r1, B P2-1): puts a decode straight into the process-wide memory,
+    /// as `fetch` would after decoding, so `ArtworkLegacyLookupTests` can pin the lookup contract end
+    /// to end without a network. Tests use URLs unique to the test, so nothing they store collides
+    /// with another test's (or a real) entry.
+    static func storeForTesting(_ image: UIImage, url: URL, bucket: Int, sourceSize: CGSize?) {
+        if let sourceSize { sourceSizes.setObject(NSValue(cgSize: sourceSize), forKey: url as NSURL) }
+        let cost = image.cgImage.map { $0.bytesPerRow * $0.height } ?? 4
+        memory.store(image: image, url: url, bucket: bucket, cost: cost)
+    }
+    #endif
 
     /// beta.19-rc1 verdict (I1, BUG-134): the source pixel size an earlier decode of `url` recorded,
     /// nil when none has run (or the entry was evicted). The Home hero's post-commit sharpen reads it
@@ -498,8 +527,9 @@ enum ArtworkStore {
     /// there is nothing left to queue.
     ///
     /// beta.19-rc1 verdict (I1): `decode` is how large the image is decoded (`.legacy`, the default,
-    /// is today's 1920 px cap). The memory check uses the lookup contract above, so `.legacy` accepts
-    /// any bucket of any family member.
+    /// is today's 1920 px cap). The memory check uses the lookup contract above (review r1, B P2-1:
+    /// `.legacy` accepts only a decode at least as large as a legacy one, from any family member; a
+    /// card-sized entry is a miss and the URL is decoded again from the URLCache bytes).
     @MainActor
     static func fetch(_ url: URL, decode: ArtworkDecodeRequest = .legacy, admission: FetchAdmission = .normal,
                       timeout: TimeInterval? = nil) async throws -> UIImage {
@@ -603,7 +633,9 @@ enum ArtworkStore {
     /// Fire-and-forget warm-up for a set of URLs (memory + disk). Home calls this the moment the
     /// hero items arrive so carousel paging and the 8s auto-advance never hit a cold cache.
     /// beta.19-rc1 verdict (I1): `decode` is the size to warm (`.legacy` by default); a URL already
-    /// resident for that request is skipped.
+    /// resident for that request is skipped (review r1, B P2-1: for `.legacy`, resident at legacy size
+    /// or larger, so a row's hero prefetch is no longer skipped because a card decoded the same
+    /// backdrop at 768 px).
     @MainActor
     static func prefetch(_ urls: [URL], decode: ArtworkDecodeRequest = .legacy) {
         installMemoryWarningObserverIfNeeded()
@@ -892,12 +924,20 @@ nonisolated final class ArtworkMemory: NSObject, NSCacheDelegate, @unchecked Sen
 
     /// The largest decode of any URL in `family`: highest bucket first, ties in family order.
     func largest(in family: [URL]) -> UIImage? {
+        largest(in: family, atLeast: 0)
+    }
+
+    /// beta.19-rc1 verdict (review r1, B P2-1): `largest(in:)` over decodes at `bucket` or larger
+    /// only — the `.legacy` lookup. Largest first, as the legacy lookup always was, so a hero the
+    /// sharpen already upgraded is re-presented from its sharp decode, not from the legacy one beside
+    /// it; nil when every resident decode is smaller than `bucket` (a card's).
+    func largest(in family: [URL], atLeast bucket: Int) -> UIImage? {
         let identities = family.map { Self.identity($0) }
         let masks = identities.map { self.presence(for: $0) }
         if masks.allSatisfy({ $0.small == 0 && $0.large == 0 }) { return nil }
-        for bucket in ArtworkDecodeMath.buckets.reversed() {
+        for candidate in ArtworkDecodeMath.buckets.reversed() where candidate >= bucket {
             for (index, identity) in identities.enumerated() {
-                if let hit = image(identity: identity, bucket: bucket, masks: masks[index]) { return hit }
+                if let hit = image(identity: identity, bucket: candidate, masks: masks[index]) { return hit }
             }
         }
         return nil

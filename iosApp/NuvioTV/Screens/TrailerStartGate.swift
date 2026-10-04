@@ -198,10 +198,26 @@ nonisolated enum TrailerStartGate {
     /// R2 (§2.3): the tile-art prefetch starts at the first at-rest reading or this far into the
     /// dwell, whichever is first — never at focus, so a horizontal scrub fires no fetch per card.
     static let artPrefetchAfter: TimeInterval = 0.3
+    /// beta.19-rc1 verdict (review r1, A-3): the least dwell on ONE card before an at-rest reading
+    /// may start the tile-art prefetch. The rows already read "rest" at focus whenever nothing moved
+    /// in the last `restQuiet` (a Right onto a card already in the viewport, Search, classic Home,
+    /// a pinned step that arms no settle), so "first at-rest reading" alone fired one `.normal`
+    /// banner fetch per card on a held Right across visible cards. A card held for less than this
+    /// is being passed, not chosen.
+    static let artPrefetchMinDwell: TimeInterval = 0.2
     static let poll: TimeInterval = 0.05
 
     static func isAtRest(sinceMotion: TimeInterval, restPending: Bool) -> Bool {
         !restPending && sinceMotion >= restQuiet
+    }
+
+    /// beta.19-rc1 verdict (review r1, A-3): whether the dwell loop may start the tile-art prefetch
+    /// now. At rest: once the card has held focus `artPrefetchMinDwell`. Not at rest: at
+    /// `artPrefetchAfter` (the rows may never settle, and the art must still beat the morph).
+    /// Never at focus.
+    static func shouldStartArtPrefetch(focusAge: TimeInterval, restAge: TimeInterval?) -> Bool {
+        if focusAge >= artPrefetchAfter { return true }
+        return restAge != nil && focusAge >= artPrefetchMinDwell
     }
 
     nonisolated enum Step: Equatable, Sendable {
@@ -273,6 +289,11 @@ nonisolated struct RowHScrollSample: Equatable, Sendable {
 /// so a write never invalidates the row (the `SettleWorkBox` / `TitleTrackingCache` pattern).
 final class RowHScrollBox {
     private(set) var sample: RowHScrollSample?
+    /// beta.19-rc1 verdict (review r1, A-4): the item whose inline tile is WIDE in this row right now
+    /// (the last `onExpansionChange(true)` not yet followed by its `false`), or nil. The morph-scroll
+    /// verification pass reads it so it never scrolls for a tile width that is gone (an abort, a
+    /// collapse). A plain reference-box field: setting it never re-renders the row.
+    var wideItemId: String?
     /// Offset at the last `RowsMotionClock` stamp, so the stamp follows cumulative travel (≥ 0.5 pt)
     /// rather than per-frame deltas, and content-width growth during a morph never stamps.
     private var lastStampedOffsetX: CGFloat?
@@ -303,7 +324,9 @@ nonisolated enum RowMorphScroll {
     ///     -debug.trailerMorphScrollProxy YES
     ///
     /// YES = no `.scrollPosition` on the row at all; one `proxy.scrollTo(itemId, anchor: nil)` at
-    /// morph end, only when `target` reports an overflow, preceded by
+    /// morph end, only when the plan reports a real viewport overflow (`Plan.overflowsViewport`;
+    /// review r1: the trailing inset cannot be honoured by an item-anchored scroll, so the row holds
+    /// its trailing fade instead), preceded by
     /// `PinnedRowSettle.noteExternalScroll(reason: "trailer-morph")` in pinned Home. Take it if the
     /// Gate 1 checks fail: `.scrollPosition($rowPosition)` writing the binding per frame during
     /// focus-driven scrolling (a temporary `_printChanges()` in `CatalogRowView.body`), or
@@ -318,16 +341,64 @@ nonisolated enum RowMorphScroll {
     ///   - visibleMinX: the viewport's leading edge in the same space.
     ///   - contentWidth: the row's scrollable extent in the same space.
     ///   - contentAlreadyGrown: whether `contentWidth` already includes the tile's growth.
+    ///   - trailingInset: how far inside the viewport's trailing edge the tile must end (see
+    ///     `plan`). 0 = the viewport edge itself, the pre-review behaviour.
     static func target(index: Int, restingWidth: CGFloat, expandedWidth: CGFloat, gap: CGFloat,
                        visibleMinX: CGFloat, viewportWidth: CGFloat, contentWidth: CGFloat,
-                       insetLeading: CGFloat, contentAlreadyGrown: Bool) -> CGFloat? {
-        guard expandedWidth > restingWidth else { return nil }
+                       insetLeading: CGFloat, contentAlreadyGrown: Bool,
+                       trailingInset: CGFloat = 0) -> CGFloat? {
+        plan(index: index, restingWidth: restingWidth, expandedWidth: expandedWidth, gap: gap,
+             visibleMinX: visibleMinX, viewportWidth: viewportWidth, contentWidth: contentWidth,
+             insetLeading: insetLeading, contentAlreadyGrown: contentAlreadyGrown,
+             trailingInset: trailingInset).offset
+    }
+
+    /// The morph scroll's whole answer (`target` is its `offset`).
+    nonisolated struct Plan: Equatable, Sendable {
+        /// Where to scroll (padded-content space), or nil when the tile already ends clear of the
+        /// trailing inset.
+        var offset: CGFloat?
+        /// True when the tile's trailing edge still lands inside the trailing inset AFTER `offset`:
+        /// the scroll is clamped at the row's end (the last card with no See All after it) or the row
+        /// cannot scroll at all. The host must then lift its trailing fade itself while the tile is
+        /// wide (`CatalogRowView`'s trailing-fade hold).
+        var endsInsideInset: Bool
+        /// The tile runs past the viewport's trailing edge itself (the pre-review "needs a scroll"
+        /// test, inset ignored). The `-debug.trailerMorphScrollProxy` fallback scrolls only then.
+        var overflowsViewport: Bool = false
+    }
+
+    /// The inset actually used: never negative, and never so large that a tile ending at
+    /// `viewportWidth − inset` would start before the viewport's leading edge.
+    static func effectiveTrailingInset(_ trailingInset: CGFloat, viewportWidth: CGFloat,
+                                       expandedWidth: CGFloat) -> CGFloat {
+        min(max(trailingInset, 0), max(0, viewportWidth - expandedWidth))
+    }
+
+    /// beta.19-rc1 verdict (review r1, B P2-2): the morph scroll used to put the expanded tile's
+    /// trailing edge EXACTLY on the viewport's trailing edge, and the Soft row fade (the default
+    /// since F) ramps from 110 pt inside that edge, so a playing trailer's right side faded to 0.61
+    /// alpha (the ring with it). The tile now has to end `trailingInset` inside the edge — the
+    /// trailing ramp's inner extent, read by the host from the same environment the fade draws
+    /// with (`RowEdgeFade.trailingTileInset`) — which covers both a tile that overflows and one that
+    /// "fits" but ends inside the ramp. When the row cannot scroll that far (clamped at its end),
+    /// `endsInsideInset` says so and the host holds the fade off instead.
+    static func plan(index: Int, restingWidth: CGFloat, expandedWidth: CGFloat, gap: CGFloat,
+                     visibleMinX: CGFloat, viewportWidth: CGFloat, contentWidth: CGFloat,
+                     insetLeading: CGFloat, contentAlreadyGrown: Bool,
+                     trailingInset: CGFloat = 0) -> Plan {
+        guard expandedWidth > restingWidth else { return Plan(offset: nil, endsInsideInset: false) }
+        let inset = effectiveTrailingInset(trailingInset, viewportWidth: viewportWidth, expandedWidth: expandedWidth)
+        // The furthest the tile's trailing edge may reach, in viewport-local x.
+        let limit = viewportWidth - inset
         let leading = insetLeading + CGFloat(index) * (restingWidth + gap)
         let trailing = leading + expandedWidth
-        guard trailing > visibleMinX + viewportWidth + 0.5 else { return nil }
+        guard trailing > visibleMinX + limit + 0.5 else { return Plan(offset: nil, endsInsideInset: false) }
         let grownContent = contentWidth + (contentAlreadyGrown ? 0 : expandedWidth - restingWidth)
         let maxOffset = max(0, grownContent - viewportWidth)
-        return min(max(trailing - viewportWidth, 0), maxOffset)
+        let offset = min(max(trailing - limit, 0), maxOffset)
+        return Plan(offset: offset, endsInsideInset: trailing - offset > limit + 0.5,
+                    overflowsViewport: trailing > visibleMinX + viewportWidth + 0.5)
     }
 }
 

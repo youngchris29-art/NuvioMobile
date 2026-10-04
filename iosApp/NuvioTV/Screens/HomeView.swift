@@ -401,9 +401,15 @@ struct HomeView: View {
     /// video, 2:57.5). See `HomeHeroFocusModel.setCovered`. `shellCovered` is the `@Published`
     /// payload when the call comes from its publisher (willSet: the property still holds the old
     /// value there).
+    ///
+    /// beta.19-rc1 verdict (review r1, A P3): `restoresFocus` names the covers tvOS hands row focus
+    /// back from when they lift (a push, the stream picker), so the model waits long enough for that
+    /// restored report before it reverts (`HomeHeroFocusModel.uncoverDelay`); the shell alone keeps
+    /// the short check (focus comes back on the tab bar).
     private func syncHeroFocusCover(shellCovered: Bool? = nil) {
-        focusModel.setCovered(!homePath.isEmpty || resume != nil
-                              || (shellCovered ?? tabBarVisibility.homeSurfaceCovered))
+        let restoresFocus = !homePath.isEmpty || resume != nil
+        focusModel.setCovered(restoresFocus || (shellCovered ?? tabBarVisibility.homeSurfaceCovered),
+                              restoresFocus: restoresFocus)
     }
 
     /// Wave H: changes to the target's own fields, at the same identity. Cheap to recompute (a
@@ -1209,6 +1215,10 @@ struct HomeView: View {
             // Pinned Home reads the settle corrector (plus the rows' motion clock); classic Home has
             // no corrector, only the clock the rows ScrollView stamps (`rowsMotionStamp` below).
             heroTrailerModel.restSource = heroContainerPinned ? .pinnedHome : .motionClock
+            // beta.19-rc1 verdict (review r1, A P2): the hero's post-commit sharpen waits on the same
+            // rest signal before it fetches and before it adopts (a plain stored property, no
+            // observation).
+            heroResolver.restSource = heroContainerPinned ? .pinnedHome : .motionClock
             // H-1B-ii: retain, don't start. During a theme `.id()` swap SwiftUI inserts the
             // incoming subtree BEFORE removing the outgoing one, so this runs while the previous
             // HomeView still holds the model — the count goes 1 → 2 → 1 and the pipeline never
@@ -1267,6 +1277,8 @@ struct HomeView: View {
         // beta.19-rc1 verdict (M3, BUG-133): follows the container (see `.onAppear`).
         .onChange(of: heroContainerPinned) { _, pinnedContainer in
             heroTrailerModel.restSource = pinnedContainer ? .pinnedHome : .motionClock
+            // beta.19-rc1 verdict (review r1, A P2): the sharpen's rest signal follows too.
+            heroResolver.restSource = pinnedContainer ? .pinnedHome : .motionClock
         }
         .onDisappear {
             // H-1B-ii: balanced against the `acquire()` above. This fires effectively only on shell
@@ -3291,26 +3303,55 @@ final class HomeHeroFocusModel: ObservableObject {
     /// the shell) the model is FROZEN: a nil report is ignored and a pending revert is cancelled,
     /// so `focusedItem` and `claimSource` survive the cover.
     private var covered = false
-    /// Armed by an uncover: if no report arrives within `uncoverVerifyDelay`, the hero reverts as a
-    /// nil report would have (focus came back somewhere other than the rows, e.g. the tab bar).
-    /// Generation-guarded, and cleared by any report.
+    /// Armed by an uncover: if no report arrives within `uncoverDelay(restoresFocus:)`, the hero
+    /// reverts as a nil report would have (focus came back somewhere other than the rows, e.g. the
+    /// tab bar). Generation-guarded, and cleared by any report: the FIRST report after the uncover is
+    /// the answer, the timer is only the fallback for an uncover that never gets one.
     private var uncoverVerifyTask: Task<Void, Never>?
-    /// Long enough for tvOS to restore focus to the row card on a pop (which re-reports the same
-    /// item and keeps the hero), short enough that a hero left behind by focus that went elsewhere
-    /// is corrected quickly.
+    /// The fallback after a cover tvOS does not restore row focus from: the shell alone (a tab
+    /// switch; focus comes back on the tab bar, never on the card). Short, so a hero left behind by
+    /// focus that went elsewhere is corrected quickly.
     nonisolated static let uncoverVerifyDelay: TimeInterval = 0.6
+    /// beta.19-rc1 verdict (review r1, A P3): the fallback after a cover tvOS DOES restore focus from
+    /// (a pushed folder/Detail page, the Continue Watching stream picker). The restored card's report
+    /// is the answer there, and on hardware it may land later than 0.6 s after `homePath` empties
+    /// (the pop animation runs first; test90 proves the timing on the simulator only). A 0.6 s check
+    /// that lost that race reverted the hero to the carousel, and the late report then re-committed
+    /// the folder through a 0.2 s commit plus a resolve: the double swap BUG-138 removes. 1.2 s
+    /// doubles the window and still corrects an uncover that never reports; the device pass reads
+    /// `[HomeHero] present` after a pop for a second commit to confirm it is enough.
+    nonisolated static let uncoverRestoreDelay: TimeInterval = 1.2
+    /// Whether the cover in force (or any cover that joined it before it lifted) is one tvOS restores
+    /// row focus from. Decides which fallback the uncover arms.
+    private var coverRestoresFocus = false
+
+    /// The uncover fallback for a cover of that kind (pure; `HeroFocusCoverTests`).
+    nonisolated static func uncoverDelay(restoresFocus: Bool) -> TimeInterval {
+        restoresFocus ? uncoverRestoreDelay : uncoverVerifyDelay
+    }
+
     /// Whether `pendingTask` is a revert (a nil report's grace) rather than a commit. A cover
     /// cancels a pending revert but lets a pending COMMIT land: that commit is the card the user
     /// selected from (a select inside the 0.2 s dwell), which is what the pop will restore focus to.
     private var pendingIsRevert = false
 
     /// beta.19-rc1 verdict (M5, BUG-138): see `covered`. Idempotent.
-    func setCovered(_ isCovered: Bool) {
+    ///
+    /// beta.19-rc1 verdict (review r1, A P3): `restoresFocus` says whether tvOS hands focus back to
+    /// the row card when this cover lifts (a push or the stream picker: true; the shell alone: false).
+    /// It picks the uncover fallback (`uncoverDelay`). A cover that joins one already in force can
+    /// only lengthen the fallback, never shorten it. Defaults to true, the conservative (longer) wait.
+    func setCovered(_ isCovered: Bool, restoresFocus: Bool = true) {
+        if isCovered, covered {
+            if restoresFocus { coverRestoresFocus = true }
+            return
+        }
         guard isCovered != covered else { return }
         covered = isCovered
         uncoverVerifyTask?.cancel()
         uncoverVerifyTask = nil
         if isCovered {
+            coverRestoresFocus = restoresFocus
             if pendingIsRevert {
                 generation &+= 1
                 pendingTask?.cancel()
@@ -3319,9 +3360,11 @@ final class HomeHeroFocusModel: ObservableObject {
             }
             return
         }
+        let delay = Self.uncoverDelay(restoresFocus: coverRestoresFocus)
+        coverRestoresFocus = false
         let generationAtUncover = generation
         uncoverVerifyTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(Self.uncoverVerifyDelay * 1_000_000_000))
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             guard !Task.isCancelled, let self, !self.covered,
                   self.generation == generationAtUncover else { return }
             self.uncoverVerifyTask = nil
@@ -3662,6 +3705,26 @@ enum HeroLogoPlan: Equatable {
     case none
 }
 
+extension RowRestSource {
+    /// beta.19-rc1 verdict (review r1, A P2): the rows have not moved for
+    /// `TrailerStartGate.restQuiet`, whatever the settle corrector's pending flag says: `isAtRest()`
+    /// with `restPending` read as false, over the same clocks per source. The hero sharpen's rest
+    /// ceiling releases only on a quiet stretch (`HeroSharpen.restStep`'s `quietAge`), so a stuck
+    /// settle decision gives way and real motion never does.
+    @MainActor var rowsQuiet: Bool {
+        let since: TimeInterval
+        switch self {
+        case .motionClock:
+            since = RowsMotionClock.secondsSinceMotion()
+        case .pinnedHome:
+            since = min(PinnedRowSettle.secondsSinceMotion(), RowsMotionClock.secondsSinceMotion())
+        case .custom(let signal):
+            since = signal.secondsSinceMotion
+        }
+        return TrailerStartGate.isAtRest(sinceMotion: since, restPending: false)
+    }
+}
+
 @MainActor
 final class HeroArtResolver: ObservableObject {
     /// The hero that is actually painted. `nil` = no hero region at all (the same state
@@ -3773,6 +3836,13 @@ final class HeroArtResolver: ObservableObject {
     private var sharpenTask: Task<Void, Never>?
     /// Bumped by every schedule and cancel. A sharpen whose generation moved adopts nothing.
     private var sharpenGeneration = 0
+    /// beta.19-rc1 verdict (review r1, A P2): the rows' rest signal the sharpen waits on before it
+    /// fetches and again before it adopts (`HeroSharpen.restStep`). `HomeView` assigns it from the
+    /// same place, and with the same value, as the hero trailer model's (`.onAppear` and
+    /// `.onChange(of: heroContainerPinned)`): pinned Home reads the settle corrector plus the rows'
+    /// motion clock, classic Home the clock alone. A plain stored property: nothing draws from it,
+    /// and HomeView's body observes nothing new.
+    var restSource: RowRestSource = .motionClock
 
     var isIdle: Bool { resolveTask == nil }
 
@@ -3994,9 +4064,27 @@ final class HeroArtResolver: ObservableObject {
             if case .url(let url, _) = plan { return url }
             return nil
         }()
-        let cachedBackdrop = ArtworkStore.cached(backdropURL)
-        let cachedLogo = ArtworkStore.cached(logoURL)
+        // beta.19-rc1 verdict (review r1, B P2-1): the legacy-size lookup, not the any-bucket seed. A
+        // Continue Watching / landscape / Upcoming / saga card decodes the same backdrop URL at its
+        // drawn size (768–1024 px), and the seed form handed that card bitmap to the hero, which
+        // committed it 3–5× upscaled. `.legacy` accepts only a decode ≥ min(1920, source) (or a
+        // sharper rendition, the sharpen's `original`); a card-only entry is a miss, and the
+        // backdrop fetch below re-decodes it from the URLCache bytes inside the same deadline. The
+        // fetches below already decode `.legacy` (their default) with the same floor on their memory
+        // check.
+        let cachedBackdrop = ArtworkStore.cached(backdropURL, decode: .legacy)
+        let cachedLogo = ArtworkStore.cached(logoURL, decode: .legacy)
         let needsBackdrop = backdropURL != nil && cachedBackdrop == nil
+        // beta.19-rc1 verdict (review r1, B P2-1): the SAME picture at a card's size, when that is
+        // all memory holds for a title's backdrop. Never committed while the legacy re-decode makes
+        // the deadline (it normally does: the bytes are in the URLCache, and the fetch below goes to
+        // the front of the six-slot gate). If it misses, this stands in rather than the item's
+        // poster (a different picture, which `adoptLateBackdrop` then never replaces): it records
+        // the backdrop URL like any backdrop, so the post-commit sharpen upgrades it at rest. Title
+        // heroes only, the same gate as the poster stand-in: folders keep their `none` → `late`
+        // path untouched.
+        let backdropStandIn: UIImage? = needsBackdrop && !isFolder && !isCollectionHero(target)
+            ? ArtworkStore.cached(backdropURL) : nil
         // `.pending` has no `logoURL` of its own yet (the fetch only starts once
         // `TitleLogoStore.awaitLogoURL` answers), so it must opt into the wait independently of
         // the `logoURL != nil` check below.
@@ -4017,11 +4105,17 @@ final class HeroArtResolver: ObservableObject {
         // `poster: nil` in the first place. The `isFolder` flag and the type predicate both gate
         // it, since either alone would be a single point of failure for that regression.
         let posterFallbackURL: URL? = {
-            guard !isFolder, !isCollectionHero(target), needsBackdrop else { return nil }
+            // Review r1 (B P2-1): a same-picture stand-in (above) beats the poster.
+            guard !isFolder, !isCollectionHero(target), needsBackdrop, backdropStandIn == nil else { return nil }
             guard let poster = target.poster, !poster.isEmpty,
                   let url = URL(string: poster), url != backdropURL else { return nil }
             return url
         }()
+        // beta.19-rc1 verdict (review r1, B P2-1): the poster stand-in deliberately keeps the
+        // any-bucket seed lookup (spec P-B §I1.7 item 2): the card's own decode of the poster is the
+        // right stand-in, and requiring a legacy-size one would put a fresh decode (or, when the card
+        // drew an upgraded rendition the item's own poster URL never fetched, a fresh download) inside
+        // the 400 ms deadline.
         let cachedPosterFallback = ArtworkStore.cached(posterFallbackURL)
         let needsPosterFallback = posterFallbackURL != nil && cachedPosterFallback == nil
 
@@ -4162,7 +4256,10 @@ final class HeroArtResolver: ObservableObject {
             deadlineTask.cancel()
             guard !Task.isCancelled, let self, self.targetIdentity == identity else { return }
             self.resolveTask = nil
-            let backdrop = wait.backdrop
+            // Review r1 (B P2-1): the legacy decode when it made the deadline, else the same picture
+            // at card size (`backdropStandIn`), probe token `small` (append-only vocabulary).
+            let usedStandIn = wait.backdrop == nil && backdropStandIn != nil
+            let backdrop = wait.backdrop ?? backdropStandIn
             // beta.19-rc1 verdict (M5, BUG-138): a `.blank` logo commits as no logo (the text
             // wordmark); a `.dark` one carries its verdict to `HeroLogo`. A fetched logo's verdict
             // is already memoized (above); the wait names the URL it came from, else it is the
@@ -4171,7 +4268,7 @@ final class HeroArtResolver: ObservableObject {
             let logo = inked.logo
             let backdropSource = wait.usedPosterFallback
                 ? "poster"
-                : Self.source(cached: cachedBackdrop, resolved: backdrop, empty: "none")
+                : (usedStandIn ? "small" : Self.source(cached: cachedBackdrop, resolved: backdrop, empty: "none"))
             self.commit(item: target, backdrop: backdrop, logo: logo, identity: identity,
                         backdropSource: backdropSource,
                         logoSource: logo == nil
@@ -4302,10 +4399,14 @@ final class HeroArtResolver: ObservableObject {
     /// `runSharpen`. Replaces any sharpen already armed or running.
     ///
     /// Timeline (warm cache): the commit lands at t0 (the art cross-fades t0 → t0 + 0.3, the text
-    /// swaps by t0 + 0.24); at t0 + 0.6 the plan runs and, when the bitmap on screen is short of what
-    /// the form draws, the sharper file is fetched with no deadline; when it lands (the backdrop and
-    /// the logo both, or `fetchCeiling`), `adoptSharpened` cross-fades the backdrop to it over 0.3 s
-    /// and swaps the logo bitmap in place. A `present` for another identity before then cancels it.
+    /// swaps by t0 + 0.24). From t0 + 0.6 the sharpen waits for the rows to have rested
+    /// `HeroSharpen.fetchRestHold` (beta.19-rc1 verdict, review r1, A P2); then the plan runs and,
+    /// when the bitmap on screen is short of what the form draws, the sharper file is fetched with no
+    /// deadline; when it lands (the backdrop and the logo both, or `fetchCeiling`) the sharpen waits
+    /// for the next at-rest reading, and only then does `adoptSharpened` cross-fade the backdrop to
+    /// it over 0.3 s and swap the logo bitmap in place. A `present` for another identity at any point
+    /// before then cancels it, so a row walk (rows never at rest between presses) starts no fetch and
+    /// no adoption can land inside a slide.
     private func scheduleSharpen(identity: String) {
         cancelSharpen()
         let generation = sharpenGeneration
@@ -4327,10 +4428,20 @@ final class HeroArtResolver: ObservableObject {
     /// already painted, so nothing waits on these and the six-slot gate's `.head` front stays for the
     /// fetches that do), waits at most `HeroSharpen.fetchCeiling` for both, then hands whatever
     /// landed to `adoptSharpened`. A sharpened file stays in `ArtworkStore`, so presenting this hero
-    /// again in the session commits the sharp bitmap straight from the cache (`cached` returns the
-    /// largest decode of any rendition) and the next plan finds nothing to do.
+    /// again in the session commits the sharp bitmap straight from the cache (the `.legacy` lookup
+    /// returns the largest adequate decode of any rendition) and the next plan finds nothing to do.
+    ///
+    /// beta.19-rc1 verdict (review r1, A P2): both ends are held off row motion. The fetch starts only
+    /// once the rows have rested `HeroSharpen.fetchRestHold`, so a held hero mid-walk queues no 1–5 MB
+    /// `original` on the six-slot gate the row posters share (`ArtworkStore` work cannot be
+    /// cancelled once it starts, so not starting it is the only cancellation there is); and the
+    /// adoption waits for an at-rest reading, so its body re-evaluation and full-screen cross-fade
+    /// never land inside a slide, a settle or a morph scroll.
     private func runSharpen(identity: String, generation: Int) async {
         defer { if sharpenGeneration == generation { sharpenTask = nil } }
+        guard let fetchRest = await waitForRowsAtRest(hold: HeroSharpen.fetchRestHold, generation: generation) else {
+            return
+        }
         // TODO(I1): skip under a "Reduce Data" setting once tvOS has one (there is none today).
         guard let presented, presented.identity == identity, targetIdentity == identity,
               resolveTask == nil else { return }
@@ -4353,11 +4464,14 @@ final class HeroArtResolver: ObservableObject {
                             + "logo=\(HeroSharpen.sizeToken(logoSize))")
             return
         }
+        // Review r1 (A P2): ` rest=<rest|ceiling> restMs=<n>` appended LAST (append-only vocabulary):
+        // how the fetch's rest wait ended and how long it took.
         HeroSharpen.log("start item=\(identity) form=\(form.rawValue) "
                         + "bd=\(HeroSharpen.urlToken(from: backdropFrom, plan: backdropPlan)) "
                         + "req=\(HeroSharpen.requestBucket(backdropPlan, aspect: sourceSize ?? backdropSize)) "
                         + "logo=\(HeroSharpen.urlToken(from: logoFrom, plan: logoPlan)) "
-                        + "lreq=\(HeroSharpen.requestBucket(logoPlan, aspect: logoSize))")
+                        + "lreq=\(HeroSharpen.requestBucket(logoPlan, aspect: logoSize))"
+                        + HeroSharpen.restToken(fetchRest))
         let started = Date()
         // The same first-terminal-event wait `present` resolves with, here bounded by the ceiling
         // instead of the swap deadline, and with no poster stand-in.
@@ -4389,9 +4503,47 @@ final class HeroArtResolver: ObservableObject {
         }
         ceiling.cancel()
         guard !Task.isCancelled, sharpenGeneration == generation else { return }
+        // Review r1 (A P2): the bitmaps are decoded; the adoption lands at the next at-rest reading
+        // (a press since then moved the identity and cancelled this sharpen).
+        guard let adoptRest = await waitForRowsAtRest(hold: HeroSharpen.adoptRestHold, generation: generation) else {
+            return
+        }
         adoptSharpened(backdrop: wait.backdrop, logo: wait.logo, identity: identity,
                        backdropURL: backdropPlan?.url, logoURL: logoPlan?.url,
-                       timedOut: wait.hitDeadline, startedAt: started)
+                       timedOut: wait.hitDeadline, startedAt: started, rest: adoptRest)
+    }
+
+    /// beta.19-rc1 verdict (review r1, A P2): polls `restSource` every `HeroSharpen.restPoll` until
+    /// the rows have been at rest for `hold`, or, past `HeroSharpen.restCeiling`, still for `hold`
+    /// with only a settle decision outstanding (`HeroSharpen.restStep` decides; real motion never
+    /// passes the ceiling). Returns how the wait ended (`rest` / `ceiling`) and how long
+    /// it took, or nil when the sharpen was cancelled or superseded meanwhile (its generation moved).
+    /// A timestamp read and a few comparisons per poll, on the main actor; no view state is written.
+    private func waitForRowsAtRest(hold: TimeInterval, generation: Int) async -> HeroSharpen.RestOutcome? {
+        let started = ProcessInfo.processInfo.systemUptime
+        var restBegan: TimeInterval?
+        var quietBegan: TimeInterval?
+        while true {
+            guard !Task.isCancelled, sharpenGeneration == generation else { return nil }
+            let now = ProcessInfo.processInfo.systemUptime
+            if restSource.isAtRest() {
+                if restBegan == nil { restBegan = now }
+            } else {
+                restBegan = nil
+            }
+            if restSource.rowsQuiet {
+                if quietBegan == nil { quietBegan = now }
+            } else {
+                quietBegan = nil
+            }
+            switch HeroSharpen.restStep(restAge: restBegan.map { now - $0 }, quietAge: quietBegan.map { now - $0 },
+                                        hold: hold, waited: now - started) {
+            case .go(let via):
+                return HeroSharpen.RestOutcome(via: via, waitedMs: Int(((now - started) * 1000).rounded()))
+            case .wait(let seconds):
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            }
+        }
     }
 
     /// Adopts a sharpened backdrop and/or logo onto the hero on screen: a same-identity update of
@@ -4408,22 +4560,28 @@ final class HeroArtResolver: ObservableObject {
     /// Not routed through `commit`: that logs a `present` line, and the probe oracles read a second
     /// `present` for one item with nothing between as a double paint (test62). The sharpen logs its
     /// own `sharpen adopt` line, and `HeroCrossfadeImage` logs its cross-fade as `sharpen paint`.
+    ///
+    /// beta.19-rc1 verdict (review r1, A P2): `rest` is how the adoption's rest wait ended; it rides
+    /// the `adopt`/`skip` lines LAST as ` rest=<rest|ceiling> restMs=<n>`, and `ms=` (fetch start →
+    /// now) now includes that wait.
     private func adoptSharpened(backdrop: UIImage?, logo: UIImage?, identity: String,
-                                backdropURL: URL?, logoURL: URL?, timedOut: Bool, startedAt: Date) {
+                                backdropURL: URL?, logoURL: URL?, timedOut: Bool, startedAt: Date,
+                                rest: HeroSharpen.RestOutcome) {
         let waitedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
         guard HeroSharpen.shouldAdoptSharpened(targetIdentity: targetIdentity,
                                                presentedIdentity: presented?.identity,
                                                resolveTaskIsNil: resolveTask == nil,
                                                identity: identity),
               let presented else {
-            HeroSharpen.log("skip item=\(identity) reason=superseded ms=\(waitedMs)")
+            HeroSharpen.log("skip item=\(identity) reason=superseded ms=\(waitedMs)" + HeroSharpen.restToken(rest))
             return
         }
         let sharpBackdrop = HeroSharpen.adoptable(backdrop, over: presented.backdrop)
         let sharpLogo = HeroSharpen.adoptable(logo, over: presented.logo)
         guard sharpBackdrop != nil || sharpLogo != nil else {
             HeroSharpen.log("skip item=\(identity) reason=\(timedOut ? "timeout" : "nogain") "
-                            + "bd=\(HeroSharpen.sizeToken(HeroSharpen.pixelSize(of: backdrop))) ms=\(waitedMs)")
+                            + "bd=\(HeroSharpen.sizeToken(HeroSharpen.pixelSize(of: backdrop))) ms=\(waitedMs)"
+                            + HeroSharpen.restToken(rest))
             return
         }
         let next = HeroPresentation(item: presented.item,
@@ -4437,7 +4595,8 @@ final class HeroArtResolver: ObservableObject {
         }
         if sharpLogo != nil { presentedLogoURL = logoURL }
         HeroSharpen.log("adopt item=\(identity) bd=\(HeroSharpen.adoptToken(from: presented.backdrop, to: sharpBackdrop)) "
-                        + "logo=\(HeroSharpen.adoptToken(from: presented.logo, to: sharpLogo)) ms=\(waitedMs)")
+                        + "logo=\(HeroSharpen.adoptToken(from: presented.logo, to: sharpLogo)) ms=\(waitedMs)"
+                        + HeroSharpen.restToken(rest))
         withAnimation(.easeInOut(duration: 0.3)) {
             self.presented = next
         }
@@ -4581,6 +4740,10 @@ final class HeroArtResolver: ObservableObject {
     /// (append-only, after `logoSrc=`). `blank` is a logo bitmap that drew nothing readable and was
     /// dropped for the text wordmark (so it reads with `logo=text logoSrc=none`); `dark` a
     /// near-black wordmark drawn as a white silhouette. `legible` also stands for "no logo".
+    ///
+    /// beta.19-rc1 verdict (review r1, B P2-1): `backdrop=small` (a new VALUE, no new field): a title
+    /// whose legacy-size backdrop missed the deadline committed the same picture at a card's size
+    /// instead of its poster; the post-commit sharpen upgrades it (`[HomeHero] sharpen`).
     private func logPresent(identity: String, backdrop: String, logo: String,
                             logoOrigin: HeroLogoSource, logoInk: HeroLogoInk, waitedMs: Int, same: Bool) {
         guard HomeHeroProbe.enabled else { return }
@@ -4880,9 +5043,19 @@ struct ContinueWatchingRow: View {
                     // Always positive — the reach lives inside the buttons (see CatalogRowView).
                     .padding(.vertical, Theme.Spacing.lg)
                 }
+                .scrollClipDisabled()
+                // BUG-118: see `RowEdgeEffectStyleModifier`.
+                .rowEdgeEffectStyle()
                 // BUG-37: rides down to the viewport's clip edge when the device rests short —
                 // same one-line treatment as every other pinned row title (see
                 // `pinnedRowTitleTracking` in BrowseComponents for the geometry and history).
+                //
+                // beta.19-rc1 verdict (review r1, B P2-3): AFTER `.rowEdgeEffectStyle()`, as
+                // `CatalogRowView` and `CollectionRowView` attach theirs. Attached before it, the
+                // title sat inside the Soft mask, and with Soft the default and its leading ramp
+                // reaching 110 pt into the frame, a scrolled row drew "Continue Watching" at 0.61
+                // alpha at x = 0. The overlay's frame is the same ScrollView frame either way (the
+                // mask never changes layout), so `pinnedRowTitleTracking` sees the same geometry.
                 .overlay(alignment: .topLeading) {
                     if cardTopReach > 0 {
                         Text("Continue Watching")
@@ -4903,9 +5076,6 @@ struct ContinueWatchingRow: View {
                             .allowsHitTesting(false)
                     }
                 }
-                .scrollClipDisabled()
-                // BUG-118: see `RowEdgeEffectStyleModifier`.
-                .rowEdgeEffectStyle()
                 .onChange(of: entries.first?.videoId) { _, newFirst in
                     // Content-driven reorder while the user is elsewhere: keep the shelf
                     // anchored to the first card instead of drifting mid-list.

@@ -4,8 +4,11 @@ import XCTest
 
 /// beta.19-rc1 verdict (M5, BUG-138): stale hero after a folder. `HomeHeroFocusModel` is frozen
 /// while Home is covered (a push, the Continue Watching stream picker, the shell): a nil report is
-/// ignored and a pending revert cancelled, and an uncover with no report reverts after 0.6 s.
-/// Real timers (commit 0.2 s, revert grace 0.3 s, uncover check 0.6 s), so each case waits ≤ ~1 s.
+/// ignored and a pending revert cancelled, and an uncover with no report reverts after 0.6 s (a shell
+/// cover) or, since review r1 (A P3), 1.2 s (a cover tvOS restores row focus from: a push, the stream
+/// picker), so a pop whose restored report is late on hardware is not reverted and re-committed.
+/// Real timers (commit 0.2 s, revert grace 0.3 s, uncover checks 0.6 / 1.2 s), so each case waits
+/// ≤ ~1.8 s.
 @MainActor
 final class HeroFocusCoverTests: XCTestCase {
 
@@ -69,7 +72,59 @@ final class HeroFocusCoverTests: XCTestCase {
         XCTAssertEqual(reverts, 0)
     }
 
+    /// A shell cover (a tab switch: focus comes back on the tab bar, never on the card) keeps the
+    /// short 0.6 s check.
     func testUncoverWithNoReportRevertsAfterTheCheck() async {
+        let item = makeItem()
+        let model = await committed(item)
+        var reverts = 0
+        model.onRevert = { reverts += 1 }
+
+        model.setCovered(true, restoresFocus: false)
+        model.reportFocus(nil, from: "row-a")
+        model.setCovered(false, restoresFocus: false)   // back on Home; focus is on the tab bar
+        await pause(0.4)
+        XCTAssertEqual(model.focusedItem?.id, item.id, "still held inside the 0.6 s check")
+
+        await pause(0.4)                          // 0.8 s after the uncover
+        XCTAssertNil(model.focusedItem, "no report within 0.6 s: reverted as a nil report would")
+        XCTAssertEqual(reverts, 1)
+    }
+
+    // MARK: - beta.19-rc1 verdict (review r1, A P3): the pop's restored report may be late
+
+    /// The uncover fallback per cover kind: a cover tvOS restores row focus from waits longer.
+    func testUncoverDelayPerCoverKind() {
+        XCTAssertEqual(HomeHeroFocusModel.uncoverDelay(restoresFocus: false), HomeHeroFocusModel.uncoverVerifyDelay)
+        XCTAssertEqual(HomeHeroFocusModel.uncoverDelay(restoresFocus: true), HomeHeroFocusModel.uncoverRestoreDelay)
+        XCTAssertEqual(HomeHeroFocusModel.uncoverVerifyDelay, 0.6)
+        XCTAssertEqual(HomeHeroFocusModel.uncoverRestoreDelay, 1.2)
+    }
+
+    /// A pop with no report at all still reverts, but only after the longer fallback: at 0.8 s (past
+    /// the old 0.6 s check, where a slow device restore used to lose the race) the hero is held.
+    func testPopWithNoReportRevertsAfterTheLongerFallback() async {
+        let item = makeItem()
+        let model = await committed(item)
+        var reverts = 0
+        model.onRevert = { reverts += 1 }
+
+        model.setCovered(true)                    // a push (restores focus: the default)
+        model.reportFocus(nil, from: "row-a")
+        model.setCovered(false)
+        await pause(0.8)
+        XCTAssertEqual(model.focusedItem?.id, item.id, "held past 0.6 s, waiting for the restored report")
+        XCTAssertEqual(reverts, 0)
+
+        await pause(0.6)                          // 1.4 s after the uncover
+        XCTAssertNil(model.focusedItem, "no report within 1.2 s: reverted as a nil report would")
+        XCTAssertEqual(reverts, 1)
+    }
+
+    /// Review r1's device race: the pop's restored report lands 0.9 s after `homePath` empties. The
+    /// first report answers the uncover, so the hero is never reverted and never re-committed (the
+    /// double swap BUG-138 removes).
+    func testLateRestoredReportAfterAPopKeepsTheItem() async {
         let item = makeItem()
         let model = await committed(item)
         var reverts = 0
@@ -77,12 +132,53 @@ final class HeroFocusCoverTests: XCTestCase {
 
         model.setCovered(true)
         model.reportFocus(nil, from: "row-a")
-        model.setCovered(false)                   // pop; focus comes back somewhere else
-        await pause(0.4)
-        XCTAssertEqual(model.focusedItem?.id, item.id, "still held inside the 0.6 s check")
+        model.setCovered(false)
+        await pause(0.9)                          // the old 0.6 s check would have reverted here
+        model.reportFocus(item, from: "row-a")    // focus restored to the folder card, late
+        await pause(0.6)
 
-        await pause(0.4)                          // 0.8 s after the uncover
-        XCTAssertNil(model.focusedItem, "no report within 0.6 s: reverted as a nil report would")
+        XCTAssertEqual(model.focusedItem?.id, item.id)
+        XCTAssertEqual(reverts, 0, "a late restored report must not cost a revert and a re-commit")
+    }
+
+    /// A push that joins a shell cover already in force lengthens the fallback; a cover can never
+    /// shorten it.
+    func testAPushJoiningAShellCoverUsesTheLongerFallback() async {
+        let item = makeItem()
+        let model = await committed(item)
+        var reverts = 0
+        model.onRevert = { reverts += 1 }
+
+        model.setCovered(true, restoresFocus: false)    // shell
+        model.setCovered(true, restoresFocus: true)     // a push lands while covered
+        model.setCovered(true, restoresFocus: false)    // the push pops, the shell is still up
+        model.reportFocus(nil, from: "row-a")
+        model.setCovered(false, restoresFocus: false)
+        await pause(0.8)
+        XCTAssertEqual(model.focusedItem?.id, item.id, "the longer fallback applies")
+
+        await pause(0.6)
+        XCTAssertNil(model.focusedItem)
+        XCTAssertEqual(reverts, 1)
+    }
+
+    /// The cover kind is per cover: after a pop is answered, a later tab switch is back on the short
+    /// check.
+    func testTheCoverKindResetsAfterEachUncover() async {
+        let item = makeItem()
+        let model = await committed(item)
+        var reverts = 0
+        model.onRevert = { reverts += 1 }
+
+        model.setCovered(true)                    // push
+        model.setCovered(false)                   // pop
+        model.reportFocus(item, from: "row-a")    // restored on time
+
+        model.setCovered(true, restoresFocus: false)    // then a tab switch
+        model.reportFocus(nil, from: "row-a")
+        model.setCovered(false, restoresFocus: false)
+        await pause(0.8)
+        XCTAssertNil(model.focusedItem, "a shell cover keeps the 0.6 s check")
         XCTAssertEqual(reverts, 1)
     }
 

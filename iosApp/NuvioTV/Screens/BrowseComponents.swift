@@ -4989,6 +4989,19 @@ struct CatalogRowView: View {
     /// row's own soft mask owns the leading edge, so the BUG-92 leading clip opens wide instead of
     /// cutting it hard; System and Off keep the clip at `leadingEdgeAllowance`.
     @AppStorage(RowEdgeFadeSetting.defaultsKey) private var rowEdgeFade = RowEdgeFadeSetting.defaultValue.rawValue
+    /// beta.19-rc1 verdict (review r1, B P2-2): the same margins and ramp length this row's
+    /// `rowEdgeEffectStyle()` draws with (it passes no overrides, so it reads exactly these), for
+    /// the morph scroll's trailing inset. A host with other chrome (the Stage strip) sets them once
+    /// on its container and the inset follows.
+    @Environment(\.rowEdgeMargins) private var rowEdgeMargins
+    @Environment(\.rowEdgeRampLength) private var rowEdgeRampLength
+    /// beta.19-rc1 verdict (review r1, B P2-2): the item whose wide inline tile the morph scroll
+    /// could NOT bring clear of the Soft trailing ramp (clamped at the row's end, or a row too short
+    /// to scroll), so the row holds its trailing fade off while that tile is wide. Written at most
+    /// once per morph pass and once per collapse, never per frame. Applied only while that item
+    /// still holds focus (`holdsTrailingFade`), so a value left behind by a card that vanished
+    /// without reporting its collapse can never keep the fade off.
+    @State private var trailingFadeHeldFor: String?
 
     /// tvOS Accessibility ▸ Motion ▸ Auto-Play Video Previews. When the user has turned previews off
     /// system-wide, the row must render exactly as it did before this feature existed.
@@ -5082,6 +5095,13 @@ struct CatalogRowView: View {
         return RowLeadingEdgeClip.allowance(posterWidth: posterWidth,
                                             liftScale: liftScale,
                                             ringWidth: ring)
+    }
+
+    /// beta.19-rc1 verdict (review r1, B P2-2): see `trailingFadeHeldFor`. Only while the held item
+    /// still has focus (a wide tile is always the focused card's).
+    private var holdsTrailingFade: Bool {
+        guard let held = trailingFadeHeldFor else { return false }
+        return held == focusedItemId
     }
 
     var body: some View {
@@ -5220,8 +5240,10 @@ struct CatalogRowView: View {
                 // M3: the horizontal-only morph scroll target (absent under the proxy fallback).
                 .modifier(RowMorphScrollPositionModifier(position: $rowPosition))
                 // BUG-118: see `RowEdgeEffectStyleModifier` — same receiver `.scrollClipDisabled()`
-                // is already on.
-                .rowEdgeEffectStyle(leadingClipAllowance: leadingEdgeAllowance)
+                // is already on. beta.19-rc1 verdict (review r1, B P2-2): `holdsTrailingFade` keeps a
+                // wide inline tile the morph scroll could not clear out of the Soft trailing ramp.
+                .rowEdgeEffectStyle(leadingClipAllowance: leadingEdgeAllowance,
+                                    holdsTrailingFade: holdsTrailingFade)
                 // Pinned: the title floats over the (transparent) reach band at the shelf's
                 // top-leading corner — visually where it always was, but INSIDE the region
                 // the focused cards' frames cover, so every reveal shows it.
@@ -5283,8 +5305,13 @@ struct CatalogRowView: View {
         }
         // H3: the row (and its ScrollViewReader) can disappear mid-flight — a pop while the
         // deferred verification pass (M3: `morphDuration + 0.05` s) is still pending. Cancel
-        // rather than let it fire against a torn-down row.
-        .onDisappear { expansionScrollTask?.cancel() }
+        // rather than let it fire against a torn-down row. Review r1 (A-4): the cards abort on
+        // disappear and may not report the collapse, so forget the wide item too (a box write,
+        // no render).
+        .onDisappear {
+            expansionScrollTask?.cancel()
+            hScroll.wideItemId = nil
+        }
     }
 
     /// Portrait poster by default; a 16:9 landscape card when the user enables landscape catalog
@@ -5320,9 +5347,29 @@ struct CatalogRowView: View {
     ///
     /// Path shipped: `ScrollPosition` (pending the Gate 1 simulator checks, §1.6.4). The proxy
     /// fallback is behind `-debug.trailerMorphScrollProxy YES` (see `RowMorphScroll`).
+    ///
+    /// beta.19-rc1 verdict (review r1, A-4): the COLLAPSE edge now cancels this item's pending
+    /// verification pass. It used to return at the guard below first, so after an abort (a fast Left
+    /// within 0.2 s of `.wide`) pass 2 still fired at `morphDuration + 0.05` s and scrolled the row
+    /// back right by up to the tile's growth, for a tile that was a poster again — pushing the newly
+    /// focused card toward the edge (critique #26's "second correcting motion"). `hScroll.wideItemId`
+    /// records which item is wide, so a late collapse report from a previous card never cancels the
+    /// current card's pass, and pass 2 itself re-checks it before scrolling.
     private func expansionChanged(itemId: String, expanded: Bool, proxy: ScrollViewProxy) {
-        guard expanded, !posterStyle.landscapeCatalogRows,
+        guard expanded else {
+            // Only this item's own pass: if another card has expanded since, `wideItemId` names it.
+            if hScroll.wideItemId == itemId {
+                hScroll.wideItemId = nil
+                expansionScrollTask?.cancel()
+                if CatalogGridProbe.enabled { CatalogGridProbe.log("expansionChanged collapse item=\(itemId) cancelled=1") }
+            }
+            // Review r1 B P2-2: the tile is no longer wide, so the trailing fade comes back.
+            if trailingFadeHeldFor == itemId { trailingFadeHeldFor = nil }
+            return
+        }
+        guard !posterStyle.landscapeCatalogRows,
               let index = section.items.firstIndex(where: { $0.id == itemId }) else { return }
+        hScroll.wideItemId = itemId
         // H3: supersede any still-pending pass from a previous expansion rather than letting both
         // race the same row.
         expansionScrollTask?.cancel()
@@ -5351,30 +5398,65 @@ struct CatalogRowView: View {
     /// target. The sample lives in `hScroll` in raw scroll coordinates; `RowMorphScroll` works in
     /// padded-content space (x = 0 at the scroll view's leading edge at rest), so the inset is added
     /// going in and taken off coming out (critique #24; the rows carry no horizontal inset today).
+    ///
+    /// beta.19-rc1 verdict (review r1):
+    /// - A-4: a pass for a card that is no longer wide (`hScroll.wideItemId`) does nothing — the
+    ///   tile width it would scroll for is gone.
+    /// - B P2-2: the tile must end `RowEdgeFade.trailingTileInset` inside the row's trailing edge
+    ///   (110 pt under the default Soft fade, 0 in System/Off), so the Soft ramp never dims a playing
+    ///   trailer's right side. When the row cannot scroll that far (the plan's `endsInsideInset`:
+    ///   clamped at the row's end), the row holds its trailing fade off while the tile is wide.
     private func morphScrollPass(index: Int, itemId: String, widthBefore: CGFloat?, pass: Int,
                                  proxy: ScrollViewProxy) {
+        guard hScroll.wideItemId == itemId else {
+            if CatalogGridProbe.enabled { CatalogGridProbe.log("expansionChanged pass=\(pass) notwide skip item=\(itemId)") }
+            return
+        }
         guard let sample = hScroll.sample else {
             if CatalogGridProbe.enabled { CatalogGridProbe.log("expansionChanged pass=\(pass) nosample item=\(itemId)") }
             return
         }
         let grown = widthBefore.map { sample.contentWidth > $0 + 1 } ?? false
-        let target = RowMorphScroll.target(index: index,
-                                           restingWidth: posterStyle.width,
-                                           expandedWidth: InlineTrailerCard.expandedWidth(posterStyle),
-                                           gap: Theme.Spacing.rowGap,
-                                           visibleMinX: sample.paddedVisibleMinX,
-                                           viewportWidth: sample.viewportWidth,
-                                           contentWidth: sample.paddedContentWidth,
-                                           insetLeading: sample.insetLeading,
-                                           contentAlreadyGrown: grown)
+        // The ScrollView's frame width is the mask's width (a mask is proposed the masked view's
+        // size), and this row passes `rowEdgeEffectStyle()` no overrides, so these are the exact
+        // margins and ramp the fade is drawn with.
+        let trailingInset = RowEdgeFade.trailingTileInset(setting: RowEdgeFadeSetting.resolve(rowEdgeFade),
+                                                          rowWidth: sample.viewportWidth,
+                                                          margins: rowEdgeMargins,
+                                                          rampLength: rowEdgeRampLength)
+        let plan = RowMorphScroll.plan(index: index,
+                                       restingWidth: posterStyle.width,
+                                       expandedWidth: InlineTrailerCard.expandedWidth(posterStyle),
+                                       gap: Theme.Spacing.rowGap,
+                                       visibleMinX: sample.paddedVisibleMinX,
+                                       viewportWidth: sample.viewportWidth,
+                                       contentWidth: sample.paddedContentWidth,
+                                       insetLeading: sample.insetLeading,
+                                       contentAlreadyGrown: grown,
+                                       trailingInset: trailingInset)
+        let target = plan.offset
+        // The proxy fallback's item-anchored scroll can only bring the tile to the viewport edge,
+        // never `trailingInset` inside it, so under that path any tile that is not already clear
+        // stays in the ramp: hold the fade there too.
+        let hold = plan.endsInsideInset || (RowMorphScroll.useProxyFallback && target != nil)
+        if hold {
+            if trailingFadeHeldFor != itemId { trailingFadeHeldFor = itemId }
+        } else if trailingFadeHeldFor == itemId {
+            trailingFadeHeldFor = nil
+        }
         if CatalogGridProbe.enabled {
             let targetText = target.map { String(format: "%.1f", $0) } ?? "fits"
-            CatalogGridProbe.log(String(format: "expansionChanged pass=%d item=%@ target=%@ minX=%.1f vw=%.1f cw=%.1f inset=%.1f grown=%d",
+            // Append-only: `tinset=` / `hold=` (review r1 B P2-2) go last.
+            CatalogGridProbe.log(String(format: "expansionChanged pass=%d item=%@ target=%@ minX=%.1f vw=%.1f cw=%.1f inset=%.1f grown=%d tinset=%.1f hold=%d",
                                         pass, itemId, targetText, sample.paddedVisibleMinX, sample.viewportWidth,
-                                        sample.paddedContentWidth, sample.insetLeading, grown ? 1 : 0))
+                                        sample.paddedContentWidth, sample.insetLeading, grown ? 1 : 0,
+                                        trailingInset, hold ? 1 : 0))
         }
         guard let target else { return }
         if RowMorphScroll.useProxyFallback {
+            // Unchanged by review r1: the fallback still scrolls only on a real viewport overflow
+            // (its item-anchored scroll cannot honour the inset; the hold above covers the rest).
+            guard plan.overflowsViewport else { return }
             // §1.6.4 fallback: the item-anchored scroll can reach the vertical rows, so tell the
             // pinned settle corrector first (pinned Home only — `cardTopReach > 0` — so a Search
             // row never touches Home's settle state).

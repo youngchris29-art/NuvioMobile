@@ -13,10 +13,10 @@ final class RowSoftEdgeMaskTests: XCTestCase {
     private let ramp: CGFloat = 250
 
     private func segments(width: CGFloat? = nil, margins: RowEdgeMargins? = nil, rampLength: CGFloat? = nil,
-                          allowance: CGFloat, active: Bool) -> [RowSoftEdgeMask.Segment] {
+                          allowance: CGFloat, active: Bool, trailingActive: Bool = true) -> [RowSoftEdgeMask.Segment] {
         RowSoftEdgeMask.segments(width: width ?? self.width, margins: margins ?? standard,
                                  rampLength: rampLength ?? ramp, restClipAllowance: allowance,
-                                 leadingActive: active)
+                                 leadingActive: active, trailingActive: trailingActive)
     }
 
     func testRestWithAllowanceCutsHardAtMinusAllowance() {
@@ -87,16 +87,61 @@ final class RowSoftEdgeMaskTests: XCTestCase {
         for width: CGFloat in [0, 100, 1000, 1640] {
             for margins in marginSets {
                 for active in [false, true] {
-                    for allowance: CGFloat in [0, 36, 400] {
-                        let s = segments(width: width, margins: margins, allowance: allowance, active: active)
-                        let tag = "width=\(width) margins=\(margins) active=\(active) allowance=\(allowance)"
-                        XCTAssertEqual(s.first?.start, -margins.leading, tag)
-                        XCTAssertEqual(s.last?.end, width + margins.trailing, tag)
-                        for i in 1..<s.count { XCTAssertEqual(s[i - 1].end, s[i].start, tag) }
-                        for seg in s { XCTAssertGreaterThanOrEqual(seg.end, seg.start, tag) }
+                    for trailingActive in [true, false] {
+                        for allowance: CGFloat in [0, 36, 400] {
+                            let s = segments(width: width, margins: margins, allowance: allowance, active: active,
+                                             trailingActive: trailingActive)
+                            let tag = "width=\(width) margins=\(margins) active=\(active) trailing=\(trailingActive) allowance=\(allowance)"
+                            XCTAssertEqual(s.first?.start, -margins.leading, tag)
+                            XCTAssertEqual(s.last?.end, width + margins.trailing, tag)
+                            for i in 1..<s.count { XCTAssertEqual(s[i - 1].end, s[i].start, tag) }
+                            for seg in s { XCTAssertGreaterThanOrEqual(seg.end, seg.start, tag) }
+                        }
                     }
                 }
             }
+        }
+    }
+
+    // MARK: Review r1, B P2-2: an expanded inline trailer must never sit in the trailing ramp
+
+    /// The ramp's reach inside the frame is the morph scroll's trailing inset: 110 with the standard
+    /// margin and ramp, less on a narrow row (the ramp is capped), 0 when the ramp ends outside it.
+    func testTrailingInnerExtent() {
+        XCTAssertEqual(RowSoftEdgeMask.trailingInnerExtent(width: 1640, margins: standard, rampLength: 250), 110)
+        // Narrow row: the drawn ramp is 140 + 50 = 190, so 50 of it is inside.
+        XCTAssertEqual(RowSoftEdgeMask.trailingInnerExtent(width: 100, margins: standard, rampLength: 250), 50)
+        XCTAssertEqual(RowSoftEdgeMask.trailingInnerExtent(width: 1640, margins: standard, rampLength: 120), 0)
+        // Each side reads its own margin (the Stage strip's chrome).
+        XCTAssertEqual(RowSoftEdgeMask.trailingInnerExtent(width: 1640, margins: RowEdgeMargins(leading: 116, trailing: 90),
+                                                           rampLength: 250), 160)
+        // It is exactly where the drawn rampOut begins, measured from the frame's trailing edge.
+        let s = segments(width: 1640, allowance: 36, active: true)
+        XCTAssertEqual(1640 - (s.last?.start ?? 0), 110)
+    }
+
+    /// Only Soft draws a ramp, so only Soft asks the morph scroll for an inset.
+    func testTrailingTileInsetFollowsTheSetting() {
+        XCTAssertEqual(RowEdgeFade.trailingTileInset(setting: .soft, rowWidth: 1640, margins: standard, rampLength: 250), 110)
+        XCTAssertEqual(RowEdgeFade.trailingTileInset(setting: .system, rowWidth: 1640, margins: standard, rampLength: 250), 0)
+        XCTAssertEqual(RowEdgeFade.trailingTileInset(setting: .off, rowWidth: 1640, margins: standard, rampLength: 250), 0)
+        XCTAssertEqual(RowEdgeFade.trailingTileInset(setting: .soft, rowWidth: 1640, margins: .standard,
+                                                     rampLength: RowEdgeFade.rampLength),
+                       RowEdgeFade.rampLength - RowSoftEdgeMask.margin)
+    }
+
+    /// The hold (a wide tile clamped at the row's end): solid to the bezel, and the rampOut piece
+    /// stays as a zero-width segment so the piece count never changes (the hold eases as a width).
+    func testTrailingHoldDrawsSolidToTheBezel() {
+        for active in [false, true] {
+            let held = segments(width: 1640, allowance: 36, active: active, trailingActive: false)
+            let normal = segments(width: 1640, allowance: 36, active: active)
+            XCTAssertEqual(held.count, normal.count, "active=\(active)")
+            XCTAssertEqual(held.last, .init(start: 1780, end: 1780, kind: .rampOut), "active=\(active)")
+            XCTAssertEqual(held[held.count - 2].kind, .solid, "active=\(active)")
+            XCTAssertEqual(held[held.count - 2].end, 1780, "active=\(active)")
+            // The leading side is untouched by the hold.
+            XCTAssertEqual(Array(held.dropLast(2)), Array(normal.dropLast(2)), "active=\(active)")
         }
     }
 }

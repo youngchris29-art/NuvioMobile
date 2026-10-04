@@ -74,7 +74,15 @@ struct UpcomingRow: View {
                 // Always positive — the reach lives inside the buttons (see CatalogRowView).
                 .padding(.vertical, Theme.Spacing.lg)
             }
+            .scrollClipDisabled()
+            // BUG-118: see `RowEdgeEffectStyleModifier`.
+            .rowEdgeEffectStyle()
             // BUG-37: pinned title rides down to the viewport's clip edge like every other row.
+            //
+            // beta.19-rc1 verdict (review r1, B P2-3): AFTER `.rowEdgeEffectStyle()`, as in
+            // `ContinueWatchingRow` (structural twin), `CatalogRowView` and `CollectionRowView`: before
+            // it the title sat inside the Soft mask and a scrolled row faded "Upcoming" to 0.61 alpha
+            // at x = 0. The mask never changes layout, so the title's geometry is unchanged.
             .overlay(alignment: .topLeading) {
                 if cardTopReach > 0 {
                     Text("Upcoming")
@@ -95,9 +103,6 @@ struct UpcomingRow: View {
                         .allowsHitTesting(false)
                 }
             }
-            .scrollClipDisabled()
-            // BUG-118: see `RowEdgeEffectStyleModifier`.
-            .rowEdgeEffectStyle()
         }
         .focusSection()
         // rc14 (BUG-122): see `ContinueWatchingRow` — cancels the floor's layout growth, after the

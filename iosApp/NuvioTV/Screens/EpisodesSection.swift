@@ -477,7 +477,9 @@ struct WatchedCheckBadge: View {
 /// selected season outlined in the accent (the same "selected vs focused" split the text chips
 /// draw with colour). Same idioms as `TrailerThumbCard`: `.borderless` button, `tileFocusLift`
 /// (goes still under No Zoom on Focus), `Theme.Font.cardTitle` caption.
-private struct SeasonPosterCard: View {
+// beta.19-rc1 verdict (review r1, I1): internal (was private) only so `SeasonPosterDecodeSizeTests`
+// can pin `decodeSize`; nothing outside this file constructs it.
+struct SeasonPosterCard: View {
     let label: String
     let imageURL: String?
     let isSelected: Bool
@@ -492,11 +494,19 @@ private struct SeasonPosterCard: View {
     private static let width: CGFloat = Theme.Size.miniPosterWidth
     private static let height: CGFloat = Theme.Size.miniPosterHeight
 
+    /// beta.19-rc1 verdict (review r1, I1): the decode size the card's artwork is drawn at. This batch
+    /// moved the Kotlin season poster to TMDB w780 (780x1170); left on the unsized `.legacy` decode
+    /// (a 1920 px cap) each one became a ~3.6 MB bitmap for a 180x270 pt card. Sized to the drawn
+    /// frame (points x displayScale, 540 px long side at scale 2, bucketed to 640) it is the same
+    /// request `PosterCard.decodeRequest` builds for a poster of this size. No `upgrade:` here: the
+    /// shared parser already hands over the larger rendition.
+    static let decodeSize: ArtworkDecodeSize = .points(width: width, height: height)
+
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             ZStack {
                 if let imageURL, !imageURL.isEmpty {
-                    CachedAsyncImage(string: imageURL)
+                    CachedAsyncImage(string: imageURL, decodeSize: Self.decodeSize)
                 } else {
                     Theme.Palette.surface
                     // FEAT-26: at 180×270 the caption2 label got lost in the empty surface — meta

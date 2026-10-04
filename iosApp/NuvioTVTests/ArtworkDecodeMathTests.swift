@@ -38,6 +38,24 @@ final class ArtworkDecodeMathTests: XCTestCase {
         XCTAssertEqual(ArtworkDecodeMath.storeBucket(needed: 1920, sourceLongSide: 1170), 1280)
     }
 
+    /// beta.19-rc1 verdict (review r1, B P2-1): the floor a cache lookup applies. For `.legacy` it is
+    /// the bucket a legacy decode of the URL is stored under, `bucket(min(1920, source))`, so a card's
+    /// smaller decode of the same URL is never a legacy hit.
+    func testLookupBucketForLegacyIsTheLegacyDecodesOwnBucket() {
+        XCTAssertEqual(ArtworkDecodeMath.lookupBucket(.legacy, source: nil), 1920)
+        XCTAssertEqual(ArtworkDecodeMath.lookupBucket(.legacy, source: CGSize(width: 3840, height: 2160)), 1920)
+        XCTAssertEqual(ArtworkDecodeMath.lookupBucket(.legacy, source: CGSize(width: 1280, height: 720)), 1280)
+        XCTAssertEqual(ArtworkDecodeMath.lookupBucket(.legacy, source: CGSize(width: 500, height: 750)), 768)
+        // A Continue Watching card's request for the same 1280 px backdrop lands in the 768 bucket,
+        // under the legacy floor.
+        let card = ArtworkDecodeRequest(size: .points(width: 360, height: 203), fill: true, scale: 2).normalized
+        XCTAssertEqual(ArtworkDecodeMath.lookupBucket(card, source: CGSize(width: 1280, height: 720)), 768)
+        // Every other request kind is unchanged: the bucket its decode is stored under.
+        let fullBleed = ArtworkDecodeRequest(size: .fullBleed, fill: true, scale: 2).normalized
+        XCTAssertEqual(ArtworkDecodeMath.lookupBucket(fullBleed, source: CGSize(width: 3840, height: 2160)), 3840)
+        XCTAssertEqual(ArtworkDecodeMath.lookupBucket(fullBleed, source: CGSize(width: 1280, height: 720)), 1280)
+    }
+
     func testPixelsPassThrough() {
         let request = ArtworkDecodeRequest(size: .pixels(256), fill: true, scale: 2)
         XCTAssertEqual(ArtworkDecodeMath.neededLongSide(request, source: nil), 256)

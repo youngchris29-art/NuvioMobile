@@ -137,7 +137,9 @@ final class TrailerMotionUITests: XCTestCase {
     private static func token(_ line: String, _ key: String) -> String? {
         let prefix = key + "="
         for part in line.split(separator: " ") where part.hasPrefix(prefix) {
-            return String(part.dropFirst(prefix.count))
+            // Gate 4 (main session): some readouts separate fields with ", " — `ring=poster,` must
+            // read as `poster`.
+            return String(part.dropFirst(prefix.count)).trimmingCharacters(in: CharacterSet(charactersIn: ",;"))
         }
         return nil
     }
@@ -579,17 +581,30 @@ final class TrailerMotionUITests: XCTestCase {
             if let value = node.value as? String, !value.contains(explainerCopy) { parts.append(value) }
             node.children.forEach(collect)
         }
-        var found = false
-        func walk(_ node: XCUIElementSnapshot) {
-            if node.label.contains(title), !node.label.contains(explainerCopy) {
-                found = true
+        // Gate 4 (main session): the row's value ("Automatic ›") is a SIBLING of the title text,
+        // not its child, so the row is every node on the title's line (same midY ± 30 pt, to its
+        // right) — the explainer column sits to the LEFT of the list and is excluded by minX.
+        var titleFrame: CGRect?
+        func findTitle(_ node: XCUIElementSnapshot) {
+            if titleFrame == nil, node.label.contains(title), !node.label.contains(explainerCopy),
+               node.frame.width > 0 {
+                titleFrame = node.frame
+                return
+            }
+            node.children.forEach(findTitle)
+        }
+        findTitle(root)
+        guard let row = titleFrame else { return nil }
+        func onRowLine(_ node: XCUIElementSnapshot) {
+            let f = node.frame
+            if f.width > 0, f.height <= 120, abs(f.midY - row.midY) <= 30, f.minX >= row.minX - 10 {
                 collect(node)
                 return
             }
-            node.children.forEach(walk)
+            node.children.forEach(onRowLine)
         }
-        walk(root)
-        return found ? parts.filter { !$0.isEmpty }.joined(separator: " | ") : nil
+        onRowLine(root)
+        return parts.filter { !$0.isEmpty }.joined(separator: " | ")
     }
 
     /// test88 (row). Inline trailers on, no `-trailer_start_delay` argument: Settings → Home Screen

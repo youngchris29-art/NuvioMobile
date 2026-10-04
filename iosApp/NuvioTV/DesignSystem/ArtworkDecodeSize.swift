@@ -18,6 +18,9 @@ nonisolated enum ArtworkDecodeSize: Hashable, Sendable {
     /// An explicit long-side cap in pixels, independent of scale. The Stage wash passes 256.
     case pixels(Int)
     /// Today's behaviour (1920 px cap). The default for every call site that has not opted in.
+    /// beta.19-rc1 verdict (review r1, B P2-1): its cache lookup is bucket-aware too
+    /// (`ArtworkDecodeMath.lookupBucket`): only a decode at least as large as a legacy decode of the
+    /// URL is a hit, never a card's smaller one.
     case legacy
 }
 
@@ -127,6 +130,17 @@ nonisolated enum ArtworkDecodeMath {
             return bucket(for: min(needed, sourceLongSide))
         }
         return bucket(for: needed)
+    }
+
+    /// beta.19-rc1 verdict (review r1, B P2-1): the smallest stored bucket a cache lookup for
+    /// `request` accepts: the bucket a decode for that request would be stored under (never above the
+    /// source). For `.legacy` that is `bucket(min(1920, source long side))`, exactly what a legacy
+    /// decode of the URL is stored under, so a legacy caller (the Home hero, every call site that has
+    /// not opted into a size) is never handed a card-sized decode of the same URL. `source` is the
+    /// pixel size an earlier decode recorded; nil when none has (then the full 1920 is required).
+    static func lookupBucket(_ request: ArtworkDecodeRequest, source: CGSize?) -> Int {
+        storeBucket(needed: neededLongSide(request, source: source),
+                    sourceLongSide: source.map { max($0.width, $0.height) })
     }
 
     /// `b`, then every larger bucket: a larger decode serves a smaller request.
