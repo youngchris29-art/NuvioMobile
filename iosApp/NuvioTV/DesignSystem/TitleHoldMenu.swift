@@ -233,7 +233,9 @@ private struct TitleHoldMenuItems: View {
         let isSeries = TitleHoldMenuPolicy.isSeries(type: preview.type)
         // Captured once per build: the labels below and the actions the buttons perform both come
         // from these two values, so they cannot disagree.
-        let isSaved = Self.liveSaved(preview)
+        // Not read on the Library grid, which shows no library toggle: `isSaved` runs the library's
+        // `ensureLoaded`, which kicks a provider refresh on every hold.
+        let isSaved = includesLibraryAction ? Self.liveSaved(preview) : false
         let isWatched = Self.liveWatched(preview, isSeries: isSeries)
         // BUG-125 probe: tvOS evaluates this body when it is about to PRESENT the menu, so this line
         // proves the hold was recognised as a long press; its absence on a hold means the press

@@ -257,4 +257,21 @@ nonisolated enum LibraryGridPolicy {
         }
         return String(localized: "Remove from \(listTitle)")
     }
+
+    /// The confirmation a Simkl remove asks for (see `LibraryRepository.removalNeedsConfirmation`).
+    static func removeConfirmationTitle(listTitle: String?) -> String {
+        guard let listTitle, !listTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return String(localized: "Remove from Library?")
+        }
+        return String(localized: "Remove from \(listTitle)?")
+    }
+
+    static func removeConfirmationMessage(providerName: String?) -> String {
+        String(localized: "\(providerName ?? "Simkl") also clears this title\u{2019}s watched history and rating when it leaves a list.")
+    }
+
+    static func removeFailedTitle(providerName: String?) -> String {
+        guard let providerName else { return String(localized: "Couldn\u{2019}t remove the title") }
+        return String(localized: "Couldn\u{2019}t update \(providerName)")
+    }
 }

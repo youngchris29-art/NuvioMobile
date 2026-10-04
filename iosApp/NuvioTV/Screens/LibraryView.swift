@@ -57,6 +57,25 @@ struct LibraryView: View {
                 // the sidebar, exits as before). No modifier at all in tabs mode.
                 .sidebarMenuReveal()
             }
+            // Simkl: leaving a status also clears the title's watched history and rating there, so
+            // the hold menu's remove asks first (`LibraryRepository.removalNeedsConfirmation`).
+            .alert(
+                LibraryGridPolicy.removeConfirmationTitle(listTitle: model.pendingRemoval?.listTitle),
+                isPresented: Binding(
+                    get: { model.pendingRemoval != nil },
+                    set: { if !$0 { model.cancelRemoval() } }
+                ),
+                presenting: model.pendingRemoval
+            ) { removal in
+                Button(String(localized: "Remove"), role: .destructive) {
+                    model.confirmRemoval(removal)
+                }
+                Button(String(localized: "Cancel"), role: .cancel) {
+                    model.cancelRemoval()
+                }
+            } message: { removal in
+                Text(LibraryGridPolicy.removeConfirmationMessage(providerName: removal.providerName))
+            }
             .navigationDestination(for: TitleRoute.self) { route in
                 DetailView(preview: route.preview)
             }
@@ -66,6 +85,20 @@ struct LibraryView: View {
             .navigationDestination(for: EntityRoute.self) { route in
                 EntityBrowseView(route: route)
             }
+        }
+        // A failed remove. The shared toast controller is a no-op on tvOS, so the screen says it.
+        .alert(
+            LibraryGridPolicy.removeFailedTitle(providerName: model.providerName),
+            isPresented: Binding(
+                get: { model.actionError != nil },
+                set: { if !$0 { model.actionError = nil } }
+            )
+        ) {
+            Button(String(localized: "OK"), role: .cancel) {
+                model.actionError = nil
+            }
+        } message: {
+            Text(model.actionError ?? "")
         }
         .onAppear {
             model.start()
@@ -164,7 +197,7 @@ struct LibraryView: View {
                 .posterButtonShape()
                 .libraryHoldMenu(preview: entry.item.toMetaPreview()) {
                     Button(role: .destructive) {
-                        model.remove(entry)
+                        model.requestRemove(entry)
                     } label: {
                         Label(LibraryGridPolicy.removeLabel(listTitle: model.selectedSectionTitle),
                               systemImage: "trash")
@@ -203,6 +236,8 @@ struct LibraryView: View {
             }
             .padding(.vertical, Theme.Spacing.xs)
         }
+        // The List and Sort pills are stock `Menu` buttons, which lift on focus; don't crop the lift.
+        .scrollClipDisabled()
         .focusSection()
     }
 

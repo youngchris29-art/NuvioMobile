@@ -522,28 +522,65 @@ object LibraryRepository {
     }
 
     /**
+     * Fork (tvOS Library L1, 2026-10-04): whether the Library grid's "Remove from <list>" needs the
+     * viewer's OK first. Only Simkl answers yes: taking a title out of a Simkl status also clears its
+     * watched history and rating there, so `applyStatusMembership` refuses unless confirmed (mobile
+     * never passes the confirmation, so it simply fails there). False for a list no connected
+     * provider owns; [removeFromListAsync] reports that one.
+     */
+    fun removalNeedsConfirmation(item: LibraryItem, listKey: String): Boolean {
+        ensureLoaded()
+        val provider = libraryProviderOwning(listKey) ?: return false
+        return provider.membershipRemovalConfirmation(item, mapOf(listKey to false)) != null
+    }
+
+    /**
      * Fork (tvOS Library L1, 2026-10-04): the Library grid's "Remove from <list>" hold action.
      *
-     * Non-suspending and failure-contained, like [toggleSaved]. [removeFromList] rethrows the first
-     * provider failure (mobile wraps it in `runCatching`), and a Kotlin exception that escapes a
-     * suspend call into Swift without `@Throws` terminates the app, so tvOS must not call
-     * [removeFromList] directly. A failure shows the same toast [toggleSaved] shows.
+     * Touches only the provider that owns [listKey]. [removeFromList] reads and re-applies the
+     * membership of every connected provider, so one that failed to load (MDBList's snapshot
+     * throws) would abort a Trakt removal, and every remove would refresh all of them.
+     *
+     * Non-suspending and failure-contained, like [toggleSaved]: a Kotlin exception that escapes a
+     * suspend call into Swift without `@Throws` terminates the app. [onFinished] gets nil on success
+     * or the failure's message, off the main thread. tvOS shows it itself: the shared toast
+     * controller is a no-op there.
      */
-    fun removeFromListAsync(item: LibraryItem, listKey: String) {
+    fun removeFromListAsync(
+        item: LibraryItem,
+        listKey: String,
+        destructiveRemovalConfirmed: Boolean,
+        onFinished: (String?) -> Unit,
+    ) {
+        ensureLoaded()
+        val profileId = localState.snapshot().token.profileId
         syncScope.launch {
-            try {
-                removeFromList(item, listKey)
+            val failure = try {
+                val provider = libraryProviderOwning(listKey)
+                    ?: error("No connected library has the list $listKey")
+                provider.applyMembership(
+                    profileId = profileId,
+                    item = item,
+                    desiredMembership = libraryMembershipWithRemovedList(provider.membership(item), listKey),
+                    destructiveRemovalConfirmed = destructiveRemovalConfirmed,
+                )
+                null
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
                 log.e(error) { "Failed to remove item=${item.id} type=${item.type} from list=$listKey" }
-                ToastControllerProvider.controller.show(
-                    error.message?.takeIf { it.isNotBlank() }
-                        ?: resourceString("Failed to update Trakt lists", StringKey.trakt_lists_update_failed),
-                )
+                error.message?.takeIf { it.isNotBlank() }
+                    ?: resourceString("Failed to update Trakt lists", StringKey.trakt_lists_update_failed)
             }
+            publish()
+            onFinished(failure)
         }
     }
+
+    private fun libraryProviderOwning(listKey: String): TrackingLibraryProvider? =
+        TrackingProviderRegistry.connectedLibraryProviders().firstOrNull { provider ->
+            provider.snapshot().tabs.any { tab -> tab.key == listKey }
+        }
 
     /**
      * Fork (tvOS Library L1, 2026-10-04): the Library screen's Retry after a failed provider or

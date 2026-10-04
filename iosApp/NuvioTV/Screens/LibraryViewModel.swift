@@ -2,13 +2,22 @@ import Combine
 import SharedCore
 
 /// One card in the Library grid.
-struct LibraryGridEntry: Identifiable {
+struct LibraryGridEntry: Identifiable, Equatable {
     /// `type:id`, normalized like the shared projection's de-duplication key, so ids are unique.
     let id: String
     let item: LibraryItem
     let state: LibraryGridPolicy.WatchState
     /// The projection's type key (`mediaCategory ?? type`), for the count line.
     let kind: String
+}
+
+/// A provider-list remove waiting for the viewer's OK (Simkl, see
+/// `LibraryRepository.removalNeedsConfirmation`). Captures the list at hold time.
+struct LibraryPendingRemoval {
+    let item: LibraryItem
+    let listKey: String
+    let listTitle: String?
+    let providerName: String?
 }
 
 /// Observes the shared `LibraryRepository` (the local Nuvio library, or the Trakt / Simkl /
@@ -43,6 +52,10 @@ final class LibraryViewModel: ObservableObject {
     @Published private(set) var effectiveSortOption: LibrarySortOption = .addedDesc
     /// Sort options valid for the active source (DEFAULT = the provider's order, remote only).
     @Published private(set) var availableSortOptions: [LibrarySortOption] = []
+    /// Set while the remove confirmation is up.
+    @Published private(set) var pendingRemoval: LibraryPendingRemoval?
+    /// A failed remove's message, shown in an alert (the shared toast is a no-op on tvOS).
+    @Published var actionError: String?
 
     var providerName: String? { LibraryGridPolicy.providerName(sourceModeName: sourceModeName) }
 
@@ -60,6 +73,10 @@ final class LibraryViewModel: ObservableObject {
     private var requestedSectionKey: String?
     private var requestedType: String?
     private var lastSourceModeName: String?
+    /// Watched flag per entry id. `WatchedRepository.isWatched` runs the tracker registry's
+    /// `ensureLoaded` on every call, so it is asked once per title and again only after the watched
+    /// flows emit, not on every library, progress or filter change.
+    private var watchedByEntryID: [String: Bool] = [:]
     private var watchers: [FlowWatcher] = []
     private var republishScheduled = false
 
@@ -80,12 +97,15 @@ final class LibraryViewModel: ObservableObject {
             self.sortOption = state.sortOption
             self.scheduleRepublish()
         })
-        // Watched marks are re-read per title in `republish` through the repository's own
-        // `isWatched` / `isFullyWatchedSeries` (the hold menu's test), so these two only trigger.
+        // Watched marks are read per title in `republish` through the repository's own
+        // `isWatched` / `isFullyWatchedSeries` (the hold menu's test) and cached; these two only
+        // drop the cache and trigger.
         watchers.append(FlowWatcherKt.watch(WatchedRepository.shared.uiState) { [weak self] _ in
+            self?.watchedByEntryID.removeAll()
             self?.scheduleRepublish()
         })
         watchers.append(FlowWatcherKt.watch(WatchedRepository.shared.fullyWatchedSeriesKeys) { [weak self] _ in
+            self?.watchedByEntryID.removeAll()
             self?.scheduleRepublish()
         })
         watchers.append(FlowWatcherKt.watch(WatchProgressRepository.shared.uiState) { [weak self] emitted in
@@ -137,20 +157,58 @@ final class LibraryViewModel: ObservableObject {
         LibraryRepository.shared.retryLoadAsync()
     }
 
-    /// The hold menu's remove. With a provider list open it removes the title from THAT list.
-    /// `toggleSaved` would flip the provider's default list instead (the watchlist), which on any
-    /// other list would add the title to the watchlist rather than remove it. The local library has
-    /// no lists (`selectedSectionKey` is always nil there), so it keeps `toggleSaved`, guarded like
-    /// the catalog hold menu (`labelStillMatchesLiveState`): a menu built before the title was
-    /// removed elsewhere must not re-add it.
+    /// The hold menu's remove. With a provider list open it removes the title from THAT list
+    /// (`removeFromListAsync` touches only the provider that owns it). `toggleSaved` would flip the
+    /// provider's default list instead (the watchlist), which on any other list would add the title
+    /// to the watchlist rather than remove it. Simkl asks first: leaving a status there also clears
+    /// the title's watched history and rating.
     ///
-    /// Known gap: on Simkl, removing a title that has watch history or a rating is refused by the
-    /// provider's destructive-removal guard; the shared wrapper shows that as a toast.
-    func remove(_ entry: LibraryGridEntry) {
-        if let key = selectedSectionKey {
-            LibraryRepository.shared.removeFromListAsync(item: entry.item, listKey: key)
-        } else if LibraryRepository.shared.isSaved(id: entry.item.id, type: entry.item.type) {
-            LibraryRepository.shared.toggleSaved(item: entry.item)
+    /// The local library has no lists (`selectedSectionKey` is always nil there), so it keeps
+    /// `toggleSaved`, guarded like the catalog hold menu (`labelStillMatchesLiveState`): a menu
+    /// built before the title was removed elsewhere must not re-add it.
+    func requestRemove(_ entry: LibraryGridEntry) {
+        guard let key = selectedSectionKey else {
+            if LibraryRepository.shared.isSaved(id: entry.item.id, type: entry.item.type) {
+                LibraryRepository.shared.toggleSaved(item: entry.item)
+            }
+            return
+        }
+        let removal = LibraryPendingRemoval(
+            item: entry.item,
+            listKey: key,
+            listTitle: selectedSectionTitle,
+            providerName: providerName
+        )
+        if LibraryRepository.shared.removalNeedsConfirmation(item: entry.item, listKey: key) {
+            // After the context menu's own dismissal (the beat the hold menu waits too), so the
+            // alert isn't presented while the menu is still leaving.
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 400_000_000)
+                self?.pendingRemoval = removal
+            }
+        } else {
+            performRemoval(removal, confirmed: false)
+        }
+    }
+
+    func confirmRemoval(_ removal: LibraryPendingRemoval) {
+        pendingRemoval = nil
+        performRemoval(removal, confirmed: true)
+    }
+
+    func cancelRemoval() {
+        pendingRemoval = nil
+    }
+
+    private func performRemoval(_ removal: LibraryPendingRemoval, confirmed: Bool) {
+        LibraryRepository.shared.removeFromListAsync(
+            item: removal.item,
+            listKey: removal.listKey,
+            destructiveRemovalConfirmed: confirmed
+        ) { [weak self] message in
+            // Called off the main thread; nil = removed.
+            guard let message else { return }
+            Task { @MainActor in self?.actionError = message }
         }
     }
 
@@ -169,7 +227,7 @@ final class LibraryViewModel: ObservableObject {
 
     private func republish() {
         guard let state = libraryState else {
-            content = .loading
+            update(\.content, .loading)
             return
         }
         let modeName = state.sourceMode.name
@@ -183,12 +241,12 @@ final class LibraryViewModel: ObservableObject {
             }
             lastSourceModeName = modeName
         }
-        sourceModeName = modeName
-        availableSortOptions = LibraryDisplaySettingsKt.availableLibrarySortOptions(sourceMode: state.sourceMode)
-        effectiveSortOption = LibraryDisplaySettingsKt.effectiveLibrarySortOption(
+        update(\.sourceModeName, modeName)
+        update(\.availableSortOptions, LibraryDisplaySettingsKt.availableLibrarySortOptions(sourceMode: state.sourceMode))
+        update(\.effectiveSortOption, LibraryDisplaySettingsKt.effectiveLibrarySortOption(
             selected: sortOption,
             sourceMode: state.sourceMode
-        )
+        ))
 
         // providerOrders stays empty, as on mobile's grid: the per-list added-order caches have no
         // public shared accessor. MDBList's DEFAULT order (newest added, then the chosen list's
@@ -201,47 +259,61 @@ final class LibraryViewModel: ObservableObject {
             sortOption: sortOption,
             providerOrders: [:]
         )
-        sections = projection.availableSections
-        selectedSectionKey = projection.selectedSectionKey
-        types = projection.availableTypes
-        selectedType = projection.selectedType
+        update(\.sections, projection.availableSections)
+        update(\.selectedSectionKey, projection.selectedSectionKey)
+        update(\.types, projection.availableTypes)
+        update(\.selectedType, projection.selectedType)
 
         let all = projection.entries.map { entry -> LibraryGridEntry in
             let item = entry.item
+            let id = Self.entryID(item)
             return LibraryGridEntry(
-                id: Self.entryID(item),
+                id: id,
                 item: item,
-                state: watchState(item),
+                state: LibraryGridPolicy.WatchState(
+                    isWatched: isWatched(item, entryID: id),
+                    progress: progressByContentId[item.id]
+                ),
                 kind: item.mediaCategory ?? item.type
             )
         }
-        visibleSmartFilters = LibraryGridPolicy.visibleSmartFilters(
+        update(\.visibleSmartFilters, LibraryGridPolicy.visibleSmartFilters(
             states: all.map(\.state),
             active: activeSmartFilters
-        )
+        ))
         let shown = activeSmartFilters.isEmpty
             ? all
             : all.filter { LibraryGridPolicy.passes($0.state, filters: activeSmartFilters) }
-        entries = shown
-        countLine = LibraryGridPolicy.countLine(kinds: shown.map(\.kind))
-        content = LibraryGridPolicy.content(
+        update(\.entries, shown)
+        update(\.countLine, LibraryGridPolicy.countLine(kinds: shown.map(\.kind)))
+        update(\.content, LibraryGridPolicy.content(
             isLoaded: state.isLoaded,
             isLoading: state.isLoading,
             errorMessage: state.errorMessage,
             hasAnySection: !state.sections.isEmpty,
             visibleCount: shown.count,
             smartFiltersActive: !activeSmartFilters.isEmpty
-        )
+        ))
     }
 
-    private func watchState(_ item: LibraryItem) -> LibraryGridPolicy.WatchState {
+    /// Writes a published value only when it changed, so a sync or progress tick that changes
+    /// nothing on screen doesn't invalidate the whole grid.
+    private func update<Value: Equatable>(_ keyPath: ReferenceWritableKeyPath<LibraryViewModel, Value>, _ value: Value) {
+        if self[keyPath: keyPath] != value {
+            self[keyPath: keyPath] = value
+        }
+    }
+
+    /// The hold menu's own test (a movie's marker, or a fully watched / title-marked series), cached
+    /// per entry until the watched flows emit.
+    private func isWatched(_ item: LibraryItem, entryID: String) -> Bool {
+        if let cached = watchedByEntryID[entryID] { return cached }
         let isSeries = TitleHoldMenuPolicy.isSeries(type: item.type)
         let marked = WatchedRepository.shared.isWatched(id: item.id, type: item.type, season: nil, episode: nil)
         let fully = isSeries ? WatchedRepository.shared.isFullyWatchedSeries(id: item.id, type: item.type) : false
-        return LibraryGridPolicy.WatchState(
-            isWatched: TitleHoldMenuPolicy.effectiveWatched(titleMarked: marked, fullyWatchedSeries: fully, isSeries: isSeries),
-            progress: progressByContentId[item.id]
-        )
+        let watched = TitleHoldMenuPolicy.effectiveWatched(titleMarked: marked, fullyWatchedSeries: fully, isSeries: isSeries)
+        watchedByEntryID[entryID] = watched
+        return watched
     }
 
     private static func entryID(_ item: LibraryItem) -> String {
