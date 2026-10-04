@@ -27452,40 +27452,6 @@
         }
       }
     },
-    "Released": {
-      "localizations": {
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Date de sortie"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Liberado"
-          }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Veröffentlicht"
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Data di rilascio"
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ngày phát hành"
-          }
-        }
-      }
-    },
     "Remembers what you search for and shows it on the Search screen. Off hides past searches and stops saving new ones. On by default.": {
       "localizations": {
         "de": {

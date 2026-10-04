@@ -23,9 +23,10 @@ nonisolated enum DetailStatusText {
         guard let raw else { return nil }
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        // Own `detail.status.*` keys, never the bare English word: the catalog already has a
-        // "Released" key used as a row LABEL (fr "Date de sortie"), and a shared key would print
-        // that label as the status value. The catalog carries an explicit English value for each.
+        // Own `detail.status.*` keys, never the bare English word: the catalog populate script
+        // harvests translations from the phone app by English text, and the phone app uses
+        // "Released" as a row LABEL (fr "Date de sortie"), so a bare key would pick up that label as
+        // the status value. The catalog carries an explicit English value for each key.
         switch trimmed.lowercased() {
         case "released": return String(localized: "detail.status.released", defaultValue: "Released")
         case "ended": return String(localized: "detail.status.ended", defaultValue: "Ended")

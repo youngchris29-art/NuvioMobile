@@ -304,6 +304,39 @@ enum ArtworkStore {
         ArtworkDecodeMath.servingOrder(from: neededBucket).map { "\($0)|\(identity)" }
     }
 
+    /// beta.19-rc1 verdict (review r3, P3 #2): the SMALLER in-flight keys of the same URL, largest
+    /// first. A fetch waits on one of these for its BYTES only, then decodes its own size from the
+    /// URLCache (`fetch`), so a `.legacy` row prefetch issued while the launch's slot-sized carousel
+    /// logo prefetch is still downloading no longer downloads the same file a second time.
+    nonisolated static func inflightByteShareKeys(identity: String, neededBucket: Int) -> [String] {
+        ArtworkDecodeMath.placeholderOrder(below: neededBucket).map { "\($0)|\(identity)" }
+    }
+
+    /// beta.19-rc1 verdict (review r3, P3 #2): does `image`, the decode another request's in-flight
+    /// work produced, cover `request` for `url`? An owner's in-flight key is its estimate from the
+    /// URL's own recorded source, and a fit `.points` owner with none keys at the slot's long side
+    /// (1280 for every logo slot at scale 2) while it decodes only the fit size (640 px for a 2:1
+    /// wordmark in the hero's 520 × 150 slot). Read once the owner has landed, so the source it
+    /// recorded sets this request's floor (`requestBucket`, the floor its own lookup applies). The
+    /// image's long side bucketed is the bucket the owner stored it under (`downsample` caps the
+    /// thumbnail at that bucket or the whole source).
+    nonisolated static func covers(_ image: UIImage, url: URL, decode request: ArtworkDecodeRequest) -> Bool {
+        let longSide: CGFloat
+        if let cgImage = image.cgImage {
+            longSide = CGFloat(max(cgImage.width, cgImage.height))
+        } else {
+            longSide = max(image.size.width, image.size.height) * image.scale
+        }
+        return ArtworkDecodeMath.bucket(for: longSide) >= requestBucket(url, request.normalized)
+    }
+
+    #if DEBUG
+    /// beta.19-rc1 verdict (review r3, P3 #2): called with the in-flight key each time `fetch` starts
+    /// its own work (a download, or a re-decode from the URLCache bytes), so
+    /// `ArtworkSlotLogoLookupTests` can tell a fetch that waited on another one from a parallel one.
+    @MainActor static var onFetchWorkStartForTesting: ((String) -> Void)?
+    #endif
+
     /// Caps simultaneous download+decode pipelines. Bounds the *transient* peak of in-flight
     /// decoded bitmaps that the memory cache's limits can't see — dozens of rows appearing at
     /// once (catalog-heavy Home load) would otherwise stack unbounded concurrent decodes
@@ -568,6 +601,11 @@ enum ArtworkStore {
     /// is today's 1920 px cap). The memory check uses the lookup contract above (review r1, B P2-1:
     /// `.legacy` accepts only a decode at least as large as a legacy one, from any family member; a
     /// card-sized entry is a miss and the URL is decoded again from the URLCache bytes).
+    ///
+    /// beta.19-rc1 verdict (review r3, P3 #2): a call that waited on another call's work returns
+    /// that work's bitmap only when it covers this call's own request; otherwise it decodes its own
+    /// size from the bytes that work left in the URLCache. A `.normal` call with no `timeout` may
+    /// also wait on a smaller fetch of the same URL, for its bytes.
     @MainActor
     static func fetch(_ url: URL, decode: ArtworkDecodeRequest = .legacy, admission: FetchAdmission = .normal,
                       timeout: TimeInterval? = nil) async throws -> UIImage {
@@ -579,14 +617,54 @@ enum ArtworkStore {
             #endif
             return hit
         }
-        let neededBucket = ArtworkDecodeMath.bucket(
-            for: ArtworkDecodeMath.neededLongSide(request, source: sourceSizes.object(forKey: url as NSURL)?.cgSizeValue))
-        // Review r2 (P3-1): the same bucket, or a larger one already in flight (`inflightKeys`).
-        let joinable = inflightKeys(identity: ArtworkMemory.identity(url), neededBucket: neededBucket)
-        let inflightKey = joinable[0]
-        for key in joinable {
-            if let existing = inflight[key] { return try await existing.value }
+        let identity = ArtworkMemory.identity(url)
+        func neededBucket() -> Int {
+            ArtworkDecodeMath.bucket(
+                for: ArtworkDecodeMath.neededLongSide(request, source: sourceSizes.object(forKey: url as NSURL)?.cgSizeValue))
         }
+        // Review r2 (P3-1): the same bucket, or a larger one already in flight (`inflightKeys`).
+        //
+        // beta.19-rc1 verdict (review r3, P3 #2): a joiner no longer takes the owner's bitmap as
+        // is. The owner's key is only its estimate (a fit `.points` owner with no recorded source
+        // keys at the slot's long side and decodes less: the hero's logo sharpen keys `original`
+        // at 1280 and decodes a 2:1 wordmark at 640, and Detail's 600 × 180 slot, keyed at 1280
+        // too, needs 768). Once the owner lands, the source is recorded: the joiner looks itself up
+        // again at its own request, keeps the owner's bitmap if it covers (`covers`), and
+        // otherwise decodes its own size below, from the URLCache bytes (no second download).
+        // With that check in place a `.normal` fetch with no request timeout also waits on a
+        // SMALLER fetch of the same URL, for its bytes (`inflightByteShareKeys`): the launch's
+        // `.legacy` row prefetch of a logo the slot-sized carousel prefetch is still downloading.
+        // `.head` callers and timed candidates never do: they would inherit a queued `.normal`
+        // owner's place in the gate, or its longer inactivity window. Each in-flight task is waited
+        // on at most once (`waited`): a finished owner's entry stays in `inflight` until the
+        // owner's own `fetch` resumes, and a rescan must not spin on it.
+        var waited: [Task<UIImage, Error>] = []
+        joining: while true {
+            let needed = neededBucket()
+            let covering = inflightKeys(identity: identity, neededBucket: needed)
+            let byteShare = admission == .normal && timeout == nil
+                ? inflightByteShareKeys(identity: identity, neededBucket: needed) : []
+            for key in covering + byteShare {
+                guard let existing = inflight[key], !waited.contains(existing) else { continue }
+                waited.append(existing)
+                let landed: UIImage
+                if covering.contains(key) {
+                    landed = try await existing.value
+                } else {
+                    // Bytes only: a failure of the smaller fetch falls through to this request's
+                    // own attempt, which is what it would have made without waiting.
+                    guard let shared = try? await existing.value else { continue joining }
+                    landed = shared
+                }
+                if let hit = cached(url, decode: request) { return hit }
+                if covers(landed, url: url, decode: request) { return landed }
+                continue joining
+            }
+            break
+        }
+        // The key is taken after the waits: a source recorded meanwhile makes it this request's
+        // real bucket. No `await` since the last scan, so any entry at it is one already waited on.
+        let inflightKey = inflightKeys(identity: identity, neededBucket: neededBucket())[0]
 
         let work = Task<UIImage, Error> {
             await acquireFetchSlot(admission)
@@ -667,8 +745,13 @@ enum ArtworkStore {
             #endif
             return image
         }
+        #if DEBUG
+        onFetchWorkStartForTesting?(inflightKey)
+        #endif
         inflight[inflightKey] = work
-        defer { inflight[inflightKey] = nil }
+        // Review r3 (P3 #2): clear only this fetch's own entry. A fetch that waited on a finished
+        // owner can replace that owner's entry before the owner's `fetch` resumes here.
+        defer { if inflight[inflightKey] == work { inflight[inflightKey] = nil } }
         return try await work.value
     }
 

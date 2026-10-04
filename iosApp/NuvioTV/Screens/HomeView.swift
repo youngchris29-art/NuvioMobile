@@ -3836,6 +3836,12 @@ final class HeroArtResolver: ObservableObject {
     /// by `commit`, cleared by any commit or sharpen that puts another backdrop on screen. A plain
     /// stored property: nothing draws from it.
     private var presentedBackdropIsStandIn = false
+    /// beta.19-rc1 verdict (review r3, P3 #1): which `commit` put the presentation on screen (bumped
+    /// by every commit that changes it) and when (`systemUptime`). The late stand-in replacement
+    /// waits out that commit's own backdrop cross-fade (`lateStandInFadeWait`) and replaces only the
+    /// stand-in of the commit it was called for. Plain stored properties: nothing draws from them.
+    private var presentedCommitSerial = 0
+    private var presentedCommittedAt: TimeInterval = 0
     /// The URL the presented logo bitmap was decoded from (nil = the text wordmark). The `.pending`
     /// path learns it from `TitleLogoStore.awaitLogoURL` (`HeroPresentArtWait.logoURL`).
     private var presentedLogoURL: URL?
@@ -4400,6 +4406,9 @@ final class HeroArtResolver: ObservableObject {
         presentedBackdropURL = backdrop != nil ? backdropURL : nil
         presentedBackdropIsStandIn = backdrop != nil && backdropIsStandIn
         presentedLogoURL = logo != nil ? logoURL : nil
+        // Review r3 (P3 #1): the backdrop cross-fade this commit starts runs from here.
+        presentedCommitSerial &+= 1
+        presentedCommittedAt = ProcessInfo.processInfo.systemUptime
         // FEAT-42: set in the SAME transaction as `presented` — see `presentedLogoSource`'s doc
         // comment.
         withAnimation(.easeInOut(duration: 0.3)) {
@@ -4682,7 +4691,9 @@ final class HeroArtResolver: ObservableObject {
     /// strictly larger bitmap (`HeroSharpen.adoptable`), only while the stand-in is still on screen
     /// for this identity, and only at the next at-rest reading (the sharpen's own rest wait,
     /// `HeroSharpen.adoptRestHold`), so its full-screen cross-fade never lands inside a slide (review
-    /// r1, A P2). It is a same-identity update: `HeroTextLayer` takes it as a silent gap-fill (no text
+    /// r1, A P2). Review r3 (P3 #1): that rest wait starts only once the stand-in commit's own
+    /// cross-fade is over (`lateStandInFadeWait`), so the previous title's backdrop always finishes
+    /// fading out. It is a same-identity update: `HeroTextLayer` takes it as a silent gap-fill (no text
     /// fade), the logo and its ink verdict are carried, `HeroCrossfadeImage` cross-fades two versions
     /// of one picture and logs it as `sharpen paint` (`HeroSharpen.noteAdopted`), never
     /// `paint … same=1`, and the probe reads `present … backdrop=late`, the one same-item re-present
@@ -4699,11 +4710,26 @@ final class HeroArtResolver: ObservableObject {
         }
         // Review r2 (P3-2): over the `small` stand-in. Larger only, and at rest.
         guard HeroSharpen.adoptable(image, over: presented.backdrop) != nil else { return }
+        // beta.19-rc1 verdict (review r3, P3 #1): and never inside the stand-in commit's own
+        // cross-fade. The rest wait alone does not hold it off: the rows read at rest right after a
+        // Right onto a card already in view (nothing scrolls, so nothing stamps), on classic Home,
+        // and on a pinned step that arms no settle. The legacy decode landing 50 ms after the
+        // commit then started `HeroCrossfadeImage`'s next swap with the previous title's backdrop
+        // still ~90 % opaque, and `crossfade(to:)` drops that outgoing bitmap in one frame. So the
+        // replacement first sleeps out the rest of that commit's span (`lateStandInFadeWait`), and
+        // replaces only the stand-in of THIS commit (`commitSerial`): a newer commit restarts its
+        // own fade, and its own resolve makes its own call here.
+        let commitSerial = presentedCommitSerial
+        let fadeWait = Self.lateStandInFadeWait(
+            sinceCommit: ProcessInfo.processInfo.systemUptime - presentedCommittedAt)
         Task { @MainActor [weak self] in
+            if fadeWait > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(fadeWait * 1_000_000_000))
+            }
             guard let self else { return }
             let standInStillUp = {
                 self.presentedBackdropIsStandIn && self.targetIdentity == identity
-                    && self.presented?.identity == identity
+                    && self.presented?.identity == identity && self.presentedCommitSerial == commitSerial
             }
             guard await self.waitForRowsAtRest(hold: HeroSharpen.adoptRestHold, while: standInStillUp) != nil,
                   HeroArtResolver.shouldAdoptLateBackdrop(
@@ -4711,6 +4737,7 @@ final class HeroArtResolver: ObservableObject {
                     presentedBackdrop: self.presented?.backdrop,
                     presentedIsSmallStandIn: self.presentedBackdropIsStandIn,
                     resolveTaskIsNil: self.resolveTask == nil, identity: identity),
+                  self.presentedCommitSerial == commitSerial,
                   let live = self.presented,
                   HeroSharpen.adoptable(image, over: live.backdrop) != nil else { return }
             HeroSharpen.noteAdopted(image)
@@ -4760,6 +4787,20 @@ final class HeroArtResolver: ObservableObject {
         guard presentedBackdrop == nil || presentedIsSmallStandIn else { return false }
         guard resolveTaskIsNil else { return false }
         return true
+    }
+
+    /// beta.19-rc1 verdict (review r3, P3 #1): how long one commit's backdrop swap occupies
+    /// `HeroCrossfadeImage` (`crossfade(to:)`): the 0.3 s fade of the outgoing bitmap, then its
+    /// release at 0.4 s. A second swap inside this span would drop that outgoing bitmap mid-fade.
+    nonisolated static let commitCrossfadeSpan: TimeInterval = 0.4
+
+    /// beta.19-rc1 verdict (review r3, P3 #1): how long the late replacement of the card-size
+    /// stand-in still sleeps before its rest wait, `sinceCommit` seconds after the stand-in's commit:
+    /// the rest of `commitCrossfadeSpan`, 0 once it is over. A negative or non-finite reading (no
+    /// clock should give one) waits the whole span.
+    nonisolated static func lateStandInFadeWait(sinceCommit: TimeInterval) -> TimeInterval {
+        guard sinceCommit.isFinite, sinceCommit >= 0 else { return commitCrossfadeSpan }
+        return max(0, commitCrossfadeSpan - sinceCommit)
     }
 
     /// `present item=<type:id> backdrop=<cached|fetched|poster|late|none> logo=<cached|fetched|text>

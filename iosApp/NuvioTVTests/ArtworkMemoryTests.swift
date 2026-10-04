@@ -345,4 +345,138 @@ final class ArtworkSlotLogoLookupTests: XCTestCase {
         XCTAssertEqual(ArtworkStore.inflightKeys(identity: "u", neededBucket: 3840), ["3840|u"])
         XCTAssertEqual(ArtworkStore.inflightKeys(identity: "u", neededBucket: 128).first, "128|u")
     }
+
+    // MARK: beta.19-rc1 verdict (review r3, P3 #2): a joined fetch is checked against the joiner's need
+
+    /// A `width` × `height` px bitmap at scale 1.
+    private func pixels(_ width: CGFloat, _ height: CGFloat) -> UIImage {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+        format.preferredRange = .standard
+        return UIGraphicsImageRenderer(size: CGSize(width: width, height: height), format: format).image { _ in }
+    }
+
+    private func longSide(_ image: UIImage) -> Int {
+        image.cgImage.map { max($0.width, $0.height) } ?? 0
+    }
+
+    /// A 2000 × 1000 PNG wordmark as a `data:` URL: `ArtworkStore.fetch` decodes it locally, with no
+    /// network. The fill colour is random, so the URL is unique to the caller.
+    private func dataLogo() -> URL {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+        format.preferredRange = .standard
+        let size = CGSize(width: 2000, height: 1000)
+        let png = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor(red: .random(in: 0...1), green: .random(in: 0...1), blue: .random(in: 0...1), alpha: 1).setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+        }.pngData()!
+        return URL(string: "data:image/png;base64,\(png.base64EncodedString())")!
+    }
+
+    /// Detail's Cinematic logo slot (600 × 180 pt, fit) at scale 2.
+    private var detailSlot: ArtworkDecodeRequest {
+        ArtworkDecodeRequest(size: .points(width: 600, height: 180), fill: false, scale: 2).normalized
+    }
+
+    /// Review r3's numbers: for a 2:1 wordmark the hero's slot decodes 640 px and Detail's needs 768,
+    /// yet with no recorded source both key their in-flight work at the slot's long side (1280), so
+    /// one joins the other.
+    func testHeroAndDetailLogoFetchesShareAKeyButNotADecodeSize() {
+        let source = CGSize(width: 2000, height: 1000)
+        let hero = HeroSharpen.logoRequest(scale: 2)
+        XCTAssertEqual(ArtworkDecodeMath.bucket(for: ArtworkDecodeMath.neededLongSide(hero, source: nil)), 1280)
+        XCTAssertEqual(ArtworkDecodeMath.bucket(for: ArtworkDecodeMath.neededLongSide(detailSlot, source: nil)), 1280)
+        XCTAssertEqual(ArtworkDecodeMath.bucket(for: ArtworkDecodeMath.neededLongSide(hero, source: source)), 640)
+        XCTAssertEqual(ArtworkDecodeMath.bucket(for: ArtworkDecodeMath.neededLongSide(detailSlot, source: source)), 768)
+    }
+
+    /// The pure check a joiner runs once the owner has landed (and recorded the source): the owner's
+    /// bitmap is kept only when it covers the joiner's OWN floor.
+    func testJoinedDecodeIsCheckedAgainstTheJoinersOwnNeed() {
+        let urls = tmdbLogo()
+        let heroDecode = pixels(640, 320)
+        ArtworkStore.storeForTesting(heroDecode, url: urls.original, bucket: 640, sourceSize: CGSize(width: 2000, height: 1000))
+
+        XCTAssertFalse(ArtworkStore.covers(heroDecode, url: urls.original, decode: detailSlot),
+                       "Detail draws the wordmark 720 px wide: a 640 px decode is short")
+        XCTAssertNil(ArtworkStore.cached(urls.original, decode: detailSlot), "and its own lookup misses")
+        XCTAssertTrue(ArtworkStore.covers(heroDecode, url: urls.original, decode: HeroSharpen.logoRequest(scale: 2)))
+        XCTAssertTrue(ArtworkStore.covers(pixels(768, 384), url: urls.original, decode: detailSlot))
+        XCTAssertFalse(ArtworkStore.covers(heroDecode, url: urls.original, decode: .legacy),
+                       "a legacy caller needs min(1920, source)")
+    }
+
+    /// A fetch also waits on SMALLER in-flight work of the same URL, for its bytes, largest first.
+    /// The launch case: the `.legacy` row prefetch (1920) and the slot-sized carousel prefetch of a
+    /// never-decoded logo (1280), which the covering keys alone never join.
+    func testByteShareKeysAreTheSmallerBuckets() {
+        XCTAssertEqual(ArtworkStore.inflightByteShareKeys(identity: "u", neededBucket: 1920),
+                       ["1536|u", "1280|u", "1024|u", "896|u", "768|u", "640|u", "512|u", "384|u", "256|u", "128|u"])
+        XCTAssertEqual(ArtworkStore.inflightByteShareKeys(identity: "u", neededBucket: 128), [])
+        let slot = ArtworkDecodeMath.bucket(
+            for: ArtworkDecodeMath.neededLongSide(HeroSharpen.logoRequest(scale: 2), source: nil))
+        let legacy = ArtworkDecodeMath.bucket(for: ArtworkDecodeMath.neededLongSide(.legacy, source: nil))
+        XCTAssertFalse(ArtworkStore.inflightKeys(identity: "u", neededBucket: legacy).contains("\(slot)|u"))
+        XCTAssertTrue(ArtworkStore.inflightByteShareKeys(identity: "u", neededBucket: legacy).contains("\(slot)|u"))
+    }
+
+    /// End to end (a `data:` URL, decoded locally): Detail's fetch joins the hero's in-flight logo
+    /// fetch, finds its 640 px decode short, and decodes its own 768 px from the same bytes. Before
+    /// review r3 it kept the 640 px bitmap and drew it 12 % upscaled.
+    func testDetailJoiningTheHeroLogoFetchDecodesItsOwnSize() async throws {
+        let url = dataLogo()
+        let identity = ArtworkMemory.identity(url)
+        var started: [String] = []
+        ArtworkStore.onFetchWorkStartForTesting = { key in
+            if key.hasSuffix("|\(identity)") { started.append(key) }
+        }
+        defer { ArtworkStore.onFetchWorkStartForTesting = nil }
+
+        let hero = HeroSharpen.logoRequest(scale: 2)
+        let detail = detailSlot
+        let heroFetch = Task { try await ArtworkStore.fetch(url, decode: hero) }
+        await Task.yield()   // the hero's fetch registers its in-flight work first
+        let detailFetch = Task { try await ArtworkStore.fetch(url, decode: detail) }
+        let heroImage = try await heroFetch.value
+        let detailImage = try await detailFetch.value
+
+        XCTAssertEqual(longSide(heroImage), 640)
+        XCTAssertEqual(longSide(detailImage), 768, "Detail decodes its own size instead of keeping the hero's")
+        XCTAssertEqual(started, ["1280|\(identity)", "768|\(identity)"],
+                       "the joined work under the slot's key, then Detail's own decode at its real bucket")
+    }
+
+    /// End to end: the `.legacy` row prefetch issued while the slot-sized logo prefetch is still in
+    /// flight waits for it, then decodes its own 1920 px from those bytes. Its own work starts only
+    /// once the slot decode has landed (before review r3 both ran at once: two downloads).
+    func testLegacyPrefetchWaitsForTheSmallerSlotFetch() async throws {
+        let url = dataLogo()
+        let identity = ArtworkMemory.identity(url)
+        let slot = HeroSharpen.logoRequest(scale: 2)
+        var started: [String] = []
+        var slotLandedWhenLegacyStarted: Bool?
+        ArtworkStore.onFetchWorkStartForTesting = { key in
+            guard key.hasSuffix("|\(identity)") else { return }
+            started.append(key)
+            if key.hasPrefix("1920|") {
+                slotLandedWhenLegacyStarted = ArtworkStore.cached(url, decode: slot) != nil
+            }
+        }
+        defer { ArtworkStore.onFetchWorkStartForTesting = nil }
+
+        let slotFetch = Task { try await ArtworkStore.fetch(url, decode: slot) }
+        await Task.yield()   // the slot fetch registers its in-flight work first
+        let legacyFetch = Task { try await ArtworkStore.fetch(url) }
+        let slotImage = try await slotFetch.value
+        let legacyImage = try await legacyFetch.value
+
+        XCTAssertEqual(longSide(slotImage), 640)
+        XCTAssertEqual(longSide(legacyImage), 1920)
+        XCTAssertEqual(started, ["1280|\(identity)", "1920|\(identity)"])
+        XCTAssertEqual(slotLandedWhenLegacyStarted, true,
+                       "the legacy decode starts after the slot fetch landed, from its bytes")
+    }
 }

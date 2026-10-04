@@ -148,4 +148,33 @@ final class HeroArtResolverLateBackdropTests: XCTestCase {
             targetIdentity: "movie:1", presentedIdentity: "movie:1", presentedBackdrop: makeImage(),
             presentedIsSmallStandIn: false, resolveTaskIsNil: true, identity: "movie:1"))
     }
+
+    // MARK: beta.19-rc1 verdict (review r3, P3 #1): never inside the stand-in commit's cross-fade
+
+    /// Review r3's scenario: the legacy decode lands 50 ms after the `small` stand-in's commit, with
+    /// the rows already at rest (a Right onto a card in view scrolls nothing). The replacement sleeps
+    /// out the rest of the commit's span before its rest wait, so the previous title's backdrop
+    /// finishes its 0.3 s fade instead of dropping out at ~90 % opacity.
+    func testLateReplacementWaitsOutTheStandInCrossfade() {
+        XCTAssertEqual(HeroArtResolver.lateStandInFadeWait(sinceCommit: 0.05), 0.35, accuracy: 1e-9)
+        XCTAssertEqual(HeroArtResolver.lateStandInFadeWait(sinceCommit: 0), HeroArtResolver.commitCrossfadeSpan)
+        XCTAssertGreaterThanOrEqual(HeroArtResolver.lateStandInFadeWait(sinceCommit: 0.05) + 0.05, 0.3,
+                                    "the replacement starts no earlier than the end of the 0.3 s fade")
+    }
+
+    /// Past the span the wait is 0 (a decode that lands late enough adopts at the next rest, as
+    /// before), and the span covers the whole `HeroCrossfadeImage` swap: the 0.3 s fade plus the
+    /// 0.1 s before it releases the outgoing bitmap.
+    func testNoExtraWaitOnceTheCrossfadeIsOver() {
+        XCTAssertEqual(HeroArtResolver.commitCrossfadeSpan, 0.4, accuracy: 1e-9)
+        XCTAssertEqual(HeroArtResolver.lateStandInFadeWait(sinceCommit: 0.4), 0, accuracy: 1e-9)
+        XCTAssertEqual(HeroArtResolver.lateStandInFadeWait(sinceCommit: 1.2), 0)
+    }
+
+    /// A reading no clock should give (negative, NaN, infinite) waits the whole span: never 0.
+    func testImpossibleReadingsWaitTheWholeSpan() {
+        XCTAssertEqual(HeroArtResolver.lateStandInFadeWait(sinceCommit: -0.2), HeroArtResolver.commitCrossfadeSpan)
+        XCTAssertEqual(HeroArtResolver.lateStandInFadeWait(sinceCommit: .nan), HeroArtResolver.commitCrossfadeSpan)
+        XCTAssertEqual(HeroArtResolver.lateStandInFadeWait(sinceCommit: .infinity), HeroArtResolver.commitCrossfadeSpan)
+    }
 }
