@@ -5223,8 +5223,8 @@ struct CatalogRowView: View {
                     // morph (UX-4a). See `RowLeadingEdgeClip`.
                     //
                     // beta.18 verdict (BUG-118, R3): in Soft the mask owns the leading edge, so the
-                    // clip opens to `softModeAllowance` (beta.19-rc1 verdict F: Soft is the
-                    // `row_edge_fade` setting's default).
+                    // clip opens to `softModeAllowance` (beta.19-rc1 verdict F: Soft is an option of
+                    // the `row_edge_fade` setting).
                     .clipShape(RowLeadingEdgeClip(allowance: RowEdgeFadeSetting.resolve(rowEdgeFade) == .soft
                                                   ? RowLeadingEdgeClip.softModeAllowance
                                                   : leadingEdgeAllowance))
@@ -5417,7 +5417,7 @@ struct CatalogRowView: View {
     /// - A-4: a pass for a card that is no longer wide (`hScroll.wideItemId`) does nothing — the
     ///   tile width it would scroll for is gone.
     /// - B P2-2: the tile must end `RowEdgeFade.trailingTileInset` inside the row's trailing edge
-    ///   (110 pt under the default Soft fade, 0 in System/Off), so the Soft ramp never dims a playing
+    ///   (110 pt under the Soft fade, 0 in System/Off, the default), so the Soft ramp never dims a playing
     ///   trailer's right side. When the row cannot scroll that far (the plan's `endsInsideInset`:
     ///   clamped at the row's end), the row holds its trailing fade off while the tile is wide.
     private func morphScrollPass(index: Int, itemId: String, widthBefore: CGFloat?, pass: Int,

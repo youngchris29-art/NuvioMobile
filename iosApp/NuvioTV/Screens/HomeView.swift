@@ -5179,7 +5179,7 @@ struct ContinueWatchingRow: View {
                 //
                 // beta.19-rc1 verdict (review r1, B P2-3): AFTER `.rowEdgeEffectStyle()`, as
                 // `CatalogRowView` and `CollectionRowView` attach theirs. Attached before it, the
-                // title sat inside the Soft mask, and with Soft the default and its leading ramp
+                // title sat inside the Soft mask, and with Soft on (the default then) and its leading ramp
                 // reaching 110 pt into the frame, a scrolled row drew "Continue Watching" at 0.61
                 // alpha at x = 0. The overlay's frame is the same ScrollView frame either way (the
                 // mask never changes layout), so `pinnedRowTitleTracking` sees the same geometry.

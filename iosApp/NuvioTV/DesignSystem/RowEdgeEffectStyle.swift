@@ -11,7 +11,7 @@ import SwiftUI
 /// fade (`RowSoftEdgeMask`) behind a Developer A/B (`debug.rowEdgeFade`, default System).
 ///
 /// beta.19-rc1 verdict (F, FEAT-54, Steven 2026-10-02): the A/B becomes a real Appearance setting,
-/// `row_edge_fade` (`RowEdgeFadeSetting`), with Soft as the default, and the mask itself is
+/// `row_edge_fade` (`RowEdgeFadeSetting`; Off by default since the 2026-10-04 F.5 gate), and the mask itself is
 /// reworked: a smootherstep ramp (`EdgeFadeCurve`) measured from the BEZEL inward over
 /// `RowEdgeFade.rampLength` (250 pt), so it starts inside the row frame instead of fading only the
 /// ~140 pt margin outside it, where the old two-stop linear ramp ended in a hard knee at the frame

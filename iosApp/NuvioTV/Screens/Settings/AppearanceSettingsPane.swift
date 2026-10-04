@@ -202,8 +202,8 @@ struct AppearanceSettingsPane: View {
                 )
 
                 // F (Steven beta.19-rc1 verdict, 2026-10-03; FEAT-54): how the left and right edges
-                // of rows fade. Soft is the app-drawn eased fade (default), System is tvOS's own
-                // scroll-edge effect, Off draws none. An unknown stored value reads as the default,
+                // of rows fade. Soft is the app-drawn eased fade, System is tvOS's own scroll-edge
+                // effect, Off draws none (the default since the F.5 frame-time gate). An unknown stored value reads as the default,
                 // so the picker always shows one of the three.
                 SettingsPickerRow(
                     title: String(localized: "Row Edge Fade"),

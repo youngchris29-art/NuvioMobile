@@ -4,6 +4,7 @@ import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import co.touchlab.kermit.Logger
 import com.nuvio.app.features.addons.RawHttpResponse
 import com.nuvio.app.features.addons.httpRequestRaw
+import com.nuvio.app.features.details.tenPointRatingText
 import com.nuvio.app.features.library.LibraryItem
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CancellationException
@@ -782,7 +783,7 @@ object TraktLibraryRepository {
             logo = logo,
             description = media.overview,
             releaseInfo = media.year?.toString(),
-            imdbRating = media.rating?.toString(),
+            imdbRating = tenPointRatingText(media.rating),
             genres = media.genres.orEmpty(),
             traktRank = item.rank,
             imdbId = ids?.imdb?.takeIf { it.isNotBlank() },

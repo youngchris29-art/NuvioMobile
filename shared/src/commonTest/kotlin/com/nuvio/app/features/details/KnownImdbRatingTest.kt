@@ -32,4 +32,14 @@ class KnownImdbRatingTest {
         """.trimIndent()
         assertNull(MetaDetailsParser.parse(payload).imdbRating)
     }
+
+    /** Review r5: Trakt related titles and library items format a 0–10 double themselves. */
+    @Test
+    fun tenPointRatingTextRoundsAndDropsUnrated() {
+        assertNull(tenPointRatingText(null))
+        assertNull(tenPointRatingText(0.0))
+        assertNull(tenPointRatingText(-2.0))
+        assertEquals("7.8", tenPointRatingText(7.83412))
+        assertEquals("6.0", tenPointRatingText(6.0))
+    }
 }

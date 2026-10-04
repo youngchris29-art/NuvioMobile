@@ -1,6 +1,7 @@
 package com.nuvio.app.features.library
 
 import com.nuvio.app.features.details.MetaDetails
+import com.nuvio.app.features.details.knownImdbRating
 import com.nuvio.app.features.home.MetaPreview
 import com.nuvio.app.features.home.PosterShape
 import com.nuvio.app.features.tracking.TrackingAttributedItem
@@ -114,7 +115,9 @@ fun LibraryItem.toMetaPreview(): MetaPreview =
         posterShape = posterShape,
         description = description,
         releaseInfo = releaseInfo,
-        imdbRating = imdbRating,
+        // Review r5: Detail falls back to the preview's rating, and library rows can carry a
+        // synced 0 ("0.0") or an "N/A" saved before the 2026-10-04 parse fix.
+        imdbRating = knownImdbRating(imdbRating),
         genres = genres,
         rawPosterUrl = rawPosterUrl,
         landscapePoster = landscapePoster,

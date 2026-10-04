@@ -377,7 +377,7 @@ nonisolated enum RowMorphScroll {
 
     /// beta.19-rc1 verdict (review r1, B P2-2): the morph scroll used to put the expanded tile's
     /// trailing edge EXACTLY on the viewport's trailing edge, and the Soft row fade (the default
-    /// since F) ramps from 110 pt inside that edge, so a playing trailer's right side faded to 0.61
+    /// until the F.5 gate made it Off) ramps from 110 pt inside that edge, so a playing trailer's right side faded to 0.61
     /// alpha (the ring with it). The tile now has to end `trailingInset` inside the edge — the
     /// trailing ramp's inner extent, read by the host from the same environment the fade draws
     /// with (`RowEdgeFade.trailingTileInset`) — which covers both a tile that overflows and one that
