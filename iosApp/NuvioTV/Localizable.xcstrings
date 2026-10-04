@@ -1,7 +1,9 @@
 {
   "sourceLanguage": "en",
   "strings": {
-    "": {},
+    "": {
+      "shouldTranslate": false
+    },
     "%.1f GB": {
       "localizations": {
         "de": {
@@ -1805,6 +1807,40 @@
         }
       }
     },
+    "1 s": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 s"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 s"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 s"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 s"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 giây"
+          }
+        }
+      }
+    },
     "1 source": {
       "localizations": {
         "de": {
@@ -2145,6 +2181,40 @@
         }
       }
     },
+    "2 s": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "2 s"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "2 s"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "2 s"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "2 s"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "2 giây"
+          }
+        }
+      }
+    },
     "2024": {
       "localizations": {
         "fr": {
@@ -2379,6 +2449,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "3 cả hai"
+          }
+        }
+      }
+    },
+    "3 s": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "3 s"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "3 s"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "3 s"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "3 s"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "3 giây"
           }
         }
       }
@@ -2923,6 +3027,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Key cá nhân sẽ ghi đè tài khoản."
+          }
+        }
+      }
+    },
+    "A plain press of Play starts the best source found so far: highest resolution, then HDR or Dolby Vision, then cached, then file size. Your source filters still apply. Hold Play to choose a source yourself. Off by default.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ein einfacher Druck auf Wiedergabe startet die beste bisher gefundene Quelle: höchste Auflösung, dann HDR oder Dolby Vision, dann aus dem Cache, dann Dateigröße. Deine Quellenfilter gelten weiterhin. Wiedergabe halten, um selbst eine Quelle zu wählen. Standardmäßig aus."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pulsar Reproducir inicia la mejor fuente encontrada hasta ese momento: mayor resolución, luego HDR o Dolby Vision, luego en caché y, por último, tamaño de archivo. Tus filtros de fuentes se siguen aplicando. Mantén pulsado Reproducir para elegir una fuente tú mismo. Desactivado por defecto."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un simple appui sur Lecture lance la meilleure source trouvée jusqu’ici : résolution la plus élevée, puis HDR ou Dolby Vision, puis en cache, puis taille de fichier. Vos filtres de sources s’appliquent toujours. Maintenez Lecture pour choisir vous-même une source. Désactivé par défaut."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Una semplice pressione di Riproduci avvia la fonte migliore trovata finora: risoluzione più alta, poi HDR o Dolby Vision, poi in cache, poi dimensione del file. I filtri delle fonti continuano ad applicarsi. Tieni premuto Riproduci per scegliere tu una fonte. Disattivato per impostazione predefinita."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nhấn Phát một lần sẽ bắt đầu nguồn tốt nhất tìm được cho đến lúc đó: độ phân giải cao nhất, rồi HDR hoặc Dolby Vision, rồi nguồn đã lưu đệm, rồi dung lượng tệp. Bộ lọc nguồn của bạn vẫn được áp dụng. Nhấn giữ Phát để tự chọn nguồn. Mặc định tắt."
           }
         }
       }
@@ -5439,6 +5577,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Tự động phát, bộ lọc, siêu dữ liệu và plugin"
+          }
+        }
+      }
+    },
+    "Automatic": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Automatisch"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Automático"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Automatique"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Automatico"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tự động"
           }
         }
       }
@@ -14110,6 +14282,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "ID nhà cung cấp xem bị loại trừ"
+          }
+        }
+      }
+    },
+    "Fades the left and right edges of rows so posters that run off the screen blend into the background. The left edge fades only after a row has scrolled. Soft by default.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Blendet die linken und rechten Ränder der Reihen aus, damit Poster, die über den Bildschirmrand hinausragen, mit dem Hintergrund verschmelzen. Der linke Rand blendet erst aus, nachdem eine Reihe gescrollt wurde. Standardmäßig Weich."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desvanece los bordes izquierdo y derecho de las filas para que los pósteres que se salen de la pantalla se fundan con el fondo. El borde izquierdo solo se desvanece después de desplazar la fila. Suave por defecto."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Estompe les bords gauche et droit des rangées pour que les affiches qui dépassent de l’écran se fondent dans l’arrière-plan. Le bord gauche ne s’estompe qu’une fois la rangée défilée. Doux par défaut."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sfuma i bordi sinistro e destro delle righe in modo che i poster che escono dallo schermo si fondano con lo sfondo. Il bordo sinistro sfuma solo dopo che una riga è stata fatta scorrere. Morbido per impostazione predefinita."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Làm mờ mép trái và phải của các hàng để poster tràn ra ngoài màn hình hòa vào nền. Mép trái chỉ mờ sau khi hàng đã cuộn. Mặc định là Nhẹ."
           }
         }
       }
@@ -24560,6 +24766,40 @@
         }
       }
     },
+    "Play starts the best source that has arrived: highest resolution first, then HDR or Dolby Vision, then cached links, then the largest file. Hold Play to choose one.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wiedergabe startet die beste bereits eingetroffene Quelle: zuerst höchste Auflösung, dann HDR oder Dolby Vision, dann Links aus dem Cache, dann die größte Datei. Wiedergabe halten, um eine auszuwählen."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reproducir inicia la mejor fuente que haya llegado: primero la mayor resolución, luego HDR o Dolby Vision, luego enlaces en caché y, por último, el archivo más grande. Mantén pulsado Reproducir para elegir una."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lecture lance la meilleure source arrivée : résolution la plus élevée d’abord, puis HDR ou Dolby Vision, puis liens en cache, puis le fichier le plus volumineux. Maintenez Lecture pour en choisir une."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Riproduci avvia la fonte migliore arrivata: prima la risoluzione più alta, poi HDR o Dolby Vision, poi i link in cache, poi il file più grande. Tieni premuto Riproduci per sceglierne una."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Phát bắt đầu nguồn tốt nhất đã có: độ phân giải cao nhất trước, rồi HDR hoặc Dolby Vision, rồi liên kết đã lưu đệm, rồi tệp lớn nhất. Nhấn giữ Phát để chọn một nguồn."
+          }
+        }
+      }
+    },
     "Play starts the first source in your Sources order by itself. Hold Play to choose one.": {
       "localizations": {
         "de": {
@@ -25746,6 +25986,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Đang chuẩn bị Dolby Vision…"
+          }
+        }
+      }
+    },
+    "Preparing playback…": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wiedergabe wird vorbereitet…"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preparando la reproducción…"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Préparation de la lecture…"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preparazione della riproduzione…"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đang chuẩn bị phát…"
           }
         }
       }
@@ -27174,6 +27448,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Ngày phát hành đến"
+          }
+        }
+      }
+    },
+    "Released": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Date de sortie"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Liberado"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Veröffentlicht"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Data di rilascio"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ngày phát hành"
           }
         }
       }
@@ -30065,6 +30373,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Đặt thời gian trailer nền phát trước khi dừng. Mặc định: Luôn luôn, phát cho đến khi bạn rời đi."
+          }
+        }
+      }
+    },
+    "Sets how long trailers on posters and in the hero wait before they start. Automatic waits until the rows stop moving, then one second. Default: Automatic.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Legt fest, wie lange Trailer auf Postern und im Hero warten, bevor sie starten. Automatisch wartet, bis die Reihen stillstehen, und dann eine Sekunde. Standard: Automatisch."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Define cuánto esperan los tráileres de los pósteres y del hero antes de empezar. Automático espera a que las filas dejen de moverse y luego un segundo. Por defecto: Automático."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Définit combien de temps les bandes-annonces sur les affiches et dans le hero attendent avant de démarrer. Automatique attend que les rangées cessent de bouger, puis une seconde. Par défaut : Automatique."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Imposta quanto aspettano i trailer sui poster e nell’hero prima di partire. Automatico aspetta che le righe smettano di muoversi, poi un secondo. Predefinito: Automatico."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đặt thời gian trailer trên poster và trong banner chờ trước khi bắt đầu. Tự động sẽ chờ đến khi các hàng ngừng chuyển động, rồi thêm một giây. Mặc định: Tự động."
           }
         }
       }
@@ -38267,6 +38609,40 @@
         }
       }
     },
+    "Trailer Start Delay": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trailer-Startverzögerung"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retraso de inicio del tráiler"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Délai de lancement de la bande-annonce"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ritardo avvio trailer"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Độ trễ bắt đầu trailer"
+          }
+        }
+      }
+    },
     "Trailer muted — press play/pause to unmute": {
       "localizations": {
         "de": {
@@ -42178,6 +42554,40 @@
         }
       }
     },
+    "debug_heroText %@ maxLive=%lld": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "debug_heroText %@ maxLive=%lld"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "debug_heroText %@ maxLive=%lld"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "debug_heroText %@ maxLive=%lld"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "debug_heroText %@ maxLive=%lld"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "debug_heroText %@ maxLive=%lld"
+          }
+        }
+      }
+    },
     "debug_hero_synopsis synL=%lld synLH=%lld synSlot=%lld": {
       "localizations": {
         "de": {
@@ -42280,6 +42690,74 @@
         }
       }
     },
+    "debug_trailerListener %@ rebuilds=%lld recent=%@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "debug_trailerListener %@ rebuilds=%lld recent=%@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "debug_trailerListener %@ rebuilds=%lld recent=%@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "debug_trailerListener %@ rebuilds=%lld recent=%@"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "debug_trailerListener %@ rebuilds=%lld recent=%@"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "debug_trailerListener %@ rebuilds=%lld recent=%@"
+          }
+        }
+      }
+    },
+    "debug_trailerMorph %@ aborts=%lld": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "debug_trailerMorph %@ aborts=%lld"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "debug_trailerMorph %@ aborts=%lld"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "debug_trailerMorph %@ aborts=%lld"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "debug_trailerMorph %@ aborts=%lld"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "debug_trailerMorph %@ aborts=%lld"
+          }
+        }
+      }
+    },
     "debug_trailerTile outer=%@x%@ inner=%@x%@ band=%@ rOut=%@ rIn=%@ x=%@": {
       "localizations": {
         "de": {
@@ -42310,6 +42788,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "debug_trailerTile outer=%@x%@ inner=%@x%@ band=%@ rOut=%@ rIn=%@ x=%@"
+          }
+        }
+      }
+    },
+    "debug_trailerTile outer=%@x%@ inner=%@x%@ band=%@ rOut=%@ rIn=%@ x=%@%@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "debug_trailerTile outer=%@x%@ inner=%@x%@ band=%@ rOut=%@ rIn=%@ x=%@%@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "debug_trailerTile outer=%@x%@ inner=%@x%@ band=%@ rOut=%@ rIn=%@ x=%@%@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "debug_trailerTile outer=%@x%@ inner=%@x%@ band=%@ rOut=%@ rIn=%@ x=%@%@"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "debug_trailerTile outer=%@x%@ inner=%@x%@ band=%@ rOut=%@ rIn=%@ x=%@%@"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "debug_trailerTile outer=%@x%@ inner=%@x%@ band=%@ rOut=%@ rIn=%@ x=%@%@"
           }
         }
       }
@@ -42514,6 +43026,416 @@
           "stringUnit": {
             "state": "translated",
             "value": "depth=%lld cycles=%lld"
+          }
+        }
+      }
+    },
+    "detail.status.canceled": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Canceled"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Annulé"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancelada"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abgesetzt"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancellata"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đã hủy"
+          }
+        }
+      }
+    },
+    "detail.status.continuing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Continuing"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "En cours"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "En emisión"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Laufend"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "In corso"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đang phát sóng"
+          }
+        }
+      }
+    },
+    "detail.status.ended": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ended"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Terminée"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Finalizada"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Beendet"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Conclusa"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đã kết thúc"
+          }
+        }
+      }
+    },
+    "detail.status.inProduction": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "In Production"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "En production"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "En producción"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "In Produktion"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "In produzione"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đang sản xuất"
+          }
+        }
+      }
+    },
+    "detail.status.pilot": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pilot"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pilote"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Piloto"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pilotfolge"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pilot"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tập thử nghiệm"
+          }
+        }
+      }
+    },
+    "detail.status.planned": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Planned"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Prévu"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Planeada"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Geplant"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pianificata"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đã lên kế hoạch"
+          }
+        }
+      }
+    },
+    "detail.status.postProduction": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Post Production"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Post-production"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Posproducción"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Postproduktion"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Post-produzione"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hậu kỳ"
+          }
+        }
+      }
+    },
+    "detail.status.released": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Released"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sorti"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Estrenada"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Veröffentlicht"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Uscito"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đã phát hành"
+          }
+        }
+      }
+    },
+    "detail.status.returningSeries": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Returning Series"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Série en cours"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Serie en emisión"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Laufende Serie"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Serie in corso"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Phim bộ tiếp tục"
+          }
+        }
+      }
+    },
+    "detail.status.rumored": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rumored"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rumeur"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rumoreada"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gerücht"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Indiscrezione"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tin đồn"
           }
         }
       }
@@ -42756,6 +43678,40 @@
         }
       }
     },
+    "row_edge_fade_probe mode=%@ ramp=%lld margin=%lld hold=%lld": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "row_edge_fade_probe mode=%@ ramp=%lld margin=%lld hold=%lld"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "row_edge_fade_probe mode=%@ ramp=%lld margin=%lld hold=%lld"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "row_edge_fade_probe mode=%@ ramp=%lld margin=%lld hold=%lld"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "row_edge_fade_probe mode=%@ ramp=%lld margin=%lld hold=%lld"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "row_edge_fade_probe mode=%@ ramp=%lld margin=%lld hold=%lld"
+          }
+        }
+      }
+    },
     "row_edge_fade_probe mode=%lld margin=%lld": {
       "localizations": {
         "de": {
@@ -42888,6 +43844,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "scrolled=%lld"
+          }
+        }
+      }
+    },
+    "scrolled=%lld phase=%lld chip=%@ reveal=%lld": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "scrolled=%lld phase=%lld chip=%@ reveal=%lld"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "scrolled=%lld phase=%lld chip=%@ reveal=%lld"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "scrolled=%lld phase=%lld chip=%@ reveal=%lld"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "scrolled=%lld phase=%lld chip=%@ reveal=%lld"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "scrolled=%lld phase=%lld chip=%@ reveal=%lld"
           }
         }
       }

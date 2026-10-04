@@ -28,6 +28,14 @@ protocol HeroCommitArtworkFetching {
     /// the row-poster prewarm leaves in memory exactly the entry the poster card will look up (its
     /// upgraded URL at its own bucket) instead of a 1920 px `.legacy` decode of the original URL.
     @MainActor func prefetchItems(_ items: [ArtworkPrefetchItem])
+    /// beta.19-rc1 verdict (review r2, P3-1): the head's TITLE LOGO lookup and fetch, at the hero
+    /// logo slot's request (`HeroSharpen.heroLogoRequest`) instead of `.legacy`. A logo is drawn in a
+    /// bounded slot, so any decode of the picture that covers the slot will do; the `.legacy` floor
+    /// (1920 px whenever the URL itself was never decoded) refused an `original` Detail had already
+    /// decoded, and the head then had to fetch `w500` inside its deadline. The backdrop keeps
+    /// `cachedImage`/`fetchImage` and their legacy floor (review r1, B P2-1).
+    @MainActor func cachedLogo(_ url: URL?) -> UIImage?
+    @MainActor func fetchLogo(_ url: URL) async throws -> UIImage
 }
 
 extension HeroCommitArtworkFetching {
@@ -36,6 +44,11 @@ extension HeroCommitArtworkFetching {
     @MainActor func prefetchItems(_ items: [ArtworkPrefetchItem]) {
         prefetchImages(items.map { $0.url })
     }
+
+    /// beta.19-rc1 verdict (review r2, P3-1): forward to the backdrop forms, so a fetcher with no
+    /// sizes of its own (`HeroCommitCoordinatorTests`' stub) answers and records logo calls as before.
+    @MainActor func cachedLogo(_ url: URL?) -> UIImage? { cachedImage(url) }
+    @MainActor func fetchLogo(_ url: URL) async throws -> UIImage { try await fetchImage(url) }
 }
 
 /// Default fetcher: routes straight to `ArtworkStore`.
@@ -60,6 +73,12 @@ struct ArtworkStoreHeroFetcher: HeroCommitArtworkFetching {
     }
     @MainActor func prefetchImages(_ urls: [URL]) { ArtworkStore.prefetch(urls) }
     @MainActor func prefetchItems(_ items: [ArtworkPrefetchItem]) { ArtworkStore.prefetch(items) }
+    /// beta.19-rc1 verdict (review r2, P3-1): the logo at the hero logo slot's request (see the
+    /// protocol). `.head` admission, as for the backdrop.
+    @MainActor func cachedLogo(_ url: URL?) -> UIImage? { ArtworkStore.cached(url, decode: HeroSharpen.heroLogoRequest) }
+    @MainActor func fetchLogo(_ url: URL) async throws -> UIImage {
+        try await ArtworkStore.fetch(url, decode: HeroSharpen.heroLogoRequest, admission: .head)
+    }
 }
 
 /// One head-art prewarm outcome, reported on the `commit` probe line.
@@ -337,7 +356,8 @@ final class HeroCommitCoordinator {
         let backdropURL = heroBackdropURL(for: head).flatMap(URL.init(string:))
         let logoURL = heroLogoURL(for: head)
         let cachedBackdrop = fetcher.cachedImage(backdropURL)
-        let cachedLogo = fetcher.cachedImage(logoURL)
+        // beta.19-rc1 verdict (review r2, P3-1): the logo at its slot's request, not `.legacy`.
+        let cachedLogo = fetcher.cachedLogo(logoURL)
         let needsBackdrop = backdropURL != nil && cachedBackdrop == nil
         let needsLogo = logoURL != nil && cachedLogo == nil
 
@@ -355,7 +375,7 @@ final class HeroCommitCoordinator {
         }
         if needsLogo, let logoURL {
             Task { @MainActor in
-                let image = try? await fetcher.fetchImage(logoURL)
+                let image = try? await fetcher.fetchLogo(logoURL)
                 prewarm.resolveLogo(image != nil)
             }
         }
@@ -373,22 +393,29 @@ final class HeroCommitCoordinator {
         // ArtworkStore's cache for the carousel's own later `HeroArtResolver.present` calls, so
         // paging to them is cache-warm even though this coordinator never re-presents them itself).
         var carouselURLs: [URL] = []
+        // beta.19-rc1 verdict (review r2, P3-1): the logos are warmed at the request
+        // `HeroArtResolver.present` looks them up and fetches them with (`HeroSharpen.heroLogoRequest`),
+        // so the entry it finds is the one warmed here and its fetch joins a prefetch still in flight.
+        var carouselLogoItems: [ArtworkPrefetchItem] = []
+        let logoRequest = HeroSharpen.heroLogoRequest
         for item in state.heroItems.dropFirst().prefix(7) {
             if let backdrop = heroBackdropURL(for: item).flatMap(URL.init(string:)) {
                 carouselURLs.append(backdrop)
             }
             if let logo = heroLogoURL(for: item) {
-                carouselURLs.append(logo)
+                carouselLogoItems.append(ArtworkPrefetchItem(url: logo, decode: logoRequest))
             }
         }
 
         // One turn behind the head's own fetches (see the ORDER note above), never ahead of them.
-        // The carousel stays on `prefetchImages` (`.legacy`, today's URLs and sizes): those are the
-        // bytes the hero's 400 ms swap deadline waits on (I1, critique #2).
-        if !rowPosterItems.isEmpty || !carouselURLs.isEmpty {
+        // The carousel backdrops stay on `prefetchImages` (`.legacy`, today's URLs and sizes): those
+        // are the bytes the hero's 400 ms swap deadline waits on (I1, critique #2). The logos keep
+        // their URLs too, decoded for the slot (the same bytes).
+        if !rowPosterItems.isEmpty || !carouselURLs.isEmpty || !carouselLogoItems.isEmpty {
             Task { @MainActor in
                 if !rowPosterItems.isEmpty { fetcher.prefetchItems(rowPosterItems) }
                 if !carouselURLs.isEmpty { fetcher.prefetchImages(carouselURLs) }
+                if !carouselLogoItems.isEmpty { fetcher.prefetchItems(carouselLogoItems) }
             }
         }
 
@@ -731,6 +758,23 @@ enum HeroSharpen {
                              fill: false, scale: scale).normalized
     }
 
+    /// beta.19-rc1 verdict (review r2, P3-1): `logoRequest` at this screen's scale, the request every
+    /// Home hero TITLE LOGO lookup and fetch uses (`HeroArtResolver.present`, the launch head in
+    /// `HeroCommitCoordinator.prepare`), and the carousel warm-ups (`prepare`'s carousel prefetch,
+    /// `HomeView.prefetchHeroArt`; the row-focus prefetches stay `.legacy`, whose decode also covers
+    /// the slot and whose in-flight work a slot fetch joins). They used `.legacy`, whose floor is
+    /// 1920 px for a URL never decoded itself: a `w500` logo then refused the `original` Detail had
+    /// already decoded for its own slot, so the hero fetched `w500` inside its 400 ms deadline and
+    /// committed the text wordmark when it missed (BUG-90 never swaps it late). A logo is drawn in a
+    /// bounded slot, so any decode of the picture that covers the slot is accepted
+    /// (`ArtworkStore.requestBucket` reads the picture's aspect from a family member). A `w500` file
+    /// decodes to the same 500 px bitmap as before; only a source larger than the slot draws is
+    /// decoded smaller than 1920. The sharpen plans from the same request, so its `original` decode is
+    /// the entry the next present finds. Backdrops keep the `.legacy` floor (review r1, B P2-1).
+    static var heroLogoRequest: ArtworkDecodeRequest {
+        logoRequest(scale: ArtworkDecodeMath.screenScale)
+    }
+
     /// What, if anything, sharpens the presented backdrop.
     /// - `backdropURL`: the URL the bitmap on screen was decoded from (never the poster stand-in).
     /// - `presentedPixelSize`: that bitmap's pixel size. `sourceSize`: the source size an earlier
@@ -756,8 +800,8 @@ enum HeroSharpen {
 
     /// What, if anything, sharpens the presented title logo: only a larger rendition (TMDB `w500` →
     /// `original`; an SVG never, `ArtworkURLUpgrade` keeps those). Decoding the same file again never
-    /// helps a logo: its `.legacy` decode is already the whole source up to 1920 px, more than the
-    /// slot draws.
+    /// helps a logo: its decode (at `heroLogoRequest`, review r2 P3-1; `.legacy` before) is already
+    /// the whole source, or at least what the slot draws.
     static func logoPlan(logoURL: URL, presentedPixelSize: CGSize?, scale: CGFloat) -> Plan? {
         let request = logoRequest(scale: scale)
         let needed = ArtworkDecodeMath.neededLongSide(request, source: presentedPixelSize)

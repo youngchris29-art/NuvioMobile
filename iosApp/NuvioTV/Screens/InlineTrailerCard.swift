@@ -506,6 +506,12 @@ final class InlineTrailerCardModel: ObservableObject {
     private var dwellTask: Task<Void, Never>?
     /// Bumped on every focus change/teardown. Guards the dwell → expand hop against a stale timer.
     private var generation = 0
+    /// beta.19-rc1 verdict (review r2, P3-4): re-arms this focus visit has spent after a cache hit
+    /// found the listener not ready (`InlineTrailerCacheHitPlan.rearmsAfterListenerWait`), and the
+    /// one pending. Both reset by `reset()`, so the budget is per focus visit, never per dwell (a
+    /// re-arm IS a dwell, so a per-dwell budget would loop).
+    private var listenerRearmsUsed = 0
+    private var listenerRearmTask: Task<Void, Never>?
     /// The title this card is currently expanded on; a resolution may only attach to its own key.
     private var activeKey: String?
     /// Key of the resolution currently in flight for this card, so a re-focus mid-resolve doesn't
@@ -688,6 +694,10 @@ final class InlineTrailerCardModel: ObservableObject {
         generation &+= 1
         dwellTask?.cancel()
         dwellTask = nil
+        // Review r2 (P3-4): a new focus visit gets its own listener re-arm.
+        listenerRearmTask?.cancel()
+        listenerRearmTask = nil
+        listenerRearmsUsed = 0
         activeKey = nil
         didFinishForKey = nil
         if candidateTrailersKey == nil || candidateTrailersKey != resolvingKey {
@@ -1139,7 +1149,9 @@ final class InlineTrailerCardModel: ObservableObject {
             // port is retried once (the server is already on its next candidate, so the second wait
             // answers with that attempt); and a listener still not ready after that keeps the
             // cached resolution untouched and goes back to idle — the next dwell retries against a
-            // listener that is up by then.
+            // listener that is up by then. Review r2 (P3-4): that next dwell no longer waits for the
+            // user to leave and come back: the card re-arms once while focus stays
+            // (`rearmAfterListenerWait`).
             if let token = TrailerLocalHLS.token(inPlaybackURL: url) {
                 let generationAtStart = generation
                 var tokenStored = TrailerLocalHLS.shared.hasToken(token)
@@ -1164,7 +1176,13 @@ final class InlineTrailerCardModel: ObservableObject {
                     if TrailerProbe.enabled {
                         NSLog("[TrailerPipeline] expand skip=listenerNotReady key=%@ waits=%d (cache kept)", key, waits)
                     }
+                    // beta.19-rc1 verdict (review r2, P3-4): an idle card holds no key, like every
+                    // other skip branch (`.unavailable`, `alreadyFinished` never set one), and the
+                    // focus visit gets one more try once the listener is up instead of none until
+                    // the user leaves and comes back (`rearmAfterListenerWait`).
+                    activeKey = nil
                     setPhase(.idle)
+                    rearmAfterListenerWait(item, key: key)
                     return
                 case .serve(let port):
                     // Re-checks the token under the server's lock: nil here means it was evicted
@@ -1227,6 +1245,41 @@ final class InlineTrailerCardModel: ObservableObject {
             }
             if TrailerProbe.enabled { NSLog("[TrailerPipeline] expand branch=miss key=%@", key) }
             startResolution(item, key: key)
+        }
+    }
+
+    /// beta.19-rc1 verdict (review r2, P3-4): one more try of the cache-hit path while focus stays.
+    ///
+    /// A cache hit whose listener was still not ready after both `readyPort()` waits (up to ~4 s,
+    /// e.g. a rebuild after resume outlasting two attempt deadlines) used to go idle with the dwell
+    /// loop already returned, so the trailer never started while the user waited on the card; the
+    /// "next dwell" only came after leaving and coming back. Now the card waits for the listener
+    /// (`readyPort()` answers the moment it is up, else at its own 2 s attempt deadline), plus
+    /// `InlineTrailerCacheHitPlan.rearmDelay` when it answered with no port, and then re-dwells:
+    /// `startDwell` re-runs the rest gate (the morph never starts in motion) and the cache-hit path
+    /// with the `.resolved` entry still in place, so no YouTube re-extraction. Bounded: one re-arm per
+    /// focus visit (`rearmsAfterListenerWait`, budget reset only by `reset()`); a second
+    /// `.waitForListener` in the same visit stays idle. Dropped when focus leaves (`reset()` cancels
+    /// it and bumps `generation`) or when anything else moved the card off `.idle` meanwhile.
+    private func rearmAfterListenerWait(_ item: MetaPreview, key: String) {
+        guard InlineTrailerCacheHitPlan.rearmsAfterListenerWait(rearmsUsed: listenerRearmsUsed) else {
+            if TrailerProbe.enabled { NSLog("[TrailerPipeline] expand rearm=none key=%@ (used)", key) }
+            return
+        }
+        listenerRearmsUsed += 1
+        let generationAtStart = generation
+        listenerRearmTask?.cancel()
+        listenerRearmTask = Task { [weak self] in
+            let port = await TrailerLocalHLS.shared.readyPort()
+            let delay = InlineTrailerCacheHitPlan.rearmDelay(readyPort: port)
+            if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
+            guard !Task.isCancelled, let self, self.generation == generationAtStart,
+                  self.phase == .idle, self.activeKey == nil else { return }
+            self.listenerRearmTask = nil
+            if TrailerProbe.enabled {
+                NSLog("[TrailerPipeline] expand rearm=listener key=%@ ready=%d", key, port == nil ? 0 : 1)
+            }
+            self.startDwell(item)
         }
     }
 
@@ -1670,7 +1723,10 @@ final class InlineTrailerCardModel: ObservableObject {
         }
     }
 
-    deinit { dwellTask?.cancel() }
+    deinit {
+        dwellTask?.cancel()
+        listenerRearmTask?.cancel()
+    }
 }
 
 /// One-shot resume for "Kotlin completion handler vs. Swift deadline, first one wins".
@@ -1848,6 +1904,27 @@ nonisolated enum InlineTrailerCacheHitPlan {
         guard tokenStored else { return .reresolve }
         guard let readyPort else { return .waitForListener }
         return .serve(port: readyPort)
+    }
+
+    // beta.19-rc1 verdict (review r2, P3-4): what `.waitForListener` does next while focus stays
+    // (`InlineTrailerCardModel.rearmAfterListenerWait`).
+
+    /// Re-arms per focus visit after `.waitForListener`. One: the re-arm is itself a dwell, so the
+    /// budget is spent per visit (reset only when focus leaves), never per dwell, or it would loop.
+    static let listenerRearms = 1
+    /// How long the re-arm waits, after the listener answered with NO port (an attempt cycle that
+    /// exhausted its candidates), before it re-dwells anyway against a fresh cycle.
+    static let listenerRearmDelay: TimeInterval = 1
+
+    /// Whether a `.waitForListener` re-arms the card: only while this focus visit has re-arms left.
+    static func rearmsAfterListenerWait(rearmsUsed: Int) -> Bool {
+        rearmsUsed < listenerRearms
+    }
+
+    /// The pause between the listener's answer and the re-dwell: none once it reported a ready port
+    /// (the cache hit will serve), `listenerRearmDelay` when it reported none.
+    static func rearmDelay(readyPort: UInt16?) -> TimeInterval {
+        readyPort == nil ? listenerRearmDelay : 0
     }
 }
 

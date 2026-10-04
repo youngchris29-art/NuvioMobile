@@ -238,3 +238,111 @@ final class ArtworkLegacyLookupTests: XCTestCase {
         XCTAssertNil(fetcher.cachedImage(nil))
     }
 }
+
+/// beta.19-rc1 verdict (review r2, P3-1): the title-logo path. Home hero logos (`HeroArtResolver.present`,
+/// the launch head's `ArtworkStoreHeroFetcher.cachedLogo`) and the first-play overlay's logo are looked
+/// up at a slot-sized `.points` request, not `.legacy`: the legacy floor is 1920 px for a URL that was
+/// never decoded itself, so a `w500` logo refused the `original` Detail had already decoded for its
+/// slot (the overlay faded DOWN to `w500`; the hero had to fetch `w500` inside its 400 ms deadline or
+/// commit the text wordmark). A slot lookup on a never-decoded URL reads the picture's aspect from a
+/// family member's recorded source, so any decode that covers the slot is a hit. Every URL is unique
+/// to its test.
+@MainActor
+final class ArtworkSlotLogoLookupTests: XCTestCase {
+
+    private func image() -> UIImage {
+        UIGraphicsImageRenderer(size: CGSize(width: 2, height: 2)).image { _ in }
+    }
+
+    /// A TMDB `w500` logo URL and its `original` sibling, unique to the caller.
+    private func tmdbLogo() -> (w500: URL, original: URL) {
+        let file = "\(UUID().uuidString).png"
+        return (URL(string: "https://image.tmdb.org/t/p/w500/\(file)")!,
+                URL(string: "https://image.tmdb.org/t/p/original/\(file)")!)
+    }
+
+    /// Detail's Cinematic logo slot (600 × 180 pt, fit, `upgrade: .logo`) at scale 2, and the bucket a
+    /// decode of `source` for it is stored under.
+    private func detailBucket(_ source: CGSize) -> Int {
+        let detailSlot = ArtworkDecodeRequest(size: .points(width: 600, height: 180), fill: false, scale: 2).normalized
+        return ArtworkDecodeMath.storeBucket(needed: ArtworkDecodeMath.neededLongSide(detailSlot, source: source),
+                                             sourceLongSide: max(source.width, source.height))
+    }
+
+    /// The reviewer's scenario on the Home hero: a 2:1 wordmark whose `original` Detail decoded at 768
+    /// (720 px drawn). The hero's slot draws it 600 px wide at scale 2, so that decode covers it.
+    func testHeroLogoLookupTakesTheOriginalDetailDecoded() {
+        let urls = tmdbLogo()
+        let source = CGSize(width: 2000, height: 1000)
+        XCTAssertEqual(detailBucket(source), 768)
+        let original = image()
+        ArtworkStore.storeForTesting(original, url: urls.original, bucket: 768, sourceSize: source)
+
+        XCTAssertNil(ArtworkStore.cached(urls.w500, decode: .legacy),
+                     "the legacy floor (1920 for a URL never decoded) refuses it: the old miss")
+        XCTAssertTrue(ArtworkStore.cached(urls.w500, decode: HeroSharpen.logoRequest(scale: 2)) === original,
+                      "the hero's slot request accepts any family decode that covers the slot")
+        XCTAssertTrue(ArtworkStore.cached(urls.w500, decode: HeroSharpen.logoRequest(scale: 1)) === original)
+    }
+
+    /// The launch head goes through the same slot lookup for its logo; its backdrop keeps the legacy
+    /// floor (review r1, B P2-1).
+    func testLaunchHeadLooksUpTheLogoAtTheSlotRequest() {
+        let urls = tmdbLogo()
+        let source = CGSize(width: 2000, height: 1000)
+        let original = image()
+        ArtworkStore.storeForTesting(original, url: urls.original, bucket: detailBucket(source), sourceSize: source)
+        let fetcher = ArtworkStoreHeroFetcher()
+        XCTAssertTrue(fetcher.cachedLogo(urls.w500) === original)
+        XCTAssertNil(fetcher.cachedImage(urls.w500), "the backdrop form keeps the legacy floor")
+        XCTAssertNil(fetcher.cachedLogo(nil))
+    }
+
+    /// The first-play overlay asks for the upgraded `original` at the stream picker header's request:
+    /// Detail's decode of that file is a final hit (no fetch, no fade down to `w500`).
+    func testFirstPlayOverlayLogoTakesTheOriginalDetailDecoded() {
+        XCTAssertEqual(FirstPlayAutoPlayOverlay.logoDecodeSize, .points(width: 600, height: 120))
+        let urls = tmdbLogo()
+        let source = CGSize(width: 2000, height: 1000)
+        let original = image()
+        ArtworkStore.storeForTesting(original, url: urls.original, bucket: detailBucket(source), sourceSize: source)
+        let overlay = ArtworkDecodeRequest(size: FirstPlayAutoPlayOverlay.logoDecodeSize, fill: false, scale: 2).normalized
+        XCTAssertTrue(ArtworkStore.cached(urls.original, decode: overlay) === original)
+        XCTAssertTrue(ArtworkStore.cached(urls.w500, decode: overlay) === original, "and the w500 fallback's lookup too")
+    }
+
+    /// No source recorded anywhere in the family: nothing to read an aspect from, so the slot's own
+    /// long side stays the floor (520 pt × 2 = 1040 → the 1280 bucket).
+    func testSlotLookupWithNoRecordedSourceKeepsTheSlotFloor() {
+        let urls = tmdbLogo()
+        ArtworkStore.storeForTesting(image(), url: urls.original, bucket: 768, sourceSize: nil)
+        XCTAssertNil(ArtworkStore.cached(urls.w500, decode: HeroSharpen.logoRequest(scale: 2)))
+        let covering = image()
+        ArtworkStore.storeForTesting(covering, url: urls.original, bucket: 1280, sourceSize: nil)
+        XCTAssertTrue(ArtworkStore.cached(urls.w500, decode: HeroSharpen.logoRequest(scale: 2)) === covering)
+    }
+
+    /// A fill request (a card) is never relaxed by the family aspect: it keeps the floor it had. A
+    /// square 400 pt slot over a 2:3 poster would need 1200 px by aspect; the no-source floor (800 →
+    /// 896) stays the answer, so the card's existing 896 hit is unchanged.
+    func testFillLookupsKeepTheirFloor() {
+        let file = "\(UUID().uuidString).jpg"
+        let w500 = URL(string: "https://image.tmdb.org/t/p/w500/\(file)")!
+        let w780 = URL(string: "https://image.tmdb.org/t/p/w780/\(file)")!
+        let card = image()
+        ArtworkStore.storeForTesting(card, url: w780, bucket: 896, sourceSize: CGSize(width: 780, height: 1170))
+        let square = ArtworkDecodeRequest(size: .points(width: 400, height: 400), fill: true, scale: 2).normalized
+        XCTAssertTrue(ArtworkStore.cached(w500, decode: square) === card)
+        let larger = ArtworkDecodeRequest(size: .points(width: 600, height: 600), fill: true, scale: 2).normalized
+        XCTAssertNil(ArtworkStore.cached(w500, decode: larger), "a 1200 px slot still needs the 1280 bucket")
+    }
+
+    /// A fetch joins work already in flight for the same URL at its own bucket or a larger one (whose
+    /// decode covers it), never a smaller one.
+    func testInflightKeysJoinTheSameOrALargerBucket() {
+        XCTAssertEqual(ArtworkStore.inflightKeys(identity: "u", neededBucket: 1280),
+                       ["1280|u", "1536|u", "1920|u", "2560|u", "3072|u", "3840|u"])
+        XCTAssertEqual(ArtworkStore.inflightKeys(identity: "u", neededBucket: 3840), ["3840|u"])
+        XCTAssertEqual(ArtworkStore.inflightKeys(identity: "u", neededBucket: 128).first, "128|u")
+    }
+}

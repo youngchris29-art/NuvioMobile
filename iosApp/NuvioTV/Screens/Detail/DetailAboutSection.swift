@@ -23,17 +23,20 @@ nonisolated enum DetailStatusText {
         guard let raw else { return nil }
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
+        // Own `detail.status.*` keys, never the bare English word: the catalog already has a
+        // "Released" key used as a row LABEL (fr "Date de sortie"), and a shared key would print
+        // that label as the status value. The catalog carries an explicit English value for each.
         switch trimmed.lowercased() {
-        case "released": return String(localized: "Released")
-        case "ended": return String(localized: "Ended")
-        case "returning series": return String(localized: "Returning Series")
-        case "continuing": return String(localized: "Continuing")
-        case "canceled", "cancelled": return String(localized: "Canceled")
-        case "in production": return String(localized: "In Production")
-        case "planned": return String(localized: "Planned")
-        case "post production": return String(localized: "Post Production")
-        case "rumored": return String(localized: "Rumored")
-        case "pilot": return String(localized: "Pilot")
+        case "released": return String(localized: "detail.status.released", defaultValue: "Released")
+        case "ended": return String(localized: "detail.status.ended", defaultValue: "Ended")
+        case "returning series": return String(localized: "detail.status.returningSeries", defaultValue: "Returning Series")
+        case "continuing": return String(localized: "detail.status.continuing", defaultValue: "Continuing")
+        case "canceled", "cancelled": return String(localized: "detail.status.canceled", defaultValue: "Canceled")
+        case "in production": return String(localized: "detail.status.inProduction", defaultValue: "In Production")
+        case "planned": return String(localized: "detail.status.planned", defaultValue: "Planned")
+        case "post production": return String(localized: "detail.status.postProduction", defaultValue: "Post Production")
+        case "rumored": return String(localized: "detail.status.rumored", defaultValue: "Rumored")
+        case "pilot": return String(localized: "detail.status.pilot", defaultValue: "Pilot")
         default: return trimmed
         }
     }

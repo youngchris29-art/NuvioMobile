@@ -541,6 +541,17 @@ struct FirstPlayAutoPlayOverlay: View {
     let message: String
     let onCancel: () -> Void
 
+    /// beta.19-rc1 verdict (review r2, P3-1): the title logo's decode, the SAME request the stream
+    /// picker's header underneath uses (`StreamPickerView`: `.points(width: 600, height: 120)`,
+    /// `upgrade: .logo`), so the two share one decode and one download of the TMDB `original`. It
+    /// was `.legacy` with no upgrade: the legacy floor is 1920 px for a URL never decoded itself, so
+    /// after Detail had decoded the `original` for its own slot, this header showed it only as a
+    /// placeholder, fetched `w500` and faded DOWN to a 500 px logo. A slot-sized request accepts any
+    /// decode of the picture that covers the slot (Detail's 600 × 180 pt `original` included). Drawn
+    /// in `TitleLogoHeader`'s slot (at most `heroLogoMaxWidth` × the pinned slot height), which this
+    /// covers.
+    static let logoDecodeSize: ArtworkDecodeSize = .points(width: 600, height: 120)
+
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -561,7 +572,8 @@ struct FirstPlayAutoPlayOverlay: View {
                     .overlay(Color.black.opacity(0.65))
             }
             VStack(spacing: Theme.Spacing.lg) {
-                TitleLogoHeader(title: title, logoUrl: logoUrl, alignment: .center)
+                TitleLogoHeader(title: title, logoUrl: logoUrl, alignment: .center,
+                                decodeSize: Self.logoDecodeSize, upgrade: .logo)
                 ProgressView()
                     .scaleEffect(1.5)
                     .padding(.vertical, Theme.Spacing.md)

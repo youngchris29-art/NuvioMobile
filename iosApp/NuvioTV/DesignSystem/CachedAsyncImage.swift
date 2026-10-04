@@ -289,7 +289,20 @@ enum ArtworkStore {
     /// One shared task per (bucket, URL) currently downloading, so awaiters coalesce onto it.
     /// beta.19-rc1 verdict (I1): same-bucket requests coalesce; a second bucket of one URL re-decodes
     /// from the URLCache bytes (no second download once the first response is stored).
+    /// beta.19-rc1 verdict (review r2, P3-1): a request also coalesces onto work in flight for the
+    /// same URL at a LARGER bucket (`inflightKeys`), whose decode covers it. The Home hero's logo is
+    /// now looked up and fetched at its slot's size while the row and carousel prefetches warm the
+    /// same URL at `.legacy`; without this, a hero fetch issued while that prefetch is still
+    /// downloading started a second download of the same file.
     @MainActor private static var inflight: [String: Task<UIImage, Error>] = [:]
+
+    /// beta.19-rc1 verdict (review r2, P3-1): the in-flight keys a fetch needing `neededBucket` may
+    /// join, in order: its own bucket first, then every larger one. A decode for a larger bucket is
+    /// capped by the same source, so it always covers the smaller request; a smaller one never
+    /// covers a larger request, so a fetch never waits on one.
+    nonisolated static func inflightKeys(identity: String, neededBucket: Int) -> [String] {
+        ArtworkDecodeMath.servingOrder(from: neededBucket).map { "\($0)|\(identity)" }
+    }
 
     /// Caps simultaneous download+decode pipelines. Bounds the *transient* peak of in-flight
     /// decoded bitmaps that the memory cache's limits can't see — dozens of rows appearing at
@@ -469,8 +482,33 @@ enum ArtworkStore {
 
     /// The bucket a decode of `url` for `request` is (or would be) stored under, using the source
     /// size an earlier decode recorded.
+    ///
+    /// beta.19-rc1 verdict (review r2, P3-1): a `.points` request for a URL that was never decoded
+    /// itself takes the picture's aspect from another family member's recorded source (the same
+    /// picture at another CDN size, `familySourceSize`), and keeps the lower of the two answers.
+    /// Without it the floor is the slot's long side whatever the picture's shape (`max(W, H)`), so a
+    /// TMDB `w500` logo looked up for a 520 × 150 pt slot demanded the 1280 bucket even when Detail
+    /// had already decoded the `original` of a 2:1 wordmark at 768, more than the slot draws (600 px),
+    /// and the caller fetched `w500` again. For a fit request the aspect answer is never above the
+    /// no-source one; for a fill request it is never below it, so `min` leaves every fill lookup (the
+    /// cards) exactly as it was. `.legacy`, `.fullBleed` and `.pixels` do not depend on the aspect
+    /// and are untouched (the hero backdrop keeps its legacy floor, review r1 B P2-1).
     nonisolated private static func requestBucket(_ url: URL, _ request: ArtworkDecodeRequest) -> Int {
-        ArtworkDecodeMath.lookupBucket(request, source: sourceSizes.object(forKey: url as NSURL)?.cgSizeValue)
+        let own = sourceSizes.object(forKey: url as NSURL)?.cgSizeValue
+        let bucket = ArtworkDecodeMath.lookupBucket(request, source: own)
+        guard own == nil, case .points = request.size, let familySource = familySourceSize(url) else { return bucket }
+        let byAspect = ArtworkDecodeMath.bucket(for: ArtworkDecodeMath.neededLongSide(request, source: familySource))
+        return min(bucket, byAspect)
+    }
+
+    /// beta.19-rc1 verdict (review r2, P3-1): the source size an earlier decode recorded for another
+    /// member of `url`'s family, first in family order (largest rendition first), nil when none has.
+    /// Only its ASPECT is used (`requestBucket`): renditions of one picture differ in size, not shape.
+    nonisolated private static func familySourceSize(_ url: URL) -> CGSize? {
+        for member in ArtworkURLUpgrade.family(url) where member != url {
+            if let size = sourceSizes.object(forKey: member as NSURL)?.cgSizeValue { return size }
+        }
+        return nil
     }
 
     #if DEBUG
@@ -543,8 +581,12 @@ enum ArtworkStore {
         }
         let neededBucket = ArtworkDecodeMath.bucket(
             for: ArtworkDecodeMath.neededLongSide(request, source: sourceSizes.object(forKey: url as NSURL)?.cgSizeValue))
-        let inflightKey = "\(neededBucket)|\(ArtworkMemory.identity(url))"
-        if let existing = inflight[inflightKey] { return try await existing.value }
+        // Review r2 (P3-1): the same bucket, or a larger one already in flight (`inflightKeys`).
+        let joinable = inflightKeys(identity: ArtworkMemory.identity(url), neededBucket: neededBucket)
+        let inflightKey = joinable[0]
+        for key in joinable {
+            if let existing = inflight[key] { return try await existing.value }
+        }
 
         let work = Task<UIImage, Error> {
             await acquireFetchSlot(admission)

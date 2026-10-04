@@ -48,6 +48,26 @@ final class InlineTrailerResolveOutcomeTests: XCTestCase {
         XCTAssertEqual(InlineTrailerCacheHitPlan.listenerWaits, 2)
     }
 
+    // MARK: Listener re-arm after `.waitForListener` (review r2, P3-4)
+
+    /// One re-arm per focus visit, then idle: the re-arm is itself a dwell, so a budget that refilled
+    /// per dwell would loop for as long as the listener stayed down.
+    func testWaitForListenerRearmsOncePerFocusVisit() {
+        XCTAssertEqual(InlineTrailerCacheHitPlan.listenerRearms, 1)
+        XCTAssertTrue(InlineTrailerCacheHitPlan.rearmsAfterListenerWait(rearmsUsed: 0))
+        XCTAssertFalse(InlineTrailerCacheHitPlan.rearmsAfterListenerWait(rearmsUsed: 1))
+        XCTAssertFalse(InlineTrailerCacheHitPlan.rearmsAfterListenerWait(rearmsUsed: 2))
+    }
+
+    /// The re-dwell starts as soon as the listener reports a port; with none (an exhausted attempt
+    /// cycle) it waits a short, bounded pause first.
+    func testRearmWaitsOnlyWhenTheListenerReportedNoPort() {
+        XCTAssertEqual(InlineTrailerCacheHitPlan.rearmDelay(readyPort: 8231), 0)
+        XCTAssertEqual(InlineTrailerCacheHitPlan.rearmDelay(readyPort: nil), InlineTrailerCacheHitPlan.listenerRearmDelay)
+        XCTAssertGreaterThan(InlineTrailerCacheHitPlan.listenerRearmDelay, 0)
+        XCTAssertLessThanOrEqual(InlineTrailerCacheHitPlan.listenerRearmDelay, 2)
+    }
+
     func testATimeoutNeverMapsToTheNextCandidate() {
         // A slow repack says nothing about the candidate: walking on would burn the three-candidate
         // budget on a title whose first trailer is fine.

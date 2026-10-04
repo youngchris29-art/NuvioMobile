@@ -2817,17 +2817,19 @@ struct HomeView: View {
     /// still warmed the same way it always was: one batch per row, on that row's first focus
     /// report (`reportRowFocus`), which is unchanged and now runs in both hero modes.
     private func prefetchHeroArt() {
-        var urls: [URL] = []
+        var items: [ArtworkPrefetchItem] = []
         // Every render candidate — primary backdrop, poster fallback AND logo — in the same chain
         // the hero actually resolves; see heroBackdropPrefetchURLs, which carries the logo itself
         // as of Wave H (the resolver waits on it, so a cold logo is a cold hero).
+        // beta.19-rc1 verdict (review r2, P3-1): typed, so the logo is warmed at the request the
+        // resolver looks it up with (`heroArtPrefetchItems`).
         for item in heroItems {
-            urls.append(contentsOf: heroBackdropPrefetchURLs(for: item).compactMap(URL.init(string:)))
+            items.append(contentsOf: heroArtPrefetchItems(for: item))
         }
         if let resting = heroRestingItem {
-            urls.append(contentsOf: heroBackdropPrefetchURLs(for: resting).compactMap(URL.init(string:)))
+            items.append(contentsOf: heroArtPrefetchItems(for: resting))
         }
-        ArtworkStore.prefetch(urls)
+        ArtworkStore.prefetch(items)
     }
 
     /// Wave H: every folder's hero backdrop AND title logo in one collection row. A folder hero has
@@ -3828,6 +3830,12 @@ final class HeroArtResolver: ObservableObject {
     /// The URL the presented backdrop bitmap was decoded from. nil when there is no backdrop, and for
     /// the poster stand-in: a different picture, which is never sharpened.
     private var presentedBackdropURL: URL?
+    /// beta.19-rc1 verdict (review r2, P3-2): the presented backdrop is the card-size stand-in (the
+    /// same picture, `backdrop=small`), committed because the legacy re-decode missed the deadline.
+    /// That legacy decode, landing late, may replace it (`adoptLateBackdrop`); nothing else may. Set
+    /// by `commit`, cleared by any commit or sharpen that puts another backdrop on screen. A plain
+    /// stored property: nothing draws from it.
+    private var presentedBackdropIsStandIn = false
     /// The URL the presented logo bitmap was decoded from (nil = the text wordmark). The `.pending`
     /// path learns it from `TitleLogoStore.awaitLogoURL` (`HeroPresentArtWait.logoURL`).
     private var presentedLogoURL: URL?
@@ -3956,6 +3964,7 @@ final class HeroArtResolver: ObservableObject {
             cancelSharpen()
             guard presented != nil else { return }
             presentedBackdropURL = nil
+            presentedBackdropIsStandIn = false
             presentedLogoURL = nil
             // FEAT-42: reset together with `presented`, in the same transaction — see
             // `presentedLogoSource`'s doc comment on why the two may never disagree.
@@ -4070,10 +4079,16 @@ final class HeroArtResolver: ObservableObject {
         // committed it 3–5× upscaled. `.legacy` accepts only a decode ≥ min(1920, source) (or a
         // sharper rendition, the sharpen's `original`); a card-only entry is a miss, and the
         // backdrop fetch below re-decodes it from the URLCache bytes inside the same deadline. The
-        // fetches below already decode `.legacy` (their default) with the same floor on their memory
-        // check.
+        // backdrop fetch below already decodes `.legacy` (its default) with the same floor on its
+        // memory check.
         let cachedBackdrop = ArtworkStore.cached(backdropURL, decode: .legacy)
-        let cachedLogo = ArtworkStore.cached(logoURL, decode: .legacy)
+        // beta.19-rc1 verdict (review r2, P3-1): the logo is drawn in a bounded slot, so it is looked
+        // up (and fetched, below) at that slot's request, not `.legacy`: the legacy floor is 1920 px
+        // for a URL never decoded itself, so a `w500` logo refused the `original` Detail had decoded
+        // for its slot, and the `w500` fetch then had to make the 400 ms deadline or the hero
+        // committed the text wordmark. Any decode of the picture that covers the slot is a hit now.
+        let logoRequest = HeroSharpen.heroLogoRequest
+        let cachedLogo = ArtworkStore.cached(logoURL, decode: logoRequest)
         let needsBackdrop = backdropURL != nil && cachedBackdrop == nil
         // beta.19-rc1 verdict (review r1, B P2-1): the SAME picture at a card's size, when that is
         // all memory holds for a title's backdrop. Never committed while the legacy re-decode makes
@@ -4082,7 +4097,8 @@ final class HeroArtResolver: ObservableObject {
         // poster (a different picture, which `adoptLateBackdrop` then never replaces): it records
         // the backdrop URL like any backdrop, so the post-commit sharpen upgrades it at rest. Title
         // heroes only, the same gate as the poster stand-in: folders keep their `none` → `late`
-        // path untouched.
+        // path untouched. Review r2 (P3-2): the legacy re-decode that missed the deadline replaces
+        // it when it lands, at the next rest (`adoptLateBackdrop`), usually well before the sharpen.
         let backdropStandIn: UIImage? = needsBackdrop && !isFolder && !isCollectionHero(target)
             ? ArtworkStore.cached(backdropURL) : nil
         // `.pending` has no `logoURL` of its own yet (the fetch only starts once
@@ -4187,7 +4203,7 @@ final class HeroArtResolver: ObservableObject {
             // `.url` case (the plan already names a concrete URL — addon, TMDB store, or
             // metahub) and it wasn't cached.
             Task { @MainActor [weak self] in
-                let image = try? await ArtworkStore.fetch(logoURL, admission: .head)
+                let image = try? await ArtworkStore.fetch(logoURL, decode: logoRequest, admission: .head)
                 // beta.19-rc1 verdict (M5, BUG-138): sample the ink OFF the main actor and memoize
                 // it BEFORE the wait sees the bitmap, so the commit reads the memo (`inkedLogo`).
                 if let image { _ = await HeroLogoInk.prepare(image, url: logoURL.absoluteString) }
@@ -4212,7 +4228,7 @@ final class HeroArtResolver: ObservableObject {
                     wait.resolveLogo(nil)
                     return
                 }
-                let image = try? await ArtworkStore.fetch(resolvedURL, admission: .head)
+                let image = try? await ArtworkStore.fetch(resolvedURL, decode: logoRequest, admission: .head)
                 // beta.19-rc1 verdict (M5): same off-main ink sample as the `.url` path, keyed on
                 // the URL the store resolved (handed to the wait so the commit can read the memo).
                 if let image { _ = await HeroLogoInk.prepare(image, url: resolvedURL.absoluteString) }
@@ -4279,7 +4295,9 @@ final class HeroArtResolver: ObservableObject {
                         // beta.19-rc1 verdict (I1): the poster stand-in is not the backdrop's
                         // picture, so it records no backdrop URL and is never sharpened.
                         backdropURL: wait.usedPosterFallback ? nil : backdropURL,
-                        logoURL: wait.logoURL ?? logoURL)
+                        logoURL: wait.logoURL ?? logoURL,
+                        // Review r2 (P3-2): the late legacy decode may replace a `small` stand-in.
+                        backdropIsStandIn: usedStandIn)
             // 2026-09-08 finding: a backdrop that lands during the deadline hand-off ITSELF — after
             // `deadlineElapsed()` above already finished the wait, but before this task's `commit`
             // just above runs — is lost by both existing paths. `resolveBackdrop`'s own `!finished`
@@ -4293,7 +4311,10 @@ final class HeroArtResolver: ObservableObject {
             // `adoptLateBackdrop` call stays for the ordinary later-arrival case (the ordering above
             // is a hand-off race, not the common case); a second call here is harmless because
             // `presentedBackdrop == nil` fails after the first adoption commits one.
-            if backdrop == nil, let late = wait.lateBackdrop {
+            // beta.19-rc1 verdict (review r2, P3-2): the same race when the commit painted the
+            // card-size stand-in instead of nothing (the second call is just as harmless: the first
+            // adoption clears `presentedBackdropIsStandIn`).
+            if backdrop == nil || usedStandIn, let late = wait.lateBackdrop {
                 self.adoptLateBackdrop(late, identity: identity, startedAt: started, url: backdropURL)
             }
         }
@@ -4364,15 +4385,20 @@ final class HeroArtResolver: ObservableObject {
     /// beta.19-rc1 verdict (I1, BUG-134): `backdropURL` / `logoURL` are where the two bitmaps were
     /// decoded from (nil for the poster stand-in and for the text wordmark), kept for the post-commit
     /// sharpen, which every commit arms (`scheduleSharpen`).
+    ///
+    /// beta.19-rc1 verdict (review r2, P3-2): `backdropIsStandIn` marks a `backdrop=small` commit (see
+    /// `presentedBackdropIsStandIn`).
     private func commit(item: MetaPreview, backdrop: UIImage?, logo: UIImage?, identity: String,
                         backdropSource: String, logoSource: String, logoOrigin: HeroLogoSource,
-                        logoInk: HeroLogoInk, waitedMs: Int, backdropURL: URL?, logoURL: URL?) {
+                        logoInk: HeroLogoInk, waitedMs: Int, backdropURL: URL?, logoURL: URL?,
+                        backdropIsStandIn: Bool = false) {
         logPresent(identity: identity, backdrop: backdropSource, logo: logoSource,
                    logoOrigin: logoOrigin, logoInk: logoInk, waitedMs: waitedMs, same: false)
         let next = HeroPresentation(item: item, backdrop: backdrop, logo: logo, identity: identity,
                                     logoInk: logoInk)
         guard next != presented else { return }
         presentedBackdropURL = backdrop != nil ? backdropURL : nil
+        presentedBackdropIsStandIn = backdrop != nil && backdropIsStandIn
         presentedLogoURL = logo != nil ? logoURL : nil
         // FEAT-42: set in the SAME transaction as `presented` — see `presentedLogoSource`'s doc
         // comment.
@@ -4520,11 +4546,19 @@ final class HeroArtResolver: ObservableObject {
     /// it took, or nil when the sharpen was cancelled or superseded meanwhile (its generation moved).
     /// A timestamp read and a few comparisons per poll, on the main actor; no view state is written.
     private func waitForRowsAtRest(hold: TimeInterval, generation: Int) async -> HeroSharpen.RestOutcome? {
+        await waitForRowsAtRest(hold: hold, while: { self.sharpenGeneration == generation })
+    }
+
+    /// The rest wait itself. `isCurrent` is re-read before every poll; the wait answers nil the first
+    /// time it is false (the hero moved on). beta.19-rc1 verdict (review r2, P3-2): factored out of
+    /// the generation form above so the late stand-in replacement (`adoptLateBackdrop`) waits on the
+    /// same signal, guarded by its own condition.
+    private func waitForRowsAtRest(hold: TimeInterval, while isCurrent: () -> Bool) async -> HeroSharpen.RestOutcome? {
         let started = ProcessInfo.processInfo.systemUptime
         var restBegan: TimeInterval?
         var quietBegan: TimeInterval?
         while true {
-            guard !Task.isCancelled, sharpenGeneration == generation else { return nil }
+            guard !Task.isCancelled, isCurrent() else { return nil }
             let now = ProcessInfo.processInfo.systemUptime
             if restSource.isAtRest() {
                 if restBegan == nil { restBegan = now }
@@ -4592,6 +4626,8 @@ final class HeroArtResolver: ObservableObject {
         if let sharpBackdrop {
             HeroSharpen.noteAdopted(sharpBackdrop)
             presentedBackdropURL = backdropURL
+            // Review r2 (P3-2): the stand-in is gone; a late legacy decode must not replace this.
+            presentedBackdropIsStandIn = false
         }
         if sharpLogo != nil { presentedLogoURL = logoURL }
         HeroSharpen.log("adopt item=\(identity) bd=\(HeroSharpen.adoptToken(from: presented.backdrop, to: sharpBackdrop)) "
@@ -4635,12 +4671,56 @@ final class HeroArtResolver: ObservableObject {
     /// resolve started with. Committing the stale captured item instead would rewind that text, and
     /// because the identity is unchanged, `commit`'s `same=0` line would make the rollback invisible
     /// to the photo oracle: nothing would look wrong that flags this class of regression.
+    ///
+    /// beta.19-rc1 verdict (review r2, P3-2): the one bitmap a late arrival may replace is the
+    /// card-size stand-in (`backdrop=small`, `presentedBackdropIsStandIn`): the SAME picture at a
+    /// card's size, committed only because this very legacy re-decode missed the deadline (the
+    /// six-slot gate busy, the URLCache re-decode landing 50 ms late). It used to be dropped here, so
+    /// the hero stayed on a 768 px card bitmap (3.3× upscaled on the Nuvio form, 5× on classic)
+    /// through the sharpen's dwell, its rest hold and a TMDB `original` download, while a 1280–1920 px
+    /// decode of the same picture sat in memory. Now it replaces the stand-in, but only with a
+    /// strictly larger bitmap (`HeroSharpen.adoptable`), only while the stand-in is still on screen
+    /// for this identity, and only at the next at-rest reading (the sharpen's own rest wait,
+    /// `HeroSharpen.adoptRestHold`), so its full-screen cross-fade never lands inside a slide (review
+    /// r1, A P2). It is a same-identity update: `HeroTextLayer` takes it as a silent gap-fill (no text
+    /// fade), the logo and its ink verdict are carried, `HeroCrossfadeImage` cross-fades two versions
+    /// of one picture and logs it as `sharpen paint` (`HeroSharpen.noteAdopted`), never
+    /// `paint … same=1`, and the probe reads `present … backdrop=late`, the one same-item re-present
+    /// test62 allows. The poster stand-in (a different picture) is still never replaced.
     private func adoptLateBackdrop(_ image: UIImage, identity: String, startedAt: Date, url: URL?) {
         guard HeroArtResolver.shouldAdoptLateBackdrop(
             targetIdentity: targetIdentity, presentedIdentity: presented?.identity,
-            presentedBackdrop: presented?.backdrop, resolveTaskIsNil: resolveTask == nil,
-            identity: identity
+            presentedBackdrop: presented?.backdrop, presentedIsSmallStandIn: presentedBackdropIsStandIn,
+            resolveTaskIsNil: resolveTask == nil, identity: identity
         ), let presented else { return }
+        guard presented.backdrop != nil else {
+            commitLateBackdrop(image, over: presented, identity: identity, startedAt: startedAt, url: url)
+            return
+        }
+        // Review r2 (P3-2): over the `small` stand-in. Larger only, and at rest.
+        guard HeroSharpen.adoptable(image, over: presented.backdrop) != nil else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let standInStillUp = {
+                self.presentedBackdropIsStandIn && self.targetIdentity == identity
+                    && self.presented?.identity == identity
+            }
+            guard await self.waitForRowsAtRest(hold: HeroSharpen.adoptRestHold, while: standInStillUp) != nil,
+                  HeroArtResolver.shouldAdoptLateBackdrop(
+                    targetIdentity: self.targetIdentity, presentedIdentity: self.presented?.identity,
+                    presentedBackdrop: self.presented?.backdrop,
+                    presentedIsSmallStandIn: self.presentedBackdropIsStandIn,
+                    resolveTaskIsNil: self.resolveTask == nil, identity: identity),
+                  let live = self.presented,
+                  HeroSharpen.adoptable(image, over: live.backdrop) != nil else { return }
+            HeroSharpen.noteAdopted(image)
+            self.commitLateBackdrop(image, over: live, identity: identity, startedAt: startedAt, url: url)
+        }
+    }
+
+    /// `adoptLateBackdrop`'s commit: the live presentation with `image` as its backdrop.
+    private func commitLateBackdrop(_ image: UIImage, over presented: HeroPresentation, identity: String,
+                                    startedAt: Date, url: URL?) {
         // FEAT-42: the logo (if any) is `presented.logo`, unchanged by this backdrop-only
         // adoption — its origin is whatever is already recorded on `presentedLogoSource`, passed
         // straight through rather than recomputed.
@@ -4668,12 +4748,16 @@ final class HeroArtResolver: ObservableObject {
     /// Pure predicate behind `adoptLateBackdrop` — see that method's doc comment for the finding
     /// and the full safety argument. Factored out the same way `isVisibleRepaint` was, so the
     /// no-double-commit guard can be pinned by a unit test with no `ArtworkStore` and no live view.
+    ///
+    /// beta.19-rc1 verdict (review r2, P3-2): `presentedIsSmallStandIn` (default false, every
+    /// pre-existing caller) lets the late arrival replace the card-size stand-in of the same picture,
+    /// the one bitmap it may replace. A poster stand-in is never marked, so it still blocks.
     nonisolated static func shouldAdoptLateBackdrop(targetIdentity: String?, presentedIdentity: String?,
-                                        presentedBackdrop: UIImage?, resolveTaskIsNil: Bool,
-                                        identity: String) -> Bool {
+                                        presentedBackdrop: UIImage?, presentedIsSmallStandIn: Bool = false,
+                                        resolveTaskIsNil: Bool, identity: String) -> Bool {
         guard targetIdentity == identity else { return false }
         guard presentedIdentity == identity else { return false }
-        guard presentedBackdrop == nil else { return false }
+        guard presentedBackdrop == nil || presentedIsSmallStandIn else { return false }
         guard resolveTaskIsNil else { return false }
         return true
     }
@@ -4744,6 +4828,8 @@ final class HeroArtResolver: ObservableObject {
     /// beta.19-rc1 verdict (review r1, B P2-1): `backdrop=small` (a new VALUE, no new field): a title
     /// whose legacy-size backdrop missed the deadline committed the same picture at a card's size
     /// instead of its poster; the post-commit sharpen upgrades it (`[HomeHero] sharpen`).
+    /// beta.19-rc1 verdict (review r2, P3-2): usually sooner, by that legacy decode itself: a
+    /// `backdrop=late` line for the same item follows at the next rest (`adoptLateBackdrop`).
     private func logPresent(identity: String, backdrop: String, logo: String,
                             logoOrigin: HeroLogoSource, logoInk: HeroLogoInk, waitedMs: Int, same: Bool) {
         guard HomeHeroProbe.enabled else { return }
@@ -6525,6 +6611,25 @@ func heroBackdropPrefetchURLs(for item: MetaPreview) -> [String] {
     if let poster = item.poster, !poster.isEmpty, !urls.contains(poster) { urls.append(poster) }
     if let logo = heroLogoURL(for: item)?.absoluteString, !urls.contains(logo) { urls.append(logo) }
     return urls
+}
+
+/// beta.19-rc1 verdict (review r2, P3-1): `heroBackdropPrefetchURLs(for:)` as typed prefetch items
+/// for the hero carousel's warm-up (`prefetchHeroArt`): the title logo at
+/// `HeroSharpen.heroLogoRequest`, the request `HeroArtResolver.present` looks it up and fetches it
+/// with (so the hero's own fetch joins this one while it is in flight instead of downloading the file
+/// a second time), the backdrop and the poster at `.legacy` as before. The row-focus prefetches keep
+/// the plain URL list: they run before the hero presents a row's item, and a slot-sized fetch joins
+/// the larger legacy work still in flight (`ArtworkStore.inflightKeys`).
+func heroArtPrefetchItems(for item: MetaPreview) -> [ArtworkPrefetchItem] {
+    let logo = heroLogoURL(for: item)?.absoluteString
+    let backdrop = heroBackdropURL(for: item)
+    let logoRequest = HeroSharpen.heroLogoRequest
+    return heroBackdropPrefetchURLs(for: item).compactMap { string in
+        guard let url = URL(string: string) else { return nil }
+        // A logo URL that is also the backdrop or the poster keeps the legacy decode those need.
+        let logoOnly = string == logo && string != backdrop && string != item.poster
+        return ArtworkPrefetchItem(url: url, decode: logoOnly ? logoRequest : .legacy)
+    }
 }
 
 /// Continue Watching flavor of `heroBackdropPrefetchURLs(for:)`.

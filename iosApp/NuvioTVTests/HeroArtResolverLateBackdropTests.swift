@@ -111,4 +111,41 @@ final class HeroArtResolverLateBackdropTests: XCTestCase {
             resolveTaskIsNil: false,
             identity: "nuvio.folder:abc"))
     }
+
+    // MARK: beta.19-rc1 verdict (review r2, P3-2): the card-size stand-in
+
+    /// A title committed the SAME picture at a card's size (`backdrop=small`) because its legacy
+    /// re-decode missed the deadline. That decode, landing late, may replace it: the one bitmap on
+    /// screen a late arrival may replace (the method then also requires a larger bitmap and a rest).
+    func testReplacesTheSmallStandInOfTheSamePicture() {
+        XCTAssertTrue(HeroArtResolver.shouldAdoptLateBackdrop(
+            targetIdentity: "movie:1",
+            presentedIdentity: "movie:1",
+            presentedBackdrop: makeImage(),
+            presentedIsSmallStandIn: true,
+            resolveTaskIsNil: true,
+            identity: "movie:1"))
+    }
+
+    /// The stand-in mark relaxes only the bitmap rule: a newer target, a presentation that moved on,
+    /// or a resolve in flight still refuse the late image.
+    func testSmallStandInKeepsEveryOtherGuard() {
+        XCTAssertFalse(HeroArtResolver.shouldAdoptLateBackdrop(
+            targetIdentity: "movie:2", presentedIdentity: "movie:1", presentedBackdrop: makeImage(),
+            presentedIsSmallStandIn: true, resolveTaskIsNil: true, identity: "movie:1"))
+        XCTAssertFalse(HeroArtResolver.shouldAdoptLateBackdrop(
+            targetIdentity: "movie:1", presentedIdentity: "movie:2", presentedBackdrop: makeImage(),
+            presentedIsSmallStandIn: true, resolveTaskIsNil: true, identity: "movie:1"))
+        XCTAssertFalse(HeroArtResolver.shouldAdoptLateBackdrop(
+            targetIdentity: "movie:1", presentedIdentity: "movie:1", presentedBackdrop: makeImage(),
+            presentedIsSmallStandIn: true, resolveTaskIsNil: false, identity: "movie:1"))
+    }
+
+    /// Unmarked (the default, every pre-existing caller): a poster stand-in, a primary, a folder's
+    /// own backdrop all still block, exactly as `testNeverReplacesAPosterStandIn` pins.
+    func testUnmarkedBitmapStillBlocks() {
+        XCTAssertFalse(HeroArtResolver.shouldAdoptLateBackdrop(
+            targetIdentity: "movie:1", presentedIdentity: "movie:1", presentedBackdrop: makeImage(),
+            presentedIsSmallStandIn: false, resolveTaskIsNil: true, identity: "movie:1"))
+    }
 }

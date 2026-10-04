@@ -4976,7 +4976,8 @@ struct CatalogRowView: View {
     @State private var hScroll = RowHScrollBox()
     /// beta.19-rc1 verdict (M3): horizontal-only scroll target for the inline-trailer morph — a
     /// horizontal `ScrollPosition` cannot move the enclosing vertical rows (see `RowMorphScroll`).
-    /// Not attached at all when `-debug.trailerMorphScrollProxy YES` arms the fallback.
+    /// Not attached at all when `-debug.trailerMorphScrollProxy YES` arms the fallback. `body` never
+    /// reads it (see `expansionChanged`'s "Path shipped" note: the re-render check was not run).
     @State private var rowPosition = ScrollPosition()
 
     /// BUG-29: an inline-trailer expansion widens its card in place without moving focus, so tvOS's
@@ -5000,7 +5001,9 @@ struct CatalogRowView: View {
     /// to scroll), so the row holds its trailing fade off while that tile is wide. Written at most
     /// once per morph pass and once per collapse, never per frame. Applied only while that item
     /// still holds focus (`holdsTrailingFade`), so a value left behind by a card that vanished
-    /// without reporting its collapse can never keep the fade off.
+    /// without reporting its collapse can never keep the fade off for ANOTHER card. For focus
+    /// coming back to that SAME card as a poster, the row's `.onDisappear` (where the cards abort
+    /// without reporting) clears the hold too (beta.19-rc1 verdict, review r2, P3-3).
     @State private var trailingFadeHeldFor: String?
 
     /// tvOS Accessibility ▸ Motion ▸ Auto-Play Video Previews. When the user has turned previews off
@@ -5308,9 +5311,14 @@ struct CatalogRowView: View {
         // rather than let it fire against a torn-down row. Review r1 (A-4): the cards abort on
         // disappear and may not report the collapse, so forget the wide item too (a box write,
         // no render).
+        // beta.19-rc1 verdict (review r2, P3-3): and the trailing-fade hold with it. A card that
+        // aborted without reporting its collapse left it set, and focus coming back to that same
+        // card (now a poster) drew the row's trailing side solid, as if Off, until the next morph
+        // pass or focus move. One write, and only when a hold is set.
         .onDisappear {
             expansionScrollTask?.cancel()
             hScroll.wideItemId = nil
+            if trailingFadeHeldFor != nil { trailingFadeHeldFor = nil }
         }
     }
 
@@ -5345,8 +5353,14 @@ struct CatalogRowView: View {
     /// then; `contentAlreadyGrown` is MEASURED against the width before the edge, not assumed),
     /// and the H3 task keeps one verification pass at `morphDuration + 0.05` s on the live sample.
     ///
-    /// Path shipped: `ScrollPosition` (pending the Gate 1 simulator checks, §1.6.4). The proxy
-    /// fallback is behind `-debug.trailerMorphScrollProxy YES` (see `RowMorphScroll`).
+    /// Path shipped: `ScrollPosition` (`.scrollPosition($rowPosition)` + `scrollTo(x:)`), the
+    /// default. Gate 1 showed `scrollTo(x:)` lands (pass-1 and pass-2 probe lines). The other check,
+    /// that `.scrollPosition` does not re-render this row on every frame of a focus-driven horizontal
+    /// scroll (a temporary `_printChanges()` in `body`), was NOT run; the body never reads
+    /// `rowPosition`, which is why it is expected to hold. Decision as it stands (beta.19-rc1
+    /// verdict, review r1 A-7): ship the `ScrollPosition` path. If the device BUG-126 frame sampler
+    /// shows per-frame row re-renders during horizontal focus scrolling, switch to the proxy
+    /// fallback with `-debug.trailerMorphScrollProxy YES` (see `RowMorphScroll`).
     ///
     /// beta.19-rc1 verdict (review r1, A-4): the COLLAPSE edge now cancels this item's pending
     /// verification pass. It used to return at the guard below first, so after an abort (a fast Left
