@@ -68,12 +68,16 @@ final class RowSoftEdgeMaskTests: XCTestCase {
         XCTAssertEqual(rest[0], .init(start: -116, end: -36, kind: .clear))
     }
 
-    /// Critique #12: the overdraw shrank from 400 to 72 pt; it must still hold everything a
-    /// focused card draws past the row frame (lift + shadow radius + shadow y + ring).
+    /// Critique #12 shrank the overdraw from 400 pt; it must still hold everything a focused card
+    /// draws past the row frame (lift + shadow radius + shadow y + ring) AND the pinned row's top
+    /// reach plus the lift, or the focus engine rests the row differently with the mask on
+    /// (Gate 4: Soft@72 rested 14 pt off Off on FA87; Soft@160 matched it).
     func testVerticalOverdrawCoversLiftShadowRing() {
         XCTAssertGreaterThanOrEqual(RowSoftEdgeMask.verticalOverdraw,
                                     Theme.Size.heroPinnedRowFocusLiftAllowance + 22 + 10 + ringWidth)
-        XCTAssertEqual(RowSoftEdgeMask.verticalOverdraw, 72)
+        XCTAssertGreaterThanOrEqual(RowSoftEdgeMask.verticalOverdraw,
+                                    Theme.Size.heroPinnedRowTopPad + Theme.Size.heroPinnedRowFocusLiftAllowance)
+        XCTAssertEqual(RowSoftEdgeMask.verticalOverdraw, 160)
     }
 
     func testMarginIsScreenInsetPlusSideSafeArea() {

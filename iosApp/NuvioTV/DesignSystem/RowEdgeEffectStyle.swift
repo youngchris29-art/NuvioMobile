@@ -306,8 +306,8 @@ extension EnvironmentValues {
 /// beta.19-rc1 verdict (F, FEAT-54): each ramp now runs `rampLength` in from the bezel (clamped to
 /// the margin plus half the row, so the two ramps never overlap), drawn with `EdgeFadeCurve`'s
 /// smootherstep stops instead of a two-stop linear gradient. The vertical overdraw drops from
-/// 400 pt to `verticalOverdraw` (72): enough for everything a focused card draws past the row's
-/// frame, and a much smaller offscreen pass per row.
+/// 400 pt to `verticalOverdraw` (160): a smaller offscreen pass per row that still covers every
+/// pixel the focus engine treats as part of the focused card (see the constant).
 struct RowSoftEdgeMask: View {
     let restClipAllowance: CGFloat
     let leadingActive: Bool
@@ -319,10 +319,13 @@ struct RowSoftEdgeMask: View {
 
     nonisolated static var margin: CGFloat { Theme.Spacing.screen + PinnedRowGeometry.sideSafeArea }
 
-    /// F (critique #12): the focus lift (20) + the card shadow radius (22) + its y offset (10) +
-    /// the ring (4) + 16 slack. Everything a focused card draws above or below the row frame stays
-    /// inside the mask.
-    nonisolated static let verticalOverdraw: CGFloat = 72
+    /// F (critique #12) sized it at 72: the focus lift (20) + the card shadow radius (22) + its y
+    /// offset (10) + the ring (4) + 16 slack, everything a focused card DRAWS past the row frame.
+    /// Gate 4 (main session, 2026-10-03): that was too tight for the focus engine. In pinned mode a
+    /// card's focus frame carries the row's top reach (88 pt), and a mask that clipped it moved the
+    /// engine's rest by 14 pt (FA87: Off and Soft@400/@160 rest at y=51, Soft@72 at y=37, title
+    /// margin 6 vs 20). 160 = 88 reach + 20 lift + 52 slack keeps the rest identical to Off.
+    nonisolated static let verticalOverdraw: CGFloat = 160
 
     nonisolated enum Kind: Equatable { case clear, solid, rampIn, rampOut }
 
