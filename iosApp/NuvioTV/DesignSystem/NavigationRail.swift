@@ -16,7 +16,8 @@ import UIKit
 //    launch focus. It ARMS on a Left the engine could not place from the leftmost item of a tab's
 //    content (`UIFocusSystem.movementDidFailNotification`, never `.onMoveCommand`, which fires on
 //    every press), on Menu at a tab root, and when focus lands on the hidden system tab bar (S1).
-//    Armed, the items are native `.borderless` Buttons and the rail takes focus programmatically.
+//    Armed, the items are native Buttons (`RailItemButtonStyle`: the white focus capsule) and the
+//    rail takes focus programmatically.
 //  - While a rail item holds focus, tab content is GATED unfocusable (`RailContentGate`): the rail
 //    is an overlay, and the engine otherwise leaks out of it. Every exit is app-handled: Right (a
 //    failed move with content gated), Select, and Menu when Left opened the rail.
@@ -402,34 +403,35 @@ struct NavigationRail: View {
     @ViewBuilder
     private func itemView(_ item: RailItem) -> some View {
         if armed {
-            // No custom ButtonStyle: system `.borderless` focus (the FEAT-30 carve-out is retired).
+            // `RailItemButtonStyle`: the FEAT-30 focus carve-out, carried over (see its doc).
+            let focused = focusedItem == item.id
             Button {
                 selectItem(item.id)
             } label: {
-                itemLabel(item)
+                itemLabel(item, focused: focused)
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(RailItemButtonStyle(isFocused: focused))
             .focused($focusedItem, equals: item.id)
             .accessibilityIdentifier("rail_item_\(item.title)")
         } else {
             // Not armed: the same look and geometry, but nothing the engine can land on.
-            itemLabel(item)
+            itemLabel(item, focused: false)
                 .accessibilityElement(children: .combine)
                 .accessibilityIdentifier("rail_item_\(item.title)")
         }
     }
 
-    private func itemLabel(_ item: RailItem) -> some View {
+    private func itemLabel(_ item: RailItem, focused: Bool) -> some View {
         let selected = item.id == selectedTab
         let width = (expanded ? RailMetrics.expandedWidth : RailMetrics.collapsedWidth) - 2 * RailMetrics.innerPadding
         return HStack(spacing: RailMetrics.labelGap) {
-            itemGlyph(item, selected: selected)
+            itemGlyph(item, selected: selected, focused: focused)
                 .frame(width: RailMetrics.itemPlatter, height: RailMetrics.itemPlatter)
             // Always mounted at its full width, faded in and out with the expansion (#20); it draws
             // past the collapsed frame only while invisible.
             Text(itemTitle(item))
                 .font(Theme.Font.body)
-                .foregroundStyle(Theme.Palette.textPrimary)
+                .foregroundStyle(focused ? Theme.Palette.onFocusPlatter : Theme.Palette.textPrimary)
                 .lineLimit(1)
                 .fixedSize()
                 .opacity(expanded ? 1 : 0)
@@ -439,7 +441,7 @@ struct NavigationRail: View {
     }
 
     @ViewBuilder
-    private func itemGlyph(_ item: RailItem, selected: Bool) -> some View {
+    private func itemGlyph(_ item: RailItem, selected: Bool, focused: Bool) -> some View {
         if item.id == RailItem.profile.id, let profile = activeProfile {
             // Contract: profile avatars ring. The ring marks the selected Profile tab.
             ProfileAvatar(profile: profile, size: RailMetrics.itemPlatter)
@@ -456,7 +458,8 @@ struct NavigationRail: View {
                     .resizable()
                     .scaledToFit()
                     .frame(width: RailMetrics.iconSize, height: RailMetrics.iconSize)
-                    .foregroundStyle(selected ? Theme.Palette.accentText : Theme.Palette.textPrimary)
+                    .foregroundStyle(selected ? Theme.Palette.accentText
+                                     : (focused ? Theme.Palette.onFocusPlatter : Theme.Palette.textPrimary))
             }
         }
     }
@@ -936,4 +939,45 @@ extension View {
     func railReturnRoute(_ makeRoute: @escaping () -> RailReturnRoute) -> some View {
         modifier(RailReturnRouteModifier(makeRoute: makeRoute))
     }
+}
+
+// MARK: - Item style
+
+/// The rail's focused-row treatment, carried over from FEAT-30's sidebar: focused = a white capsule
+/// behind the whole row (glyph and label) with dark content; unfocused = the plain row.
+///
+/// WHY A CUSTOM `ButtonStyle` (HIG hybrid contract: custom styles only where a system style
+/// demonstrably can't express it, documented in the style file). The rail first shipped with
+/// system `.borderless`, and the end-of-Wave-2 simulator walk (2026-10-05) showed why that fails
+/// here: `.borderless` draws no platter, only brightens and scales the label. On the glass panel
+/// a focused text row looked exactly like an unfocused one (the profile row read as unfocused
+/// while it held focus), and the icon rows got a lumpy white blob behind the glyph alone. The
+/// other system styles fail for the reasons FEAT-30 recorded: `.bordered`/`.card` draw a
+/// system-sized rounded RECT that reads as a second panel stacked on the glass, and `.glass`
+/// composites glass-on-glass into a smear. The capsule still speaks the system focus language
+/// (white platter, dark label, no accent ring, no tilt), confined to this one chrome.
+///
+/// `isFocused` is passed in from the rail's own `@FocusState`, never read from
+/// `@Environment(\.isFocused)`: that read is device-unreliable (BUG-65, white-on-white on
+/// hardware with the simulator unable to reproduce it).
+struct RailItemButtonStyle: ButtonStyle {
+    let isFocused: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background {
+                if isFocused {
+                    Capsule(style: .continuous)
+                        .fill(Color.white)
+                        .padding(.horizontal, -RailItemButtonStyle.platterOutsetH)
+                        .padding(.vertical, -RailItemButtonStyle.platterOutsetV)
+                }
+            }
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+
+    /// The capsule reaches a little past the row so the glyph is not flush with its rounded end.
+    static let platterOutsetH: CGFloat = 4
+    static let platterOutsetV: CGFloat = 2
 }
