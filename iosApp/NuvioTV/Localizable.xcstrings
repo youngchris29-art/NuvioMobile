@@ -72,6 +72,40 @@
         }
       }
     },
+    "%@ %@ maxLive=%lld stageH=%@ stripH=%@ P=%@ fits=%lld rest=%@ row=%lld fitem=%@ disp=%@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ %@ maxLive=%lld stageH=%@ stripH=%@ P=%@ fits=%lld rest=%@ row=%lld fitem=%@ disp=%@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ %@ maxLive=%lld stageH=%@ stripH=%@ P=%@ fits=%lld rest=%@ row=%lld fitem=%@ disp=%@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ %@ maxLive=%lld stageH=%@ stripH=%@ P=%@ fits=%lld rest=%@ row=%lld fitem=%@ disp=%@"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ %@ maxLive=%lld stageH=%@ stripH=%@ P=%@ fits=%lld rest=%@ row=%lld fitem=%@ disp=%@"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ %@ maxLive=%lld stageH=%@ stripH=%@ P=%@ fits=%lld rest=%@ row=%lld fitem=%@ disp=%@"
+          }
+        }
+      }
+    },
     "%@ - %@ Instant": {
       "localizations": {
         "de": {
@@ -102,6 +136,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "%@ - %@ Tức thì"
+          }
+        }
+      }
+    },
+    "%@ also clears this title’s watched history and rating when it leaves a list.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ löscht auch den Gesehen-Verlauf und die Bewertung dieses Titels, wenn er aus einer Liste entfernt wird."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ también borra el historial de vistos y la valoración de este título cuando sale de una lista."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ efface aussi l’historique de visionnage et la note de ce titre quand il quitte une liste."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ cancella anche la cronologia di visione e la valutazione di questo titolo quando esce da un elenco."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ cũng xóa lịch sử đã xem và đánh giá của tựa này khi nó rời khỏi một danh sách."
           }
         }
       }
@@ -719,6 +787,40 @@
         }
       }
     },
+    "%lld anime": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld Anime"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld anime"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld anime"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld anime"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld anime"
+          }
+        }
+      }
+    },
     "%lld badge pack%@ imported": {
       "localizations": {
         "de": {
@@ -923,6 +1025,40 @@
         }
       }
     },
+    "%lld movies": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld Filme"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld películas"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld films"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld film"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld phim"
+          }
+        }
+      }
+    },
     "%lld of %lld enabled": {
       "localizations": {
         "de": {
@@ -1059,6 +1195,40 @@
         }
       }
     },
+    "%lld other titles": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld andere Titel"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld otros títulos"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld autres titres"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld altri titoli"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld tựa khác"
+          }
+        }
+      }
+    },
     "%lld playable files": {
       "localizations": {
         "de": {
@@ -1123,6 +1293,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "%lld s"
+          }
+        }
+      }
+    },
+    "%lld series": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld Serien"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld series"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld séries"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld serie"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld loạt phim"
           }
         }
       }
@@ -1361,6 +1565,74 @@
           "stringUnit": {
             "state": "translated",
             "value": "%lld/10"
+          }
+        }
+      }
+    },
+    "%lldh %lldm left": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Noch %lld Std. %lld Min."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quedan %lld h %lld min"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld h %lld min restantes"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mancano %lld h %lld min"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Còn %lld giờ %lld phút"
+          }
+        }
+      }
+    },
+    "%lldm left": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Noch %lld Min."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quedan %lld min"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld min restantes"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mancano %lld min"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Còn %lld phút"
           }
         }
       }
@@ -1773,6 +2045,74 @@
         }
       }
     },
+    "1 movie": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 Film"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 película"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 film"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 film"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 phim"
+          }
+        }
+      }
+    },
+    "1 other title": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 anderer Titel"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 otro título"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 autre titre"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 altro titolo"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 tựa khác"
+          }
+        }
+      }
+    },
     "1 provider": {
       "localizations": {
         "de": {
@@ -1837,6 +2177,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "1 giây"
+          }
+        }
+      }
+    },
+    "1 series": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 Serie"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 serie"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 série"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 serie"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 loạt phim"
           }
         }
       }
@@ -3167,6 +3541,40 @@
         }
       }
     },
+    "A soft wash of the focused title's colors fills the background": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ein sanfter Schleier in den Farben des fokussierten Titels füllt den Hintergrund"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un velo suave con los colores del título enfocado llena el fondo"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un voile doux aux couleurs du titre sélectionné remplit l’arrière-plan"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Una velatura morbida con i colori del titolo selezionato riempie lo sfondo"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Một lớp màu dịu từ tựa đang chọn phủ kín nền"
+          }
+        }
+      }
+    },
     "API key saved": {
       "localizations": {
         "de": {
@@ -4187,6 +4595,74 @@
         }
       }
     },
+    "Always Visible": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Immer sichtbar"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Siempre visible"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Toujours visible"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sempre visibile"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Luôn hiển thị"
+          }
+        }
+      }
+    },
+    "Always Visible keeps the rail on screen and moves pages a little to the right to make room for it. Hide While Browsing slides it away while you scroll or open a title, and brings it back at the top of a page. Default: Always Visible.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Immer sichtbar lässt die Seitenleiste auf dem Bildschirm und rückt die Seiten etwas nach rechts, um Platz für sie zu schaffen. Beim Stöbern ausblenden schiebt sie weg, während du scrollst oder einen Titel öffnest, und holt sie oben auf einer Seite zurück. Standard: Immer sichtbar."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Siempre visible mantiene la barra lateral en pantalla y desplaza un poco las páginas a la derecha para dejarle espacio. Ocultar al navegar la retira mientras te desplazas o abres un título, y la vuelve a mostrar en la parte superior de una página. Por defecto: Siempre visible."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Toujours visible garde la barre latérale à l’écran et décale un peu les pages vers la droite pour lui faire de la place. Masquer pendant la navigation l’escamote quand vous faites défiler ou ouvrez un titre, et la fait revenir en haut d’une page. Par défaut : Toujours visible."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sempre visibile tiene la barra laterale sullo schermo e sposta un po’ le pagine a destra per farle spazio. Nascondi durante la navigazione la fa scorrere via mentre scorri o apri un titolo e la riporta in cima a una pagina. Predefinito: Sempre visibile."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Luôn hiển thị giữ thanh bên trên màn hình và dịch các trang sang phải một chút để chừa chỗ cho nó. Ẩn khi duyệt sẽ trượt thanh bên đi khi bạn cuộn hoặc mở một tựa, và đưa nó trở lại ở đầu trang. Mặc định: Luôn hiển thị."
+          }
+        }
+      }
+    },
     "Amber": {
       "localizations": {
         "de": {
@@ -4217,6 +4693,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Cam"
+          }
+        }
+      }
+    },
+    "Ambient Background": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ambiente-Hintergrund"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fondo ambiental"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Arrière-plan d’ambiance"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sfondo d’atmosfera"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nền hòa màu"
           }
         }
       }
@@ -6363,6 +6873,40 @@
         }
       }
     },
+    "Background plays the trailer behind the title at the top of the screen after you rest on a poster. In Row turns that poster into a playing trailer card. Default: In Row.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hintergrund spielt den Trailer hinter dem Titel oben auf dem Bildschirm ab, wenn du auf einem Poster verweilst. In der Reihe verwandelt dieses Poster in eine laufende Trailer-Karte. Standard: In der Reihe."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fondo reproduce el tráiler detrás del título en la parte superior de la pantalla cuando te detienes en un póster. En la fila convierte ese póster en una tarjeta con el tráiler en reproducción. Por defecto: En la fila."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Arrière-plan lit la bande-annonce derrière le titre en haut de l’écran quand vous vous arrêtez sur une affiche. Dans la rangée transforme cette affiche en carte de bande-annonce en lecture. Par défaut : Dans la rangée."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sfondo riproduce il trailer dietro il titolo in alto sullo schermo quando ti fermi su un poster. Nella riga trasforma quel poster in una scheda con il trailer in riproduzione. Predefinito: Nella riga."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nền phát trailer phía sau tiêu đề ở đầu màn hình khi bạn dừng lại trên một poster. Trong hàng biến poster đó thành thẻ trailer đang phát. Mặc định: Trong hàng."
+          }
+        }
+      }
+    },
     "Badge chips render above the stream name.": {
       "localizations": {
         "de": {
@@ -7791,6 +8335,40 @@
         }
       }
     },
+    "Choose the Home layout, which catalogs appear as rows and in what order, and where trailer previews play.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wähle das Layout des Startbildschirms, welche Kataloge als Reihen erscheinen und in welcher Reihenfolge, und wo Trailer-Vorschauen laufen."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Elige el diseño de Inicio, qué catálogos aparecen como filas y en qué orden, y dónde se reproducen las vistas previas de tráileres."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choisissez la disposition de l’accueil, les catalogues affichés en rangées et leur ordre, et l’endroit où se lisent les aperçus de bandes-annonces."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scegli il layout della Home, quali cataloghi appaiono come righe e in che ordine, e dove vengono riprodotte le anteprime dei trailer."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chọn bố cục Trang chủ, danh mục nào hiện thành hàng và theo thứ tự nào, cùng nơi phát bản xem trước trailer."
+          }
+        }
+      }
+    },
     "Choose the title page layout, how trailers behave, and which sections appear under the main details. Episode spoiler protection is here too.": {
       "localizations": {
         "de": {
@@ -8468,6 +9046,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Xóa tất cả bộ lọc"
+          }
+        }
+      }
+    },
+    "Clear Filters": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Filter zurücksetzen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Borrar filtros"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Effacer les filtres"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancella filtri"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Xóa bộ lọc"
           }
         }
       }
@@ -10376,6 +10988,74 @@
         }
       }
     },
+    "Couldn't load this folder.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dieser Ordner konnte nicht geladen werden."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se pudo cargar esta carpeta."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Impossible de charger ce dossier."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Impossibile caricare questa cartella."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không thể tải thư mục này."
+          }
+        }
+      }
+    },
+    "Couldn't load this source.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diese Quelle konnte nicht geladen werden."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se pudo cargar esta fuente."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Impossible de charger cette source."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Impossibile caricare questa fonte."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không thể tải nguồn này."
+          }
+        }
+      }
+    },
     "Couldn't load your add-ons.": {
       "localizations": {
         "de": {
@@ -10648,6 +11328,74 @@
         }
       }
     },
+    "Couldn’t load your %@ library": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deine %@-Bibliothek konnte nicht geladen werden"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se pudo cargar tu biblioteca de %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Impossible de charger votre bibliothèque %@"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Impossibile caricare la tua libreria %@"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không thể tải thư viện %@ của bạn"
+          }
+        }
+      }
+    },
+    "Couldn’t load your library": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deine Bibliothek konnte nicht geladen werden"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se pudo cargar tu biblioteca"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Impossible de charger votre bibliothèque"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Impossibile caricare la tua libreria"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không thể tải thư viện của bạn"
+          }
+        }
+      }
+    },
     "Couldn’t look this title up with your stream addons.": {
       "localizations": {
         "de": {
@@ -10818,6 +11566,40 @@
         }
       }
     },
+    "Couldn’t remove the title": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Der Titel konnte nicht entfernt werden"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se pudo quitar el título"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Impossible de retirer le titre"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Impossibile rimuovere il titolo"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không thể xóa tựa"
+          }
+        }
+      }
+    },
     "Couldn’t safely clear the current session. The server was not changed.": {
       "localizations": {
         "de": {
@@ -10916,6 +11698,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Không thể lưu cấu hình máy chủ."
+          }
+        }
+      }
+    },
+    "Couldn’t update %@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ konnte nicht aktualisiert werden"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se pudo actualizar %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Impossible de mettre à jour %@"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Impossibile aggiornare %@"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không thể cập nhật %@"
           }
         }
       }
@@ -13164,6 +13980,40 @@
         }
       }
     },
+    "Edit": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Modifier"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Editar"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bearbeiten"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Modifica"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sửa"
+          }
+        }
+      }
+    },
     "Edit Filters": {
       "localizations": {
         "de": {
@@ -13194,6 +14044,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Chỉnh sửa bộ lọc"
+          }
+        }
+      }
+    },
+    "Edit Filters: %@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Filter bearbeiten: %@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Editar filtros: %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Modifier les filtres : %@"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Modifica filtri: %@"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chỉnh sửa bộ lọc: %@"
           }
         }
       }
@@ -14490,6 +15374,40 @@
         }
       }
     },
+    "Fills the Stage background with a soft, blurred wash of the focused title's colors. With OLED True Black on, the wash is dimmed. On by default.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Füllt den Stage-Hintergrund mit einem sanften, verschwommenen Schleier in den Farben des fokussierten Titels. Mit OLED-Echtschwarz wird der Schleier abgedunkelt. Standardmäßig an."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Llena el fondo de Stage con un velo suave y difuminado de los colores del título enfocado. Con Negro puro OLED activado, el velo se atenúa. Activado por defecto."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remplit l’arrière-plan Stage d’un voile doux et flou aux couleurs du titre sélectionné. Avec Noir profond OLED activé, le voile est atténué. Activé par défaut."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Riempie lo sfondo di Stage con una velatura morbida e sfocata dei colori del titolo selezionato. Con Nero vero OLED attivo, la velatura è attenuata. Attivo per impostazione predefinita."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Phủ nền Stage bằng một lớp màu dịu, mờ lấy từ màu của tựa đang chọn. Khi bật Đen tuyền OLED, lớp màu được làm tối đi. Bật theo mặc định."
+          }
+        }
+      }
+    },
     "Finding next episode…": {
       "localizations": {
         "de": {
@@ -15408,6 +16326,40 @@
         }
       }
     },
+    "Grid": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Raster"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cuadrícula"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Grille"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Griglia"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lưới"
+          }
+        }
+      }
+    },
     "Guest data on this Apple TV (profiles, library, watch progress) will be cleared. You can then sign in on the welcome screen.": {
       "localizations": {
         "de": {
@@ -16022,6 +16974,40 @@
         }
       }
     },
+    "Hide While Browsing": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Beim Stöbern ausblenden"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ocultar al navegar"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Masquer pendant la navigation"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nascondi durante la navigazione"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ẩn khi duyệt"
+          }
+        }
+      }
+    },
     "Hide sound descriptions and speaker labels from text subtitles.": {
       "localizations": {
         "de": {
@@ -16362,6 +17348,40 @@
         }
       }
     },
+    "Home Layout": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Écran d’accueil"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pantalla de inicio"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Startbildschirm"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Home"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trang chủ"
+          }
+        }
+      }
+    },
     "Home Rows": {
       "localizations": {
         "de": {
@@ -16698,6 +17718,74 @@
           "stringUnit": {
             "state": "translated",
             "value": "Trong thư viện"
+          }
+        }
+      }
+    },
+    "In Progress": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Begonnen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "En curso"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "En cours"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "In corso"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đang xem"
+          }
+        }
+      }
+    },
+    "In Row": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "In der Reihe"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "En la fila"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dans la rangée"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nella riga"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trong hàng"
           }
         }
       }
@@ -17892,6 +18980,40 @@
         }
       }
     },
+    "Layout and rows, plus trailer previews": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Layout und Reihen, dazu Trailer-Vorschauen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diseño y filas, además de vistas previas de tráileres"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disposition et rangées, plus les aperçus de bandes-annonces"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Layout e righe, più le anteprime dei trailer"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bố cục và các hàng, cùng bản xem trước trailer"
+          }
+        }
+      }
+    },
     "Layout and trailers, plus which sections show": {
       "localizations": {
         "de": {
@@ -18266,6 +19388,74 @@
         }
       }
     },
+    "List": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Liste"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lista"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Liste"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Elenco"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Danh sách"
+          }
+        }
+      }
+    },
+    "List Order": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ordre de la liste"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Orden de lista"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Listenreihenfolge"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ordine della lista"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mặc định"
+          }
+        }
+      }
+    },
     "Loading catalogs…": {
       "localizations": {
         "de": {
@@ -18398,6 +19588,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Đang tải cài đặt phụ đề…"
+          }
+        }
+      }
+    },
+    "Loading your library…": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deine Bibliothek wird geladen…"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cargando tu biblioteca…"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chargement de votre bibliothèque…"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Caricamento della tua libreria…"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đang tải thư viện của bạn…"
           }
         }
       }
@@ -20988,6 +22212,40 @@
         }
       }
     },
+    "No titles match these filters": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keine Titel passen zu diesen Filtern"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ningún título coincide con estos filtros"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aucun titre ne correspond à ces filtres"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nessun titolo corrisponde a questi filtri"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không có tựa nào khớp với các bộ lọc này"
+          }
+        }
+      }
+    },
     "No trailer measurements yet — open a title and let its trailer play.": {
       "localizations": {
         "de": {
@@ -21562,6 +22820,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "NuvioTV (Tích hợp)"
+          }
+        }
+      }
+    },
+    "OK": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OK"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aceptar"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OK"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OK"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OK"
           }
         }
       }
@@ -24596,6 +25888,40 @@
         }
       }
     },
+    "Plain background": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Einfarbiger Hintergrund"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fondo liso"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Arrière-plan uni"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sfondo semplice"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nền trơn"
+          }
+        }
+      }
+    },
     "Play": {
       "localizations": {
         "de": {
@@ -26602,6 +27928,74 @@
         }
       }
     },
+    "Rail": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Seitenleiste"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Barra lateral"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Barre latérale"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Barra laterale"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thanh bên"
+          }
+        }
+      }
+    },
+    "Rail swaps the top tab bar for a column of icons on the left.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Die Seitenleiste ersetzt die obere Tab-Leiste durch eine Symbolspalte links."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La barra lateral cambia la barra de pestañas superior por una columna de iconos a la izquierda."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La barre latérale remplace la barre d’onglets du haut par une colonne d’icônes à gauche."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La barra laterale sostituisce la barra delle schede in alto con una colonna di icone a sinistra."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thanh bên thay thanh thẻ phía trên bằng một cột biểu tượng ở bên trái."
+          }
+        }
+      }
+    },
     "Rating": {
       "localizations": {
         "de": {
@@ -27860,6 +29254,74 @@
         }
       }
     },
+    "Remove from %@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aus %@ entfernen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quitar de %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retirer de %@"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rimuovi da %@"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Xóa khỏi %@"
+          }
+        }
+      }
+    },
+    "Remove from %@?": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aus %@ entfernen?"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Quitar de %@?"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retirer de %@ ?"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rimuovere da %@?"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Xóa khỏi %@?"
+          }
+        }
+      }
+    },
     "Remove from Continue Watching": {
       "localizations": {
         "de": {
@@ -27924,6 +29386,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Xóa khỏi Thư viện"
+          }
+        }
+      }
+    },
+    "Remove from Library?": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retirer de la bibliothèque ?"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Eliminar de la biblioteca?"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aus Bibliothek entfernen?"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rimuovere dalla libreria?"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Xóa khỏi thư viện?"
           }
         }
       }
@@ -28744,6 +30240,40 @@
         }
       }
     },
+    "Rows": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lignes"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Filas"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reihen"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Righe"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hàng"
+          }
+        }
+      }
+    },
     "Rows reserve the zoom-mode band; the hero-off description loses a line at Large": {
       "localizations": {
         "de": {
@@ -28876,6 +30406,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Tiếng Nga"
+          }
+        }
+      }
+    },
+    "S%lld E%lld": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "S%lld E%lld"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "T%lld E%lld"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "S%lld É%lld"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "S%lld E%lld"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "M%lld T%lld"
           }
         }
       }
@@ -30407,6 +31971,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Đặt kích thước phụ đề. Mặc định: Vừa."
+          }
+        }
+      }
+    },
+    "Sets how long a trailer preview waits before it starts. Automatic waits until the row stops moving, then one second. Default: Automatic.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Legt fest, wie lange eine Trailer-Vorschau wartet, bevor sie startet. Automatisch wartet, bis die Reihe stillsteht, dann noch eine Sekunde. Standard: Automatisch."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Define cuánto espera la vista previa del tráiler antes de empezar. Automático espera a que la fila deje de moverse y luego un segundo más. Por defecto: Automático."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Définit combien de temps un aperçu de bande-annonce attend avant de démarrer. Automatique attend que la rangée s’immobilise, puis une seconde. Par défaut : Automatique."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Imposta quanto attende l’anteprima del trailer prima di partire. Automatico attende che la riga smetta di muoversi, poi un secondo. Predefinito: Automatico."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đặt thời gian bản xem trước trailer chờ trước khi bắt đầu. Tự động sẽ chờ đến khi hàng ngừng di chuyển, rồi thêm một giây. Mặc định: Tự động."
           }
         }
       }
@@ -33675,6 +35273,40 @@
         }
       }
     },
+    "Something went wrong. Try again.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Etwas ist schiefgelaufen. Versuche es erneut."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Algo salió mal. Inténtalo de nuevo."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Une erreur s’est produite. Réessayez."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Qualcosa è andato storto. Riprova."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đã xảy ra lỗi. Hãy thử lại."
+          }
+        }
+      }
+    },
     "Sort": {
       "localizations": {
         "fr": {
@@ -34079,6 +35711,74 @@
           "stringUnit": {
             "state": "translated",
             "value": "Vuông"
+          }
+        }
+      }
+    },
+    "Stage": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stage"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stage"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stage"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stage"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stage"
+          }
+        }
+      }
+    },
+    "Stage puts the focused title at the top of the screen with one row of posters below it. Up and Down move a whole row at a time. Classic keeps the previous Home, with a banner above rows that scroll. Default: Stage.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stage zeigt den fokussierten Titel oben auf dem Bildschirm, mit einer Poster-Reihe darunter. Oben und Unten wechseln jeweils eine ganze Reihe. Klassisch behält den bisherigen Startbildschirm, mit einem Banner über scrollenden Reihen. Standard: Stage."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stage muestra el título enfocado en la parte superior de la pantalla con una fila de pósteres debajo. Arriba y Abajo avanzan una fila entera cada vez. Clásico mantiene el Inicio anterior, con un banner sobre filas que se desplazan. Por defecto: Stage."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stage place le titre sélectionné en haut de l’écran, avec une rangée d’affiches en dessous. Haut et Bas font défiler une rangée entière à la fois. Classique conserve l’accueil précédent, avec une bannière au-dessus de rangées qui défilent. Par défaut : Stage."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stage mette il titolo selezionato in alto sullo schermo, con una riga di poster sotto. Su e Giù spostano una riga intera alla volta. Classico mantiene la Home precedente, con un banner sopra righe che scorrono. Predefinito: Stage."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stage đặt tựa đang chọn ở đầu màn hình, với một hàng poster bên dưới. Lên và Xuống di chuyển cả một hàng mỗi lần. Cổ điển giữ Trang chủ trước đây, với một banner phía trên các hàng cuộn. Mặc định: Stage."
           }
         }
       }
@@ -38164,6 +39864,40 @@
         }
       }
     },
+    "Titles you save on %@ show up here.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Titel, die du auf %@ speicherst, erscheinen hier."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Los títulos que guardes en %@ aparecen aquí."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Les titres que vous enregistrez sur %@ apparaissent ici."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "I titoli che salvi su %@ compaiono qui."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Các tựa bạn lưu trên %@ sẽ hiện ở đây."
+          }
+        }
+      }
+    },
     "Too many attempts. Try again in %ds.": {
       "localizations": {
         "de": {
@@ -38331,6 +40065,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Thẻ trên cùng"
+          }
+        }
+      }
+    },
+    "Top Tabs keeps the tab bar across the top of the screen. Rail replaces it with a column of icons on the left edge. Press Left at the edge of a page, or Menu, to open it. Default: Top Tabs.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tabs oben behält die Tab-Leiste oben auf dem Bildschirm. Seitenleiste ersetzt sie durch eine Symbolspalte am linken Rand. Drücke Links am Rand einer Seite oder Menü, um sie zu öffnen. Standard: Tabs oben."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pestañas superiores mantiene la barra de pestañas en la parte superior de la pantalla. Barra lateral la sustituye por una columna de iconos en el borde izquierdo. Pulsa Izquierda en el borde de una página, o Menú, para abrirla. Por defecto: Pestañas superiores."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Onglets en haut garde la barre d’onglets en haut de l’écran. Barre latérale la remplace par une colonne d’icônes sur le bord gauche. Appuyez sur Gauche au bord d’une page, ou sur Menu, pour l’ouvrir. Par défaut : Onglets en haut."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Schede in alto mantiene la barra delle schede in cima allo schermo. Barra laterale la sostituisce con una colonna di icone sul bordo sinistro. Premi Sinistra al bordo di una pagina, o Menu, per aprirla. Predefinito: Schede in alto."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thẻ trên cùng giữ thanh thẻ ở đầu màn hình. Thanh bên thay nó bằng một cột biểu tượng ở mép trái. Nhấn Trái ở mép một trang, hoặc Menu, để mở. Mặc định: Thẻ trên cùng."
           }
         }
       }
@@ -38909,6 +40677,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Trailer khi được chọn"
+          }
+        }
+      }
+    },
+    "Trailers play muted behind the title at the top after you rest on a poster": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trailer laufen stumm hinter dem Titel oben, wenn du auf einem Poster verweilst"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Los tráileres se reproducen sin sonido detrás del título, arriba, cuando te detienes en un póster"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Les bandes-annonces se lisent sans le son derrière le titre en haut quand vous vous arrêtez sur une affiche"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "I trailer partono senza audio dietro il titolo in alto quando ti fermi su un poster"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trailer phát không tiếng phía sau tiêu đề ở trên khi bạn dừng lại trên một poster"
           }
         }
       }
@@ -41940,6 +43742,40 @@
         }
       }
     },
+    "Your %@ library is empty": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deine %@-Bibliothek ist leer"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tu biblioteca de %@ está vacía"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Votre bibliothèque %@ est vide"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La tua libreria %@ è vuota"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thư viện %@ của bạn đang trống"
+          }
+        }
+      }
+    },
     "Your %@ session has expired. Reconnect in Settings → Services → Debrid.": {
       "localizations": {
         "de": {
@@ -42684,6 +44520,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "debug_pinned %@"
+          }
+        }
+      }
+    },
+    "debug_strip %@ row=%lld key=%@ foc=%@ atTop=%lld segs=%lld seg=%@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "debug_strip %@ row=%lld key=%@ foc=%@ atTop=%lld segs=%lld seg=%@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "debug_strip %@ row=%lld key=%@ foc=%@ atTop=%lld segs=%lld seg=%@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "debug_strip %@ row=%lld key=%@ foc=%@ atTop=%lld segs=%lld seg=%@"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "debug_strip %@ row=%lld key=%@ foc=%@ atTop=%lld segs=%lld seg=%@"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "debug_strip %@ row=%lld key=%@ foc=%@ atTop=%lld segs=%lld seg=%@"
           }
         }
       }
