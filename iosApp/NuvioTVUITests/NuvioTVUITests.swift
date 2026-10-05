@@ -9665,22 +9665,41 @@ extension NuvioTVUITests {
     private func chooseMenuOption(_ app: XCUIApplication, _ option: String, submenu: String? = nil, what: String) throws {
         remote.press(.select)
         pause(1.2)
-        var target = app.buttons[option]
-        if !target.waitForExistence(timeout: 3), let submenu {
-            let nested = app.buttons[submenu]
-            if nested.waitForExistence(timeout: 2) {
-                if !moveFocus(.down, until: nested, max: 5) { _ = moveFocus(.up, until: nested, max: 5) }
-                if nested.hasFocus {
-                    remote.press(.select)
-                    pause(1.0)
-                }
-                target = app.buttons[option]
+        // A tvOS `Menu`'s options surface as buttons on some runtimes and as menu items or cells on
+        // others: take the first type that has the label.
+        func menuElement(_ label: String) -> XCUIElement {
+            for candidate in [app.buttons[label], app.menuItems[label], app.cells[label]] where candidate.exists {
+                return candidate
             }
+            return app.buttons[label]
         }
-        guard target.waitForExistence(timeout: 3) else {
+        func waitForMenuElement(_ label: String, timeout: TimeInterval) -> XCUIElement? {
+            let deadline = Date().addingTimeInterval(timeout)
+            repeat {
+                let element = menuElement(label)
+                if element.exists { return element }
+                pause(0.25)
+            } while Date() < deadline
+            return nil
+        }
+        var target = waitForMenuElement(option, timeout: 3)
+        if target == nil, let submenu, let nested = waitForMenuElement(submenu, timeout: 2) {
+            if !moveFocus(.down, until: nested, max: 5) { _ = moveFocus(.up, until: nested, max: 5) }
+            if nested.hasFocus {
+                remote.press(.select)
+                pause(1.0)
+            }
+            target = waitForMenuElement(option, timeout: 3)
+        }
+        guard let target else {
+            // What the open menu looks like on this runtime, for the next fix.
+            let tree = XCTAttachment(string: app.debugDescription)
+            tree.name = "menu-tree-\(option)"
+            tree.lifetime = .keepAlways
+            add(tree)
             remote.press(.menu)
             pause(1.0)
-            throw XCTSkip("\(what): the menu never exposed a '\(option)' option as a button on this runtime — nothing was changed")
+            throw XCTSkip("\(what): the menu never exposed a '\(option)' option as a button, menu item or cell on this runtime — nothing was changed")
         }
         if !target.hasFocus, !moveFocus(.down, until: target, max: 5) {
             _ = moveFocus(.up, until: target, max: 5)

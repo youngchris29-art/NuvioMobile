@@ -424,7 +424,10 @@ final class NavigationRailUITests: XCTestCase {
         }
         XCTAssertEqual(rail(app, "reason"), "menu", "\(railState(app))")
         remote.press(.menu)
-        XCTAssertTrue(poll(4.0, step: 0.5) { app.state != .runningForeground },
+        // The tvOS simulator shows the Home screen ~2 s after the press, and `app.state` can trail
+        // it: wait longer, and take the Home screen (HeadBoard) in front as the same evidence.
+        let headBoard = XCUIApplication(bundleIdentifier: "com.apple.HeadBoard")
+        XCTAssertTrue(poll(8.0, step: 0.5) { app.state != .runningForeground || headBoard.state == .runningForeground },
                       "Menu inside a Menu-opened rail must leave the app (the remote's normal grammar, Q2)")
     }
 
@@ -559,7 +562,9 @@ final class NavigationRailUITests: XCTestCase {
     func testRail08_AlwaysVisibleInset() throws {
         let app = launch(Self.railArguments())
         try requireRail(app)
-        let pill = app.descendants(matching: .any)["navigation_rail"].firstMatch
+        // The DEBUG bounds element is the pill's own frame (`navigation_rail` is a `.contain`
+        // container whose frame is the union of its children, faded labels included).
+        let pill = app.descendants(matching: .any)["navigation_rail_bounds"].firstMatch
         XCTAssertTrue(pill.waitForExistence(timeout: 4), "navigation_rail must show in Always Visible")
         XCTAssertLessThanOrEqual(pill.frame.maxX, 101, "the collapsed pill must end by x 101: \(pill.frame)")
         XCTAssertEqual(rail(app, "inset"), "36", "\(railState(app))")

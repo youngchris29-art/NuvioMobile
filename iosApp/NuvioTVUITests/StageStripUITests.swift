@@ -541,9 +541,12 @@ final class StageStripUITests: XCTestCase {
         let geo = try requireGeometry(app)
         try requireStrip(app, geo)
         pause(2.0)
-        let slot = app.descendants(matching: .any)["stage_text_slot"].firstMatch
+        // The DEBUG bounds element fills the fixed slot; `stage_text_slot` itself is a `.contain`
+        // container, whose accessibility frame is the union of its children (it follows the logo
+        // and the synopsis length, so it is not the slot's frame).
+        let slot = app.descendants(matching: .any)["stage_text_slot_bounds"].firstMatch
         guard slot.waitForExistence(timeout: 5) else {
-            XCTFail("stage_text_slot is missing")
+            XCTFail("stage_text_slot_bounds is missing")
             return
         }
         let rest = slot.frame
@@ -559,10 +562,10 @@ final class StageStripUITests: XCTestCase {
         }
         note("S04_frames", frames.map { "\($0)" }.joined(separator: "\n"))
         for frame in frames {
-            XCTAssertEqual(frame.minX, rest.minX, accuracy: 0.5, "stage_text_slot moved horizontally: \(rest) → \(frame)")
-            XCTAssertEqual(frame.minY, rest.minY, accuracy: 0.5, "stage_text_slot moved vertically: \(rest) → \(frame)")
-            XCTAssertEqual(frame.width, rest.width, accuracy: 0.5, "stage_text_slot changed width: \(rest) → \(frame)")
-            XCTAssertEqual(frame.height, rest.height, accuracy: 0.5, "stage_text_slot changed height: \(rest) → \(frame)")
+            XCTAssertEqual(frame.minX, rest.minX, accuracy: 0.5, "the stage text slot moved horizontally: \(rest) → \(frame)")
+            XCTAssertEqual(frame.minY, rest.minY, accuracy: 0.5, "the stage text slot moved vertically: \(rest) → \(frame)")
+            XCTAssertEqual(frame.width, rest.width, accuracy: 0.5, "the stage text slot changed width: \(rest) → \(frame)")
+            XCTAssertEqual(frame.height, rest.height, accuracy: 0.5, "the stage text slot changed height: \(rest) → \(frame)")
         }
         XCTAssertEqual(Self.double(stage(app), "stageH") ?? -1, geo.stageH, accuracy: 0.5, "stageH changed across the swaps: \(stage(app))")
     }
@@ -750,7 +753,10 @@ final class StageStripUITests: XCTestCase {
         XCTAssertEqual(Self.token(gate, "via"), "rest", "the In Row dwell must open on the strip's rest, not the 3 s ceiling: \(gate)")
         XCTAssertNotNil(rest, "the gate line carries no rest=: \(gate)")
         if let rest {
-            XCTAssertGreaterThanOrEqual(rest, 0.3, "the strip's rest came too early: the page glide (~0.5 s) must end first: \(gate)")
+            // The simulator's Down hop settles in ~0.21–0.27 s (S01's trace: settle=212/269 ms; an
+            // Up takes ~0.5 s), and `via=rest` already proves the dwell waited for it, so the floor
+            // only rules out a rest taken before the glide started.
+            XCTAssertGreaterThanOrEqual(rest, 0.15, "the strip's rest came before the glide: \(gate)")
             if let start {
                 XCTAssertGreaterThanOrEqual(start - rest, 0.95, "Automatic starts 1 s after the rest: \(gate)")
             }

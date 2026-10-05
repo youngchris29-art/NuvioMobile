@@ -193,6 +193,48 @@ final class StageGate1EvidenceTests: XCTestCase {
         note("memory-walk", log.joined(separator: "\n"))
     }
 
+    /// W3 follow-up (test105, 2026-10-05): how focus reaches the folder page's Edit band from row 0.
+    /// In Tabs mode the first run's Up went to the tab bar; this walk records Up, then Right along
+    /// the bar, and the same Up in Rail mode, with the focused element and `folder_rows_state`.
+    func testFolderEditBandReach() {
+        let seed = Data(Self.folderSeedJson.utf8).base64EncodedString()
+        defer {
+            let app = launch(["-debug.collectionsSeedJsonB64", Data("[]".utf8).base64EncodedString()])
+            pause(8)
+            app.terminate()
+        }
+        var log: [String] = []
+        for mode in ["tabs", "rail"] {
+            let app = launch(["-home_layout", "stage", "-sidebar_style", mode, "-rail_visibility", "always",
+                              "-debug.collectionsSeedJsonB64", seed])
+            pause(16)
+            func step(_ name: String, _ button: XCUIRemote.Button?, wait: TimeInterval = 1.5) {
+                if let button { remote.press(button); pause(wait) }
+                let state = app.descendants(matching: .any)["folder_rows_state"].firstMatch
+                log.append("\(mode) \(name): focus=\(focusedLabel(app)) | \(state.exists ? state.label : "-")")
+            }
+            // Into the strip unless focus is already there (Rail mode can launch on a card): the
+            // pinned folder tile is the first card.
+            if !focusedLabel(app).contains("ZZFolderRows") {
+                remote.press(.down)
+                pause(2)
+            }
+            step("tile", nil)
+            remote.press(.select)                // open the folder
+            pause(10)
+            step("open", nil)
+            step("up1", .up)
+            shot("editband-\(mode)-up1")
+            step("up2", .up)
+            if mode == "tabs" {
+                for i in 1...7 { step("right\(i)", .right, wait: 1.0) }
+                shot("editband-\(mode)-rights")
+            }
+            app.terminate()
+        }
+        note("editband-reach", log.joined(separator: "\n"))
+    }
+
     /// Wave 2 (W2-B): the folder opened from a Stage Home is a stage-and-strip page. Seeds the
     /// P2 §4.3 collection (pinned, so its folder tile is the strip's first card), enters the strip,
     /// opens the folder, pages Down once and back Up, then leaves with Menu. Clears the seed.

@@ -143,6 +143,71 @@ final class RailGateEvidenceTests: XCTestCase {
         note("probeI", log.joined(separator: "\n"))
     }
 
+    /// R3 sweep (W3 Rail08 / Probe I follow-up, 2026-10-05): Always Visible's reserved width on every
+    /// tab root and on a pushed Detail, after it moved to UIKit safe area at the shell. Records each
+    /// screen's content left edge (the smallest minX among on-screen texts and buttons right of the
+    /// pill) with a screenshot. Spec (P4 R3): 176 everywhere; Stage reads it from the environment.
+    func testAlwaysVisibleInsetSweep() {
+        var log: [String] = []
+        func contentLeftEdge(_ app: XCUIApplication) -> String {
+            let elements = app.staticTexts.allElementsBoundByIndex + app.buttons.allElementsBoundByIndex
+            let xs = elements.compactMap { element -> CGFloat? in
+                guard element.exists else { return nil }
+                let f = element.frame
+                // Right of the pill (16…100, plus its faded labels' overflow) and on screen.
+                guard f.minX >= 110, f.minX < 1900, f.minY >= 0, f.minY < 1080, f.width > 20 else { return nil }
+                return f.minX
+            }
+            guard let minX = xs.min() else { return "<none>" }
+            return String(format: "%.1f", minX)
+        }
+        func record(_ app: XCUIApplication, _ name: String) {
+            log.append("\(name): left=\(contentLeftEdge(app)) focus=\(focusedLabel(app)) | \(railState(app))")
+            shot("inset-\(name)")
+        }
+        func press(_ button: XCUIRemote.Button, _ times: Int) {
+            for _ in 0..<times {
+                remote.press(button)
+                pause(0.3)
+            }
+        }
+        func openTab(_ app: XCUIApplication, steps: Int) {
+            remote.press(.menu)                 // a tab root: Menu opens the rail on the current item
+            pause(1.5)
+            press(.up, 6)                       // to Home
+            pause(0.6)
+            press(.down, steps)
+            pause(0.6)
+            remote.press(.select)
+            pause(4)
+        }
+        // Classic Home first (the Rail08 finding), then the other roots from it.
+        let classic = launch(["-sidebar_style", "rail", "-rail_visibility", "always", "-home_layout", "classic"])
+        pause(16)
+        remote.press(.down)
+        pause(1.5)
+        remote.press(.down)
+        pause(2)
+        record(classic, "classic-home")
+        remote.press(.select)                   // a Detail pushed from a Classic row
+        pause(5)
+        record(classic, "detail")
+        remote.press(.menu)
+        pause(2.5)
+        // Up to the top of Home so Menu opens the rail rather than paging back.
+        press(.up, 3)
+        pause(2)
+        openTab(classic, steps: 1)
+        record(classic, "search")
+        openTab(classic, steps: 2)
+        record(classic, "library")
+        openTab(classic, steps: 3)
+        record(classic, "addons")
+        openTab(classic, steps: 4)
+        record(classic, "settings")
+        note("inset-sweep", log.joined(separator: "\n"))
+    }
+
     /// Hide While Browsing: the rail shows at the top and hides once the strip leaves row 0.
     func testRailHideWhileBrowsing() {
         let app = launch(["-sidebar_style", "rail", "-home_layout", "stage", "-rail_visibility", "browsing"])
