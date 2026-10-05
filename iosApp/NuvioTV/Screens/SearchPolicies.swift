@@ -5,17 +5,29 @@ import Foundation
 /// `SearchRepository.search` publishes `isLoading = true` with EMPTY sections at the start of every
 /// new query, so with results updating as you type the page blanked on every letter. This keeps
 /// the previous query's rows on screen while the next one loads, and swaps when that search
-/// finishes or once `holdLimit` has passed since it started. Past the limit it shows the new
-/// search's rows, or none ("Searching…"): the previous query's rows never stay longer, even when
-/// nothing more arrives (`tick`; review r1 P2-1: a catalog with no matches emits nothing, so a
-/// slow add-on used to keep stale rows up until its 60 s timeout).
+/// finishes or extends them. Another query's rows never stay more than `holdLimit` after the new
+/// search starts, even when nothing more arrives (`tick`; review r1 P2-1: a catalog with no matches
+/// emits nothing, so a slow add-on used to keep stale rows up until its 60 s timeout).
 ///
 /// Device evidence (S1 Wave 0, Living Room Apple TV, Grid, "dune" one letter at a time): swapping
 /// on the FIRST new row collapsed the page to one row and regrew it on every letter; holding until
 /// the search finished kept the rows steady (swaps at 0.12–0.27 s on warm add-ons).
 struct SearchRowsHold {
-    /// Longest the previous query's rows stay up after the next search starts.
+    /// Longest another query's rows stay up after the next search starts.
     static let holdLimit: TimeInterval = 1.0
+
+    /// How the rows on screen relate to the search now loading. The view model knows both queries
+    /// exactly (no key parsing; review r2 P3-2) and compares section keys for the rest.
+    enum Relation: Equatable {
+        /// The rows on screen are this search's and the new emission contains them all: rows only
+        /// grow during one search, so this is the same search progressing.
+        case sameSearch
+        /// The same query was searched again (a manifest refresh, Retry) and the new emission
+        /// hasn't caught up with what is shown yet.
+        case sameQueryRestart
+        /// The rows on screen came from an earlier, different query.
+        case otherQuery
+    }
 
     private enum Phase: Equatable {
         /// No search loading.
@@ -33,52 +45,57 @@ struct SearchRowsHold {
         return false
     }
 
-    /// When the current hold must end even if the repository emits nothing more.
+    /// When a hold over ANOTHER query's rows must end even if the repository emits nothing more.
     var holdDeadline: TimeInterval? {
         if case .holding(let since) = phase { return since + Self.holdLimit }
         return nil
     }
 
     /// The rows to show for one repository emission. `current` is what is on screen, `incoming`
-    /// the emission's sections, `now` a `systemUptime` value. `currentBelongsToActiveSearch` is
-    /// false when the rows on screen came from an EARLIER query than the one loading (the view
-    /// model reads it off the section keys): the repository's empty start emission can be
-    /// conflated away on a fast or cached search, and the first emission then already carries the
-    /// new search's partial rows (review r1 P3-1).
+    /// the emission's sections, `now` a `systemUptime` value, `relation` how `current` relates to
+    /// the loading search.
+    ///
+    /// - Settled (`isLoading == false`): exactly what the search found (empty = "No results.").
+    /// - Rows on screen and the emission doesn't extend them (an empty start emission, a
+    ///   restart that hasn't caught up, or another query's rows under conflated partial rows;
+    ///   review r1 P3-1): hold them.
+    /// - Holding: release as soon as the emission extends the held rows; another query's rows are
+    ///   also released once `holdLimit` has passed (to the new rows, or none = "Searching…"),
+    ///   while a same-query restart keeps its rows until it catches up or settles (review r2 P3-1).
     mutating func rows<Row>(
         current: [Row],
         incoming: [Row],
         isLoading: Bool,
         now: TimeInterval,
-        currentBelongsToActiveSearch: Bool = true
+        relation: Relation
     ) -> [Row] {
         guard isLoading else {
-            // Settled: show exactly what the search found (empty means the "No results." state).
             phase = .idle
             return incoming
         }
         switch phase {
         case .idle, .following:
-            // Rows only grow during one search, so an empty loading emission over rows on screen
-            // is the NEXT search starting; so are partial rows over an earlier query's rows.
-            if !current.isEmpty && (incoming.isEmpty || !currentBelongsToActiveSearch) {
+            if !current.isEmpty && (incoming.isEmpty || relation != .sameSearch) {
                 phase = .holding(since: now)
                 return current
             }
             phase = .following
             return incoming
         case .holding(let since):
-            if now - since < Self.holdLimit { return current }
-            phase = .following
-            return incoming
+            if relation == .sameSearch || (relation == .otherQuery && now - since >= Self.holdLimit) {
+                phase = .following
+                return incoming
+            }
+            return current
         }
     }
 
-    /// Re-evaluates a hold when no emission arrives (review r1 P2-1). Once the deadline has
-    /// passed, ends the hold and returns the last emission's rows (none means "Searching…");
-    /// otherwise returns nil and nothing changes.
-    mutating func tick<Row>(lastIncoming: [Row], isLoading: Bool, now: TimeInterval) -> [Row]? {
-        guard case .holding(let since) = phase, now - since >= Self.holdLimit else { return nil }
+    /// Re-evaluates a hold when no emission arrives (review r1 P2-1: a catalog with no matches
+    /// emits nothing). Past the deadline a hold over ANOTHER query's rows ends with the last
+    /// emission's rows (none = "Searching…"); otherwise returns nil and nothing changes.
+    mutating func tick<Row>(lastIncoming: [Row], isLoading: Bool, now: TimeInterval, relation: Relation) -> [Row]? {
+        guard case .holding(let since) = phase, relation == .otherQuery,
+              now - since >= Self.holdLimit else { return nil }
         phase = isLoading ? .following : .idle
         return lastIncoming
     }

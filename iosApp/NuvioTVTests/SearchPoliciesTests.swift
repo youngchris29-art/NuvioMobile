@@ -7,111 +7,114 @@ final class SearchRowsHoldTests: XCTestCase {
 
     func testFirstSearchWithNothingOnScreenFollowsIncoming() {
         var hold = SearchRowsHold()
-        XCTAssertEqual(hold.rows(current: [Int](), incoming: [], isLoading: true, now: 0), [])
+        XCTAssertEqual(hold.rows(current: [Int](), incoming: [], isLoading: true, now: 0, relation: .otherQuery), [])
         XCTAssertFalse(hold.isHolding)
-        XCTAssertEqual(hold.rows(current: [], incoming: [7], isLoading: true, now: 0.2), [7])
-        XCTAssertEqual(hold.rows(current: [7], incoming: [7, 8], isLoading: false, now: 0.4), [7, 8])
+        XCTAssertEqual(hold.rows(current: [], incoming: [7], isLoading: true, now: 0.2, relation: .sameSearch), [7])
+        XCTAssertEqual(hold.rows(current: [7], incoming: [7, 8], isLoading: false, now: 0.4, relation: .sameSearch), [7, 8])
     }
 
-    func testKeepsPreviousRowsWhileTheNextSearchLoads() {
+    func testTheSameSearchProgressingIsNeverHeld() {
         var hold = SearchRowsHold()
-        XCTAssertEqual(hold.rows(current: previous, incoming: [], isLoading: true, now: 10), previous)
+        XCTAssertEqual(hold.rows(current: [7], incoming: [7, 8], isLoading: true, now: 0, relation: .sameSearch), [7, 8])
+        XCTAssertFalse(hold.isHolding)
+    }
+
+    func testKeepsAnotherQuerysRowsWhileTheNextSearchLoads() {
+        var hold = SearchRowsHold()
+        XCTAssertEqual(hold.rows(current: previous, incoming: [], isLoading: true, now: 10, relation: .otherQuery), previous)
         XCTAssertTrue(hold.isHolding)
-        XCTAssertEqual(hold.rows(current: previous, incoming: [9], isLoading: true, now: 10.3), previous)
+        XCTAssertEqual(hold.rows(current: previous, incoming: [9], isLoading: true, now: 10.3, relation: .otherQuery), previous)
     }
 
     func testSwapsWhenTheNextSearchFinishes() {
         var hold = SearchRowsHold()
-        _ = hold.rows(current: previous, incoming: [], isLoading: true, now: 10)
-        XCTAssertEqual(hold.rows(current: previous, incoming: [9, 8], isLoading: false, now: 10.2), [9, 8])
+        _ = hold.rows(current: previous, incoming: [], isLoading: true, now: 10, relation: .otherQuery)
+        XCTAssertEqual(hold.rows(current: previous, incoming: [9, 8], isLoading: false, now: 10.2, relation: .otherQuery), [9, 8])
         XCTAssertFalse(hold.isHolding)
     }
 
-    func testSwapsOnceTheHoldLimitHasPassedAndNewRowsExist() {
+    func testAnotherQuerysRowsGoOnceTheLimitHasPassed() {
         var hold = SearchRowsHold()
-        _ = hold.rows(current: previous, incoming: [], isLoading: true, now: 10)
+        _ = hold.rows(current: previous, incoming: [], isLoading: true, now: 10, relation: .otherQuery)
         XCTAssertEqual(
-            hold.rows(current: previous, incoming: [9], isLoading: true, now: 10 + SearchRowsHold.holdLimit),
+            hold.rows(current: previous, incoming: [9], isLoading: true, now: 10 + SearchRowsHold.holdLimit, relation: .otherQuery),
             [9]
         )
         // Following now: later rows of the same search come straight through.
-        XCTAssertEqual(hold.rows(current: [9], incoming: [9, 8], isLoading: true, now: 11.2), [9, 8])
+        XCTAssertEqual(hold.rows(current: [9], incoming: [9, 8], isLoading: true, now: 11.2, relation: .sameSearch), [9, 8])
     }
 
-    func testKeepsTheRowsInsideTheLimitWhenNothingNewArrives() {
+    func testPastTheLimitAnEmptyEmissionShowsSearching() {
         var hold = SearchRowsHold()
-        _ = hold.rows(current: previous, incoming: [], isLoading: true, now: 10)
-        XCTAssertEqual(hold.rows(current: previous, incoming: [], isLoading: true, now: 10.5), previous)
-    }
-
-    func testPastTheLimitAnEmptyLoadingEmissionShowsSearching() {
-        var hold = SearchRowsHold()
-        _ = hold.rows(current: previous, incoming: [], isLoading: true, now: 10)
-        XCTAssertEqual(hold.rows(current: previous, incoming: [], isLoading: true, now: 11.2), [])
+        _ = hold.rows(current: previous, incoming: [], isLoading: true, now: 10, relation: .otherQuery)
+        XCTAssertEqual(hold.rows(current: previous, incoming: [], isLoading: true, now: 10.5, relation: .otherQuery), previous)
+        XCTAssertEqual(hold.rows(current: previous, incoming: [], isLoading: true, now: 11.2, relation: .otherQuery), [])
         XCTAssertFalse(hold.isHolding)
     }
 
     // Review r1 P2-1: a catalog with no matches emits nothing, so the hold must end on its own.
-    func testTickReleasesTheHoldAtTheDeadlineWithNoNewEmission() {
+    func testTickReleasesAnotherQuerysRowsAtTheDeadline() {
         var hold = SearchRowsHold()
-        _ = hold.rows(current: previous, incoming: [], isLoading: true, now: 10)
-        _ = hold.rows(current: previous, incoming: [9], isLoading: true, now: 10.2)   // held
+        _ = hold.rows(current: previous, incoming: [], isLoading: true, now: 10, relation: .otherQuery)
+        _ = hold.rows(current: previous, incoming: [9], isLoading: true, now: 10.2, relation: .otherQuery)
         XCTAssertEqual(hold.holdDeadline, 10 + SearchRowsHold.holdLimit)
-        XCTAssertNil(hold.tick(lastIncoming: [9], isLoading: true, now: 10.9))
-        XCTAssertEqual(hold.tick(lastIncoming: [9], isLoading: true, now: 11.0), [9])
+        XCTAssertNil(hold.tick(lastIncoming: [9], isLoading: true, now: 10.9, relation: .otherQuery))
+        XCTAssertEqual(hold.tick(lastIncoming: [9], isLoading: true, now: 11.0, relation: .otherQuery), [9])
         XCTAssertFalse(hold.isHolding)
         XCTAssertNil(hold.holdDeadline)
     }
 
     func testTickPastTheDeadlineWithNoNewRowsShowsSearching() {
         var hold = SearchRowsHold()
-        _ = hold.rows(current: previous, incoming: [], isLoading: true, now: 10)
-        XCTAssertEqual(hold.tick(lastIncoming: [Int](), isLoading: true, now: 11.5), [])
+        _ = hold.rows(current: previous, incoming: [], isLoading: true, now: 10, relation: .otherQuery)
+        XCTAssertEqual(hold.tick(lastIncoming: [Int](), isLoading: true, now: 11.5, relation: .otherQuery), [])
     }
 
     func testTickDoesNothingWhenNotHolding() {
         var hold = SearchRowsHold()
-        XCTAssertNil(hold.tick(lastIncoming: [1], isLoading: true, now: 100))
+        XCTAssertNil(hold.tick(lastIncoming: [1], isLoading: true, now: 100, relation: .otherQuery))
     }
 
-    // Review r1 P3-1: the empty start emission conflated away; partial rows of the NEW query
-    // arrive over the old query's rows.
-    func testPartialRowsOverAnEarlierQuerysRowsAreHeld() {
+    // Review r2 P3-1: a manifest refresh or Retry searches the SAME query again; its valid rows
+    // stay until the restart catches up or settles, never blanked by the clock.
+    func testASameQueryRestartKeepsItsRowsPastTheLimitUntilItCatchesUp() {
         var hold = SearchRowsHold()
-        XCTAssertEqual(
-            hold.rows(current: previous, incoming: [9], isLoading: true, now: 10, currentBelongsToActiveSearch: false),
-            previous
-        )
-        XCTAssertTrue(hold.isHolding)
-        XCTAssertEqual(hold.rows(current: previous, incoming: [9, 8], isLoading: false, now: 10.3), [9, 8])
+        XCTAssertEqual(hold.rows(current: previous, incoming: [], isLoading: true, now: 10, relation: .sameQueryRestart), previous)
+        XCTAssertNil(hold.tick(lastIncoming: [Int](), isLoading: true, now: 20, relation: .sameQueryRestart))
+        XCTAssertEqual(hold.rows(current: previous, incoming: [1], isLoading: true, now: 21, relation: .sameQueryRestart), previous)
+        XCTAssertEqual(hold.rows(current: previous, incoming: [1, 2, 3], isLoading: true, now: 22, relation: .sameSearch), [1, 2, 3])
+        XCTAssertFalse(hold.isHolding)
     }
 
     func testANewSearchStartingWhileFollowingHoldsWhatIsShown() {
         var hold = SearchRowsHold()
-        XCTAssertEqual(hold.rows(current: [Int](), incoming: [9], isLoading: true, now: 0), [9])
+        XCTAssertEqual(hold.rows(current: [Int](), incoming: [9], isLoading: true, now: 0, relation: .sameSearch), [9])
         // The repository's empty loading emission is the next search starting.
-        XCTAssertEqual(hold.rows(current: [9], incoming: [], isLoading: true, now: 0.5), [9])
+        XCTAssertEqual(hold.rows(current: [9], incoming: [], isLoading: true, now: 0.5, relation: .otherQuery), [9])
         XCTAssertTrue(hold.isHolding)
+    }
+
+    // Review r1 P3-1: the empty start emission conflated away; partial rows of the NEW query
+    // arrive over the old query's rows.
+    func testPartialRowsOverAnotherQuerysRowsAreHeld() {
+        var hold = SearchRowsHold()
+        XCTAssertEqual(hold.rows(current: previous, incoming: [9], isLoading: true, now: 10, relation: .otherQuery), previous)
+        XCTAssertTrue(hold.isHolding)
+        XCTAssertEqual(hold.rows(current: previous, incoming: [9, 8], isLoading: false, now: 10.3, relation: .otherQuery), [9, 8])
     }
 
     func testASettledEmptySearchClearsTheRows() {
         var hold = SearchRowsHold()
-        _ = hold.rows(current: previous, incoming: [], isLoading: true, now: 10)
-        XCTAssertEqual(hold.rows(current: previous, incoming: [], isLoading: false, now: 10.4), [])
-    }
-
-    func testACachedFirstEmissionWithRowsIsShownAtOnce() {
-        var hold = SearchRowsHold()
-        XCTAssertEqual(hold.rows(current: previous, incoming: [5], isLoading: true, now: 0), [5])
-        XCTAssertFalse(hold.isHolding)
+        _ = hold.rows(current: previous, incoming: [], isLoading: true, now: 10, relation: .otherQuery)
+        XCTAssertEqual(hold.rows(current: previous, incoming: [], isLoading: false, now: 10.4, relation: .otherQuery), [])
     }
 
     func testResetDropsTheHold() {
         var hold = SearchRowsHold()
-        _ = hold.rows(current: previous, incoming: [], isLoading: true, now: 10)
+        _ = hold.rows(current: previous, incoming: [], isLoading: true, now: 10, relation: .otherQuery)
         hold.reset()
         XCTAssertFalse(hold.isHolding)
-        XCTAssertEqual(hold.rows(current: [Int](), incoming: [], isLoading: true, now: 11), [])
+        XCTAssertEqual(hold.rows(current: [Int](), incoming: [], isLoading: true, now: 11, relation: .otherQuery), [])
     }
 }
 

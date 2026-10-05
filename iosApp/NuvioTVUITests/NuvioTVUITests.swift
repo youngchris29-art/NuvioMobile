@@ -539,8 +539,16 @@ final class NuvioTVUITests: XCTestCase {
         let tabNames = ["Home", "Search", "Library", "Add-ons", "Settings", "Profile"]
         for _ in 0..<4 {
             if searchKeyboardHasFocus(app) { return true }
+            // Sidebar rows carry the same LABELS as the tab bar's buttons, so `app.buttons["Search"]`
+            // matches them too: check the sidebar first (Right hands off into Search, S1 W2).
+            let inSidebar = tabNames.contains {
+                let row = app.buttons["sidebar_item_\($0)"]
+                return row.exists && row.hasFocus
+            }
             let onTabBar = tabNames.contains { app.buttons[$0].exists && app.buttons[$0].hasFocus }
-            if onTabBar {
+            if inSidebar {
+                remote.press(.right)
+            } else if onTabBar {
                 remote.press(.down)
             } else {
                 remote.press(searchKeyboardIsGrid(app) ? .left : .up)
@@ -1456,6 +1464,9 @@ final class NuvioTVUITests: XCTestCase {
             // Synthesis changed nothing — fall back to the key walk (26.5-only, see its comment).
             typedSuccessfully = typeOnKeyboard(app, query) && searchFieldText(app) == query
         }
+        // Review r2 P3-5: typing must have worked; otherwise the search half of this round trip
+        // would go unexercised and the clear check below would pass trivially.
+        XCTAssertTrue(typedSuccessfully, "typing '\(query)' must reach the search field")
         pause(2.5) // debounce + results fetch
         shot(app, "19a2_after_query_typed")
 
@@ -9473,5 +9484,17 @@ extension NuvioTVUITests {
         app.typeText("n")
         pause(1)
         XCTAssertEqual(searchFieldText(app), query + "n", "Right must land focus back in the search keyboard: typing after it must reach the field")
+
+        // A SECOND Menu soon after (review r2 P2-1): the redirect must fire again, not be
+        // suppressed by a guard meant only for failed rescues.
+        pause(0.5)
+        remote.press(.menu)
+        pause(1.0)
+        XCTAssertEqual(app.state, .runningForeground, "a second Menu from the search keyboard must not suspend the app")
+        guard app.state == .runningForeground else { return }
+        XCTAssertTrue(waitUntil(3) { anySidebarRowFocused() }, "a second Menu from the search keyboard must open the sidebar again")
+        shot(app, "93d_second_menu")
+        remote.press(.right)
+        pause(1.5)
     }
 }

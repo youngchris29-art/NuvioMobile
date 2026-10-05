@@ -293,9 +293,11 @@ struct SidebarOverlay: View {
     /// (two quick tab switches, or two Menu presses 0.2 s apart, otherwise let a stale timer
     /// re-arm or disarm the panel the user is currently using).
     @State private var focusGeneration = 0
-    /// S1 W2 review r1 P3-3: when the last hidden-bar redirect fired (`systemUptime`), so a reveal
-    /// that cannot take focus and resets focus straight back into the bar cannot loop.
-    @State private var lastStrandedReveal: TimeInterval = -.greatestFiniteMagnitude
+    /// S1 W2: when a reveal last FAILED to take focus and reset focus out of the hidden bar
+    /// (`systemUptime`; review r1 P3-3). A reset that lands straight back in the bar must not loop
+    /// reveal → fail → reset. Only failed rescues stamp it (review r2 P2-1): a successful one
+    /// must never block the next Menu's redirect.
+    @State private var lastFailedStrandedRescue: TimeInterval = -.greatestFiniteMagnitude
     /// Settled mirror of the resting (scroll-position) rule — see `SidebarMetrics.restingShowSettle`
     /// and `updateRestingVisibility`. Never read `chrome.scrolledDownByTab` directly in
     /// `shouldShow`: that is the raw crossing signal, and reacting to it edge-for-edge is the
@@ -538,12 +540,10 @@ struct SidebarOverlay: View {
             sidebarMode: SidebarChrome.isEnabled(),
             sidebarHoldsFocus: chrome.isFocusedChrome
         ) else { return }
-        let now = ProcessInfo.processInfo.systemUptime
-        guard now - lastStrandedReveal > 1.5 else {
-            NSLog("[SidebarChrome] focus landed on the hidden tab bar again within 1.5 s; not revealing again")
+        guard ProcessInfo.processInfo.systemUptime - lastFailedStrandedRescue > 1.5 else {
+            NSLog("[SidebarChrome] focus landed on the hidden tab bar right after a failed rescue; not revealing again")
             return
         }
-        lastStrandedReveal = now
         NSLog("[SidebarChrome] focus landed on the hidden tab bar; revealing the sidebar")
         chrome.requestReveal()
     }
@@ -572,22 +572,26 @@ struct SidebarOverlay: View {
         // issued before anything focusable exists leaves the system with no focused item — the
         // BUG-47 dead end, with the panel disarmed so it cannot catch the fallback either. Two
         // checks re-issue the reset; if focus is still nowhere after the last, re-arm the panel
-        // and take focus back so the user is never left without a focused element. The re-arm
+        // and take focus back so the user is never left without a focused element. S1 W2 (r2
+        // gate, test93): Search's system keyboard arrives 1–2 s after the tab opens and its page
+        // can be empty until then, so a 1.0 s give-up re-armed the panel over a Search page that
+        // was about to become focusable; the ladder now runs to 2.5 s. The re-arm
         // goes through `takeFocusAfterReveal` (r3b P1-1): the rows do not exist on the turn that
         // arms them, so a synchronous focus write here would be the dropped write that function
         // exists to avoid — and it carries the fail-closed disarm this branch would otherwise lack.
         DispatchQueue.main.async {
             guard generation == focusGeneration else { return }
             resetFocus(in: shellFocusScope)
-            for (index, delay) in [0.35, 1.0].enumerated() {
+            let checks = [0.35, 1.0, 1.75, 2.5]
+            for (index, delay) in checks.enumerated() {
                 DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                     guard generation == focusGeneration else { return }
                     guard focusedItem == nil, !armed else { return }   // a reveal took over meanwhile
                     guard HiddenTabBarFocusBlocker.focusedItemIsNil() else { return }
-                    if index == 0 {
+                    if index < checks.count - 1 {
                         resetFocus(in: shellFocusScope)
                     } else {
-                        NSLog("[SidebarChrome] hand-off landed nowhere twice; re-arming the panel")
+                        NSLog("[SidebarChrome] hand-off landed nowhere after %.2f s; re-arming the panel", delay)
                         armed = true
                         revealed = true
                         takeFocusAfterReveal()
@@ -642,7 +646,9 @@ struct SidebarOverlay: View {
                     // in content rather than leave the BUG-47 dead end behind. S1 W2 (review r1
                     // P3-3): the same when focus sits on the invisible hidden-bar button a stranded
                     // reveal was meant to rescue.
-                    if HiddenTabBarFocusBlocker.focusedItemIsNil() || HiddenTabBarFocusBlocker.focusedItemIsInHiddenBar() {
+                    let strandedInBar = HiddenTabBarFocusBlocker.focusedItemIsInHiddenBar()
+                    if strandedInBar { lastFailedStrandedRescue = ProcessInfo.processInfo.systemUptime }
+                    if HiddenTabBarFocusBlocker.focusedItemIsNil() || strandedInBar {
                         resetFocus(in: shellFocusScope)
                     }
                 }
