@@ -51,6 +51,18 @@ final class AmbientWashModelTests: XCTestCase {
         for _ in 0..<30 { await Task.yield() }
     }
 
+    /// Waits (polling every 5 ms, up to `timeout`) for `condition`. `drain()`'s fixed yields are a
+    /// timing assumption: on a busy machine the model's next load can start after them (a gate run
+    /// on 2026-10-05 failed that way once in many), so assertions about a load that must START wait
+    /// for it instead.
+    private func waitUntil(timeout: TimeInterval = 2, _ condition: () -> Bool) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
+            await Task.yield()
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+    }
+
     private func makeItem(id: String, type: String = "movie", poster: String? = nil, banner: String? = nil) -> MetaPreview {
         MetaPreview(
             id: id, type: type, name: "Title",
@@ -232,10 +244,10 @@ final class AmbientWashModelTests: XCTestCase {
         XCTAssertEqual(model.generation, 0)
 
         model.show(art("movie:a"))   // not stuck on "already wanted": the stage can ask again
-        await drain()
+        await waitUntil { stub.calls.count == 2 }
         XCTAssertEqual(stub.calls, ["movie:a", "movie:a"])
         stub.resolve("movie:a", with: try makeOutput())
-        await drain()
+        await waitUntil { model.incoming != nil }
         XCTAssertEqual(model.incoming?.identity, "movie:a")
     }
 
