@@ -1419,14 +1419,13 @@ final class NuvioTVUITests: XCTestCase {
     ///   2. the Discover header exists again after the query is cleared — this is the actual
     ///      BUG-33(2) regression check.
     ///   3. the app is still in the foreground at the end (kept as a final sanity net).
-    /// Conditional (does not fail the test if typing can't be driven):
-    ///   - typing "as" into the field: `app.typeText` first, `typeOnKeyboard` (hardware-synthesis
-    ///     retry + key-walk) only when the field's value did not change at all.
-    ///   - if typing demonstrably succeeded (field value == the query), that a results signal (a
-    ///     result button, a result cell, the "See All" card, or the "No results." empty-results
-    ///     message) appeared — still a real `XCTAssertTrue`, just skipped when typing itself
-    ///     could not be driven, so a keyboard mismatch doesn't fail the test.
-    ///   - that the field's value no longer equals the query after the Delete presses.
+    ///   4. typing "as" reaches the field (S1 review r2 P3-5): `app.typeText` first,
+    ///      `typeOnKeyboard` (hardware-synthesis retry + key-walk) only when the field's value did
+    ///      not change at all. A failure here is recorded and the run continues.
+    ///   5. the Delete presses leave the field empty.
+    /// Gated on step 4 (skipped after its recorded failure, so it doesn't pile on): a results
+    /// signal (a result button, a result cell, the "See All" card, or the "No results."
+    /// empty-results message) appears.
     func test19DiscoverSurvivesSearch() throws {
         // Fresh launch (2026-08-02): the Discover asserts below need a Search tab with no
         // leftover query/keyboard state from suite order, and test18's end state fed this test
@@ -9334,14 +9333,15 @@ extension NuvioTVUITests {
         let field = app.searchFields.firstMatch
         XCTAssertTrue(field.waitForExistence(timeout: 10), "Search must show the system search field")
         XCTAssertEqual(app.textFields.count, 0, "today's TextField must be gone")
-        // A query that is NOT already a Recent Search, so the saved-on-open check can't pass vacuously.
+        // The saved-on-open check must not pass vacuously: Recent is most-recent-first and a
+        // re-recorded query moves to the front, so pick a query that is NOT the first chip now
+        // and require it to BE the first chip afterwards. That never runs out, unlike requiring a
+        // query that isn't saved at all (every run saves one; the r6 gate skipped on that).
         let candidates = ["severance", "shogun", "andor", "the bear", "slow horses", "fallout"]
-        guard let query = candidates.first(where: {
-            !app.buttons.matching(NSPredicate(format: "label CONTAINS %@", $0)).firstMatch.exists
-        }) else {
-            throw XCTSkip("every candidate query is already a Recent Search on this fixture")
+        let firstChipBefore = recentSearchLabels(app).first?.lowercased()
+        guard let query = candidates.first(where: { firstChipBefore?.contains($0) != true }) else {
+            throw XCTSkip("unreachable: candidates are distinct")
         }
-        let chip = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", query)).firstMatch
 
         XCTAssertTrue(focusSearchKeyboard(app), "focus must reach the inline search keyboard before typing")
         app.typeText(query)
@@ -9374,7 +9374,24 @@ extension NuvioTVUITests {
         pause(2)
         XCTAssertEqual(searchFieldText(app), "", "the field must clear")
         shot(app, "test92-cleared")
-        XCTAssertTrue(chip.waitForExistence(timeout: 5), "opening a result must save the query to Recent Searches")
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline, recentSearchLabels(app).first?.lowercased().contains(query) != true { pause(0.5) }
+        XCTAssertTrue(
+            recentSearchLabels(app).first?.lowercased().contains(query) == true,
+            "opening a result must save the query to Recent Searches as the most recent (chips: \(recentSearchLabels(app)))"
+        )
+    }
+
+    /// The Recent Searches chips, most recent first: the buttons in the row just under the
+    /// "Recent Searches" header, left to right. Empty when there is no history.
+    private func recentSearchLabels(_ app: XCUIApplication) -> [String] {
+        let header = app.staticTexts["Recent Searches"]
+        guard header.exists else { return [] }
+        let top = header.frame.maxY, bottom = header.frame.maxY + 140
+        return app.buttons.allElementsBoundByIndex
+            .filter { $0.frame.minY >= top && $0.frame.maxY <= bottom }
+            .sorted { $0.frame.minX < $1.frame.minX }
+            .map(\.label)
     }
 }
 
@@ -9474,9 +9491,10 @@ extension NuvioTVUITests {
         XCTAssertEqual(searchFieldText(app), query, "the typed query must survive the Menu / Right round trip")
         XCTAssertEqual(app.state, .runningForeground, "the app must still be in the foreground after the Menu / Right round trip")
         // "No sidebar row focused" alone would also pass with focus nowhere (the rows disarm on
-        // the hand-off), and the hand-off's 1.0 s fallback can re-arm the panel after the first
-        // sample (review r1 P3-7): settle past it, then read real key focus (26.5) and type.
-        pause(1.5)
+        // the hand-off), and the hand-off's fallback can re-arm the panel after the first sample
+        // (review r1 P3-7): settle past its last check (2.5 s on Search, `SidebarHandOffLadder`;
+        // review r3 P3-5), then read real key focus (26.5) and type.
+        pause(3.0)
         XCTAssertFalse(anySidebarRowFocused(), "the sidebar must not take focus back after the hand-off settles")
         if ProcessInfo.processInfo.operatingSystemVersion.majorVersion < 27 {
             XCTAssertTrue(searchKeyboardHasFocus(app), "Right must land focus on a key of the search keyboard")
@@ -9485,8 +9503,10 @@ extension NuvioTVUITests {
         pause(1)
         XCTAssertEqual(searchFieldText(app), query + "n", "Right must land focus back in the search keyboard: typing after it must reach the field")
 
-        // A SECOND Menu soon after (review r2 P2-1): the redirect must fire again, not be
-        // suppressed by a guard meant only for failed rescues.
+        // A SECOND Menu (review r2 P2-1): the redirect must fire again. This press comes seconds
+        // after the first redirect, so it proves the round trip end to end; the guard's timing
+        // (successful redirects never suppress the next) is pinned by `StrandedRescueGuardTests`
+        // (review r3 P3-4).
         pause(0.5)
         remote.press(.menu)
         pause(1.0)

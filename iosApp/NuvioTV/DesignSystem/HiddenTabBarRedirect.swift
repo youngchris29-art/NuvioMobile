@@ -22,3 +22,41 @@ enum HiddenTabBarRedirect {
         landedInHiddenBar && sidebarMode && !sidebarHoldsFocus
     }
 }
+
+/// S1 W2: stops a redirect loop without blocking the next Menu.
+///
+/// When a reveal can't take focus and resets focus out of the hidden bar, that reset can land
+/// straight back in the bar and fire the redirect again (review r1 P3-3). Only a FAILED rescue
+/// suppresses the redirect, for `window` seconds; a successful one never does, so a second Menu
+/// soon after a first opens the sidebar again (review r2 P2-1: stamping every redirect stranded
+/// that Menu on the hidden bar).
+struct StrandedRescueGuard {
+    static let window: TimeInterval = 1.5
+    private var lastFailure: TimeInterval = -.greatestFiniteMagnitude
+
+    /// Whether a landing in the hidden bar at `now` may reveal the sidebar.
+    func allowsReveal(now: TimeInterval) -> Bool {
+        now - lastFailure > Self.window
+    }
+
+    /// A reveal could not take focus and left it in the hidden bar.
+    mutating func rescueFailed(now: TimeInterval) {
+        lastFailure = now
+    }
+}
+
+/// S1 W2: when the sidebar's post-select hand-off re-runs default focus placement, in seconds
+/// after it starts. The panel re-arms at the last check if focus is still nowhere. While nothing
+/// holds focus a press can fall through to the system (the BUG-47 dead end), so the ladder stays
+/// short (review r3 P3-3) except on Search: its system keyboard arrives 1–2 s after the tab opens
+/// and its page can have nothing focusable until then, so a 1.0 s give-up re-armed the panel over
+/// a Search page that was about to take focus (r2 gate, test93).
+enum SidebarHandOffLadder {
+    static let standard: [TimeInterval] = [0.35, 1.0]
+    static let search: [TimeInterval] = [0.35, 1.0, 1.75, 2.5]
+
+    /// The checks for the tab the hand-off is going to, by its `SidebarItem.title`.
+    static func checks(forTabTitled title: String?) -> [TimeInterval] {
+        title == "Search" ? search : standard
+    }
+}

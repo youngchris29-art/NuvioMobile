@@ -84,11 +84,10 @@ final class SearchViewModel: ObservableObject {
     private var stopped = false
     /// S1 W1: what to show while the next query loads. See `SearchRowsHold`.
     private var rowsHold = SearchRowsHold()
-    /// The repository's last emission, for the hold's deadline tick (review r1 P2-1).
+    /// The repository's last ACCEPTED emission (not stale when it arrived), for the hold's
+    /// deadline tick (review r1 P2-1) and `holdSearchStarted`. It can be the previous search's
+    /// once the next one starts; the tick checks.
     private var lastSearchState: SearchUiState?
-    /// The query whose rows are on screen (`activeQuery` when they were last taken from the
-    /// repository rather than held). Exact, so the hold never parses section keys (review r2 P3-2).
-    private var shownQuery: String?
     private var holdTickGeneration = 0
     private var scheduledHoldDeadline: TimeInterval?
 
@@ -100,6 +99,18 @@ final class SearchViewModel: ObservableObject {
         searchWatcher = FlowWatcherKt.watch(SearchRepository.shared.uiState) { [weak self] emitted in
             guard let self, !self.stopped else { return }
             guard let state = emitted as? SearchUiState else { return }
+            // Review r4 P2-1: a cancelled search can write after the next one started (or after
+            // the field was cleared); its rows are another query's, so the whole emission is
+            // dropped rather than shown or held for the tick.
+            guard !SearchRowsHold.isStale(
+                emissionQuery: Self.searchedQuery(of: state.sections),
+                activeQuery: self.activeQuery
+            ) else {
+                // `stop()` cancels the tick but keeps the hold; if this was the first value after
+                // `start()`, nothing else would re-arm it (review r6 P3-3). Idempotent.
+                self.scheduleHoldTick()
+                return
+            }
             self.isLoading = state.isLoading
             // S1 W1: keep the previous query's rows while the next one loads (`SearchRowsHold`);
             // the repository starts every search with empty sections.
@@ -111,7 +122,6 @@ final class SearchViewModel: ObservableObject {
                 now: ProcessInfo.processInfo.systemUptime,
                 relation: self.holdRelation(current: self.sections, incoming: state.sections)
             )
-            if !self.rowsHold.isHolding { self.shownQuery = self.activeQuery }
             self.scheduleHoldTick()
             let settledEmpty = state.sections.isEmpty && !state.isLoading
             // KMP exports enum entries all-lowercase (like DiscoverEmptyStateReason.requestfailed).
@@ -194,13 +204,39 @@ final class SearchViewModel: ObservableObject {
 
     // MARK: - Rows hold (S1 W1)
 
-    /// How the rows on screen relate to the search now loading (`SearchRowsHold.Relation`):
-    /// another query's, or this query's and already contained in the emission (the same search
-    /// progressing: rows only grow), or this query's searched again and not caught up yet.
+    /// How the rows on screen relate to the search now loading (`SearchRowsHold.relation`).
     private func holdRelation(current: [HomeCatalogSection], incoming: [HomeCatalogSection]) -> SearchRowsHold.Relation {
-        guard shownQuery == activeQuery else { return .otherQuery }
-        let incomingKeys = Set(incoming.map(\.key))
-        return current.allSatisfy { incomingKeys.contains($0.key) } ? .sameSearch : .sameQueryRestart
+        SearchRowsHold.relation(
+            shownQuery: Self.searchedQuery(of: current),
+            activeQuery: activeQuery,
+            shownKeys: current.map(\.key),
+            incomingKeys: incoming.map(\.key)
+        )
+    }
+
+    /// The query a set of result rows was searched with, read off the rows themselves (review r3
+    /// P2-1): every search section's See All target carries the exact query (BUG-48), so the label
+    /// can't drift from the rows the way a query stamped at display time can. Nil when unknown or
+    /// mixed.
+    static func searchedQuery(of sections: [HomeCatalogSection]) -> String? {
+        var query: String?
+        for section in sections {
+            guard let searched = (section.target as? CatalogTargetAddon)?.search else { return nil }
+            if let query, query != searched { return nil }
+            query = searched
+        }
+        return query
+    }
+
+    /// The debounce started a new search: tell the hold now rather than wait for the repository's
+    /// start state, which may never be seen (review r3 P3-1, r5 P2-1; `SearchRowsHold.searchStarted`).
+    private func holdSearchStarted() {
+        rowsHold.searchStarted(
+            relation: holdRelation(current: sections, incoming: lastSearchState?.sections ?? []),
+            hasRows: !sections.isEmpty,
+            now: ProcessInfo.processInfo.systemUptime
+        )
+        scheduleHoldTick()
     }
 
     /// A hold must end on time even when the repository emits nothing more (review r1 P2-1): a
@@ -221,17 +257,25 @@ final class SearchViewModel: ObservableObject {
                   let state = self.lastSearchState else { return }
             self.scheduledHoldDeadline = nil
             let now = ProcessInfo.processInfo.systemUptime
+            // The last accepted emission can predate the active search when its start state was
+            // never seen: never release to the previous search's rows (review r4 P2-1), and that
+            // search is still loading as far as anything here knows ("Searching…").
+            let stale = SearchRowsHold.isStale(
+                emissionQuery: Self.searchedQuery(of: state.sections),
+                activeQuery: self.activeQuery
+            )
+            let incoming = stale ? [] : state.sections
+            let loading = stale || state.isLoading
             if let rows = self.rowsHold.tick(
-                lastIncoming: state.sections,
-                isLoading: state.isLoading,
+                lastIncoming: incoming,
+                isLoading: loading,
                 now: now,
-                relation: self.holdRelation(current: self.sections, incoming: state.sections)
+                relation: self.holdRelation(current: self.sections, incoming: incoming)
             ) {
                 self.sections = rows
-                self.shownQuery = self.activeQuery
+                if stale { self.isLoading = true }
             } else if let pending = self.rowsHold.holdDeadline, now < pending {
-                // Fired before its deadline (review r2 P3-4). Only while the deadline is still
-                // ahead: past it, a same-query restart's hold waits for the next emission instead.
+                // Fired before its deadline (review r2 P3-4): reschedule while it is still ahead.
                 self.scheduleHoldTick()
             }
         }
@@ -254,7 +298,6 @@ final class SearchViewModel: ObservableObject {
             SearchRepository.shared.clear()
             rowsHold.reset()
             cancelHoldTick()
-            shownQuery = nil
             sections = []
             emptyMessage = nil
             searchError = nil
@@ -275,6 +318,7 @@ final class SearchViewModel: ObservableObject {
                 disabledCatalogKeys: Self.SearchSourceSettings.disabledKeys,
                 forceRefresh: false
             )
+            self.holdSearchStarted()
         }
     }
 

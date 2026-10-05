@@ -293,11 +293,9 @@ struct SidebarOverlay: View {
     /// (two quick tab switches, or two Menu presses 0.2 s apart, otherwise let a stale timer
     /// re-arm or disarm the panel the user is currently using).
     @State private var focusGeneration = 0
-    /// S1 W2: when a reveal last FAILED to take focus and reset focus out of the hidden bar
-    /// (`systemUptime`; review r1 P3-3). A reset that lands straight back in the bar must not loop
-    /// reveal → fail → reset. Only failed rescues stamp it (review r2 P2-1): a successful one
-    /// must never block the next Menu's redirect.
-    @State private var lastFailedStrandedRescue: TimeInterval = -.greatestFiniteMagnitude
+    /// S1 W2: suppresses the hidden-bar redirect only right after a FAILED rescue (see
+    /// `StrandedRescueGuard`; review r1 P3-3, r2 P2-1).
+    @State private var rescueGuard = StrandedRescueGuard()
     /// Settled mirror of the resting (scroll-position) rule — see `SidebarMetrics.restingShowSettle`
     /// and `updateRestingVisibility`. Never read `chrome.scrolledDownByTab` directly in
     /// `shouldShow`: that is the raw crossing signal, and reacting to it edge-for-edge is the
@@ -540,7 +538,7 @@ struct SidebarOverlay: View {
             sidebarMode: SidebarChrome.isEnabled(),
             sidebarHoldsFocus: chrome.isFocusedChrome
         ) else { return }
-        guard ProcessInfo.processInfo.systemUptime - lastFailedStrandedRescue > 1.5 else {
+        guard rescueGuard.allowsReveal(now: ProcessInfo.processInfo.systemUptime) else {
             NSLog("[SidebarChrome] focus landed on the hidden tab bar right after a failed rescue; not revealing again")
             return
         }
@@ -570,19 +568,20 @@ struct SidebarOverlay: View {
         // runloop turn, so SwiftUI has removed the row buttons first. Then VERIFY (internal
         // review r3 P1-1): the destination tab may still be building on this turn, and a reset
         // issued before anything focusable exists leaves the system with no focused item — the
-        // BUG-47 dead end, with the panel disarmed so it cannot catch the fallback either. Two
-        // checks re-issue the reset; if focus is still nowhere after the last, re-arm the panel
-        // and take focus back so the user is never left without a focused element. S1 W2 (r2
-        // gate, test93): Search's system keyboard arrives 1–2 s after the tab opens and its page
-        // can be empty until then, so a 1.0 s give-up re-armed the panel over a Search page that
-        // was about to become focusable; the ladder now runs to 2.5 s. The re-arm
+        // BUG-47 dead end, with the panel disarmed so it cannot catch the fallback either. Each
+        // check but the last re-issues the reset while focus is still nowhere; at the last, re-arm
+        // the panel and take focus back so the user is never left without a focused element. The
+        // checks come from `SidebarHandOffLadder` (1.0 s; 2.5 s on Search, whose system keyboard
+        // arrives late, S1 W2). The re-arm
         // goes through `takeFocusAfterReveal` (r3b P1-1): the rows do not exist on the turn that
         // arms them, so a synchronous focus write here would be the dropped write that function
         // exists to avoid — and it carries the fail-closed disarm this branch would otherwise lack.
         DispatchQueue.main.async {
             guard generation == focusGeneration else { return }
             resetFocus(in: shellFocusScope)
-            let checks = [0.35, 1.0, 1.75, 2.5]
+            let checks = SidebarHandOffLadder.checks(
+                forTabTitled: items.first { $0.id == selectedTab }?.title
+            )
             for (index, delay) in checks.enumerated() {
                 DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                     guard generation == focusGeneration else { return }
@@ -647,7 +646,7 @@ struct SidebarOverlay: View {
                     // P3-3): the same when focus sits on the invisible hidden-bar button a stranded
                     // reveal was meant to rescue.
                     let strandedInBar = HiddenTabBarFocusBlocker.focusedItemIsInHiddenBar()
-                    if strandedInBar { lastFailedStrandedRescue = ProcessInfo.processInfo.systemUptime }
+                    if strandedInBar { rescueGuard.rescueFailed(now: ProcessInfo.processInfo.systemUptime) }
                     if HiddenTabBarFocusBlocker.focusedItemIsNil() || strandedInBar {
                         resetFocus(in: shellFocusScope)
                     }

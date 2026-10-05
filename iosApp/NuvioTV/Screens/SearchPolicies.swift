@@ -5,19 +5,23 @@ import Foundation
 /// `SearchRepository.search` publishes `isLoading = true` with EMPTY sections at the start of every
 /// new query, so with results updating as you type the page blanked on every letter. This keeps
 /// the previous query's rows on screen while the next one loads, and swaps when that search
-/// finishes or extends them. Another query's rows never stay more than `holdLimit` after the new
-/// search starts, even when nothing more arrives (`tick`; review r1 P2-1: a catalog with no matches
-/// emits nothing, so a slow add-on used to keep stale rows up until its 60 s timeout).
+/// finishes or extends them. Another query's rows stay at most `holdLimit` after the search that
+/// replaces them starts, even when nothing more arrives (`tick`; review r1 P2-1: a catalog with no
+/// matches emits nothing, so a slow add-on used to keep stale rows up until its 60 s timeout).
+/// The view model reports each search start itself (`searchStarted`), since the repository's
+/// start state can be swallowed (review r5 P2-1), and drops a cancelled search's late writes that
+/// carry rows (`isStale`, review r4 P2-1). A late write with NO rows (a settled "no results") can't
+/// be told apart and may flash until the active search's next write (review r5 P3-1, accepted:
+/// the fix is a request id on `SearchUiState`, in `shared/`).
 ///
 /// Device evidence (S1 Wave 0, Living Room Apple TV, Grid, "dune" one letter at a time): swapping
 /// on the FIRST new row collapsed the page to one row and regrew it on every letter; holding until
 /// the search finished kept the rows steady (swaps at 0.12–0.27 s on warm add-ons).
 struct SearchRowsHold {
-    /// Longest another query's rows stay up after the next search starts.
+    /// Longest another query's rows stay up after the search that replaces them starts.
     static let holdLimit: TimeInterval = 1.0
 
-    /// How the rows on screen relate to the search now loading. The view model knows both queries
-    /// exactly (no key parsing; review r2 P3-2) and compares section keys for the rest.
+    /// How the rows on screen relate to the search now loading (`relation(...)` computes it).
     enum Relation: Equatable {
         /// The rows on screen are this search's and the new emission contains them all: rows only
         /// grow during one search, so this is the same search progressing.
@@ -29,11 +33,54 @@ struct SearchRowsHold {
         case otherQuery
     }
 
+    /// The relation for the rows on screen, from facts the view model reads off the rows
+    /// themselves (review r3 P2-1: a query stamped when rows were taken can be the NEXT query's,
+    /// when a deadline tick or a late write from a cancelled search lands after the query changed).
+    /// `shownQuery` is the query the shown rows were searched with (nil when unknown or mixed);
+    /// queries compare like the repository's request key (`sameQuery`).
+    static func relation(
+        shownQuery: String?,
+        activeQuery: String?,
+        shownKeys: [String],
+        incomingKeys: [String]
+    ) -> Relation {
+        guard let shownQuery, let activeQuery, sameQuery(shownQuery, activeQuery) else { return .otherQuery }
+        let incoming = Set(incomingKeys)
+        return shownKeys.allSatisfy { incoming.contains($0) } ? .sameSearch : .sameQueryRestart
+    }
+
+    /// Whether an emission's rows came from a search other than the active one (review r4 P2-1).
+    /// A cancelled search can still write after the next one starts (a `StateFlow` write is not a
+    /// suspension point), and its rows must neither reach the screen nor be what a hold releases
+    /// to. `emissionQuery` is nil for an emission with no rows to label (start states, empty
+    /// settles): this can't judge those, so it never calls them stale.
+    static func isStale(emissionQuery: String?, activeQuery: String?) -> Bool {
+        guard let emissionQuery else { return false }
+        guard let activeQuery else { return true }
+        return !sameQuery(emissionQuery, activeQuery)
+    }
+
+    /// Queries compare like the repository's request key: trimmed, case-insensitive. The label
+    /// is Kotlin's `trim()` of the query, which also strips U+001C–U+001F that Swift's
+    /// `.whitespacesAndNewlines` keeps (review r5 P3-2), so both sides trim the union.
+    static func sameQuery(_ a: String, _ b: String) -> Bool {
+        normalized(a) == normalized(b)
+    }
+
+    private static let queryTrim = CharacterSet.whitespacesAndNewlines
+        .union(CharacterSet(charactersIn: "\u{1C}\u{1D}\u{1E}\u{1F}"))
+
+    private static func normalized(_ query: String) -> String {
+        query.trimmingCharacters(in: queryTrim).lowercased()
+    }
+
     private enum Phase: Equatable {
         /// No search loading.
         case idle
-        /// A search is loading and the previous rows are still shown; `since` is its start.
-        case holding(since: TimeInterval)
+        /// A search is loading and the previous rows are still shown. `overOtherQuery`: they are
+        /// another query's, and `since` is when they became so (the 1 s bound runs from there).
+        /// Otherwise they are this query's, held through a restart with no clock.
+        case holding(since: TimeInterval, overOtherQuery: Bool)
         /// A search is loading and its own rows are shown as they arrive.
         case following
     }
@@ -46,8 +93,9 @@ struct SearchRowsHold {
     }
 
     /// When a hold over ANOTHER query's rows must end even if the repository emits nothing more.
+    /// A same-query restart has none.
     var holdDeadline: TimeInterval? {
-        if case .holding(let since) = phase { return since + Self.holdLimit }
+        if case .holding(let since, true) = phase { return since + Self.holdLimit }
         return nil
     }
 
@@ -60,8 +108,9 @@ struct SearchRowsHold {
     ///   restart that hasn't caught up, or another query's rows under conflated partial rows;
     ///   review r1 P3-1): hold them.
     /// - Holding: release as soon as the emission extends the held rows; another query's rows are
-    ///   also released once `holdLimit` has passed (to the new rows, or none = "Searching…"),
-    ///   while a same-query restart keeps its rows until it catches up or settles (review r2 P3-1).
+    ///   also released once `holdLimit` has passed since they became another query's (to the new
+    ///   rows, or none = "Searching…"; review r3 P3-2), while a same-query restart keeps its rows
+    ///   until it catches up or settles (review r2 P3-1).
     mutating func rows<Row>(
         current: [Row],
         incoming: [Row],
@@ -76,17 +125,55 @@ struct SearchRowsHold {
         switch phase {
         case .idle, .following:
             if !current.isEmpty && (incoming.isEmpty || relation != .sameSearch) {
-                phase = .holding(since: now)
+                phase = .holding(since: now, overOtherQuery: relation == .otherQuery)
                 return current
             }
             phase = .following
             return incoming
-        case .holding(let since):
-            if relation == .sameSearch || (relation == .otherQuery && now - since >= Self.holdLimit) {
+        case .holding(let since, let overOtherQuery):
+            switch relation {
+            case .sameSearch:
                 phase = .following
                 return incoming
+            case .sameQueryRestart:
+                phase = .holding(since: since, overOtherQuery: false)
+                return current
+            case .otherQuery:
+                let start = overOtherQuery ? since : now
+                if now - start >= Self.holdLimit {
+                    phase = .following
+                    return incoming
+                }
+                phase = .holding(since: start, overOtherQuery: true)
+                return current
             }
-            return current
+        }
+    }
+
+    /// The view model started a search. The repository's start state can't be relied on to say
+    /// so: it doesn't depend on the query, so it isn't re-emitted when equal to the current value
+    /// (review r3 P3-1), and a cancelled search's late write can replace it before the view model
+    /// reads it (review r5 P2-1). So:
+    /// - not holding, with another query's rows on screen: hold them, bounded from now;
+    /// - holding a restart that is now another query's: the bound starts now;
+    /// - holding another query's rows that are the active query's again: drop the bound;
+    /// - holding another query's rows already: keep the clock, so steady typing still swaps.
+    /// The caller reschedules its tick.
+    mutating func searchStarted(relation: Relation, hasRows: Bool, now: TimeInterval) {
+        switch phase {
+        case .idle, .following:
+            if hasRows && relation == .otherQuery {
+                phase = .holding(since: now, overOtherQuery: true)
+            }
+        case .holding(let since, let overOtherQuery):
+            switch relation {
+            case .otherQuery where !overOtherQuery:
+                phase = .holding(since: now, overOtherQuery: true)
+            case .sameQueryRestart where overOtherQuery, .sameSearch where overOtherQuery:
+                phase = .holding(since: since, overOtherQuery: false)
+            default:
+                break
+            }
         }
     }
 
@@ -94,7 +181,7 @@ struct SearchRowsHold {
     /// emits nothing). Past the deadline a hold over ANOTHER query's rows ends with the last
     /// emission's rows (none = "Searching…"); otherwise returns nil and nothing changes.
     mutating func tick<Row>(lastIncoming: [Row], isLoading: Bool, now: TimeInterval, relation: Relation) -> [Row]? {
-        guard case .holding(let since) = phase, relation == .otherQuery,
+        guard case .holding(let since, true) = phase, relation == .otherQuery,
               now - since >= Self.holdLimit else { return nil }
         phase = isLoading ? .following : .idle
         return lastIncoming
