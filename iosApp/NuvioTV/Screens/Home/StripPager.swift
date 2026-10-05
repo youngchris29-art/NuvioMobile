@@ -92,15 +92,22 @@ final class StripPagerBox {
     private(set) var glideSpan: ClosedRange<Int>?
     private var mounts: [String: StripPageMount] = [:]
 
-    func isMounted(_ index: Int, count: Int) -> Bool {
+    /// Inside the window or the glide span, or the row holds focus. Review r2 (P2-1): a focused row
+    /// the window moves away from (Menu under Reduce Motion, whose glide span opens and closes in one
+    /// call; a row the engine landed on mid-glide) stays mounted until it reports the release. An
+    /// unmounted row never reports it, which left a stale key in `owners` and switched off the
+    /// focus-lost detection (the background trailer kept playing behind the tab bar, and rows that
+    /// arrived while focus was outside hid above row 0 again).
+    func isMounted(_ index: Int, key: String, count: Int) -> Bool {
         StripMountWindow.range(center: windowCenter, count: count).contains(index)
             || glideSpan?.contains(index) == true
+            || owners.contains(key)
     }
 
     /// Page `key`'s mount flag, created on first use with the window's current answer.
     func mount(for key: String, at index: Int, count: Int) -> StripPageMount {
         if let existing = mounts[key] { return existing }
-        let created = StripPageMount(isMounted(index, count: count))
+        let created = StripPageMount(isMounted(index, key: key, count: count))
         mounts[key] = created
         return created
     }
@@ -122,7 +129,7 @@ final class StripPagerBox {
     func refreshMounts() {
         let count = rowKeys.count
         for (index, key) in rowKeys.enumerated() {
-            mounts[key]?.set(isMounted(index, count: count))
+            mounts[key]?.set(isMounted(index, key: key, count: count))
         }
     }
 
@@ -343,6 +350,8 @@ struct StripPager<Row: View>: View {
         guard owns else {
             let pagerBox = box
             pagerBox.owners.remove(key)
+            // Review r2 (P2-1): a row kept mounted only because it held focus can go now.
+            pagerBox.refreshMounts()
             // One runloop turn later: a row-to-row move reports the destination's `true` in the same
             // turn (in either order), so only a real exit leaves `owners` empty here.
             DispatchQueue.main.async {
@@ -377,7 +386,9 @@ struct StripPager<Row: View>: View {
         }
         guard key != box.focusedRowKey else { return }
         box.focusedRowKey = key
-        guard let index = rowKeys.firstIndex(of: key) else { return }
+        // Review r2 (P3-3): `box.rowKeys`, not `rowKeys`. The handle's closure (an external request,
+        // and its expiry, which can land here) runs on the pager value copied at install time.
+        guard let index = box.rowKeys.firstIndex(of: key) else { return }
         let previous = box.rowIndex
         box.rowIndex = index
         box.moveWindow(to: index)

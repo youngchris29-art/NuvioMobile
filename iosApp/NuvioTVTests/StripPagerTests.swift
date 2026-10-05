@@ -114,6 +114,21 @@ final class StripPagerTests: XCTestCase {
         XCTAssertFalse(box.mount(for: "c", at: 2, count: 3) === c, "dropped once the row left")
     }
 
+    /// Review r2 (P2-1): Menu under Reduce Motion moves the window to row 0 with no glide span. The
+    /// row that still holds focus must stay mounted until it reports the release; unmounted, it never
+    /// would, and its stale `owners` entry switched off the focus-lost detection.
+    func testAFocusedRowStaysMountedUntilItReleases() {
+        let (box, mounts) = box(rows: 8)
+        box.moveWindow(to: 5)
+        box.owners.insert("r5")
+        box.moveWindow(to: 0)
+        XCTAssertEqual(mounts.map(\.isMounted), [true, true, true, false, false, true, false, false],
+                       "the focused r5 stays mounted outside the window")
+        box.owners.remove("r5")
+        box.refreshMounts()
+        XCTAssertEqual(mounts.map(\.isMounted), [true, true, true, false, false, false, false, false])
+    }
+
     func testIndicesFollowRowsInsertedAbove() {
         let (box, mounts) = box(rows: 6)
         box.moveWindow(to: 3)

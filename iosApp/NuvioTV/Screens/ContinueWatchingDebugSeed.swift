@@ -23,8 +23,9 @@ import SharedCore
 /// `PlaybackProgressRecorder` records a playback, with `syncRemote: false`), so the Continue
 /// Watching row reads them like any watched title. Applied once per launch, from the same place in
 /// the Home pipeline as the collections seed. Refused on a signed-in cloud account with the
-/// collections seed's own rule (`collectionsSeedRefusal`), so test data never reaches a real
-/// account's history; a refusal does not latch, so a later Home start in the same launch retries.
+/// collections seed's own rule (`collectionsSeedRefusal`), and while a tracker (Trakt, Simkl,
+/// MDBList) is the progress source, so test data never reaches a real account's history; a
+/// refusal does not latch, so a later Home start in the same launch retries.
 @MainActor
 enum ContinueWatchingDebugSeed {
     static let argumentKey = "debug.continueWatchingSeedJsonB64"
@@ -36,6 +37,13 @@ enum ContinueWatchingDebugSeed {
         guard let b64 = UserDefaults.standard.string(forKey: argumentKey), !b64.isEmpty else { return }
         if let refusal = HomeViewModel.collectionsSeedRefusal(authState: AuthRepository.shared.state.value_) {
             NSLog("[ContinueWatchingSeed] applied=false refused=%@", refusal)
+            return
+        }
+        // Review r2 (P3-1): a tracker as the progress source (Trakt, Simkl, MDBList) makes the
+        // `remove` cleanup a real delete on that account (`clearProgress` → provider removal).
+        if let source = WatchProgressRepository.shared.activeSourceState.value_ as? WatchProgressSource,
+           source.providerId != nil {
+            NSLog("[ContinueWatchingSeed] applied=false refused=tracker progress source %@", source.name)
             return
         }
         didApply = true

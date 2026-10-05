@@ -336,6 +336,13 @@ struct NavigationRail: View {
                 .frame(width: 0, height: 0)
                 .allowsHitTesting(false)
         }
+        // R3: Always Visible's reserved width, as UIKit safe area at the shell (see
+        // `HiddenTabBarFocusBlocker.setReservedLeadingInset`). Follows the visibility live.
+        .onChange(of: visibility, initial: true) { _, newVisibility in
+            HiddenTabBarFocusBlocker.setReservedLeadingInset(
+                NavigationChrome.contentSafeAreaExtra(sideSafeArea: PinnedRowGeometry.sideSafeArea,
+                                                      reservesWidth: newVisibility == .always))
+        }
         // ALWAYS mounted (DEBUG): its `shown=` token is the hide test.
         .overlay(alignment: .topLeading) { stateProbe }
         // `@Published` emits on willSet and replays its current value to a new subscriber: use the
@@ -386,6 +393,15 @@ struct NavigationRail: View {
             RoundedRectangle(cornerRadius: RailMetrics.cornerRadius, style: .continuous)
                 .fill(Color.clear)
                 .glassEffect(.regular, in: RoundedRectangle(cornerRadius: RailMetrics.cornerRadius, style: .continuous))
+            #if DEBUG
+            // Rail08's oracle: the pill's own frame. `navigation_rail` is a `.contain` container,
+            // whose accessibility frame is the union of its children, and the collapsed pill's
+            // labels (laid out, faded) overflow its 84 pt width.
+            Color.white.opacity(0.001)
+                .accessibilityElement()
+                .accessibilityLabel("rail bounds")
+                .accessibilityIdentifier("navigation_rail_bounds")
+            #endif
         }
         // #20: Reduce Motion drops the width animation; the labels and the dim still cross-fade
         // (their own animations).
@@ -794,12 +810,15 @@ private struct RailTabRootModifier: ViewModifier {
     }
 }
 
-/// R3: Always Visible reserves the rail's width as extra LEADING SAFE AREA (`.safeAreaPadding`, not
-/// `.padding`): `ignoresSafeArea()` backgrounds (Home's hero art, Stage's art and wash, Detail's
-/// backdrop) still reach x = 0 behind the rail, while content moves 140 → 176 pt from the bezel.
-/// Stage and the folder Rows page ignore the safe area by design, so they read the same 36 pt from
-/// `\.railLeadingInset` (R1). Environment values flow into NavigationStack destinations, so pushed
-/// pages inherit all three.
+/// R3: Always Visible reserves the rail's width as extra LEADING SAFE AREA: `ignoresSafeArea()`
+/// backgrounds (Home's hero art, Stage's art and wash, Detail's backdrop) still reach x = 0 behind
+/// the rail, while content moves 140 → 176 pt from the bezel. The safe area itself is UIKit's, set
+/// on the shell's tab controller (`HiddenTabBarFocusBlocker.setReservedLeadingInset`): a SwiftUI
+/// `.safeAreaPadding` here never reached past a tab's NavigationStack or into `.searchable`'s
+/// container (W3's Rail08 and Probe I). This modifier carries the environment half: Stage and the
+/// folder Rows page ignore the safe area by design and read the same 36 pt from
+/// `\.railLeadingInset` (R1), and `\.rowEdgeMargins` tells the rows where the visible edge is.
+/// Environment values flow into NavigationStack destinations, so pushed pages inherit both.
 private struct RailReservedWidthModifier: ViewModifier {
     @ViewBuilder
     func body(content: Content) -> some View {
@@ -807,7 +826,6 @@ private struct RailReservedWidthModifier: ViewModifier {
             let side = PinnedRowGeometry.sideSafeArea
             let extra = NavigationChrome.contentSafeAreaExtra(sideSafeArea: side, reservesWidth: true)
             content
-                .safeAreaPadding(.leading, extra)
                 .environment(\.railLeadingInset, extra)
                 .environment(\.rowEdgeMargins, NavigationChrome.rowEdgeMargins(sideSafeArea: side, reservesWidth: true))
         } else {

@@ -207,6 +207,15 @@ struct StageTextBlock: View {
         let output = swap.output
         let progressLookup = copySource.progressLookup
         ZStack(alignment: .topLeading) {
+            #if DEBUG
+            // testS04's oracle: the slot's own frame. The `.contain` container's accessibility
+            // frame is the union of its children, which follows the logo (absent until it loads)
+            // and the synopsis length, so it moves with a swap although the slot never does.
+            Color.white.opacity(0.001)
+                .accessibilityElement()
+                .accessibilityLabel("stage text slot")
+                .accessibilityIdentifier("stage_text_slot_bounds")
+            #endif
             if let shown = output.shown {
                 let copy = StageCopy.make(item: shown.item, progress: progressLookup?(shown.item))
                 VStack(alignment: .leading, spacing: StripGeometry.slotGap) {

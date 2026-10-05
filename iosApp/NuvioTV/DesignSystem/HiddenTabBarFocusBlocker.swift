@@ -61,6 +61,21 @@ struct HiddenTabBarFocusBlocker: UIViewRepresentable {
         return system.focusedItem
     }
 
+    /// H9 R3 (W3 Rail08 / Probe I, 2026-10-05): Always Visible's reserved width, as UIKit safe area
+    /// on the shell's tab controller (`additionalSafeAreaInsets.left`). SwiftUI's `.safeAreaPadding`
+    /// at a tab root never reached past the tab's NavigationStack or into `.searchable`'s container
+    /// (both UIKit-hosted): Classic Home, Library, Settings and pushed pages kept content at 140 pt
+    /// while `\.rowEdgeMargins` said 176. UIKit propagates this inset to every hosted page and to the
+    /// search container. Full-bleed backgrounds still reach x = 0 (they ignore the safe area), and
+    /// Stage and the folder Rows page ignore it by design and read `\.railLeadingInset` instead.
+    /// 0 outside Always Visible. Applied whenever the blocker finds the tab controller.
+    static func setReservedLeadingInset(_ inset: CGFloat) {
+        reservedLeadingInset = inset
+        current?.applyReservedInset()
+    }
+
+    nonisolated(unsafe) private static var reservedLeadingInset: CGFloat = 0
+
     /// P4 §2.3: the rail's content gate. Closed (`gated == true`) while a rail item holds focus, so
     /// the engine can neither leak out of the overlay into content (Down past the bottom item, Right
     /// to an off-screen card whose frame overlaps the rail's beam) nor reach the Grid keyboard, a
@@ -155,6 +170,7 @@ struct HiddenTabBarFocusBlocker: UIViewRepresentable {
             // tree when the cached bar is still in the window and still blocked.
             if let bar = blockedBar, bar.window != nil, !bar.isUserInteractionEnabled, tabController != nil {
                 HiddenTabBarFocusBlocker.isBlocking = true
+                applyReservedInset()
                 return
             }
             guard let root = window?.rootViewController else { return }
@@ -178,6 +194,16 @@ struct HiddenTabBarFocusBlocker: UIViewRepresentable {
                 NSLog("[NavRail] hidden tab bar made unfocusable (hidden=%d alpha=%.2f frame=%@)",
                       bar.isHidden ? 1 : 0, bar.alpha, NSCoder.string(for: bar.frame))
             }
+            applyReservedInset()
+        }
+
+        /// See `HiddenTabBarFocusBlocker.setReservedLeadingInset`. One comparison when unchanged.
+        func applyReservedInset() {
+            guard let tab = tabController else { return }
+            let inset = HiddenTabBarFocusBlocker.reservedLeadingInset
+            guard tab.additionalSafeAreaInsets.left != inset else { return }
+            tab.additionalSafeAreaInsets.left = inset
+            NSLog("[NavRail] reserved leading safe area=%.0f", inset)
         }
 
         /// The tab controller's view, finding the controller first if this view has not yet.
@@ -232,6 +258,10 @@ struct HiddenTabBarFocusBlocker: UIViewRepresentable {
         func restore() {
             if let bar = blockedBar, !bar.isUserInteractionEnabled {
                 bar.isUserInteractionEnabled = true
+            }
+            // A torn-down rail leaves no reserved width behind.
+            if let tab = tabController, tab.additionalSafeAreaInsets.left != 0 {
+                tab.additionalSafeAreaInsets.left = 0
             }
             // P4 §2.3: a torn-down rail must never leave content non-interactive.
             if let view = gatedView {

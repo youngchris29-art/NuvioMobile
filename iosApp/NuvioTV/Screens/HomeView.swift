@@ -5289,7 +5289,14 @@ struct ContinueWatchingRow: View {
                     guard focusedVideoId == nil, let newFirst else { return }
                     var tx = Transaction()
                     tx.disablesAnimations = true
-                    withTransaction(tx) { proxy.scrollTo(newFirst, anchor: .leading) }
+                    if stripFocusMemory != nil {
+                        // Review r2 (P3-2): in the strip, through the row's own horizontal
+                        // `ScrollPosition` (the P2-3 reason: an item-anchored proxy scroll can spill
+                        // into the strip's vertical scroll). Classic keeps the proxy.
+                        withTransaction(tx) { rowPosition.scrollTo(edge: .leading) }
+                    } else {
+                        withTransaction(tx) { proxy.scrollTo(newFirst, anchor: .leading) }
+                    }
                 }
                 // Home Stage & Strip (P1 §3.3): see `restoreStripMemory`. Inert outside the strip.
                 .onAppear { restoreStripMemory() }
