@@ -84,6 +84,10 @@ final class SearchViewModel: ObservableObject {
     private var stopped = false
     /// S1 W1: what to show while the next query loads. See `SearchRowsHold`.
     private var rowsHold = SearchRowsHold()
+    /// The repository's last emission, for the hold's deadline tick (review r1 P2-1).
+    private var lastSearchState: SearchUiState?
+    private var holdTickGeneration = 0
+    private var scheduledHoldDeadline: TimeInterval?
 
     func start() {
         guard !started else { return }
@@ -96,12 +100,15 @@ final class SearchViewModel: ObservableObject {
             self.isLoading = state.isLoading
             // S1 W1: keep the previous query's rows while the next one loads (`SearchRowsHold`);
             // the repository starts every search with empty sections.
+            self.lastSearchState = state
             self.sections = self.rowsHold.rows(
                 current: self.sections,
                 incoming: state.sections,
                 isLoading: state.isLoading,
-                now: ProcessInfo.processInfo.systemUptime
+                now: ProcessInfo.processInfo.systemUptime,
+                currentBelongsToActiveSearch: self.sectionsBelongToActiveQuery(self.sections)
             )
+            self.scheduleHoldTick()
             let settledEmpty = state.sections.isEmpty && !state.isLoading
             // KMP exports enum entries all-lowercase (like DiscoverEmptyStateReason.requestfailed).
             // Manifest failure = RequestFailed while no enabled add-on has a manifest at all.
@@ -173,10 +180,55 @@ final class SearchViewModel: ObservableObject {
         // the signature already matches, so without this the section would never rebuild.
         // canReuseDiscoverState in the repository still avoids redundant network work.
         lastDiscoverAddonSignature = nil
-        // `activeQuery` deliberately survives: the view's `@State query` outlives a tab switch and
-        // `.onChange(of: query)` won't refire, so the next addon emission after start() must still
-        // be able to re-issue. The repository's same-key early return keeps that a no-op otherwise.
+        // `activeQuery` deliberately survives: the query box (`SearchQueryBox`) outlives a tab
+        // switch and `SearchFieldLayer`'s `.onChange` won't refire, so the next addon emission
+        // after start() must still be able to re-issue. The repository's same-key early return
+        // keeps that a no-op otherwise.
         lastSearchAddonSignature = nil
+        cancelHoldTick()
+    }
+
+    // MARK: - Rows hold (S1 W1)
+
+    /// Whether the rows on screen came from the query now loading. Search section keys end in
+    /// `:<query lowercased>` (`SearchCatalogRequest.sectionKey()` in shared), and `activeQuery` is
+    /// the query last sent to the repository.
+    private func sectionsBelongToActiveQuery(_ shown: [HomeCatalogSection]) -> Bool {
+        guard let query = activeQuery, !shown.isEmpty else { return true }
+        let suffix = ":" + query.lowercased()
+        return shown.allSatisfy { $0.key.hasSuffix(suffix) }
+    }
+
+    /// A hold must end on time even when the repository emits nothing more (review r1 P2-1): a
+    /// catalog with no matches throws without changing the sections, so after the fast add-ons
+    /// answer, a slow one could keep the previous query's rows up until its 60 s timeout.
+    private func scheduleHoldTick() {
+        guard let deadline = rowsHold.holdDeadline else {
+            cancelHoldTick()
+            return
+        }
+        guard deadline != scheduledHoldDeadline else { return }
+        scheduledHoldDeadline = deadline
+        holdTickGeneration &+= 1
+        let generation = holdTickGeneration
+        let delay = max(0, deadline - ProcessInfo.processInfo.systemUptime) + 0.01
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, generation == self.holdTickGeneration, !self.stopped,
+                  let state = self.lastSearchState else { return }
+            self.scheduledHoldDeadline = nil
+            if let rows = self.rowsHold.tick(
+                lastIncoming: state.sections,
+                isLoading: state.isLoading,
+                now: ProcessInfo.processInfo.systemUptime
+            ) {
+                self.sections = rows
+            }
+        }
+    }
+
+    private func cancelHoldTick() {
+        holdTickGeneration &+= 1
+        scheduledHoldDeadline = nil
     }
 
     /// Called as the search text changes; debounces, then queries (or resets on empty).
@@ -190,6 +242,7 @@ final class SearchViewModel: ObservableObject {
             // nothing ever re-arms it. Use `.clear()`, which only resets search state. (BUG-33(2))
             SearchRepository.shared.clear()
             rowsHold.reset()
+            cancelHoldTick()
             sections = []
             emptyMessage = nil
             searchError = nil

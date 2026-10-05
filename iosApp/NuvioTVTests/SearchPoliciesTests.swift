@@ -38,10 +38,52 @@ final class SearchRowsHoldTests: XCTestCase {
         XCTAssertEqual(hold.rows(current: [9], incoming: [9, 8], isLoading: true, now: 11.2), [9, 8])
     }
 
-    func testNeverSwapsToAnEmptyPageWhileLoading() {
+    func testKeepsTheRowsInsideTheLimitWhenNothingNewArrives() {
         var hold = SearchRowsHold()
         _ = hold.rows(current: previous, incoming: [], isLoading: true, now: 10)
-        XCTAssertEqual(hold.rows(current: previous, incoming: [], isLoading: true, now: 15), previous)
+        XCTAssertEqual(hold.rows(current: previous, incoming: [], isLoading: true, now: 10.5), previous)
+    }
+
+    func testPastTheLimitAnEmptyLoadingEmissionShowsSearching() {
+        var hold = SearchRowsHold()
+        _ = hold.rows(current: previous, incoming: [], isLoading: true, now: 10)
+        XCTAssertEqual(hold.rows(current: previous, incoming: [], isLoading: true, now: 11.2), [])
+        XCTAssertFalse(hold.isHolding)
+    }
+
+    // Review r1 P2-1: a catalog with no matches emits nothing, so the hold must end on its own.
+    func testTickReleasesTheHoldAtTheDeadlineWithNoNewEmission() {
+        var hold = SearchRowsHold()
+        _ = hold.rows(current: previous, incoming: [], isLoading: true, now: 10)
+        _ = hold.rows(current: previous, incoming: [9], isLoading: true, now: 10.2)   // held
+        XCTAssertEqual(hold.holdDeadline, 10 + SearchRowsHold.holdLimit)
+        XCTAssertNil(hold.tick(lastIncoming: [9], isLoading: true, now: 10.9))
+        XCTAssertEqual(hold.tick(lastIncoming: [9], isLoading: true, now: 11.0), [9])
+        XCTAssertFalse(hold.isHolding)
+        XCTAssertNil(hold.holdDeadline)
+    }
+
+    func testTickPastTheDeadlineWithNoNewRowsShowsSearching() {
+        var hold = SearchRowsHold()
+        _ = hold.rows(current: previous, incoming: [], isLoading: true, now: 10)
+        XCTAssertEqual(hold.tick(lastIncoming: [Int](), isLoading: true, now: 11.5), [])
+    }
+
+    func testTickDoesNothingWhenNotHolding() {
+        var hold = SearchRowsHold()
+        XCTAssertNil(hold.tick(lastIncoming: [1], isLoading: true, now: 100))
+    }
+
+    // Review r1 P3-1: the empty start emission conflated away; partial rows of the NEW query
+    // arrive over the old query's rows.
+    func testPartialRowsOverAnEarlierQuerysRowsAreHeld() {
+        var hold = SearchRowsHold()
+        XCTAssertEqual(
+            hold.rows(current: previous, incoming: [9], isLoading: true, now: 10, currentBelongsToActiveSearch: false),
+            previous
+        )
+        XCTAssertTrue(hold.isHolding)
+        XCTAssertEqual(hold.rows(current: previous, incoming: [9, 8], isLoading: false, now: 10.3), [9, 8])
     }
 
     func testANewSearchStartingWhileFollowingHoldsWhatIsShown() {
@@ -94,6 +136,22 @@ final class SearchHistoryOnOpenTests: XCTestCase {
     func testTheQueryIsTrimmed() {
         var history = SearchHistoryOnOpen()
         XCTAssertEqual(history.pathChanged(from: 0, to: 1, query: "  the bear "), "the bear")
+    }
+
+    func testChangingTheQueryLetsTheSameQueryRecordAgain() {
+        var history = SearchHistoryOnOpen()
+        XCTAssertEqual(history.pathChanged(from: 0, to: 1, query: "dune"), "dune")
+        history.queryChanged(to: "dune")          // the same text: still recorded
+        XCTAssertNil(history.pathChanged(from: 0, to: 1, query: "dune"))
+        history.queryChanged(to: "")              // cleared (the only way to reach the Recent chips)
+        history.queryChanged(to: "dune")
+        XCTAssertEqual(history.pathChanged(from: 0, to: 1, query: "dune"), "dune")
+    }
+
+    func testASubmitCountsAsRecorded() {
+        var history = SearchHistoryOnOpen()
+        history.submitted("severance ")
+        XCTAssertNil(history.pathChanged(from: 0, to: 1, query: "severance"))
     }
 
     func testOncePerQuery() {

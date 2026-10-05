@@ -515,10 +515,6 @@ final class NuvioTVUITests: XCTestCase {
         return true
     }
 
-    /// Whether Search's inline keyboard is the GRID layout (a 6-column block on the left, results
-    /// to its RIGHT) rather than the LINEAR one FA87 uses (one row of keys across the top, results
-    /// below). Measured by the keyboard's frame: linear ≈ (80, 261, 1760, 66), grid is under 900
-    /// wide. S1 W1.
     /// Whether a key of the inline search keyboard holds focus, from ONE snapshot of the keyboard
     /// (reliable on the 26.5 runtime FA87 runs; keys never report focus on 27.0).
     private func searchKeyboardHasFocus(_ app: XCUIApplication) -> Bool {
@@ -534,9 +530,12 @@ final class NuvioTVUITests: XCTestCase {
     /// before the keyboard exists on a first open (1–2 s on FA87), and then focus lands on the
     /// first content below instead (S1 W4 run: a Recent Searches chip). Waits for the keyboard,
     /// then steps Down from the tab bar or Up/Left from content until a key holds focus.
+    /// 26.5-only beyond the wait: on the 27.0 runtime keys never report focus, so there it only
+    /// waits for the keyboard and returns true (stepping would walk Up into the tab bar).
     @discardableResult
     private func focusSearchKeyboard(_ app: XCUIApplication) -> Bool {
         guard app.keyboards.firstMatch.waitForExistence(timeout: 6) else { return false }
+        if ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 { pause(1); return true }
         let tabNames = ["Home", "Search", "Library", "Add-ons", "Settings", "Profile"]
         for _ in 0..<4 {
             if searchKeyboardHasFocus(app) { return true }
@@ -559,6 +558,10 @@ final class NuvioTVUITests: XCTestCase {
         return value == "Search movies & shows" ? "" : value
     }
 
+    /// Whether Search's inline keyboard is the GRID layout (a 6-column block on the left, results
+    /// to its RIGHT) rather than the LINEAR one FA87 uses (one row of keys across the top, results
+    /// below). Measured by the keyboard's frame: linear ≈ (80, 261, 1760, 66), grid is under 900
+    /// wide. S1 W1.
     private func searchKeyboardIsGrid(_ app: XCUIApplication) -> Bool {
         app.keyboards.firstMatch.exists && app.keyboards.firstMatch.frame.width < 900
     }
@@ -1445,13 +1448,13 @@ final class NuvioTVUITests: XCTestCase {
         // the empty field's value is the prompt text, so "non-empty" proves nothing).
         let query = "as"
         XCTAssertTrue(focusSearchKeyboard(app), "focus must reach the inline search keyboard before typing")
-        let valueBeforeTyping = searchField.value as? String
+        let valueBeforeTyping = searchFieldText(app)
         app.typeText(query)
         pause(1)
-        var typedSuccessfully = (searchField.value as? String) == query
-        if !typedSuccessfully && (searchField.value as? String) == valueBeforeTyping {
+        var typedSuccessfully = searchFieldText(app) == query
+        if !typedSuccessfully && searchFieldText(app) == valueBeforeTyping {
             // Synthesis changed nothing — fall back to the key walk (26.5-only, see its comment).
-            typedSuccessfully = typeOnKeyboard(app, query) && (searchField.value as? String) == query
+            typedSuccessfully = typeOnKeyboard(app, query) && searchFieldText(app) == query
         }
         pause(2.5) // debounce + results fetch
         shot(app, "19a2_after_query_typed")
@@ -1473,7 +1476,7 @@ final class NuvioTVUITests: XCTestCase {
         // Delete presses empty the field. query.count + 2 covers a partial/duplicated type.
         app.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: query.count + 2))
         pause(2)
-        XCTAssertNotEqual(searchField.value as? String, query, "the Delete presses must clear the typed query")
+        XCTAssertEqual(searchFieldText(app), "", "the Delete presses must clear the typed query")
 
         shot(app, "19b_discover_after")
         // Mandatory: the actual BUG-33(2) regression check — Discover must reappear after the
@@ -9460,7 +9463,13 @@ extension NuvioTVUITests {
         XCTAssertEqual(searchFieldText(app), query, "the typed query must survive the Menu / Right round trip")
         XCTAssertEqual(app.state, .runningForeground, "the app must still be in the foreground after the Menu / Right round trip")
         // "No sidebar row focused" alone would also pass with focus nowhere (the rows disarm on
-        // the hand-off): typing must land in the field again, which needs focus in the keyboard.
+        // the hand-off), and the hand-off's 1.0 s fallback can re-arm the panel after the first
+        // sample (review r1 P3-7): settle past it, then read real key focus (26.5) and type.
+        pause(1.5)
+        XCTAssertFalse(anySidebarRowFocused(), "the sidebar must not take focus back after the hand-off settles")
+        if ProcessInfo.processInfo.operatingSystemVersion.majorVersion < 27 {
+            XCTAssertTrue(searchKeyboardHasFocus(app), "Right must land focus on a key of the search keyboard")
+        }
         app.typeText("n")
         pause(1)
         XCTAssertEqual(searchFieldText(app), query + "n", "Right must land focus back in the search keyboard: typing after it must reach the field")

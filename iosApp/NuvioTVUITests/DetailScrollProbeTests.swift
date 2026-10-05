@@ -333,8 +333,11 @@ final class DetailScrollProbeTests: XCTestCase {
         // may have landed on content below it (S1 W4 run). Wait for it, then step back Up/Left to
         // it if no key holds focus (keys report focus on the 26.5 runtime).
         guard app.keyboards.firstMatch.waitForExistence(timeout: 6) else { return false }
-        for _ in 0..<3 where !keyboardHasFocus(app) {
-            XCUIRemote.shared.press(searchKeyboardIsGrid(app) ? .left : .up)
+        let tabNames = ["Home", "Search", "Library", "Add-ons", "Settings", "Profile"]
+        for _ in 0..<4 where ProcessInfo.processInfo.operatingSystemVersion.majorVersion < 27 && !keyboardHasFocus(app) {
+            // Down from the tab bar, Up/Left from content below the keyboard (review r1 P3-9).
+            let onTabBar = tabNames.contains { app.buttons[$0].exists && app.buttons[$0].hasFocus }
+            XCUIRemote.shared.press(onTabBar ? .down : (searchKeyboardIsGrid(app) ? .left : .up))
             pause(0.7)
         }
         app.typeText(text)
@@ -345,15 +348,17 @@ final class DetailScrollProbeTests: XCTestCase {
         return after == text
     }
 
-    /// Whether Search's inline keyboard is the GRID layout (6-column block on the left, results to
-    /// its RIGHT) rather than the LINEAR one (one row across the top, results below) — by the
-    /// keyboard's frame width (linear ≈ 1760, grid < 900). Duplicated from `NuvioTVUITests`.
+    /// Whether a key of the inline search keyboard holds focus, from one snapshot (26.5 runtime;
+    /// keys never report focus on 27.0). Duplicated from `NuvioTVUITests`.
     private func keyboardHasFocus(_ app: XCUIApplication) -> Bool {
         guard let root = try? app.keyboards.firstMatch.snapshot() else { return false }
         func walk(_ node: XCUIElementSnapshot) -> Bool { node.hasFocus || node.children.contains(where: walk) }
         return walk(root)
     }
 
+    /// Whether Search's inline keyboard is the GRID layout (6-column block on the left, results to
+    /// its RIGHT) rather than the LINEAR one (one row across the top, results below) — by the
+    /// keyboard's frame width (linear ≈ 1760, grid < 900). Duplicated from `NuvioTVUITests`.
     private func searchKeyboardIsGrid(_ app: XCUIApplication) -> Bool {
         app.keyboards.firstMatch.exists && app.keyboards.firstMatch.frame.width < 900
     }

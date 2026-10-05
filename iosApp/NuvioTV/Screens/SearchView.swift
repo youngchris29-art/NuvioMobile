@@ -31,7 +31,7 @@ struct SearchView: View {
         NavigationStack(path: $path) {
             ZStack {
                 Theme.Palette.background.ignoresSafeArea()
-                SearchFieldLayer(model: owner.model, queryBox: owner.queryBox)
+                SearchFieldLayer(owner: owner, queryBox: owner.queryBox)
             }
             .navigationDestination(for: TitleRoute.self) { route in
                 DetailView(preview: route.preview)
@@ -74,16 +74,21 @@ final class SearchViewOwner: ObservableObject {
 /// Carries the system search field. Observes only the query box, so results updates never re-apply
 /// `.searchable`'s text binding (the iPhone-keyboard flicker; see `SearchView`).
 private struct SearchFieldLayer: View {
-    let model: SearchViewModel
+    /// A plain reference, never observed (it never publishes anyway).
+    let owner: SearchViewOwner
     @ObservedObject var queryBox: SearchQueryBox
 
     var body: some View {
-        SearchContent(model: model, query: $queryBox.text)
+        SearchContent(model: owner.model, query: $queryBox.text)
             .searchable(text: $queryBox.text, prompt: Text("Search movies & shows"))
             // The iPhone keyboard's return key. The remote's inline keyboard has none.
-            .onSubmit(of: .search) { model.recordSearch(queryBox.text) }
+            .onSubmit(of: .search) {
+                owner.model.recordSearch(queryBox.text)
+                owner.historyOnOpen.submitted(queryBox.text)
+            }
             .onChange(of: queryBox.text) { _, newValue in
-                model.queryChanged(newValue)
+                owner.historyOnOpen.queryChanged(to: newValue)
+                owner.model.queryChanged(newValue)
             }
     }
 }

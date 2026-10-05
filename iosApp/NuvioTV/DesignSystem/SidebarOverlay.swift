@@ -293,6 +293,9 @@ struct SidebarOverlay: View {
     /// (two quick tab switches, or two Menu presses 0.2 s apart, otherwise let a stale timer
     /// re-arm or disarm the panel the user is currently using).
     @State private var focusGeneration = 0
+    /// S1 W2 review r1 P3-3: when the last hidden-bar redirect fired (`systemUptime`), so a reveal
+    /// that cannot take focus and resets focus straight back into the bar cannot loop.
+    @State private var lastStrandedReveal: TimeInterval = -.greatestFiniteMagnitude
     /// Settled mirror of the resting (scroll-position) rule — see `SidebarMetrics.restingShowSettle`
     /// and `updateRestingVisibility`. Never read `chrome.scrolledDownByTab` directly in
     /// `shouldShow`: that is the raw crossing signal, and reacting to it edge-for-edge is the
@@ -489,6 +492,8 @@ struct SidebarOverlay: View {
         // BELOW the panel, so the engine usually finds nothing to the right (test52's "Right went
         // nowhere"), and Search's system keyboard is never a geometric neighbour of the panel at
         // all (S1 Wave 0). Checked a turn later so a Right the engine DID act on is left alone.
+        // Focus lands on the tab's default placement (`resetFocus`), not where it was before the
+        // sidebar opened; before S1 Right did nothing at all (review r1 P3-5, accepted).
         .onMoveCommand { direction in
             guard direction == .right, armed else { return }
             DispatchQueue.main.async {
@@ -533,6 +538,12 @@ struct SidebarOverlay: View {
             sidebarMode: SidebarChrome.isEnabled(),
             sidebarHoldsFocus: chrome.isFocusedChrome
         ) else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastStrandedReveal > 1.5 else {
+            NSLog("[SidebarChrome] focus landed on the hidden tab bar again within 1.5 s; not revealing again")
+            return
+        }
+        lastStrandedReveal = now
         NSLog("[SidebarChrome] focus landed on the hidden tab bar; revealing the sidebar")
         chrome.requestReveal()
     }
@@ -628,8 +639,10 @@ struct SidebarOverlay: View {
                     armed = false
                     // r3b P2-2: this branch may be the last actor standing (a hand-off deferred to
                     // this reveal and retired). If nothing holds focus, put default placement back
-                    // in content rather than leave the BUG-47 dead end behind.
-                    if HiddenTabBarFocusBlocker.focusedItemIsNil() {
+                    // in content rather than leave the BUG-47 dead end behind. S1 W2 (review r1
+                    // P3-3): the same when focus sits on the invisible hidden-bar button a stranded
+                    // reveal was meant to rescue.
+                    if HiddenTabBarFocusBlocker.focusedItemIsNil() || HiddenTabBarFocusBlocker.focusedItemIsInHiddenBar() {
                         resetFocus(in: shellFocusScope)
                     }
                 }
@@ -675,6 +688,14 @@ struct HiddenTabBarFocusBlocker: UIViewRepresentable {
         guard let view = current, let window = view.window,
               let system = UIFocusSystem.focusSystem(for: window) else { return false }
         return system.focusedItem == nil
+    }
+
+    /// Whether focus sits inside the hidden bar this blocker disabled (S1 W2): the stranded state
+    /// tvOS's system search field leaves behind on Menu.
+    static func focusedItemIsInHiddenBar() -> Bool {
+        guard let view = current, let window = view.window,
+              let system = UIFocusSystem.focusSystem(for: window) else { return false }
+        return view.isInBlockedBar(system.focusedItem)
     }
 
     func makeUIView(context: Context) -> BlockerView { BlockerView() }
@@ -754,11 +775,18 @@ struct HiddenTabBarFocusBlocker: UIViewRepresentable {
         /// S1 W2: the landing check. By hierarchy (the next item is inside the bar this view
         /// blocked), not by UIKit's private button class name.
         private func redirectIfLandedInBar(_ note: Notification) {
-            guard let bar = blockedBar,
-                  let context = note.userInfo?[UIFocusSystem.focusUpdateContextUserInfoKey] as? UIFocusUpdateContext,
-                  let next = context.nextFocusedItem as? UIView,
-                  next.isDescendant(of: bar) else { return }
+            guard let context = note.userInfo?[UIFocusSystem.focusUpdateContextUserInfoKey] as? UIFocusUpdateContext,
+                  isInBlockedBar(context.nextFocusedItem) else { return }
             onFocusLandedInHiddenBar()
+        }
+
+        /// Inside the blocked bar by hierarchy, or (review r1 P3-4) a tab-bar button by class name:
+        /// the hierarchy check is proven on the 26.5 simulator, the class name on the Apple TV
+        /// (S1 Wave 0 run 4b). Only ever true in Sidebar mode, where this blocker exists.
+        func isInBlockedBar(_ item: UIFocusItem?) -> Bool {
+            guard let view = item as? UIView else { return false }
+            if let bar = blockedBar, view.isDescendant(of: bar) { return true }
+            return String(describing: type(of: view)).contains("UITabBarButton")
         }
 
         func restore() {
