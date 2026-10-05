@@ -259,8 +259,9 @@ private struct RailLeadingInsetKey: EnvironmentKey {
 
 extension EnvironmentValues {
     /// R1 (P4): how far an Always Visible navigation rail pushes a tab root's content right. The Stage
-    /// root ignores the safe area (and with it P4's `.safeAreaPadding`), so it reads this instead and
-    /// adds it to `StripGeometry.contentLeading`. Default 0; P4's `.railTabRoot` sets it.
+    /// root ignores the safe area (and with it the shell's reserved width, UIKit safe area on the tab
+    /// controller), so it reads this instead and adds it to `StripGeometry.contentLeading`. Default 0;
+    /// P4's `.railTabRoot` sets it.
     var railLeadingInset: CGFloat {
         get { self[RailLeadingInsetKey.self] }
         set { self[RailLeadingInsetKey.self] = newValue }

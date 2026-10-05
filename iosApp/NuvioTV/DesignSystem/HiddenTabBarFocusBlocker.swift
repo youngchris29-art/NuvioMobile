@@ -71,6 +71,10 @@ struct HiddenTabBarFocusBlocker: UIViewRepresentable {
     /// 0 outside Always Visible. Applied whenever the blocker finds the tab controller.
     static func setReservedLeadingInset(_ inset: CGFloat) {
         reservedLeadingInset = inset
+        #if DEBUG
+        // A/B knob for the UI legs: the environment half (`\.railLeadingInset`) stays on.
+        if UserDefaults.standard.bool(forKey: "debug.railShellInsetOff") { reservedLeadingInset = 0 }
+        #endif
         current?.applyReservedInset()
     }
 
@@ -256,12 +260,19 @@ struct HiddenTabBarFocusBlocker: UIViewRepresentable {
         }
 
         func restore() {
-            if let bar = blockedBar, !bar.isUserInteractionEnabled {
-                bar.isUserInteractionEnabled = true
-            }
-            // A torn-down rail leaves no reserved width behind.
-            if let tab = tabController, tab.additionalSafeAreaInsets.left != 0 {
-                tab.additionalSafeAreaInsets.left = 0
+            // Review r3 (P3-1): the bar and the reserved width only for the registered blocker. On
+            // a remount (a theme, font or visibility change re-identifies the shell) both TabView
+            // controllers are briefly children of the root and this blocker may hold the incoming
+            // one; clearing it would drop the new shell to 140 pt until its blocker re-applied.
+            // Rail → Tabs and a profile exit register no successor, so they still clear.
+            if HiddenTabBarFocusBlocker.current === self {
+                if let bar = blockedBar, !bar.isUserInteractionEnabled {
+                    bar.isUserInteractionEnabled = true
+                }
+                // A torn-down rail leaves no reserved width behind.
+                if let tab = tabController, tab.additionalSafeAreaInsets.left != 0 {
+                    tab.additionalSafeAreaInsets.left = 0
+                }
             }
             // P4 §2.3: a torn-down rail must never leave content non-interactive.
             if let view = gatedView {

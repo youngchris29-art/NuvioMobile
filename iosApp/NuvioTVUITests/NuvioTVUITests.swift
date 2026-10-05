@@ -359,6 +359,29 @@ final class NuvioTVUITests: XCTestCase {
 
     /// Press `direction` until `element` has focus (or the budget runs out).
     @discardableResult
+    /// Whether `element` holds focus, by frame when its own `hasFocus` never reports. On tvOS 26.5
+    /// a `Menu`'s focusable node is not the element that carries its identifier or label: an open
+    /// menu's options are labelled `Other` elements inside unlabelled `Cell`s, and the Cell is what
+    /// reports focus (W3 re-run tree dump); the folder Edit menu's focused node is an unlabelled
+    /// `Other` over its button. Same centre (±12 pt vertically, ±40 pt horizontally) counts.
+    private func hasFocusByFrame(_ app: XCUIApplication, _ element: XCUIElement) -> Bool {
+        guard element.exists else { return false }
+        if element.hasFocus { return true }
+        let focused = app.descendants(matching: .any).matching(NSPredicate(format: "hasFocus == true")).firstMatch
+        guard focused.exists else { return false }
+        let a = focused.frame, b = element.frame
+        return abs(a.midY - b.midY) < 12 && abs(a.midX - b.midX) < 40
+    }
+
+    private func moveFocus(_ app: XCUIApplication, _ direction: XCUIRemote.Button, untilFrameOf element: XCUIElement, max: Int = 12) -> Bool {
+        for _ in 0..<max {
+            if hasFocusByFrame(app, element) { return true }
+            remote.press(direction)
+            pause(0.7)
+        }
+        return hasFocusByFrame(app, element)
+    }
+
     private func moveFocus(_ direction: XCUIRemote.Button, until element: XCUIElement, max: Int = 12) -> Bool {
         for _ in 0..<max {
             if element.exists && element.hasFocus { return true }
@@ -9446,9 +9469,19 @@ extension NuvioTVUITests {
     /// and on 26.5 a real key-focus read and a typed character. Reaches Search through the rail by
     /// a Left from Stage Home's first card (`openTab`'s rail branch), never by Menu.
     func test93RailMenuFromSearchKeyboard() throws {
+        try railMenuFromSearchKeyboard(extra: [])
+    }
+
+    /// W3 re-run A/B: test93's walk with the shell's reserved width (Always Visible's UIKit safe
+    /// area on the tab controller) switched off by the DEBUG `-debug.railShellInsetOff YES` knob.
+    func test93bRailMenuFromSearchKeyboardShellInsetOff() throws {
+        try railMenuFromSearchKeyboard(extra: ["-debug.railShellInsetOff", "YES"])
+    }
+
+    private func railMenuFromSearchKeyboard(extra: [String]) throws {
         let query = "du"
 
-        let app = launchToHome(extraArguments: ["-sidebar_style", "rail"], forceFreshLaunch: true, homeLayout: "stage")
+        let app = launchToHome(extraArguments: ["-sidebar_style", "rail"] + extra, forceFreshLaunch: true, homeLayout: "stage")
         defer { _ = launchToHome(forceFreshLaunch: true) } // the style was only a launch argument
         pause(1.5)
         guard railMode(app) else {
@@ -9668,10 +9701,12 @@ extension NuvioTVUITests {
         // A tvOS `Menu`'s options surface as buttons on some runtimes and as menu items or cells on
         // others: take the first type that has the label.
         func menuElement(_ label: String) -> XCUIElement {
-            for candidate in [app.buttons[label], app.menuItems[label], app.cells[label]] where candidate.exists {
+            let candidates = [app.collectionViews.otherElements[label], app.buttons[label],
+                              app.menuItems[label], app.cells[label]]
+            for candidate in candidates where candidate.exists {
                 return candidate
             }
-            return app.buttons[label]
+            return app.collectionViews.otherElements[label]
         }
         func waitForMenuElement(_ label: String, timeout: TimeInterval) -> XCUIElement? {
             let deadline = Date().addingTimeInterval(timeout)
@@ -9684,8 +9719,8 @@ extension NuvioTVUITests {
         }
         var target = waitForMenuElement(option, timeout: 3)
         if target == nil, let submenu, let nested = waitForMenuElement(submenu, timeout: 2) {
-            if !moveFocus(.down, until: nested, max: 5) { _ = moveFocus(.up, until: nested, max: 5) }
-            if nested.hasFocus {
+            if !moveFocus(app, .down, untilFrameOf: nested, max: 5) { _ = moveFocus(app, .up, untilFrameOf: nested, max: 5) }
+            if hasFocusByFrame(app, nested) {
                 remote.press(.select)
                 pause(1.0)
             }
@@ -9701,10 +9736,10 @@ extension NuvioTVUITests {
             pause(1.0)
             throw XCTSkip("\(what): the menu never exposed a '\(option)' option as a button, menu item or cell on this runtime — nothing was changed")
         }
-        if !target.hasFocus, !moveFocus(.down, until: target, max: 5) {
-            _ = moveFocus(.up, until: target, max: 5)
+        if !hasFocusByFrame(app, target), !moveFocus(app, .down, untilFrameOf: target, max: 5) {
+            _ = moveFocus(app, .up, untilFrameOf: target, max: 5)
         }
-        guard target.hasFocus else {
+        guard hasFocusByFrame(app, target) else {
             remote.press(.menu)
             pause(1.0)
             throw XCTSkip("\(what): the menu's '\(option)' option would not take focus — nothing was changed")
@@ -10097,7 +10132,7 @@ extension NuvioTVUITests {
         let editMenu = app.descendants(matching: .any)["folder.editMenu"].firstMatch
         func gridShowing() -> Bool { app.descendants(matching: .any)["folder_header_state"].exists }
         func rowsShowing() -> Bool { !stageProbeLabel(app, "folder_rows_state").isEmpty }
-        func focusEditMenu() -> Bool { moveFocus(.up, until: editMenu, max: 4) }
+        func focusEditMenu() -> Bool { moveFocus(app, .up, untilFrameOf: editMenu, max: 4) }
 
         guard focusSeededFolderTile(app) else {
             throw XCTSkip("the seeded folder tile never took focus on Stage Home — the collections seed is refused on a signed-in account")
@@ -10118,7 +10153,7 @@ extension NuvioTVUITests {
         XCTAssertTrue(pollUntil(6) { gridShowing() }, "Grid must swap in today's grid (folder_header_state)")
         XCTAssertTrue(app.buttons["All"].exists, "the grid's chips must be back, All included")
         XCTAssertFalse(rowsShowing(), "folder_rows_state must leave with the Rows page")
-        XCTAssertTrue(editMenu.exists && editMenu.hasFocus, "choosing a layout must keep focus on the Edit menu (P2 §2.6)")
+        XCTAssertTrue(hasFocusByFrame(app, editMenu), "choosing a layout must keep focus on the Edit menu (P2 §2.6)")
 
         remote.press(.menu)
         pause(3.0)

@@ -76,6 +76,9 @@ final class StripPagerBox {
     /// Stales every rung of an older focus request.
     var restoreGeneration = 0
     var requestSequence = 0
+    /// Review r3 (P3-3): Reduce Motion, mirrored here so a page started from the handle's closure
+    /// (which runs on the pager value copied at install) reads the live setting.
+    var reduceMotion = false
 
     // MARK: Mounted window (review r1, A P2-5)
     //
@@ -307,6 +310,9 @@ struct StripPager<Row: View>: View {
         .onChange(of: rowKeys, initial: true) { _, keys in
             rowKeysChanged(keys)
         }
+        .onChange(of: reduceMotion, initial: true) { _, motion in
+            box.reduceMotion = motion
+        }
         .onChange(of: probeConfiguration, initial: true) { _, _ in
             guard ownsProbe else { return }
             StageStripProbe.shared.configure(pageHeight: geometry.pageHeight,
@@ -418,7 +424,7 @@ struct StripPager<Row: View>: View {
             alongside?()
             return
         }
-        let seconds = reduceMotion ? 0 : StageStripTuning.pageSeconds
+        let seconds = box.reduceMotion ? 0 : StageStripTuning.pageSeconds
         // A glide longer than the mounted window keeps every row it passes mounted until it ends.
         let span = min(previous, index)...max(previous, index)
         let longGlide = span.count > StripMountWindow.radius + 1

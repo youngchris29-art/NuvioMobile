@@ -150,8 +150,9 @@ struct ContentView: View {
         //    class exactly — three device rounds proved a hidden→shown bar can freeze mid-slide on
         //    hardware — so the mode switches the only way that has ever been safe: the shell is
         //    rebuilt, and the new tree resolves one constant value for its whole lifetime.
-        //  * `railVisibility` decides whether every `Tab` closure carries the rail's reserved
-        //    leading inset, a structural change to the shell (H9, P4 §4.3).
+        //  * `railVisibility` decides whether the shell reserves the rail's leading width (the tab
+        //    controller's UIKit safe area, set by the rail) and what `.railTabRoot` hands down as
+        //    `\.railLeadingInset` / `\.rowEdgeMargins` (H9, P4 §4.3).
         //  * `uiFont` is read through `Theme.Font`'s static cache, the same static-read pattern
         //    `Palette.accent` uses, so it needs the same re-identification to take effect.
         // Selected tab, Settings path and the two focus hints above are all held ABOVE this
@@ -455,7 +456,8 @@ struct MainTabView: View {
         // tab's kept-alive subtree: pruned or deferred with it, re-created per tab, and
         // re-evaluated on every `Tab` closure rebuild — the T3 class again. As an overlay it is a
         // floating layer; the only content geometry it changes is Always Visible's leading inset,
-        // applied structurally by `.railTabRoot`, and tabs mode gets no view at all.
+        // UIKit safe area on the tab controller (`HiddenTabBarFocusBlocker.setReservedLeadingInset`)
+        // plus `.railTabRoot`'s environment values, and tabs mode gets no view at all.
         //
         // BOTH shared objects are handed over as explicit parameters, and `tabBarVisibility` has
         // to be (rc2 fix, 2026-09-06). The `.environment(\.tabBarVisibility,)` above does NOT
