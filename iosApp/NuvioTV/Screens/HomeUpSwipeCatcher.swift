@@ -88,11 +88,11 @@ enum HomeUpSwipeDecision {
 /// Down-swipe panel). A `.background` representable is a SIBLING of the focused card, not an
 /// ancestor of it, so a recognizer on its own view would never see the swipe. Installing on
 /// `window` in `didMoveToWindow` puts the recognizer above every focusable thing in the app —
-/// `HiddenTabBarFocusBlocker.BlockerView` (`SidebarOverlay.swift`) is the precedent for reaching
+/// `HiddenTabBarFocusBlocker.BlockerView` (`HiddenTabBarFocusBlocker.swift`) is the precedent for reaching
 /// the window from a zero-size representable.
 ///
 /// **The cost of that reach, and how it is paid.** This recognizer sees every indirect swipe in
-/// the app: the player, Detail, Search, Settings, the sidebar. It is made inert everywhere else by
+/// the app: the player, Detail, Search, Settings, the rail. It is made inert everywhere else by
 /// the GUARDS on the callback, not by where it is attached — see `HomeView.handleUpSwipe`, which
 /// declines unless Home's rows are the pinned, uncovered, focused surface. The recognizer itself
 /// is deliberately passive: `cancelsTouchesInView = false` and unconditional simultaneous

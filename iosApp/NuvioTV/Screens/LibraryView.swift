@@ -53,9 +53,9 @@ struct LibraryView: View {
                 }
                 .scrollClipDisabled()
                 .reportsScrollToTabBar(tab: "Library")
-                // FEAT-30: Menu summons the sidebar in sidebar mode (a second Menu, with focus in
-                // the sidebar, exits as before). No modifier at all in tabs mode.
-                .sidebarMenuReveal()
+                // FEAT-30 / H9: Menu summons the rail in Rail mode (a second Menu, with focus in
+                // the rail, exits as before). No modifier at all in tabs mode.
+                .railMenuReveal()
             }
             // Simkl: leaving a status also clears the title's watched history and rating there, so
             // the hold menu's remove asks first (`LibraryRepository.removalNeedsConfirmation`).

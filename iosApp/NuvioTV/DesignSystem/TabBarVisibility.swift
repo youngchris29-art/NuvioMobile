@@ -167,20 +167,20 @@ private struct TabBarImmersiveHideModifier: ViewModifier {
     /// focus. Launch-latched like every other probe knob; release-inert unless passed.
     nonisolated static let sidebarSpike = UserDefaults.standard.bool(forKey: "debug.sidebarSpike")
 
-    /// FEAT-30: the real, shipping term the spike knob above was standing in for — with the
-    /// Omni-style sidebar on, the system tab bar is gone for the whole session and the sidebar is
-    /// the only chrome. The knob stays as an alias (spike OR sidebar mode ⇒ hidden) so a Phase 0
+    /// FEAT-30 / H9: the real, shipping term the spike knob above was standing in for — in Rail mode
+    /// (FEAT-30's Sidebar before it) the system tab bar is gone for the whole session and the rail
+    /// is the only chrome. The knob stays as an alias (spike OR rail mode ⇒ hidden) so a Phase 0
     /// hardware run can still force the hidden-bar geometry without switching the setting.
     ///
     /// A PLAIN INSTANCE READ evaluated in `body`, deliberately NOT a `nonisolated static let` like
     /// the spike beside it. The mode may only change across `ContentView`'s
-    /// `.id(theme|sidebar|font)` remount — and a remount re-creates VIEWS, not type storage, so a
-    /// launch-latched static would keep resolving the old mode until the app was relaunched,
-    /// leaving the bar and the sidebar both on screen (or both off). One `UserDefaults` lookup per
+    /// `.id(theme|style|visibility|font)` remount — and a remount re-creates VIEWS, not type storage,
+    /// so a launch-latched static would keep resolving the old mode until the app was relaunched,
+    /// leaving the bar and the rail both on screen (or both off). One `UserDefaults` lookup per
     /// body evaluation is the cost, and this body is already narrow by construction: it
     /// re-evaluates on an `immersiveHidden` publish, i.e. a Detail push/pop, never on a tab switch
     /// or a scroll (see the T3 archaeology on this type and on `TabBarVisibility.immersiveHidden`).
-    private var sidebarMode: Bool { SidebarChrome.isEnabled() }
+    private var railMode: Bool { NavigationChrome.isRail() }
 
     func body(content: Content) -> some View {
         content
@@ -190,7 +190,7 @@ private struct TabBarImmersiveHideModifier: ViewModifier {
             // force-hides. Rounds 1–3 proved any hidden→shown reshow can freeze mid-slide
             // on hardware (clipped at the top until focus re-entered the bar), so the fix
             // is to not have a reshow.
-            .toolbarVisibility((immersive || Self.sidebarSpike || sidebarMode) ? .hidden : .automatic, for: .tabBar)
+            .toolbarVisibility((immersive || Self.sidebarSpike || railMode) ? .hidden : .automatic, for: .tabBar)
             // T3: use the PAYLOAD from `onReceive`, not the property — `@Published` emits on
             // willSet, same house rule as HomeView.swift's hero-trailer sync (~L1762-1768:
             // "`@Published` emits on willSet, so use the payload, not the property"). A
@@ -255,10 +255,11 @@ nonisolated struct TabBarScrollSample: Equatable, Sendable {
 /// state.
 private struct TabBarScrollAutoHide: ViewModifier {
     @State private var hidesBar = false
-    /// FEAT-30: the sidebar's own copy of this hysteresis, so the floating panel can get out of
-    /// the way while the user browses rows. Read through `@Environment` (no observation), and
-    /// written only on the same crossings the local latch flips on — never per scroll tick.
-    @Environment(\.sidebarChrome) private var sidebarChrome
+    /// FEAT-30 / H9: the rail's own copy of this hysteresis, so Hide While Browsing can get the
+    /// rail out of the way while the user browses rows. Read through `@Environment` (no
+    /// observation), and written only on the same crossings the local latch flips on — never per
+    /// scroll tick.
+    @Environment(\.navigationChrome) private var navigationChrome
     /// BUG-30/66/62: which tab root this is, for the About-pane diagnostics readout.
     let tab: String
     /// Optional mirror of `hidesBar` for the attaching screen's own use (BUG-27: Home keys its
@@ -286,7 +287,7 @@ private struct TabBarScrollAutoHide: ViewModifier {
     private static let hideArm: CGFloat = TabBarScrollSample.hideArm
     private static let showArm: CGFloat = TabBarScrollSample.showArm
 
-    /// FEAT-30: tab NAME → `TabView` selection value, so the sidebar can key its per-tab
+    /// FEAT-30 / H9: tab NAME → `TabView` selection value, so the rail can key its per-tab
     /// scrolled-down map by the same number `selectedTab` carries. A table here rather than a new
     /// parameter on `reportsScrollToTabBar` — the four call sites (Home, Search, Library, Add-ons)
     /// keep their existing `tab:` signature, and the names they already pass are the same ones
@@ -304,12 +305,12 @@ private struct TabBarScrollAutoHide: ViewModifier {
             if !hidesBar, residual > Self.hideArm {
                 hidesBar = true
                 isScrolledDown?.wrappedValue = true
-                reportToSidebar(true)
+                reportToRail(true)
                 crossedHysteresis = true
             } else if hidesBar, residual < Self.showArm {
                 hidesBar = false
                 isScrolledDown?.wrappedValue = false
-                reportToSidebar(false)
+                reportToRail(false)
                 crossedHysteresis = true
             }
             // BUG-66 evidence probe (2026-09-10): `TabBarStateProbe` samples the SYSTEM tab bar's
@@ -330,9 +331,11 @@ private struct TabBarScrollAutoHide: ViewModifier {
     /// even touch the shared model, so the default (unconnected) instance every non-shell screen
     /// falls back to stays untouched too. One `UserDefaults` read per CROSSING — the hysteresis
     /// above is what makes that a handful of reads per page walk rather than one per frame.
-    private func reportToSidebar(_ scrolledDown: Bool) {
-        guard SidebarChrome.isEnabled(), let index = Self.tabIndexByName[tab] else { return }
-        sidebarChrome.setScrolledDown(tab: index, scrolledDown)
+    /// A `.scroll` write (P4 #8): on Home in Stage the strip's page write owns the rail and lands
+    /// first, so this crossing writes the same value and is a no-op (R4).
+    private func reportToRail(_ scrolledDown: Bool) {
+        guard NavigationChrome.isRail(), let index = Self.tabIndexByName[tab] else { return }
+        navigationChrome.setScrolledDown(tab: index, scrolledDown)
     }
 }
 

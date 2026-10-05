@@ -850,8 +850,8 @@ enum Theme {
         /// logging its BUDGET MISMATCH line). Padding the top back by the delta keeps 455 valid
         /// instead of forking the constant per chrome mode.
         ///
-        /// SHIPS AS 0, and 0 means "no modifier applied at all" (`sidebarTopCompensation()` in
-        /// SidebarOverlay.swift branches structurally), so an untouched build in either mode is
+        /// SHIPS AS 0, and 0 means "no modifier applied at all" (`railTopCompensation()` in
+        /// NavigationRail.swift branches structurally), so an untouched build in either mode is
         /// unaffected. The Phase 0 device spike (`-debug.sidebarSpike YES`) measures the real delta
         /// against 455 and the shipping value replaces the 0 below.
         ///

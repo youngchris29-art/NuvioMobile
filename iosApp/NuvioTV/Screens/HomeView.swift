@@ -29,18 +29,18 @@ struct HomeView: View {
     /// (`PosterCard`, `CatalogRowView`, `FolderTile`, `SearchView`), so any test override still
     /// flows through the environment the same way it always did.
     @Environment(\.posterStyle) private var posterStyle
-    /// FEAT-30: the floating sidebar's shared state. Held, never OBSERVED — `@Environment` on a
-    /// custom key hands over the object without subscribing to `objectWillChange`, which is the
-    /// whole point here: Home must not re-render because the sidebar took focus or another tab
-    /// crossed its scroll hysteresis. Home's only use is the Menu-press reveal below, and it reads
-    /// the model inside that closure, at press time.
-    @Environment(\.sidebarChrome) private var sidebarChrome
+    /// H9 (FEAT-30's sidebar before it): the navigation rail's shared state. Held, never OBSERVED —
+    /// `@Environment` on a custom key hands over the object without subscribing to
+    /// `objectWillChange`, which is the whole point here: Home must not re-render because the rail
+    /// took focus or another tab crossed its scroll hysteresis. Home reads it only inside closures
+    /// (the Menu-press reveal below, the swipe guard, Classic's rail return route), at event time.
+    @Environment(\.navigationChrome) private var navigationChrome
     /// rc13 (BUG-112 swipe): the shell's coverage signal, for `handleUpSwipe`'s "is Home even the
     /// frontmost surface" guard — `PinnedRowSettle.hostCovered` only knows about PUSHES over Home,
     /// and every tab stays mounted across a switch, so a swipe in Search would otherwise reach
     /// Home's window-level recognizer with nothing to stop it.
     ///
-    /// Held, never OBSERVED, for the same reason `sidebarChrome` above is: `@Environment` on a
+    /// Held, never OBSERVED, for the same reason `navigationChrome` above is: `@Environment` on a
     /// custom key hands over an `ObservableObject` without subscribing to `objectWillChange`
     /// (`HomeHeroBackdrop` subscribes explicitly with `onReceive` where it needs to), so Home does
     /// not re-render on every tab switch. The one read happens inside a gesture callback, at swipe
@@ -658,8 +658,9 @@ struct HomeView: View {
     /// The live focus request the rows observe (`PinnedRowUpFallback.swift`).
     @State private var rowFocusRequest = PinnedRowFocusRequest.none
     @State private var rowFocusRequestSeq = 0
-    /// Stales every scheduled rung of an older fallback — the same discipline
-    /// `SidebarOverlay.handOffFocusToContent` uses for its verified re-issues.
+    /// Stales every scheduled rung of an older fallback — the same discipline the rail's
+    /// `NavigationRail.fallbackHandOff` (FEAT-30's `handOffFocusToContent`) uses for its verified
+    /// re-issues.
     @State private var upFallbackGeneration = 0
     /// Review fixes F1/F2: the row key the CURRENT attempt is trying to focus, or nil when no
     /// attempt is live. The sole reader/writer outside `endUpFallback` is `beginUpFallback`
@@ -796,15 +797,16 @@ struct HomeView: View {
                     .font(.system(size: 8))
                     .opacity(0.011)
                     .accessibilityIdentifier("debug_upfallback")
-                // FEAT-30 (invisible, harness-readable): which navigation chrome this build is
-                // rendering under, and the top compensation it applied. `comp` is what a device
-                // bisect of `debug.sidebarTopCompensation` reads back to confirm the launch
-                // argument actually landed — the sidebar's own state lives in the overlay's
-                // separate `sidebar_state` probe, which only exists while the panel is shown.
-                Text("debug_sidebar mode=\(SidebarChrome.isEnabled() ? 1 : 0) comp=\(Int(SidebarChrome.topCompensation))")
+                // FEAT-30 / H9 (invisible, harness-readable): which navigation chrome this build is
+                // rendering under (`mode=tabs|rail`), the rail's visibility, the leading inset Always
+                // Visible adds to every tab root (36 or 0), and the top compensation applied. `comp`
+                // is what a device bisect of `debug.sidebarTopCompensation` reads back to confirm the
+                // launch argument actually landed — the rail's own state lives in its always-mounted
+                // `rail_state` probe. Replaces FEAT-30's `debug_sidebar`.
+                Text(verbatim: "debug_navchrome mode=\(NavigationChrome.isRail() ? "rail" : "tabs") vis=\(NavigationChrome.railVisibility().rawValue) inset=\(Int(NavigationChrome.contentSafeAreaExtra(sideSafeArea: PinnedRowGeometry.sideSafeArea, reservesWidth: NavigationChrome.reservesWidth()).rounded())) comp=\(Int(NavigationChrome.topCompensation))")
                     .font(.system(size: 8))
                     .opacity(0.011)
-                    .accessibilityIdentifier("debug_sidebar")
+                    .accessibilityIdentifier("debug_navchrome")
                 // beta.19-rc1 verdict (M3/R2 BUG-133, B2 BUG-131): the trailer event and listener
                 // lifecycle readouts for the UI legs (test85/85B/86/91). LEAF views, each observing
                 // its own DEBUG sink, so a trailer event re-renders one label and never this body
@@ -994,14 +996,14 @@ struct HomeView: View {
                     // documented failure mode. Giving hero-off users Menu-to-top needs a
                     // device-verified anchor plan, not a flag change here.
                     //
-                    // FEAT-30 adds the OTHER branch and touches nothing in this one: the
+                    // FEAT-30 / H9 add the OTHER branch and touch nothing in this one: the
                     // scrolled-down BUG-27 handler above is byte-identical in both chrome modes,
                     // and the `else` — which is `nil` today, i.e. "Menu keeps its default root
-                    // behaviour" — becomes the sidebar reveal in sidebar mode only. Ordering is
+                    // behaviour" — becomes the rail reveal in Rail mode only. Ordering is
                     // deliberate: from down the page Menu still means "back to the top", the way
-                    // it does now and the way every tvOS app does it; the sidebar is what Menu
+                    // it does now and the way every tvOS app does it; the rail is what Menu
                     // means once you are already at the top, where the handler used to detach.
-                    // In tabs mode `sidebarMenuRevealHandler` is `nil`, so this site resolves
+                    // In tabs mode `railMenuRevealHandler` is `nil`, so this site resolves
                     // exactly as it always has.
                     .onExitCommand(perform: (isScrolledDown && !heroItems.isEmpty) ? {
                         if heroNuvioStyle {
@@ -1052,14 +1054,15 @@ struct HomeView: View {
                                 }
                             }
                         }
-                    } : sidebarMenuRevealHandler)
+                    } : railMenuRevealHandler)
                     // FEAT-30 (2026-09-05) briefly added an `.onMoveCommand` here too, summoning
                     // the sidebar on an Up press the focus engine could not place — see
-                    // `SidebarOverlay.swift`'s `SidebarMenuRevealModifier` doc comment for the full
-                    // arc (device spike → settle-window gate → BUG-98 gate removal → the 2026-09-09
+                    // `RailMenuRevealModifier`'s doc comment (NavigationRail.swift) for the arc
+                    // (device spike → settle-window gate → BUG-98 gate removal → the 2026-09-09
                     // rc7 tester verdict that reveal-on-Up is unusable at all). Christian's decision
                     // was to drop the Up-reveal path everywhere, so that modifier (and the
-                    // `sidebarUpRevealHandler` it read) is gone; Menu (above) is the only reveal.
+                    // `sidebarUpRevealHandler` it read) is gone. The rail (H9) adds a failed LEFT
+                    // from a row's first card, never an Up; Menu (above) is the other way in.
                     // Tab-bar clip after a D-pad walk back to the top: STILL OPEN (see tracker).
                     // Rounds 5–6 tried completing the scroll to the true top when focus
                     // re-entered the hero; both caused worse regressions on device (wedged Down
@@ -1089,6 +1092,9 @@ struct HomeView: View {
                     // scrolls to "home_top" explicitly and is unaffected either way. Unverified
                     // until a device walk says the probe's `residual` dropped from 67 toward 0.
                 }
+                // H9 (P4 §2.5, §6.2): Classic's rail return route, registered while the Classic
+                // rows exist (a Home Layout flip mounts and unmounts it with them). Rail mode only.
+                .railReturnRoute { classicRailRoute }
                 }  // Home Stage & Strip (P1 E5): closes the Classic `else`.
             }
             .onReceive(heroTimer) { _ in
@@ -1793,9 +1799,9 @@ struct HomeView: View {
     ///    tab is selected, or the root deep-link cover is up. Tabs stay mounted across a switch
     ///    (that is what `homeSurfaceCovered` exists to say), so without this a swipe in Search or
     ///    Settings would run Home's ladder underneath them.
-    ///  - Not while the SIDEBAR chrome holds focus. The rc7 verdict stands — no Up gesture
-    ///    anywhere may surface or drive the sidebar — and a swipe while its rows have focus is
-    ///    the sidebar's own business.
+    ///  - Not while the navigation RAIL holds focus (FEAT-30's sidebar before it). The rc7 verdict
+    ///    stands — no Up gesture anywhere may surface or drive the chrome — and a swipe while its
+    ///    items have focus is the rail's own business.
     ///  - Not while Home's own Continue-Watching COVER is up (`resume`). It presents the stream
     ///    picker and, through it, the player: neither `hostCovered` (a `NavigationPath` push) nor
     ///    `homeSurfaceCovered` (tab selection / push depth / the root deep-link cover) sees a
@@ -1818,7 +1824,7 @@ struct HomeView: View {
         guard pinned else { return }
         guard !PinnedRowSettle.hostCovered else { return }
         guard !tabBarVisibility.homeSurfaceCovered else { return }
-        guard !sidebarChrome.isFocusedChrome else { return }
+        guard !navigationChrome.isFocusedChrome else { return }
         guard resume == nil else { return }
         guard activeUpFallbackTarget == nil else { return }
         if focusedRowKey != nil {
@@ -1849,7 +1855,7 @@ struct HomeView: View {
     /// **Why it must move the shelf.** `isScrolledDown` does not drive the bar: the tvOS 26 bar is
     /// `.toolbarVisibility(.automatic)` and expands natively off the rows ScrollView's own offset
     /// (`TabBarVisibility`'s doc records the three rounds that established this, and
-    /// `TabBarScrollAutoHide` only mirrors a hysteresis for the Menu handler and the sidebar). So
+    /// `TabBarScrollAutoHide` only mirrors a hysteresis for the Menu handler and the rail). So
     /// "report the bar as expanded" is not a thing that exists — the only honest fix is to put the
     /// shelf back where the bar expands on its own, which is the top.
     ///
@@ -1858,7 +1864,7 @@ struct HomeView: View {
     ///    caller is the pinned header's own hook, and `handleUpSwipe` already checked both.
     ///  - `isScrolledDown` — at the top there is nothing to scroll and the bar is already there;
     ///    firing anyway would animate a no-op scroll under the user on every Up at rest.
-    ///  - NOT in sidebar mode. There is no system bar to reach: `SidebarOverlay` replaces it and
+    ///  - NOT in Rail mode. There is no system bar to reach: `NavigationRail` replaces it and
     ///    the hidden `UITabBar` is deliberately made unfocusable (`HiddenTabBarFocusBlocker`).
     ///    Menu is the scroll-to-top there, by the same rc7 decision that removed every Up-reveal.
     ///  - Not while Home is COVERED (BUG-109) — the same rule every other scroll on this screen
@@ -1893,7 +1899,7 @@ struct HomeView: View {
         if source == "press" { upInput.lastUpInputAt = ProcessInfo.processInfo.systemUptime }
         if revealTopAfterUpIntoHero(pinned: heroHeaderVisible, proxy: proxy, source: source) { return }
         guard heroHeaderVisible, heroFocused, isScrolledDown else { return }
-        guard !SidebarChrome.isEnabled() else { return }
+        guard !NavigationChrome.isRail() else { return }
         guard !PinnedRowSettle.hostCovered else { return }
         guard !tabBarVisibility.homeSurfaceCovered else { return }
         guard resume == nil else { return }
@@ -1926,7 +1932,7 @@ struct HomeView: View {
     ///
     /// Review fix (F2a): a claim for a DIFFERENT row than the one `focusedRowKey` already names
     /// retires whatever attempt is currently live via `endUpFallback` — the same discipline
-    /// `SidebarOverlay.handOffFocusToContent` uses for its own re-issues. This is what stops a
+    /// `NavigationRail.fallbackHandOff` uses for its own re-issues. This is what stops a
     /// landed fallback from later pulling focus back: the moment the target row's own claim
     /// lands, generation moves past every rung's captured value, so a rung that fires afterward
     /// (whether because the user pressed Down immediately, or for any other reason) finds
@@ -1955,6 +1961,10 @@ struct HomeView: View {
     /// window, since nil can never equal the origin row's key.
     private func handleRowFocusOwnership(_ rowKey: String, owns: Bool) {
         if owns {
+            // H9 (P4 §6.2): the row Classic's rail route returns to. A box write (the BUG-126 rule:
+            // a row hop never re-renders Home), and never cleared on release, unlike
+            // `focusedRowKey`, so it still names the row while the rail holds focus.
+            upInput.lastOwnedRowKey = rowKey
             if focusedRowKey != rowKey {
                 let origin = focusedRowKey
                 // beta.18 verdict (BUG-126): one frame-timing window per row hop (no-op unless
@@ -2028,7 +2038,7 @@ struct HomeView: View {
                                                   rowsScrolledPastTop: rowsScrolledPastTop,
                                                   window: Self.upIntoHeroWindow)
         if case .declined(let reason) = verdict { return decline(reason) }
-        guard !SidebarChrome.isEnabled() else { return decline("sidebar") }
+        guard !NavigationChrome.isRail() else { return decline("rail") }
         guard !PinnedRowSettle.hostCovered else { return decline("covered") }
         guard !tabBarVisibility.homeSurfaceCovered else { return decline("covered") }
         guard resume == nil else { return decline("resume") }
@@ -2108,8 +2118,8 @@ struct HomeView: View {
     }
 
     /// The hand-off ladder. Each rung is cheaper-first and only runs if the one before it did not
-    /// land, verified against `focusedRowKey` — the pattern `SidebarOverlay.handOffFocusToContent`
-    /// established (a reset issued into a subtree that is still building lands nowhere, so it is
+    /// land, verified against `focusedRowKey` — the pattern FEAT-30's `handOffFocusToContent` (now
+    /// `NavigationRail.fallbackHandOff`) established (a reset issued into a subtree that is still building lands nowhere, so it is
     /// re-issued and finally escalated rather than assumed).
     ///
     ///  1. t=0    ASK. Write the row's own `@FocusState` through the environment request. When the
@@ -2463,8 +2473,10 @@ struct HomeView: View {
                 // Up never opened anything here before FEAT-30 and that is what he wants back. The
                 // actual rc6 bug was a touch-surface swipe flicking the panel open and immediately
                 // closed again, not a lost deliberate press. Christian's decision: no Up-reveal
-                // path at all, in the carousel or anywhere else — the sidebar opens on Menu only
-                // (`SidebarMenuRevealModifier` / Home's own `.onExitCommand` grammar below). So an
+                // path at all, in the carousel or anywhere else — the sidebar opened on Menu only
+                // (now `RailMenuRevealModifier` / Home's own `.onExitCommand` grammar below; the H9
+                // rail adds a failed Left, which this carousel vetoes through Classic's rail route
+                // because Left pages it). So an
                 // Up here is exactly what it was before FEAT-30 ever touched this closure: it falls
                 // through to the paging switch's `default: return`, a no-op.
                 //
@@ -2925,33 +2937,72 @@ struct HomeView: View {
         focusModel.reportFocus(item, from: source)
     }
 
-    /// FEAT-30: Home's half of the sidebar Menu grammar — the `else` of the BUG-27 ternary in the
-    /// body above.
+    /// FEAT-30 / H9: Home's half of the rail's Menu grammar — the `else` of the BUG-27 ternary in
+    /// the body above (Classic only; Stage's strip has its own `atTopExit`).
     ///
-    /// `nil` unless sidebar mode is on AND the page is at the top, which keeps two invariants:
+    /// `nil` unless Rail mode is on AND the page is at the top, which keeps two invariants:
     /// tabs mode resolves that site to `nil` exactly as it does today (byte-identical), and while
-    /// the page is scrolled down the BUG-27 Menu-to-top branch owns the press — the sidebar never
-    /// competes with "the long way down, the short way back".
+    /// the page is scrolled down the BUG-27 Menu-to-top branch owns the press — the rail never
+    /// competes with "the long way down, the short way back". Inside a rail Menu opened, Menu is
+    /// the system default (P4 R4).
     ///
-    /// Search/Library/Add-ons get the same behaviour from `.sidebarMenuReveal()`; Home cannot use
+    /// Search/Library/Add-ons get the same behaviour from `.railMenuReveal()`; Home cannot use
     /// that modifier because its exit handler has to compose with the branch above.
     ///
     /// FEAT-30 (2026-09-05) briefly added a sibling `sidebarUpRevealHandler` here too — Up with no
     /// focus target reveal + focus the sidebar, same as the hero carousel's own branch. Removed
     /// 2026-09-09 on the rc7 tester verdict (BUG-98's follow-up): reveal-on-Up proved unusable on
     /// hardware regardless of gating, so Christian's call was Menu-only, everywhere. See
-    /// `SidebarOverlay.swift`'s `SidebarMenuRevealModifier` doc comment for the full arc.
-    private var sidebarMenuRevealHandler: (() -> Void)? {
-        guard SidebarChrome.isEnabled(), !isScrolledDown else { return nil }
+    /// `RailMenuRevealModifier`'s doc comment (NavigationRail.swift) for the full arc.
+    private var railMenuRevealHandler: (() -> Void)? {
+        guard NavigationChrome.isRail(), !isScrolledDown else { return nil }
         return {
             // Read at press time, not as a body dependency — `@Environment` on the custom key
             // gives Home the object without subscribing it to `objectWillChange` (see the
-            // property's doc comment). The guard is belt-and-braces: with focus in the sidebar
-            // this handler is not in the responder chain at all, since the panel is a sibling of
+            // property's doc comment). The guard is belt-and-braces: with focus in the rail
+            // this handler is not in the responder chain at all, since the rail is a sibling of
             // the whole TabView rather than a descendant of Home.
-            guard !sidebarChrome.isFocusedChrome else { return }
-            sidebarChrome.requestReveal()
+            guard !navigationChrome.isFocusedChrome else { return }
+            navigationChrome.requestReveal(.menu)
         }
+    }
+
+    /// H9 (P4 §2.5, §6.2): where a rail exit puts focus back on Classic Home. Captured when the rail
+    /// arms from a Left or Menu (focus still on the origin): the hero CTA if it held focus,
+    /// otherwise the row last owned (`upInput.lastOwnedRowKey`). Restored through the existing
+    /// seams: `heroFocused`, or a `PinnedRowFocusRequest` for that row, which every Classic row
+    /// applies to its own `@FocusState` (`pinnedRowUpFallbackTarget`) on its FIRST card — exactly
+    /// the Left origin, since a Left mid-row scrolls the row instead of opening the rail. Declines
+    /// (default hand-off) while Home is covered by a push or the Continue Watching picker. Vetoes a
+    /// Left arm while the carousel's CTA holds focus: Left pages the carousel there
+    /// (`HeroCarouselInteractionModifier`), and Menu at the top opens the rail instead.
+    private var classicRailRoute: RailReturnRoute {
+        RailReturnRoute(
+            name: "home",
+            capture: {
+                if heroFocused {
+                    upInput.railReturnTarget = HomeRailReturnTarget.hero
+                } else if let key = upInput.lastOwnedRowKey {
+                    upInput.railReturnTarget = HomeRailReturnTarget.row(key)
+                } else {
+                    upInput.railReturnTarget = nil
+                }
+            },
+            restore: {
+                guard homePath.isEmpty, resume == nil else { return false }
+                switch upInput.railReturnTarget {
+                case .hero?:
+                    heroFocused = true
+                    return true
+                case .row(let key)?:
+                    requestRowFocus(key)
+                    return true
+                case nil:
+                    return false
+                }
+            },
+            vetoesLeftArm: { heroFocused && heroCarouselActive }
+        )
     }
 
     /// BUG-38 round three: adapts a collection folder to the hero's `MetaPreview` shape so a
@@ -6796,4 +6847,16 @@ final class HomeRowInputBox {
     /// review r1 (P3-3): `systemUptime` of the last up-into-hero reveal scroll; latch for the
     /// `alreadyRevealing` decline.
     var lastRevealAt: TimeInterval?
+    /// H9 (P4 §6.2): the row that last took focus. Written on every `owns == true` report and never
+    /// cleared on release (unlike `focusedRowKey`), so it still names the Left origin's row while
+    /// the rail holds focus.
+    var lastOwnedRowKey: String?
+    /// H9: where Classic's rail route returns focus (captured when the rail arms).
+    var railReturnTarget: HomeRailReturnTarget?
+}
+
+/// H9 (P4 §2.5): Classic Home's rail return target — the hero CTA, or a row (its first card).
+nonisolated enum HomeRailReturnTarget: Equatable, Sendable {
+    case hero
+    case row(String)
 }

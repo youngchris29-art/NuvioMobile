@@ -49,9 +49,10 @@ struct ContentView: View {
     /// put focus back on the swatch it was on. Not persisted: a cold launch must never steal
     /// focus into Appearance.
     @State private var pendingThemeSwatchFocus: String?
-    /// FEAT-30/31: same job as `pendingThemeSwatchFocus`, for the two Appearance rows that also
-    /// remount the whole tree when pressed — the navigation-style picker (tabs ↔ sidebar) and the
-    /// UI-font picker (see the `.id` below). Owned HERE for the identical reason: focus cannot
+    /// FEAT-30/31: same job as `pendingThemeSwatchFocus`, for the Appearance rows that also
+    /// remount the whole tree when pressed — the navigation-style picker (tabs ↔ rail), the rail
+    /// visibility picker (H9) and the UI-font picker (see the `.id` below). Owned HERE for the
+    /// identical reason: focus cannot
     /// survive a remount at all, so without a hint the rebuilt pane drops the user at the top of
     /// Settings and the row they just changed looks like it did nothing.
     ///
@@ -59,10 +60,15 @@ struct ContentView: View {
     /// files belong to another wave, so `SettingsView`'s signature is deliberately untouched here.
     /// Not persisted: a cold launch must never steal focus into Appearance.
     @State private var pendingAppearanceRowFocus: String?
-    /// FEAT-30: the navigation chrome mode (`"tabs"` default / `"sidebar"`). Read here for ONE
-    /// purpose — it is part of the rebuild key below. `SidebarChrome.isEnabled()` is what the
-    /// shell's own call sites read.
-    @AppStorage(SidebarChrome.defaultsKey) private var sidebarStyle = "tabs"
+    /// H9 (FEAT-45, replacing FEAT-30's Sidebar): the navigation chrome mode (`"tabs"` default /
+    /// `"rail"`; FEAT-30's stored `"sidebar"` reads as Rail and migrates once at launch). Read here
+    /// for ONE purpose — it is part of the rebuild key below. `NavigationChrome.isRail()` is what
+    /// the shell's own call sites read.
+    @AppStorage(NavigationChrome.styleKey) private var navigationStyle = "tabs"
+    /// H9: the rail's visibility (`"always"` default / `"browsing"`), also a rebuild-key input only.
+    /// It changes the `Tab` closures structurally (Always Visible's inset), so it may only switch
+    /// across a remount (T3 / BUG-66, the same reasoning as the style).
+    @AppStorage(NavigationChrome.railVisibilityKey) private var railVisibility = "always"
     /// FEAT-31: the UI font family (`"system"` default / `"openSans"`). Also purely a rebuild-key
     /// input — `Theme.Font` resolves the family itself, and its tokens are static reads that only
     /// re-evaluate when the tree is re-identified, exactly like `Theme.Palette.accent`.
@@ -137,18 +143,20 @@ struct ContentView: View {
         // Focus resets on change; the state that would visibly strand the user — the selected tab
         // and the Settings path — is held above this boundary so it survives.
         //
-        // FEAT-30/31 join the key. Both are rare, deliberate user actions in Appearance, and both
-        // change something a mid-session flip cannot safely carry:
-        //  * `sidebarStyle` decides the resolved `.toolbarVisibility` preference for the tab bar.
+        // FEAT-30/31 (and H9's rail visibility) join the key. All are rare, deliberate user actions
+        // in Appearance, and all change something a mid-session flip cannot safely carry:
+        //  * `navigationStyle` decides the resolved `.toolbarVisibility` preference for the tab bar.
         //    Changing a resolved toolbar preference while the shell is live is the BUG-66 latch
         //    class exactly — three device rounds proved a hidden→shown bar can freeze mid-slide on
         //    hardware — so the mode switches the only way that has ever been safe: the shell is
         //    rebuilt, and the new tree resolves one constant value for its whole lifetime.
+        //  * `railVisibility` decides whether every `Tab` closure carries the rail's reserved
+        //    leading inset, a structural change to the shell (H9, P4 §4.3).
         //  * `uiFont` is read through `Theme.Font`'s static cache, the same static-read pattern
         //    `Palette.accent` uses, so it needs the same re-identification to take effect.
         // Selected tab, Settings path and the two focus hints above are all held ABOVE this
         // boundary, so a mode or font change costs the user nothing but the rebuild.
-        .id("\(appTheme.paletteKey)|\(sidebarStyle)|\(uiFont)")
+        .id("\(appTheme.paletteKey)|\(navigationStyle)|\(railVisibility)|\(uiFont)")
         .onAppear {
             auth.start()
             posterStyle.start()
@@ -361,36 +369,43 @@ struct MainTabView: View {
     /// `@StateObject` here would silently restore the every-tab-switch toolbar re-resolution.
     @State private var tabBarVisibility = TabBarVisibility()
 
-    /// FEAT-30: the sidebar's shared state, provided to every tab root alongside
+    /// H9: the navigation rail's shared state, provided to every tab root alongside
     /// `tabBarVisibility` below. `@State` on a reference type for the SAME load-bearing reason as
-    /// the property above (T3 / BUG-66) — see `SidebarChromeModel`'s own doc comment: observing it
-    /// here would put every scroll crossing on every tab back into the shell's invalidation path,
+    /// the property above (T3 / BUG-66) — see `NavigationChromeModel`'s own doc comment: observing
+    /// it here would put every scroll crossing on every tab back into the shell's invalidation path,
     /// which is precisely what re-resolved `.toolbarVisibility` mid-transition. Only
-    /// `SidebarOverlay` observes it.
-    @State private var sidebarChrome = SidebarChromeModel()
-    /// FEAT-30: focus scope over the whole tab shell, so the sidebar can hand focus back to content
-    /// with `resetFocus(in:)` after a row press (see `SidebarOverlay.handOffFocusToContent`).
+    /// `NavigationRail` observes it.
+    @State private var navigationChrome = NavigationChromeModel()
+    /// FEAT-30 / H9: focus scope over the whole tab shell, so the rail can hand focus back to
+    /// content with `resetFocus(in:)` (see `NavigationRail.fallbackHandOff`).
     @Namespace private var shellFocusScope
 
     var body: some View {
         // tvOS 26+ `Tab` syntax: gets the modern floating Liquid Glass top bar (the legacy
         // `.tabItem` API renders the older chrome).
         TabView(selection: $selectedTab) {
+            // H9 (P4 §5.1): `.railTabRoot(value)` after `.tabBarImmersiveHide()` in every closure —
+            // the tab index for return routes, Always Visible's leading inset and the per-tab gate
+            // fallback. Structurally absent in Tabs mode, and launch-constant (T3).
             Tab("Home", systemImage: "house", value: 0) {
                 HomeView(model: home)
                     .tabBarImmersiveHide()
+                    .railTabRoot(0)
             }
             Tab("Search", systemImage: "magnifyingglass", value: 1) {
                 SearchView()
                     .tabBarImmersiveHide()
+                    .railTabRoot(1)
             }
             Tab("Library", systemImage: "books.vertical", value: 2) {
                 LibraryView()
                     .tabBarImmersiveHide()
+                    .railTabRoot(2)
             }
             Tab("Add-ons", systemImage: "puzzlepiece.extension", value: 3) {
                 AddonsView()
                     .tabBarImmersiveHide()
+                    .railTabRoot(3)
             }
             // T4: Settings and Profile don't scroll meaningfully, so they were left with no
             // tab-bar declaration at all — but that's not neutral. Without one, the resolved
@@ -407,14 +422,16 @@ struct MainTabView: View {
                     pendingAppearanceRowFocus: $pendingAppearanceRowFocus
                 )
                     .tabBarImmersiveHide()
+                    .railTabRoot(4)
             }
             Tab("Profile", systemImage: "person.crop.circle", value: 5) {
                 ProfileTabView(activeProfile: activeProfile, onSwitchProfile: onSwitchProfile)
                     .tabBarImmersiveHide()
+                    .railTabRoot(5)
             }
         }
         .environment(\.tabBarVisibility, tabBarVisibility)
-        .environment(\.sidebarChrome, sidebarChrome)
+        .environment(\.navigationChrome, navigationChrome)
         // BUG-66 evidence probe (2026-09-10): arms `TabBarStateProbe`'s on-device tab-bar geometry
         // sampler once this view lands in a window. Hosted here (rather than inside a `Tab`
         // closure, or in `HomeView.swift`, which this task may not edit) because `MainTabView`'s
@@ -424,7 +441,7 @@ struct MainTabView: View {
         // (TabBarStateProbe.swift) which the About pane's toggle writes in Release too, so a
         // DEBUG-only armer meant every rc sample logged `NOT-FOUND state=unknown`.
         .background(TabBarProbeArmer())
-        // FEAT-30: the shell-wide focus scope `resetFocus(in:)` targets. Sidebar mode only, so
+        // FEAT-30 / H9: the shell-wide focus scope `resetFocus(in:)` targets. Rail mode only, so
         // tabs mode carries no new modifier at all (the byte-identical promise; test54's row walk
         // stopped finding tiles in the one run where this scope was declared in both modes).
         .modifier(ShellFocusScopeModifier(scope: shellFocusScope))
@@ -432,12 +449,13 @@ struct MainTabView: View {
         // bar moves the shell's top safe area. Ships as a no-op (the constant is 0 and the
         // modifier then applies nothing at all, in either mode) until the device spike measures
         // the delta — see that constant's doc comment.
-        .sidebarTopCompensation()
-        // FEAT-30: the sidebar is mounted HERE — on the TabView and deliberately OUTSIDE every
-        // `Tab` closure. Inside one it would live in that tab's kept-alive subtree: pruned or
-        // deferred with it, re-created per tab, and re-evaluated on every `Tab` closure rebuild —
-        // the T3 class again. As an overlay it is a pure floating layer, so nothing behind it
-        // reflows and tabs mode gets no view at all.
+        .railTopCompensation()
+        // H9: the rail is mounted HERE — on the TabView and deliberately OUTSIDE every `Tab`
+        // closure (FEAT-30's sidebar sat in the same place). Inside one it would live in that
+        // tab's kept-alive subtree: pruned or deferred with it, re-created per tab, and
+        // re-evaluated on every `Tab` closure rebuild — the T3 class again. As an overlay it is a
+        // floating layer; the only content geometry it changes is Always Visible's leading inset,
+        // applied structurally by `.railTabRoot`, and tabs mode gets no view at all.
         //
         // BOTH shared objects are handed over as explicit parameters, and `tabBarVisibility` has
         // to be (rc2 fix, 2026-09-06). The `.environment(\.tabBarVisibility,)` above does NOT
@@ -450,17 +468,16 @@ struct MainTabView: View {
         // on a visibility publish) is unchanged, and the overlay keeps the one narrow
         // `onReceive($immersiveHidden)`.
         //
-        // The overlay places itself in the top-left SCREEN corner (`SidebarMetrics.cornerLeading`
-        // / `cornerTop`, safe area ignored on those two edges) rather than being padded here —
-        // rc2 feedback asked for higher and further left, and the numbers belong next to the
-        // panel's own layout constants.
+        // The rail places itself (16 pt from the bezel, vertically centred, safe area ignored)
+        // rather than being padded here: the numbers belong next to its own layout constants.
         .overlay(alignment: .topLeading) {
-            if SidebarChrome.isEnabled() {
-                SidebarOverlay(
+            if NavigationChrome.isRail() {
+                NavigationRail(
                     selectedTab: $selectedTab,
+                    activeProfile: activeProfile,
                     rootCoverActive: rootCoverActive,
                     shellFocusScope: shellFocusScope,
-                    chrome: sidebarChrome,
+                    chrome: navigationChrome,
                     tabBarVisibility: tabBarVisibility
                 )
             }
@@ -513,18 +530,18 @@ struct ProfileTabView: View {
             }
             .padding(Theme.Spacing.screen)
         }
-        // FEAT-30 (Codex r2): Profile is a tab root too; with the system bar hidden in sidebar
-        // mode a Menu press here needs the same route to the sidebar the other roots have.
-        .sidebarMenuReveal()
+        // FEAT-30 (Codex r2) / H9: Profile is a tab root too; with the system bar hidden in Rail
+        // mode a Menu press here needs the same route to the rail the other roots have.
+        .railMenuReveal()
     }
 }
 
-/// FEAT-30: `.focusScope` over the tab shell, structurally absent in tabs mode.
+/// FEAT-30 / H9: `.focusScope` over the tab shell, structurally absent in tabs mode.
 private struct ShellFocusScopeModifier: ViewModifier {
     let scope: Namespace.ID
     @ViewBuilder
     func body(content: Content) -> some View {
-        if SidebarChrome.isEnabled() {
+        if NavigationChrome.isRail() {
             content.focusScope(scope)
         } else {
             content

@@ -16,11 +16,11 @@ struct AppearanceSettingsPane: View {
     @ObservedObject var badges: BadgeSettingsViewModel
     /// Swatch to refocus after a theme-change remount; consumed by [ThemePickerRow].
     @Binding var pendingThemeSwatchFocus: String?
-    /// FEAT-30/31: which row ("navigation" / "typeface") should reclaim focus after a
-    /// theme-`.id()`-driven remount; consumed by this pane's own `.onAppear` below, same contract
-    /// as `pendingThemeSwatchFocus`/`ThemePickerRow`.
+    /// FEAT-30/31, H9: which row ("navigation" / "railVisibility" / "typeface") should reclaim
+    /// focus after a theme-`.id()`-driven remount; consumed by this pane's own `.onAppear` below,
+    /// same contract as `pendingThemeSwatchFocus`/`ThemePickerRow`.
     @Binding var pendingAppearanceRowFocus: String?
-    /// Backs the `.focused($appearanceRowFocus, equals:)` modifiers on the Navigation and
+    /// Backs the `.focused($appearanceRowFocus, equals:)` modifiers on the Navigation, Rail and
     /// Typeface rows below. `SettingsPickerRow`'s own body is a single `Menu` (see
     /// `SettingsRowViews.swift`), so `.focused` applied to the row view — not to something inside
     /// it — still binds correctly: SwiftUI's `focused(_:equals:)` on a container reports focus
@@ -35,11 +35,19 @@ struct AppearanceSettingsPane: View {
     /// FEAT-7: mirrors SettingsView's own `settings_style` key (same UserDefaults key, read
     /// independently here) so this pane's chip row and the sidebar it controls stay in sync.
     @AppStorage("settings_style") private var settingsStyle = "default"
-    /// FEAT-30: device-local key, not synced. Owning reader is `TabBarImmersiveHideModifier`/
-    /// `SidebarOverlay` (Opus wave, concurrent with this file) — `"tabs"` (default) keeps the top
-    /// tab bar, `"sidebar"` swaps to the floating sidebar panel. Also folded into ContentView's
-    /// `.id` remount key alongside `theme`/`ui_font`, so writing this key remounts the tree.
-    @AppStorage("sidebar_style") private var sidebarStyle = "tabs"
+    /// H9 (FEAT-45, replacing FEAT-30's Sidebar): device-local key, not synced. Owning reader is
+    /// `NavigationChrome` (`TabBarImmersiveHideModifier`, `NavigationRail`) — `"tabs"` (default)
+    /// keeps the top tab bar, `"rail"` swaps it for the navigation rail; FEAT-30's stored
+    /// `"sidebar"` reads as Rail (and migrates once at launch). Folded into ContentView's `.id`
+    /// remount key alongside `theme`/`ui_font`, so writing this key remounts the tree.
+    @AppStorage(NavigationChrome.styleKey) private var navigationStyle = NavigationChrome.Style.tabs.rawValue
+    /// H9: the rail's visibility, device-local. `"always"` (default) reserves the rail's width on
+    /// every page; `"browsing"` floats it and slides it away while browsing. Also part of the `.id`
+    /// remount key (it changes every tab root's inset).
+    @AppStorage(NavigationChrome.railVisibilityKey) private var railVisibility = NavigationChrome.RailVisibility.always.rawValue
+    /// Home Stage & Strip (P3 #22): Hide Hero Artwork While Browsing only means something in
+    /// Classic, so the row hides in Stage. Live, like every Home Layout reader.
+    @AppStorage(HomeLayout.defaultsKey) private var homeLayoutRaw = HomeLayout.defaultValue.rawValue
     /// FEAT-31: device-local key, not synced. Owning reader is `Theme.Font` (DesignSystem/Theme.swift)
     /// — `"system"` (default) or `"openSans"`. Also folded into ContentView's `.id` remount key, so
     /// writing this key remounts the tree the same way a theme change does.
@@ -70,10 +78,16 @@ struct AppearanceSettingsPane: View {
         ("default", String(localized: "Default")),
         ("minimal", String(localized: "Minimal")),
     ]
-    /// FEAT-30 row options. Values are the raw `sidebar_style` UserDefaults strings.
+    /// H9 row options. Values are the raw `sidebar_style` UserDefaults strings (`NavigationChrome
+    /// .Style`); the binding below normalises FEAT-30's "sidebar" to "rail" on read.
     private static let navigationOptions: [(value: String, label: String)] = [
-        ("tabs", String(localized: "Top Tabs")),
-        ("sidebar", String(localized: "Sidebar")),
+        (NavigationChrome.Style.tabs.rawValue, String(localized: "Top Tabs")),
+        (NavigationChrome.Style.rail.rawValue, String(localized: "Rail")),
+    ]
+    /// H9 Rail row options. Values are the raw `rail_visibility` strings.
+    private static let railVisibilityOptions: [(value: String, label: String)] = [
+        (NavigationChrome.RailVisibility.always.rawValue, String(localized: "Always Visible")),
+        (NavigationChrome.RailVisibility.whileBrowsing.rawValue, String(localized: "Hide While Browsing")),
     ]
     /// FEAT-31 row options. Values are `Theme.AppFontFamily.rawValue`, so the picker never drifts
     /// from the type the storage key actually feeds.
@@ -81,19 +95,32 @@ struct AppearanceSettingsPane: View {
         ($0.rawValue, $0.displayName)
     }
 
-    /// Wraps `sidebarStyle` so picking a navigation style arms the focus-restore hint BEFORE the
+    /// Wraps `navigationStyle` so picking a navigation style arms the focus-restore hint BEFORE the
     /// `@AppStorage` write — the write is what re-identifies ContentView's `.id()`-keyed tree, so
     /// anything set after it belongs to a view already being torn down (same ordering rule as
-    /// `pendingThemeSwatchFocus` in `ThemePickerRow.onSelect` above).
-    private var sidebarStyleBinding: Binding<String> {
+    /// `pendingThemeSwatchFocus` in `ThemePickerRow.onSelect` above). Normalises on get (P4 §4.1):
+    /// a launch-argument "sidebar" shows "Rail", not a blank pill.
+    private var navigationStyleBinding: Binding<String> {
         Binding(
-            get: { sidebarStyle },
+            get: { NavigationChrome.style(raw: navigationStyle).rawValue },
             set: { newValue in
                 // Codex r2: a re-pick of the current value changes no `.id`, so no remount would
                 // consume the hint — it would then steal focus on the next unrelated remount.
-                guard newValue != sidebarStyle else { return }
+                guard newValue != NavigationChrome.style(raw: navigationStyle).rawValue else { return }
                 pendingAppearanceRowFocus = "navigation"
-                sidebarStyle = newValue
+                navigationStyle = newValue
+            }
+        )
+    }
+
+    /// Same wrapper for the Rail row (its write remounts the tree too).
+    private var railVisibilityBinding: Binding<String> {
+        Binding(
+            get: { NavigationChrome.railVisibility(raw: railVisibility).rawValue },
+            set: { newValue in
+                guard newValue != NavigationChrome.railVisibility(raw: railVisibility).rawValue else { return }
+                pendingAppearanceRowFocus = "railVisibility"
+                railVisibility = newValue
             }
         )
     }
@@ -243,19 +270,34 @@ struct AppearanceSettingsPane: View {
                 label: { value in Self.settingsStyleOptions.first { $0.value == value }?.label ?? value }
             )
 
-            // FEAT-30: opt-in floating sidebar in place of the top tab bar. Default "tabs" is
-            // byte-identical to today; the Opus wave building SidebarOverlay/TabBarImmersiveHideModifier
-            // reads this same key independently.
-            SettingsPickerRow(
-                title: String(localized: "Navigation"),
-                subtitle: String(localized: "Sidebar hides the top tab bar behind a floating panel"),
-                selection: sidebarStyleBinding,
-                options: Self.navigationOptions.map(\.value),
-                descriptionID: .appearanceNavigation,
-                label: { value in Self.navigationOptions.first { $0.value == value }?.label ?? value }
-            )
-            .accessibilityIdentifier("appearance_row_navigation")
-            .focused($appearanceRowFocus, equals: "navigation")
+            // H9 (FEAT-45): Top Tabs or the navigation rail, plus the Rail row directly below it,
+            // shown only with Rail. One `Group`, so this section's builder keeps the ten direct
+            // children it had (the Row Edge Fade group above follows the same rule). Default
+            // "tabs" is byte-identical to today.
+            Group {
+                SettingsPickerRow(
+                    title: String(localized: "Navigation"),
+                    subtitle: String(localized: "Rail swaps the top tab bar for a column of icons on the left."),
+                    selection: navigationStyleBinding,
+                    options: Self.navigationOptions.map(\.value),
+                    descriptionID: .appearanceNavigation,
+                    label: { value in Self.navigationOptions.first { $0.value == value }?.label ?? value }
+                )
+                .accessibilityIdentifier("appearance_row_navigation")
+                .focused($appearanceRowFocus, equals: "navigation")
+
+                if NavigationChrome.style(raw: navigationStyle) == .rail {
+                    SettingsPickerRow(
+                        title: String(localized: "Rail"),
+                        selection: railVisibilityBinding,
+                        options: Self.railVisibilityOptions.map(\.value),
+                        descriptionID: .appearanceRail,
+                        label: { value in Self.railVisibilityOptions.first { $0.value == value }?.label ?? value }
+                    )
+                    .accessibilityIdentifier("appearance_row_rail")
+                    .focused($appearanceRowFocus, equals: "railVisibility")
+                }
+            }
 
             // FEAT-31: opt-in Open Sans typeface. The binding's setter applies the font family
             // BEFORE writing `uiFont` — ContentView's `.id` remount key reads `ui_font` from
@@ -291,12 +333,15 @@ struct AppearanceSettingsPane: View {
             // testers in opposite directions — one asked for the OFF behavior thinking it
             // was missing (UX-1), one reported the toggle "does nothing" while describing
             // exactly what ON does (BUG-24). The name now states the action.
-            SettingsToggleRow(
-                title: String(localized: "Hide Hero Artwork While Browsing"),
-                subtitle: String(localized: "Artwork shows while the hero is highlighted and hides once you move down into the rows"),
-                isOn: $heroPosterFocusOnly,
-                descriptionID: .appearanceHideHeroArtwork
-            )
+            // Home Stage & Strip (P3 #22): Classic only — Stage has no hero carousel to fade.
+            if HomeLayout.resolve(homeLayoutRaw) == .classic {
+                SettingsToggleRow(
+                    title: String(localized: "Hide Hero Artwork While Browsing"),
+                    subtitle: String(localized: "Artwork shows while the hero is highlighted and hides once you move down into the rows"),
+                    isOn: $heroPosterFocusOnly,
+                    descriptionID: .appearanceHideHeroArtwork
+                )
+            }
         }
 
         SettingsSection(String(localized: "Custom Posters")) {

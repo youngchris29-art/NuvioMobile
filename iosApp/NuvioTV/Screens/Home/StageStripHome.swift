@@ -53,11 +53,15 @@ struct StageStripHome: View {
 
     /// Held for its lifetime, never observed: it publishes nothing (#5).
     @StateObject private var stage = StageController()
-    /// R1: the rail's content shift (P4 sets it; 0 until then).
+    /// H9 (P4 R2): the Stage rail route's own state (the captured row, Home's cover), in a reference
+    /// box so neither write re-renders the strip.
+    @State private var railRouteBox = StageRailRouteBox()
+    /// R1: the rail's content shift (36 with the rail Always Visible, from `.railTabRoot`; else 0).
     @Environment(\.railLeadingInset) private var railLeadingInset
     @Environment(\.posterStyle) private var posterStyle
-    /// Held, never observed (HomeView's rule): read at Menu-press time only.
-    @Environment(\.sidebarChrome) private var sidebarChrome
+    /// Held, never observed (HomeView's rule): read at Menu-press time, in the page-start write and
+    /// in the trailer gate only. The rail (H9) is its only observer.
+    @Environment(\.navigationChrome) private var navigationChrome
     /// Held, never observed: the shell cover arrives through `onReceive`.
     @Environment(\.tabBarVisibility) private var tabBarVisibility
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -84,7 +88,7 @@ struct StageStripHome: View {
             StageView(controller: stage, geometry: geo)
             VStack(spacing: 0) {
                 // The stage block's place. Nothing focusable lives here, so Up from row 0 goes to
-                // the tab bar (or the sidebar/rail rules, §6).
+                // the tab bar (in Rail mode Up has no target there and never reveals, §6).
                 Color.clear
                     .frame(height: geo.stageHeight)
                     .allowsHitTesting(false)
@@ -133,8 +137,8 @@ struct StageStripHome: View {
         .onReceive(stage.focusModel.$focusedItem) { item in
             syncBackgroundTrailer(reason: "focus", focused: .some(item))
         }
-        // §7: the chrome taking focus stops the trailer (`navigationChrome` after W2-D's rename).
-        .onReceive(sidebarChrome.$isFocusedChrome) { focused in
+        // §7: the chrome taking focus stops the trailer (the rail, H9; R2's teardown).
+        .onReceive(navigationChrome.$isFocusedChrome) { focused in
             syncBackgroundTrailer(reason: "chrome", chromeFocused: focused)
         }
         // §7: tvOS Accessibility ▸ Motion ▸ Auto-Play Video Previews, read live by the funnel; its
@@ -171,6 +175,9 @@ struct StageStripHome: View {
             // `@Published` emits on willSet: use the payload, not the property.
             syncCover(shell: covered)
         }
+        // H9 (P4 §2.5, R2): Stage's rail return route, registered while the Stage layout is mounted.
+        // Rail mode only; nothing is registered in Tabs mode.
+        .railReturnRoute { stageRailRoute }
     }
 
     // MARK: Geometry
@@ -232,11 +239,17 @@ struct StageStripHome: View {
                            let down = index > 0
                            if isScrolledDown != down { isScrolledDown = down }
                            // §7: a strip row owns focus again (also when focus comes back from the
-                           // tab bar, the sidebar or a pushed page); the trailer re-arms at the rest.
+                           // tab bar, the rail or a pushed page); the trailer re-arms at the rest.
                            stage.stripFocusGained()
                        },
-                       // W2-D: the rail's Hide While Browsing runs from here with the page's curve (#8).
-                       onPageStart: { _, _ in },
+                       // H9 (#8, R4): Hide While Browsing moves with the strip's page — its curve
+                       // and duration, no resting settle. This write owns the rail; the strip's
+                       // `reportsScrollToTabBar` mirror (kept for TabBarStateProbe) writes the same
+                       // value at its later crossing, a no-op under write-on-change.
+                       onPageStart: { index, seconds in
+                           guard NavigationChrome.isRail() else { return }
+                           navigationChrome.setScrolledDown(tab: 0, index > 0, motion: .page(seconds: seconds))
+                       },
                        onStripFocusLost: { stage.stripFocusLost() }) { key in
                 rowView(key)
             }
@@ -368,16 +381,40 @@ struct StageStripHome: View {
 
     // MARK: Chrome
 
-    /// Menu at row 0 (§6): in sidebar mode, reveal the sidebar (HomeView's rule); in Tabs mode nil,
-    /// so the system default applies (focus to the tab bar, then exit). W2-D swaps in the rail's.
+    /// Menu at row 0 (§6, P4 R3): in Rail mode, open the rail (HomeView's `railMenuRevealHandler`
+    /// rule); in Tabs mode nil, so the system default applies (focus to the tab bar, then exit). From
+    /// any later row Menu still pages to row 0 first (the strip's own handler). Inside a rail Menu
+    /// opened, Menu is the system default (R4). Up at row 0 has no target in Rail mode and never
+    /// reveals (BUG-98).
     private var atTopExit: (() -> Void)? {
-        guard SidebarChrome.isEnabled() else { return nil }
-        let chrome = sidebarChrome
+        guard NavigationChrome.isRail() else { return nil }
+        let chrome = navigationChrome
         return {
             // Read at press time, not as a body dependency.
             guard !chrome.isFocusedChrome else { return }
-            chrome.requestReveal()
+            chrome.requestReveal(.menu)
         }
+    }
+
+    /// H9 (P4 §2.5, R2): where a rail exit puts focus back on Stage Home. `capture` records the row
+    /// that owns the strip (`currentRowKey`, kept after focus leaves the strip); `restore` asks the
+    /// pager for that row's remembered card through P1's rungs (`requestFocus(rowKey:itemId:)`
+    /// moves the mounted window to the row before asking it for focus). A Left entry comes from card
+    /// 0, which the memory then holds. Declines while a push or the Continue Watching picker covers
+    /// Home. A tab switch back to Home with nothing captured this session falls to the live row.
+    private var stageRailRoute: RailReturnRoute {
+        let controller = stage
+        let box = railRouteBox
+        return RailReturnRoute(
+            name: "home",
+            capture: { box.savedRow = controller.currentRowKey },
+            restore: {
+                guard !box.covered, let row = box.savedRow ?? controller.currentRowKey else { return false }
+                controller.requestFocus(rowKey: row, itemId: controller.memory.itemId(for: row))
+                return true
+            },
+            vetoesLeftArm: { false }
+        )
     }
 
     /// D1: the rows skip the in-row morph when the trailer plays in the stage (W2-A).
@@ -387,6 +424,8 @@ struct StageStripHome: View {
 
     private func syncCover(shell: Bool?) {
         let restoresFocus = cover.pushed || cover.resume
+        // H9: the Stage rail route declines while Home is covered by a push or the stream picker.
+        railRouteBox.covered = restoresFocus
         stage.setCovered(restoresFocus || (shell ?? tabBarVisibility.homeSurfaceCovered),
                          restoresFocus: restoresFocus)
         // §7: any cover stops the background trailer; lifting one lets the next rest arm it again.
@@ -431,13 +470,23 @@ struct StageStripHome: View {
             sceneActive: (scene ?? scenePhase) == .active,
             covered: cover.pushed || cover.resume || (shellCovered ?? tabBarVisibility.homeSurfaceCovered),
             stripOwnsFocus: stage.stripOwnsFocus,
-            chromeHoldsFocus: chromeFocused ?? sidebarChrome.isFocusedChrome
+            chromeHoldsFocus: chromeFocused ?? navigationChrome.isFocusedChrome
         )
         stage.syncBackgroundTrailer(gate,
                                     output: output ?? stage.swap.output,
                                     focused: focused ?? stage.focusModel.focusedItem,
                                     reason: reason)
     }
+}
+
+/// H9 (P4 R2): the Stage rail route's state. A reference box (never observed), so the captured row
+/// and the cover flag never re-render the strip.
+@MainActor
+final class StageRailRouteBox {
+    /// The strip row that owned focus when the rail armed (nil until the first capture).
+    var savedRow: String?
+    /// A push or the Continue Watching picker covers Home (`StageCover`).
+    var covered = false
 }
 
 /// Before any strip row exists: a copy of `HomeView`'s private `placeholder` (loading, error, the

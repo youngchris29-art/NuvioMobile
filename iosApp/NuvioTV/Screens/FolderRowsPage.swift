@@ -58,7 +58,7 @@ struct FolderRowsPage: View {
     @State private var debug = FolderRowsDebugState()
     #endif
 
-    /// R1: the rail's content shift (P4 sets it; 0 until then).
+    /// R1: the rail's content shift (36 with the rail Always Visible, from `.railTabRoot`; else 0).
     @Environment(\.railLeadingInset) private var railLeadingInset
     @Environment(\.posterStyle) private var posterStyle
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -120,16 +120,14 @@ struct FolderRowsPage: View {
             // A pop back from Detail or See All lifts the cover (P1 §4.3's push rule).
             stage.setCovered(false, restoresFocus: true)
             seedStage()
-            // R2 (P4 §2.5, W2-D): register this page's rail return route HERE, the Stage shape keyed
-            // by `\.railTabIndex`: `capture` records `stage.currentRowKey`; `restore` calls
-            // `stage.requestFocus(rowKey: row, itemId: stage.memory.itemId(for: row))` and returns
-            // true (false while a push covers the page); `vetoesLeftArm: { false }`. Pushed on
-            // appear, removed in `.onDisappear` below (a push over this page triggers both).
         }
         .onDisappear {
             stage.setCovered(true, restoresFocus: true)
-            // R2 (W2-D): remove this page's rail return route HERE.
         }
+        // R2 (P4 §2.5, H9): this page's rail return route, the Stage shape keyed by `\.railTabIndex`:
+        // registered on appear and removed on disappear by `.railReturnRoute` (a push over this page
+        // triggers both, so a pushed Detail's route is the one on top). Rail mode only.
+        .railReturnRoute { folderRailRoute }
         // §2.4 first paint: the folder, with its cover as the wash's fallback. A changed preview
         // identity before the first real commit re-seeds; after it the seed is ignored.
         .onChange(of: folderIdentity ?? "-", initial: true) { _, _ in
@@ -187,9 +185,13 @@ struct FolderRowsPage: View {
                            onRowChange: { _, key in
                                rowChanged(key: key)
                            },
-                           // W2-D: the rail's Hide While Browsing, if it applies to this page.
+                           // H9 (P4 §5.2): no rail write here. The page writes no mirror, so in
+                           // Hide While Browsing the rail keeps Home's state.
                            onPageStart: { _, _ in },
-                           onStripFocusLost: { stage.stripFocusLost() }) { key in
+                           onStripFocusLost: {
+                               box.stripHasFocus = false
+                               stage.stripFocusLost()
+                           }) { key in
                     rowView(key, rows: rows)
                 }
                 // #23: a synced Poster Size too tall for the stage's floor lays out at the largest
@@ -324,6 +326,31 @@ struct FolderRowsPage: View {
                      prefetch: { section.items.prefix(8).flatMap { heroBackdropPrefetchURLs(for: $0) } })
     }
 
+    // MARK: Rail (P4 §2.5, R2)
+
+    /// Where a rail exit puts focus back on this page. `capture` records the strip row only when the
+    /// strip held focus at arm time (a Left from the Edit band captures nothing, so the exit lands on
+    /// the page's default focus rather than pulling focus into the strip); `restore` asks the pager
+    /// for that row's remembered card (`requestFocus(rowKey:itemId:)` moves the mounted window to the
+    /// row first). Without this route a Right would land on default focus (the Edit band, or row 0)
+    /// and the strip would page away from where the viewer was.
+    private var folderRailRoute: RailReturnRoute {
+        let controller = stage
+        let pageBox = box
+        return RailReturnRoute(
+            name: "folder",
+            capture: {
+                pageBox.railSavedRow = pageBox.stripHasFocus ? controller.currentRowKey : nil
+            },
+            restore: {
+                guard let row = pageBox.railSavedRow else { return false }
+                controller.requestFocus(rowKey: row, itemId: controller.memory.itemId(for: row))
+                return true
+            },
+            vetoesLeftArm: { false }
+        )
+    }
+
     // MARK: Focus (§2.3, §2.6)
 
     /// Once `FolderRowsPlan.initialFocusTarget` names a row while no card has had focus yet, put focus
@@ -350,6 +377,7 @@ struct FolderRowsPage: View {
     /// `StripPager.onRowChange`: a row took focus (or its index moved under rows inserted above it).
     private func rowChanged(key: String) {
         box.focusedRowKey = key
+        box.stripHasFocus = true
         let rows = model.stripRows
         if let tab = rows.first(where: { $0.id == key })?.tabIndex, tab > (deepestFocusedTab ?? Int.min) {
             deepestFocusedTab = tab
@@ -385,6 +413,10 @@ final class FolderRowsPageBox {
     var initialCard: String?
     /// The strip row that last took focus (kept while focus is on the Edit band).
     var focusedRowKey: String?
+    /// H9: a strip row owns focus right now (set by `onRowChange`, cleared by `onStripFocusLost`).
+    var stripHasFocus = false
+    /// H9: the row the rail route returns to (captured when the rail arms; nil = default focus).
+    var railSavedRow: String?
 }
 
 // MARK: - Folder logo (§2.5)

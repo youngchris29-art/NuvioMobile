@@ -3,20 +3,20 @@ import XCTest
 
 final class HiddenTabBarRedirectTests: XCTestCase {
     func testALandingInTheHiddenBarRevealsTheSidebar() {
-        XCTAssertTrue(HiddenTabBarRedirect.shouldReveal(landedInHiddenBar: true, sidebarMode: true, sidebarHoldsFocus: false))
+        XCTAssertTrue(HiddenTabBarRedirect.shouldReveal(landedInHiddenBar: true, railMode: true, railHoldsFocus: false))
     }
 
     func testOrdinaryFocusMovesNeverReveal() {
-        XCTAssertFalse(HiddenTabBarRedirect.shouldReveal(landedInHiddenBar: false, sidebarMode: true, sidebarHoldsFocus: false))
+        XCTAssertFalse(HiddenTabBarRedirect.shouldReveal(landedInHiddenBar: false, railMode: true, railHoldsFocus: false))
     }
 
     func testTabsModeNeverReveals() {
         // The bar is visible and focusable in Tabs mode: landing on it is the normal Menu behaviour.
-        XCTAssertFalse(HiddenTabBarRedirect.shouldReveal(landedInHiddenBar: true, sidebarMode: false, sidebarHoldsFocus: false))
+        XCTAssertFalse(HiddenTabBarRedirect.shouldReveal(landedInHiddenBar: true, railMode: false, railHoldsFocus: false))
     }
 
     func testNoRevealWhileTheSidebarAlreadyHoldsFocus() {
-        XCTAssertFalse(HiddenTabBarRedirect.shouldReveal(landedInHiddenBar: true, sidebarMode: true, sidebarHoldsFocus: true))
+        XCTAssertFalse(HiddenTabBarRedirect.shouldReveal(landedInHiddenBar: true, railMode: true, railHoldsFocus: true))
     }
 }
 

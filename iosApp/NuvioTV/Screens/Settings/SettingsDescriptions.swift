@@ -54,6 +54,8 @@ enum SettingsDescriptionID: String, CaseIterable {
     case appearanceRowEdgeFade = "appearance.rowEdgeFade"
     case appearanceSettingsStyle = "appearance.settingsStyle"
     case appearanceNavigation = "appearance.navigation"
+    // Home Stage & Strip (H9, FEAT-45): the Rail row under Navigation, shown only with Rail.
+    case appearanceRail = "appearance.rail"
     case appearanceTypeface = "appearance.typeface"
     case appearancePosterSize = "appearance.posterSize"
     case appearancePosterCorners = "appearance.posterCorners"
@@ -236,7 +238,8 @@ enum SettingsDescriptions {
         case .appearanceOledBlack: return LocalizedStringResource("Makes the app background pure black, which suits OLED screens. Cards keep their own colors so they still stand out.")
         case .appearanceRowEdgeFade: return LocalizedStringResource("Fades the left and right edges of rows so posters that run off the screen blend into the background. The left edge fades only after a row has scrolled. Off by default.")
         case .appearanceSettingsStyle: return LocalizedStringResource("Default shows an icon beside each Settings category. Minimal removes the icons and tightens the rows so more fit on screen.")
-        case .appearanceNavigation: return LocalizedStringResource("Top Tabs keeps the tab bar across the top of the screen. Sidebar hides it and shows a floating panel that opens when you press Menu. Default: Top Tabs.")
+        case .appearanceNavigation: return LocalizedStringResource("Top Tabs keeps the tab bar across the top of the screen. Rail replaces it with a column of icons on the left edge. Press Left at the edge of a page, or Menu, to open it. Default: Top Tabs.")
+        case .appearanceRail: return LocalizedStringResource("Always Visible keeps the rail on screen and moves pages a little to the right to make room for it. Hide While Browsing slides it away while you scroll or open a title, and brings it back at the top of a page. Default: Always Visible.")
         case .appearanceTypeface: return LocalizedStringResource("Chooses the font used across the app. Default: the Apple TV system font.")
         case .appearancePosterSize: return LocalizedStringResource("Sets how large posters appear in rows and grids. Larger posters leave less room for the description at the top of Home.")
         case .appearancePosterCorners: return LocalizedStringResource("Sets how round the poster corners are, from square to fully round.")

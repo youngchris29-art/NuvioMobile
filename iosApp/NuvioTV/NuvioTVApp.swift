@@ -83,6 +83,11 @@ struct NuvioTVApp: App {
         // `row_edge_fade` is never overwritten. Before any row reads the setting.
         RowEdgeFadeSetting.migrateLegacy(UserDefaults.standard)
 
+        // Home Stage & Strip (H9, P4 R6): FEAT-30's stored `sidebar_style = "sidebar"` becomes
+        // `"rail"`, once and device-local. Reads the persistent domain only, so a `-sidebar_style
+        // sidebar` launch argument is never written to disk. Before the shell reads the mode.
+        NavigationChrome.migrateLegacy(UserDefaults.standard, domain: Bundle.main.bundleIdentifier ?? "")
+
         // beta.19-rc1 verdict (F): `-debug.frameSamplerSteadyS N` opens a frame-timing window every
         // N s for the Soft-vs-Off frame-time gate. Inert unless that knob is set.
         CollectionFocusFrameSampler.shared.startSteadyWindowsIfConfigured()

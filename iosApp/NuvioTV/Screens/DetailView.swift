@@ -325,6 +325,13 @@ enum DetailScrollAB {
     nonisolated static var buttonGlassDisabled: Bool { leg == 4 }
 }
 
+/// H9 (P4 §2.5): the hero button Detail's rail route captured when the rail armed. A reference box
+/// held by the route's closures, so the capture writes no view state.
+@MainActor
+final class DetailRailFocusBox {
+    var focus: DetailHeroFocus?
+}
+
 /// Full detail screen for a single title, fed by the shared `MetaDetailsRepository`.
 /// Constructed from a `MetaPreview` (the card the user focused), then enriched in place as the
 /// repository resolves full metadata.
@@ -1197,6 +1204,27 @@ struct DetailView: View {
             bridgeTask?.cancel()
             bridgeTask = nil
         }
+        // H9 (P4 §2.5): the rail returns focus to the hero button that held it when the rail armed
+        // (Play, Trailer, …); from a row below the hero it takes the default hand-off (Play, through
+        // `.defaultFocus`). Registered beside the immersive push/pop, keyed by `\.railTabIndex`, so
+        // a Detail outside the shell (a Top Shelf deep link) registers nothing. Rail mode only.
+        .railReturnRoute { detailRailRoute }
+    }
+
+    /// H9: see the `.railReturnRoute` call above. The box lives as long as the route registered on
+    /// this appearance.
+    private var detailRailRoute: RailReturnRoute {
+        let saved = DetailRailFocusBox()
+        return RailReturnRoute(
+            name: "detail",
+            capture: { saved.focus = heroFocus },
+            restore: {
+                guard let target = saved.focus else { return false }
+                heroFocus = target
+                return true
+            },
+            vetoesLeftArm: { false }
+        )
     }
 
     // MARK: - FEAT-32: trailer bridge

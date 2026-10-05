@@ -12,8 +12,9 @@ import SwiftUI
 /// - Up / Down walk the List; the explainer column is not focusable, so Left does nothing and
 ///   Right is the row control's own business — the same grammar every Settings row had before.
 /// - Menu pops back to the Settings root. That is the system's default for a `NavigationStack`
-///   destination: this scaffold installs NO `onExitCommand` and NO `.sidebarMenuReveal()`, so the
-///   pop always wins inside a pane, in tabs and sidebar mode alike.
+///   destination: this scaffold installs NO `onExitCommand` and NO `.railMenuReveal()`, so the
+///   pop always wins inside a pane, in tabs and Rail mode alike. In Rail mode a Left from a row
+///   (the explainer column is not focusable) opens the navigation rail.
 /// - BUG-47: every pane rendered here must keep at least one focusable row in every state.
 ///
 /// Pushed sub-pages (Custom Posters, server connection) are stack destinations, not descendants of

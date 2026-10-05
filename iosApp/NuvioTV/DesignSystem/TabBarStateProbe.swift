@@ -7,7 +7,7 @@ import UIKit
 /// `TabBarProbe` (`TabBarVisibility.swift`, the About pane's "Tab Bar Diagnostics" toggle) only
 /// ever read a scroll-view's own offset/inset, which tracks the HYSTERESIS this app applies, not
 /// whether the SYSTEM bar itself visually minimized. This probe records the bar's own GEOMETRY
-/// over time — read straight off the live `UITabBar`, the way `SidebarOverlay`'s
+/// over time — read straight off the live `UITabBar`, the way the rail's
 /// `HiddenTabBarFocusBlocker` locates it — so a photo of the About pane answers, for the first
 /// time, whether the bar ever minimizes on the device and what Home's scroll state was when it
 /// did or did not. Diagnostics only: it installs nothing that changes layout or focus.
@@ -47,7 +47,7 @@ import UIKit
 /// identity with `TabBarContentScrollLink.homeRowsScrollView`; `novc` = no selected controller.
 /// `off`/`ins` (T1) are read off `TabBarContentScrollLink.homeRowsScrollView`, raw (not
 /// inset-corrected), and are `-` while Home's rows are not linked (another tab, a pushed page,
-/// sidebar mode). A linked bar moves 1:1 with the tracked offset, so `st=part off=13` reads "the
+/// Rail mode). A linked bar moves 1:1 with the tracked offset, so `st=part off=13` reads "the
 /// rows rested 13 pt deep" (H1) and `st=part off=0` reads "the baseline itself is off" (H2).
 /// Because the tick dedupe below compares the whole line minus `r=`, a tick now also logs when the
 /// rows' offset changed since the last logged line; at rest nothing changes and ticks stay quiet.
@@ -310,17 +310,18 @@ enum TabBarStateProbe {
     }
 
     /// Walks the armed window's controller tree for the first `UITabBar` (same recursive shape as
-    /// `SidebarOverlay.HiddenTabBarFocusBlocker.findTabBarController` — children first, presented
+    /// `HiddenTabBarFocusBlocker.BlockerView.findTabBarController` — children first, presented
     /// controller last), reads its frame in WINDOW coordinates, alpha, and `isHidden`, computes
     /// `minimized`, and logs one line. Logs a `NOT-FOUND` line instead of silently doing nothing
-    /// when no `UITabBarController` is found (sidebar mode legitimately has none — the system bar
-    /// is force-hidden and unfocusable there, see `HiddenTabBarFocusBlocker`), mirroring that
-    /// type's own "say so instead of silently doing nothing" house rule.
+    /// when no `UITabBarController` is found (Rail mode's bar is force-hidden and unfocusable, see
+    /// `HiddenTabBarFocusBlocker`), mirroring that type's own "say so instead of silently doing
+    /// nothing" house rule. `m=sb` (kept from FEAT-30's Sidebar, which `TabBarContentScrollLinkTests`
+    /// asserts) now means Rail mode.
     /// A `tick` whose composed state equals the previously logged sample is not logged; every other
     /// reason always logs.
     static func sample(reason: String) {
         guard enabled else { return }
-        let sidebar = SidebarChrome.isEnabled()
+        let sidebar = NavigationChrome.isRail()
         let m = sidebar ? "sb" : "cls"
         guard let window = armedWindow else {
             log("NOT-FOUND why=no-window st=unk m=\(m) r=\(reason)")
@@ -402,9 +403,8 @@ enum TabBarStateProbe {
     }
 
     /// Children first, presented controllers last — identical precedence to
-    /// `SidebarOverlay.HiddenTabBarFocusBlocker.findTabBarController`, duplicated here rather than
-    /// shared because that one is `private` inside a `private final class` in a file this task is
-    /// not allowed to touch.
+    /// `HiddenTabBarFocusBlocker.BlockerView.findTabBarController`, duplicated here rather than
+    /// shared because that one is `private` to the blocker's view class.
     private static func findTabBarController(from controller: UIViewController) -> UITabBarController? {
         if let tab = controller as? UITabBarController { return tab }
         for child in controller.children {
@@ -422,7 +422,7 @@ enum TabBarStateProbe {
 /// `HomeView.swift`, which this task may not edit. `didMoveToWindow` can fire before the view is
 /// fully attached to the responder chain on some SwiftUI/UIKit interleavings, hence the deferred
 /// `DispatchQueue.main.async` before reading `window` again, matching the defensive pattern
-/// `SidebarOverlay.HiddenTabBarFocusBlocker.BlockerView` uses for the same reason.
+/// `HiddenTabBarFocusBlocker.BlockerView` uses for the same reason.
 struct TabBarProbeArmer: UIViewRepresentable {
     func makeUIView(context: Context) -> ArmerView { ArmerView() }
     func updateUIView(_ uiView: ArmerView, context: Context) {}

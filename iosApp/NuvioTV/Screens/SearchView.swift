@@ -129,11 +129,11 @@ private struct SearchContent: View {
         // default); this stamps it while the results scroll vertically.
         .rowsMotionStamp(.vertical)
         .reportsScrollToTabBar(tab: "Search")
-        // FEAT-30: in sidebar mode Menu summons the floating sidebar instead of
-        // suspending the app; a second Menu (with focus now in the sidebar) falls through
+        // FEAT-30 / H9: in Rail mode Menu summons the navigation rail instead of
+        // suspending the app; a second Menu (with focus now in the rail) falls through
         // to the system default and exits, so the exit convention survives one step
-        // further in. Structurally absent in tabs mode — see `SidebarMenuRevealModifier`.
-        .sidebarMenuReveal()
+        // further in. Structurally absent in tabs mode — see `RailMenuRevealModifier`.
+        .railMenuReveal()
     }
 
     private var queryIsEmpty: Bool {

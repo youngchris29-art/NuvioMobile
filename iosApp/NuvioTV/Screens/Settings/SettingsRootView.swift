@@ -29,16 +29,19 @@ import SwiftUI
 ///    early). On a plain pop the system's memory and the
 ///    target are the same row (`lastCategory` is set by the Select that pushed), so nothing moves.
 ///    After the first landing nothing ever writes focus again: no repeated forcing, no stealing
-///    focus after user input. Arming does not pull focus out of the tab bar or sidebar: it only
-///    acts once focus enters the list on its own.
+///    focus after user input. Arming does not pull focus out of the tab bar or the rail: it only
+///    acts once focus enters the list on its own. A rail exit arms it too (H9, P4 #21): the root
+///    registers a rail return route whose restore arms the correction and takes the default
+///    hand-off, so focus that lands in the freshly re-entered List moves to `lastCategory`.
 ///
 /// **List.** Up / Down walk the ten categories across the four groups (headers are not
 /// focusable). Up from the first row leaves upward to the tab bar; Down from the last does
 /// nothing. Left and Right do nothing (the explainer is not focusable). Select pushes the pane.
 ///
-/// **Menu.** In sidebar navigation mode `.sidebarMenuReveal()` (attached by `SettingsView` on this
-/// view, inside the stack) reveals the sidebar; in tabs mode the system default applies (focus to
-/// the tab bar, then exit). Inside a pane Menu pops back here — panes are stack destinations, not
+/// **Menu.** In Rail navigation mode `.railMenuReveal()` (attached by `SettingsView` on this view,
+/// inside the stack) opens the navigation rail; in tabs mode the system default applies (focus to
+/// the tab bar, then exit). In Rail mode Left from a row also opens the rail (nothing focusable
+/// sits left of the List). Inside a pane Menu pops back here — panes are stack destinations, not
 /// descendants of this view, so this view's exit handler never sees their Menu press.
 ///
 /// **Explainer.** Driven by `SettingsRootFocusModel`, written from inside each row's label (the
@@ -117,6 +120,18 @@ struct SettingsRootView: View {
             if landed != target {
                 focusedCategory = target
             }
+        }
+        // H9 (P4 §2.5, #21): a rail exit to Settings arms the one-shot landing correction above and
+        // returns false, so the rail's default hand-off places focus in the List and the correction
+        // moves it to `lastCategory`. Rail mode only; nothing is registered in tabs mode.
+        .railReturnRoute {
+            RailReturnRoute(name: "settings",
+                            capture: {},
+                            restore: {
+                                landingCorrectionArmed = true
+                                return false
+                            },
+                            vetoesLeftArm: { false })
         }
     }
 

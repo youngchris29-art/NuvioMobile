@@ -221,7 +221,7 @@ struct TabBarContentScrollLinkAttacher: UIViewRepresentable {
             guard window != nil else { return }
             guard TabBarContentScrollLink.enabled else { return }
             apply()
-            // Same defensive shape as `SidebarOverlay.HiddenTabBarFocusBlocker.BlockerView`:
+            // Same defensive shape as `HiddenTabBarFocusBlocker.BlockerView`:
             // `didMoveToWindow` can land before the hosting controller is parented, so retry on the
             // next turn and on a short ladder.
             DispatchQueue.main.async { [weak self] in self?.apply() }
@@ -261,7 +261,7 @@ struct TabBarContentScrollLinkAttacher: UIViewRepresentable {
         /// Idempotent. Cheap when the link already holds: one superview walk plus a few identity
         /// reads, and no writes.
         func apply() {
-            guard TabBarContentScrollLink.enabled, !SidebarChrome.isEnabled() else { return }
+            guard TabBarContentScrollLink.enabled, !NavigationChrome.isRail() else { return }
             guard window != nil, let scrollView = enclosingScrollView() else { return }
 
             // Identity guard: same scroll view, and every controller still reports it.
@@ -365,7 +365,7 @@ struct TabBarContentScrollLinkAttacher: UIViewRepresentable {
         /// again, which is harmless.
         private func relink(reason: String) {
             relinkDone = true
-            guard TabBarContentScrollLink.enabled, !SidebarChrome.isEnabled(), window != nil,
+            guard TabBarContentScrollLink.enabled, !NavigationChrome.isRail(), window != nil,
                   let linked = linkedScrollView else {
                 NSLog("[TabBarLink] relink skipped reason=%@ (no live link)", reason)
                 return

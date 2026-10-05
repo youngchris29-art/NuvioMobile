@@ -23,10 +23,10 @@ import SharedCore
 /// **Menu.** Exactly one level per press. Inside an open `Menu`/`Picker` popover it dismisses the
 /// popover; on a page pushed by a `SettingsLinkRow` it pops back to the pane; in a pane it pops
 /// back to the root with focus on the category just left (tvOS focus memory, backed by the root's
-/// preferred focus on `lastCategory`). At the root: in sidebar navigation mode
-/// `.sidebarMenuReveal()` reveals the sidebar (FEAT-30); in tabs mode it leaves Settings for the
-/// tab bar. Only the root view carries `.sidebarMenuReveal()`; panes are stack destinations, not
-/// its descendants, so the stack's pop wins inside them in both modes. An `.alert` is dismissed
+/// preferred focus on `lastCategory`). At the root: in Rail navigation mode `.railMenuReveal()`
+/// opens the navigation rail (H9, which replaced FEAT-30's sidebar); in tabs mode it leaves
+/// Settings for the tab bar. Only the root view carries `.railMenuReveal()`; panes are stack
+/// destinations, not its descendants, so the stack's pop wins inside them in both modes. An `.alert` is dismissed
 /// by its own Cancel button.
 ///
 /// **Theme remount.** `path` and `lastCategory` are `@Binding`s owned by `ContentView`, above the
@@ -75,12 +75,12 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack(path: $path) {
             SettingsRootView(path: $path, lastCategory: $lastCategory)
-                // FEAT-30 (Codex r2, internal review r3 P2-8): in sidebar mode the system tab bar
-                // is gone from this root too, so Menu at the root needs the same route to the
+                // FEAT-30 (Codex r2, internal review r3 P2-8) / H9: in Rail mode the system tab
+                // bar is gone from this root too, so Menu at the root needs the same route to the
                 // replacement chrome the scrolling roots have. Attached to the ROOT view, inside
                 // the stack: pushed panes (and `SettingsLinkRow` sub-pages) are stack
                 // destinations, not descendants of this view, so their Menu (pop) is untouched.
-                .sidebarMenuReveal()
+                .railMenuReveal()
                 .background(Theme.Palette.background.ignoresSafeArea())
                 .navigationDestination(for: SettingsCategory.self) { category in
                     SettingsPaneScaffold(category: category) {
