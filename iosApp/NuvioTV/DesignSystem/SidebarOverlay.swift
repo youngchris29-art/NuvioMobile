@@ -363,7 +363,8 @@ struct SidebarOverlay: View {
         // Zero-sized, always mounted in sidebar mode (this view only exists in sidebar mode):
         // keeps the hidden system bar out of the focus engine — see `HiddenTabBarFocusBlocker`.
         .background(alignment: .topLeading) {
-            HiddenTabBarFocusBlocker().frame(width: 0, height: 0).allowsHitTesting(false)
+            HiddenTabBarFocusBlocker(onFocusLandedInHiddenBar: revealForStrandedFocus)
+                .frame(width: 0, height: 0).allowsHitTesting(false)
         }
         // Corner placement (rc2 feedback — see `SidebarMetrics.cornerLeading/cornerTop`). The
         // offsets live HERE rather than at the mount site so the panel's origin and its own layout
@@ -484,6 +485,17 @@ struct SidebarOverlay: View {
         // One focus section for the whole panel: D-pad moves inside it stay inside it, and a move
         // out of it hands off to the content underneath in one step rather than row by row.
         .focusSection()
+        // S1 W2 (2026-10-04): Right leaves the sidebar for the current tab's content. Pages start
+        // BELOW the panel, so the engine usually finds nothing to the right (test52's "Right went
+        // nowhere"), and Search's system keyboard is never a geometric neighbour of the panel at
+        // all (S1 Wave 0). Checked a turn later so a Right the engine DID act on is left alone.
+        .onMoveCommand { direction in
+            guard direction == .right, armed else { return }
+            DispatchQueue.main.async {
+                guard focusedItem != nil else { return }
+                handOffFocusToContent()
+            }
+        }
         // `.contain` (not a bare identifier on the stack): an identifier applied to a container
         // can propagate onto its children in SwiftUI and would clobber the per-row
         // `sidebar_item_*` identifiers the harness addresses. Declaring an explicit accessibility
@@ -510,6 +522,19 @@ struct SidebarOverlay: View {
 
             Spacer(minLength: 0)
         }
+    }
+
+    /// S1 W2 (2026-10-04): focus landed on the hidden system tab bar (see `HiddenTabBarRedirect`):
+    /// open the sidebar and take focus onto its row, the same path as a Menu reveal, instead of
+    /// leaving focus on an invisible button.
+    private func revealForStrandedFocus() {
+        guard HiddenTabBarRedirect.shouldReveal(
+            landedInHiddenBar: true,
+            sidebarMode: SidebarChrome.isEnabled(),
+            sidebarHoldsFocus: chrome.isFocusedChrome
+        ) else { return }
+        NSLog("[SidebarChrome] focus landed on the hidden tab bar; revealing the sidebar")
+        chrome.requestReveal()
     }
 
     /// Post-select hand-off: drop the rows' focusability for a moment so the focus engine must
@@ -633,6 +658,10 @@ struct SidebarOverlay: View {
 /// so a build where the backing controller is not a `UITabBarController` says so instead of
 /// silently doing nothing. Tabs mode never mounts it.
 struct HiddenTabBarFocusBlocker: UIViewRepresentable {
+    /// S1 W2: called when focus lands inside the hidden bar anyway (tvOS's system search field
+    /// moves it there on Menu; see `HiddenTabBarRedirect`). The overlay opens the sidebar.
+    var onFocusLandedInHiddenBar: () -> Void = {}
+
     /// True once a backing `UITabBar` has had interaction disabled. Read by the sidebar's
     /// hand-off: default focus placement is only safe when the invisible bar cannot be its first
     /// candidate (internal review r3 P1-2b).
@@ -649,7 +678,10 @@ struct HiddenTabBarFocusBlocker: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> BlockerView { BlockerView() }
-    func updateUIView(_ uiView: BlockerView, context: Context) { uiView.apply() }
+    func updateUIView(_ uiView: BlockerView, context: Context) {
+        uiView.onFocusLandedInHiddenBar = onFocusLandedInHiddenBar
+        uiView.apply()
+    }
     /// Restore the bar if the overlay is ever torn down without the whole shell being remounted
     /// (internal review r3 P2-4): a tabs-mode shell with a visible, permanently unfocusable bar
     /// and no sidebar would have no reachable chrome at all.
@@ -662,6 +694,7 @@ struct HiddenTabBarFocusBlocker: UIViewRepresentable {
         private var loggedSuccess = false
         private weak var blockedBar: UITabBar?
         private var focusObserver: NSObjectProtocol?
+        var onFocusLandedInHiddenBar: () -> Void = {}
 
         override func didMoveToWindow() {
             super.didMoveToWindow()
@@ -678,8 +711,9 @@ struct HiddenTabBarFocusBlocker: UIViewRepresentable {
             if focusObserver == nil {
                 focusObserver = NotificationCenter.default.addObserver(
                     forName: UIFocusSystem.didUpdateNotification, object: nil, queue: .main
-                ) { [weak self] _ in
+                ) { [weak self] note in
                     self?.apply()
+                    self?.redirectIfLandedInBar(note)
                 }
             }
         }
@@ -715,6 +749,16 @@ struct HiddenTabBarFocusBlocker: UIViewRepresentable {
                 NSLog("[SidebarChrome] hidden tab bar made unfocusable (hidden=%d alpha=%.2f frame=%@)",
                       bar.isHidden ? 1 : 0, bar.alpha, NSCoder.string(for: bar.frame))
             }
+        }
+
+        /// S1 W2: the landing check. By hierarchy (the next item is inside the bar this view
+        /// blocked), not by UIKit's private button class name.
+        private func redirectIfLandedInBar(_ note: Notification) {
+            guard let bar = blockedBar,
+                  let context = note.userInfo?[UIFocusSystem.focusUpdateContextUserInfoKey] as? UIFocusUpdateContext,
+                  let next = context.nextFocusedItem as? UIView,
+                  next.isDescendant(of: bar) else { return }
+            onFocusLandedInHiddenBar()
         }
 
         func restore() {
