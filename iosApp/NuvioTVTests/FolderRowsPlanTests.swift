@@ -298,6 +298,33 @@ final class FolderRowsPlanTests: XCTestCase {
         XCTAssertNil(FolderRowsPlan.firstFocusable([]))
     }
 
+    // End-of-Wave-2 FA87 walk: the second source loaded first and the page opened on it.
+    func testInitialFocusWaitsForAnEarlierRowStillLoading() {
+        let built = rows([tab(1, loading: true), tab(2, items: items(2))])
+        XCTAssertNil(FolderRowsPlan.initialFocusTarget(built, waitOver: false))
+        XCTAssertEqual(FolderRowsPlan.initialFocusTarget(built, waitOver: true)?.id, key(2))
+    }
+
+    func testInitialFocusTakesTheFirstRowOnceItLoads() {
+        let built = rows([tab(1, items: items(2)), tab(2, items: items(2))])
+        XCTAssertEqual(FolderRowsPlan.initialFocusTarget(built, waitOver: false)?.id, key(1))
+    }
+
+    func testInitialFocusIsNotHeldUpByFailedOrEmptyRows() {
+        let built = rows([tab(1, error: "x"), tab(2), tab(3, items: items(2))])
+        XCTAssertEqual(FolderRowsPlan.initialFocusTarget(built, waitOver: false)?.id, key(3))
+    }
+
+    func testInitialFocusIgnoresLoadingRowsBelowTheFirstFocusableRow() {
+        let built = rows([tab(1, items: items(2)), tab(2, loading: true)])
+        XCTAssertEqual(FolderRowsPlan.initialFocusTarget(built, waitOver: false)?.id, key(1))
+    }
+
+    func testInitialFocusWithNothingFocusable() {
+        XCTAssertNil(FolderRowsPlan.initialFocusTarget(rows([tab(1, loading: true)]), waitOver: true))
+        XCTAssertNil(FolderRowsPlan.initialFocusTarget([], waitOver: true))
+    }
+
     func testFocusablePositionCountsOnlyFocusableRows() {
         // A failed row above the first loaded one does not push it off position 0 (the Edit band).
         let built = rows([tab(1, error: "x"), tab(2, items: items(2)), tab(3, loading: true), tab(4, items: items(2))])

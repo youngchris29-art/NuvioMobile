@@ -62,6 +62,8 @@ private enum StripPagerTuning {
     /// row's first card (§3.3).
     static let rungDelays: [(rung: Int, delay: TimeInterval)] = [(2, 0.3), (3, 0.7), (4, 1.0)]
     static let firstCardRung = 4
+    /// How long after the last rung an unlanded request stays live before it expires.
+    static let expiryGrace: TimeInterval = 0.3
 }
 
 /// See the file header.
@@ -89,6 +91,12 @@ struct StripPager<Row: View>: View {
     @State private var focusRequest = PinnedRowFocusRequest.none
     /// Flips only between row 0 and row 1, so the host is not re-rendered per hop.
     @State private var atTop = true
+    /// The index the mounted window is centred on (`StripMountWindow`): the focused row, or the
+    /// target of a programmatic request so its row is mounted before the rungs ask it for focus.
+    @State private var windowCenter = 0
+    /// Rows a long glide passes (Menu → row 0 from row 5), kept mounted until the page ends so the
+    /// glide never runs through empty pages or unmounts the row it leaves.
+    @State private var glideSpan: ClosedRange<Int>?
     @State private var box = StripPagerBox()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -126,23 +134,15 @@ struct StripPager<Row: View>: View {
         let trailing = geometry.trailingMargin
         let exitHandler: (() -> Void)? = atTop ? atTopExit : { pageToTop() }
         ScrollView(.vertical) {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                ForEach(rowKeys, id: \.self) { key in
-                    row(key)
-                        .padding(.leading, leading)
-                        .padding(.trailing, trailing)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .frame(height: page, alignment: .top)
-                        // §3.4: render-time only, no state writes. The page at rest is exactly 1, so
-                        // the focused card's lift renders untouched; the peeking page reads 0.6.
-                        .visualEffect { content, proxy in
-                            content.opacity(StripGeometry.pageOpacity(
-                                minY: proxy.frame(in: .scrollView(axis: .vertical)).minY,
-                                pageHeight: page))
-                        }
-                        .id(key)
-                }
-                Color.clear.frame(height: geometry.peek)
+            // Not a `LazyVStack`: it recreated the row ABOVE the focused one while focus was landing
+            // on it (Up from row i: focus reached row i−1's remembered card, the row was rebuilt as
+            // the strip began to scroll, focus dropped to nil, and the engine re-entered the row
+            // through its focus section at the card nearest the screen centre; end-of-Wave-2 FA87
+            // walk). Every page frame exists eagerly, so `.scrollPosition(id:)` and the view-aligned
+            // targets see the whole strip; only the rows inside `StripMountWindow` mount real content,
+            // so the row above and the row below the focused one are always stable.
+            VStack(alignment: .leading, spacing: 0) {
+                pages(page: page, leading: leading, trailing: trailing)
             }
             .scrollTargetLayout()
             .background(alignment: .topLeading) {
@@ -199,6 +199,36 @@ struct StripPager<Row: View>: View {
         }
     }
 
+    @ViewBuilder
+    private func pages(page: CGFloat, leading: CGFloat, trailing: CGFloat) -> some View {
+        let mounted = StripMountWindow.range(center: windowCenter, count: rowKeys.count)
+        let span = glideSpan
+        ForEach(Array(rowKeys.enumerated()), id: \.element) { index, key in
+            Group {
+                if mounted.contains(index) || span?.contains(index) == true {
+                    row(key)
+                        .padding(.leading, leading)
+                        .padding(.trailing, trailing)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    // Outside the window: an empty page of the same height. Nothing here can take
+                    // focus, and Down/Up only ever move to an adjacent row, which is mounted.
+                    Color.clear
+                }
+            }
+            .frame(height: page, alignment: .top)
+            // §3.4: render-time only, no state writes. The page at rest is exactly 1, so the
+            // focused card's lift renders untouched; the peeking page reads 0.6.
+            .visualEffect { content, proxy in
+                content.opacity(StripGeometry.pageOpacity(
+                    minY: proxy.frame(in: .scrollView(axis: .vertical)).minY,
+                    pageHeight: page))
+            }
+            .id(key)
+        }
+        Color.clear.frame(height: geometry.peek)
+    }
+
     private var probeConfiguration: String {
         "\(geometry.pageHeight)|\(geometry.stripHeight)|\(rowKeys.count)"
     }
@@ -231,7 +261,10 @@ struct StripPager<Row: View>: View {
                 StageStripProbe.shared.log("ownership \(key) ignored: programmatic target \(target) in flight")
                 return
             } else {
+                // The window passed and another row holds focus: the viewer has moved on, so the
+                // request must not land later (see `expireRequest`).
                 box.programmaticTarget = nil
+                dropStaleRequest(keeping: key)
             }
         }
         guard key != box.focusedRowKey else { return }
@@ -239,10 +272,11 @@ struct StripPager<Row: View>: View {
         guard let index = rowKeys.firstIndex(of: key) else { return }
         let previous = box.rowIndex
         box.rowIndex = index
+        if windowCenter != index { windowCenter = index }
         controller.currentRowKey = key
         // A frame-time window per hop (no-op unless `debug.collectionFrameProbe` is on).
         CollectionFocusFrameSampler.shared.arm(rowKey: key, gif: false)
-        page(to: key, index: index)
+        page(to: key, index: index, from: previous)
         let top = index == 0
         if atTop != top { atTop = top }
         if ownsProbe, previous != index {
@@ -260,12 +294,16 @@ struct StripPager<Row: View>: View {
     /// `alongside` (W2-A, #16) runs inside the page's own transaction: Menu's first focus rung, so
     /// the focus write and the position animation are one transaction. With no page to run (already
     /// on `key`) it runs at once.
-    private func page(to key: String, index: Int, alongside: (() -> Void)? = nil) {
+    private func page(to key: String, index: Int, from previous: Int, alongside: (() -> Void)? = nil) {
         guard positionId != key else {
             alongside?()
             return
         }
         let seconds = reduceMotion ? 0 : StageStripTuning.pageSeconds
+        // A glide longer than the mounted window keeps every row it passes mounted until it ends.
+        let span = min(previous, index)...max(previous, index)
+        let longGlide = span.count > StripMountWindow.radius + 1
+        if longGlide { glideSpan = span }
         let signal = controller.signal
         let generation = signal.pageStarted(duration: seconds)
         onPageStart(index, seconds)
@@ -274,6 +312,7 @@ struct StripPager<Row: View>: View {
             positionId = key
             alongside?()
             signal.pageEnded(generation: generation)
+            if longGlide { glideSpan = nil }
         } else {
             // #15: the page ends at its animation's real completion, not at a nominal 0.5 s.
             withAnimation(.easeOut(duration: seconds), completionCriteria: .logicallyComplete) {
@@ -281,6 +320,7 @@ struct StripPager<Row: View>: View {
                 alongside?()
             } completion: {
                 signal.pageEnded(generation: generation)
+                if longGlide, glideSpan == span { glideSpan = nil }
             }
         }
     }
@@ -312,6 +352,7 @@ struct StripPager<Row: View>: View {
         // Rows were inserted or removed above the focused row; `.scrollPosition(id:)` keeps it in
         // place, only its index moved.
         box.rowIndex = index
+        if windowCenter != index { windowCenter = index }
         let top = index == 0
         if atTop != top { atTop = top }
         #if DEBUG
@@ -340,14 +381,18 @@ struct StripPager<Row: View>: View {
         }
         box.restoreGeneration &+= 1
         let generation = box.restoreGeneration
+        // A far row (Menu → row 0 from row 5, a rail restore) is outside the mounted window: move
+        // the window first, so the row exists when the rungs ask it for focus.
+        if windowCenter != index { windowCenter = index }
         box.programmaticTarget = key
         box.programmaticDeadline = ProcessInfo.processInfo.systemUptime + StripPagerTuning.programmaticWindow
+        let from = box.rowIndex
         if firstRungInPage {
-            page(to: key, index: index) {
+            page(to: key, index: index, from: from) {
                 runRung(1, key: key, itemId: itemId, reason: reason, generation: generation)
             }
         } else {
-            page(to: key, index: index)
+            page(to: key, index: index, from: from)
             DispatchQueue.main.async {
                 runRung(1, key: key, itemId: itemId, reason: reason, generation: generation)
             }
@@ -357,6 +402,35 @@ struct StripPager<Row: View>: View {
                 runRung(entry.rung, key: key, itemId: itemId, reason: reason, generation: generation)
             }
         }
+        let lastDelay = StripPagerTuning.rungDelays.last?.delay ?? 0
+        DispatchQueue.main.asyncAfter(deadline: .now() + lastDelay + StripPagerTuning.expiryGrace) {
+            expireRequest(key: key, reason: reason, generation: generation)
+        }
+    }
+
+    /// A request that never landed must not stay live. The last rung leaves it in the environment,
+    /// and a row that remounts later re-applies a live request on appear (F5), so it would take
+    /// focus seconds afterwards, in the middle of the viewer's next press. On the folder Rows page
+    /// one Down paged twice that way (end-of-Wave-2 FA87 walk): the page's first-focus request for
+    /// a row still off screen never landed, and the row re-applied it when Down scrolled it in. So
+    /// the request expires after its last rung, and the strip then follows the row that actually
+    /// holds focus, whose ownership report the in-flight window had set aside.
+    private func expireRequest(key: String, reason: String, generation: Int) {
+        guard box.restoreGeneration == generation else { return }   // landed, or a newer request
+        box.restoreGeneration &+= 1
+        if box.programmaticTarget == key { box.programmaticTarget = nil }
+        dropStaleRequest(keeping: nil)
+        StageStripProbe.shared.log("restore row=\(key) expired reason=\(reason)")
+        if let owner = box.owners.first(where: { $0 != key }), owner != box.focusedRowKey {
+            handleOwnership(owner, owns: true)
+        }
+    }
+
+    /// Clears a live focus request for any row but `keeping`, and stands its remaining rungs down.
+    private func dropStaleRequest(keeping key: String?) {
+        guard let pending = focusRequest.rowKey, pending != key else { return }
+        focusRequest = PinnedRowFocusRequest(rowKey: nil, generation: focusRequest.generation)
+        box.restoreGeneration &+= 1
     }
 
     private func runRung(_ rung: Int, key: String, itemId: String?, reason: String, generation: Int) {

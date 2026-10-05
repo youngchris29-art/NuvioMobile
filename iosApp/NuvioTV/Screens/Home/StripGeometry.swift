@@ -293,8 +293,12 @@ nonisolated enum StageStripTuning {
         fadeIn: knob("debug.stageFadeIn", in: 0.05...0.4) ?? TextSwapTiming.stage.fadeIn
     )
 
-    /// Whether remembered cards drive `.defaultFocus` on Down/Up (§3.3). `-debug.stripFocusMemory
-    /// off` turns it off; memory then serves Menu and rail restores only.
+    /// Whether remembered cards drive `.defaultFocus` on Down/Up (§3.3). Gate G-F (end-of-Wave-2 FA87
+    /// walk, 2026-10-05): with the strip's rows in a `LazyVStack` it seemed to fail, because the row
+    /// above was rebuilt while focus landed on its remembered card; with the mounted window
+    /// (`StripMountWindow`) Up lands on that card on Home and on the folder page, so memory stays on.
+    /// `-debug.stripFocusMemory off` gives the Q5 fallback (Down/Up land geometrically; memory then
+    /// serves Menu and rail restores only).
     static let focusMemoryDefaultFocus: Bool = {
         guard let raw = UserDefaults.standard.string(forKey: "debug.stripFocusMemory")?
             .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else { return true }

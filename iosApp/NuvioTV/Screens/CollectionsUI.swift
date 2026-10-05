@@ -1732,8 +1732,8 @@ struct FolderDetailView: View {
 /// Mounted once by `FolderDetailView`, outside the Rows/Grid switch, so picking a layout keeps focus
 /// on it. A full-width focus section (the Library L1 pattern): Up from ANY card of the strip's top
 /// row (or from the grid's chips) reaches it, and Down returns to the row the strip shows (its own
-/// focus section). Visible and enabled only at the top of the page (`isActive`), faded like the
-/// Edit Filters button it replaces.
+/// focus section). Visible, enabled and a focus section only at the top of the page (`isActive`),
+/// faded like the Edit Filters button it replaces; elsewhere it is hidden and never a focus target.
 struct FolderEditMenuBand: View {
     @ObservedObject var model: FolderDetailViewModel
     @Binding var layout: FolderPageLayout
@@ -1744,6 +1744,21 @@ struct FolderEditMenuBand: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
+        // The band is a focus section only while it is active. Faded out, a section with only a
+        // disabled Menu in it still caught Up from a lower strip row (focus landed on the empty
+        // section, then bounced to whichever card sat under it: end-of-Wave-2 FA87 walk). Hidden,
+        // it keeps its place and is never a focus target.
+        Group {
+            if isActive {
+                band.focusSection()
+            } else {
+                band.hidden()
+            }
+        }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: isActive)
+    }
+
+    private var band: some View {
         HStack(spacing: 0) {
             Spacer(minLength: 0)
             Menu {
@@ -1771,9 +1786,6 @@ struct FolderEditMenuBand: View {
         }
         .padding(.top, FolderHeaderGeometry.restTop)
         .padding(.trailing, Theme.Spacing.screen)
-        .focusSection()
-        .opacity(isActive ? 1 : 0)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: isActive)
     }
 
     private var filterEntries: [FolderDetailViewModel.EditableSource] {

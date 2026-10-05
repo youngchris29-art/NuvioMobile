@@ -43,6 +43,9 @@ struct FolderRowsPage: View {
     @StateObject private var stage = StageController()
     /// Report bookkeeping that never drives rendering.
     @State private var box = FolderRowsPageBox()
+    /// §2.3: initial focus stops waiting for an earlier row still loading
+    /// (`FolderRowsPlan.initialFocusWaitLimit` after the page appears).
+    @State private var initialFocusWaitOver = false
     /// Q1: the stage follows focus from the viewer's first move, for good. Drives the logo's rise.
     @State private var followsFocus = false
     /// The deepest tab the strip has had focus on. It feeds `FolderRowsPlan.visible` in place of the
@@ -109,6 +112,11 @@ struct FolderRowsPage: View {
         .onAppear {
             stage.start()
             stage.swap.setReduceMotion(reduceMotion)
+            if !initialFocusWaitOver {
+                DispatchQueue.main.asyncAfter(deadline: .now() + FolderRowsPlan.initialFocusWaitLimit) {
+                    initialFocusWaitOver = true
+                }
+            }
             // A pop back from Detail or See All lifts the cover (P1 §4.3's push rule).
             stage.setCovered(false, restoresFocus: true)
             seedStage()
@@ -127,8 +135,10 @@ struct FolderRowsPage: View {
         .onChange(of: folderIdentity ?? "-", initial: true) { _, _ in
             seedStage()
         }
-        // §2.3 initial focus: the first time a row becomes focusable, its first card.
-        .onChange(of: FolderRowsPlan.firstFocusable(shownRows)?.id, initial: true) { _, key in
+        // §2.3 initial focus: row 0's first card. A later row that loads first waits for the
+        // rows above it (`FolderRowsPlan.initialFocusTarget`).
+        .onChange(of: FolderRowsPlan.initialFocusTarget(shownRows, waitOver: initialFocusWaitOver)?.id,
+                  initial: true) { _, key in
             requestInitialFocus(key)
         }
         .onChange(of: allRows) { _, rows in
@@ -316,9 +326,9 @@ struct FolderRowsPage: View {
 
     // MARK: Focus (§2.3, §2.6)
 
-    /// The first time a row becomes focusable while no card has had focus yet, put focus on its first
-    /// card (S4; `itemId: nil` = the remembered card, else the first). The Edit band holds focus
-    /// until then (BUG-47).
+    /// Once `FolderRowsPlan.initialFocusTarget` names a row while no card has had focus yet, put focus
+    /// on its first card (S4; `itemId: nil` = the remembered card, else the first). The Edit band
+    /// holds focus until then (BUG-47).
     private func requestInitialFocus(_ key: String?) {
         guard requestsInitialFocus, let key, box.pendingInitialFocus else { return }
         box.pendingInitialFocus = false

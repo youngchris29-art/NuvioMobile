@@ -144,4 +144,97 @@ final class StageGate1EvidenceTests: XCTestCase {
         note("folder-focused-probes", "downs=\(downs) found=\(found)\n" + probes(app))
         note("folder-focused-tree", app.debugDescription)
     }
+
+    /// The label of the element holding focus (tvOS 26.5 reports `hasFocus`; 27.0 never does).
+    private func focusedLabel(_ app: XCUIApplication) -> String {
+        let focused = app.descendants(matching: .any).matching(NSPredicate(format: "hasFocus == true")).firstMatch
+        return focused.exists ? "\(focused.elementType.rawValue):\(focused.label)" : "<none>"
+    }
+
+    /// Diagnostic for per-row focus memory (P1 §3.3, gate G-F): on Home's strip and on the folder
+    /// Rows page, leave a row on its THIRD card, page Down, then Up, and record which card takes
+    /// focus at each step. Memory working = the third card again after Up.
+    func testFocusMemoryWalk() {
+        focusMemoryWalk(extra: [])
+    }
+
+    private func focusMemoryWalk(extra: [String]) {
+        let seed = Data(Self.folderSeedJson.utf8).base64EncodedString()
+        defer {
+            let app = launch(["-debug.collectionsSeedJsonB64", Data("[]".utf8).base64EncodedString()])
+            pause(8)
+            app.terminate()
+        }
+        let app = launch(["-home_layout", "stage", "-debug.collectionsSeedJsonB64", seed] + extra)
+        pause(16)
+        var log: [String] = []
+        func step(_ name: String, _ button: XCUIRemote.Button?, wait: TimeInterval = 2.5) {
+            if let button { remote.press(button); pause(wait) }
+            log.append("\(name): \(focusedLabel(app))")
+        }
+        // Home: row 0 is the pinned folder collection (one tile); row 1 is a catalog row.
+        step("home-start", nil)
+        step("home-enter-strip", .down)
+        step("home-row1", .down, wait: 3)
+        step("home-row1-right", .right, wait: 1.2)
+        step("home-row1-right2", .right, wait: 1.2)
+        step("home-row2", .down, wait: 3)
+        step("home-back-up", .up, wait: 3)
+        shot("memory-home-after-up")
+        // Back to the folder tile and open the folder.
+        step("home-up-to-row0", .up, wait: 3)
+        step("folder-open", .select, wait: 10)
+        step("folder-right", .right, wait: 1.2)
+        step("folder-right2", .right, wait: 1.2)
+        step("folder-down", .down, wait: 3)
+        step("folder-back-up", .up, wait: 3)
+        shot("memory-folder-after-up")
+        step("folder-up-again", .up, wait: 3)
+        note("memory-walk", log.joined(separator: "\n"))
+    }
+
+    /// Wave 2 (W2-B): the folder opened from a Stage Home is a stage-and-strip page. Seeds the
+    /// P2 §4.3 collection (pinned, so its folder tile is the strip's first card), enters the strip,
+    /// opens the folder, pages Down once and back Up, then leaves with Menu. Clears the seed.
+    func testFolderRowsPage() {
+        let seed = Data(Self.folderSeedJson.utf8).base64EncodedString()
+        defer {
+            let app = launch(["-debug.collectionsSeedJsonB64", Data("[]".utf8).base64EncodedString()])
+            pause(8)
+            app.terminate()
+        }
+        let app = launch(["-home_layout", "stage", "-debug.collectionsSeedJsonB64", seed])
+        pause(16)
+        remote.press(.down)          // tab bar → the strip's first card (the folder tile)
+        pause(2)
+        shot("folderpage-0-home-folder-focused")
+        note("folderpage-0-probes", probes(app))
+        remote.press(.select)        // open the folder
+        pause(10)
+        func folderProbes() -> String {
+            ["folder_rows_state", "debug_stage_folder", "debug_wash_folder"].map { id in
+                let element = app.descendants(matching: .any)[id].firstMatch
+                return element.exists ? element.label : "\(id) <absent>"
+            }.joined(separator: "\n")
+        }
+        shot("folderpage-1-open")
+        note("folderpage-1-probes", folderProbes())
+        note("folderpage-1-tree", app.debugDescription)
+        remote.press(.down)
+        pause(3)
+        shot("folderpage-2-down")
+        note("folderpage-2-probes", folderProbes())
+        remote.press(.down)
+        pause(3)
+        shot("folderpage-3-down2")
+        note("folderpage-3-probes", folderProbes())
+        remote.press(.up)
+        pause(3)
+        shot("folderpage-4-up")
+        note("folderpage-4-probes", folderProbes())
+        remote.press(.menu)
+        pause(4)
+        shot("folderpage-5-back-home")
+        note("folderpage-5-probes", probes(app))
+    }
 }

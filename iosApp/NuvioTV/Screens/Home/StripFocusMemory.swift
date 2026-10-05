@@ -96,3 +96,17 @@ nonisolated enum StripRowRestore {
         return min(max(target, 0), maxOffset) - sample.insetLeading
     }
 }
+
+/// Which strip rows mount real content: the window's centre and `radius` rows on each side. Every
+/// other page is an empty frame of the same height, so the strip keeps its full scroll geometry
+/// while only a few rows exist. The row above and the row below the focused one are always inside,
+/// so a Down or Up never lands in a row that is being built (see `StripPager`'s body).
+nonisolated enum StripMountWindow {
+    static let radius = 2
+
+    static func range(center: Int, count: Int, radius: Int = StripMountWindow.radius) -> ClosedRange<Int> {
+        guard count > 0 else { return 0...0 }
+        let c = min(max(center, 0), count - 1)
+        return max(0, c - radius)...min(count - 1, c + radius)
+    }
+}

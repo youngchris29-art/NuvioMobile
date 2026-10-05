@@ -313,6 +313,22 @@ nonisolated enum FolderRowsPlan {
         rows.first(where: \.isFocusable)
     }
 
+    /// How long initial focus waits for an earlier row that is still loading (§2.3).
+    static let initialFocusWaitLimit: TimeInterval = 2.0
+
+    /// §2.3's "open → row 0, first card": the row initial focus lands on. The rows load in parallel,
+    /// so a later row can be focusable before an earlier one has finished, and landing there opened
+    /// the page on its second row (end-of-Wave-2 FA87 walk). While a row ABOVE the first focusable
+    /// row is still loading, wait (nil) until `waitOver`, then take the first focusable row. Failed
+    /// and empty rows never hold it up.
+    static func initialFocusTarget(_ rows: [FolderStripRow], waitOver: Bool) -> FolderStripRow? {
+        for row in rows {
+            if row.isFocusable { return row }
+            if row.status == .loading, !waitOver { return nil }
+        }
+        return nil
+    }
+
     /// The row's index among the FOCUSABLE rows of `rows` (0 = the top row the viewer can land
     /// on), or nil when it is not a focusable row there. The Edit band shows at position 0, which
     /// holds even when an empty or failed row sits above the first focusable one.

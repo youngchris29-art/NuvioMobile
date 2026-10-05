@@ -72,6 +72,22 @@ final class StripFocusMemoryTests: XCTestCase {
         XCTAssertTrue(StageStripTuning.focusMemoryDefaultFocus)
     }
 
+    // MARK: StripMountWindow (end-of-Wave-2 walk: the row above must not be rebuilt)
+
+    func testMountWindowKeepsTheRowsAroundTheFocusedOne() {
+        XCTAssertEqual(StripMountWindow.range(center: 3, count: 10), 1...5)
+        XCTAssertTrue(StripMountWindow.range(center: 3, count: 10).contains(2), "the row above")
+        XCTAssertTrue(StripMountWindow.range(center: 3, count: 10).contains(4), "the row below")
+    }
+
+    func testMountWindowClampsAtTheEnds() {
+        XCTAssertEqual(StripMountWindow.range(center: 0, count: 10), 0...2)
+        XCTAssertEqual(StripMountWindow.range(center: 9, count: 10), 7...9)
+        XCTAssertEqual(StripMountWindow.range(center: 0, count: 1), 0...0)
+        XCTAssertEqual(StripMountWindow.range(center: 12, count: 4), 1...3)
+        XCTAssertEqual(StripMountWindow.range(center: 0, count: 0), 0...0)
+    }
+
     // MARK: StripRowRestore (remounted rows)
 
     /// 220 pt cards, 28 pt gap, a 1640 pt viewport, 18 cards (content 18 × 248 − 28 = 4436).
