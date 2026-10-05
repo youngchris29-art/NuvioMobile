@@ -137,6 +137,86 @@ final class ArtworkColorStoreTests: XCTestCase {
         XCTAssertNil(ArtworkColorStore.color(from: nil, use: .rail))
     }
 
+    // MARK: - wash lift (Home Stage & Strip, H3)
+
+    /// 256 opaque orange pixels as premultiplied RGBA8, the form `AmbientWashRenderer` hands
+    /// `meanChroma(rgba:)`. Raw bytes, so these tests need no image rendering.
+    private func orangeMean() throws -> ArtworkColorStore.Mean {
+        let rgba: [UInt8] = (0..<256).flatMap { _ in [UInt8(255), 128, 0, 255] }
+        return try XCTUnwrap(ArtworkColorStore.meanChroma(rgba: rgba))
+    }
+
+    func testWashLiftClampsSaturationAndFixesBrightness() {
+        XCTAssertEqual(ArtworkColorStore.washMinSaturation, 0.45)
+        XCTAssertEqual(ArtworkColorStore.washMaxSaturation, 0.85)
+        XCTAssertEqual(ArtworkColorStore.washBrightness, 0.55)
+
+        // A dull colour is lifted to the saturation floor; brightness is 0.55 whatever it was.
+        let low = ArtworkColorStore.washLifted(h: 0.6, s: 0.2, v: 0.3)
+        XCTAssertEqual(low.h, 0.6, accuracy: 0.0001)
+        XCTAssertEqual(low.s, 0.45, accuracy: 0.0001)
+        XCTAssertEqual(low.v, 0.55, accuracy: 0.0001)
+        // A neon colour is pulled down to the ceiling, and a bright one down to 0.55.
+        let high = ArtworkColorStore.washLifted(h: 0.33, s: 0.95, v: 1.0)
+        XCTAssertEqual(high.h, 0.33, accuracy: 0.0001)
+        XCTAssertEqual(high.s, 0.85, accuracy: 0.0001)
+        XCTAssertEqual(high.v, 0.55, accuracy: 0.0001)
+        // Inside the clamp the saturation is left alone.
+        let inside = ArtworkColorStore.washLifted(h: 0.1, s: 0.6, v: 0.9)
+        XCTAssertEqual(inside.h, 0.1, accuracy: 0.0001)
+        XCTAssertEqual(inside.s, 0.6, accuracy: 0.0001)
+        XCTAssertEqual(inside.v, 0.55, accuracy: 0.0001)
+    }
+
+    func testGreyArtGivesNoWashColour() {
+        XCTAssertNil(ArtworkColorStore.washRGB(from: nil))
+        XCTAssertNil(ArtworkColorStore.color(from: nil, use: .wash))
+        // A real grey sample answers nil end to end: no mean, so no tint.
+        let grey: [UInt8] = (0..<256).flatMap { _ in [UInt8(128), 128, 128, 255] }
+        let mean = ArtworkColorStore.meanChroma(rgba: grey)
+        XCTAssertNil(mean)
+        XCTAssertNil(ArtworkColorStore.washRGB(from: mean))
+    }
+
+    func testWashRGBKeepsTheHueAtTheFixedBrightness() throws {
+        let mean = try orangeMean()
+        let rgb = try XCTUnwrap(ArtworkColorStore.washRGB(from: mean))
+        let hsb = ArtworkColorStore.hsb(r: rgb.r, g: rgb.g, b: rgb.b)
+        XCTAssertLessThan(hueDistance(hsb.h, mean.h), 0.01)
+        XCTAssertEqual(hsb.v, 0.55, accuracy: 0.001)
+        XCTAssertEqual(hsb.s, 0.85, accuracy: 0.001, "a fully saturated orange is pulled down to the ceiling")
+        // Orange at s 0.85, v 0.55: red is the brightest channel, blue the dimmest.
+        XCTAssertEqual(rgb.r, 0.55, accuracy: 0.01)
+        XCTAssertEqual(rgb.g, 0.317, accuracy: 0.01)
+        XCTAssertEqual(rgb.b, 0.0825, accuracy: 0.01)
+        // The SwiftUI colour for the same use is that same tint.
+        XCTAssertEqual(ArtworkColorStore.color(from: mean, use: .wash),
+                       Color(.sRGB, red: Double(rgb.r), green: Double(rgb.g), blue: Double(rgb.b), opacity: 1))
+    }
+
+    /// The third use must not move the first two: same mean, same ring and rail colours as before.
+    func testWashUseLeavesRingAndRailUnchanged() throws {
+        let mean = try orangeMean()
+        let ring = ArtworkColorStore.ringLifted(h: mean.h, s: mean.s, v: mean.v)
+        let ringRGB = ArtworkColorStore.rgb(h: ring.h, s: ring.s, v: ring.v)
+        XCTAssertEqual(ArtworkColorStore.color(from: mean, use: .ring),
+                       Color(.sRGB, red: Double(ringRGB.r), green: Double(ringRGB.g), blue: Double(ringRGB.b), opacity: 1))
+        let rail = ArtworkColorStore.railLifted(h: mean.h, s: mean.s, v: mean.v)
+        let railRGB = ArtworkColorStore.rgb(h: rail.h, s: rail.s, v: rail.v)
+        XCTAssertEqual(ArtworkColorStore.color(from: mean, use: .rail),
+                       Color(.sRGB, red: Double(railRGB.r), green: Double(railRGB.g), blue: Double(railRGB.b), opacity: 1))
+        // Ring floors s at 0.55 / v at 0.85, rail pins v at 1.0, wash pins v at 0.55: three different colours.
+        XCTAssertNotEqual(ArtworkColorStore.color(from: mean, use: .wash), ArtworkColorStore.color(from: mean, use: .ring))
+        XCTAssertNotEqual(ArtworkColorStore.color(from: mean, use: .wash), ArtworkColorStore.color(from: mean, use: .rail))
+        // The untouched lifts themselves.
+        let low = ArtworkColorStore.ringLifted(h: 0.6, s: 0.2, v: 0.3)
+        XCTAssertEqual(low.s, 0.55, accuracy: 0.0001)
+        XCTAssertEqual(low.v, 0.85, accuracy: 0.0001)
+        let railLow = ArtworkColorStore.railLifted(h: 0.6, s: 0.2, v: 0.3)
+        XCTAssertEqual(railLow.s, 0.40, accuracy: 0.0001)
+        XCTAssertEqual(railLow.v, 1.0, accuracy: 0.0001)
+    }
+
     // MARK: - HSB round trip
 
     func testHSBRoundTrip() {

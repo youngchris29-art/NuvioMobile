@@ -25,8 +25,24 @@ nonisolated struct PinnedRowFocusRequest: Equatable, Sendable {
     /// Bumped on every request, so two consecutive requests for the SAME row are two distinct
     /// values and the rows' `onChange` fires for both (the retry rungs depend on this).
     var generation: Int
+    /// Home Stage & Strip (P1 §3.3): the card to land on — the strip's Menu and rail restores name
+    /// the row's remembered card. nil everywhere Classic builds a request.
+    var itemId: String? = nil
+    /// Home Stage & Strip: the strip's last restore rung lands on the row's FIRST card even when a
+    /// remembered card exists (that card is what the earlier rungs could not reach). false
+    /// everywhere Classic builds a request.
+    var forceFirst: Bool = false
 
     static let none = PinnedRowFocusRequest(rowKey: nil, generation: 0)
+
+    /// The card a row with `rowKey` should focus for request `r`, or nil when `r` names another row.
+    /// Classic (`itemId` nil, no memory) resolves to `firstId`, exactly the card it always took.
+    nonisolated static func target(for r: PinnedRowFocusRequest, rowKey: String,
+                                   firstId: String?, remembered: String?) -> String? {
+        guard r.rowKey == rowKey else { return nil }
+        if r.forceFirst { return firstId }
+        return r.itemId ?? remembered ?? firstId
+    }
 }
 
 private struct PinnedRowFocusRequestKey: EnvironmentKey {
@@ -79,28 +95,68 @@ private struct PinnedRowUpFallbackTarget: ViewModifier {
     let focus: FocusState<String?>.Binding
     @Environment(\.pinnedRowFocusRequest) private var request
     @Environment(\.pinnedRowFocusOwnership) private var ownership
+    /// Home Stage & Strip (P1 §3.3): set only by the strip (`StripPager`). nil everywhere else, and
+    /// with it nil the body below is exactly the Classic one.
+    @Environment(\.stripFocusMemory) private var memory
 
     func body(content: Content) -> some View {
-        content
+        if let memory {
+            stripBody(content, memory: memory)
+        } else {
+            content
+                .onChange(of: request) { _, new in
+                    applyIfMatching(new)
+                }
+                .onChange(of: focus.wrappedValue != nil) { _, owns in
+                    ownership.report(rowKey, owns)
+                }
+                // F5: `onChange(of:)` with the default `initial: false` only fires on a value change
+                // AFTER this row is already observing it — a row the `LazyVStack` culls and later
+                // remounts (scrolled back into view by the fallback's own reveal rung) receives the
+                // CURRENT request as its initial environment value and silently drops it. Re-apply a
+                // still-active matching request on mount so a late-mounting row is not stranded.
+                .onAppear {
+                    applyIfMatching(request)
+                }
+        }
+    }
+
+    /// The strip's form: the Classic body plus the per-row memory. Every focused card is recorded,
+    /// and the row's default focus names the remembered card (the first card for a row never
+    /// visited), so Down/Up land where the viewer left the row. `.userInitiated` lets the engine
+    /// evaluate it on a directional move, not only when the window first appears. Gate G-F decides
+    /// whether it holds inside the lazy, focus-sectioned rows; `-debug.stripFocusMemory off` drops
+    /// the default focus and keeps the recording (Menu and rail restores).
+    @ViewBuilder
+    private func stripBody(_ content: Content, memory: StripFocusMemory) -> some View {
+        let recorded = content
             .onChange(of: request) { _, new in
                 applyIfMatching(new)
             }
             .onChange(of: focus.wrappedValue != nil) { _, owns in
                 ownership.report(rowKey, owns)
             }
-            // F5: `onChange(of:)` with the default `initial: false` only fires on a value change
-            // AFTER this row is already observing it — a row the `LazyVStack` culls and later
-            // remounts (scrolled back into view by the fallback's own reveal rung) receives the
-            // CURRENT request as its initial environment value and silently drops it. Re-apply a
-            // still-active matching request on mount so a late-mounting row is not stranded.
+            .onChange(of: focus.wrappedValue) { _, id in
+                if let id { memory.remember(rowKey: rowKey, itemId: id) }
+            }
             .onAppear {
                 applyIfMatching(request)
             }
+        if memory.drivesDefaultFocus {
+            recorded.defaultFocus(focus, memory.itemId(for: rowKey) ?? firstId, priority: .userInitiated)
+        } else {
+            recorded
+        }
     }
 
     private func applyIfMatching(_ request: PinnedRowFocusRequest) {
-        guard request.rowKey == rowKey, let firstId, focus.wrappedValue == nil else { return }
-        focus.wrappedValue = firstId
+        // The anti-theft guard: a request that arrives while this row ALREADY holds focus (a late
+        // retry rung whose earlier rung landed) must not yank the user off whichever card they are on.
+        guard focus.wrappedValue == nil,
+              let target = PinnedRowFocusRequest.target(for: request, rowKey: rowKey, firstId: firstId,
+                                                        remembered: memory?.itemId(for: rowKey))
+        else { return }
+        focus.wrappedValue = target
     }
 }
 

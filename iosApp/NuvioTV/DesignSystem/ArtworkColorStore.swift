@@ -21,6 +21,11 @@ import UIKit
 /// `Use.rail`: full brightness, saturation clamped 0.40…0.70, so a rail stays an edge highlight and
 /// not a neon frame).
 ///
+/// Home Stage & Strip (H3) adds a third lift, `Use.wash` (saturation clamped 0.45…0.85, brightness
+/// fixed at 0.55). It is for the ambient wash behind the stage, whose renderer takes the mean from its
+/// own 160×90 bytes (`meanChroma(rgba:)`) and asks `washRGB(from:)` for the tint, so the per-URL cache
+/// and the cost contract below are untouched by it.
+///
 /// Cost contract (the BUG-19/BUG-41 lesson: work on the focus path is what the tester feels at 10
 /// feet). A colour is computed ONCE per URL, off the main actor, because a card asked for it: on a
 /// focus GAIN for the ring, and once on image load for the rail, and only when the depth toggle is
@@ -59,6 +64,10 @@ final class ArtworkColorStore {
         case ring
         /// Depth rail: v = 1.0, s clamped to 0.40…0.70 (`railLifted`).
         case rail
+        /// Home Stage & Strip (H3): the ambient wash behind the stage. v fixed at 0.55, s clamped to
+        /// 0.45…0.85 (`washLifted`): a rich hue at mid brightness, because it tints a large area, so
+        /// it must not fight the wash's exposure cap or the white stage text.
+        case wash
     }
 
     /// Sampled mean colour in HSB (each 0…1), before any lift.
@@ -91,6 +100,11 @@ final class ArtworkColorStore {
     nonisolated static let railMinSaturation: CGFloat = 0.40
     nonisolated static let railMaxSaturation: CGFloat = 0.70
     nonisolated static let railBrightness: CGFloat = 1.0
+
+    /// Home Stage & Strip (H3) wash lift (see `washLifted`): saturation clamp and fixed brightness.
+    nonisolated static let washMinSaturation: CGFloat = 0.45
+    nonisolated static let washMaxSaturation: CGFloat = 0.85
+    nonisolated static let washBrightness: CGFloat = 0.55
 
     /// Below this MEAN chroma weight per pixel the poster counts as grey and `dominantColor`
     /// returns nil. Not 0: near-black JPEG noise (an RGB of 3/1/1 reads as 67% saturated) gives a
@@ -156,6 +170,7 @@ final class ArtworkColorStore {
         switch use {
         case .ring: lifted = ringLifted(h: mean.h, s: mean.s, v: mean.v)
         case .rail: lifted = railLifted(h: mean.h, s: mean.s, v: mean.v)
+        case .wash: lifted = washLifted(h: mean.h, s: mean.s, v: mean.v)
         }
         let out = rgb(h: lifted.h, s: lifted.s, v: lifted.v)
         return Color(.sRGB, red: Double(out.r), green: Double(out.g), blue: Double(out.b), opacity: 1)
@@ -318,6 +333,24 @@ final class ArtworkColorStore {
     /// bright to read, but a fully saturated poster colour would turn the edge into a neon frame.
     nonisolated static func railLifted(h: CGFloat, s: CGFloat, v: CGFloat) -> (h: CGFloat, s: CGFloat, v: CGFloat) {
         (h, min(railMaxSaturation, max(railMinSaturation, s)), railBrightness)
+    }
+
+    /// Home Stage & Strip (H3, W1-B): the ambient-wash lift. Hue kept, saturation clamped to
+    /// 0.45…0.85, brightness FIXED at 0.55 (whatever the art's own `v` was). The wash fills a large
+    /// area, so unlike the ring and the rail it wants a rich hue at mid brightness: the renderer mixes
+    /// the wash toward this colour and then caps the whole wash's exposure, and a brighter tint would
+    /// only be scaled back down.
+    nonisolated static func washLifted(h: CGFloat, s: CGFloat, v: CGFloat) -> (h: CGFloat, s: CGFloat, v: CGFloat) {
+        (h, min(washMaxSaturation, max(washMinSaturation, s)), washBrightness)
+    }
+
+    /// The wash tint as sRGB-encoded RGB (each 0…1), the colour `AmbientWashRenderer` mixes toward;
+    /// nil for grey art (no mean), which gets no tint at all. The renderer takes the mean from its own
+    /// 160×90 bytes (`meanChroma(rgba:)`), so this never touches the per-URL ring/rail cache.
+    nonisolated static func washRGB(from mean: Mean?) -> (r: CGFloat, g: CGFloat, b: CGFloat)? {
+        guard let mean else { return nil }
+        let lifted = washLifted(h: mean.h, s: mean.s, v: mean.v)
+        return rgb(h: lifted.h, s: lifted.s, v: lifted.v)
     }
 
     /// RGB (0…1) → HSB (each 0…1, hue 0 = red, wrapping). Hue is 0 for a grey.

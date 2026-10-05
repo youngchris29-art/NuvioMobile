@@ -509,7 +509,9 @@ enum Theme {
 
     // MARK: - Spacing
 
-    enum Spacing {
+    /// `nonisolated`: plain constants, also read by pure layout math (`StripGeometry`) that unit
+    /// tests and non-view code call off the main actor.
+    nonisolated enum Spacing {
         static let xxs: CGFloat = 4
         static let xs: CGFloat = 8
         static let sm: CGFloat = 12
@@ -546,7 +548,7 @@ enum Theme {
         static let posterWidth: CGFloat = 220
         static let posterHeight: CGFloat = 330      // 2:3
         static let landscapeWidth: CGFloat = 360
-        static let landscapeHeight: CGFloat = 203   // 16:9
+        nonisolated static let landscapeHeight: CGFloat = 203   // 16:9
         /// FEAT-34 (2026-09-09, tester ask via u/mrStevenx3 on rc7): the description page's saga
         /// row read as the same size as the trailer cards; official Nuvio's saga cards read
         /// noticeably larger. `SagaCard`-only size, distinct from `landscapeWidth`/`landscapeHeight`.
@@ -583,10 +585,10 @@ enum Theme {
         /// focusable element — the info block above it is static content).
         static let heroButtonSlotHeight: CGFloat = 56
         /// Fixed logo/title slot inside a hero page (bottom-aligned; image fits within it).
-        static let heroLogoSlotHeight: CGFloat = 150
+        nonisolated static let heroLogoSlotHeight: CGFloat = 150
         static let heroLogoMaxWidth: CGFloat = 520
         /// Fixed single-line metadata slot inside a hero page.
-        static let heroMetaSlotHeight: CGFloat = 32
+        nonisolated static let heroMetaSlotHeight: CGFloat = 32
         /// Fixed two-line synopsis slot inside a hero page.
         static let heroSynopsisSlotHeight: CGFloat = 72
         // UX-2 hero redesign, v2: "Nuvio-style" — info panel top-LEFT, artwork reading on the
@@ -603,7 +605,7 @@ enum Theme {
         /// Nuvio-style hero is pinned above the rows now and uses the compacted
         /// `heroPinnedTopPad` instead. Kept as the in-scroll Nuvio value in case that layout
         /// comes back.
-        static let heroForegroundTopPadNuvio: CGFloat = 120
+        nonisolated static let heroForegroundTopPadNuvio: CGFloat = 120
         /// Width of the right-anchored artwork panel in the Nuvio-style hero (tvOS layout is
         /// a fixed 1920pt canvas). Its left ~30% fades out via a gradient mask, so the flat
         /// background region behind the 680pt info panel meets the art in a smooth blend.
@@ -632,7 +634,7 @@ enum Theme {
         /// 16 + 56 CTA + 16 ≈ 350 → frame 352, freeing ~100pt (rows viewport ≈ 606).
         /// Classic keeps the full-size slots everywhere.
         static let heroCarouselHeightPinned: CGFloat = 352
-        static let heroLogoSlotHeightPinned: CGFloat = 110
+        nonisolated static let heroLogoSlotHeightPinned: CGFloat = 110
         /// 2-line synopsis in the compact pinned hero (3 lines in full Nuvio).
         static let heroSynopsisSlotHeightPinned: CGFloat = 72
         /// Top padding above the PINNED hero header (pinned Nuvio mode only — the classic
@@ -763,7 +765,7 @@ enum Theme {
         /// `intrLifted=` probe field. rc12: also the floor `PinnedRowGeometry.plan`'s `floorLift`
         /// borrows in No Zoom when the reach-hold A/B is on, reserving the same band width even
         /// though nothing actually scales in that mode.
-        static let heroPinnedRowFocusLiftAllowance: CGFloat = 20
+        nonisolated static let heroPinnedRowFocusLiftAllowance: CGFloat = 20
         /// BUG-87/89 zoom-on reach hold (2026-09-30, `zoom-on-title-fix-plan.md` option A): extra
         /// points the pinned rows' top-reach FLOOR reserves above `heroPinnedRowFocusLiftAllowance`
         /// + the belt's arm when a zoom mode is active and `FocusModeFlags.zoomReachHold` is on.
@@ -969,7 +971,7 @@ enum Theme {
         /// synopsis lines, and Large two lines where it had one. Classic (non-pinned) keeps
         /// `Spacing.md`/`Spacing.lg`.
         static let heroPinnedVerticalPad: CGFloat = 12
-        static let heroPinnedSlotGap: CGFloat = Theme.Spacing.sm
+        nonisolated static let heroPinnedSlotGap: CGFloat = Theme.Spacing.sm
 
         /// FEAT-29 (Steven's beta.17 report, re-raised as a regression): a focused collection
         /// folder's hero wordmark used to render inside the shared TITLE-hero pinned logo slot,

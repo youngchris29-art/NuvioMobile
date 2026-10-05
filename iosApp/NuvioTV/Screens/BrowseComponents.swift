@@ -4995,6 +4995,9 @@ struct CatalogRowView: View {
     /// on its container and the inset follows.
     @Environment(\.rowEdgeMargins) private var rowEdgeMargins
     @Environment(\.rowEdgeRampLength) private var rowEdgeRampLength
+    /// Home Stage & Strip (P1 §3.3): the strip's per-row focus memory. nil outside the strip, which
+    /// leaves `restoreStripMemory` inert (Classic, Search, Library).
+    @Environment(\.stripFocusMemory) private var stripFocusMemory
     /// beta.19-rc1 verdict (review r1, B P2-2): the item whose wide inline tile the morph scroll
     /// could NOT bring clear of the Soft trailing ramp (clamped at the row's end, or a row too short
     /// to scroll), so the row holds its trailing fade off while that tile is wide. Written at most
@@ -5272,6 +5275,8 @@ struct CatalogRowView: View {
                             .allowsHitTesting(false)
                     }
                 }
+                // Home Stage & Strip (P1 §3.3): see `restoreStripMemory`. Inert outside the strip.
+                .onAppear { restoreStripMemory(proxy: proxy) }
             }
         }
         .focusSection()
@@ -5487,6 +5492,48 @@ struct CatalogRowView: View {
                 withAnimation(InlineTrailerCardModel.morphAnimation) { rowPosition.scrollTo(x: offset) }
             }
         }
+    }
+
+    /// Home Stage & Strip (P1 §3.3, remounted rows): the strip's `LazyVStack` may cull this row far
+    /// from the current page and lose its horizontal offset, leaving the remembered card unrealized
+    /// for `.defaultFocus`. On a (re)mount with a remembered card that is not the first, it is
+    /// scrolled back into view on the next runloop with no animation (the minimal scroll; nothing
+    /// moves when it is already visible). Inert outside the strip.
+    ///
+    /// Through this row's own horizontal `rowPosition` (`StripRowRestore.offset`, the M3 morph-scroll
+    /// path), not the spec's `proxy.scrollTo(id)`: an item-anchored proxy scroll can spill into the
+    /// enclosing vertical scroll view (the M3 note on `RowMorphScroll`), and a remount happens while
+    /// the row is entering the strip, i.e. not vertically visible, so a spill would move the strip
+    /// off its page. Under `-debug.trailerMorphScrollProxy` (no `rowPosition` attached) the restore
+    /// falls back to the proxy. The geometry sample may not have landed on the first runloop after
+    /// a mount, so one retry follows 0.15 s later.
+    private func restoreStripMemory(proxy: ScrollViewProxy) {
+        guard let memory = stripFocusMemory, memory.drivesDefaultFocus,
+              let id = memory.itemId(for: section.key),
+              id != section.items.first?.id,
+              let index = section.items.firstIndex(where: { $0.id == id }) else { return }
+        DispatchQueue.main.async { applyStripMemoryScroll(id: id, index: index, attempt: 0, proxy: proxy) }
+    }
+
+    private func applyStripMemoryScroll(id: String, index: Int, attempt: Int, proxy: ScrollViewProxy) {
+        var tx = Transaction()
+        tx.disablesAnimations = true
+        if RowMorphScroll.useProxyFallback {
+            withTransaction(tx) { proxy.scrollTo(id) }
+            return
+        }
+        guard let sample = hScroll.sample else {
+            if attempt == 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                    applyStripMemoryScroll(id: id, index: index, attempt: 1, proxy: proxy)
+                }
+            }
+            return
+        }
+        let cardWidth = posterStyle.landscapeCatalogRows ? Theme.Size.landscapeWidth : posterStyle.width
+        guard let x = StripRowRestore.offset(index: index, cardWidth: cardWidth,
+                                             gap: Theme.Spacing.rowGap, sample: sample) else { return }
+        withTransaction(tx) { rowPosition.scrollTo(x: x) }
     }
 
     /// Play/pause handler for `item`'s focusable button, or `nil` when this card isn't the focused,

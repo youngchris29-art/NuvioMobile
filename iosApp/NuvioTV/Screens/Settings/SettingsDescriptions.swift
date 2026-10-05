@@ -75,6 +75,10 @@ enum SettingsDescriptionID: String, CaseIterable {
     case appearanceBadgeImport = "appearance.badgeImport"
 
     // MARK: Home Screen (ids wired in HomeScreenSettingsPane by W1-B)
+    // Home Stage & Strip (H8, W1-C): the layout picker and the wash switch open the pane, and the
+    // two "Stage" ids sit beside the Classic ids they replace while Home Layout is Stage.
+    case homeLayout = "home.layout"
+    case homeAmbientBackground = "home.ambientBackground"
     case homeUpcoming = "home.upcoming"
     case homeRefreshAddons = "home.refreshAddons"
     case homeShowHero = "home.showHero"
@@ -83,9 +87,11 @@ enum SettingsDescriptionID: String, CaseIterable {
     case homeHeroSource = "home.heroSource"
     case homeTrailersOnFocus = "home.trailersOnFocus"
     case homeTrailerLocation = "home.trailerLocation"
+    case homeTrailerLocationStage = "home.trailerLocationStage"
     case homeHeroTrailerAutoplay = "home.heroTrailerAutoplay"
     // beta.19-rc1 verdict (M4, FEAT-52): the row lives in HomeScreenSettingsPane (spec A, W2-D).
     case homeTrailerStartDelay = "home.trailerStartDelay"
+    case homeTrailerStartDelayStage = "home.trailerStartDelayStage"
     case homeCatalogType = "home.catalogType"
     case homeCatalogs = "home.catalogs"
     case homeCatalog = "home.catalog"
@@ -252,6 +258,9 @@ enum SettingsDescriptions {
         case .appearanceBadgeImport: return LocalizedStringResource("Adds a badge pack from a JSON web address. Packs you import in the Nuvio phone app sync here on their own.")
 
         // Home Screen
+        // Home Stage & Strip (H8, W1-C): plain drafts; W2-C polishes the copy and translates it.
+        case .homeLayout: return LocalizedStringResource("Stage shows the focused title at the top of the screen with one row of posters below it, and Up and Down move one whole row at a time. Classic is the previous Home, with the banner and scrolling rows. Default: Stage.")
+        case .homeAmbientBackground: return LocalizedStringResource("Fills the background with a soft, blurred wash of the focused title's colors. With OLED True Black on, the wash is dimmed. On by default.")
         case .homeUpcoming: return LocalizedStringResource("Adds a row under Continue Watching with the next episodes of your shows that air in the next 14 days. On by default.")
         case .homeRefreshAddons: return LocalizedStringResource("Checks your installed add-ons again for catalogs. Use it if Home rows are missing even though add-ons are installed.")
         case .homeShowHero: return LocalizedStringResource("On shows a rotating banner at the top of Home, built from up to two of your catalogs. Off shows the focused title's artwork and description instead. On by default.")
@@ -260,8 +269,10 @@ enum SettingsDescriptions {
         case .homeHeroSource: return LocalizedStringResource("Turns this catalog on or off as a source for the rotating banner. At most two can be on at once.")
         case .homeTrailersOnFocus: return LocalizedStringResource("Plays a muted trailer preview after you rest on a poster for a moment. Off by default.")
         case .homeTrailerLocation: return LocalizedStringResource("Chooses whether the preview plays inside the poster or in the top banner. The banner only works with the Nuvio-style hero. Default: Poster.")
+        case .homeTrailerLocationStage: return LocalizedStringResource("Background plays the trailer behind the title at the top of the screen once you stop moving. In Row turns the focused poster into a playing trailer card. Default: In Row.")
         case .homeHeroTrailerAutoplay: return LocalizedStringResource("Lets the top banner play its trailer by itself without waiting for focus. Off by default.")
         case .homeTrailerStartDelay: return LocalizedStringResource("Sets how long trailers on posters and in the hero wait before they start. Automatic waits until the rows stop moving, then one second. Default: Automatic.")
+        case .homeTrailerStartDelayStage: return LocalizedStringResource("Sets how long trailer previews wait before they start. Automatic waits until the row has stopped moving, then one second. Default: Automatic.")
         case .homeCatalogType: return LocalizedStringResource("Adds the type to row names, so a row reads Popular - Movies instead of just Popular. On by default.")
         case .homeCatalogs: return LocalizedStringResource("Opens the list of catalogs that make up your Home rows. Switch each on or off and move them up or down to set the order.")
         case .homeCatalog: return LocalizedStringResource("Turns this row on or off on Home. Use the arrows to move it up or down.")

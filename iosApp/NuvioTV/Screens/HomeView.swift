@@ -113,6 +113,12 @@ struct HomeView: View {
     /// Paired with `noZoomOnFocus` above — `FocusModeFlags` carries both, and the ring branch is the
     /// one that could make the lift height-dependent again (BUG-93 made the two zoom modes equal).
     @AppStorage("accent_focus_ring") private var accentFocusRing = false
+    /// Home Stage & Strip (P1 E1): which Home this is. Read LIVE (`@AppStorage`, P2-7), so Settings ›
+    /// Home Screen › Home Layout flips it at once; `-home_layout classic|stage` lands in the argument
+    /// domain, which this reads too. Stage swaps the whole rows region for `StageStripHome` (E5) and
+    /// sends Classic's hero machinery dormant (E2–E4); Classic is otherwise byte-identical.
+    @AppStorage(HomeLayout.defaultsKey) private var homeLayoutRaw = HomeLayout.defaultValue.rawValue
+    private var isStageLayout: Bool { HomeLayout.resolve(homeLayoutRaw) == .stage }
     /// rc12 BUG-87 follow-up: the No Zoom reach-hold (`AboutSettingsPane`'s "No Zoom Row Reach (A/B)"
     /// row), default ON since 2026-09-30. Read only to make this view observe the key; the value
     /// used is `PinnedRowTitle.resolveReachHoldsLift()` at the `pinnedPlan` call site below, which
@@ -248,7 +254,9 @@ struct HomeView: View {
     /// is off — the commit is immediate there, exactly as it ships today.
     @State private var folderFocusGeneration = 0
 
-    private var heroItems: [MetaPreview] { Array(model.heroItems.prefix(8)) }
+    /// Home Stage & Strip (P1 E2): empty in Stage, so the carousel, its 8 s timer, the hero page
+    /// warm-up and the `heroSurfaceSeen` latch all stay dormant there.
+    private var heroItems: [MetaPreview] { isStageLayout ? [] : Array(model.heroItems.prefix(8)) }
     private var currentHero: MetaPreview? {
         guard !heroItems.isEmpty else { return nil }
         return heroItems[min(heroIndex, heroItems.count - 1)]
@@ -370,6 +378,9 @@ struct HomeView: View {
     /// resting item instead. Both modes off ⇒ nil ⇒ no hero region at all, exactly as Show Hero
     /// OFF behaved before this change.
     private var displayHero: MetaPreview? {
+        // Home Stage & Strip (P1 E3): the stage owns its own focus/art pipeline
+        // (`StageController`); Classic's resolver presents nil and fetches nothing.
+        if isStageLayout { return nil }
         if heroCarouselActive { return focusModel.focusedItem ?? currentHero }
         if focusHeroActive { return focusModel.focusedItem ?? heroRestingItem }
         return nil
@@ -816,7 +827,9 @@ struct HomeView: View {
                 // Wave H: the PRESENTED hero, not the target — this layer paints only once the
                 // resolver has both bitmaps (or gave up on one), so the backdrop can no longer lag
                 // the text it belongs to (BUG-86 phenomenon C).
-                if let presentation = heroResolver.presented {
+                // Home Stage & Strip (P1 E4): Classic only — the stage draws its own masked art
+                // over the ambient wash (S5).
+                if !isStageLayout, let presentation = heroResolver.presented {
                     Group {
                         // Nuvio-style: right-anchored artwork whose left edge fades to the
                         // flat background — the info panel never sits over the art.
@@ -878,6 +891,17 @@ struct HomeView: View {
                 // jump-to-top animation) would bubble to the tab root and suspend the app. One
                 // handler on the common ancestor covers rows and CTA in both modes; scrollTo
                 // resolves the "home_top" anchor through the descendant ScrollView.
+                //
+                // Home Stage & Strip (P1 E5): the Stage layout replaces this whole region (and the
+                // BUG-27 `.onExitCommand` inside it) with `StageStripHome`; the Classic branch below
+                // is unchanged, kept at its original indentation so its diff stays empty.
+                if isStageLayout {
+                    StageStripHome(model: model,
+                                   actions: StageHomeActions(resume: { resume = $0 },
+                                                             push: { homePath.append($0) }),
+                                   cover: StageCover(pushed: !homePath.isEmpty, resume: resume != nil),
+                                   isScrolledDown: $isScrolledDown)
+                } else {
                 ScrollViewReader { scrollProxy in
                     Group {
                         if heroContainerPinned {
@@ -1065,6 +1089,7 @@ struct HomeView: View {
                     // scrolls to "home_top" explicitly and is unaffected either way. Unverified
                     // until a device walk says the probe's `residual` dropped from 67 toward 0.
                 }
+                }  // Home Stage & Strip (P1 E5): closes the Classic `else`.
             }
             .onReceive(heroTimer) { _ in
                 // Reduce Motion: pause auto-advance entirely rather than rebasing the TabView
@@ -2834,20 +2859,17 @@ struct HomeView: View {
 
     /// Wave H: every folder's hero backdrop AND title logo in one collection row. A folder hero has
     /// no poster fallback, so these two URLs are the whole of what its hero can ever paint.
+    /// Home Stage & Strip (P1 E6): the body lives in `HomeRowPreviews.collectionArtURLs`.
     private func collectionHeroPrefetchURLs(_ collection: NuvioCollection) -> [String] {
-        collection.folders.flatMap { folder -> [String] in
-            [folder.heroBackdropUrl, folder.titleLogoUrl]
-                .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
-        }
+        HomeRowPreviews.collectionArtURLs(collection)
     }
 
     /// Wave H: warm a collection row's folder artwork when the ROW appears. Shares the per-row
     /// dedup set with `reportRowFocus`, so a row pays for its warm-up exactly once per Home
     /// lifetime whichever of the two events happens first.
+    /// Home Stage & Strip (P1 E6): the body lives in `HomeRowPreviews.warmCollection`.
     private func prefetchCollectionHeroArt(_ collection: NuvioCollection) {
-        guard prefetchedBackdropRows.insert(collection.id).inserted else { return }
-        ArtworkStore.prefetch(collectionHeroPrefetchURLs(collection).compactMap(URL.init(string:)))
+        HomeRowPreviews.warmCollection(collection, done: &prefetchedBackdropRows)
     }
 
     /// UX-7: single funnel for every row's focus report. The gating history here is worth keeping
@@ -2887,12 +2909,12 @@ struct HomeView: View {
     private func reportRowFocus(_ item: MetaPreview?, source: String,
                                 logoCandidates: () -> [MetaPreview] = { [] },
                                 prefetch: () -> [String]) {
-        if item != nil, prefetchedBackdropRows.insert(source).inserted {
-            ArtworkStore.prefetch(prefetch().compactMap(URL.init(string:)))
-            // Already filtered to lookup candidates by the caller (the catalog-row call site is
-            // the only one that passes a non-default closure) — no re-filtering here.
-            let candidates = logoCandidates()
-            if !candidates.isEmpty { TitleLogoStore.shared.lookupIfNeeded(candidates) }
+        // Home Stage & Strip (P1 E6): the warm-up half lives in `HomeRowPreviews.warmRow`, which the
+        // Stage controller's report funnel runs too. Gated on `item != nil` HERE as well, so the
+        // `@State` dedup set is touched exactly when the original `if item != nil, …insert…` did.
+        if item != nil {
+            HomeRowPreviews.warmRow(source: source, item: item, done: &prefetchedBackdropRows,
+                                    logoCandidates: logoCandidates, prefetch: prefetch)
         }
         // BUG-112 review fix (F3): row ownership (`focusedRowKey`) used to be claimed HERE, gated
         // on `item != nil` — which meant landing on a row's "See All" tile or an unconfigured
@@ -2946,42 +2968,10 @@ struct HomeView: View {
     /// jump. Nil when the folder carries neither a backdrop nor a logo — such a folder has
     /// nothing of its own to show, so focusing it leaves the hero alone rather than painting a
     /// poster-shaped cover across the backdrop.
+    /// Home Stage & Strip (P1 E6): the body (and its history) lives in `HomeRowPreviews.folder`,
+    /// which the Stage strip and the folder Rows page use too (S6).
     private func folderHeroPreview(collection: NuvioCollection, folder: CollectionFolder) -> MetaPreview? {
-        let backdrop = folder.heroBackdropUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let logo = folder.titleLogoUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !(backdrop?.isEmpty ?? true) || !(logo?.isEmpty ?? true) else { return nil }
-        return MetaPreview(
-            id: "\(collectionHeroIdScheme)\(collection.id)/\(folder.id)",
-            type: collectionHeroType,
-            name: folder.title.trimmingCharacters(in: .whitespacesAndNewlines),
-            // Wave H (BUG-86b): the cover is NOT a hero fallback. It is the tile's own square
-            // artwork, so it is always already cached — which meant the hero painted it instantly,
-            // scaled-to-fill into a 16:9 frame, and then swapped it for the real backdrop: the
-            // "flat colour block, then the mosaic pops in larger and shrinks into place" the tester
-            // filmed. With no fallback the previous hero simply stays up until the folder's own
-            // backdrop resolves (`HeroArtResolver.folderDeadline`), and the row's `.onAppear`
-            // prefetch means it usually already has.
-            poster: nil,
-            banner: (backdrop?.isEmpty ?? true) ? nil : backdrop,
-            logo: (logo?.isEmpty ?? true) ? nil : logo,
-            posterShape: .poster,
-            // rc14 (BUG-119): the PANEL form (Show Hero off) renders a folder hero through the
-            // three-slot column again — see `HomeHeroForeground.nuvioLayout` — so the folder
-            // needs text for its meta line and synopsis slot or the panel reads as "no title or
-            // description" (Steven, 2026-09-13). The carousel's merged logo-only box ignores
-            // both fields, so H-2's "no caption under the wordmark" stands there.
-            description: Self.folderHeroDescription(collection: collection, folder: folder),
-            releaseInfo: collection.title.trimmingCharacters(in: .whitespacesAndNewlines),
-            rawReleaseDate: nil,
-            popularity: nil,
-            voteCount: nil,
-            imdbRating: nil,
-            genres: [],
-            rawPosterUrl: nil,
-            landscapePoster: nil,
-            rawLandscapePosterUrl: nil,
-            customPosterApplied: false
-        )
+        HomeRowPreviews.folder(collection: collection, folder: folder)
     }
 
     /// rc14 (BUG-119): the one-line description the hero-off panel shows under a focused
@@ -3003,27 +2993,9 @@ struct HomeView: View {
     /// card can drive the hero the same way a catalog poster does. Kotlin default args aren't
     /// exported to Swift, so every `MetaPreview` field has to be supplied explicitly — the fields
     /// CW doesn't carry (rating, popularity, etc.) go in as nil/empty rather than guessed.
+    /// Home Stage & Strip (P1 E6): the body lives in `HomeRowPreviews.entry`.
     private func previewFromEntry(_ entry: WatchProgressEntry) -> MetaPreview {
-        MetaPreview(
-            id: entry.parentMetaId,
-            type: entry.parentMetaType,
-            name: entry.title,
-            poster: entry.poster,
-            banner: entry.background,
-            logo: nil,
-            posterShape: .poster,
-            description: nil,
-            releaseInfo: nil,
-            rawReleaseDate: nil,
-            popularity: nil,
-            voteCount: nil,
-            imdbRating: nil,
-            genres: [],
-            rawPosterUrl: nil,
-            landscapePoster: nil,
-            rawLandscapePosterUrl: nil,
-            customPosterApplied: false
-        )
+        HomeRowPreviews.entry(entry)
     }
 
     @ViewBuilder
@@ -5090,6 +5062,9 @@ struct ContinueWatchingRow: View {
     @Environment(\.rowCardLinkFrameFloor) private var cardLinkFrameFloor
     @Environment(\.pinnedRowIsLast) private var isLastRow
     @Environment(\.posterStyle) private var posterStyle
+    /// Home Stage & Strip (P1 §3.3): the strip's per-row focus memory. nil outside the strip, which
+    /// leaves the remount restore below inert (Classic).
+    @Environment(\.stripFocusMemory) private var stripFocusMemory
 
     /// rc14 (BUG-122): see `PinnedRowGeometry.shortRowLayoutCompensation`. The natural label is
     /// what `LandscapeCard` lays out inside the reaches — its fixed height plus the caption when
@@ -5100,6 +5075,23 @@ struct ContinueWatchingRow: View {
         return PinnedRowGeometry.shortRowLayoutCompensation(floor: cardLinkFrameFloor,
                                                             naturalLabel: natural,
                                                             isLastRow: isLastRow)
+    }
+
+    /// Home Stage & Strip (P1 §3.3, remounted rows): the strip's `LazyVStack` may cull this row far
+    /// from the current page and lose its horizontal offset, leaving the remembered card
+    /// unrealized for `.defaultFocus`. On a (re)mount with a remembered card that is not the first,
+    /// scroll it back into view on the next runloop with no animation (anchor nil: the minimal
+    /// scroll, nothing moves when it is already visible). Inert outside the strip.
+    private func restoreStripMemory(proxy: ScrollViewProxy) {
+        guard let memory = stripFocusMemory, memory.drivesDefaultFocus,
+              let id = memory.itemId(for: "continue-watching"),
+              id != entries.first?.videoId,
+              entries.contains(where: { $0.videoId == id }) else { return }
+        DispatchQueue.main.async {
+            var tx = Transaction()
+            tx.disablesAnimations = true
+            withTransaction(tx) { proxy.scrollTo(id) }
+        }
     }
 
     var body: some View {
@@ -5211,6 +5203,8 @@ struct ContinueWatchingRow: View {
                     tx.disablesAnimations = true
                     withTransaction(tx) { proxy.scrollTo(newFirst, anchor: .leading) }
                 }
+                // Home Stage & Strip (P1 §3.3): see `restoreStripMemory`. Inert outside the strip.
+                .onAppear { restoreStripMemory(proxy: proxy) }
             }
         }
         .focusSection()

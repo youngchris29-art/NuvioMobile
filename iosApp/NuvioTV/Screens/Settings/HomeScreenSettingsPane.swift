@@ -16,8 +16,28 @@ import SharedCore
 /// report across three betas (reproduced in the simulator 2026-08-29/30). The fix hoists every
 /// expanded row to be a direct `SettingsSection` child in its own right — see the per-view
 /// comments below for what that retired.
+///
+/// Home Stage & Strip (H8, 2026-10-05): a new first "Layout" section holds the Home Layout picker
+/// (Stage by default, Classic = the previous Home) and, in Stage only, the Ambient Background
+/// switch. Stage has no rotating banner, so it hides the four rows that only configure one: Show
+/// Hero, Nuvio-Style Hero, Hero Sources and Autoplay Hero Trailer. Their stored values are never
+/// touched; they simply do nothing in Stage and are back as they were when the layout returns to
+/// Classic. Trailer Location reads Background / In Row in Stage (the stage always exists, so
+/// Background always takes effect) and keeps today's Hero / Poster wording and captions in
+/// Classic. Upcoming Episodes, Catalogs and Show Catalog Type are the same in both layouts.
 struct HomeScreenSettingsPane: View {
     @ObservedObject var model: SettingsViewModel
+
+    /// Home Stage & Strip (H1): which Home the viewer gets, `HomeLayout.rawValue` ("stage" |
+    /// "classic"). Device-local, not synced; HomeView and the folder page read the same key live
+    /// through `HomeLayout`, so the flip applies as soon as the picker writes it. An unset or
+    /// unknown value reads as the default (Stage).
+    @AppStorage(HomeLayout.defaultsKey) private var homeLayoutRaw = HomeLayout.defaultValue.rawValue
+
+    /// Home Stage & Strip (H3): the soft wash of the focused title's colors behind the stage.
+    /// Default ON. Local-only, not synced; the wash layer reads the same key
+    /// (`AmbientWashSetting`). Only offered while Home Layout is Stage.
+    @AppStorage(AmbientWashSetting.defaultsKey) private var ambientBackground = AmbientWashSetting.defaultValue
 
     /// Mirrors the poster-card's `inline_trailers_enabled` key (BrowseComponents.swift) so this
     /// toggle can turn off the muted trailer-on-focus preview. Local-only, not synced.
@@ -37,6 +57,8 @@ struct HomeScreenSettingsPane: View {
 
     /// Where the "Trailers on Focus" muted preview plays: the poster card itself (default) or the
     /// hero banner. Only meaningful while `inlineTrailersEnabled` is on. Local-only, not synced.
+    /// The raw values stay "poster" / "hero" in both layouts; only the picker wording differs (Stage
+    /// reads them as In Row / Background, Classic as Poster / Hero).
     @AppStorage("trailer_playback_location") private var trailerPlaybackLocation = "poster"
 
     /// beta.19-rc1 verdict (M4, FEAT-52 "Trailer Start Delay"): how long a focus-dwelled trailer waits
@@ -52,7 +74,14 @@ struct HomeScreenSettingsPane: View {
     @State private var heroSourcesExpanded = false
     @State private var catalogsExpanded = false
 
+    /// Home Stage & Strip (H1): the layout this pane is configuring, resolved through
+    /// `HomeLayout.resolve` so an unset or unknown stored value reads as Stage, the same as every
+    /// other reader.
+    private var isStage: Bool { HomeLayout.resolve(homeLayoutRaw) == .stage }
+
     var body: some View {
+        layoutSection
+
         SettingsSection(String(localized: "Home Rows")) {
             // Catalog-independent: the Upcoming row is fed by watch progress + Library, so its
             // switch must stay reachable when no catalog add-on is installed (Codex round 1).
@@ -61,7 +90,8 @@ struct HomeScreenSettingsPane: View {
             // it sits OUTSIDE the `model.catalogs.isEmpty` branch below, so whatever the catalog
             // list does — arrives, shrinks, empties — the Home Screen pane always has at least one
             // focusable row for the focus engine to land on, and the sidebar can always enter it.
-            // Do not move this row inside the branch.
+            // Do not move this row inside the branch. (The Home Layout picker in the section above
+            // is now a second always-present row; this one keeps its floor role regardless.)
             SettingsToggleRow(
                 title: String(localized: "Upcoming Episodes"),
                 subtitle: upcomingRowEnabled
@@ -108,23 +138,31 @@ struct HomeScreenSettingsPane: View {
                 // behavior that also silently took the description panel away with it, which is
                 // precisely the trap the reporter hit three times; both states now state what
                 // they DO, and neither implies losing the description.
-                SettingsToggleRow(
-                    title: String(localized: "Show Hero"),
-                    subtitle: model.heroEnabled
-                        ? String(localized: "A rotating banner built from up to 2 of your catalogs, switching to the focused title as you browse")
-                        : String(localized: "No rotating banner \u{2014} the top of Home shows the focused title's artwork and description"),
-                    isOn: Binding(
-                        get: { model.heroEnabled },
-                        set: { model.setHeroEnabled($0) }
-                    ),
-                    descriptionID: .homeShowHero
-                )
+                //
+                // Home Stage & Strip (H8): Stage has no rotating banner or focus panel to
+                // configure, so Show Hero and the two groups below it that configure the banner
+                // (Nuvio-Style Hero, Hero Sources) exist only in Classic. Their stored values are
+                // never touched: they do nothing in Stage and are back as they were in Classic.
+                if !isStage {
+                    SettingsToggleRow(
+                        title: String(localized: "Show Hero"),
+                        subtitle: model.heroEnabled
+                            ? String(localized: "A rotating banner built from up to 2 of your catalogs, switching to the focused title as you browse")
+                            : String(localized: "No rotating banner \u{2014} the top of Home shows the focused title's artwork and description"),
+                        isOn: Binding(
+                            get: { model.heroEnabled },
+                            set: { model.setHeroEnabled($0) }
+                        ),
+                        descriptionID: .homeShowHero
+                    )
+                }
 
                 // Everything inside this branch configures the ROTATING banner specifically —
                 // its layout and which catalogs feed it — so it stays hidden with Show Hero off,
                 // where there are no hero pages to lay out or source (FEAT-15: the focus panel
-                // always uses the pinned Nuvio presentation, see HomeView.heroNuvioStyle).
-                if model.heroEnabled {
+                // always uses the pinned Nuvio presentation, see HomeView.heroNuvioStyle). It is
+                // also Classic-only (see above).
+                if !isStage && model.heroEnabled {
                     // UX-2 hero redesign v2: title/description on the left with the artwork
                     // reading on the right (Nuvio-style, OPT-IN) vs the classic lower-left
                     // logo layout (default). UX-7 extension: the Nuvio-style hero is also
@@ -185,15 +223,7 @@ struct HomeScreenSettingsPane: View {
 
                 SettingsToggleRow(
                     title: String(localized: "Trailers on Focus"),
-                    // Codex gate r3/r4: the enabled summary names the surface that will ACTUALLY
-                    // play — "Hero" only when the hero location can take effect (same conditions
-                    // as the two fallback captions below); otherwise the poster, which is what
-                    // the user will see in the classic layout or with no hero source enabled.
-                    subtitle: !inlineTrailersEnabled
-                        ? String(localized: "Posters show artwork only")
-                        : heroLocationEffective
-                            ? String(localized: "The hero plays a muted trailer preview after a moment of focus on a poster")
-                            : String(localized: "Posters play a muted trailer preview after a moment of focus"),
+                    subtitle: trailersOnFocusSubtitle,
                     isOn: $inlineTrailersEnabled,
                     descriptionID: .homeTrailersOnFocus
                 )
@@ -202,19 +232,26 @@ struct HomeScreenSettingsPane: View {
                     trailerLocationRow
                 }
 
-                SettingsToggleRow(
-                    title: String(localized: "Autoplay Hero Trailer"),
-                    subtitle: heroTrailerAutoplay
-                        ? String(localized: "The hero plays its trailer by itself, without waiting for focus")
-                        : String(localized: "The hero shows artwork only"),
-                    isOn: $heroTrailerAutoplay,
-                    descriptionID: .homeHeroTrailerAutoplay
-                )
+                // Home Stage & Strip (H8): the hero's own autoplay is a Classic-banner setting; the
+                // stage has no such switch (its trailer is Trailer Location above), so the row is
+                // Classic-only and its stored value is left alone.
+                if !isStage {
+                    SettingsToggleRow(
+                        title: String(localized: "Autoplay Hero Trailer"),
+                        subtitle: heroTrailerAutoplay
+                            ? String(localized: "The hero plays its trailer by itself, without waiting for focus")
+                            : String(localized: "The hero shows artwork only"),
+                        isOn: $heroTrailerAutoplay,
+                        descriptionID: .homeHeroTrailerAutoplay
+                    )
+                }
 
                 // beta.19-rc1 verdict (M4, FEAT-52): only while a trailer can actually start on a dwell
-                // — the poster/hero preview on focus, or the hero's own autoplay. With both off there is
-                // nothing for the delay to delay. Sits right after the two switches that enable it.
-                if inlineTrailersEnabled || heroTrailerAutoplay {
+                // — the poster/hero preview on focus, or (Classic only) the hero's own autoplay. With
+                // both off there is nothing for the delay to delay. Sits right after the switches that
+                // enable it. In Stage only Trailers on Focus can start one: a stored Autoplay Hero
+                // Trailer value does nothing there, so it must not keep this row up.
+                if inlineTrailersEnabled || (!isStage && heroTrailerAutoplay) {
                     trailerStartDelayRow
                 }
 
@@ -279,13 +316,76 @@ struct HomeScreenSettingsPane: View {
         .onChange(of: model.catalogs.contains(where: { !$0.isCollection })) { _, hasCatalogSources in
             if !hasCatalogSources { heroSourcesExpanded = false }
         }
+        // Home Stage & Strip (H8): Hero Sources only exists in Classic, so entering Stage drops its
+        // expansion too (same reasoning as the resets above: a stale flag would resurrect an
+        // expanded group the next time Classic returns, instead of the collapsed-on-recreation
+        // behavior). Written from here because the picker lives in the sibling Layout section.
+        .onChange(of: homeLayoutRaw) { _, raw in
+            if HomeLayout.resolve(raw) == .stage { heroSourcesExpanded = false }
+        }
+    }
+
+    // MARK: - Layout section (Home Stage & Strip, H8)
+
+    /// The new first section: the Home Layout picker (always present, so the pane has a second
+    /// focus floor beside Upcoming Episodes) and, in Stage only, the Ambient Background switch.
+    /// Both sit outside the `model.catalogs.isEmpty` branch below, so they stay reachable with no
+    /// add-on installed. Stage and Classic read the same `home_layout` key through `HomeLayout`:
+    /// HomeView and the folder page see a flip live, with no remount and no relaunch.
+    @ViewBuilder
+    private var layoutSection: some View {
+        SettingsSection(String(localized: "Layout")) {
+            SettingsPickerRow(
+                title: String(localized: "Home Layout"),
+                selection: Binding(
+                    get: { HomeLayout.resolve(homeLayoutRaw) },
+                    set: { homeLayoutRaw = $0.rawValue }
+                ),
+                options: HomeLayout.allCases,
+                descriptionID: .homeLayout,
+                label: { $0.label }
+            )
+
+            // The wash is part of the stage (it fills the background behind the focused title), so
+            // there is nothing for the switch to control in Classic. Its stored value is kept.
+            if isStage {
+                SettingsToggleRow(
+                    title: String(localized: "Ambient Background"),
+                    subtitle: ambientBackground
+                        ? String(localized: "A soft wash of the focused title's colors fills the background")
+                        : String(localized: "Plain background"),
+                    isOn: $ambientBackground,
+                    descriptionID: .homeAmbientBackground
+                )
+            }
+        }
+    }
+
+    /// The "Trailers on Focus" subtitle. Codex gate r3/r4: the enabled summary names the surface
+    /// that will ACTUALLY play. Classic says "hero" only when the hero location can take effect
+    /// (same conditions as the two fallback captions in `trailerLocationRow`); otherwise the
+    /// poster, which is what the viewer will see in the classic layout or with no hero source
+    /// enabled. Home Stage & Strip (H8): Stage always has a stage, so Background always takes
+    /// effect and says so; In Row keeps the poster wording.
+    private var trailersOnFocusSubtitle: String {
+        guard inlineTrailersEnabled else { return String(localized: "Posters show artwork only") }
+        if heroLocationEffective {
+            return isStage
+                ? String(localized: "Trailers play muted behind the title at the top after you rest on a poster")
+                : String(localized: "The hero plays a muted trailer preview after a moment of focus on a poster")
+        }
+        return String(localized: "Posters play a muted trailer preview after a moment of focus")
     }
 
     /// Settings-side mirror of `HomeView.heroFocusTrailerMode`'s settings terms: "Hero" is
     /// selected AND the layout pins a hero (Show Hero off → focus panel; Nuvio-style on with at
     /// least one hero source, the best proxy Settings has for the hero fan-out producing a
     /// surface). Exactly the complement of the two fallback captions in `trailerLocationRow`.
+    ///
+    /// Home Stage & Strip (H8): the stage always exists, so in Stage "Background" (the stored
+    /// "hero") always takes effect and none of the Classic conditions apply.
     private var heroLocationEffective: Bool {
+        if isStage { return trailerPlaybackLocation == "hero" }
         guard trailerPlaybackLocation == "hero" else { return false }
         if !model.heroEnabled { return true }
         return heroNuvioStyle && model.catalogs.contains(where: { $0.heroSourceEnabled })
@@ -293,16 +393,39 @@ struct HomeScreenSettingsPane: View {
 
     /// FEAT-52 "Trailer Start Delay": Automatic (the rows stop moving, then one second) or a fixed
     /// 1 / 2 / 3 s counted from focus, never before the rows stop. The description is the kit's
-    /// focused-row explainer (`SettingsDescriptions.homeTrailerStartDelay`).
+    /// focused-row explainer: Classic keeps its own copy, and Stage has one that does not mention
+    /// the hero (each id is written as a literal in its own branch, which is what the description
+    /// coverage test scans for).
     @ViewBuilder
     private var trailerStartDelayRow: some View {
-        SettingsPickerRow(
-            title: String(localized: "Trailer Start Delay"),
-            selection: Binding(get: { TrailerStartDelay(rawValue: trailerStartDelay) ?? .automatic },
-                               set: { trailerStartDelay = $0.rawValue }),
-            options: TrailerStartDelay.allCases,
-            descriptionID: .homeTrailerStartDelay,
-            label: { $0.label }
+        if isStage {
+            SettingsPickerRow(
+                title: String(localized: "Trailer Start Delay"),
+                selection: trailerStartDelayBinding,
+                options: TrailerStartDelay.allCases,
+                descriptionID: .homeTrailerStartDelayStage,
+                label: { $0.label }
+            )
+        } else {
+            SettingsPickerRow(
+                title: String(localized: "Trailer Start Delay"),
+                selection: trailerStartDelayBinding,
+                options: TrailerStartDelay.allCases,
+                descriptionID: .homeTrailerStartDelay,
+                label: { $0.label }
+            )
+        }
+    }
+
+    private var trailerStartDelayBinding: Binding<TrailerStartDelay> {
+        Binding(get: { TrailerStartDelay(rawValue: trailerStartDelay) ?? .automatic },
+                set: { trailerStartDelay = $0.rawValue })
+    }
+
+    private var trailerLocationBinding: Binding<String> {
+        Binding(
+            get: { trailerPlaybackLocation },
+            set: { trailerPlaybackLocation = $0 }
         )
     }
 
@@ -310,31 +433,44 @@ struct HomeScreenSettingsPane: View {
     /// preview plays in the poster card (default) or the hero banner. The classic (non-Nuvio-
     /// style) hero layout has no artwork region to preview into, so a caption explains that
     /// "Hero" falls back to the poster there.
+    ///
+    /// Home Stage & Strip (H8): in Stage the same two stored values read Background ("hero", the
+    /// trailer plays behind the title at the top) and In Row ("poster", the focused poster turns
+    /// into the playing card), Background listed first. The stage always exists, so neither
+    /// Classic fallback caption applies there. Classic is unchanged: Poster / Hero and both
+    /// captions.
     @ViewBuilder
     private var trailerLocationRow: some View {
-        SettingsPickerRow(
-            title: String(localized: "Trailer Location"),
-            selection: Binding(
-                get: { trailerPlaybackLocation },
-                set: { trailerPlaybackLocation = $0 }
-            ),
-            options: ["poster", "hero"],
-            descriptionID: .homeTrailerLocation,
-            label: { $0 == "hero" ? String(localized: "Hero") : String(localized: "Poster") }
-        )
-        if trailerPlaybackLocation == "hero" && model.heroEnabled && !heroNuvioStyle {
-            Text("In the classic hero layout, trailers play in the poster.")
-                .font(Theme.Font.caption)
-                .foregroundStyle(Theme.Palette.textSecondary)
-        }
-        // Same silent-mismatch guard for the other configuration where "Hero" cannot take
-        // effect: Nuvio-style layout but zero hero sources selected, so the hero fan-out can
-        // never produce a surface and `heroFocusTrailerMode`'s latch never sets.
-        if trailerPlaybackLocation == "hero" && model.heroEnabled && heroNuvioStyle
-            && !model.catalogs.contains(where: { $0.heroSourceEnabled }) {
-            Text("Hero needs a hero source enabled below; until then, trailers play in the poster.")
-                .font(Theme.Font.caption)
-                .foregroundStyle(Theme.Palette.textSecondary)
+        if isStage {
+            SettingsPickerRow(
+                title: String(localized: "Trailer Location"),
+                selection: trailerLocationBinding,
+                options: ["hero", "poster"],
+                descriptionID: .homeTrailerLocationStage,
+                label: { $0 == "hero" ? String(localized: "Background") : String(localized: "In Row") }
+            )
+        } else {
+            SettingsPickerRow(
+                title: String(localized: "Trailer Location"),
+                selection: trailerLocationBinding,
+                options: ["poster", "hero"],
+                descriptionID: .homeTrailerLocation,
+                label: { $0 == "hero" ? String(localized: "Hero") : String(localized: "Poster") }
+            )
+            if trailerPlaybackLocation == "hero" && model.heroEnabled && !heroNuvioStyle {
+                Text("In the classic hero layout, trailers play in the poster.")
+                    .font(Theme.Font.caption)
+                    .foregroundStyle(Theme.Palette.textSecondary)
+            }
+            // Same silent-mismatch guard for the other configuration where "Hero" cannot take
+            // effect: Nuvio-style layout but zero hero sources selected, so the hero fan-out can
+            // never produce a surface and `heroFocusTrailerMode`'s latch never sets.
+            if trailerPlaybackLocation == "hero" && model.heroEnabled && heroNuvioStyle
+                && !model.catalogs.contains(where: { $0.heroSourceEnabled }) {
+                Text("Hero needs a hero source enabled below; until then, trailers play in the poster.")
+                    .font(Theme.Font.caption)
+                    .foregroundStyle(Theme.Palette.textSecondary)
+            }
         }
     }
 
