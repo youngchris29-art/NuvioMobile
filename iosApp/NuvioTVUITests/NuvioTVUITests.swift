@@ -473,11 +473,16 @@ final class NuvioTVUITests: XCTestCase {
         openSettingsCategory(app, named: "Developer")
     }
 
-    /// Types `text` on the tvOS full-screen system keyboard by walking to each letter key in turn
-    /// and selecting it. Best-effort, same spirit as test19DiscoverSurvivesSearch's typing step
-    /// (see its header comment): this harness has no verified key-to-key adjacency map for the
+    /// Types `text` on the tvOS system keyboard by walking to each letter key in turn and
+    /// selecting it. Best-effort: this harness has no verified key-to-key adjacency map for the
     /// keyboard grid, so a character the walk can't reach just stops the whole attempt rather than
     /// guessing blind arrow-press counts. Returns whether every character was found and selected.
+    ///
+    /// The entry field is Search's system search field (`app.searchFields`, S1 W1: an inline
+    /// keyboard is always on screen there, focus is already in it after `openTab`, and Select
+    /// types a key — so callers must NOT press Select to "open" it) when one exists, else the
+    /// first plain text field (the Settings server-URL field, which still opens a full-screen
+    /// keyboard).
     @discardableResult
     private func typeOnKeyboard(_ app: XCUIApplication, _ text: String) -> Bool {
         // tvOS 27's full-screen keyboard exposes `app.keys` elements but their `hasFocus` never
@@ -486,7 +491,8 @@ final class NuvioTVUITests: XCTestCase {
         // focused keyboard on both runtimes — proved by the manual BUG-47 repro — so try that
         // first and validate it landed by watching the entry field's value; only fall back to
         // walking keys when synthesis provably changed nothing.
-        let entryField = app.textFields.firstMatch
+        let entryField = app.searchFields.firstMatch.exists ? app.searchFields.firstMatch : app.textFields.firstMatch
+        if app.searchFields.firstMatch.exists { focusSearchKeyboard(app) }
         let before = (entryField.exists ? entryField.value as? String : nil) ?? ""
         app.typeText(text)
         pause(0.8)
@@ -507,6 +513,68 @@ final class NuvioTVUITests: XCTestCase {
             pause(0.25)
         }
         return true
+    }
+
+    /// Whether Search's inline keyboard is the GRID layout (a 6-column block on the left, results
+    /// to its RIGHT) rather than the LINEAR one FA87 uses (one row of keys across the top, results
+    /// below). Measured by the keyboard's frame: linear ≈ (80, 261, 1760, 66), grid is under 900
+    /// wide. S1 W1.
+    /// Whether a key of the inline search keyboard holds focus, from ONE snapshot of the keyboard
+    /// (reliable on the 26.5 runtime FA87 runs; keys never report focus on 27.0).
+    private func searchKeyboardHasFocus(_ app: XCUIApplication) -> Bool {
+        let keyboard = app.keyboards.firstMatch
+        guard keyboard.exists, let root = try? keyboard.snapshot() else { return false }
+        func walk(_ node: XCUIElementSnapshot) -> Bool {
+            node.hasFocus || node.children.contains(where: walk)
+        }
+        return walk(root)
+    }
+
+    /// Puts focus on the inline search keyboard before typing. `openTab`'s closing Down can run
+    /// before the keyboard exists on a first open (1–2 s on FA87), and then focus lands on the
+    /// first content below instead (S1 W4 run: a Recent Searches chip). Waits for the keyboard,
+    /// then steps Down from the tab bar or Up/Left from content until a key holds focus.
+    @discardableResult
+    private func focusSearchKeyboard(_ app: XCUIApplication) -> Bool {
+        guard app.keyboards.firstMatch.waitForExistence(timeout: 6) else { return false }
+        let tabNames = ["Home", "Search", "Library", "Add-ons", "Settings", "Profile"]
+        for _ in 0..<4 {
+            if searchKeyboardHasFocus(app) { return true }
+            let onTabBar = tabNames.contains { app.buttons[$0].exists && app.buttons[$0].hasFocus }
+            if onTabBar {
+                remote.press(.down)
+            } else {
+                remote.press(searchKeyboardIsGrid(app) ? .left : .up)
+            }
+            pause(0.7)
+        }
+        return searchKeyboardHasFocus(app)
+    }
+
+    /// The search field's text without the system's decorations: an empty field reports the
+    /// prompt, and the value can carry a ", Press ￼ to change keyboards" hint (S1 W4 run).
+    private func searchFieldText(_ app: XCUIApplication) -> String {
+        var value = (app.searchFields.firstMatch.value as? String) ?? ""
+        if let hint = value.range(of: ", Press ") { value = String(value[..<hint.lowerBound]) }
+        return value == "Search movies & shows" ? "" : value
+    }
+
+    private func searchKeyboardIsGrid(_ app: XCUIApplication) -> Bool {
+        app.keyboards.firstMatch.exists && app.keyboards.firstMatch.frame.width < 900
+    }
+
+    /// Moves focus from Search's inline keyboard into the first results row: one Down on the
+    /// linear keyboard, Right×7 across the grid keyboard's six columns. S1 W1.
+    private func enterSearchResults(_ app: XCUIApplication) {
+        if searchKeyboardIsGrid(app) { press(.right, times: 7, gap: 0.5) } else { press(.down, times: 1) }
+        pause(1)
+    }
+
+    /// The inverse of `enterSearchResults`: first results row back to the inline keyboard (Up on
+    /// the linear keyboard, Left×7 on the grid one). S1 W1.
+    private func returnToSearchKeyboard(_ app: XCUIApplication) {
+        if searchKeyboardIsGrid(app) { press(.left, times: 7, gap: 0.5) } else { press(.up, times: 1) }
+        pause(1)
     }
 
     /// Whichever button currently holds focus, or nil if none does. `hasFocus` isn't a reliable
@@ -1323,44 +1391,31 @@ final class NuvioTVUITests: XCTestCase {
     /// `discoverUiState` browse grid); a non-empty query swaps in `searchResults`. The reported
     /// bug is Discover staying wiped after a search is cleared back to empty.
     ///
-    /// tvOS drives text entry via its own full-screen system keyboard (the file's own comment:
-    /// "opens tvOS's self-contained full-screen keyboard"), which no test in this harness has
-    /// driven before, so its exact key-grid layout/labels are unverified here — this pass has no
-    /// sim run available to confirm `app.keys[...]` resolves the way it does for a plain iOS
-    /// on-screen keyboard. Every keyboard-grid step below is therefore guarded by `.exists`
-    /// checks: if the grid doesn't expose the expected keys, the test backs out via Menu and
-    /// still captures the "after" screenshot, instead of guessing a fixed arrow-press count that
-    /// could hang or mistype.
+    /// Search drives text entry through tvOS's system search field (`.searchable`, S1 W1): an
+    /// INLINE keyboard is always drawn on the Search screen, `openTab` leaves focus in it, and
+    /// `app.typeText` types into the field directly — there is no separate keyboard to open (a
+    /// Select on a key types that key's letter). The field is `app.searchFields.firstMatch`; its
+    /// `value` is the prompt text while empty and exactly the query once typed. Menu does NOT
+    /// clear or dismiss anything here (Menu from the keyboard moves focus to the tab bar and a
+    /// second Menu leaves the app), so the query is cleared by typing Delete into the field.
     ///
-    /// MANUAL SIM STEP — keyboard grid driving unreliable: if the exported "19a2_after_query"
-    /// screenshot never shows a typed query, or "19b_discover_after" doesn't show the Discover
-    /// chips/grid back on screen, verify this manually instead: open Search, select the field,
-    /// type 1-2 letters on the tvOS keyboard, wait for results to render, clear the field (Menu
-    /// back to the field, then delete/backspace to empty it, or re-select and clear), and confirm
-    /// Discover's genre chips / catalog grid reappear rather than staying blank.
-    ///
-    /// FINDING 7 fix (P2, Codex review): every failure path previously fell through to only
-    /// `app.state == .runningForeground`, so the test could pass without ever confirming Discover
-    /// actually rendered — a regression that left Discover blank after clearing a search, or a sim
-    /// that couldn't drive the keyboard at all, would still go green. This now asserts a concrete
-    /// Discover signal — the `Text("Discover")` section header from `SearchView.discoverSection`
-    /// (SearchView.swift ~line 143) — which `SearchViewModel.start()` renders as soon as
-    /// `discoverUiState` emits once, independent of whether any catalogs/items are present (an
-    /// empty-addon profile still gets the header plus an empty-state message below it). Profile
-    /// "Chris" (launchToHome) has real addons installed (test16 walks live Settings against it),
-    /// so the header is expected to appear here, not just in principle.
-    ///
-    /// ALWAYS asserted (mandatory, regardless of how the keyboard step goes):
-    ///   1. the Discover header exists right after opening Search, before any keyboard interaction.
-    ///   2. the Discover header exists again after the Menu/Menu round-trip that backs out of the
-    ///      keyboard — this is the actual BUG-33(2) regression check.
+    /// ALWAYS asserted (mandatory, regardless of how the typing step goes):
+    ///   1. the `Text("Discover")` section header (`SearchView.discoverSection`) exists right
+    ///      after opening Search, before any typing — it renders as soon as `discoverUiState`
+    ///      emits once, independent of whether any catalogs/items are present (an empty-addon
+    ///      profile still gets the header plus an empty-state message below it), and profile
+    ///      "Chris" (launchToHome) has real addons installed.
+    ///   2. the Discover header exists again after the query is cleared — this is the actual
+    ///      BUG-33(2) regression check.
     ///   3. the app is still in the foreground at the end (kept as a final sanity net).
-    /// Best-effort / conditional (does not fail the test if the keyboard grid can't be driven):
-    ///   - typing "as" into the query field.
-    ///   - if typing demonstrably succeeded (both letter keys were focused and selected), that a
-    ///     results signal (a result cell, or the "No results." empty-results message) appeared —
-    ///     this is still a real `XCTAssertTrue`, it's just skipped entirely when typing itself
-    ///     could not be driven, so a keyboard-grid mismatch doesn't fail the test.
+    /// Conditional (does not fail the test if typing can't be driven):
+    ///   - typing "as" into the field: `app.typeText` first, `typeOnKeyboard` (hardware-synthesis
+    ///     retry + key-walk) only when the field's value did not change at all.
+    ///   - if typing demonstrably succeeded (field value == the query), that a results signal (a
+    ///     result button, a result cell, the "See All" card, or the "No results." empty-results
+    ///     message) appeared — still a real `XCTAssertTrue`, just skipped when typing itself
+    ///     could not be driven, so a keyboard mismatch doesn't fail the test.
+    ///   - that the field's value no longer equals the query after the Delete presses.
     func test19DiscoverSurvivesSearch() throws {
         // Fresh launch (2026-08-02): the Discover asserts below need a Search tab with no
         // leftover query/keyboard state from suite order, and test18's end state fed this test
@@ -1370,12 +1425,12 @@ final class NuvioTVUITests: XCTestCase {
         pause(1.5)
         shot(app, "19a_discover_before")
 
-        // Mandatory: Discover must actually be on screen before we touch the keyboard at all,
+        // Mandatory: Discover must actually be on screen before we touch the field at all,
         // otherwise everything that follows is exercising nothing.
         let discoverHeader = app.staticTexts["Discover"]
         XCTAssertTrue(discoverHeader.waitForExistence(timeout: 6), "Discover missing on entry")
 
-        let searchField = app.textFields.firstMatch
+        let searchField = app.searchFields.firstMatch
         guard searchField.waitForExistence(timeout: 4) else {
             // Field never resolved — nothing further to drive automatically. Still re-check
             // Discover so this path can't silently pass without exercising anything.
@@ -1384,56 +1439,41 @@ final class NuvioTVUITests: XCTestCase {
             XCTAssertTrue(app.state == .runningForeground)
             return
         }
-        if !searchField.hasFocus {
-            _ = moveFocus(.up, until: searchField, max: 6)
-        }
-        remote.press(.select)
-        pause(2) // full-screen keyboard presentation
 
-        // Best-effort "as": walk to "a", select, then to "s", select. Bail to the manual-step
-        // path (Menu back out) if the grid doesn't expose letter keys the way expected. Tracks
-        // whether both selects were actually driven, so the post-typing results assert below can
-        // stay guarded rather than failing the test on a keyboard-grid mismatch.
-        var typedSuccessfully = false
-        let keyA = app.keys["a"]
-        if keyA.waitForExistence(timeout: 3) {
-            _ = moveFocus(.right, until: keyA, max: 12)
-            var selectedA = false
-            if keyA.hasFocus {
-                remote.press(.select)
-                selectedA = true
-            }
-            pause(0.5)
-            let keyS = app.keys["s"]
-            var selectedS = false
-            if moveFocus(.right, until: keyS, max: 8) || moveFocus(.down, until: keyS, max: 6) {
-                remote.press(.select)
-                selectedS = true
-            }
-            pause(2.5) // debounce + results fetch
-            shot(app, "19a2_after_query_typed")
-            typedSuccessfully = selectedA && selectedS
+        // `openTab` ends with one Down that lands focus IN the inline keyboard, so typing needs
+        // no Select. Validate it landed through the field's value (exactly the query once typed;
+        // the empty field's value is the prompt text, so "non-empty" proves nothing).
+        let query = "as"
+        XCTAssertTrue(focusSearchKeyboard(app), "focus must reach the inline search keyboard before typing")
+        let valueBeforeTyping = searchField.value as? String
+        app.typeText(query)
+        pause(1)
+        var typedSuccessfully = (searchField.value as? String) == query
+        if !typedSuccessfully && (searchField.value as? String) == valueBeforeTyping {
+            // Synthesis changed nothing — fall back to the key walk (26.5-only, see its comment).
+            typedSuccessfully = typeOnKeyboard(app, query) && (searchField.value as? String) == query
         }
+        pause(2.5) // debounce + results fetch
+        shot(app, "19a2_after_query_typed")
 
         // Conditional: only when typing was actually driven do we require a results signal — a
-        // result cell for a hit, or the "No results." empty-results text for a legitimate miss.
-        // Either counts as proof the query round-tripped through SearchRepository.
+        // result button/cell for a hit, or the "No results." empty-results text for a legitimate
+        // miss. Either counts as proof the query round-tripped through SearchRepository.
         if typedSuccessfully {
+            let resultButton = app.buttons.matching(NSPredicate(format: "label CONTAINS[c] %@", query)).firstMatch
             let resultCell = app.cells.firstMatch
             let noResultsMessage = app.staticTexts["No results."]
             XCTAssertTrue(
-                resultCell.waitForExistence(timeout: 3) || noResultsMessage.waitForExistence(timeout: 1),
-                "typed query \"as\" produced neither result cells nor an empty-results message"
+                resultButton.waitForExistence(timeout: 8) || resultCell.exists || seeAllCard(app).exists || noResultsMessage.waitForExistence(timeout: 1),
+                "typed query \"\(query)\" produced neither result rows nor an empty-results message"
             )
         }
 
-        // Clear back to Discover: Menu dismisses the keyboard/backs out of the query. If the
-        // query text survived (see the manual-step note above), a human should re-check by
-        // clearing it explicitly and re-screenshotting.
-        remote.press(.menu)
-        pause(1.5)
-        remote.press(.menu)
-        pause(1.5)
+        // Clear back to Discover: focus is still in the keyboard (typing never left it), so
+        // Delete presses empty the field. query.count + 2 covers a partial/duplicated type.
+        app.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: query.count + 2))
+        pause(2)
+        XCTAssertNotEqual(searchField.value as? String, query, "the Delete presses must clear the typed query")
 
         shot(app, "19b_discover_after")
         // Mandatory: the actual BUG-33(2) regression check — Discover must reappear after the
@@ -1692,30 +1732,26 @@ final class NuvioTVUITests: XCTestCase {
     /// shows up under a specific race window (immediate Menu vs. Menu after pagination) still gets
     /// exercised.
     ///
-    /// Query typing is best-effort (see `typeOnKeyboard` / test19's header comment on the tvOS
-    /// keyboard grid): if it can't be driven on a given run this still asserts the app survived
-    /// the attempt, but the actual crash probe below needs real results to reach a "See All" card,
-    /// so a failed type makes the rest of the test a no-op pass.
+    /// Query typing is best-effort (see `typeOnKeyboard` / test19's header comment on Search's
+    /// system search field): if it can't be driven on a given run this still asserts the app
+    /// survived the attempt, but the actual crash probe below needs real results to reach a "See
+    /// All" card, so a failed type makes the rest of the test a no-op pass. S1 W1: focus is
+    /// already in the inline keyboard after `openTab`, so there is no Select-to-open-keyboard and
+    /// no Menu-to-dismiss step — results render live under the keyboard.
     func test23SearchSeeAllBackNoCrash() throws {
         let app = launchToHome(forceFreshLaunch: true)
         openTab(app, named: "Search")
         pause(1.5)
 
-        let searchField = app.textFields.firstMatch
+        let searchField = app.searchFields.firstMatch
         guard searchField.waitForExistence(timeout: 4) else {
             XCTAssertTrue(app.state == .runningForeground)
             return
         }
-        if !searchField.hasFocus {
-            _ = moveFocus(.up, until: searchField, max: 6)
-        }
-        remote.press(.select)
-        pause(2) // full-screen keyboard presentation
 
         // Broad query so real result rows (and a "See All" card) are likely regardless of which
         // addons are installed on the signed-in profile.
         let typed = typeOnKeyboard(app, "batman")
-        remote.press(.menu) // dismiss the keyboard back to the results list either way
         pause(2.5) // debounce + results fetch
         shot(app, "23a_search_results")
         // Prerequisite failures are LOUD: this test is the BUG-47 regression gate, and a silent
@@ -1729,7 +1765,7 @@ final class NuvioTVUITests: XCTestCase {
         }
 
         let seeAll = seeAllCard(app)
-        press(.down, times: 1) // out of the search field, into the first results row
+        enterSearchResults(app) // out of the keyboard, into the first results row
 
         for iteration in 1...3 {
             // On the tvOS 27.0 runtime under Xcode 26.6, `hasFocus` NEVER reads true for these
@@ -1877,18 +1913,14 @@ final class NuvioTVUITests: XCTestCase {
         // Search path into a grid.
         openTab(app, named: "Search")
         pause(1.5)
-        let searchField = app.textFields.firstMatch
+        let searchField = app.searchFields.firstMatch
         guard searchField.waitForExistence(timeout: 4) else {
             XCTAssertTrue(app.state == .runningForeground)
             return
         }
-        if !searchField.hasFocus {
-            _ = moveFocus(.up, until: searchField, max: 6)
-        }
-        remote.press(.select)
-        pause(2)
+        // S1 W1: focus is already in the inline keyboard after `openTab` — type straight into
+        // the field (no Select to open a keyboard, no Menu to dismiss one).
         let typed = typeOnKeyboard(app, "batman")
-        remote.press(.menu)
         pause(2.5)
         guard typed else {
             XCTFail("UX-13 gate not exercised: the tvOS keyboard grid could not be driven")
@@ -1896,7 +1928,7 @@ final class NuvioTVUITests: XCTestCase {
         }
         // Same lazy-materialization + broken-hasFocus caveats as test23: existence-driven walk.
         let searchSeeAll = seeAllCard(app)
-        press(.down, times: 1)
+        enterSearchResults(app)
         guard walkRightUntilExists(searchSeeAll, max: 60) else {
             shot(app, "24x_no_seeall")
             XCTFail("UX-13 gate not exercised: no reachable See All card on Home or in Search results")
@@ -2428,13 +2460,11 @@ final class NuvioTVUITests: XCTestCase {
 
         openTab(app, named: "Search")
         pause(1.5)
-        let searchField = app.textFields.firstMatch
+        let searchField = app.searchFields.firstMatch
         if searchField.waitForExistence(timeout: 4) {
-            if !searchField.hasFocus { _ = moveFocus(.up, until: searchField, max: 6) }
-            remote.press(.select)
-            pause(2.0)
+            // S1 W1: focus is already in the inline keyboard after `openTab`; type into it
+            // directly. No Menu "dismiss" — Menu from the keyboard now goes to the tab bar.
             _ = typeOnKeyboard(app, "a")
-            remote.press(.menu) // dismiss the keyboard back to results
             pause(1.5)
         }
         openTab(app, named: "Home")
@@ -2785,7 +2815,7 @@ final class NuvioTVUITests: XCTestCase {
         openTab(app, named: "Search")
         pause(2.5)
         shot(app, "29b_search_without_discover")
-        XCTAssertTrue(app.textFields.firstMatch.waitForExistence(timeout: 6), "Search tab not reached")
+        XCTAssertTrue(app.searchFields.firstMatch.waitForExistence(timeout: 6), "Search tab not reached")
         XCTAssertFalse(app.staticTexts["Discover"].exists, "Discover header still on Search with Hide Discover ON")
 
         openContentSources()
@@ -7242,7 +7272,7 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertTrue(moveFocus(.down, until: searchRow, max: 4), "could not focus sidebar_item_Search from sidebar_item_Home")
         remote.press(.select)
         pause(2.5)
-        XCTAssertTrue(app.textFields.firstMatch.waitForExistence(timeout: 6), "Search content did not appear after selecting sidebar_item_Search")
+        XCTAssertTrue(app.searchFields.firstMatch.waitForExistence(timeout: 6), "Search content did not appear after selecting sidebar_item_Search")
         shot(app, "52c_search")
 
         // Selecting a row releases focus to the new tab's content (`SidebarOverlay.basePanel`:
@@ -7251,15 +7281,17 @@ final class NuvioTVUITests: XCTestCase {
         // press — AND something in content must actually hold focus (internal review r3 P2-9:
         // `expanded=0` alone also describes the BUG-47 dead end where focus landed nowhere).
         pause(1.5)
-        // `focusedButton` unions cells/buttons/toggles/switches; Search's first focusable is its
-        // TextField, so include text fields (and any focused static container) in the landing read.
-        let landed = focusedButton(app)
-            ?? app.textFields.allElementsBoundByIndex.first(where: { $0.hasFocus })
-            ?? app.otherElements.allElementsBoundByIndex.first(where: { $0.hasFocus })
-        print("[test52] landed=\(landed.map { "\($0.elementType.rawValue):\($0.identifier)|\($0.label)" } ?? "nil") \(stateProbe.exists ? stateProbe.label : "(no sidebar_state)")")
-        XCTAssertNotNil(landed, "after selecting Search nothing holds focus — the hand-off landed nowhere (BUG-47 class)")
-        if let landed {
-            XCTAssertFalse(landed.identifier.hasPrefix("sidebar_item_"), "focus stayed in the panel after the row press: \(landed.identifier)|\(landed.label)")
+        // S1 W1: Search's first focusable is now the system search field's INLINE keyboard (always
+        // on screen), and the focus engine lands focus on a key. Keyboard keys never report
+        // `hasFocus` reliably (see `typeOnKeyboard`), so the landing proof is the keyboard being
+        // up, not a `hasFocus` read: with focus handed off and the panel collapsed, the only
+        // focusable content left on Search is that keyboard.
+        let keyboardUp = app.keyboards.firstMatch.exists
+        let focusedRow = focusedButton(app)
+        print("[test52] keyboard=\(keyboardUp) focusedButton=\(focusedRow.map { "\($0.elementType.rawValue):\($0.identifier)|\($0.label)" } ?? "nil") \(stateProbe.exists ? stateProbe.label : "(no sidebar_state)")")
+        XCTAssertTrue(keyboardUp, "after selecting Search the inline keyboard is not on screen — the hand-off landed nowhere (BUG-47 class)")
+        if let focusedRow {
+            XCTAssertFalse(focusedRow.identifier.hasPrefix("sidebar_item_"), "focus stayed in the panel after the row press: \(focusedRow.identifier)|\(focusedRow.label)")
         }
         if stateProbe.exists {
             XCTAssertTrue(stateProbe.label.contains("expanded=0"), "panel should report collapsed once focus left it: \(stateProbe.label)")
@@ -9282,21 +9314,25 @@ extension NuvioTVUITests {
     /// into it; FA87 runs the LINEAR keyboard, so Down leaves the keyboard for the results (Grid
     /// needs Right instead); an empty field's `value` is the prompt plus a keyboard hint.
     func test92SearchLiveResults() throws {
-        let query = "severance"
         let app = launchToHome(forceFreshLaunch: true)
         openTab(app, named: "Search")
         pause(2)
         let field = app.searchFields.firstMatch
         XCTAssertTrue(field.waitForExistence(timeout: 10), "Search must show the system search field")
         XCTAssertEqual(app.textFields.count, 0, "today's TextField must be gone")
-        let chip = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", query)).firstMatch
-        if chip.exists {
-            throw XCTSkip("'\(query)' is already a Recent Search on this fixture; the saved-on-open check would be vacuous")
+        // A query that is NOT already a Recent Search, so the saved-on-open check can't pass vacuously.
+        let candidates = ["severance", "shogun", "andor", "the bear", "slow horses", "fallout"]
+        guard let query = candidates.first(where: {
+            !app.buttons.matching(NSPredicate(format: "label CONTAINS %@", $0)).firstMatch.exists
+        }) else {
+            throw XCTSkip("every candidate query is already a Recent Search on this fixture")
         }
+        let chip = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", query)).firstMatch
 
+        XCTAssertTrue(focusSearchKeyboard(app), "focus must reach the inline search keyboard before typing")
         app.typeText(query)
         pause(1)
-        XCTAssertEqual(field.value as? String, query, "typing must reach the system field")
+        XCTAssertEqual(searchFieldText(app), query, "typing must reach the system field")
         // No submit: rows must arrive while the keyboard is still up.
         let result = app.buttons.matching(NSPredicate(format: "label CONTAINS[c] %@", query)).firstMatch
         XCTAssertTrue(result.waitForExistence(timeout: 15), "results must appear while typing, without a submit")
@@ -9314,7 +9350,7 @@ extension NuvioTVUITests {
         remote.press(.menu)
         pause(3)
         XCTAssertTrue(field.waitForExistence(timeout: 5))
-        XCTAssertEqual(field.value as? String, query, "the query must survive Back")
+        XCTAssertEqual(searchFieldText(app), query, "the query must survive Back")
         shot(app, "test92-back")
 
         // Back to the keyboard and clear the field: the Recent chip must be there now.
@@ -9322,8 +9358,111 @@ extension NuvioTVUITests {
         pause(1)
         app.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: query.count + 2))
         pause(2)
-        XCTAssertNotEqual(field.value as? String, query, "the field must clear")
+        XCTAssertEqual(searchFieldText(app), "", "the field must clear")
         shot(app, "test92-cleared")
         XCTAssertTrue(chip.waitForExistence(timeout: 5), "opening a result must save the query to Recent Searches")
+    }
+}
+
+// MARK: - S1 W2 (2026-10-04): Menu from the Search keyboard in Sidebar mode
+
+extension NuvioTVUITests {
+    /// S1 W2 (`docs/search-s1-native-search-plan-2026-10-04.md`): in Sidebar mode (FEAT-30,
+    /// `-sidebar_style sidebar`) the Search tab's system search field keeps the system tab bar
+    /// alive but HIDDEN. Menu from the inline keyboard used to strand focus on that hidden tab bar
+    /// (nothing visible reacted), and a second Menu from there left the app for the springboard.
+    /// W2's hidden-tab-bar focus redirect makes the first Menu open the SIDEBAR with focus on one
+    /// of its rows instead, and a Right press from the sidebar hands focus back into Search — the
+    /// typed query and the inline keyboard untouched.
+    ///
+    /// Asserts both directions of that contract:
+    ///   - Menu ONCE from the keyboard, with a query typed: some `sidebar_item_<Name>` button holds
+    ///     focus within ~3 s and the app is still in the foreground (never suspended).
+    ///   - Right ONCE: no sidebar row holds focus any more within ~3 s, the inline keyboard is
+    ///     back on screen, the field still reads the typed query, and the app is still foreground.
+    /// Keyboard keys never report `hasFocus` reliably (see `typeOnKeyboard`), so "focus is back in
+    /// Search" is proven by the sidebar rows having LOST focus plus the keyboard and the query
+    /// being intact — never by a `hasFocus` read on a key.
+    ///
+    /// Reaches Search through the sidebar the way test52/test84 do (Menu at rest on Home reveals +
+    /// focuses `sidebar_item_Home`, Down to Search, Select), NOT through `openTab`: since rc8
+    /// (BUG-98) the panel reveals on Menu only, so `openTab`'s sidebar branch (an Up-climb until a
+    /// row has focus) never reaches it and would end on a Detail page. Selecting the row releases
+    /// focus into Search's content, which lands in the inline keyboard — no further press needed.
+    func test93SidebarMenuFromSearchKeyboard() throws {
+        let query = "du"
+        let sidebarNames = ["Home", "Search", "Library", "Add-ons", "Settings", "Profile"]
+
+        let app = launchToHome(extraArguments: ["-sidebar_style", "sidebar"], forceFreshLaunch: true)
+        defer { _ = launchToHome(forceFreshLaunch: true) } // the style was only a launch argument
+        pause(1.5)
+
+        func anySidebarRowFocused() -> Bool {
+            sidebarNames.contains { name in
+                let row = app.buttons["sidebar_item_\(name)"]
+                return row.exists && row.hasFocus
+            }
+        }
+        // Polls `condition` every 0.25 s for up to `timeout` seconds.
+        func waitUntil(_ timeout: TimeInterval, _ condition: () -> Bool) -> Bool {
+            let deadline = Date().addingTimeInterval(timeout)
+            while Date() < deadline {
+                if condition() { return true }
+                pause(0.25)
+            }
+            return condition()
+        }
+
+        // Menu at rest on Home reveals the panel with focus on sidebar_item_Home (test52's route).
+        let homeRow = app.buttons["sidebar_item_Home"]
+        remote.press(.menu)
+        pause(1.0)
+        guard homeRow.waitForExistence(timeout: 4), homeRow.hasFocus else {
+            XCTFail("Menu at rest on Home did not reveal + focus sidebar_item_Home in sidebar mode")
+            return
+        }
+        let searchRow = app.buttons["sidebar_item_Search"]
+        guard moveFocus(.down, until: searchRow, max: 4) else {
+            XCTFail("could not focus sidebar_item_Search from sidebar_item_Home")
+            return
+        }
+        remote.press(.select)
+        pause(2.5)
+
+        let field = app.searchFields.firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 6), "Search content did not appear after selecting sidebar_item_Search")
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 4), "the inline keyboard must be on screen when Search opens from the sidebar")
+        XCTAssertTrue(focusSearchKeyboard(app), "focus must reach the inline search keyboard before typing")
+        app.typeText(query)
+        pause(1)
+        XCTAssertEqual(searchFieldText(app), query, "typing must reach the system search field before the Menu press")
+        shot(app, "93a_search_open")
+
+        // Menu ONCE: W2's hidden-tab-bar focus redirect must open the sidebar with a row focused.
+        remote.press(.menu)
+        pause(1.0)
+        XCTAssertEqual(app.state, .runningForeground, "Menu from the search keyboard must not suspend the app (the hidden system tab bar swallowed focus and a second Menu left the app)")
+        guard app.state == .runningForeground else { return }
+        let sidebarFocused = waitUntil(3) { anySidebarRowFocused() }
+        shot(app, "93b_after_menu")
+        guard sidebarFocused else {
+            XCTFail("Menu from the search keyboard must open the sidebar (W2 hidden-tab-bar focus redirect): no sidebar_item_* row holds focus after one Menu press")
+            return
+        }
+
+        // Right ONCE: focus must leave the sidebar back into Search, query and keyboard intact.
+        remote.press(.right)
+        pause(1.0)
+        let leftSidebar = waitUntil(3) { !anySidebarRowFocused() }
+        shot(app, "93c_after_right")
+        XCTAssertTrue(leftSidebar, "Right from the sidebar must hand focus back into Search (W2): a sidebar_item_* row still holds focus 3 s after the press")
+        XCTAssertTrue(app.keyboards.firstMatch.exists, "the inline keyboard must be back on screen after Right out of the sidebar")
+        XCTAssertEqual(searchFieldText(app), query, "the typed query must survive the Menu / Right round trip")
+        XCTAssertEqual(app.state, .runningForeground, "the app must still be in the foreground after the Menu / Right round trip")
+        // "No sidebar row focused" alone would also pass with focus nowhere (the rows disarm on
+        // the hand-off): typing must land in the field again, which needs focus in the keyboard.
+        app.typeText("n")
+        pause(1)
+        XCTAssertEqual(searchFieldText(app), query + "n", "Right must land focus back in the search keyboard: typing after it must reach the field")
     }
 }

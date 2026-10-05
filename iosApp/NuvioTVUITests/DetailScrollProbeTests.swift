@@ -315,33 +315,54 @@ final class DetailScrollProbeTests: XCTestCase {
 
     // MARK: - Item 8 sim repro: Drop Game / Les Condés (the tester's named titles)
 
-    /// Types `text` into the Search tab's field and returns whether it landed — same
-    /// synthesis-first / keyboard-walk-fallback trick `NuvioTVUITests.typeOnKeyboard` documents
-    /// (hardware keyboard synthesis into a focused tvOS text field, validated by watching the
-    /// field's own `.value`), duplicated here rather than shared per this harness's own
-    /// precedent (see the type doc). One `remote.press(.menu)` at the end dismisses the full-screen
-    /// keyboard back to the results grid — `NuvioTVUITests.test19DiscoverSurvivesSearch`'s own
-    /// teardown uses the same button for the same reason; skipping it was this test's first-draft
-    /// bug (the keyboard stayed on screen and no result cell was ever reachable — see the report).
+    /// Types `text` into the Search tab's field and returns whether it landed. S1 W1: Search is
+    /// tvOS's system search field (`.searchable`) with an INLINE keyboard that is always on screen,
+    /// and `openTabByName` ends with the Down that lands focus in it — so there is nothing to open
+    /// (a Select on a key would TYPE that key) and nothing to dismiss (Menu from the keyboard moves
+    /// focus to the tab bar, a second Menu leaves the app); results render live under the
+    /// keyboard. Hardware keyboard synthesis (`app.typeText`) types into the focused keyboard, and
+    /// success is validated by the field's `.value` being EXACTLY the typed text (an empty
+    /// field's value is the prompt text, so "non-empty" would prove nothing). Same
+    /// synthesis-validated-by-value idea as `NuvioTVUITests.typeOnKeyboard`, duplicated here
+    /// rather than shared per this harness's own precedent (see the type doc).
     @discardableResult
     private func typeIntoSearchField(_ app: XCUIApplication, _ text: String) -> Bool {
-        let searchField = app.textFields.firstMatch
+        let searchField = app.searchFields.firstMatch
         guard searchField.waitForExistence(timeout: 6) else { return false }
-        if !searchField.hasFocus {
-            for _ in 0..<6 where !searchField.hasFocus {
-                remote.press(.up)
-                pause(0.4)
-            }
+        // The inline keyboard can appear 1–2 s after the tab opens; `openTabByName`'s closing Down
+        // may have landed on content below it (S1 W4 run). Wait for it, then step back Up/Left to
+        // it if no key holds focus (keys report focus on the 26.5 runtime).
+        guard app.keyboards.firstMatch.waitForExistence(timeout: 6) else { return false }
+        for _ in 0..<3 where !keyboardHasFocus(app) {
+            XCUIRemote.shared.press(searchKeyboardIsGrid(app) ? .left : .up)
+            pause(0.7)
         }
-        remote.press(.select)
-        pause(2) // full-screen keyboard presentation
-        let before = (searchField.exists ? searchField.value as? String : nil) ?? ""
         app.typeText(text)
         pause(1)
-        let after = (searchField.exists ? searchField.value as? String : nil) ?? ""
-        remote.press(.menu) // dismiss the keyboard so the results grid becomes reachable
+        var after = (searchField.exists ? searchField.value as? String : nil) ?? ""
+        if let hint = after.range(of: ", Press ") { after = String(after[..<hint.lowerBound]) }
         pause(2.5) // debounce + results fetch
-        return after != before && !after.isEmpty
+        return after == text
+    }
+
+    /// Whether Search's inline keyboard is the GRID layout (6-column block on the left, results to
+    /// its RIGHT) rather than the LINEAR one (one row across the top, results below) — by the
+    /// keyboard's frame width (linear ≈ 1760, grid < 900). Duplicated from `NuvioTVUITests`.
+    private func keyboardHasFocus(_ app: XCUIApplication) -> Bool {
+        guard let root = try? app.keyboards.firstMatch.snapshot() else { return false }
+        func walk(_ node: XCUIElementSnapshot) -> Bool { node.hasFocus || node.children.contains(where: walk) }
+        return walk(root)
+    }
+
+    private func searchKeyboardIsGrid(_ app: XCUIApplication) -> Bool {
+        app.keyboards.firstMatch.exists && app.keyboards.firstMatch.frame.width < 900
+    }
+
+    /// Focus from Search's inline keyboard into the first results row: one Down (linear) or
+    /// Right×7 (grid).
+    private func enterSearchResults(_ app: XCUIApplication) {
+        if searchKeyboardIsGrid(app) { press(.right, times: 7, gap: 0.5) } else { press(.down, times: 1) }
+        pause(0.8)
     }
 
     /// Best-effort: walk toward the first result cell and select it. EXISTENCE-driven, not
@@ -358,8 +379,7 @@ final class DetailScrollProbeTests: XCTestCase {
     /// "debug_ux6 MISSING" or a Search screen instead of a Detail one, which the report calls out
     /// explicitly rather than this helper asserting past it.
     private func openFirstSearchResult(_ app: XCUIApplication) {
-        remote.press(.down)
-        pause(0.8)
+        enterSearchResults(app) // out of the inline keyboard: Down (linear) / Right×7 (grid)
         // 2026-09-04 finding: default focus after one Down does NOT reliably land on the leftmost
         // cell — a query with exactly one real match + a "See All" tile landed on "See All"
         // instead (confirmed via exported .xcresult screenshots: the very next screen was a
