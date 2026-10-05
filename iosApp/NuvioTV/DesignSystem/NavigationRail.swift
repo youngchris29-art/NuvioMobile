@@ -962,6 +962,8 @@ extension View {
 /// hardware with the simulator unable to reproduce it).
 struct RailItemButtonStyle: ButtonStyle {
     let isFocused: Bool
+    /// Review r1 (B P3-8): no press scale under Reduce Motion.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -973,8 +975,8 @@ struct RailItemButtonStyle: ButtonStyle {
                         .padding(.vertical, -RailItemButtonStyle.platterOutsetV)
                 }
             }
-            .scaleEffect(configuration.isPressed ? 0.97 : 1)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.97 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed && !reduceMotion)
     }
 
     /// The capsule reaches a little past the row so the glyph is not flush with its rounded end.

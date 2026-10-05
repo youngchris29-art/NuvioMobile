@@ -54,8 +54,6 @@ final class StageController: ObservableObject {
     /// after focus leaves the strip: it is the row a rail restore goes back to.
     var currentRowKey: String?
 
-    /// The title the stage was last asked to show (sticky: a nil commit keeps it, D5).
-    private(set) var stageTarget: MetaPreview?
     /// The first real focus commit has happened; seeds are ignored from then on.
     private(set) var hasCommitted = false
     /// W2-A (§7): a strip row owns focus right now (`stripFocusGained` / `stripFocusLost`, #17). The
@@ -127,7 +125,6 @@ final class StageController: ObservableObject {
         seededIdentity = identity
         ArtworkStore.prefetch(heroArtPrefetchItems(for: item))
         swap.seed(item, washFallback: washFallback)
-        stageTarget = item
         present(item)
         StageStripProbe.shared.log("seed id=\(identity) fallback=\(washFallback == nil ? 0 : 1)")
     }
@@ -242,7 +239,6 @@ final class StageController: ObservableObject {
         // D5: the stage target is sticky. See All, the tab bar and the rail keep the last title.
         guard let item else { return }
         hasCommitted = true
-        stageTarget = item
         present(item)
     }
 

@@ -448,7 +448,7 @@ final class StageStripProbe: NSObject, ObservableObject {
 
 // MARK: - Marker
 
-/// A 1×1 clear UIView in a background that MOVES with the strip's content (the `LazyVStack`'s). Its
+/// A 1×1 clear UIView in a background that MOVES with the strip's content (its page stack's). Its
 /// rendered y is what the probe samples every frame. Mounted only while the probe is armed.
 struct StageStripMarker: UIViewRepresentable {
     func makeUIView(context: Context) -> StageStripMarkerView {

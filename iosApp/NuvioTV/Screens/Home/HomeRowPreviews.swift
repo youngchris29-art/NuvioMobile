@@ -12,13 +12,11 @@ enum HomeRowPreviews {
     /// configured `heroBackdropUrl`, `logo` the `titleLogoUrl` (both read by the existing
     /// `heroBackdropURL(for:)` / `heroLogoURL(for:)` chains with no special casing), and `poster`
     /// the cover (the backdrop chain's last fallback). `type` is the `collectionHeroType`
-    /// sentinel the trailer, enrichment and CTA gates key on. `releaseInfo` is deliberately nil —
-    /// beta.14.5 shipped the parent collection's title ("Genres", "Services de Streaming") here
-    /// as the hero's meta line, but a tester flagged it 2026-08-22 as an unwanted tvOS-only
-    /// caption with no mobile counterpart, so H-2 removes it: the folder hero is logo-only.
-    /// `genres` is already empty for a folder preview, so `metaLine` resolves to "" and the
-    /// `Theme.Size.heroMetaSlotHeight`-framed slot at the call sites just holds empty — no layout
-    /// jump. Nil when the folder carries neither a backdrop nor a logo — such a folder has
+    /// sentinel the trailer, enrichment and CTA gates key on. `releaseInfo` carries the parent
+    /// collection's title and `description` the folder's line for the PANEL form (rc14, BUG-119,
+    /// see the note at the fields); the carousel's logo-only box ignores both, so H-2's "no
+    /// caption under the wordmark" (2026-08-22) still holds there. `genres` is empty for a folder
+    /// preview. Nil when the folder carries neither a backdrop nor a logo — such a folder has
     /// nothing of its own to show, so focusing it leaves the hero alone rather than painting a
     /// poster-shaped cover across the backdrop.
     static func folder(collection: NuvioCollection, folder: CollectionFolder) -> MetaPreview? {

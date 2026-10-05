@@ -5154,6 +5154,7 @@ struct CatalogRowView: View {
                     Text(section.title)
                         .font(Theme.Font.sectionTitle)
                         .foregroundStyle(Theme.Palette.textPrimary)
+                        .stripHeadingLineLimit()
                 }
             }
 
@@ -5521,9 +5522,9 @@ struct CatalogRowView: View {
         }
     }
 
-    /// Home Stage & Strip (P1 §3.3, remounted rows): the strip's `LazyVStack` may cull this row far
-    /// from the current page and lose its horizontal offset, leaving the remembered card unrealized
-    /// for `.defaultFocus`. On a (re)mount with a remembered card that is not the first, it is
+    /// Home Stage & Strip (P1 §3.3, remounted rows): the strip mounts this row only inside its window
+    /// (`StripMountWindow`), and a remount loses the horizontal offset, leaving the remembered card
+    /// unrealized for `.defaultFocus`. On a (re)mount with a remembered card that is not the first, it is
     /// scrolled back into view on the next runloop with no animation (the minimal scroll; nothing
     /// moves when it is already visible). Inert outside the strip.
     ///

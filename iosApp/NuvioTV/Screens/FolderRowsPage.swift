@@ -388,11 +388,16 @@ struct FolderRowsPage: View {
     /// The Edit band gate (and the DEBUG readout) from the focused row's place among the focusable
     /// rows. No focused row, or a focused row that is no longer focusable (a reload), reads as the
     /// top, so the band is available as the page's anchor.
+    ///
+    /// Review r1 (B P2-2): the gate only CLOSES while a strip row holds focus. With focus on the band
+    /// itself, `focusedRowKey` still names the row it came from, and a row above it becoming
+    /// focusable (a slow first source arriving; Edit Filters on an empty row, then its reload)
+    /// moved that row off the top and hid the band under the Menu that held focus.
     private func refreshFocusDerived(rows: [FolderStripRow]) {
         let shownRows = FolderRowsPlan.visible(rows, focusedTabIndex: deepestFocusedTab)
         let position = box.focusedRowKey.flatMap { FolderRowsPlan.focusablePosition(of: $0, in: shownRows) }
         let atTop = (position ?? 0) == 0
-        if rowsAtTop != atTop { rowsAtTop = atTop }
+        if rowsAtTop != atTop, atTop || box.stripHasFocus { rowsAtTop = atTop }
         #if DEBUG
         var tab: Int?
         if position != nil, let key = box.focusedRowKey {

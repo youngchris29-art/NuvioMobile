@@ -227,6 +227,9 @@ struct StageStripHome: View {
                 .padding(.leading, geo.contentLeading)
                 .padding(.top, Theme.Spacing.lg)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                // Review r1 (B P3-6): Menu with the add-on error's Retry focused opens the rail in
+                // Rail mode, as at the strip's row 0 (and Classic's top). nil in Tabs mode.
+                .onExitCommand(perform: atTopExit)
         } else {
             StripPager(rowKeys: keys,
                        geometry: geo,

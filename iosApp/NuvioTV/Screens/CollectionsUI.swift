@@ -287,6 +287,7 @@ struct CollectionRowView: View {
                 Text(collection.title)
                     .font(Theme.Font.sectionTitle)
                     .foregroundStyle(Theme.Palette.textPrimary)
+                    .stripHeadingLineLimit()
             }
 
             ScrollView(.horizontal, showsIndicators: false) {
@@ -1022,6 +1023,17 @@ final class FolderDetailViewModel: ObservableObject {
     private var watcher: FlowWatcher?
     /// The repository folder `collection` was last refreshed for.
     private var lastFolder: CollectionFolder?
+    /// Review r1 (B P3-9): the strip state (rows, sources, settled, collection) is built only while
+    /// Home is in Stage, the only layout that shows it (the Rows page and the Edit band), so
+    /// Classic's grid does exactly the per-emission work it did before. `FolderDetailView` sets it
+    /// from the live Home layout; turning it on builds from the last emission at once.
+    var buildsStripState = false {
+        didSet {
+            guard buildsStripState, !oldValue, let state = lastState else { return }
+            applyStripState(state)
+        }
+    }
+    private var lastState: FolderDetailUiState?
 
     /// The folder this page shows, from `collection` (the route carries only ids and titles).
     var folder: CollectionFolder? {
@@ -1056,7 +1068,8 @@ final class FolderDetailViewModel: ObservableObject {
                 collectionId: self.collectionId,
                 folderId: self.folderId
             )
-            self.applyStripState(state)
+            self.lastState = state
+            if self.buildsStripState { self.applyStripState(state) }
         }
         FolderDetailRepository.shared.initialize(collectionId: collectionId, folderId: folderId)
     }
@@ -1352,6 +1365,10 @@ struct FolderDetailView: View {
         }
         .onAppear { model.start() }
         .onDisappear { model.stop() }
+        // Review r1 (B P3-9): see `FolderDetailViewModel.buildsStripState`.
+        .onChange(of: homeLayout == .stage, initial: true) { _, stage in
+            model.buildsStripState = stage
+        }
         // A layout switch mounts a fresh page: its scroll starts at the top and no strip row has
         // focus yet.
         .onChange(of: layout) { _, _ in

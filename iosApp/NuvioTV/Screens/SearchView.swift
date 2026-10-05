@@ -99,6 +99,10 @@ private struct SearchContent: View {
     @ObservedObject var model: SearchViewModel
     @Binding var query: String
     @Environment(\.posterStyle) private var posterStyle
+    /// H9 (review r1, B P2-4): the rail's Always Visible content shift (36 pt, else 0). The tab
+    /// root's `.safeAreaPadding` doesn't reach into `.searchable`'s container, so Search applies the
+    /// shift itself and its left edge matches the other tabs (176 pt) and `\.rowEdgeMargins`.
+    @Environment(\.railLeadingInset) private var railLeadingInset
 
     private var gridColumns: [GridItem] {
         [GridItem(
@@ -122,6 +126,7 @@ private struct SearchContent: View {
                 }
             }
             .padding(Theme.Spacing.screen)
+            .padding(.leading, railLeadingInset)
         }
         .scrollClipDisabled()
         // beta.19-rc1 verdict (M3, BUG-133): Search has no settle corrector, so its rows'

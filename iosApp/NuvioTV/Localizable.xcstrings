@@ -32417,76 +32417,6 @@
         }
       }
     },
-    "Sidebar": {
-      "extractionState": "manual",
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Seitenleiste"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Barra lateral"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Barre latérale"
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Barra laterale"
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Thanh bên"
-          }
-        }
-      }
-    },
-    "Sidebar hides the top tab bar behind a floating panel": {
-      "extractionState": "manual",
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Die Seitenleiste blendet die obere Tab-Leiste hinter einem schwebenden Panel aus."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "La barra lateral oculta la barra de pestañas superior detrás de un panel flotante."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "La barre latérale masque la barre d'onglets supérieure derrière un panneau flottant."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "La barra laterale nasconde la barra delle schede superiore dietro un pannello flottante."
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Thanh bên ẩn thanh thẻ phía trên sau một bảng nổi."
-          }
-        }
-      }
-    },
     "Sign In": {
       "localizations": {
         "de": {
@@ -38405,40 +38335,6 @@
         }
       }
     },
-    "Top Tabs keeps the tab bar across the top of the screen. Sidebar hides it and shows a floating panel that opens when you press Menu. Default: Top Tabs.": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "„Obere Tabs“ behält die Tab-Leiste am oberen Bildschirmrand. „Seitenleiste“ blendet sie aus und zeigt ein schwebendes Fenster, das sich beim Drücken von Menü öffnet. Standard: Obere Tabs."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Pestañas superiores mantiene la barra de pestañas en la parte superior de la pantalla. Barra lateral la oculta y muestra un panel flotante que se abre al pulsar Menú. Por defecto: Pestañas superiores."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Onglets en haut garde la barre d’onglets en haut de l’écran. Barre latérale la masque et affiche un panneau flottant qui s’ouvre en appuyant sur Menu. Par défaut : Onglets en haut."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Schede in alto mantiene la barra delle schede nella parte alta dello schermo. Barra laterale la nasconde e mostra un pannello flottante che si apre premendo Menu. Predefinito: Schede in alto."
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tab trên cùng giữ thanh tab ở phía trên màn hình. Thanh bên ẩn nó và hiển thị một bảng nổi mở ra khi bạn nhấn Menu. Mặc định: Tab trên cùng."
-          }
-        }
-      }
-    },
     "Track %lld": {
       "localizations": {
         "de": {
@@ -42792,40 +42688,6 @@
         }
       }
     },
-    "debug_sidebar mode=%lld comp=%lld": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "debug_sidebar mode=%lld comp=%lld"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "debug_sidebar mode=%lld comp=%lld"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "debug_sidebar mode=%lld comp=%lld"
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "debug_sidebar mode=%lld comp=%lld"
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "debug_sidebar mode=%lld comp=%lld"
-          }
-        }
-      }
-    },
     "debug_trailerListener %@ rebuilds=%lld recent=%@": {
       "localizations": {
         "de": {
@@ -44048,40 +43910,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "đang tìm…"
-          }
-        }
-      }
-    },
-    "sidebar_state expanded=%lld focused=%lld revealed=%lld armed=%lld blocker=%lld shown=1 immersive=%lld resting=%lld": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "sidebar_state expanded=%lld focused=%lld revealed=%lld armed=%lld blocker=%lld shown=1 immersive=%lld resting=%lld"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "sidebar_state expanded=%lld focused=%lld revealed=%lld armed=%lld blocker=%lld shown=1 immersive=%lld resting=%lld"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "sidebar_state expanded=%lld focused=%lld revealed=%lld armed=%lld blocker=%lld shown=1 immersive=%lld resting=%lld"
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "sidebar_state expanded=%lld focused=%lld revealed=%lld armed=%lld blocker=%lld shown=1 immersive=%lld resting=%lld"
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "sidebar_state expanded=%lld focused=%lld revealed=%lld armed=%lld blocker=%lld shown=1 immersive=%lld resting=%lld"
           }
         }
       }

@@ -203,18 +203,6 @@ struct StageTextBlock: View {
         _copySource = ObservedObject(wrappedValue: copySource)
     }
 
-    /// Wave 1's signature, kept for a caller holding a fixed lookup (the copy then never changes
-    /// after the block is built).
-    init(swap: StageSwapDriver,
-         geometry: StripGeometry,
-         hidesLogoWhenDisplaying: String?,
-         progressLookup: ((MetaPreview) -> WatchProgressEntry?)?) {
-        self.init(swap: swap,
-                  geometry: geometry,
-                  hidesLogoWhenDisplaying: hidesLogoWhenDisplaying,
-                  copySource: StageCopySource(progressLookup: progressLookup))
-    }
-
     var body: some View {
         let output = swap.output
         let progressLookup = copySource.progressLookup

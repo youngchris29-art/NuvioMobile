@@ -1324,6 +1324,17 @@ struct HomeView: View {
         .onChange(of: upcomingRowEnabled) { _, enabled in
             if enabled { model.startUpcoming() } else { model.stopUpcoming() }
         }
+        // Review r1 (A P2-4, B P2-3): a live Home Layout flip mounts the other layout at its top,
+        // but `isScrolledDown` and the rail's mirror kept the old layout's state: Classic's
+        // hysteresis writes only on crossings, and Stage's first ownership doesn't page. Left set,
+        // Menu at Classic's top ran the BUG-27 jump (hero on) or suspended the app (hero off, Rail
+        // mode), and Hide While Browsing kept the rail hidden at the top.
+        .onChange(of: isStageLayout) { _, _ in
+            if isScrolledDown { isScrolledDown = false }
+            if NavigationChrome.isRail() {
+                navigationChrome.setScrolledDown(tab: 0, false)
+            }
+        }
     }
 
     /// The scrolling rows region — the SAME builder for both hero layouts, so row content is
@@ -5116,6 +5127,10 @@ struct ContinueWatchingRow: View {
     /// Home Stage & Strip (P1 §3.3): the strip's per-row focus memory. nil outside the strip, which
     /// leaves the remount restore below inert (Classic).
     @Environment(\.stripFocusMemory) private var stripFocusMemory
+    /// Review r1 (A P2-3): the remount restore's horizontal geometry and target, attached only in
+    /// the strip (`StripRowScrollRestore`), so Classic's row is structurally unchanged.
+    @State private var hScroll = RowHScrollBox()
+    @State private var rowPosition = ScrollPosition()
 
     /// rc14 (BUG-122): see `PinnedRowGeometry.shortRowLayoutCompensation`. The natural label is
     /// what `LandscapeCard` lays out inside the reaches — its fixed height plus the caption when
@@ -5128,21 +5143,39 @@ struct ContinueWatchingRow: View {
                                                             isLastRow: isLastRow)
     }
 
-    /// Home Stage & Strip (P1 §3.3, remounted rows): the strip's `LazyVStack` may cull this row far
-    /// from the current page and lose its horizontal offset, leaving the remembered card
-    /// unrealized for `.defaultFocus`. On a (re)mount with a remembered card that is not the first,
-    /// scroll it back into view on the next runloop with no animation (anchor nil: the minimal
-    /// scroll, nothing moves when it is already visible). Inert outside the strip.
-    private func restoreStripMemory(proxy: ScrollViewProxy) {
+    /// Home Stage & Strip (P1 §3.3, remounted rows): the strip mounts this row only inside its
+    /// window (`StripMountWindow`), and a remount loses the horizontal offset, leaving the
+    /// remembered card unrealized for `.defaultFocus`. On a (re)mount with a remembered card that is
+    /// not the first, scroll it back into view on the next runloop with no animation (the minimal
+    /// scroll; nothing moves when it is already visible). Inert outside the strip.
+    ///
+    /// Review r1 (A P2-3): through this row's own horizontal `ScrollPosition` (`StripRowRestore`, as
+    /// `CatalogRowView` does), not `proxy.scrollTo(id)`. The row remounts two pages above the
+    /// viewport (Up from row 3, the start of a Menu glide), and an item-anchored proxy scroll can
+    /// spill into the strip's vertical scroll view (the M3 note) and knock the page off its
+    /// boundary. The geometry sample may not have landed on the first runloop, so one retry follows.
+    private func restoreStripMemory() {
         guard let memory = stripFocusMemory, memory.drivesDefaultFocus,
               let id = memory.itemId(for: "continue-watching"),
               id != entries.first?.videoId,
-              entries.contains(where: { $0.videoId == id }) else { return }
-        DispatchQueue.main.async {
-            var tx = Transaction()
-            tx.disablesAnimations = true
-            withTransaction(tx) { proxy.scrollTo(id) }
+              let index = entries.firstIndex(where: { $0.videoId == id }) else { return }
+        DispatchQueue.main.async { applyStripMemoryScroll(index: index, attempt: 0) }
+    }
+
+    private func applyStripMemoryScroll(index: Int, attempt: Int) {
+        guard let sample = hScroll.sample else {
+            if attempt == 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                    applyStripMemoryScroll(index: index, attempt: 1)
+                }
+            }
+            return
         }
+        guard let x = StripRowRestore.offset(index: index, cardWidth: Theme.Size.landscapeWidth,
+                                             gap: Theme.Spacing.rowGap, sample: sample) else { return }
+        var tx = Transaction()
+        tx.disablesAnimations = true
+        withTransaction(tx) { rowPosition.scrollTo(x: x) }
     }
 
     var body: some View {
@@ -5214,6 +5247,10 @@ struct ContinueWatchingRow: View {
                     .padding(.vertical, Theme.Spacing.lg)
                 }
                 .scrollClipDisabled()
+                // Review r1 (A P2-3): the strip's restore path; absent outside the strip.
+                .modifier(StripRowScrollRestore(enabled: stripFocusMemory != nil,
+                                                box: hScroll,
+                                                position: $rowPosition))
                 // BUG-118: see `RowEdgeEffectStyleModifier`.
                 .rowEdgeEffectStyle()
                 // BUG-37: rides down to the viewport's clip edge when the device rests short —
@@ -5255,7 +5292,7 @@ struct ContinueWatchingRow: View {
                     withTransaction(tx) { proxy.scrollTo(newFirst, anchor: .leading) }
                 }
                 // Home Stage & Strip (P1 §3.3): see `restoreStripMemory`. Inert outside the strip.
-                .onAppear { restoreStripMemory(proxy: proxy) }
+                .onAppear { restoreStripMemory() }
             }
         }
         .focusSection()

@@ -66,9 +66,9 @@ extension EnvironmentValues {
     }
 }
 
-/// A catalog row that `LazyVStack` culled and remounted has lost its horizontal offset, so its
-/// remembered card may be unrealized and `.defaultFocus` cannot land on it. This is the offset that
-/// brings card `index` back into view with the least travel.
+/// A row the strip remounted (it mounts only the rows inside `StripMountWindow`) has lost its
+/// horizontal offset, so its remembered card may be unrealized and `.defaultFocus` cannot land on
+/// it. This is the offset that brings card `index` back into view with the least travel.
 ///
 /// Horizontal-only on purpose: the row scrolls through its own `ScrollPosition`
 /// (`CatalogRowView.rowPosition`, the M3 morph-scroll path), which cannot move the strip vertically.
@@ -94,6 +94,51 @@ nonisolated enum StripRowRestore {
         }
         let maxOffset = max(0, sample.paddedContentWidth - sample.viewportWidth)
         return min(max(target, 0), maxOffset) - sample.insetLeading
+    }
+}
+
+/// Review r1 (A P3-8): a row heading in the strip stays on one line, as `StripGeometry`'s row
+/// height assumes (with No Zoom there is no lift slack for a second line). Absent outside the
+/// strip, where `\.stripFocusMemory` is nil, so Classic's headings are unchanged.
+struct StripHeadingLineLimit: ViewModifier {
+    @Environment(\.stripFocusMemory) private var stripFocusMemory
+
+    func body(content: Content) -> some View {
+        if stripFocusMemory != nil {
+            content.lineLimit(1)
+        } else {
+            content
+        }
+    }
+}
+
+extension View {
+    func stripHeadingLineLimit() -> some View {
+        modifier(StripHeadingLineLimit())
+    }
+}
+
+/// Review r1 (A P2-3): `StripRowRestore`'s inputs for a row with no morph-scroll path of its own
+/// (Continue Watching): the row's horizontal geometry into a reference box (never view state) and
+/// a horizontal `ScrollPosition` target. Structurally absent when `enabled` is false, i.e. outside
+/// the strip, so Classic's row is unchanged; `enabled` is constant for a row's lifetime.
+struct StripRowScrollRestore: ViewModifier {
+    let enabled: Bool
+    let box: RowHScrollBox
+    @Binding var position: ScrollPosition
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content
+                .onScrollGeometryChange(for: RowHScrollSample.self, of: { geo in
+                    RowHScrollSample(geo)
+                }, action: { _, sample in
+                    box.record(sample)
+                })
+                .scrollPosition($position)
+        } else {
+            content
+        }
     }
 }
 

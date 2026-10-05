@@ -67,9 +67,12 @@ struct SettingsRootView: View {
     @FocusState private var focusedCategory: SettingsCategory?
     /// One-shot "correct the next landing" flag; see the focus graph above.
     @State private var landingCorrectionArmed = false
+    /// Review r1 (B P3-5): the row that held focus when the rail armed (Left or Menu), so a rail
+    /// exit comes back to it rather than to the last opened category. Cleared at the landing.
+    @State private var railReturnCategory: SettingsCategory?
 
     /// The row focus should land on when it enters the list without system focus memory.
-    private var focusTarget: SettingsCategory { lastCategory ?? .accountProfiles }
+    private var focusTarget: SettingsCategory { railReturnCategory ?? lastCategory ?? .accountProfiles }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
@@ -117,16 +120,20 @@ struct SettingsRootView: View {
             // First landing on a row since arming: disarm for good, then correct it at most once.
             landingCorrectionArmed = false
             let target = focusTarget
+            railReturnCategory = nil
             if landed != target {
                 focusedCategory = target
             }
         }
         // H9 (P4 §2.5, #21): a rail exit to Settings arms the one-shot landing correction above and
         // returns false, so the rail's default hand-off places focus in the List and the correction
-        // moves it to `lastCategory`. Rail mode only; nothing is registered in tabs mode.
+        // moves it to the row the rail was opened from (else `lastCategory`). Rail mode only;
+        // nothing is registered in tabs mode.
         .railReturnRoute {
             RailReturnRoute(name: "settings",
-                            capture: {},
+                            capture: {
+                                railReturnCategory = focusedCategory
+                            },
                             restore: {
                                 landingCorrectionArmed = true
                                 return false

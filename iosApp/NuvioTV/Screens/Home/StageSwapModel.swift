@@ -370,9 +370,6 @@ final class StageSwapDriver: ObservableObject {
     private var lastDisplayedIdentity: String?
     private var lastPageEndedByTimeout = false
 
-    /// Wake count (tests: one wake outstanding at a time).
-    private(set) var scheduledWakes = 0
-
     init(timing: TextSwapTiming = StageStripTuning.swapTiming,
          now: (@MainActor () -> TimeInterval)? = nil,
          motionAge: (@MainActor () -> TimeInterval)? = nil,
@@ -480,7 +477,6 @@ final class StageSwapDriver: ObservableObject {
         guard let deadline = core.nextDeadline else { return }
         var delay = deadline.isFinite ? max(0, deadline - t) : 0
         if lastFireStalled { delay = max(delay, Self.retryFloor) }
-        scheduledWakes += 1
         wake = schedule(delay) { [weak self] in self?.fire() }
     }
 
