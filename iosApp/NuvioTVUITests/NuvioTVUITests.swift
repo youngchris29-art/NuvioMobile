@@ -200,67 +200,26 @@ final class NuvioTVUITests: XCTestCase {
     ///    a full relaunch instead, the only reliable recovery.
     /// `forceFreshLaunch` forces that same relaunch unconditionally, for tests that must not
     /// inherit any prior UI state (settings-pane scroll/focus, pushed screens) from suite order.
+    ///
+    /// Home Stage & Strip (W3, 2026-10-05): Stage is the app's default Home now, and every leg in
+    /// this class was written against Classic (the hero, the pinned rows, `debug_hero`,
+    /// `debug_pinned`, the Down-count walks). So the helper pins Classic through the argument
+    /// domain (`-home_layout classic`) unless a leg asks for another layout: `"stage"` for the
+    /// Stage legs, `nil` for a leg that flips the Home Layout picker itself (the argument domain
+    /// would shadow the picker's write, P2 §3.1). Only an argument-less Classic launch may reuse a
+    /// running instance, and only one that is Tabs-mode Classic: an instance another class left in
+    /// Rail mode (`rail_state` mounted) or on Stage Home (`debug_stage` mounted) is relaunched
+    /// rather than reused. That also retires FEAT-30's sidebar recovery branch: Rail mode is only
+    /// ever a launch argument, so its instances are never reused here.
     @discardableResult
-    private func launchToHome(extraArguments: [String] = [], forceFreshLaunch: Bool = false) -> XCUIApplication {
+    private func launchToHome(extraArguments: [String] = [], forceFreshLaunch: Bool = false,
+                              homeLayout: String? = "classic") -> XCUIApplication {
         let app = XCUIApplication()
+        if let homeLayout { app.launchArguments += ["-home_layout", homeLayout] }
         app.launchArguments += extraArguments
-        if extraArguments.isEmpty && !forceFreshLaunch && app.state == .runningForeground {
-            app.activate()
-            pause(2)
-            let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
-            if chris.waitForExistence(timeout: 8) {
-                if !chris.hasFocus { press(.left, times: 3, gap: 0.5) }
-                remote.press(.select)
-                pause(10)
-                return app
-            }
-            // FEAT-30: in sidebar mode there is no system tab bar to recover through at all —
-            // `app.buttons["Home"]` never exists, so the Menu-press recovery below (which only
-            // stops pressing Menu once that button is visible) would burn its whole budget
-            // pressing Menu blind. That is actively dangerous here, not just wasted motion: Menu
-            // while a sidebar row already has focus is the system's suspend-the-app default
-            // (`SidebarOverlay` installs no exit handler of its own — see its doc comment), and a
-            // prior test could easily have left focus sitting on one. Detect the mode by the
-            // sidebar's own rows/container existing (the same signal `openTab` uses, not a
-            // `UserDefaults` read this process has no access to) and recover through THAT helper's
-            // own sidebar branch, which reaches Home with no Menu press anywhere in its path.
-            if app.otherElements["sidebar_overlay"].exists || app.buttons["sidebar_item_Home"].exists {
-                openTab(app, named: "Home")
-                pause(1)
-                return app
-            }
-            // Already past the profile gate, somewhere inside the app (a prior test's end state —
-            // e.g. test01 deliberately ends on a pushed DetailView). Pop pushed screens with Menu
-            // ONLY while the root tab bar is off screen (see the header comment), then reselect
-            // the Home tab so every test starts from the same top-of-Home state a fresh launch
-            // gives. `.exists` alone is NOT the right stop signal: the failed run's hierarchy
-            // dumps show the bar's buttons stay in the tree when scrolled off screen (frame.minY
-            // -604…-1510) and sit at ~+62 when actually visible — and only the visible-bar state
-            // is the one where a Menu press escapes to the springboard (off-screen-deep Menu is
-            // the BUG-27 jump-to-top interception, and pushed covers remove the bar entirely).
-            let homeTab = app.buttons["Home"]
-            var escapedToSpringboard = false
-            for _ in 0..<4 {
-                if homeTab.exists, homeTab.frame.minY > 0 { break }
-                remote.press(.menu)
-                pause(1.2)
-                if app.state != .runningForeground {
-                    escapedToSpringboard = true
-                    break
-                }
-            }
-            if !escapedToSpringboard {
-                press(.up, times: 8, gap: 0.5)
-                if !moveFocus(.left, until: homeTab, max: 8) {
-                    _ = moveFocus(.right, until: homeTab, max: 8)
-                }
-                remote.press(.select)
-                pause(3)
-                press(.down, times: 1)
-                pause(1)
-                return app
-            }
-            // Springboard escape: fall through to app.launch() below.
+        if extraArguments.isEmpty && !forceFreshLaunch && homeLayout == "classic" && app.state == .runningForeground,
+           reuseRunningClassicInstance(app) {
+            return app
         }
         app.launch()
         // Session restore + profile fetch can take well past 15s on a cold sim launch; a short wait
@@ -273,6 +232,129 @@ final class NuvioTVUITests: XCTestCase {
         }
         pause(10) // Home catalog fan-out
         return app
+    }
+
+    /// The reuse half of `launchToHome` (see its header): activates the running instance and brings
+    /// it back to the top of Classic Home. Returns false when the caller must relaunch instead: the
+    /// instance runs the navigation rail or Stage Home (another class's launch arguments), or a
+    /// recovery Menu press escaped to the springboard.
+    private func reuseRunningClassicInstance(_ app: XCUIApplication) -> Bool {
+        app.activate()
+        pause(2)
+        // Rail mode has no system tab bar for the Menu recovery below to stop on, and Menu inside a
+        // Menu-opened rail suspends the app (P4 R4): never recover through it, relaunch.
+        if railMode(app) { return false }
+        let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
+        if chris.waitForExistence(timeout: 8) {
+            if !chris.hasFocus { press(.left, times: 3, gap: 0.5) }
+            remote.press(.select)
+            pause(10)
+            return !stageHomeMounted(app)
+        }
+        // Already past the profile gate, somewhere inside the app (a prior test's end state —
+        // e.g. test01 deliberately ends on a pushed DetailView). Pop pushed screens with Menu
+        // ONLY while the root tab bar is off screen (see the header comment), then reselect
+        // the Home tab so every test starts from the same top-of-Home state a fresh launch
+        // gives. `.exists` alone is NOT the right stop signal: the failed run's hierarchy
+        // dumps show the bar's buttons stay in the tree when scrolled off screen (frame.minY
+        // -604…-1510) and sit at ~+62 when actually visible — and only the visible-bar state
+        // is the one where a Menu press escapes to the springboard (off-screen-deep Menu is
+        // the BUG-27 jump-to-top interception, and pushed covers remove the bar entirely).
+        let homeTab = app.buttons["Home"]
+        for _ in 0..<4 {
+            if homeTab.exists, homeTab.frame.minY > 0 { break }
+            remote.press(.menu)
+            pause(1.2)
+            // Springboard escape: relaunch, never `activate()` out of it.
+            if app.state != .runningForeground { return false }
+        }
+        press(.up, times: 8, gap: 0.5)
+        if !moveFocus(.left, until: homeTab, max: 8) {
+            _ = moveFocus(.right, until: homeTab, max: 8)
+        }
+        remote.press(.select)
+        pause(3)
+        // A Stage Home is not what an argument-less leg in this class was written against.
+        if stageHomeMounted(app) { return false }
+        press(.down, times: 1)
+        pause(1)
+        return true
+    }
+
+    /// Stage Home (Home Stage & Strip) is on screen: its DEBUG `debug_stage` readout is mounted.
+    private func stageHomeMounted(_ app: XCUIApplication) -> Bool {
+        app.descendants(matching: .any)["debug_stage"].firstMatch.exists
+    }
+
+    // MARK: - Navigation rail (H9, FEAT-45; replaced FEAT-30's sidebar)
+    //
+    // `-sidebar_style rail` (or FEAT-30's stored "sidebar", read as Rail) swaps the system tab bar
+    // for the floating pill rail (`DesignSystem/NavigationRail.swift`). Its always-mounted DEBUG
+    // probe, `rail_state armed= expanded= focused= reason= gated= vis= shown= tab= route= inset=
+    // gmode=`, is the harness's view of it: `focused` is the rail's own `@FocusState` (-1 = none),
+    // readable on every runtime. The items are `rail_item_<Title>`: plain labels at rest, Buttons
+    // only while armed. The rail opens on a Left the focus engine cannot place from a tab's
+    // leftmost item, on Menu at a tab root, and when focus lands on the hidden tab bar (S1). The
+    // helpers here open it by Left only: Menu inside a Menu-opened rail suspends the app (P4 R4),
+    // and Menu down a page pages or pops before it ever reaches the rail.
+
+    /// The rail's items in `TabView` selection order (`RailItem`), which is also its `focused=` id.
+    private static let railItemTitles = ["Home", "Search", "Library", "Add-ons", "Settings", "Profile"]
+
+    /// Rail mode is on: `rail_state` is mounted in Rail mode only.
+    private func railMode(_ app: XCUIApplication) -> Bool {
+        app.descendants(matching: .any)["rail_state"].firstMatch.exists
+    }
+
+    private func railState(_ app: XCUIApplication) -> String {
+        let probe = app.descendants(matching: .any)["rail_state"].firstMatch
+        return probe.exists ? probe.label : ""
+    }
+
+    private func railToken(_ app: XCUIApplication, _ key: String) -> String? {
+        Self.probeToken(railState(app), key: key)
+    }
+
+    /// The rail's focused item id (`rail_state focused=`), -1 when no item holds focus.
+    private func railFocusedItem(_ app: XCUIApplication) -> Int {
+        Int(railToken(app, "focused") ?? "") ?? -1
+    }
+
+    /// Opens the rail by Left and returns whether it expanded: up to 15 Lefts, until `rail_state`
+    /// reads `expanded=1`. A Left walk reaches the tab's leftmost item and the next Left arms the
+    /// rail (`reason=left`). Classic's hero carousel takes a Left for itself (it pages; the Classic
+    /// route vetoes the arm), and a long linear search keyboard can outlast the walk, so when the
+    /// first walk does not open it the helper steps Down once (into the rows, or the results) and
+    /// walks again. Never Menu.
+    @discardableResult
+    private func openRail(_ app: XCUIApplication) -> Bool {
+        func expanded() -> Bool { railToken(app, "expanded") == "1" }
+        if expanded() { return true }
+        for attempt in 0..<2 {
+            for _ in 0..<15 {
+                remote.press(.left)
+                pause(0.4)
+                if expanded() { return true }
+            }
+            if attempt == 0 {
+                remote.press(.down)
+                pause(1.0)
+            }
+        }
+        return expanded()
+    }
+
+    /// With the rail open, moves its focus to item `index` by the probe's `focused=` id.
+    @discardableResult
+    private func moveRailFocus(_ app: XCUIApplication, to index: Int) -> Bool {
+        for _ in 0..<10 {
+            let focused = railFocusedItem(app)
+            if focused == index { return true }
+            if focused < 0 { pause(0.3); continue }
+            remote.press(focused < index ? .down : .up)
+            pause(0.5)
+        }
+        return railFocusedItem(app) == index
     }
 
     /// Press `direction` until `element` has focus (or the budget runs out).
@@ -288,40 +370,33 @@ final class NuvioTVUITests: XCTestCase {
 
     /// From Home content, walk up to the tab bar, right to the wanted tab, and enter it.
     ///
-    /// FEAT-30: on a device with the sidebar overlay on (`sidebar_style` = `"sidebar"`), the
-    /// system tab bar this function has always driven does not exist at all — `SidebarOverlay`
-    /// (`DesignSystem/SidebarOverlay.swift`) replaces it. Detected by the sidebar's own rows
-    /// EXISTING, not by reading the `UserDefaults` key directly (the harness has no access to the
-    /// sim's defaults from inside the test process, and existence is exactly what the app itself
-    /// renders off of), so tabs-mode callers see byte-identical behaviour below — the sidebar
-    /// branch is a new `if`, not a change to the existing walk.
+    /// H9 (FEAT-45, replaced FEAT-30's sidebar): in Rail mode the system tab bar this function has
+    /// always driven does not exist. Detected by the rail's own `rail_state` probe, not by reading
+    /// the `UserDefaults` key (the harness has no access to the sim's defaults from inside the test
+    /// process), so tabs-mode callers see byte-identical behaviour below — the rail branch is an
+    /// `if`, not a change to the tab-bar walk. The rail branch opens the rail by Left (never by
+    /// Menu, see `openRail`), moves to `rail_item_<title>` by the probe's `focused=` id, selects
+    /// it, and waits out the hand-off ladder (2.5 s on Search, whose keyboard arrives late).
+    /// Selecting an item hands focus to the tab's content, so no post-select Down is needed.
     private func openTab(_ app: XCUIApplication, named title: String) {
         let tabNames = ["Home", "Search", "Library", "Add-ons", "Settings", "Profile"]
-        if app.descendants(matching: .any)["sidebar_item_Home"].exists || app.otherElements["sidebar_overlay"].exists {
-            // The panel is visible even collapsed (showing only the CURRENT tab's own row), and it
-            // only expands to show every row once focus actually lands ON one of them
-            // (`SidebarOverlay.isExpanded` = `focusedItem != nil`). So climb Up until ANY
-            // `sidebar_item_*` row holds focus — deliberately not a Menu press: Menu while the
-            // sidebar already has focus is the system's suspend-the-app default (see
-            // `launchToHome`'s header comment on the springboard-escape class), so this walk must
-            // never rely on it.
-            func anySidebarRowFocused() -> Bool {
-                tabNames.contains { app.buttons["sidebar_item_\($0)"].exists && app.buttons["sidebar_item_\($0)"].hasFocus }
+        if railMode(app) {
+            guard let index = Self.railItemTitles.firstIndex(of: title) else {
+                XCTFail("openTab: '\(title)' is not a rail item (the rail branch takes the English tab titles)")
+                return
             }
-            for _ in 0..<40 {
-                if anySidebarRowFocused() { break }
-                remote.press(.up)
-                pause(0.35)
+            guard openRail(app) else {
+                XCTFail("openTab(\(title)): the navigation rail never opened from a Left walk — \(railState(app))")
+                return
             }
-            let target = app.buttons["sidebar_item_\(title)"]
-            if !moveFocus(.down, until: target, max: 6) {
-                _ = moveFocus(.up, until: target, max: 8)
+            guard moveRailFocus(app, to: index) else {
+                // Never Select blind: with the rail's focus unknown it could pick another tab, and
+                // with the rail closed it would press a content item.
+                XCTFail("openTab(\(title)): could not move the rail's focus to item \(index) — \(railState(app))")
+                return
             }
             remote.press(.select)
-            // Selecting a row releases focus into the new tab's content (see
-            // `SidebarOverlay.basePanel`), so unlike the tab-bar branch below no post-select
-            // press is needed to leave the chrome.
-            pause(2)
+            pause(2.5)
             return
         }
 
@@ -539,14 +614,12 @@ final class NuvioTVUITests: XCTestCase {
         let tabNames = ["Home", "Search", "Library", "Add-ons", "Settings", "Profile"]
         for _ in 0..<4 {
             if searchKeyboardHasFocus(app) { return true }
-            // Sidebar rows carry the same LABELS as the tab bar's buttons, so `app.buttons["Search"]`
-            // matches them too: check the sidebar first (Right hands off into Search, S1 W2).
-            let inSidebar = tabNames.contains {
-                let row = app.buttons["sidebar_item_\($0)"]
-                return row.exists && row.hasFocus
-            }
+            // Armed rail items carry the same LABELS as the tab bar's buttons, so
+            // `app.buttons["Search"]` matches them too: check the rail first, by its own probe
+            // (Right leaves the rail for Search's content, S1 W2 carried into the rail).
+            let inRail = railMode(app) && railFocusedItem(app) >= 0
             let onTabBar = tabNames.contains { app.buttons[$0].exists && app.buttons[$0].hasFocus }
-            if inSidebar {
+            if inRail {
                 remote.press(.right)
             } else if onTabBar {
                 remote.press(.down)
@@ -774,10 +847,11 @@ final class NuvioTVUITests: XCTestCase {
     func test00zRestoreShowHeroOn() throws {
         let app = launchToHome(forceFreshLaunch: true)
         // Revamp (FEAT-50): push the Home Screen pane from the Settings root. The push lands on
-        // the pane's FIRST row, which is now "Upcoming Episodes" — Show Hero sits one row below
-        // it — so walk DOWN to Show Hero (Up as the fallback), never selecting an unverified row:
-        // the attempt before this walk existed selected whatever had focus and collaterally
-        // toggled Trailers on Focus OFF.
+        // the pane's FIRST row. Home Stage & Strip: that is now "Home Layout" (the Layout
+        // section), then "Upcoming Episodes", then Show Hero, which exists in Classic only (this
+        // class launches Classic, see `launchToHome`) — so walk DOWN to Show Hero (Up as the
+        // fallback), never selecting an unverified row: the attempt before this walk existed
+        // selected whatever had focus and collaterally toggled Trailers on Focus OFF.
         XCTAssertTrue(openSettingsCategory(app, named: "Home Screen"), "Settings › Home Screen pane did not open")
         // The focused row: its wrapping Cell (composed "Title, …, On/Off" label) or the inner
         // control, via the union helper. A toggle's state is on `.value` for the control and at
@@ -866,6 +940,21 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["settings_pane_homeScreen"].waitForExistence(timeout: 4),
                       "Select on Home Screen must push its pane")
         shot(app, "04c_home_rows")
+        // Home Stage & Strip (P2 §3.2): the pane opens on the new Layout section, whose first row
+        // is the Home Layout picker in both layouts. Show Hero and Hero Sources below are Classic
+        // only (this class launches Classic, see `launchToHome`).
+        XCTAssertTrue(rowExists("Home Layout"), "Home Layout row missing from the top of the Home Screen pane")
+        let explainer = app.staticTexts["settings_explainer_title"]
+        if explainer.waitForExistence(timeout: 3) {
+            // The explainer names the focused row once it reports (it shows the pane summary
+            // until then), so poll briefly rather than read once.
+            var landed = explainer.label
+            for _ in 0..<12 where landed != "Home Layout" {
+                pause(0.25)
+                landed = explainer.label
+            }
+            XCTAssertEqual(landed, "Home Layout", "the pane's first focused row must be Home Layout")
+        }
         try walkToRowByTreeIndex(app, targetLabelPrefix: "Show Hero", sidebarMaxX: 0, category: "Home Screen")
         XCTAssertTrue(rowExists("Show Hero"), "Show Hero row missing")
         // Hero Sources is a disclosure Button (SettingsDisclosureRow) directly below "Nuvio-Style
@@ -1241,6 +1330,8 @@ final class NuvioTVUITests: XCTestCase {
         // Accent Focus Ring existence assert below fails ("no matches found") even though the
         // row renders fine (same test passed isolated on the same build). A fresh launch
         // guarantees the sidebar-default Settings entry this test's walk assumes.
+        // Home Stage & Strip (P4 §4.1, #22): "Hide Hero Artwork While Browsing" exists only while
+        // Home Layout is Classic; `launchToHome` pins Classic, which this leg depends on.
         let app = launchToHome(forceFreshLaunch: true)
 
         XCTAssertTrue(openSettingsCategory(app, named: "Appearance"), "Settings › Appearance pane did not open")
@@ -3938,17 +4029,30 @@ final class NuvioTVUITests: XCTestCase {
     [{"id":"zzfolderprobe-collection","title":"ZZFolderProbe","pinToTop":true,"showAllTab":true,"folders":[{"id":"zzfolderprobe-folder","title":"ZZFolderProbeFolder","hideTitle":false,"heroBackdropUrl":"https://images.metahub.space/background/medium/tt0111161/img","sources":[{"provider":"addon","addonId":"com.linvo.cinemeta","type":"movie","catalogId":"top"},{"provider":"addon","addonId":"com.linvo.cinemeta","type":"series","catalogId":"top"}]}]}]
     """
 
+    /// Home Stage & Strip (P2 §4.3): the folder Rows page fixture. One pinned collection (so its
+    /// folder tile is Stage Home's first strip card) with one folder over FOUR sources: three
+    /// Cinemeta catalogs, which load, and a missing add-on, which fails at once ("Addon not found")
+    /// so the page's removal rule runs (`rows=3 removed=1`). No `titleLogoUrl`, so the folder title
+    /// is a staticText inside `folder_stage_logo`. Legs that read it (test104–108) pass
+    /// `-folder_layout_grid ""`, which shadows any stored Grid choice, except test105, which writes
+    /// that choice through the Edit menu; every one re-seeds `"[]"` in its `defer`.
+    private static let folderRowsSeedJson = """
+    [{"id":"zzfolderrows-collection","title":"ZZFolderRows","pinToTop":true,"showAllTab":true,"folders":[{"id":"zzfolderrows-folder","title":"ZZFolderRowsFolder","hideTitle":false,"heroBackdropUrl":"https://images.metahub.space/background/medium/tt0111161/img","coverImageUrl":"https://images.metahub.space/poster/medium/tt0111161/img","sources":[{"provider":"addon","addonId":"com.linvo.cinemeta","type":"movie","catalogId":"top"},{"provider":"addon","addonId":"com.linvo.cinemeta","type":"series","catalogId":"top"},{"provider":"addon","addonId":"com.linvo.cinemeta","type":"movie","catalogId":"imdbRating"},{"provider":"addon","addonId":"zz.missing.addon","type":"movie","catalogId":"zzmissing"}]}]}]
+    """
+
     /// beta.19-rc1 verdict (C, BUG-135): a fresh launch to Home with `json` imported as the active
     /// profile's collections through the DEBUG-only `-debug.collectionsSeedJsonB64` knob
     /// (`HomeViewModel.applyCollectionsSeedIfRequested`). The import REPLACES and persists the
     /// profile's collections, so a test using this re-seeds `"[]"` in its `defer` (the FA87
     /// fixture has none of its own). No harness guard: the app refuses the seed on a signed-in
     /// cloud account (`[CollectionsSeed] imported=false refused=signedIn`), so the worst case on a
-    /// real account is a skipped test, never synced test data.
-    private func launchToHomeWithSeededCollections(_ json: String, extraArguments: [String] = []) -> XCUIApplication {
+    /// real account is a skipped test, never synced test data. `homeLayout` as `launchToHome`'s
+    /// (Classic unless a leg asks for Stage).
+    private func launchToHomeWithSeededCollections(_ json: String, extraArguments: [String] = [],
+                                                   homeLayout: String? = "classic") -> XCUIApplication {
         let b64 = Data(json.utf8).base64EncodedString()
         return launchToHome(extraArguments: ["-debug.collectionsSeedJsonB64", b64] + extraArguments,
-                            forceFreshLaunch: true)
+                            forceFreshLaunch: true, homeLayout: homeLayout)
     }
 
 
@@ -5305,12 +5409,16 @@ final class NuvioTVUITests: XCTestCase {
     /// Prerequisites fail LOUDLY (suite convention): a missing probe is an `XCTFail`, a fixture in
     /// the wrong Poster Size or hero mode is a self-describing `XCTSkip`.
     func test47LargePinnedRowTitleClearsArtwork() throws {
-        let app = launchToHome(forceFreshLaunch: true) // a prior still-mode process (test46) must not be reused: the settle probe reads its geometry
+        // A prior still-mode process (test46) must not be reused: the settle probe reads its
+        // geometry. Home Stage & Strip (W3): Poster Size is synced profile state and FA87 is
+        // Medium, so the DEBUG `-debug.posterSizeOverride large` knob (`PosterStyleDebugOverride`,
+        // app-wide) supplies the Large premise this leg used to skip on.
+        let app = launchToHome(extraArguments: ["-debug.posterSizeOverride", "large"], forceFreshLaunch: true)
         openTab(app, named: "Home")
         pause(1.5)
 
-        // Poster Size gate. The fixture is currently at Large, but this must not DEPEND on that
-        // silently: `debug_env` already publishes the live `PosterStyle.width`, so read it.
+        // Poster Size gate. The override above should make this Large, but it must not DEPEND on
+        // that silently: `debug_env` already publishes the live `PosterStyle.width`, so read it.
         // Artwork height is width x 1.5 (Theme.Size's own table): Small 183pt wide, Medium 220,
         // Large ~269 — so >= 260 is Large.
         let env = app.staticTexts["debug_env"]
@@ -5688,7 +5796,10 @@ final class NuvioTVUITests: XCTestCase {
                              // the header for why both are needed.
                              "-debug.pinnedHeroCompressionOff", "YES",
                              "-debug.pinnedSettleDisarm", "YES",
-                             "-debug.homeScrollProbe", "YES"],
+                             "-debug.homeScrollProbe", "YES",
+                             // Home Stage & Strip (W3): the Large premise below, on the Medium FA87
+                             // fixture (DEBUG `PosterStyleDebugOverride`).
+                             "-debug.posterSizeOverride", "large"],
             forceFreshLaunch: true
         )
         openTab(app, named: "Home")
@@ -5789,7 +5900,9 @@ final class NuvioTVUITests: XCTestCase {
         // present.
         let healthyApp = launchToHome(
             extraArguments: ["-no_zoom_on_focus", "YES", "-debug.homeScrollProbe", "YES",
-                             "-debug.pinnedNoZoomReachHoldsLift", "NO", "-debug.pinnedZoomReachHold", "NO"],
+                             "-debug.pinnedNoZoomReachHoldsLift", "NO", "-debug.pinnedZoomReachHold", "NO",
+                             // Same Large premise as leg A (W3: DEBUG override on the Medium FA87).
+                             "-debug.posterSizeOverride", "large"],
             forceFreshLaunch: true
         )
         openTab(healthyApp, named: "Home")
@@ -7209,122 +7322,13 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertTrue(app.state == .runningForeground)
     }
 
-    // MARK: - FEAT-30: floating sidebar overlay
-
-    /// FEAT-30's device-local opt-in (`-sidebar_style sidebar`) swaps the system tab bar for
-    /// `SidebarOverlay`'s floating panel (`DesignSystem/SidebarOverlay.swift`): collapsed at rest
-    /// to just the current tab's own row, expands to all six the instant focus lands on it, and
-    /// stepping focus back out (Right, toward content) collapses it again. This is the harness's
-    /// only coverage of that mode — every other test in this file runs in tabs mode, which is why
-    /// the fixture restore at the end matters as much as the assertions above it.
-    ///
-    /// Reveal is Menu-only. FEAT-30 briefly (2026-09-05 device spike through 2026-09-08's BUG-98)
-    /// also revealed the panel on an Up press with no focus target above it, gated for a day on a
-    /// 0.45s "deliberate Up" settle window and then ungated on a misread of a tester's rc6 video.
-    /// The rc7 tester verdict (2026-09-09) was that reveal-on-Up was unusable on hardware no
-    /// matter how it was gated — the panel opened "no matter where he is" — so Christian dropped
-    /// that path entirely; see `SidebarOverlay.swift`'s `SidebarMenuRevealModifier` doc comment for
-    /// the full arc. This test now asserts BOTH directions of that decision: a lone Up does
-    /// nothing, and Menu is what reveals + focuses the panel.
-    ///
-    /// Deliberately never presses Menu while a sidebar row could hold focus: `SidebarOverlay`
-    /// installs no exit handler of its own, so Menu there falls through to the system's
-    /// suspend-the-app default (see its doc comment, and `openTab`'s sidebar branch above, which
-    /// this test's navigation mirrors).
-    func test52SidebarOverlay() throws {
-        let app = launchToHome(extraArguments: ["-sidebar_style", "sidebar"], forceFreshLaunch: true)
-        pause(1.5)
-
-        let debugSidebar = app.staticTexts["debug_sidebar"]
-        XCTAssertTrue(debugSidebar.waitForExistence(timeout: 6), "debug_sidebar probe missing (DEBUG build?)")
-        XCTAssertTrue(debugSidebar.label.contains("mode=1"), "sidebar mode did not turn on: \(debugSidebar.label)")
-
-        // Collapsed at rest: only the current tab's (Home's) own row exists — and at rest the pill
-        // is deliberately NOT a button (`SidebarOverlay.armed`: it is a plain label until a Menu
-        // reveal arms it), so match any element type here.
-        XCTAssertTrue(app.descendants(matching: .any)["sidebar_item_Home"].exists, "sidebar_item_Home must exist at rest on the Home tab")
-        XCTAssertFalse(app.descendants(matching: .any)["sidebar_item_Search"].exists, "sidebar_item_Search must NOT exist while the panel is collapsed")
-
-        // The system tab bar must be gone outright. `app.buttons["Home"]` cannot say so — XCUI
-        // matches identifier OR label, and the sidebar's own Home row is labelled "Home" — but
-        // while the panel is collapsed NOTHING labelled "Search" may exist: the tab bar's Search
-        // button is hidden with the bar, and the sidebar's Search row only exists once expanded.
-        XCTAssertFalse(app.buttons["Search"].exists, "a 'Search' button exists while collapsed — the system tab bar is still present in sidebar mode")
-        shot(app, "52a_collapsed")
-
-        // 2026-09-09 (rc7 tester verdict, BUG-98 follow-up): a lone Up press with focus at rest on
-        // the hero/first row must NOT reveal the panel any more — the Up-reveal path (device spike
-        // through BUG-98) is gone outright, gated or not. Assert this BEFORE summoning the panel,
-        // while focus is still exactly where launch left it.
-        remote.press(.up)
-        pause(0.6)
-        XCTAssertFalse(app.buttons["sidebar_item_Search"].exists, "a lone Up press revealed the panel — the sidebar must only open on Menu now")
-        XCTAssertTrue(app.descendants(matching: .any)["sidebar_item_Home"].exists, "sidebar_item_Home should still exist collapsed after a no-op Up")
-        XCTAssertFalse(app.descendants(matching: .any)["sidebar_item_Search"].exists, "sidebar_item_Search must still not exist after a no-op Up")
-
-        // Menu is the ONLY reveal path now. Home's own Menu grammar (the BUG-27 ternary in
-        // HomeView's body) only routes to the sidebar via `sidebarMenuRevealHandler` while
-        // `!isScrolledDown` — true here since the test just launched and never scrolled — so this
-        // one press both reveals AND focuses `sidebar_item_Home`, which is what expands the panel
-        // to all six rows (`SidebarOverlay.isExpanded`).
-        let homeRow = app.buttons["sidebar_item_Home"]
-        remote.press(.menu)
-        pause(1.0)
-        print("[test52] after Menu focused=\(focusedButton(app).map { "\($0.identifier)|\($0.label)|\($0.frame)" } ?? "nil")")
-        let expanded = homeRow.waitForExistence(timeout: 4) && homeRow.hasFocus
-        XCTAssertTrue(expanded, "Menu did not reveal + focus sidebar_item_Home")
-        pause(0.5)
-        let stateProbe = app.staticTexts["sidebar_state"]
-        XCTAssertTrue(stateProbe.waitForExistence(timeout: 4), "sidebar_state probe missing while the panel is shown")
-        XCTAssertTrue(stateProbe.label.contains("expanded=1"), "panel did not report expanded once focus landed on a row: \(stateProbe.label)")
-        XCTAssertTrue(app.buttons["sidebar_item_Search"].exists, "sidebar_item_Search must exist once the panel is expanded")
-        shot(app, "52b_expanded")
-
-        // Down to Search, Select to enter it. NOT Menu — see the header comment.
-        let searchRow = app.buttons["sidebar_item_Search"]
-        XCTAssertTrue(moveFocus(.down, until: searchRow, max: 4), "could not focus sidebar_item_Search from sidebar_item_Home")
-        remote.press(.select)
-        pause(2.5)
-        XCTAssertTrue(app.searchFields.firstMatch.waitForExistence(timeout: 6), "Search content did not appear after selecting sidebar_item_Search")
-        shot(app, "52c_search")
-
-        // Selecting a row releases focus to the new tab's content (`SidebarOverlay.basePanel`:
-        // our pages start below the panel, so the reference's keep-focus behaviour left no way
-        // out but Down past the last row), so the panel must now be collapsed with no further
-        // press — AND something in content must actually hold focus (internal review r3 P2-9:
-        // `expanded=0` alone also describes the BUG-47 dead end where focus landed nowhere).
-        pause(1.5)
-        // S1 W1: Search's first focusable is now the system search field's INLINE keyboard (always
-        // on screen), and the focus engine lands focus on a key. Keyboard keys never report
-        // `hasFocus` reliably (see `typeOnKeyboard`), so the landing proof is the keyboard being
-        // up, not a `hasFocus` read: with focus handed off and the panel collapsed, the only
-        // focusable content left on Search is that keyboard.
-        let keyboardUp = app.keyboards.firstMatch.exists
-        let focusedRow = focusedButton(app)
-        print("[test52] keyboard=\(keyboardUp) focusedButton=\(focusedRow.map { "\($0.elementType.rawValue):\($0.identifier)|\($0.label)" } ?? "nil") \(stateProbe.exists ? stateProbe.label : "(no sidebar_state)")")
-        XCTAssertTrue(keyboardUp, "after selecting Search the inline keyboard is not on screen — the hand-off landed nowhere (BUG-47 class)")
-        if let focusedRow {
-            XCTAssertFalse(focusedRow.identifier.hasPrefix("sidebar_item_"), "focus stayed in the panel after the row press: \(focusedRow.identifier)|\(focusedRow.label)")
-        }
-        if stateProbe.exists {
-            XCTAssertTrue(stateProbe.label.contains("expanded=0"), "panel should report collapsed once focus left it: \(stateProbe.label)")
-        } else {
-            // Also acceptable: the whole panel (and its probe) can disappear once collapsed AND
-            // scrolled — `SidebarOverlay.shouldShow` folds the reveal/scroll resting rule together.
-            // Either shape means "no longer expanded showing every row".
-            XCTAssertFalse(
-                app.buttons["sidebar_item_Home"].exists && app.buttons["sidebar_item_Search"].exists,
-                "both sidebar_item_Home and sidebar_item_Search still exist — the panel never collapsed"
-            )
-        }
-
-        // Restore: fresh tabs-mode launch, exactly like test43's fixture restore.
-        let restored = launchToHome(forceFreshLaunch: true)
-        let restoredProbe = restored.staticTexts["debug_sidebar"]
-        XCTAssertTrue(restoredProbe.waitForExistence(timeout: 6), "debug_sidebar probe missing after restore")
-        XCTAssertTrue(restoredProbe.label.contains("mode=0"), "fixture did not restore to tabs mode: \(restoredProbe.label)")
-        XCTAssertTrue(restored.state == .runningForeground)
-    }
+    // MARK: - FEAT-30 sidebar overlay → H9 navigation rail
+    //
+    // test52SidebarOverlay was deleted with Sidebar mode itself (Home Stage & Strip W2-D retired
+    // `SidebarOverlay.swift`; a stored `sidebar_style "sidebar"` now migrates to "rail"). Its cases
+    // live on in `NavigationRailUITests`: testRail01 (the rail opens on a Left from a row's first
+    // card, never on Up), testRail04 (Menu at a tab root opens it), testRail06 (Select switches tab
+    // and hands focus to the new tab's content) and testRail09 (the "sidebar" value reads as Rail).
 
     // MARK: - FEAT-31: Open Sans typeface
 
@@ -7381,7 +7385,15 @@ final class NuvioTVUITests: XCTestCase {
     /// `p95=` numbers themselves are a device harvest for a human to read off the attachment/shot,
     /// not something this test judges pass/fail on.
     func test54CollectionFrameProbeDriver() throws {
-        let app = launchToHome(extraArguments: ["-debug.collectionFrameProbe", "YES"], forceFreshLaunch: true)
+        // Home Stage & Strip (W3): seeded, so the FA87 guest fixture (no collections of its own,
+        // the Wave 0 baseline skip) has a folder tile to drive the sampler with. Classic, as every
+        // leg in this class (`launchToHome`). The `defer` re-seeds `"[]"` on every exit.
+        let app = launchToHomeWithSeededCollections(Self.folderProbeSeedJson,
+                                                    extraArguments: ["-debug.collectionFrameProbe", "YES"])
+        defer {
+            let restored = launchToHomeWithSeededCollections("[]")
+            XCTAssertTrue(restored.state == .runningForeground)
+        }
         pause(1.5)
 
         func liveHeroProbe() -> String {
@@ -7451,9 +7463,6 @@ final class NuvioTVUITests: XCTestCase {
         print("[FEAT33] \(text)")
         shot(app, "54b_frame_probe")
         XCTAssertTrue(text.contains("focus n="), "collection_frame_blob has no 'focus n=' line — the sampler never measured a focus step: \(text)")
-
-        let restored = launchToHome(forceFreshLaunch: true)
-        XCTAssertTrue(restored.state == .runningForeground)
     }
 
     /// BUG-102 (rc9, 2026-09-10): with No Zoom on Focus OFF and the accent ring ON, a focused
@@ -7642,9 +7651,13 @@ final class NuvioTVUITests: XCTestCase {
     /// on so a `covered=1 skipped=1` line lands in the Row Settle pane when the corrector tried to
     /// scroll the covered Home (diagnostics only; the assertion is the landing).
     func test57FolderExitRestoresFocus() throws {
-        let app = launchToHome(extraArguments: ["-debug.pinnedRowSettleProbe", "YES"], forceFreshLaunch: true)
+        // Home Stage & Strip (W3): Classic (the folder page is today's grid there; the Stage
+        // analogue is test106), and seeded so the FA87 guest fixture has a folder tile to leave
+        // from. The `defer` re-seeds `"[]"`.
+        let app = launchToHomeWithSeededCollections(Self.folderProbeSeedJson,
+                                                    extraArguments: ["-debug.pinnedRowSettleProbe", "YES"])
         defer {
-            let restored = launchToHome(forceFreshLaunch: true)
+            let restored = launchToHomeWithSeededCollections("[]")
             XCTAssertTrue(restored.state == .runningForeground)
         }
         pause(1.5)
@@ -8966,9 +8979,10 @@ final class NuvioTVUITests: XCTestCase {
         pause(4)
         shot(app, "73a_after_callback")
 
-        let sidebarMode = app.descendants(matching: .any)["sidebar_item_Home"].exists || app.otherElements["sidebar_overlay"].exists
+        // H9: in Rail mode there is no tab bar; the rail's always-mounted probe stands in for it.
+        let navRailMode = railMode(app)
         XCTAssertTrue(app.state == .runningForeground)
-        XCTAssertTrue(app.buttons["Home"].exists || sidebarMode, "Home's tab bar / sidebar is gone — a cover opened over Home")
+        XCTAssertTrue(app.buttons["Home"].exists || navRailMode, "Home's tab bar / navigation rail is gone — a cover opened over Home")
         for label in ["Mark Watched", "Watched", "Add to Library", "In Library", "Play"] {
             XCTAssertFalse(app.buttons[label].exists, "a Detail/picker screen opened (found \"\(label)\"): the unknown-session callback was not ignored")
         }
@@ -9224,15 +9238,39 @@ final class NuvioTVUITests: XCTestCase {
         let summary = explainerBody.exists ? explainerBody.label : ""
         remote.press(.select)
         XCTAssertTrue(app.descendants(matching: .any)["settings_pane_homeScreen"].waitForExistence(timeout: 4), "Home Screen pane did not push")
-        XCTAssertEqual(titleBecomes(["Upcoming Episodes"]), "Upcoming Episodes", "on the pane's first row the explainer must describe Upcoming Episodes")
+        // Home Stage & Strip (P2 §3.2, §4.4): the pane's first row is now the Home Layout picker
+        // (the new Layout section), in both layouts. This run is Classic (`launchToHome`): Home
+        // Layout → Upcoming Episodes → Show Hero (or Refresh Add-ons with no catalogs).
+        XCTAssertEqual(titleBecomes(["Home Layout"]), "Home Layout", "on the pane's first row the explainer must describe Home Layout")
         let rowBody = explainerBody.exists ? explainerBody.label : ""
-        XCTAssertFalse(rowBody.isEmpty, "the explainer body is empty on the Upcoming Episodes row")
+        XCTAssertFalse(rowBody.isEmpty, "the explainer body is empty on the Home Layout row")
         XCTAssertNotEqual(rowBody, summary, "the explainer body still shows the Home Screen summary on a focused row")
-        shot(app, "82b_home_upcoming")
+        shot(app, "82b_home_layout")
+        press(.down, times: 1)
+        XCTAssertEqual(titleBecomes(["Upcoming Episodes"]), "Upcoming Episodes", "Classic: Down from Home Layout must move the explainer to Upcoming Episodes (Ambient Background is Stage only)")
+        shot(app, "82b2_home_upcoming")
         press(.down, times: 1)
         let next = titleBecomes(["Show Hero", "Refresh Add-ons"])
-        XCTAssertTrue(["Show Hero", "Refresh Add-ons"].contains(next), "Down from Upcoming Episodes must move the explainer to Show Hero (or Refresh Add-ons with no catalogs), got '\(next)'")
+        XCTAssertTrue(["Show Hero", "Refresh Add-ons"].contains(next), "Classic: Down from Upcoming Episodes must move the explainer to Show Hero (or Refresh Add-ons with no catalogs), got '\(next)'")
         shot(app, "82c_home_next_row")
+
+        // Stage run: Home Layout, then Ambient Background (Stage only, directly below it).
+        let stage = launchToHome(forceFreshLaunch: true, homeLayout: "stage")
+        XCTAssertTrue(openSettingsCategory(stage, named: "Home Screen"), "Settings › Home Screen pane did not open (Stage)")
+        let stageTitle = stage.staticTexts["settings_explainer_title"]
+        func stageTitleBecomes(_ expected: String) -> String {
+            var last = ""
+            for _ in 0..<12 {
+                last = stageTitle.exists ? stageTitle.label : ""
+                if last == expected { break }
+                pause(0.25)
+            }
+            return last
+        }
+        XCTAssertEqual(stageTitleBecomes("Home Layout"), "Home Layout", "Stage: the pane's first row must be Home Layout")
+        press(.down, times: 1)
+        XCTAssertEqual(stageTitleBecomes("Ambient Background"), "Ambient Background", "Stage: Down from Home Layout must reach Ambient Background")
+        shot(stage, "82c2_stage_ambient")
 
         // Minimal style: no explainer column at the root.
         let minimal = launchToHome(extraArguments: ["-settings_style", "minimal"], forceFreshLaunch: true)
@@ -9271,46 +9309,39 @@ final class NuvioTVUITests: XCTestCase {
         _ = launchToHome(forceFreshLaunch: true)
     }
 
-    /// FEAT-50 sidebar mode (corrections F11): with `-sidebar_style sidebar`, Menu inside a pane pops
-    /// back to the Settings root (`settings_root_list`) and does NOT reveal the sidebar
-    /// (`sidebar_item_Search` only exists while the panel is expanded).
-    func test84SidebarModePaneMenuPopsToRoot() throws {
-        let app = launchToHome(extraArguments: ["-sidebar_style", "sidebar"], forceFreshLaunch: true)
+    /// FEAT-50 Rail mode (corrections F11, carried from FEAT-30's sidebar to the H9 rail, P4 §7.3):
+    /// with `-sidebar_style rail`, Menu inside a pane pops back to the Settings root
+    /// (`settings_root_list`) with focus on the category it left, and does NOT open the rail (the
+    /// pop wins; `rail_state expanded=0`). Settings is reached through the rail itself: a Left from
+    /// Stage Home's first card opens it (`openTab`'s rail branch), never a Menu.
+    func test84RailModePaneMenuPopsToRoot() throws {
+        let app = launchToHome(extraArguments: ["-sidebar_style", "rail"], forceFreshLaunch: true, homeLayout: "stage")
         defer { _ = launchToHome(forceFreshLaunch: true) } // the style was only a launch argument
         pause(1.5)
-        // Sidebar mode has no tab bar, and since rc8 (BUG-98) the panel reveals on Menu ONLY, so
-        // `openTab`'s Up-climb never reaches it (the 10-02 g3 run climbed into Home's hero and its
-        // final Select opened a Detail page). Use test52's proven route instead: Menu at rest on
-        // Home reveals the panel with focus on `sidebar_item_Home`, Down to Settings, Select.
-        let homeRow = app.buttons["sidebar_item_Home"]
-        remote.press(.menu)
-        pause(1.0)
-        guard homeRow.waitForExistence(timeout: 4), homeRow.hasFocus else {
-            XCTFail("Menu at rest on Home did not reveal + focus sidebar_item_Home in sidebar mode")
+        guard railMode(app) else {
+            XCTFail("rail_state probe missing with -sidebar_style rail — the rail is not on (DEBUG build?)")
             return
         }
-        let settingsRow = app.buttons["sidebar_item_Settings"]
-        XCTAssertTrue(moveFocus(.down, until: settingsRow, max: 6), "could not focus sidebar_item_Settings")
-        remote.press(.select)
-        pause(2.5)
+        openTab(app, named: "Settings")
         var rootUp = false
         for _ in 0..<8 where !rootUp { rootUp = settingsRootPresent(app); if !rootUp { pause(0.5) } }
-        XCTAssertTrue(rootUp, "the Settings root did not appear after selecting sidebar_item_Settings")
+        XCTAssertTrue(rootUp, "the Settings root did not appear after selecting rail_item_Settings — \(railState(app))")
+        XCTAssertEqual(railToken(app, "tab"), "4", "the rail must report the Settings tab — \(railState(app))")
         focusSettingsRootRow(app, named: "Appearance")
         remote.press(.select)
         XCTAssertTrue(app.descendants(matching: .any)["settings_pane_appearance"].waitForExistence(timeout: 4),
-                      "Settings › Appearance pane did not open in sidebar mode")
+                      "Settings › Appearance pane did not open in Rail mode")
         pause(1)
-        shot(app, "84a_sidebar_mode_pane")
-        XCTAssertFalse(app.descendants(matching: .any)["sidebar_item_Search"].exists, "precondition: the sidebar must be collapsed inside the pane")
+        shot(app, "84a_rail_mode_pane")
+        XCTAssertEqual(railToken(app, "expanded"), "0", "precondition: the rail must be collapsed inside the pane — \(railState(app))")
         remote.press(.menu)
         pause(1.5)
         shot(app, "84b_after_menu")
-        XCTAssertTrue(app.state == .runningForeground, "Menu inside a pane must not leave the app in sidebar mode")
+        XCTAssertTrue(app.state == .runningForeground, "Menu inside a pane must not leave the app in Rail mode")
         XCTAssertTrue(app.descendants(matching: .any)["settings_root_list"].waitForExistence(timeout: 4),
-                      "Menu inside a pane must pop to the Settings root in sidebar mode")
-        XCTAssertFalse(app.descendants(matching: .any)["sidebar_item_Search"].exists,
-                       "Menu inside a pane must not reveal the sidebar (the pop wins)")
+                      "Menu inside a pane must pop to the Settings root in Rail mode")
+        XCTAssertEqual(railToken(app, "expanded"), "0",
+                       "Menu inside a pane must not open the rail (the pop wins) — \(railState(app))")
         XCTAssertEqual(focusedSettingsRootTitle(app), "Appearance", "the pop must return focus to the Appearance row")
     }
 }
@@ -9395,45 +9426,37 @@ extension NuvioTVUITests {
     }
 }
 
-// MARK: - S1 W2 (2026-10-04): Menu from the Search keyboard in Sidebar mode
+// MARK: - S1 W2 (2026-10-04), carried into the H9 rail: Menu from the Search keyboard
 
 extension NuvioTVUITests {
-    /// S1 W2 (`docs/search-s1-native-search-plan-2026-10-04.md`): in Sidebar mode (FEAT-30,
-    /// `-sidebar_style sidebar`) the Search tab's system search field keeps the system tab bar
-    /// alive but HIDDEN. Menu from the inline keyboard used to strand focus on that hidden tab bar
-    /// (nothing visible reacted), and a second Menu from there left the app for the springboard.
-    /// W2's hidden-tab-bar focus redirect makes the first Menu open the SIDEBAR with focus on one
-    /// of its rows instead, and a Right press from the sidebar hands focus back into Search — the
-    /// typed query and the inline keyboard untouched.
+    /// S1 W2 (`docs/search-s1-native-search-plan-2026-10-04.md`), carried from FEAT-30's sidebar into
+    /// the H9 navigation rail (P4 §3, §7.3; W2-D's canary). In Rail mode (`-sidebar_style rail`) the
+    /// Search tab's system search field keeps the system tab bar alive but HIDDEN. Menu from the
+    /// inline keyboard moves focus into that hidden bar, and `HiddenTabBarFocusBlocker`'s redirect
+    /// opens the RAIL with an item focused instead (`rail_state … reason=hiddenBarRedirect
+    /// expanded=1`). A Right press from the rail hands focus back into Search, the typed query and
+    /// the inline keyboard untouched; a second Menu soon after redirects again.
     ///
-    /// Asserts both directions of that contract:
-    ///   - Menu ONCE from the keyboard, with a query typed: some `sidebar_item_<Name>` button holds
-    ///     focus within ~3 s and the app is still in the foreground (never suspended).
-    ///   - Right ONCE: no sidebar row holds focus any more within ~3 s, the inline keyboard is
-    ///     back on screen, the field still reads the typed query, and the app is still foreground.
-    /// Keyboard keys never report `hasFocus` reliably (see `typeOnKeyboard`), so "focus is back in
-    /// Search" is proven by the sidebar rows having LOST focus plus the keyboard and the query
-    /// being intact — never by a `hasFocus` read on a key.
+    /// Never presses Menu while a rail item holds focus: a rail opened by the redirect (like one
+    /// opened by Menu) takes no Menu of its own, so the system suspends the app (P4 R4). Each
+    /// redirect is closed with Right.
     ///
-    /// Reaches Search through the sidebar the way test52/test84 do (Menu at rest on Home reveals +
-    /// focuses `sidebar_item_Home`, Down to Search, Select), NOT through `openTab`: since rc8
-    /// (BUG-98) the panel reveals on Menu only, so `openTab`'s sidebar branch (an Up-climb until a
-    /// row has focus) never reaches it and would end on a Detail page. Selecting the row releases
-    /// focus into Search's content, which lands in the inline keyboard — no further press needed.
-    func test93SidebarMenuFromSearchKeyboard() throws {
+    /// Keyboard keys never report `hasFocus` reliably on 27.0 (see `typeOnKeyboard`), so "focus is
+    /// back in Search" is the rail having LOST focus plus the keyboard and the query being intact,
+    /// and on 26.5 a real key-focus read and a typed character. Reaches Search through the rail by
+    /// a Left from Stage Home's first card (`openTab`'s rail branch), never by Menu.
+    func test93RailMenuFromSearchKeyboard() throws {
         let query = "du"
-        let sidebarNames = ["Home", "Search", "Library", "Add-ons", "Settings", "Profile"]
 
-        let app = launchToHome(extraArguments: ["-sidebar_style", "sidebar"], forceFreshLaunch: true)
+        let app = launchToHome(extraArguments: ["-sidebar_style", "rail"], forceFreshLaunch: true, homeLayout: "stage")
         defer { _ = launchToHome(forceFreshLaunch: true) } // the style was only a launch argument
         pause(1.5)
-
-        func anySidebarRowFocused() -> Bool {
-            sidebarNames.contains { name in
-                let row = app.buttons["sidebar_item_\(name)"]
-                return row.exists && row.hasFocus
-            }
+        guard railMode(app) else {
+            XCTFail("rail_state probe missing with -sidebar_style rail — the rail is not on (DEBUG build?)")
+            return
         }
+
+        func railFocused() -> Bool { railFocusedItem(app) >= 0 }
         // Polls `condition` every 0.25 s for up to `timeout` seconds.
         func waitUntil(_ timeout: TimeInterval, _ condition: () -> Bool) -> Bool {
             let deadline = Date().addingTimeInterval(timeout)
@@ -9444,58 +9467,46 @@ extension NuvioTVUITests {
             return condition()
         }
 
-        // Menu at rest on Home reveals the panel with focus on sidebar_item_Home (test52's route).
-        let homeRow = app.buttons["sidebar_item_Home"]
-        remote.press(.menu)
-        pause(1.0)
-        guard homeRow.waitForExistence(timeout: 4), homeRow.hasFocus else {
-            XCTFail("Menu at rest on Home did not reveal + focus sidebar_item_Home in sidebar mode")
-            return
-        }
-        let searchRow = app.buttons["sidebar_item_Search"]
-        guard moveFocus(.down, until: searchRow, max: 4) else {
-            XCTFail("could not focus sidebar_item_Search from sidebar_item_Home")
-            return
-        }
-        remote.press(.select)
-        pause(2.5)
-
+        openTab(app, named: "Search")
         let field = app.searchFields.firstMatch
-        XCTAssertTrue(field.waitForExistence(timeout: 6), "Search content did not appear after selecting sidebar_item_Search")
-        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 4), "the inline keyboard must be on screen when Search opens from the sidebar")
+        XCTAssertTrue(field.waitForExistence(timeout: 6), "Search content did not appear after selecting rail_item_Search — \(railState(app))")
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 4), "the inline keyboard must be on screen when Search opens from the rail")
+        XCTAssertEqual(railToken(app, "tab"), "1", "the rail must report the Search tab — \(railState(app))")
         XCTAssertTrue(focusSearchKeyboard(app), "focus must reach the inline search keyboard before typing")
         app.typeText(query)
         pause(1)
         XCTAssertEqual(searchFieldText(app), query, "typing must reach the system search field before the Menu press")
         shot(app, "93a_search_open")
 
-        // Menu ONCE: W2's hidden-tab-bar focus redirect must open the sidebar with a row focused.
+        // Menu ONCE: the hidden-tab-bar redirect must open the rail with an item focused.
         remote.press(.menu)
         pause(1.0)
         XCTAssertEqual(app.state, .runningForeground, "Menu from the search keyboard must not suspend the app (the hidden system tab bar swallowed focus and a second Menu left the app)")
         guard app.state == .runningForeground else { return }
-        let sidebarFocused = waitUntil(3) { anySidebarRowFocused() }
+        let railOpened = waitUntil(3) { railFocused() }
         shot(app, "93b_after_menu")
-        guard sidebarFocused else {
-            XCTFail("Menu from the search keyboard must open the sidebar (W2 hidden-tab-bar focus redirect): no sidebar_item_* row holds focus after one Menu press")
+        let opened = railState(app)
+        guard railOpened else {
+            XCTFail("Menu from the search keyboard must open the rail (S1 hidden-tab-bar redirect): no rail item holds focus after one Menu press — \(opened)")
             return
         }
+        XCTAssertTrue(opened.contains("reason=hiddenBarRedirect"), "the rail must say the hidden-bar redirect opened it — \(opened)")
+        XCTAssertTrue(opened.contains("expanded=1"), "the redirect must expand the rail — \(opened)")
 
-        // Right ONCE: focus must leave the sidebar back into Search, query and keyboard intact.
+        // Right ONCE: focus must leave the rail back into Search, query and keyboard intact.
         remote.press(.right)
         pause(1.0)
-        let leftSidebar = waitUntil(3) { !anySidebarRowFocused() }
+        let leftRail = waitUntil(3) { !railFocused() && railToken(app, "expanded") == "0" }
         shot(app, "93c_after_right")
-        XCTAssertTrue(leftSidebar, "Right from the sidebar must hand focus back into Search (W2): a sidebar_item_* row still holds focus 3 s after the press")
-        XCTAssertTrue(app.keyboards.firstMatch.exists, "the inline keyboard must be back on screen after Right out of the sidebar")
+        XCTAssertTrue(leftRail, "Right from the rail must hand focus back into Search: the rail still holds focus 3 s after the press — \(railState(app))")
+        XCTAssertTrue(app.keyboards.firstMatch.exists, "the inline keyboard must be back on screen after Right out of the rail")
         XCTAssertEqual(searchFieldText(app), query, "the typed query must survive the Menu / Right round trip")
         XCTAssertEqual(app.state, .runningForeground, "the app must still be in the foreground after the Menu / Right round trip")
-        // "No sidebar row focused" alone would also pass with focus nowhere (the rows disarm on
-        // the hand-off), and the hand-off's fallback can re-arm the panel after the first sample
-        // (review r1 P3-7): settle past its last check (2.5 s on Search, `SidebarHandOffLadder`;
-        // review r3 P3-5), then read real key focus (26.5) and type.
+        // "No rail item focused" alone would also pass with focus nowhere, and the hand-off's
+        // fallback can re-arm the rail after the first sample: settle past its last check (2.5 s on
+        // Search, `SidebarHandOffLadder`), then read real key focus (26.5) and type.
         pause(3.0)
-        XCTAssertFalse(anySidebarRowFocused(), "the sidebar must not take focus back after the hand-off settles")
+        XCTAssertFalse(railFocused(), "the rail must not take focus back after the hand-off settles — \(railState(app))")
         if ProcessInfo.processInfo.operatingSystemVersion.majorVersion < 27 {
             XCTAssertTrue(searchKeyboardHasFocus(app), "Right must land focus on a key of the search keyboard")
         }
@@ -9503,18 +9514,744 @@ extension NuvioTVUITests {
         pause(1)
         XCTAssertEqual(searchFieldText(app), query + "n", "Right must land focus back in the search keyboard: typing after it must reach the field")
 
-        // A SECOND Menu (review r2 P2-1): the redirect must fire again. This press comes seconds
-        // after the first redirect, so it proves the round trip end to end; the guard's timing
-        // (successful redirects never suppress the next) is pinned by `StrandedRescueGuardTests`
-        // (review r3 P3-4).
+        // A SECOND Menu: the redirect must fire again (a successful redirect never suppresses the
+        // next; `StrandedRescueGuardTests` pins the timing).
         pause(0.5)
         remote.press(.menu)
         pause(1.0)
         XCTAssertEqual(app.state, .runningForeground, "a second Menu from the search keyboard must not suspend the app")
         guard app.state == .runningForeground else { return }
-        XCTAssertTrue(waitUntil(3) { anySidebarRowFocused() }, "a second Menu from the search keyboard must open the sidebar again")
+        XCTAssertTrue(waitUntil(3) { railFocused() }, "a second Menu from the search keyboard must open the rail again — \(railState(app))")
+        XCTAssertTrue(railState(app).contains("reason=hiddenBarRedirect"), "the second opening must be the redirect too — \(railState(app))")
         shot(app, "93d_second_menu")
         remote.press(.right)
         pause(1.5)
+    }
+}
+
+// MARK: - Home Stage & Strip W3 (2026-10-05): P2 legs — Home Screen settings, ambient wash, folder Rows page
+
+/// Spec P2 §4.3 (`docs/research/home-stage-strip-spec-P2-ambient-collections-settings.md`), the
+/// test100–test108 block. Every Stage leg passes `-home_layout stage` explicitly (through
+/// `launchToHome(homeLayout:)`) so a value an interrupted picker flip stored cannot leak in; the
+/// only exception is test101, which flips the picker itself and must not shadow it.
+///
+/// Oracles are the DEBUG readouts, never frames of moving things (XCUITest frames ignore SwiftUI
+/// offsets, scale and opacity):
+///   - `debug_stage` / `debug_stage_folder`: `phase= shown= pending= swaps= maxLive= stageH= stripH=
+///     P= fits= rest= row= fitem= disp=` (Home's stage / the folder page's own stage);
+///   - `folder_rows_state`: `mode=rows rows= removed= row= tab= docked= disp= state=`;
+///   - `debug_wash` / `debug_wash_folder`: `on= oled= id= gen= shown= late= lum= ms=`;
+///   - the Tab Bar Geometry blob (`tab_bar_state_probe_blob`, Settings › Developer).
+///
+/// `maxLive` is a process-wide high-water mark of live stage text blocks: Home's stage alone reads
+/// 1, and a folder page pushed over Home adds its own block, so the folder page's "never two titles"
+/// bound is 2 (one per stage), never 3.
+extension NuvioTVUITests {
+
+    // MARK: Helpers
+
+    private static let folderRowsFolderId = "nuvio-folder://zzfolderrows-collection/zzfolderrows-folder"
+    private static let folderRowsFolderIdentity = "nuvio.folder:nuvio-folder://zzfolderrows-collection/zzfolderrows-folder"
+    private static let folderRowsFolderTitle = "ZZFolderRowsFolder"
+
+    private func tok(_ line: String, _ key: String) -> String? {
+        Self.probeToken(line, key: key)
+    }
+
+    /// A DEBUG readout's label by identifier, "" when it is not in the tree. Matched across every
+    /// element type, as the Stage evidence harnesses do.
+    private func stageProbeLabel(_ app: XCUIApplication, _ identifier: String) -> String {
+        let element = app.descendants(matching: .any)[identifier].firstMatch
+        return element.exists ? element.label : ""
+    }
+
+    /// Polls `condition` every `step` seconds for up to `timeout` seconds.
+    private func pollUntil(_ timeout: TimeInterval, step: TimeInterval = 0.25, _ condition: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            pause(step)
+        }
+        return condition()
+    }
+
+    /// A system tab bar button holds focus (Tabs mode).
+    private func tabBarHasFocus(_ app: XCUIApplication) -> Bool {
+        ["Home", "Search", "Library", "Add-ons", "Settings", "Profile"].contains { app.buttons[$0].exists && app.buttons[$0].hasFocus }
+    }
+
+    /// Stage Home in Tabs mode lands focus on the tab bar after the profile pick (Gate 1 finding 1);
+    /// the first Down enters the strip.
+    @discardableResult
+    private func enterStageStrip(_ app: XCUIApplication) -> Bool {
+        for _ in 0..<3 where tabBarHasFocus(app) {
+            remote.press(.down)
+            pause(1.5)
+        }
+        return !tabBarHasFocus(app)
+    }
+
+    /// A Detail page is up: the Cinematic hero, or the Classic action row.
+    private func detailPageUp(_ app: XCUIApplication) -> Bool {
+        app.descendants(matching: .any)["detail_hero"].exists
+            || ["Mark Watched", "Watched", "Add to Library", "In Library"].contains { app.buttons[$0].exists }
+    }
+
+    /// Stage Home seeded with the P2 folder fixture (`folderRowsSeedJson`). Trailers off and no
+    /// Upcoming row keep the walk deterministic; `-folder_layout_grid ""` shadows any stored Grid
+    /// choice, except for test105, which writes that choice and passes `shadowGridChoice: false`.
+    private func launchStageWithFolderRows(extraArguments: [String] = [], shadowGridChoice: Bool = true) -> XCUIApplication {
+        var arguments = ["-debug.homeScrollProbe", "YES", "-inline_trailers_enabled", "NO",
+                         "-home_upcoming_row_enabled", "NO",
+                         "-debug.trailerProbe", "YES", "-debug.trailerForceNoTrailer", "YES"]
+        if shadowGridChoice { arguments += ["-folder_layout_grid", ""] }
+        return launchToHomeWithSeededCollections(Self.folderRowsSeedJson, extraArguments: arguments + extraArguments,
+                                                 homeLayout: "stage")
+    }
+
+    /// From Stage Home's tab bar, Down until the strip reports the seeded folder tile
+    /// (`debug_stage fitem=nuvio-folder://zzfolderrows…`). The fixture pins its collection to the
+    /// top, so the folder tile is the strip's first card.
+    private func focusSeededFolderTile(_ app: XCUIApplication) -> Bool {
+        func fitem() -> String { tok(stageProbeLabel(app, "debug_stage"), "fitem") ?? "" }
+        if fitem() == Self.folderRowsFolderId, !tabBarHasFocus(app) { return true }
+        for _ in 0..<4 {
+            remote.press(.down)
+            if pollUntil(2.0, { fitem() == Self.folderRowsFolderId }) { return true }
+        }
+        return false
+    }
+
+    /// Select on the focused folder tile, then wait for the Rows page to settle on row 0
+    /// (`folder_rows_state … state=rows row=0`, the initial focus, P2 §2.3). Returns the readout
+    /// (settled or not), or nil when the page never appeared.
+    private func openSeededFolderRowsPage(_ app: XCUIApplication) -> String? {
+        remote.press(.select)
+        _ = pollUntil(15, step: 0.5) {
+            let line = stageProbeLabel(app, "folder_rows_state")
+            return tok(line, "state") == "rows" && tok(line, "row") == "0"
+        }
+        let line = stageProbeLabel(app, "folder_rows_state")
+        return line.isEmpty ? nil : line
+    }
+
+    /// The label of a row heading at the top of the strip: a section-title-sized staticText whose
+    /// top sits within 60 pt below `stripTop` (the stage height). nil when none is found.
+    private func stripHeadingLabel(_ app: XCUIApplication, stripTop: CGFloat) -> String? {
+        guard let root = try? app.snapshot() else { return nil }
+        var found: String?
+        func walk(_ node: XCUIElementSnapshot) {
+            guard found == nil else { return }
+            let frame = node.frame
+            if node.elementType == .staticText, !node.label.isEmpty,
+               !node.identifier.hasPrefix("debug_"), !node.label.hasPrefix("debug_"),
+               frame.height >= 24, frame.height <= 80, frame.width >= 40,
+               frame.minY >= stripTop - 10, frame.minY <= stripTop + 60 {
+                found = node.label
+                return
+            }
+            node.children.forEach(walk)
+        }
+        walk(root)
+        return found
+    }
+
+    /// Selects `option` in the system Menu that a Select on the focused row opens (a
+    /// `SettingsPickerRow`, or the folder Edit menu, whose Layout `Picker` can surface its options
+    /// inline or behind a nested `submenu` row). Throws `XCTSkip` when the runtime never publishes
+    /// the option as a focusable button — a known soft spot (PinnedRowSettleRegimeTests' Poster
+    /// Size leg) — after closing the menu with Menu, so nothing was changed.
+    private func chooseMenuOption(_ app: XCUIApplication, _ option: String, submenu: String? = nil, what: String) throws {
+        remote.press(.select)
+        pause(1.2)
+        var target = app.buttons[option]
+        if !target.waitForExistence(timeout: 3), let submenu {
+            let nested = app.buttons[submenu]
+            if nested.waitForExistence(timeout: 2) {
+                if !moveFocus(.down, until: nested, max: 5) { _ = moveFocus(.up, until: nested, max: 5) }
+                if nested.hasFocus {
+                    remote.press(.select)
+                    pause(1.0)
+                }
+                target = app.buttons[option]
+            }
+        }
+        guard target.waitForExistence(timeout: 3) else {
+            remote.press(.menu)
+            pause(1.0)
+            throw XCTSkip("\(what): the menu never exposed a '\(option)' option as a button on this runtime — nothing was changed")
+        }
+        if !target.hasFocus, !moveFocus(.down, until: target, max: 5) {
+            _ = moveFocus(.up, until: target, max: 5)
+        }
+        guard target.hasFocus else {
+            remote.press(.menu)
+            pause(1.0)
+            throw XCTSkip("\(what): the menu's '\(option)' option would not take focus — nothing was changed")
+        }
+        remote.press(.select)
+        pause(2.0)
+    }
+
+    /// Whether the Settings picker row `title` shows `value`: the row's Menu keeps `LabeledContent`
+    /// (title + value), so the value surfaces as the element's `.value`, in a Cell's composed
+    /// "Title, …, Value" label, or as its own staticText.
+    private func pickerRowShows(_ app: XCUIApplication, title: String, value: String) -> Bool {
+        let rows = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label BEGINSWITH %@", title))
+            .allElementsBoundByIndex
+        for row in rows {
+            if (row.value as? String) == value { return true }
+            if row.label.hasSuffix(", \(value)") || row.label.contains(", \(value),") { return true }
+        }
+        return app.staticTexts[value].exists
+    }
+
+    /// Walks the Home Screen pane from its first row with Down, collecting each row title the
+    /// explainer names (the focused row's own title, FEAT-50), until "Catalogs" or 20 presses.
+    /// `checks` are (row, value) pairs read while that row holds focus. Precondition: the pane was
+    /// just pushed (focus on its first row).
+    private func walkHomeScreenRows(_ app: XCUIApplication, checks: [(title: String, value: String)]) -> (titles: [String], valueSeen: [String: Bool]) {
+        let explainer = app.staticTexts["settings_explainer_title"]
+        func current() -> String { explainer.exists ? explainer.label : "" }
+        var title = current()
+        for _ in 0..<12 where title.isEmpty || title == "Home Screen" {
+            pause(0.25)
+            title = current()
+        }
+        var titles: [String] = []
+        var valueSeen: [String: Bool] = [:]
+        for _ in 0..<20 {
+            title = current()
+            if !title.isEmpty, titles.last != title {
+                titles.append(title)
+                for check in checks where check.title == title {
+                    valueSeen[title] = pickerRowShows(app, title: check.title, value: check.value)
+                }
+            }
+            if title == "Catalogs" { break }
+            remote.press(.down)
+            var next = current()
+            for _ in 0..<8 where next == title {
+                pause(0.2)
+                next = current()
+            }
+        }
+        return (titles, valueSeen)
+    }
+
+    /// Settings › Developer's Tab Bar Geometry blob (`tab_bar_state_probe_blob`, the persisted
+    /// chronological buffer), walked to with Down. Empty when it never rendered.
+    private func readTabBarProbeLines(_ app: XCUIApplication, tag: String) -> [String] {
+        XCTAssertTrue(openDeveloper(app), "Settings › Developer pane did not open")
+        pause(1.0)
+        var blob = probeBlobLabel(app, identifier: "tab_bar_state_probe_blob") ?? ""
+        for _ in 0..<30 where blob.isEmpty {
+            remote.press(.down)
+            pause(0.5)
+            blob = probeBlobLabel(app, identifier: "tab_bar_state_probe_blob") ?? ""
+        }
+        let attachment = XCTAttachment(string: blob)
+        attachment.name = "\(tag)_tab_bar_probe_lines"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        return blob.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+    }
+
+    /// The "never half shown at rest" rule over Tab Bar Geometry lines (T1/BUG-66's `st=` field,
+    /// sampled at every crossing and on a 2 s tick that drops repeats). A `st=part` line is a
+    /// mid-glide sample only if a non-`part` line follows it within 2.6 s: a bar that RESTED half
+    /// shown logs one `part` line and then nothing until the next press (the tick drops repeats).
+    /// Returns the offending lines.
+    private func tabBarRestsHalfShown(_ lines: [String]) -> [String] {
+        func stamp(_ line: String) -> Int? {
+            guard let range = line.range(of: "ms ") else { return nil }
+            return Int(line[line.startIndex..<range.lowerBound])
+        }
+        let samples = lines.filter { stamp($0) != nil && !$0.contains("NOT-FOUND") }
+        var offenders: [String] = []
+        for (index, line) in samples.enumerated() where tok(line, "st") == "part" {
+            guard let at = stamp(line) else { continue }
+            let settled = samples[(index + 1)...].contains { later in
+                guard let t = stamp(later) else { return false }
+                return t - at <= 2600 && tok(later, "st") != "part"
+            }
+            if !settled { offenders.append(line) }
+        }
+        return offenders
+    }
+
+    // MARK: test100–test103: Home Screen settings and the ambient wash
+
+    /// P2 §4.3 test100: in Stage the Home Screen pane opens on Home Layout (value Stage), offers
+    /// Ambient Background, labels Trailer Location Background / In Row, and hides the four
+    /// Classic-hero rows and the Classic fallback captions; in Classic it shows Show Hero, drops
+    /// Ambient Background and reads Trailer Location as Hero.
+    func test100StageHomeScreenSettingsRows() throws {
+        let trailerArguments = ["-inline_trailers_enabled", "YES", "-trailer_playback_location", "hero"]
+        let stage = launchToHome(extraArguments: trailerArguments, forceFreshLaunch: true, homeLayout: "stage")
+        XCTAssertTrue(openSettingsCategory(stage, named: "Home Screen"), "Settings › Home Screen pane did not open (Stage)")
+        let stageWalk = walkHomeScreenRows(stage, checks: [("Home Layout", "Stage"), ("Trailer Location", "Background")])
+        shot(stage, "100a_stage_pane_end")
+        let stageTitles = stageWalk.titles
+        add(XCTAttachment(string: "Stage rows: \(stageTitles)"))
+        XCTAssertEqual(stageTitles.first, "Home Layout", "Stage: the pane's first row must be Home Layout — rows: \(stageTitles)")
+        XCTAssertEqual(stageWalk.valueSeen["Home Layout"], true, "Stage: Home Layout must read Stage")
+        for expected in ["Ambient Background", "Upcoming Episodes", "Trailers on Focus", "Trailer Location",
+                         "Trailer Start Delay", "Show Catalog Type in Titles", "Catalogs"] {
+            XCTAssertTrue(stageTitles.contains(expected), "Stage: the walk never reached '\(expected)' — rows: \(stageTitles)")
+        }
+        XCTAssertEqual(stageWalk.valueSeen["Trailer Location"], true, "Stage: Trailer Location must read Background for the stored \"hero\"")
+        for hidden in ["Show Hero", "Nuvio-Style Hero", "Hero Sources", "Autoplay Hero Trailer"] {
+            XCTAssertFalse(stageTitles.contains(hidden), "Stage: '\(hidden)' configures Classic's banner and must be hidden — rows: \(stageTitles)")
+        }
+        XCTAssertFalse(stage.staticTexts["In the classic hero layout, trailers play in the poster."].exists,
+                       "Stage: the Classic fallback caption must not render")
+        XCTAssertFalse(stage.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "Hero needs a hero source")).firstMatch.exists,
+                       "Stage: the Classic hero-source caption must not render")
+
+        let classic = launchToHome(extraArguments: trailerArguments, forceFreshLaunch: true, homeLayout: "classic")
+        XCTAssertTrue(openSettingsCategory(classic, named: "Home Screen"), "Settings › Home Screen pane did not open (Classic)")
+        let classicWalk = walkHomeScreenRows(classic, checks: [("Home Layout", "Classic"), ("Trailer Location", "Hero")])
+        shot(classic, "100b_classic_pane_end")
+        let classicTitles = classicWalk.titles
+        add(XCTAttachment(string: "Classic rows: \(classicTitles)"))
+        XCTAssertEqual(classicTitles.first, "Home Layout", "Classic: the pane's first row must be Home Layout — rows: \(classicTitles)")
+        XCTAssertEqual(classicWalk.valueSeen["Home Layout"], true, "Classic: Home Layout must read Classic")
+        XCTAssertTrue(classicTitles.contains("Show Hero"), "Classic: Show Hero must be offered — rows: \(classicTitles)")
+        XCTAssertFalse(classicTitles.contains("Ambient Background"), "Classic: Ambient Background is Stage only — rows: \(classicTitles)")
+        XCTAssertEqual(classicWalk.valueSeen["Trailer Location"], true, "Classic: Trailer Location must keep its Hero wording")
+    }
+
+    /// P2 §4.3 test101: the Home Layout picker is live. No `-home_layout`, so the picker's write is
+    /// not shadowed by the argument domain. Classic → Home shows the Classic hero and no stage;
+    /// Stage → the stage is back. The persisted choice is put back to Stage on every exit.
+    func test101HomeLayoutPickerIsLive() throws {
+        let app = launchToHome(forceFreshLaunch: true, homeLayout: nil)
+        var stageRestored = false
+        defer {
+            if !stageRestored, openSettingsCategory(app, named: "Home Screen") {
+                _ = try? chooseMenuOption(app, "Stage", what: "test101 restore")
+            }
+        }
+        XCTAssertTrue(openSettingsCategory(app, named: "Home Screen"), "Settings › Home Screen pane did not open")
+        let explainer = app.staticTexts["settings_explainer_title"]
+        XCTAssertTrue(pollUntil(3) { explainer.exists && explainer.label == "Home Layout" },
+                      "the pane must open on the Home Layout row")
+        try chooseMenuOption(app, "Classic", what: "Home Layout picker")
+        shot(app, "101a_picked_classic")
+        XCTAssertTrue(pollUntil(3) { explainer.exists && explainer.label == "Home Layout" },
+                      "after the pick focus must still be on Home Layout — explainer: \(explainer.exists ? explainer.label : "-")")
+        XCTAssertTrue(pickerRowShows(app, title: "Home Layout", value: "Classic"), "Home Layout must read Classic after the pick")
+        XCTAssertFalse(app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "Ambient Background")).firstMatch.exists,
+                       "Ambient Background is Stage only and must leave the pane once Classic is picked")
+
+        openTab(app, named: "Home")
+        pause(3)
+        XCTAssertTrue(app.staticTexts["debug_hero"].waitForExistence(timeout: 8), "Home did not come up after picking Classic")
+        XCTAssertTrue(pollUntil(5) { !self.stageHomeMounted(app) }, "Classic picked: Home must not mount the stage (debug_stage)")
+        shot(app, "101b_home_classic")
+
+        XCTAssertTrue(openSettingsCategory(app, named: "Home Screen"), "Settings › Home Screen pane did not reopen")
+        try chooseMenuOption(app, "Stage", what: "Home Layout picker")
+        stageRestored = true
+        openTab(app, named: "Home")
+        pause(3)
+        XCTAssertTrue(pollUntil(8) { self.stageHomeMounted(app) }, "Stage picked: Home must mount the stage again")
+        shot(app, "101c_home_stage")
+    }
+
+    /// P2 §4.3 test102: the ambient wash fills the left gutter with the focused title's colours,
+    /// and switched off (`-home_ambient_background NO`) the gutter is the theme background. The
+    /// wash's own readout must agree with the stage (`debug_wash id=` = `debug_stage disp=`).
+    func test102AmbientWashOnOff() throws {
+        let base = ["-debug.homeScrollProbe", "YES", "-inline_trailers_enabled", "NO", "-home_upcoming_row_enabled", "NO"]
+        let gutter = CGRect(x: 4, y: 600, width: 26, height: 400)
+
+        let on = launchToHome(extraArguments: base, forceFreshLaunch: true, homeLayout: "stage")
+        enterStageStrip(on)
+        remote.press(.down)
+        pause(2.5)
+        let onWash = stageProbeLabel(on, "debug_wash")
+        let onStage = stageProbeLabel(on, "debug_stage")
+        shot(on, "102a_wash_on")
+        let onImage = XCUIScreen.main.screenshot().image
+        let onRGB = try meanRGB(in: onImage, pointRect: gutter, windowSize: on.frame.size)
+        XCTAssertEqual(tok(onWash, "on"), "1", "the wash must be on by default: \(onWash)")
+        XCTAssertEqual(tok(onWash, "shown"), "1", "the wash must be showing after a rest: \(onWash)")
+        XCTAssertEqual(tok(onWash, "id"), tok(onStage, "disp"), "the wash must show the title the stage displays — wash: \(onWash) | stage: \(onStage)")
+
+        let off = launchToHome(extraArguments: base + ["-home_ambient_background", "NO"], forceFreshLaunch: true, homeLayout: "stage")
+        enterStageStrip(off)
+        remote.press(.down)
+        pause(2.5)
+        let offWash = stageProbeLabel(off, "debug_wash")
+        shot(off, "102b_wash_off")
+        let offImage = XCUIScreen.main.screenshot().image
+        let offRGB = try meanRGB(in: offImage, pointRect: gutter, windowSize: off.frame.size)
+        XCTAssertEqual(tok(offWash, "on"), "0", "-home_ambient_background NO must switch the wash off: \(offWash)")
+        XCTAssertEqual(tok(offWash, "shown"), "0", "a switched-off wash shows nothing: \(offWash)")
+        add(XCTAttachment(string: "gutter mean RGB on=\(onRGB) off=\(offRGB) washOn=\(onWash) washOff=\(offWash)"))
+
+        // The theme background: 0x0D0D0D, or pure black with OLED True Black (the readout says).
+        let background = tok(offWash, "oled") == "1" ? 0.0 : 13.0 / 255.0
+        let tolerance = 3.0 / 255.0
+        XCTAssertEqual(offRGB.0, background, accuracy: tolerance, "wash off: the left gutter must be the theme background (red)")
+        XCTAssertEqual(offRGB.1, background, accuracy: tolerance, "wash off: the left gutter must be the theme background (green)")
+        XCTAssertEqual(offRGB.2, background, accuracy: tolerance, "wash off: the left gutter must be the theme background (blue)")
+        if let luma = Double(tok(onWash, "lum") ?? ""), luma < 0.03 {
+            throw XCTSkip("the focused title's wash is near black (lum=\(luma)) — no visible difference to measure against the plain background")
+        }
+        let delta = max(abs(onRGB.0 - offRGB.0), abs(onRGB.1 - offRGB.1), abs(onRGB.2 - offRGB.2))
+        XCTAssertGreaterThanOrEqual(delta, 8.0 / 255.0, "wash on: the left gutter must differ from the plain background by ≥ 8/255 in a channel (on=\(onRGB) off=\(offRGB))")
+    }
+
+    /// P2 §4.3 test103: the wash follows the stage swap and never runs ahead of it. Two Rights in
+    /// quick succession make one swap (the first title never shows); the wash's generation rises by
+    /// exactly one, and in no sample does the wash show the new title before the stage does.
+    func test103AmbientWashFollowsSwap() throws {
+        let app = launchToHome(extraArguments: ["-debug.homeScrollProbe", "YES", "-inline_trailers_enabled", "NO",
+                                                "-home_upcoming_row_enabled", "NO"],
+                               forceFreshLaunch: true, homeLayout: "stage")
+        enterStageStrip(app)
+        remote.press(.down)
+        pause(3.0)
+        let startWash = stageProbeLabel(app, "debug_wash")
+        let startStage = stageProbeLabel(app, "debug_stage")
+        guard tok(startWash, "on") == "1", let gen0 = Int(tok(startWash, "gen") ?? "") else {
+            XCTFail("debug_wash missing or off at the start: '\(startWash)'")
+            return
+        }
+        let startDisp = tok(startStage, "disp") ?? "-"
+        remote.press(.right)
+        remote.press(.right)
+        // One snapshot per sample, so the wash and the stage describe the same instant.
+        var samples: [(wash: String, disp: String)] = []
+        let deadline = Date().addingTimeInterval(2.5)
+        while Date() < deadline {
+            if let root = try? app.snapshot() {
+                var wash = "", stage = ""
+                func walk(_ node: XCUIElementSnapshot) {
+                    if node.identifier == "debug_wash" { wash = node.label }
+                    if node.identifier == "debug_stage" { stage = node.label }
+                    node.children.forEach(walk)
+                }
+                walk(root)
+                samples.append((wash: tok(wash, "id") ?? "-", disp: tok(stage, "disp") ?? "-"))
+            }
+            pause(0.05)
+        }
+        pause(1.0)
+        let endWash = stageProbeLabel(app, "debug_wash")
+        let endStage = stageProbeLabel(app, "debug_stage")
+        let target = tok(endStage, "disp") ?? "-"
+        add(XCTAttachment(string: "start disp=\(startDisp) end disp=\(target) samples(wash|disp)=\(samples.map { "\($0.wash)|\($0.disp)" })"))
+        guard target != startDisp else {
+            throw XCTSkip("the two Rights did not change the stage's title (end disp \(target)) — the row has fewer than three titles here")
+        }
+        XCTAssertEqual(Int(tok(endWash, "gen") ?? ""), gen0 + 1, "two quick Rights are one swap: the wash generation must rise by exactly one (\(startWash) → \(endWash))")
+        let firstWash = samples.firstIndex { $0.wash == target }
+        let firstDisp = samples.firstIndex { $0.disp == target }
+        if let firstWash {
+            XCTAssertNotNil(firstDisp, "the wash showed \(target) while the stage never displayed it in the window")
+            if let firstDisp {
+                XCTAssertGreaterThanOrEqual(firstWash, firstDisp, "the wash showed the new title before the stage did (sample \(firstWash) vs \(firstDisp))")
+            }
+        }
+        XCTAssertEqual(tok(endWash, "id"), target, "end state: the wash must show the stage's title — \(endWash)")
+        if let fitem = tok(endStage, "fitem"), fitem != "-" {
+            XCTAssertTrue(target.hasSuffix(":" + fitem), "end state: the stage must show the focused title (disp \(target), fitem \(fitem))")
+        }
+    }
+
+    // MARK: test104–test108: the folder Rows page
+
+    /// P2 §4.3 test104: a folder opened from Stage Home is a stage-and-strip page — one row per
+    /// source (All omitted), the failed source removed, the folder on the stage and its title docked
+    /// until the first move, then the stage follows focus for good and the title never re-docks
+    /// (Q1). Also: one page per Down, and Up returns to the card a row was left on (per-row memory).
+    func test104FolderRowsPage() throws {
+        let app = launchStageWithFolderRows()
+        defer {
+            let restored = launchToHomeWithSeededCollections("[]")
+            XCTAssertTrue(restored.state == .runningForeground)
+        }
+        guard focusSeededFolderTile(app) else {
+            throw XCTSkip("the seeded folder tile never took focus on Stage Home (debug_stage: \(stageProbeLabel(app, "debug_stage"))) — the collections seed is refused on a signed-in account")
+        }
+        let homeStage = stageProbeLabel(app, "debug_stage")
+        XCTAssertLessThanOrEqual(Int(tok(homeStage, "maxLive") ?? "") ?? 99, 1, "Home's stage must never hold two titles: \(homeStage)")
+        guard let opened = openSeededFolderRowsPage(app) else {
+            XCTFail("the folder Rows page never appeared (folder_rows_state missing) after Select on the folder tile")
+            return
+        }
+        shot(app, "104a_folder_open")
+        let openStage = stageProbeLabel(app, "debug_stage_folder")
+        add(XCTAttachment(string: "open: \(opened) | \(openStage)"))
+        XCTAssertEqual(tok(opened, "mode"), "rows", "Stage opens a folder as the Rows page: \(opened)")
+        XCTAssertEqual(tok(opened, "state"), "rows", "\(opened)")
+        XCTAssertEqual(tok(opened, "rows"), "3", "three loaded sources make three rows (All omitted): \(opened)")
+        XCTAssertEqual(tok(opened, "removed"), "1", "the missing add-on's failed row is removed while nothing below it was visited: \(opened)")
+        XCTAssertEqual(tok(opened, "row"), "0", "the page opens on its first row: \(opened)")
+        XCTAssertEqual(tok(opened, "tab"), "1", "row 0 is the first source tab (tab 0 is All, omitted): \(opened)")
+        XCTAssertEqual(tok(opened, "docked"), "1", "the folder title is docked in the stage until the first move (Q1): \(opened)")
+        XCTAssertEqual(tok(opened, "disp"), Self.folderRowsFolderIdentity, "the stage shows the folder when the page opens: \(opened)")
+        XCTAssertEqual(tok(openStage, "fitem"), "-", "the stage must not follow the initial landing (Q1): \(openStage)")
+        let logo = app.descendants(matching: .any)["folder_stage_logo"].firstMatch
+        XCTAssertTrue(logo.waitForExistence(timeout: 4), "folder_stage_logo is missing")
+        XCTAssertTrue(logo.staticTexts[Self.folderRowsFolderTitle].exists, "the folder's title must be a staticText inside folder_stage_logo")
+        XCTAssertFalse(app.staticTexts["All"].exists, "the Rows page omits the All tab")
+
+        // The first move: Down pages to row 1 and the title rises at once.
+        remote.press(.down)
+        var downLine = ""
+        let paged = pollUntil(1.0, step: 0.05) {
+            downLine = stageProbeLabel(app, "folder_rows_state")
+            return tok(downLine, "row") == "1" && tok(downLine, "docked") == "0"
+        }
+        XCTAssertTrue(paged, "one Down must reach row 1 and undock the folder title within ~0.6 s (Q1): \(downLine)")
+        var followStage = ""
+        let followed = pollUntil(2.0, step: 0.1) {
+            followStage = stageProbeLabel(app, "debug_stage_folder")
+            guard let fitem = tok(followStage, "fitem"), fitem != "-", let disp = tok(followStage, "disp") else { return false }
+            return disp.hasSuffix(":" + fitem)
+        }
+        XCTAssertTrue(followed, "after the first move the stage must show the focused card within 1.5 s: \(followStage)")
+        pause(1.2)
+        let rested = stageProbeLabel(app, "folder_rows_state")
+        XCTAssertEqual(tok(rested, "row"), "1", "one Down must page exactly one row: \(rested)")
+        XCTAssertTrue(logo.staticTexts[Self.folderRowsFolderTitle].exists, "the folder title must stay in the tree once it has risen (title always visible)")
+        shot(app, "104b_row1")
+
+        // Up: the stage follows row 0's card and the title stays compact (no re-dock, Q1).
+        remote.press(.up)
+        var samples: [String] = []
+        let upDeadline = Date().addingTimeInterval(2.0)
+        while Date() < upDeadline {
+            samples.append(stageProbeLabel(app, "folder_rows_state"))
+            pause(0.05)
+        }
+        add(XCTAttachment(string: "after Up: \(samples)"))
+        XCTAssertTrue(samples.allSatisfy { tok($0, "docked") == "0" }, "the folder title must never re-dock once it has risen (Q1): \(samples)")
+        XCTAssertFalse(samples.contains { tok($0, "disp") == Self.folderRowsFolderIdentity }, "back at row 0 the stage must follow the focused card, never return to the folder: \(samples)")
+        let upLine = samples.last ?? ""
+        XCTAssertEqual(tok(upLine, "row"), "0", "Up must return to row 0: \(upLine)")
+        let upStage = stageProbeLabel(app, "debug_stage_folder")
+        if let fitem = tok(upStage, "fitem"), fitem != "-", let disp = tok(upStage, "disp") {
+            XCTAssertTrue(disp.hasSuffix(":" + fitem), "at row 0 the stage must show row 0's focused card: \(upStage)")
+        }
+        // One stage per page: Home's and this page's text blocks, never a third.
+        XCTAssertLessThanOrEqual(Int(tok(upStage, "maxLive") ?? "") ?? 99, 2, "two titles in one stage at once: \(upStage)")
+        let wash = stageProbeLabel(app, "debug_wash_folder")
+        if tok(wash, "on") == "1" {
+            XCTAssertEqual(tok(wash, "shown"), "1", "the folder page's wash must be showing: \(wash)")
+        }
+
+        // Per-row memory: leave row 0 on its third card, page Down, Up → the same card.
+        remote.press(.right)
+        pause(1.0)
+        remote.press(.right)
+        pause(2.0)
+        let remembered = tok(stageProbeLabel(app, "debug_stage_folder"), "fitem") ?? "-"
+        remote.press(.down)
+        pause(2.5)
+        remote.press(.up)
+        pause(2.5)
+        let back = stageProbeLabel(app, "debug_stage_folder")
+        XCTAssertEqual(tok(stageProbeLabel(app, "folder_rows_state"), "row"), "0", "Up must return to row 0")
+        XCTAssertEqual(tok(back, "fitem"), remembered, "Up must land on the card row 0 was left on (per-row memory): \(back)")
+        shot(app, "104c_memory")
+    }
+
+    /// P2 §4.3 test105: the folder's Edit menu offers Layout › Grid / Rows. Picking Grid swaps in
+    /// today's grid (chips, `folder_header_state`) with focus kept on the Edit menu, the choice
+    /// survives leaving and reopening the folder, and Rows brings the strip back. No
+    /// `-folder_layout_grid` shadow here: this leg writes that choice.
+    func test105FolderRowsGridOption() throws {
+        let app = launchStageWithFolderRows(shadowGridChoice: false)
+        defer {
+            let restored = launchToHomeWithSeededCollections("[]")
+            XCTAssertTrue(restored.state == .runningForeground)
+        }
+        // A `Menu`: its resolved AX type is not guaranteed to be a plain button, so match any type.
+        let editMenu = app.descendants(matching: .any)["folder.editMenu"].firstMatch
+        func gridShowing() -> Bool { app.descendants(matching: .any)["folder_header_state"].exists }
+        func rowsShowing() -> Bool { !stageProbeLabel(app, "folder_rows_state").isEmpty }
+        func focusEditMenu() -> Bool { moveFocus(.up, until: editMenu, max: 4) }
+
+        guard focusSeededFolderTile(app) else {
+            throw XCTSkip("the seeded folder tile never took focus on Stage Home — the collections seed is refused on a signed-in account")
+        }
+        remote.press(.select)
+        XCTAssertTrue(pollUntil(15, step: 0.5) { rowsShowing() || gridShowing() }, "the folder page never appeared")
+        pause(2.0)
+        if gridShowing() {
+            // A Grid choice an interrupted earlier run left behind: back to Rows first.
+            XCTAssertTrue(focusEditMenu(), "could not focus folder.editMenu on the grid page")
+            try chooseMenuOption(app, "Rows", submenu: "Layout", what: "folder Layout (reset)")
+            XCTAssertTrue(pollUntil(6) { rowsShowing() }, "Rows did not come back after the reset")
+            pause(2.0)
+        }
+        XCTAssertTrue(focusEditMenu(), "Up from the strip's first row must reach folder.editMenu (the Edit band)")
+        try chooseMenuOption(app, "Grid", submenu: "Layout", what: "folder Layout › Grid")
+        shot(app, "105a_grid")
+        XCTAssertTrue(pollUntil(6) { gridShowing() }, "Grid must swap in today's grid (folder_header_state)")
+        XCTAssertTrue(app.buttons["All"].exists, "the grid's chips must be back, All included")
+        XCTAssertFalse(rowsShowing(), "folder_rows_state must leave with the Rows page")
+        XCTAssertTrue(editMenu.exists && editMenu.hasFocus, "choosing a layout must keep focus on the Edit menu (P2 §2.6)")
+
+        remote.press(.menu)
+        pause(3.0)
+        XCTAssertTrue(focusSeededFolderTile(app), "leaving the folder must return Home focus to the folder tile")
+        remote.press(.select)
+        XCTAssertTrue(pollUntil(15, step: 0.5) { gridShowing() || rowsShowing() }, "the folder page never reappeared")
+        pause(2.0)
+        XCTAssertTrue(gridShowing(), "the Grid choice must persist when the folder is reopened")
+        shot(app, "105b_reopened_grid")
+
+        XCTAssertTrue(focusEditMenu(), "Up from the grid must reach folder.editMenu")
+        try chooseMenuOption(app, "Rows", submenu: "Layout", what: "folder Layout › Rows")
+        XCTAssertTrue(pollUntil(6) { rowsShowing() }, "Rows must bring the strip back")
+        XCTAssertEqual(tok(stageProbeLabel(app, "folder_rows_state"), "mode"), "rows")
+        shot(app, "105c_rows_again")
+    }
+
+    /// P2 §4.3 test106 (the Stage analogue of test57): the folder stage ignores the initial landing
+    /// (`fitem=-` until the first move); back from a Detail opened on row 1 the page is on the same
+    /// row and card; leaving the folder returns Home focus to its tile.
+    func test106FolderRowsExitRestoresFocus() throws {
+        let app = launchStageWithFolderRows()
+        defer {
+            let restored = launchToHomeWithSeededCollections("[]")
+            XCTAssertTrue(restored.state == .runningForeground)
+        }
+        guard focusSeededFolderTile(app) else {
+            throw XCTSkip("the seeded folder tile never took focus on Stage Home — the collections seed is refused on a signed-in account")
+        }
+        guard openSeededFolderRowsPage(app) != nil else {
+            XCTFail("the folder Rows page never appeared")
+            return
+        }
+        pause(1.0)
+        XCTAssertEqual(tok(stageProbeLabel(app, "debug_stage_folder"), "fitem"), "-",
+                       "the folder stage must not follow the initial landing: fitem stays '-' until the first move")
+        remote.press(.down)
+        pause(2.5)
+        XCTAssertEqual(tok(stageProbeLabel(app, "folder_rows_state"), "row"), "1", "Down must page to row 1")
+        remote.press(.right)
+        pause(2.0)
+        let chosen = tok(stageProbeLabel(app, "debug_stage_folder"), "fitem") ?? "-"
+        XCTAssertNotEqual(chosen, "-", "after the first move the folder stage must report the focused card")
+        remote.press(.select)
+        guard pollUntil(20, step: 0.5, { self.detailPageUp(app) }) else {
+            XCTFail("Select on a folder card did not open its Detail page")
+            return
+        }
+        pause(2.0)
+        shot(app, "106a_detail")
+        remote.press(.menu)
+        XCTAssertTrue(pollUntil(10, step: 0.5) { !self.stageProbeLabel(app, "folder_rows_state").isEmpty }, "Menu from Detail must return to the folder page")
+        pause(2.0)
+        let back = stageProbeLabel(app, "folder_rows_state")
+        let backStage = stageProbeLabel(app, "debug_stage_folder")
+        shot(app, "106b_back_on_folder")
+        XCTAssertEqual(tok(back, "row"), "1", "back from Detail the strip must be on the row it left: \(back)")
+        XCTAssertEqual(tok(backStage, "fitem"), chosen, "back from Detail focus must be on the card it left: \(backStage)")
+        remote.press(.menu)
+        pause(3.0)
+        let home = stageProbeLabel(app, "debug_stage")
+        shot(app, "106c_back_home")
+        XCTAssertEqual(tok(home, "fitem"), Self.folderRowsFolderId, "leaving the folder must return Home focus to the folder tile: \(home)")
+        XCTAssertTrue(app.state == .runningForeground)
+    }
+
+    /// P2 §4.3 test107: See All at the end of a folder row pushes that source's catalog grid, titled
+    /// with the row's heading; Menu returns to the folder page on row 0.
+    func test107FolderRowsSeeAll() throws {
+        let app = launchStageWithFolderRows()
+        defer {
+            let restored = launchToHomeWithSeededCollections("[]")
+            XCTAssertTrue(restored.state == .runningForeground)
+        }
+        guard focusSeededFolderTile(app) else {
+            throw XCTSkip("the seeded folder tile never took focus on Stage Home — the collections seed is refused on a signed-in account")
+        }
+        guard openSeededFolderRowsPage(app) != nil else {
+            XCTFail("the folder Rows page never appeared")
+            return
+        }
+        pause(1.0)
+        let stripTop = CGFloat(Double(tok(stageProbeLabel(app, "debug_stage_folder"), "stageH") ?? "") ?? 520)
+        let heading = stripHeadingLabel(app, stripTop: stripTop)
+        add(XCTAttachment(string: "row 0 heading: \(heading ?? "<not found>") stripTop=\(stripTop)"))
+        let seeAll = seeAllCard(app)
+        guard walkRightUntilExists(seeAll, max: 22) else {
+            throw XCTSkip("row 0 has no See All tile (its source returned no more than the 18-item preview)")
+        }
+        for _ in 0..<4 where !seeAll.hasFocus {
+            remote.press(.right)
+            pause(0.6)
+        }
+        XCTAssertTrue(seeAll.hasFocus, "could not focus row 0's See All tile")
+        remote.press(.select)
+        pause(3.0)
+        shot(app, "107a_see_all")
+        if let heading {
+            // The grid's own title sits at the top of the pushed page; the folder row's heading
+            // with the same text sits at the stage's height, so only a top-of-screen match counts.
+            let titled = pollUntil(6) {
+                app.staticTexts.matching(NSPredicate(format: "label == %@", heading)).allElementsBoundByIndex
+                    .contains { $0.frame.minY >= 0 && $0.frame.minY < 260 }
+            }
+            XCTAssertTrue(titled, "See All must push a grid titled '\(heading)' (row 0's heading)")
+        }
+        remote.press(.menu)
+        let returned = pollUntil(8, step: 0.5) { self.tok(self.stageProbeLabel(app, "folder_rows_state"), "row") == "0" }
+        XCTAssertTrue(returned, "Menu from the grid must return to the folder page on row 0: \(stageProbeLabel(app, "folder_rows_state"))")
+    }
+
+    /// P2 §4.3 test108 (#9): on the folder page in Tabs mode the system tab bar, linked to the
+    /// page's strip, is never left half shown at a rest. Two Downs and two Ups with 4 s rests (two
+    /// probe ticks each), back to Home, then the Tab Bar Geometry blob from Settings › Developer.
+    func test108FolderRowsTabBarNeverHalfShown() throws {
+        let app = launchStageWithFolderRows(extraArguments: ["-debug.tabBarStateProbe", "YES"])
+        defer {
+            let restored = launchToHomeWithSeededCollections("[]")
+            XCTAssertTrue(restored.state == .runningForeground)
+        }
+        guard focusSeededFolderTile(app) else {
+            throw XCTSkip("the seeded folder tile never took focus on Stage Home — the collections seed is refused on a signed-in account")
+        }
+        guard openSeededFolderRowsPage(app) != nil else {
+            XCTFail("the folder Rows page never appeared")
+            return
+        }
+        pause(2.0)
+        remote.press(.down)
+        pause(4.0)
+        remote.press(.down)
+        pause(4.0)
+        shot(app, "108a_row2")
+        remote.press(.up)
+        pause(1.2)
+        remote.press(.up)
+        pause(4.0)
+        shot(app, "108b_row0")
+        remote.press(.menu)
+        pause(3.0)
+        let lines = readTabBarProbeLines(app, tag: "108")
+        guard !lines.isEmpty else {
+            XCTFail("tab_bar_state_probe_blob produced no lines — the probe is not armed (-debug.tabBarStateProbe YES) or the Developer readout did not render")
+            return
+        }
+        // The walk ends where the harness switched to Settings (`r=tab sel=4`).
+        let settingsSwitch = lines.firstIndex { tok($0, "r") == "tab" && tok($0, "sel") == "4" } ?? lines.count
+        let walk = Array(lines[..<settingsSwitch])
+        let halfShown = tabBarRestsHalfShown(Array(lines))
+        XCTAssertTrue(halfShown.isEmpty, "the tab bar rested half shown (st=part with no settled sample within 2.6 s): \(halfShown)")
+        XCTAssertTrue(walk.contains { tok($0, "st") == "min" }, "the bar never hid while the folder strip was below row 0: \(walk)")
+        let lastState = walk.last { tok($0, "st") != nil && !$0.contains("NOT-FOUND") }.flatMap { tok($0, "st") }
+        XCTAssertEqual(lastState, "exp", "back at row 0 (and on Home) the bar must rest fully shown: \(walk)")
     }
 }

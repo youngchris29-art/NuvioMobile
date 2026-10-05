@@ -57,6 +57,8 @@ final class GuestTrailerRevealScratchTests: XCTestCase {
     func testGuestColdStoreFirstDwellReveal() throws {
         let app = XCUIApplication()
         app.launchArguments += [
+            // Home Stage & Strip (W3): the row walks below are Classic Home's.
+            "-home_layout", "classic",
             "-inline_trailers_enabled", "YES",
             "-debug.trailerProbe", "YES",
             "-debug.trailerSmokeVideoId", "rNZ0xKaCdus",

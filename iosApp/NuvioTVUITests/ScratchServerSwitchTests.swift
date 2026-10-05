@@ -414,7 +414,10 @@ final class ScratchServerSwitchTests: XCTestCase {
         [{"id":"seed-collection","title":"Seed Collection","folders":[{"id":"seed-folder","title":"Seed Sci-Fi","sources":[{"provider":"tmdb","tmdbSourceType":"DISCOVER","mediaType":"movie","title":"Discover Movies","sortBy":"popularity.desc"}]}]}]
         """
         let app = XCUIApplication()
-        app.launchArguments = ["-debug.collectionsSeedJsonB64", Data(seed.utf8).base64EncodedString()]
+        // Home Stage & Strip (W3): Classic, where the folder page keeps its Edit Filters button
+        // (`folder.editFilters`); Stage opens folders as the Rows page with an Edit menu instead.
+        app.launchArguments = ["-home_layout", "classic",
+                               "-debug.collectionsSeedJsonB64", Data(seed.utf8).base64EncodedString()]
         app.launch()
         passProfileGate(app, timeout: 60) // returns early on Welcome, passes the gate if already a guest
         guard ensureOnCustomServer(app, stub: stub) else { return }

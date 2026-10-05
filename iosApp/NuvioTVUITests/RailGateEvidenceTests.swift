@@ -106,6 +106,43 @@ final class RailGateEvidenceTests: XCTestCase {
         note("\(tag)-walk", log.joined(separator: "\n"))
     }
 
+    /// Probe I (P4 §8; review r1, B P2-4): Always Visible on Search. Records the Linear and Grid
+    /// keyboards' frames (the whole keyboard and its "a" key), Search's left content edge and the
+    /// pill, with a screenshot of each keyboard. Decides whether the system keyboard clears the pill.
+    func testProbeISearchAlwaysVisible() {
+        let app = launch(["-sidebar_style", "rail", "-rail_visibility", "always", "-home_layout", "stage"])
+        pause(16)
+        var log: [String] = []
+        func frame(_ element: XCUIElement) -> String {
+            element.exists ? "\(element.frame)" : "<none>"
+        }
+        func record(_ name: String) {
+            let pill = app.descendants(matching: .any)["navigation_rail"].firstMatch
+            log.append("\(name): keyboard=\(frame(app.keyboards.firstMatch)) keyA=\(frame(app.keys["a"].firstMatch)) "
+                       + "recent=\(frame(app.staticTexts["Recent Searches"].firstMatch)) "
+                       + "field=\(frame(app.searchFields.firstMatch)) pill=\(frame(pill)) "
+                       + "focus=\(focusedLabel(app)) | \(railState(app))")
+        }
+        remote.press(.down)          // into the strip
+        pause(2.5)
+        remote.press(.left)          // card 0: Left opens the rail
+        pause(2)
+        remote.press(.down)          // Home → Search
+        pause(0.8)
+        remote.press(.select)
+        pause(4.5)                   // the system keyboard arrives 1–2 s after the tab opens
+        record("linear")
+        shot("probeI-0-linear")
+        remote.press(.playPause)     // "Press ⏯ to change keyboards"
+        pause(2.5)
+        record("grid")
+        shot("probeI-1-grid")
+        remote.press(.playPause)     // back to Linear, the fixture's default
+        pause(1.5)
+        record("linear-again")
+        note("probeI", log.joined(separator: "\n"))
+    }
+
     /// Hide While Browsing: the rail shows at the top and hides once the strip leaves row 0.
     func testRailHideWhileBrowsing() {
         let app = launch(["-sidebar_style", "rail", "-home_layout", "stage", "-rail_visibility", "browsing"])

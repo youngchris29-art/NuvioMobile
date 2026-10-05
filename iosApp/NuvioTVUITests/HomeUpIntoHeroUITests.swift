@@ -21,6 +21,9 @@ final class HomeUpIntoHeroUITests: XCTestCase {
     @discardableResult
     private func launchToHome(extraArguments: [String]) -> XCUIApplication {
         let app = XCUIApplication()
+        // Home Stage & Strip (W3, 2026-10-05): Stage is the app's default Home now, and this file
+        // measures Classic Home (the pinned hero's Up-into-hero gate), so every launch pins Classic.
+        app.launchArguments += ["-home_layout", "classic"]
         app.launchArguments += extraArguments
         app.launch()
         let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch

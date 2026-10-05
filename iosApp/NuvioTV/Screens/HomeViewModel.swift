@@ -824,6 +824,7 @@ final class HomeViewModel: ObservableObject {
         CollectionRepository.shared.initialize()
         #if DEBUG
         applyCollectionsSeedIfRequested()
+        ContinueWatchingDebugSeed.applyIfRequested()
         #endif
     }
 

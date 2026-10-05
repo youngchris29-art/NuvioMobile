@@ -43,6 +43,8 @@ final class DetailRowAnchorTests: XCTestCase {
         // No trailer anywhere: the detail page otherwise auto-enters the full-screen cover
         // (FEAT-32) a few seconds in, and the Down walk would be pressing inside it.
         // `forceNoTrailer` is honoured only alongside `debug.trailerProbe`.
+        // Home Stage & Strip (W3): the Down walk to a movies row is Classic Home's; pin Classic.
+        app.launchArguments += ["-home_layout", "classic"]
         app.launchArguments += ["-home_upcoming_row_enabled", "NO",
                                 "-debug.trailerProbe", "YES", "-debug.trailerForceNoTrailer", "YES",
                                 "-debug.detailScrollProbe", "YES"]

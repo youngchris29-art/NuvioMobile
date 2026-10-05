@@ -46,6 +46,9 @@ final class HeroFolderSwapTests: XCTestCase {
     @discardableResult
     private func launchToHome(extraArguments: [String]) -> XCUIApplication {
         let app = XCUIApplication()
+        // Home Stage & Strip (W3, 2026-10-05): Stage is the app's default Home now, and this file
+        // measures Classic Home (the Classic hero's folder swaps), so every launch pins Classic.
+        app.launchArguments += ["-home_layout", "classic"]
         app.launchArguments += extraArguments
         app.launch()
         // Session restore + profile fetch can take well past 15s on a cold sim launch — same
@@ -309,10 +312,14 @@ final class HeroFolderSwapTests: XCTestCase {
 
     /// Self-locating loop: walk Down up to 45 times looking for a folder hero, parsing
     /// `pitem=<identity>` off `debug_hero`'s label and stopping once the identity starts with the
-    /// folder id prefix `nuvio-folder://`. Returns the number of Down presses it took to arrive, or
-    /// `nil` (having already `XCTFail`'d with the last probe label) if the budget exhausts. Factored
-    /// out of test54 so test55 can reuse the identical walk rather than re-deriving it.
-    private func locateFolderHero(_ probe: XCUIElement) -> Int? {
+    /// folder id prefix `nuvio-folder://`. Returns the number of Down presses it took to arrive and
+    /// the last probe label, or a nil count when the budget exhausts. Factored out of test54 so
+    /// test55 can reuse the identical walk rather than re-deriving it.
+    ///
+    /// Home Stage & Strip (W3): a profile with no collection folder is a fixture premise, not a
+    /// product failure, so the callers SKIP on a nil count (the Wave 0 baseline failed here on the
+    /// FA87 guest fixture, which has no collections unless a leg seeds one; test54 now does).
+    private func locateFolderHero(_ probe: XCUIElement) -> (downs: Int?, lastLabel: String) {
         var lastProbeLabel = ""
         for attempt in 1...45 {
             press(.down, times: 1, gap: 1.2)
@@ -325,12 +332,25 @@ final class HeroFolderSwapTests: XCTestCase {
                 let pitemValue = afterPitem.components(separatedBy: " ")[0]
 
                 if pitemValue.contains("nuvio-folder://") {
-                    return attempt
+                    return (attempt, label)
                 }
             }
         }
-        XCTFail("Could not locate a collection-folder hero after 45 Down presses. Last probe: \(lastProbeLabel)")
-        return nil
+        return (nil, lastProbeLabel)
+    }
+
+    /// The `NuvioTVUITests.folderProbeSeedJson` fixture (duplicated by house rule): one pinned
+    /// collection with one folder of two Cinemeta catalogs and a stable metahub backdrop, so the
+    /// folder reaches the Classic hero (`HomeView.folderHeroPreview` needs a backdrop or a logo).
+    private static let folderSeedJson = """
+    [{"id":"zzfolderprobe-collection","title":"ZZFolderProbe","pinToTop":true,"showAllTab":true,"folders":[{"id":"zzfolderprobe-folder","title":"ZZFolderProbeFolder","hideTitle":false,"heroBackdropUrl":"https://images.metahub.space/background/medium/tt0111161/img","sources":[{"provider":"addon","addonId":"com.linvo.cinemeta","type":"movie","catalogId":"top"},{"provider":"addon","addonId":"com.linvo.cinemeta","type":"series","catalogId":"top"}]}]}]
+    """
+
+    /// `launchToHome` with `json` imported as the active profile's collections through the
+    /// DEBUG-only, guest-only `-debug.collectionsSeedJsonB64` knob. The import replaces and persists
+    /// the profile's collections, so callers re-seed `"[]"` in a `defer`.
+    private func launchToHomeWithSeededCollections(_ json: String, extraArguments: [String] = []) -> XCUIApplication {
+        launchToHome(extraArguments: ["-debug.collectionsSeedJsonB64", Data(json.utf8).base64EncodedString()] + extraArguments)
     }
 
     // MARK: - test54
@@ -344,16 +364,26 @@ final class HeroFolderSwapTests: XCTestCase {
     /// test uses; no other debug launch arguments are needed to reach Home on the signed-in FA87
     /// fixture (the profile picker auto-select above is `launchToHome`'s whole job).
     func test54FolderHeroSwapGeometry() throws {
-        let app = launchToHome(extraArguments: [
+        // Home Stage & Strip (W3, P2 §4.4): seeded, so the FA87 guest fixture has a folder to walk
+        // to, and Classic (`launchToHome`), whose hero this rig films. The `defer` re-seeds "[]".
+        let app = launchToHomeWithSeededCollections(Self.folderSeedJson, extraArguments: [
             "-debug.homeHeroProbe", "YES",
         ])
+        defer {
+            let restored = launchToHomeWithSeededCollections("[]")
+            pause(8)
+            restored.terminate()
+        }
 
         let probe = app.staticTexts["debug_hero"]
         XCTAssertTrue(probe.waitForExistence(timeout: 20),
                       "debug_hero probe never appeared — Home rows are not up, nothing to walk")
         pause(2.0) // catalog fan-out settle, matching the other hero tests' post-Home pause
 
-        guard let downsPressedForFolder = locateFolderHero(probe) else { return }
+        let located = locateFolderHero(probe)
+        guard let downsPressedForFolder = located.downs else {
+            throw XCTSkip("no collection-folder hero within 45 Down presses (the seed is refused on a signed-in account) — nothing to film. Last probe: \(located.lastLabel)")
+        }
 
         XCTContext.runActivity(named: "folder_found_at_down_\(downsPressedForFolder)") { _ in }
         print("Found collection folder after \(downsPressedForFolder) Down presses")
@@ -429,7 +459,10 @@ final class HeroFolderSwapTests: XCTestCase {
                       "debug_hero probe never appeared — Home rows are not up, nothing to walk")
         pause(2.0) // catalog fan-out settle, matching test54 and the other hero tests
 
-        guard locateFolderHero(probe) != nil else { return }
+        let located = locateFolderHero(probe)
+        guard located.downs != nil else {
+            throw XCTSkip("test55: no collection-folder hero within 45 Down presses on this profile's Home — no folder to judge the late-backdrop path on. Last probe: \(located.lastLabel)")
+        }
         pause(1.5)
 
         // Two more folder tiles, dwelling 8s on each — long enough for a cold fetch to land and

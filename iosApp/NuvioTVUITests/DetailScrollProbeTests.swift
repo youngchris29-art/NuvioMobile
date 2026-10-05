@@ -55,6 +55,9 @@ final class DetailScrollProbeTests: XCTestCase {
     @discardableResult
     private func launchToHome(extraArguments: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
+        // Home Stage & Strip (W3, 2026-10-05): Stage is the app's default Home now, and this file
+        // measures Classic Home (the hero-CTA route into Detail), so every launch pins Classic.
+        app.launchArguments += ["-home_layout", "classic"]
         app.launchArguments += extraArguments
         app.launch()
         // Session restore + profile fetch can take well past 15 s on a cold sim launch (same wait
@@ -336,8 +339,11 @@ final class DetailScrollProbeTests: XCTestCase {
         let tabNames = ["Home", "Search", "Library", "Add-ons", "Settings", "Profile"]
         for _ in 0..<4 where ProcessInfo.processInfo.operatingSystemVersion.majorVersion < 27 && !keyboardHasFocus(app) {
             // Down from the tab bar, Up/Left from content below the keyboard (review r1 P3-9).
-            let onTabBar = tabNames.contains { app.buttons[$0].exists && app.buttons[$0].hasFocus }
-            XCUIRemote.shared.press(onTabBar ? .down : (searchKeyboardIsGrid(app) ? .left : .up))
+            // H9: in Rail mode, Right from a rail item (whose labels match the tab names, so check
+            // the rail's own probe first) hands focus back to Search's content.
+            let inRail = railFocusedItem(app) >= 0
+            let onTabBar = !inRail && tabNames.contains { app.buttons[$0].exists && app.buttons[$0].hasFocus }
+            XCUIRemote.shared.press(inRail ? .right : (onTabBar ? .down : (searchKeyboardIsGrid(app) ? .left : .up)))
             pause(0.7)
         }
         app.typeText(text)
@@ -445,11 +451,53 @@ final class DetailScrollProbeTests: XCTestCase {
         }
     }
 
-    /// Minimal tab-bar opener — trimmed copy of `NuvioTVUITests.openTab`'s walk (climb to the tab
+    /// The navigation rail's DEBUG probe (`rail_state … focused= …`), "" outside Rail mode.
+    private func railState(_ app: XCUIApplication) -> String {
+        let probe = app.descendants(matching: .any)["rail_state"].firstMatch
+        return probe.exists ? probe.label : ""
+    }
+
+    /// The rail's focused item (`rail_state focused=`), -1 when none (or not in Rail mode).
+    private func railFocusedItem(_ app: XCUIApplication) -> Int {
+        for token in railState(app).split(separator: " ") where token.hasPrefix("focused=") {
+            return Int(token.dropFirst("focused=".count)) ?? -1
+        }
+        return -1
+    }
+
+    /// Minimal tab opener — trimmed copy of `NuvioTVUITests.openTab`'s walk (climb to the tab
     /// bar, right/left-hunt for the named tab, select), private to that file so duplicated here per
     /// this harness's own precedent (see the type doc). Only ever called with "Search".
+    ///
+    /// H9 (Home Stage & Strip W3): in Rail mode (`rail_state` mounted) there is no tab bar. The rail
+    /// opens on a Left the focus engine cannot place from the leftmost item — never on a blind Menu,
+    /// which inside a Menu-opened rail leaves the app — then the item is reached by the probe's
+    /// `focused=` id and selected; the hand-off ladder takes up to 2.5 s on Search.
     private func openTabByName(_ app: XCUIApplication, _ name: String) {
         let tabNames = ["Home", "Search", "Library", "Add-ons", "Settings", "Profile"]
+        if !railState(app).isEmpty, let index = tabNames.firstIndex(of: name) {
+            // Up to 15 Lefts; if the rail is still closed (a hero carousel takes Left, a long
+            // keyboard outlasts the walk), one Down and 15 more.
+            for attempt in 0..<2 where !railState(app).contains("expanded=1") {
+                if attempt == 1 {
+                    remote.press(.down)
+                    pause(1.0)
+                }
+                for _ in 0..<15 where !railState(app).contains("expanded=1") {
+                    remote.press(.left)
+                    pause(0.4)
+                }
+            }
+            for _ in 0..<10 {
+                let focused = railFocusedItem(app)
+                if focused == index { break }
+                if focused >= 0 { remote.press(focused < index ? .down : .up) }
+                pause(0.5)
+            }
+            remote.press(.select)
+            pause(2.5)
+            return
+        }
         for _ in 0..<40 {
             if tabNames.contains(where: { app.buttons[$0].exists && app.buttons[$0].hasFocus }) { break }
             remote.press(.up)

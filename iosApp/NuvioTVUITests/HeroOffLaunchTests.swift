@@ -225,6 +225,9 @@ final class HeroOffLaunchTests: XCTestCase {
     @discardableResult
     private func launchToHome(extraArguments: [String]) -> XCUIApplication {
         let app = XCUIApplication()
+        // Home Stage & Strip (W3, 2026-10-05): Stage is the app's default Home now, and this file
+        // measures Classic Home (the hero-off rows gate and its probes), so every launch pins Classic.
+        app.launchArguments += ["-home_layout", "classic"]
         app.launchArguments += extraArguments
         app.launch()
         // Session restore + profile fetch can take well past 15s on a cold sim launch (the same
