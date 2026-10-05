@@ -1002,15 +1002,38 @@ final class FolderDetailViewModel: ObservableObject {
     /// NETWORK — LIST/COLLECTION/PERSON/DIRECTOR ignore Discover filters at resolve time).
     @Published private(set) var editableSource: EditableSource?
 
-    private let collectionId: String
-    private let folderId: String
+    /// Home Stage & Strip (P2 §2.2): the Rows page's strip, one row per source tab (no "All"), built
+    /// from EVERY tab's state — `FolderDetailRepository.initialize` already loads each source's first
+    /// page concurrently, so this is Swift only. Assigned only when it changes; a row whose equality
+    /// key is unchanged keeps its previous instance and section (`FolderRowsPlan.reusing`).
+    @Published private(set) var stripRows: [FolderStripRow] = []
+    /// P2 §2.2: no source is still on its first load (`!FolderDetailUiState.isLoading`).
+    @Published private(set) var allSettled = false
+    /// P2 §2.6: one entry per filter-editable source tab (the Rows page's Edit menu); the Grid page
+    /// keeps `editableSource`, the selected tab's.
+    @Published private(set) var editableSources: [EditableSource] = []
+    /// P2 §2.2: the folder's collection, for the Rows page's stage preview (`HomeRowPreviews.folder`).
+    /// Read at init, refreshed when the repository's folder changes.
+    @Published private(set) var collection: NuvioCollection? = nil
+
+    /// Internal (P2 §2.2): the folder page builds its per-folder layout key from them.
+    let collectionId: String
+    let folderId: String
     private var watcher: FlowWatcher?
+    /// The repository folder `collection` was last refreshed for.
+    private var lastFolder: CollectionFolder?
+
+    /// The folder this page shows, from `collection` (the route carries only ids and titles).
+    var folder: CollectionFolder? {
+        collection?.folders.first { $0.id == folderId }
+    }
 
     init(route: FolderRoute) {
         collectionId = route.collectionId
         folderId = route.folderId
         folderTitle = route.folderTitle
         titleLogoUrl = route.titleLogoUrl
+        collection = CollectionRepository.shared.getCollection(id: route.collectionId)
     }
 
     func start() {
@@ -1028,11 +1051,48 @@ final class FolderDetailViewModel: ObservableObject {
             self.canLoadMore = state.selectedTabCanLoadMore
             self.tabIsLoading = state.selectedTab?.isLoading ?? false
             self.editableSource = Self.editableSource(
+                forTabAt: Int(state.selectedTabIndex),
                 in: state,
                 collectionId: self.collectionId,
                 folderId: self.folderId
             )
+            self.applyStripState(state)
         }
+        FolderDetailRepository.shared.initialize(collectionId: collectionId, folderId: folderId)
+    }
+
+    /// P2 §2.2: the Rows page's per-tab state, published only when it changes.
+    private func applyStripState(_ state: FolderDetailUiState) {
+        // The repository is a singleton: an emission still carrying another folder (before this
+        // page's `initialize` replaced it) is never drawn as this folder's rows.
+        if let folder = state.folder, folder.id != folderId { return }
+        let snapshots = state.tabs.enumerated().map { index, tab in
+            FolderTabSnapshot(tab: tab, tabIndex: index)
+        }
+        let rows = FolderRowsPlan.reusing(
+            stripRows,
+            for: FolderRowsPlan.rows(snapshots, collectionId: collectionId, folderId: folderId)
+        )
+        if rows != stripRows { stripRows = rows }
+        let settled = !state.isLoading
+        if settled != allSettled { allSettled = settled }
+        let sources = state.tabs.indices.compactMap { index in
+            Self.editableSource(forTabAt: index, in: state, collectionId: collectionId, folderId: folderId)
+        }
+        if sources.map(\.id) != editableSources.map(\.id) || sources.map(\.title) != editableSources.map(\.title) {
+            editableSources = sources
+        }
+        if let folder = state.folder, folder != lastFolder {
+            lastFolder = folder
+            let fresh = CollectionRepository.shared.getCollection(id: collectionId)
+            if fresh != collection { collection = fresh }
+        }
+    }
+
+    /// P2 §2.3 (the Rows page's Try Again): clear, then load every source again. `reload()` is not
+    /// enough here: `initialize` early-returns on unchanged inputs, so it never refetches a failed tab.
+    func retry() {
+        FolderDetailRepository.shared.clear()
         FolderDetailRepository.shared.initialize(collectionId: collectionId, folderId: folderId)
     }
 
@@ -1050,19 +1110,20 @@ final class FolderDetailViewModel: ObservableObject {
         }
     }
 
-    /// Maps the selected tab back to its `resolvedSources` index. FolderDetailRepository builds
+    /// Maps tab `tabIndex` back to its `resolvedSources` index. FolderDetailRepository builds
     /// one tab per source, with an "All" tab first when `showAllTab` (`tabIndex = showAll ?
     /// sourceIndex + 1 : sourceIndex`, FolderDetailRepository.kt:278). Addon sources whose
     /// catalog can't be materialised are skipped while building tabs, which would shift the
     /// indices — so the offset result is verified against the folder's sources and corrected by
-    /// identity when it doesn't line up.
+    /// identity when it doesn't line up. The Grid page asks for the selected tab; the Rows page's
+    /// Edit menu (P2 §2.6) for every tab.
     private static func editableSource(
+        forTabAt tabIndex: Int,
         in state: FolderDetailUiState,
         collectionId: String,
         folderId: String
     ) -> EditableSource? {
         let tabs = state.tabs
-        let tabIndex = Int(state.selectedTabIndex)
         guard tabs.indices.contains(tabIndex) else { return nil }
         let tab = tabs[tabIndex]
         guard !tab.isAllTab, let source = tab.source, source.isTmdb else { return nil }
@@ -1185,13 +1246,34 @@ nonisolated enum FolderHeaderGeometry {
 /// and every poster flashed its grey shimmer for 0.25–0.5 s on open. Now the title rises and
 /// stays (compact, centred), the chips pin under it, and the grid is held back for at most 0.45 s
 /// while its first posters warm. See `FolderHeaderGeometry`.
+///
+/// Home Stage & Strip (H5, FEAT-43; P2 spec §2): a folder follows the Home layout. Classic Home
+/// keeps this grid exactly (`gridPage`, with its Edit Filters button). Stage Home opens the folder
+/// as a stage-and-strip page (`FolderRowsPage`), and the grid stays available per folder through
+/// the Edit menu (`FolderEditMenuBand`: Layout › Rows / Grid, plus Edit Filters), which replaces
+/// the Edit Filters button in Stage and is mounted OUTSIDE the Rows/Grid switch, so choosing a
+/// layout keeps focus on it. Both layouts share the one view model; the per-folder Grid choice is
+/// device-local (`FolderLayoutStore`). `home_layout` and the choice are read live, so a folder left
+/// open while Home Layout flips in Settings shows the new layout on return.
 struct FolderDetailView: View {
     @StateObject private var model: FolderDetailViewModel
 
     @Environment(\.posterStyle) private var posterStyle
     @Environment(\.dismiss) private var dismiss
     @Environment(\.displayScale) private var displayScale
-    /// Drives the TMDB filter editor cover for the selected tab's tmdb source.
+    /// P2 §2.1: the Home layout, read live (`HomeLayout` is the one copy of the key).
+    @AppStorage(HomeLayout.defaultsKey) private var homeLayoutRaw = HomeLayout.defaultValue.rawValue
+    /// P2 §2.1: the device-local per-folder Grid choices (`FolderLayoutStore`).
+    @AppStorage(FolderLayoutStore.defaultsKey) private var folderLayoutRaw = ""
+    /// P2 §2.6: the Rows page's Edit band gate, written by `FolderRowsPage` only when it changes
+    /// (true while the strip's focused row is its top focusable row, or before any row had focus).
+    @State private var rowsAtTop = true
+    /// A layout switch happened while this page was open (Edit › Layout, or Home Layout flipped in
+    /// Settings): a Rows page mounted by it leaves focus where it is instead of pulling it to the
+    /// first card (P2 §2.6: choosing a layout keeps focus on the Edit menu).
+    @State private var layoutSwitched = false
+    /// Drives the TMDB filter editor cover for the selected tab's tmdb source (Grid) or the source
+    /// picked in the Edit menu (Rows).
     @State private var editing: FolderDetailViewModel.EditableSource?
     /// True once the grid has scrolled past its top (content offset > 8 pt). Derived through a Bool
     /// transform in `onScrollGeometryChange`, so it writes once per crossing, not per scroll frame.
@@ -1224,7 +1306,71 @@ struct FolderDetailView: View {
 
     private var hasChips: Bool { model.tabs.count > 1 }
 
+    private var homeLayout: HomeLayout { HomeLayout.resolve(homeLayoutRaw) }
+
+    /// P2 §2.1: Classic → the grid; Stage → Rows unless this folder has a stored Grid choice.
+    private var pageLayout: FolderPageLayout {
+        FolderPageLayout.resolve(
+            homeLayout: homeLayout,
+            gridOverride: FolderLayoutStore.isGrid(folderLayoutRaw,
+                                                   collectionId: model.collectionId,
+                                                   folderId: model.folderId)
+        )
+    }
+
+    /// The Edit menu's Layout picker: writes (or clears) this folder's Grid choice.
+    private var layoutBinding: Binding<FolderPageLayout> {
+        Binding(
+            get: { pageLayout },
+            set: { newLayout in
+                let updated = FolderLayoutStore.setting(folderLayoutRaw,
+                                                        grid: newLayout == .grid,
+                                                        collectionId: model.collectionId,
+                                                        folderId: model.folderId)
+                if updated != folderLayoutRaw { folderLayoutRaw = updated }
+            }
+        )
+    }
+
     var body: some View {
+        let layout = pageLayout
+        ZStack(alignment: .top) {
+            switch layout {
+            case .rows:
+                FolderRowsPage(model: model, rowsAtTop: $rowsAtTop, requestsInitialFocus: !layoutSwitched)
+            case .grid:
+                gridPage
+            }
+            if homeLayout == .stage {
+                // §2.6: visible and enabled at the top of the page (the strip's top focusable row,
+                // or the grid not scrolled), the existing Edit Filters rule.
+                FolderEditMenuBand(model: model,
+                                   layout: layoutBinding,
+                                   isActive: layout == .rows ? rowsAtTop : !gridScrolled,
+                                   editing: $editing)
+            }
+        }
+        .onAppear { model.start() }
+        .onDisappear { model.stop() }
+        // A layout switch mounts a fresh page: its scroll starts at the top and no strip row has
+        // focus yet.
+        .onChange(of: layout) { _, _ in
+            if gridScrolled { gridScrolled = false }
+            if !rowsAtTop { rowsAtTop = true }
+            if !layoutSwitched { layoutSwitched = true }
+        }
+        // House pattern for full-screen flows (`ProfileEditTarget`, DetailView's players). On
+        // dismiss — Save, Cancel, or Menu — re-run initialize: the repository's retained-inputs
+        // guard refetches only when the folder actually changed. Serves both layouts.
+        .fullScreenCover(item: $editing, onDismiss: { model.reload() }) { source in
+            TmdbFilterEditorView(target: source)
+        }
+    }
+
+    /// Today's folder page, moved verbatim from `body`: Classic always, Stage when this folder's
+    /// layout is Grid. Its tab-change reset and its reveal task live here, so the Rows page never
+    /// prefetches a grid. Classic keeps the Edit Filters button; Stage has the Edit band instead.
+    private var gridPage: some View {
         ZStack(alignment: .top) {
             Theme.Palette.background.ignoresSafeArea()
 
@@ -1275,7 +1421,9 @@ struct FolderDetailView: View {
                 #endif
             }
 
-            editFiltersOverlay
+            if homeLayout == .classic {
+                editFiltersOverlay
+            }
 
             // C: the bottom edge fades into the background instead of cutting cards off at the
             // bezel. Outside the scroll view, never hit-tested.
@@ -1297,8 +1445,6 @@ struct FolderDetailView: View {
                 .accessibilityIdentifier("folder_header_state")
             #endif
         }
-        .onAppear { model.start() }
-        .onDisappear { model.stop() }
         // C: a new tab hides the grid at once (no fade-out), then the task below reveals it when
         // the new tab's first posters are warm.
         .onChange(of: model.selectedTabIndex) { _, _ in
@@ -1308,12 +1454,6 @@ struct FolderDetailView: View {
         }
         .task(id: GridRevealKey(tab: model.selectedTabIndex, hasItems: !model.items.isEmpty)) {
             await revealGridWhenWarm()
-        }
-        // House pattern for full-screen flows (`ProfileEditTarget`, DetailView's players). On
-        // dismiss — Save, Cancel, or Menu — re-run initialize: the repository's retained-inputs
-        // guard refetches only when the folder actually changed.
-        .fullScreenCover(item: $editing, onDismiss: { model.reload() }) { source in
-            TmdbFilterEditorView(target: source)
         }
     }
 
@@ -1579,6 +1719,79 @@ struct FolderDetailView: View {
             .padding(.trailing, Theme.Spacing.screen)
             .opacity(gridScrolled ? 0 : 1)
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: gridScrolled)
+        }
+    }
+}
+
+/// Home Stage & Strip (P2 §2.6): the folder page's Edit menu in Stage, in place of the Edit Filters
+/// button: Layout › Rows / Grid (this folder's device-local choice), then Edit Filters — one entry
+/// per filter-editable source on the Rows page, the selected tab's on the Grid page (today's label).
+/// Always present in Stage, so it is also the page's focus anchor while nothing else is focusable
+/// (BUG-47).
+///
+/// Mounted once by `FolderDetailView`, outside the Rows/Grid switch, so picking a layout keeps focus
+/// on it. A full-width focus section (the Library L1 pattern): Up from ANY card of the strip's top
+/// row (or from the grid's chips) reaches it, and Down returns to the row the strip shows (its own
+/// focus section). Visible and enabled only at the top of the page (`isActive`), faded like the
+/// Edit Filters button it replaces.
+struct FolderEditMenuBand: View {
+    @ObservedObject var model: FolderDetailViewModel
+    @Binding var layout: FolderPageLayout
+    /// Rows: the strip's focused row is its top focusable row (or none has had focus yet). Grid: the
+    /// grid has not scrolled.
+    let isActive: Bool
+    @Binding var editing: FolderDetailViewModel.EditableSource?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Spacer(minLength: 0)
+            Menu {
+                Picker(String(localized: "Layout"), selection: $layout) {
+                    Text("Rows").tag(FolderPageLayout.rows)
+                    Text("Grid").tag(FolderPageLayout.grid)
+                }
+                ForEach(filterEntries) { source in
+                    Button {
+                        editing = source
+                    } label: {
+                        Label(entryTitle(for: source), systemImage: "line.3.horizontal.decrease.circle")
+                    }
+                }
+            } label: {
+                Label("Edit", systemImage: "slider.horizontal.3")
+                    .font(Theme.Font.meta)
+            }
+            // HIG contract: system styles only. If `.button` does not draw a bordered pill on tvOS,
+            // drop both modifiers and keep the system Menu look.
+            .menuStyle(.button)
+            .buttonStyle(.bordered)
+            .disabled(!isActive)
+            .accessibilityIdentifier("folder.editMenu")
+        }
+        .padding(.top, FolderHeaderGeometry.restTop)
+        .padding(.trailing, Theme.Spacing.screen)
+        .focusSection()
+        .opacity(isActive ? 1 : 0)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: isActive)
+    }
+
+    private var filterEntries: [FolderDetailViewModel.EditableSource] {
+        switch layout {
+        case .rows:
+            return model.editableSources
+        case .grid:
+            return model.editableSource.map { [$0] } ?? []
+        }
+    }
+
+    /// Rows names the source ("Edit Filters: Action"); Grid keeps today's label (the selected tab's).
+    private func entryTitle(for source: FolderDetailViewModel.EditableSource) -> String {
+        switch layout {
+        case .rows:
+            return String(localized: "Edit Filters: \(source.title)")
+        case .grid:
+            return String(localized: "Edit Filters")
         }
     }
 }

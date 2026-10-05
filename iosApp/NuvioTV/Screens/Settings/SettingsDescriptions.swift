@@ -258,9 +258,9 @@ enum SettingsDescriptions {
         case .appearanceBadgeImport: return LocalizedStringResource("Adds a badge pack from a JSON web address. Packs you import in the Nuvio phone app sync here on their own.")
 
         // Home Screen
-        // Home Stage & Strip (H8, W1-C): plain drafts; W2-C polishes the copy and translates it.
-        case .homeLayout: return LocalizedStringResource("Stage shows the focused title at the top of the screen with one row of posters below it, and Up and Down move one whole row at a time. Classic is the previous Home, with the banner and scrolling rows. Default: Stage.")
-        case .homeAmbientBackground: return LocalizedStringResource("Fills the background with a soft, blurred wash of the focused title's colors. With OLED True Black on, the wash is dimmed. On by default.")
+        // Home Stage & Strip (H8): copy passed SlopMonster 5/5 (W2-C); translated at the end of the batch.
+        case .homeLayout: return LocalizedStringResource("Stage puts the focused title at the top of the screen with one row of posters below it. Up and Down move a whole row at a time. Classic keeps the previous Home, with a banner above rows that scroll. Default: Stage.")
+        case .homeAmbientBackground: return LocalizedStringResource("Fills the Stage background with a soft, blurred wash of the focused title's colors. With OLED True Black on, the wash is dimmed. On by default.")
         case .homeUpcoming: return LocalizedStringResource("Adds a row under Continue Watching with the next episodes of your shows that air in the next 14 days. On by default.")
         case .homeRefreshAddons: return LocalizedStringResource("Checks your installed add-ons again for catalogs. Use it if Home rows are missing even though add-ons are installed.")
         case .homeShowHero: return LocalizedStringResource("On shows a rotating banner at the top of Home, built from up to two of your catalogs. Off shows the focused title's artwork and description instead. On by default.")
@@ -269,10 +269,10 @@ enum SettingsDescriptions {
         case .homeHeroSource: return LocalizedStringResource("Turns this catalog on or off as a source for the rotating banner. At most two can be on at once.")
         case .homeTrailersOnFocus: return LocalizedStringResource("Plays a muted trailer preview after you rest on a poster for a moment. Off by default.")
         case .homeTrailerLocation: return LocalizedStringResource("Chooses whether the preview plays inside the poster or in the top banner. The banner only works with the Nuvio-style hero. Default: Poster.")
-        case .homeTrailerLocationStage: return LocalizedStringResource("Background plays the trailer behind the title at the top of the screen once you stop moving. In Row turns the focused poster into a playing trailer card. Default: In Row.")
+        case .homeTrailerLocationStage: return LocalizedStringResource("Background plays the trailer behind the title at the top of the screen after you rest on a poster. In Row turns that poster into a playing trailer card. Default: In Row.")
         case .homeHeroTrailerAutoplay: return LocalizedStringResource("Lets the top banner play its trailer by itself without waiting for focus. Off by default.")
         case .homeTrailerStartDelay: return LocalizedStringResource("Sets how long trailers on posters and in the hero wait before they start. Automatic waits until the rows stop moving, then one second. Default: Automatic.")
-        case .homeTrailerStartDelayStage: return LocalizedStringResource("Sets how long trailer previews wait before they start. Automatic waits until the row has stopped moving, then one second. Default: Automatic.")
+        case .homeTrailerStartDelayStage: return LocalizedStringResource("Sets how long a trailer preview waits before it starts. Automatic waits until the row stops moving, then one second. Default: Automatic.")
         case .homeCatalogType: return LocalizedStringResource("Adds the type to row names, so a row reads Popular - Movies instead of just Popular. On by default.")
         case .homeCatalogs: return LocalizedStringResource("Opens the list of catalogs that make up your Home rows. Switch each on or off and move them up or down to set the order.")
         case .homeCatalog: return LocalizedStringResource("Turns this row on or off on Home. Use the arrows to move it up or down.")
@@ -413,7 +413,7 @@ extension SettingsCategory {
         case .accountProfiles: return LocalizedStringResource("Nuvio account and server, plus Remote Setup")
         case .services: return LocalizedStringResource("Trakt, Simkl and MDBList, plus debrid")
         case .appearance: return LocalizedStringResource("Theme and poster style, plus card depth and badges")
-        case .homeScreen: return LocalizedStringResource("The hero and rows, plus trailer previews")
+        case .homeScreen: return LocalizedStringResource("Layout and rows, plus trailer previews")
         case .detailPage: return LocalizedStringResource("Layout and trailers, plus which sections show")
         case .player: return LocalizedStringResource("Default player, skipping, video and buffering")
         case .sources: return LocalizedStringResource("Auto-play, filters, metadata and plugins")
@@ -434,7 +434,7 @@ extension SettingsCategory {
         case .appearance:
             return LocalizedStringResource("Pick the accent color, the font and the navigation style. Shape how posters and cards look across the app. Stream badge packs are managed here too.")
         case .homeScreen:
-            return LocalizedStringResource("Choose what the top of Home shows and which catalogs appear as rows, in what order. Trailer previews on focus are set here too.")
+            return LocalizedStringResource("Choose the Home layout, which catalogs appear as rows and in what order, and where trailer previews play.")
         case .detailPage:
             return LocalizedStringResource("Choose the title page layout, how trailers behave, and which sections appear under the main details. Episode spoiler protection is here too.")
         case .player:

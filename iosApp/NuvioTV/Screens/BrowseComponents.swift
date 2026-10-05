@@ -69,6 +69,20 @@ private struct TrailerPlaysInHeroKey: EnvironmentKey {
     static let defaultValue = false
 }
 
+/// Home Stage & Strip (P1 §5, W2-A): the Stage strip asks its catalog rows to follow the heading
+/// with the add-on's name in secondary text ("Popular · Cinemeta"), one line. False everywhere else,
+/// so Classic Home, Search, Library and every other `CatalogRowView` host keep the plain heading.
+private struct RowHeadingShowsAddonKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var rowHeadingShowsAddon: Bool {
+        get { self[RowHeadingShowsAddonKey.self] }
+        set { self[RowHeadingShowsAddonKey.self] = newValue }
+    }
+}
+
 extension EnvironmentValues {
     var rowCardTopReach: CGFloat {
         get { self[RowCardTopReachKey.self] }
@@ -5059,6 +5073,8 @@ struct CatalogRowView: View {
     /// Home's "Trailer Location: Hero" mode — see `trailerPlaysInHero`. False (no-op) everywhere
     /// except Home in that mode, so Search and every other host keeps the inline morph.
     @Environment(\.trailerPlaysInHero) private var trailerPlaysInHero
+    /// Home Stage & Strip (P1 §5): the strip's "heading · add-on" form. False everywhere else.
+    @Environment(\.rowHeadingShowsAddon) private var rowHeadingShowsAddon
 
     /// H3 hardening (BUG-47): the previous version fired-and-forgot a detached `Task` per
     /// expansion. A rapid re-focus while one was still mid-flight (the 450ms deferred correction
@@ -5125,9 +5141,20 @@ struct CatalogRowView: View {
             // vertical focus travel could land on it and reveals would align its tiny frame —
             // degenerate rest positions (sliver rows, floating pill, art cut at the fold).
             if cardTopReach == 0 {
-                Text(section.title)
-                    .font(Theme.Font.sectionTitle)
-                    .foregroundStyle(Theme.Palette.textPrimary)
+                // Home Stage & Strip (P1 §5): in the Stage strip the heading names its add-on
+                // ("Popular · Cinemeta"), unless the name is blank or the title already carries it.
+                // One line, so the strip's row height (one heading line) holds. Everywhere else
+                // the flag is false and this is the plain heading, unchanged.
+                if rowHeadingShowsAddon,
+                   let addon = StageCopy.headingAddon(title: section.title, addonName: section.addonName) {
+                    Text(Self.headingWithAddon(title: section.title, addon: addon))
+                        .font(Theme.Font.sectionTitle)
+                        .lineLimit(1)
+                } else {
+                    Text(section.title)
+                        .font(Theme.Font.sectionTitle)
+                        .foregroundStyle(Theme.Palette.textPrimary)
+                }
             }
 
             ScrollViewReader { proxy in
@@ -5561,6 +5588,20 @@ struct CatalogRowView: View {
     nonisolated static func rowPlayingKey(_ key: String?, itemKeys: some Sequence<String>) -> String? {
         guard let key else { return nil }
         return itemKeys.contains(key) ? key : nil
+    }
+
+    /// Home Stage & Strip (P1 §5): the strip's heading as ONE `Text`, the title in primary text and
+    /// " · <add-on>" in secondary, so a single `lineLimit(1)` truncates the add-on first. An
+    /// `AttributedString` rather than `Text + Text` (deprecated on tvOS 26) or `Text` interpolation
+    /// (that would turn the heading into a localization key): both halves are data.
+    private static func headingWithAddon(title: String, addon: String) -> AttributedString {
+        var heading = AttributedString(title)
+        heading[AttributeScopes.SwiftUIAttributes.ForegroundColorAttribute.self] = Theme.Palette.textPrimary
+        let suffixText: String = " \u{00B7} " + addon
+        var suffix = AttributedString(suffixText)
+        suffix[AttributeScopes.SwiftUIAttributes.ForegroundColorAttribute.self] = Theme.Palette.textSecondary
+        heading.append(suffix)
+        return heading
     }
 }
 

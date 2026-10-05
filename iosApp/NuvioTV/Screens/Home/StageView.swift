@@ -6,8 +6,10 @@ import UIKit
 //
 // Who observes what (#5, the `HeroTextLayer` pattern): `StageView` holds the controller as a plain
 // `let` and observes nothing; `StageTextBlock` and `StageArtLayer` each observe the swap driver;
-// the wash (W1-B) observes `swap.washFeed`; each DEBUG label observes its own readout. A swap phase
-// therefore re-renders these leaves and never the strip.
+// the text block also observes the Continue Watching copy source (W2-A); the background trailer
+// (W2-A) is its own leaf observing only the trailer model; the wash (W1-B) observes
+// `swap.washFeed`; each DEBUG label observes its own readout. A swap phase, a Continue Watching
+// change or a trailer start therefore re-renders these leaves and never the strip.
 
 /// S3: the stage for one page — Home (`StageStripHome`) or the folder Rows page (W2-B). The art is
 /// full screen behind everything (alpha-masked into the wash, S5); the text column sits in the stage
@@ -34,11 +36,13 @@ struct StageView: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            StageArtLayer(swap: controller.swap, geometry: geometry)
+            // The background trailer model is handed down on every host; only Home ever arms it
+            // (`StageStripHome`), so on the folder page it stays idle and draws nothing.
+            StageArtLayer(swap: controller.swap, geometry: geometry, trailer: controller.bgTrailer)
             StageTextBlock(swap: controller.swap,
                            geometry: geometry,
                            hidesLogoWhenDisplaying: hidesLogoWhenDisplaying,
-                           progressLookup: controller.progressLookup)
+                           copySource: controller.copySource)
             #if DEBUG
             StageDebugLabel(debug: controller.swap.debug, geometry: geometry, probeID: probeID)
             #endif
@@ -53,18 +57,29 @@ struct StageView: View {
 /// The stage art: the shown title's backdrop (`HeroCrossfadeImage`, 0.3 s ease-in-out in place,
 /// Reduce Motion honoured), framed full screen at aspect-fill, faded by an ALPHA mask into layer 0
 /// (the ambient wash, or the theme background with the wash off) on the left and below the stage.
-/// The background trailer (W2-A) mounts here, under the mask and the text.
+/// The background trailer (W2-A, §7) mounts here, over the art and under the scrim, the mask and
+/// the text.
 struct StageArtLayer: View {
     @ObservedObject var swap: StageSwapDriver
     let geometry: StripGeometry
+    /// W2-A (§7): the background trailer model (`StageController.bgTrailer`). Observed by its own
+    /// leaf (`StageBackgroundTrailer`), never by this view, so a dwell or a play/stop re-renders
+    /// that leaf only. nil draws no trailer surface at all.
+    var trailer: InlineTrailerCardModel? = nil
 
     var body: some View {
         let art = swap.output.art
         ZStack {
             HeroCrossfadeImage(image: art?.backdrop, identity: art?.identity ?? "-")
-            // Inside the mask, so it darkens the ART only, never the wash.
+            // §7: over the art, under the scrim (the text stays legible over moving video) and
+            // inside the mask (the video fades into the wash exactly as the art does). It can only
+            // ever play the shown title: any focus move tears it down before the stage swaps.
+            if let trailer {
+                StageBackgroundTrailer(model: trailer,
+                                       zoomKey: art.map { TrailerResolutionCache.key(type: $0.item.type, id: $0.item.id) })
+            }
+            // Inside the mask, so it darkens the ART (and the trailer) only, never the wash.
             StageScrim()
-            // W2-A: the background trailer (`TrailerHeroPlayer`, surface "stage-bg") goes here.
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
@@ -101,6 +116,44 @@ struct StageArtMask: View {
     }
 }
 
+/// W2-A (§7): the stage's background trailer surface — the shown title's trailer, muted through
+/// `HeroTrailerAudioState` (Play/Pause on the focused catalog card toggles it, because the model
+/// claims the player slot with that card's own key), played once (`loops: false`) and handed back to
+/// the still art when it ends. A LEAF observing only the trailer model, so a dwell, a start or a
+/// stop re-renders this view and never the art, the text or the strip (#5). Arming and teardown live
+/// in `StageController.syncBackgroundTrailer`, driven by `StageStripHome`'s `onReceive`s.
+///
+/// The image under it is unconditional and never re-identified: the player is the only thing that
+/// comes and goes (Classic's `HomeHeroBackdrop.heroSurface` rule), fading in over the still and cut
+/// on removal.
+struct StageBackgroundTrailer: View {
+    @ObservedObject var model: InlineTrailerCardModel
+    /// `TrailerResolutionCache.key` of the title on stage: the key the letterbox zoom is remembered
+    /// under (BUG-59).
+    let zoomKey: String?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        ZStack {
+            if let url = model.playingURL {
+                TrailerHeroPlayer(
+                    urlString: url,
+                    onFailure: { report in model.playbackFailed(report) },
+                    zoomKey: zoomKey,
+                    loops: false,
+                    onPlaybackEnded: { model.playbackFinished() },
+                    surfaceTag: "stage-bg"
+                )
+                .transition(.asymmetric(insertion: .opacity, removal: .identity))
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: model.playingURL)
+        .accessibilityHidden(true)
+        .allowsHitTesting(false)
+    }
+}
+
 /// Legibility for the stage's top band and text column, drawn INSIDE the art's mask: it darkens the
 /// art under the tab bar and toward the text, and leaves the wash untouched (S5: nothing opaque over
 /// the wash). Tuned on device in W2-A.
@@ -128,15 +181,43 @@ struct StageScrim: View {
 /// keyed on the shown identity with `.transition(.identity)` (the swap is a hard cut while the text
 /// is invisible) and only its opacity animates, outside the `.id`, with the driver's curve. The
 /// outer frame is fixed (`stage_text_slot`): it changes with a settings change, never with a swap.
+///
+/// W2-A (§5): the copy is Continue-Watching-aware through `copySource` (`StageController.copySource`),
+/// which this leaf observes, so a Continue Watching change (a resume position moving on, the next
+/// episode taking over) rewrites the shown title's meta line and synopsis in place, with no fade and
+/// no re-render of anything else.
 struct StageTextBlock: View {
     @ObservedObject var swap: StageSwapDriver
     let geometry: StripGeometry
     let hidesLogoWhenDisplaying: String?
-    /// W2-A's Continue Watching copy (`StageController.progressLookup`); nil = Classic copy.
-    let progressLookup: ((MetaPreview) -> WatchProgressEntry?)?
+    /// W2-A's Continue Watching copy input (`StageController.copySource`); a nil lookup = Classic copy.
+    @ObservedObject var copySource: StageCopySource
+
+    init(swap: StageSwapDriver,
+         geometry: StripGeometry,
+         hidesLogoWhenDisplaying: String?,
+         copySource: StageCopySource) {
+        _swap = ObservedObject(wrappedValue: swap)
+        self.geometry = geometry
+        self.hidesLogoWhenDisplaying = hidesLogoWhenDisplaying
+        _copySource = ObservedObject(wrappedValue: copySource)
+    }
+
+    /// Wave 1's signature, kept for a caller holding a fixed lookup (the copy then never changes
+    /// after the block is built).
+    init(swap: StageSwapDriver,
+         geometry: StripGeometry,
+         hidesLogoWhenDisplaying: String?,
+         progressLookup: ((MetaPreview) -> WatchProgressEntry?)?) {
+        self.init(swap: swap,
+                  geometry: geometry,
+                  hidesLogoWhenDisplaying: hidesLogoWhenDisplaying,
+                  copySource: StageCopySource(progressLookup: progressLookup))
+    }
 
     var body: some View {
         let output = swap.output
+        let progressLookup = copySource.progressLookup
         ZStack(alignment: .topLeading) {
             if let shown = output.shown {
                 let copy = StageCopy.make(item: shown.item, progress: progressLookup?(shown.item))
@@ -229,6 +310,22 @@ struct StageDebugLabel: View {
     /// Whole numbers print bare ("447"), half points with one decimal ("520.5").
     static func number(_ value: CGFloat) -> String {
         value == value.rounded() ? "\(Int(value))" : String(format: "%.1f", Double(value))
+    }
+}
+
+/// W2-A (§7): `debug_stageTrailer armed=<type:id|-> arms=<n> resets=<n> last=<arm|reset>/<via>`, the
+/// background trailer's arming record (Home only: `StageStripHome` mounts it). `via` is the gate
+/// that moved it (`rest`, `activity`, `focus`, `cover`, `scene`, `mode`, `autoplay`, `chrome`,
+/// `focusLost`, `disappear`). Separate from `debug_stage`, whose S7 tokens stay as they are. A LEAF.
+struct StageTrailerDebugLabel: View {
+    @ObservedObject var debug: StageDebugState
+
+    var body: some View {
+        Text(verbatim: "debug_stageTrailer armed=\(debug.trailerArmed) arms=\(debug.trailerArms) resets=\(debug.trailerResets) last=\(debug.trailerLast)")
+            .font(.system(size: 8))
+            .opacity(0.011)
+            .accessibilityIdentifier("debug_stageTrailer")
+            .allowsHitTesting(false)
     }
 }
 

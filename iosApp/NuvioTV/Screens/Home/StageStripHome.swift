@@ -1,5 +1,6 @@
 import SharedCore
 import SwiftUI
+import UIKit
 
 // Home Stage & Strip (P1 §1): the Stage layout of Home, mounted by `HomeView` (E5) in place of
 // Classic's rows region when Home Layout is Stage.
@@ -16,7 +17,15 @@ import SwiftUI
 // `release()` and `startUpcoming()`. This view must NOT acquire the model.
 //
 // None of Classic's pinned machinery is mounted here (P1 §1.2): rows get no pinned environment, so
-// their reaches stay 0 and their headings are the plain `Text` above the shelf.
+// their reaches stay 0 and their headings are the plain `Text` above the shelf (with the add-on's
+// name after a catalog heading, W2-A §5).
+//
+// W2-A (§7): this view is the ONLY place the stage's background trailer is armed. Every gate it
+// depends on arrives through `onReceive` / `onChange` (the swap output's rest, the focus commit, the
+// covers, the scene, the setting, the system autoplay preference, the chrome) and goes through one
+// funnel, `syncBackgroundTrailer`. No trailer or swap state is read in `body` (only the setting and
+// `scenePhase`, neither of which moves with focus), so the strip never re-renders for a rest, an arm
+// or a trailer start.
 
 /// What the strip's rows can ask Home's navigation to do.
 struct StageHomeActions {
@@ -52,6 +61,9 @@ struct StageStripHome: View {
     /// Held, never observed: the shell cover arrives through `onReceive`.
     @Environment(\.tabBarVisibility) private var tabBarVisibility
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// §7: the background trailer plays only while the scene is active (read at the event, and its
+    /// changes re-run the trailer funnel).
+    @Environment(\.scenePhase) private var scenePhase
     @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
     @AppStorage("home_upcoming_row_enabled") private var upcomingRowEnabled = true
     @AppStorage("inline_trailers_enabled") private var inlineTrailersEnabled = false
@@ -81,6 +93,7 @@ struct StageStripHome: View {
             }
             #if DEBUG
             StripDebugLabel(debug: stage.swap.debug)
+            StageTrailerDebugLabel(debug: stage.swap.debug)
             #endif
         }
         // Kept exactly as the spike had it: the strip's page arithmetic is in full-screen points.
@@ -91,9 +104,52 @@ struct StageStripHome: View {
         .onAppear {
             stage.start()
             stage.swap.setReduceMotion(reduceMotion)
+            stage.bgTrailer.prefersReducedMotion = reduceMotion
+            // §7: where Trailers on Focus plays in Stage, stated once on mount and once per actual
+            // flip (`.onChange` below), never per render.
+            Self.logTrailerLocation(background: backgroundTrailerMode)
+        }
+        .onDisappear {
+            // Home Layout switched to Classic (or the shell went away): the player slot goes back.
+            stage.stopBackgroundTrailer(reason: "disappear")
         }
         .onChange(of: reduceMotion) { _, motion in
             stage.swap.setReduceMotion(motion)
+            stage.bgTrailer.prefersReducedMotion = motion
+        }
+        // §5: Home's Continue Watching row, as the stage copy's lookup (the folder page installs
+        // none). `@Published` emits on willSet: use the payload. An unchanged republish is a no-op.
+        .onReceive(model.$continueWatching) { entries in
+            stage.setContinueWatching(entries)
+        }
+        // §7 arm/teardown. The swap output's `restingKey` going non-nil is the rest the trailer arms
+        // on; any focus activity or page start clears it, which tears the trailer down. Payload, not
+        // the property (willSet).
+        .onReceive(stage.swap.$output) { output in
+            stageOutputChanged(output)
+        }
+        // §7: the focus commit the arming rule checks the rest against (a See All tile or an
+        // art-less folder leaves the stage on the previous title).
+        .onReceive(stage.focusModel.$focusedItem) { item in
+            syncBackgroundTrailer(reason: "focus", focused: .some(item))
+        }
+        // §7: the chrome taking focus stops the trailer (`navigationChrome` after W2-D's rename).
+        .onReceive(sidebarChrome.$isFocusedChrome) { focused in
+            syncBackgroundTrailer(reason: "chrome", chromeFocused: focused)
+        }
+        // §7: tvOS Accessibility ▸ Motion ▸ Auto-Play Video Previews, read live by the funnel; its
+        // change notification re-runs it (HomeView's `systemVideoAutoplayEnabled` rule, without the
+        // `@State` mirror: nothing here reads it in `body`).
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIAccessibility.videoAutoplayStatusDidChangeNotification)) { _ in
+            syncBackgroundTrailer(reason: "autoplay")
+        }
+        .onChange(of: scenePhase) { _, phase in
+            syncBackgroundTrailer(reason: "scene", scene: phase)
+        }
+        .onChange(of: backgroundTrailerMode) { _, mode in
+            Self.logTrailerLocation(background: mode)
+            syncBackgroundTrailer(reason: "mode")
         }
         // §4.3 seed: once the rows gate opens, the first strip row's first item (the card tvOS
         // focuses at launch), so the first commit is a silent gap-fill: no double paint.
@@ -175,6 +231,9 @@ struct StageStripHome: View {
                        onRowChange: { index, _ in
                            let down = index > 0
                            if isScrolledDown != down { isScrolledDown = down }
+                           // §7: a strip row owns focus again (also when focus comes back from the
+                           // tab bar, the sidebar or a pushed page); the trailer re-arms at the rest.
+                           stage.stripFocusGained()
                        },
                        // W2-D: the rail's Hide While Browsing runs from here with the page's curve (#8).
                        onPageStart: { _, _ in },
@@ -186,6 +245,8 @@ struct StageStripHome: View {
             .environment(\.posterStyle, geo.fits ? posterStyle : posterStyle.withHeight(geo.layoutPosterHeight))
             // D1: settings only (Trailers on Focus + Background), never per focus (the BUG-19 rule).
             .environment(\.trailerPlaysInHero, backgroundTrailerMode)
+            // §5 (Stage only): catalog headings carry their add-on's name ("Popular · Cinemeta").
+            .environment(\.rowHeadingShowsAddon, true)
         }
     }
 
@@ -328,6 +389,54 @@ struct StageStripHome: View {
         let restoresFocus = cover.pushed || cover.resume
         stage.setCovered(restoresFocus || (shell ?? tabBarVisibility.homeSurfaceCovered),
                          restoresFocus: restoresFocus)
+        // §7: any cover stops the background trailer; lifting one lets the next rest arm it again.
+        syncBackgroundTrailer(reason: "cover", shellCovered: shell)
+    }
+
+    // MARK: Background trailer (W2-A, §7)
+
+    /// `[TrailerPipeline] trailerLocation stage=bg|row`: `bg` = the stage's background trailer
+    /// (Trailer Location "hero"), `row` = the in-row morph (or nothing, with Trailers on Focus off).
+    /// Classic's own `trailerLocation heroMode=` line is HomeView's.
+    private static func logTrailerLocation(background: Bool) {
+        NSLog("[TrailerPipeline] trailerLocation stage=%@", background ? "bg" : "row")
+    }
+
+    /// The swap output changed (a payload from willSet). `restingKey` going non-nil is the rest the
+    /// trailer arms on; any focus activity or page start clears it, which tears the trailer down.
+    private func stageOutputChanged(_ output: StageSwapOutput) {
+        let reason = output.restingKey == nil ? "activity" : "rest"
+        syncBackgroundTrailer(reason: reason, output: output)
+    }
+
+    /// The background trailer's one funnel: builds the gate from what this view knows and hands it,
+    /// with the swap output and the committed focus, to `StageController.syncBackgroundTrailer`,
+    /// which arms or tears down on change only. A caller fed by a `@Published` publisher passes the
+    /// value it was handed (the publisher fires in willSet, so the property still holds the old
+    /// value); everything else is read live, here, at the event, never through `body`.
+    ///
+    /// Arm: the trailer setting, the system autoplay preference, an active scene, nothing covering
+    /// Home, a strip row owning focus, the chrome not holding it, and the stage at rest on the
+    /// focused, non-folder title (`StageTrailerGate`). Trailer Start Delay then runs as the dwell
+    /// (M4): Automatic starts it 1 s after the strip's rest, a fixed N counts from this arm.
+    private func syncBackgroundTrailer(reason: String,
+                                       output: StageSwapOutput? = nil,
+                                       focused: MetaPreview?? = nil,
+                                       shellCovered: Bool? = nil,
+                                       chromeFocused: Bool? = nil,
+                                       scene: ScenePhase? = nil) {
+        let gate = StageTrailerGate(
+            modeOn: backgroundTrailerMode,
+            autoplayAllowed: UIAccessibility.isVideoAutoplayEnabled,
+            sceneActive: (scene ?? scenePhase) == .active,
+            covered: cover.pushed || cover.resume || (shellCovered ?? tabBarVisibility.homeSurfaceCovered),
+            stripOwnsFocus: stage.stripOwnsFocus,
+            chromeHoldsFocus: chromeFocused ?? sidebarChrome.isFocusedChrome
+        )
+        stage.syncBackgroundTrailer(gate,
+                                    output: output ?? stage.swap.output,
+                                    focused: focused ?? stage.focusModel.focusedItem,
+                                    reason: reason)
     }
 }
 

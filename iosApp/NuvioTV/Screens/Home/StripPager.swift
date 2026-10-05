@@ -257,8 +257,14 @@ struct StripPager<Row: View>: View {
 
     // MARK: Paging
 
-    private func page(to key: String, index: Int) {
-        guard positionId != key else { return }
+    /// `alongside` (W2-A, #16) runs inside the page's own transaction: Menu's first focus rung, so
+    /// the focus write and the position animation are one transaction. With no page to run (already
+    /// on `key`) it runs at once.
+    private func page(to key: String, index: Int, alongside: (() -> Void)? = nil) {
+        guard positionId != key else {
+            alongside?()
+            return
+        }
         let seconds = reduceMotion ? 0 : StageStripTuning.pageSeconds
         let signal = controller.signal
         let generation = signal.pageStarted(duration: seconds)
@@ -266,11 +272,13 @@ struct StripPager<Row: View>: View {
         StageStripProbe.shared.log("page to=\(index) key=\(key) seconds=\(seconds) gen=\(generation)")
         if seconds == 0 {
             positionId = key
+            alongside?()
             signal.pageEnded(generation: generation)
         } else {
             // #15: the page ends at its animation's real completion, not at a nominal 0.5 s.
             withAnimation(.easeOut(duration: seconds), completionCriteria: .logicallyComplete) {
                 positionId = key
+                alongside?()
             } completion: {
                 signal.pageEnded(generation: generation)
             }
@@ -278,14 +286,19 @@ struct StripPager<Row: View>: View {
     }
 
     /// Menu at row > 0 (§6): page to row 0 and put focus on its remembered card.
+    ///
+    /// W2-A (#16): the page and the first focus rung go out in ONE transaction. The device spike's
+    /// Menu → row 0 was one 1.36 s motion, the engine's scroll winning over the app's glide; the
+    /// first rung used to follow a runloop after the page, so the focus write and the position
+    /// animation were two transactions. Now the request is written inside the page's
+    /// `withAnimation`, so row 0 takes focus in the same update the glide starts. The device pass
+    /// measures it (the main session's item); the later rungs are unchanged.
     private func pageToTop() {
         guard let first = box.rowKeys.first else { return }
         if ownsProbe { StageStripProbe.shared.notePress("menu") }
-        box.programmaticTarget = first
-        box.programmaticDeadline = ProcessInfo.processInfo.systemUptime + StripPagerTuning.programmaticWindow
-        page(to: first, index: 0)
+        requestRowFocus(first, itemId: controller.memory.itemId(for: first), reason: "menu",
+                        firstRungInPage: true)
         controller.swap.noteFocusActivity()
-        requestRowFocus(first, itemId: controller.memory.itemId(for: first), reason: "menu")
     }
 
     private func rowKeysChanged(_ keys: [String]) {
@@ -314,7 +327,13 @@ struct StripPager<Row: View>: View {
     /// focus, then at 1.0 s on the row's FIRST card. Generation-guarded; each rung logs
     /// `[StageStrip] restore row= item= rung= landed=`. A row that is far away is paged to first, so
     /// it is realized before its cards are asked to take focus.
-    private func requestRowFocus(_ key: String, itemId: String?, reason: String) {
+    ///
+    /// `firstRungInPage` (Menu, #16): rung 1 is written inside the page's own transaction instead of
+    /// on the next runloop. A row the `LazyVStack` has not realized yet still takes the request when
+    /// it mounts (`pinnedRowUpFallbackTarget` re-applies a live request on appear, F5), and the
+    /// timed rungs cover the rest.
+    private func requestRowFocus(_ key: String, itemId: String?, reason: String,
+                                 firstRungInPage: Bool = false) {
         guard let index = box.rowKeys.firstIndex(of: key) else {
             StageStripProbe.shared.log("restore row=\(key) item=\(itemId ?? "-") rung=0 landed=0 reason=\(reason) norow")
             return
@@ -323,9 +342,15 @@ struct StripPager<Row: View>: View {
         let generation = box.restoreGeneration
         box.programmaticTarget = key
         box.programmaticDeadline = ProcessInfo.processInfo.systemUptime + StripPagerTuning.programmaticWindow
-        page(to: key, index: index)
-        DispatchQueue.main.async {
-            runRung(1, key: key, itemId: itemId, reason: reason, generation: generation)
+        if firstRungInPage {
+            page(to: key, index: index) {
+                runRung(1, key: key, itemId: itemId, reason: reason, generation: generation)
+            }
+        } else {
+            page(to: key, index: index)
+            DispatchQueue.main.async {
+                runRung(1, key: key, itemId: itemId, reason: reason, generation: generation)
+            }
         }
         for entry in StripPagerTuning.rungDelays {
             DispatchQueue.main.asyncAfter(deadline: .now() + entry.delay) {
