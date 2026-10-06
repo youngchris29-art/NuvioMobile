@@ -1,5 +1,6 @@
 package com.nuvio.app.features.search
 
+import com.nuvio.app.features.tmdb.PersonPreview
 import com.nuvio.app.features.catalog.CatalogTarget
 import com.nuvio.app.features.home.MetaPreview
 import com.nuvio.app.features.home.HomeCatalogSection
@@ -39,6 +40,12 @@ data class SearchUiState(
     /// C2: up to eight result titles that start with (then contain) the query, excluding the query
     /// itself. Derived from the merged results, never from a second request.
     val suggestions: List<String> = emptyList(),
+    /// C3: TMDB people matching the query. Filled by a sibling coroutine, so add-on rows are never
+    /// delayed by it; empty when TMDB is off or nothing matched.
+    val people: List<PersonPreview> = emptyList(),
+    /// C3: true from the start of a search until the people lookup answers (TMDB enabled only).
+    /// Independent of [isLoading], which stays add-on-only.
+    val peopleLoading: Boolean = false,
 )
 
 /// Search & Discover batch 2026-10-06 (C2). Swift sees `.topresult` / `.type`.

@@ -23,6 +23,8 @@ import com.nuvio.app.features.home.HomeCatalogSettingsRepository
 import com.nuvio.app.features.home.HomeCatalogSection
 import com.nuvio.app.features.home.MetaPreview
 import com.nuvio.app.features.home.filterReleasedItems
+import com.nuvio.app.features.tmdb.TmdbPersonSearchService
+import com.nuvio.app.features.tmdb.TmdbSettingsRepository
 import com.nuvio.app.features.watchprogress.CurrentDateProvider
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -134,6 +136,7 @@ object SearchRepository {
             return requestId
         }
 
+        val tmdbPeopleEnabled = TmdbSettingsRepository.snapshot().enabled
         val requestKey = buildString {
             append(normalizedQuery.lowercase())
             append('|')
@@ -143,6 +146,9 @@ object SearchRepository {
             // is still pending; the flag must be part of the key or the same query re-issued after
             // that manifest fails is deduped by the same-key guard and the state never settles.
             append(hasPendingAddonManifests)
+            append('|')
+            // C3: toggling TMDB must re-run the query so the People row appears or goes.
+            append(tmdbPeopleEnabled)
             append('|')
             append(
                 requests.joinToString(separator = "|") { request ->
@@ -168,9 +174,23 @@ object SearchRepository {
             lastFanOut = fanOutLine,
             requestId = myId,
             query = normalizedQuery,
+            peopleLoading = tmdbPeopleEnabled,
         )
 
         activeJob = scope.launch {
+            // C3: sibling of the fan-out, never awaited by the channel loop; cancelled with the job.
+            if (tmdbPeopleEnabled) {
+                launch {
+                    val found = TmdbPersonSearchService.searchPeople(normalizedQuery)
+                    publish(myId) {
+                        it.copy(
+                            people = found,
+                            peopleLoading = false,
+                            emptyStateReason = if (found.isNotEmpty()) null else it.emptyStateReason,
+                        )
+                    }
+                }
+            }
             val resultChannel = Channel<IndexedSearchOutcome>(Channel.UNLIMITED)
             val jobs = requests.mapIndexed { index, request ->
                 launch {
@@ -198,7 +218,7 @@ object SearchRepository {
                     val snapshot = buildSearchResultsSnapshot(normalizedQuery, results.filterNotNull())
                     if (snapshot.sections.isNotEmpty()) {
                         publish(myId) {
-                            SearchUiState(
+                            it.copy(
                                 isLoading = true,
                                 sections = snapshot.sections,
                                 lastFanOut = fanOutLine,
@@ -222,7 +242,8 @@ object SearchRepository {
             val allFailed = outcomes.isNotEmpty() && outcomes.all { it is SearchCatalogOutcome.Failed }
 
             publish(myId) {
-                SearchUiState(
+                // C3: copy, not a fresh state, so people that already landed survive.
+                it.copy(
                     isLoading = snapshot.sections.isEmpty() && hasPendingAddonManifests,
                     sections = snapshot.sections,
                     // C2 behaviour change (accepted): an all-empty search is NoResults now, not
@@ -230,7 +251,7 @@ object SearchRepository {
                     emptyStateReason = resolveEmptyState(
                         outcomes = outcomes,
                         pending = hasPendingAddonManifests,
-                        hasPeople = false,
+                        hasPeople = it.people.isNotEmpty(),
                     ),
                     errorMessage = if (allFailed) firstFailure else null,
                     lastFanOut = fanOutLine,
