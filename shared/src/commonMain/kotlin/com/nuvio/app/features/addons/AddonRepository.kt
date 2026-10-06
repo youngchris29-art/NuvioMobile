@@ -430,7 +430,8 @@ object AddonRepository {
                                     onFailure = { error ->
                                         addon.copy(
                                             isRefreshing = false,
-                                            errorMessage = error.message ?: resourceString("Unable to load manifest", StringKey.addon_load_manifest_failed),
+                                            // Transport errors carry the (possibly keyed) manifest URL; see AddonFailureMessages.kt.
+                                            errorMessage = manifestFailureMessage(error),
                                         )
                                     },
                                 )
