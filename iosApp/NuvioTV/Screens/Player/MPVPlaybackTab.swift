@@ -55,7 +55,7 @@ struct MPVPlaybackTab: View {
 
                 // Subtitle delay moved to the Subtitles tab's "Timing" row (beta.15 §B1) — that's
                 // where a viewer actually looks when subs are out of sync, and it now persists
-                // per title/profile. Audio delay stays here (no persistence spec for it yet).
+                // per title/profile. Audio delay stays here and persists per title/profile, like the subtitle delay.
                 PlayerPanelSectionCaption(text: String(localized: "Timing")).padding(.top, Theme.Spacing.sm)
                 delayRow(title: String(localized: "Audio Delay"), value: state.audioDelaySec, step: 0.25, limit: 10) {
                     state.setAudioDelay?($0)

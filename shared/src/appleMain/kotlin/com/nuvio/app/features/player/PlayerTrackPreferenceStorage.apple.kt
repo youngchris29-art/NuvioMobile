@@ -16,6 +16,7 @@ actual object PlayerTrackPreferenceStorage {
     private const val audioTrackIdKey = "audio_track_id"
     private const val subtitleIsForcedKey = "subtitle_is_forced"
     private const val subtitleDelayMsKey = "subtitle_delay_ms"
+    private const val audioDelayMsKey = "audio_delay_ms"
 
     actual fun load(contentId: String): PersistedPlayerTrackPreference? {
         val id = contentId.normalizedStorageId() ?: return null
@@ -79,6 +80,25 @@ actual object PlayerTrackPreferenceStorage {
         NSUserDefaults.standardUserDefaults.setInteger(
             delayMs.coerceIn(SUBTITLE_DELAY_MIN_MS, SUBTITLE_DELAY_MAX_MS).toLong(),
             forKey = scopedKey(subtitleDelayMsKey, id),
+        )
+    }
+
+    actual fun loadAudioDelayMs(videoId: String): Int? {
+        val id = videoId.normalizedStorageId() ?: return null
+        val defaults = NSUserDefaults.standardUserDefaults
+        val key = scopedKey(audioDelayMsKey, id)
+        return if (defaults.objectForKey(key) != null) {
+            defaults.integerForKey(key).toInt()
+        } else {
+            null
+        }
+    }
+
+    actual fun saveAudioDelayMs(videoId: String, delayMs: Int) {
+        val id = videoId.normalizedStorageId() ?: return
+        NSUserDefaults.standardUserDefaults.setInteger(
+            delayMs.coerceIn(AUDIO_DELAY_MIN_MS, AUDIO_DELAY_MAX_MS).toLong(),
+            forKey = scopedKey(audioDelayMsKey, id),
         )
     }
 
