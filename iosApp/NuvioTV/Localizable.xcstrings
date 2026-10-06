@@ -1161,6 +1161,7 @@
         }
       }
     },
+    "%lld of %lld shown": {},
     "%lld of %lld · in the Subtitles tab": {
       "localizations": {
         "de": {
@@ -4527,6 +4528,7 @@
         }
       }
     },
+    "All search sources are off": {},
     "Also set in tvOS Settings › Video and Audio › Match Content.": {
       "localizations": {
         "de": {
@@ -7825,6 +7827,7 @@
         }
       }
     },
+    "Catalog": {},
     "Catalog & search posters": {
       "localizations": {
         "de": {
@@ -8471,6 +8474,7 @@
         }
       }
     },
+    "Choose which MDBList lists appear in the Library and in Manage Lists. The Watchlist is always shown.": {},
     "Choose which catalogs Search looks through. Fewer sources means faster, more focused results. Applies to this Apple TV only.": {
       "extractionState": "manual",
       "localizations": {
@@ -10954,6 +10958,7 @@
         }
       }
     },
+    "Couldn't load Discover.": {},
     "Couldn't load this catalog. Try another genre or catalog.": {
       "localizations": {
         "de": {
@@ -11260,6 +11265,7 @@
         }
       }
     },
+    "Couldn't update this list. Try again.": {},
     "Couldn’t load details for %@. A TMDB API key is required for cast profiles.": {
       "localizations": {
         "de": {
@@ -15782,6 +15788,7 @@
         }
       }
     },
+    "Found in %@": {},
     "Four-digit year, for example 2024.": {
       "localizations": {
         "de": {
@@ -16360,6 +16367,8 @@
         }
       }
     },
+    "Grouped by type": {},
+    "Groups results into Top result, Movies, Series and People, merged across your add-ons. One row per add-on shows each catalog separately. Default: Grouped by type.": {},
     "Guest data on this Apple TV (profiles, library, watch progress) will be cleared. You can then sign in on the welcome screen.": {
       "localizations": {
         "de": {
@@ -19320,6 +19329,7 @@
         }
       }
     },
+    "Library lists": {},
     "Lighting": {
       "localizations": {
         "de": {
@@ -21736,6 +21746,7 @@
         }
       }
     },
+    "No lists found in your MDBList account yet. Sync to load them.": {},
     "No playable files": {
       "localizations": {
         "de": {
@@ -21838,6 +21849,7 @@
         }
       }
     },
+    "No results for ‘%@’": {},
     "No results.": {
       "localizations": {
         "de": {
@@ -22280,6 +22292,7 @@
         }
       }
     },
+    "None of your add-ons can search": {},
     "None of your addons provide streams for this title.": {
       "localizations": {
         "de": {
@@ -24732,6 +24745,7 @@
         }
       }
     },
+    "One row per add-on": {},
     "Online": {
       "localizations": {
         "de": {
@@ -24902,6 +24916,7 @@
         }
       }
     },
+    "Open Search Sources": {},
     "Open in %@": {
       "localizations": {
         "de": {
@@ -25412,6 +25427,8 @@
         }
       }
     },
+    "Own Tab": {},
+    "Own Tab puts Discover on the tab bar and rail. Under Search adds a Discover row to the Search page that opens it. Off hides Discover everywhere, and syncs as Hide Discover to your other devices. Default: Own Tab.": {},
     "PRIMARY": {
       "localizations": {
         "de": {
@@ -25718,6 +25735,7 @@
         }
       }
     },
+    "People": {},
     "Personal API Key (Optional)": {
       "localizations": {
         "de": {
@@ -25820,6 +25838,7 @@
         }
       }
     },
+    "Pick which lists show in the Library.": {},
     "Picks where the More Like This row on a title page gets its suggestions. If the account you choose is not connected, TMDB is used instead. Default: Trakt.": {
       "localizations": {
         "de": {
@@ -30988,6 +31007,7 @@
         }
       }
     },
+    "Search Results": {},
     "Search Sources": {
       "extractionState": "manual",
       "localizations": {
@@ -31023,6 +31043,7 @@
         }
       }
     },
+    "Search for %@": {},
     "Search movies & shows": {
       "localizations": {
         "de": {
@@ -36905,6 +36926,7 @@
         }
       }
     },
+    "Suggestions": {},
     "Swipe down for info": {
       "localizations": {
         "de": {
@@ -40103,6 +40125,7 @@
         }
       }
     },
+    "Top result": {},
     "Track %lld": {
       "localizations": {
         "de": {
@@ -41599,6 +41622,7 @@
         }
       }
     },
+    "Type": {},
     "Typeface": {
       "extractionState": "manual",
       "localizations": {
@@ -41668,6 +41692,7 @@
         }
       }
     },
+    "Under Search": {},
     "Unknown": {
       "localizations": {
         "de": {
