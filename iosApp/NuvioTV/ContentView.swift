@@ -73,6 +73,11 @@ struct ContentView: View {
     /// input — `Theme.Font` resolves the family itself, and its tokens are static reads that only
     /// re-evaluate when the tree is re-identified, exactly like `Theme.Palette.accent`.
     @AppStorage(Theme.AppFontFamily.defaultsKey) private var uiFont = "system"
+    /// Search & Discover batch 2026-10-06 (A5): where Discover lives. Tab presence must be
+    /// launch-constant (T3), so the stored value joins the remount key below and `MainTabView`
+    /// resolves `showsDiscoverTab` once per tree. A value that arrives by sync (`hideDiscover`)
+    /// is read inside the tree and takes effect at the next remount or launch.
+    @AppStorage(DiscoverPlacement.defaultsKey) private var discoverPlacementRaw = ""
     /// Deep link currently presented (Top Shelf → resume / title). Held until the user is past
     /// the auth + profile gates when the app is cold-launched from the Top Shelf.
     @State private var deepLink: DeepLink?
@@ -157,7 +162,7 @@ struct ContentView: View {
         //    `Palette.accent` uses, so it needs the same re-identification to take effect.
         // Selected tab, Settings path and the two focus hints above are all held ABOVE this
         // boundary, so a mode or font change costs the user nothing but the rebuild.
-        .id("\(appTheme.paletteKey)|\(navigationStyle)|\(railVisibility)|\(uiFont)")
+        .id("\(appTheme.paletteKey)|\(navigationStyle)|\(railVisibility)|\(uiFont)|\(discoverPlacementRaw)")
         .onAppear {
             auth.start()
             posterStyle.start()
@@ -380,6 +385,9 @@ struct MainTabView: View {
     /// FEAT-30 / H9: focus scope over the whole tab shell, so the rail can hand focus back to
     /// content with `resetFocus(in:)` (see `NavigationRail.fallbackHandOff`).
     @Namespace private var shellFocusScope
+    /// A6: resolved once per tree identity (`@State`'s initial value), never re-read while this
+    /// shell lives, so the set of tabs is constant for the tree's lifetime (T3).
+    @State private var showsDiscoverTab = DiscoverPlacement.current() == .ownTab
 
     var body: some View {
         // tvOS 26+ `Tab` syntax: gets the modern floating Liquid Glass top bar (the legacy
@@ -397,6 +405,18 @@ struct MainTabView: View {
                 SearchView()
                     .tabBarImmersiveHide()
                     .railTabRoot(1)
+            }
+            // Search & Discover batch 2026-10-06 (O3 Stage Discover, A6): the seventh tab, value
+            // 6 so Profile keeps 5 (return routes, rail ids and tests key on it). Present only
+            // when the placement setting resolves to Own Tab; `showsDiscoverTab` is resolved once
+            // per tree (T3) and the placement key is part of the remount `.id` in `ContentView`.
+            // Title and symbol must match `RailItem.discover`.
+            if showsDiscoverTab {
+                Tab("Discover", systemImage: "safari", value: 6) {
+                    DiscoverTabRoot()
+                        .tabBarImmersiveHide()
+                        .railTabRoot(6)
+                }
             }
             Tab("Library", systemImage: "books.vertical", value: 2) {
                 LibraryView()
@@ -494,6 +514,18 @@ struct MainTabView: View {
         .onChange(of: rootCoverActive) { _, active in
             tabBarVisibility.setRootCoverActive(active)
         }
+        // Search & Discover batch 2026-10-06 (B3 g): Search's "All search sources are off" empty
+        // state offers "Open Search Sources". The Search tab can't reach the Settings stack, so it
+        // posts `.nuvioOpenSettings` with the category and this always-mounted shell does the jump.
+        .onReceive(NotificationCenter.default.publisher(for: .nuvioOpenSettings)) { note in
+            let raw = note.userInfo?["category"] as? String
+            let category = raw.flatMap(SettingsCategory.init(rawValue:))
+            selectedTab = 4
+            if let category {
+                settingsPath = [category]
+                settingsLastCategory = category
+            }
+        }
         .onChange(of: selectedTab) { _, tab in
             tabBarVisibility.setHomeTabSelected(tab == 0)
             // beta.18 verdict (BUG-66): `r=tab` now and `r=tab2` 0.6 s later in the Tab Bar
@@ -549,4 +581,12 @@ private struct ShellFocusScopeModifier: ViewModifier {
             content
         }
     }
+}
+
+// MARK: - Cross-tab requests
+
+extension Notification.Name {
+    /// Posted by a tab that wants the shell to open Settings. `userInfo["category"]` carries a
+    /// `SettingsCategory` raw value (optional). Search & Discover batch 2026-10-06.
+    static let nuvioOpenSettings = Notification.Name("com.nuvio.tv.openSettings")
 }
