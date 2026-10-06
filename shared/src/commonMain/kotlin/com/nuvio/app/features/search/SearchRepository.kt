@@ -404,7 +404,9 @@ object SearchRepository {
             ?: typeOptions.first()
         val catalogOptions = sources.filter { it.type == selectedType }
         val selectedCatalog = restoredCatalog ?: catalogOptions.first()
-        val selectedGenre = selectedCatalog.resolveGenreSelection(current.selectedGenre)
+        val selectedGenre = selectedCatalog.resolveGenreSelection(
+            current.selectedGenre ?: DiscoverSelectionStorage.loadGenre(selectedCatalog.key),
+        )
 
         _discoverUiState.value = DiscoverUiState(
             typeOptions = typeOptions,
@@ -454,7 +456,9 @@ object SearchRepository {
             selectedType = type,
             catalogOptions = catalogOptions,
             selectedCatalogKey = selectedCatalog.key,
-            selectedGenre = selectedCatalog.resolveGenreSelection(null),
+            selectedGenre = selectedCatalog.resolveGenreSelection(
+                DiscoverSelectionStorage.loadGenre(selectedCatalog.key),
+            ),
             items = emptyList(),
             isLoading = false,
             nextSkip = null,
@@ -472,7 +476,9 @@ object SearchRepository {
         val selectedCatalog = current.catalogOptions.firstOrNull { it.key == catalogKey } ?: return
         _discoverUiState.value = current.copy(
             selectedCatalogKey = selectedCatalog.key,
-            selectedGenre = selectedCatalog.resolveGenreSelection(null),
+            selectedGenre = selectedCatalog.resolveGenreSelection(
+                DiscoverSelectionStorage.loadGenre(selectedCatalog.key),
+            ),
             items = emptyList(),
             isLoading = false,
             nextSkip = null,
@@ -497,6 +503,7 @@ object SearchRepository {
             emptyStateReason = null,
             errorMessage = null,
         )
+        DiscoverSelectionStorage.saveGenre(selectedCatalog.key, normalizedGenre)
         loadDiscoverFeed(reset = true)
     }
 

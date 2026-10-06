@@ -32,19 +32,24 @@ object DiscoverSources {
     /// The persisted catalog (the same `discover_catalog_key` Search's Discover uses) when it is
     /// still offered, else the first option; null when there are no options. The genre is the
     /// catalog's resolved default: the per-catalog genre memory (plan C4) plugs in here.
-    fun restoreSelection(options: List<DiscoverCatalogOption>): DiscoverSelection? =
-        restoreSelection(
+    fun restoreSelection(options: List<DiscoverCatalogOption>): DiscoverSelection? {
+        val preferredKey = DiscoverSelectionStorage.loadCatalogKey()
+        // The genre remembered for the catalog that will actually be restored.
+        val restored = restoreSelection(options, preferredKey, preferredGenre = null) ?: return null
+        return restoreSelection(
             options = options,
-            preferredCatalogKey = DiscoverSelectionStorage.loadCatalogKey(),
-            preferredGenre = null,
+            preferredCatalogKey = preferredKey,
+            preferredGenre = DiscoverSelectionStorage.loadGenre(restored.catalogKey),
         )
+    }
 
-    /// Persists the catalog key (shared with Search's Discover). [genre] is accepted for the C4
-    /// per-catalog genre memory and not stored yet.
+    /// Persists the catalog key (shared with Search's Discover) and that catalog's genre
+    /// (null clears it).
     fun saveSelection(catalogKey: String, genre: String?) {
         val key = catalogKey.trim()
         if (key.isEmpty()) return
         DiscoverSelectionStorage.saveCatalogKey(key)
+        DiscoverSelectionStorage.saveGenre(key, genre)
     }
 
     /// Pure half of [restoreSelection], for tests and for the C4 genre hook.
