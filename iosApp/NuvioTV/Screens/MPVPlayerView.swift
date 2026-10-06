@@ -1119,16 +1119,22 @@ final class MPVTVPlayerViewController: UIViewController {
 
     #if DEBUG
     /// `debug.mpvSmokeSkipInterval` = "start,end,type" (smoke harness only): one synthetic interval.
+    private var smokeSkipActive = false
     private func applySmokeSkipInterval() {
         guard UserDefaults.standard.string(forKey: "debug.mpvSmokeURL") != nil,
               let raw = UserDefaults.standard.string(forKey: "debug.mpvSmokeSkipInterval") else { return }
         let parts = raw.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
         guard parts.count == 3, let start = Double(parts[0]), let end = Double(parts[1]) else { return }
-        applySkipIntervals([SkipInterval(startTime: start, endTime: end, type: parts[2], provider: "smoke")])
+        smokeSkipActive = true
+        applySkipIntervals([SkipInterval(startTime: start, endTime: end, type: parts[2], provider: "smoke")], isSmoke: true)
     }
     #endif
 
-    private func applySkipIntervals(_ intervals: [SkipInterval]) {
+    private func applySkipIntervals(_ intervals: [SkipInterval], isSmoke: Bool = false) {
+        #if DEBUG
+        // The smoke interval stands: the real fetch's (empty) answer must not replace it.
+        if smokeSkipActive, !isSmoke { return }
+        #endif
         skipPlanner.setIntervals(intervals)
         state.skipIntervals = intervals
         state.transport.skipSpans = intervals.compactMap { interval in

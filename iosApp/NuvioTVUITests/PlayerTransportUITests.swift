@@ -259,4 +259,17 @@ final class PlayerTransportUITests: XCTestCase {
             XCTAssertEqual(XCTWaiter().wait(for: [exp], timeout: 6), .completed, "second Menu did not exit")
         }
     }
+
+    // MARK: Skip chip (P1-C)
+
+    /// The chip hides 10 s after it appears and comes back on any remote press (mpv player).
+    func testSkipChipAutoHides() throws {
+        let app = try launch(extra: ["-debug.mpvSmokeSkipInterval", "0,100000,op"])
+        XCTAssertTrue(waitFor(app, timeout: 20) { $0["chip"] == "1" }, "chip never appeared: \(probeText(app))")
+        Thread.sleep(forTimeInterval: 11.0)
+        XCTAssertTrue(waitFor(app, timeout: 3) { $0["chip"] == "0" }, "chip did not auto-hide: \(probeText(app))")
+        remote.press(.left)
+        XCTAssertTrue(waitFor(app, timeout: 4) { $0["chip"] == "1" }, "a press did not bring the chip back: \(probeText(app))")
+        print("[SeekProbe] chip leg end: \(probeText(app))")
+    }
 }
