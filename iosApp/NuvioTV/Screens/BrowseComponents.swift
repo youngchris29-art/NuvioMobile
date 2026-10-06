@@ -5368,24 +5368,22 @@ struct CatalogRowView: View {
     private func card(for item: MetaPreview, proxy: ScrollViewProxy) -> some View {
         if let cardFootnote {
             VStack(alignment: .leading, spacing: 0) {
-                InlineTrailerCard(item: item, enabled: inlineTrailersActive, onExpansionChange: { expanded in
-                    expansionChanged(itemId: item.id, expanded: expanded, proxy: proxy)
-                })
-                // Fixed-height sizer (a hidden caption line) with the footnote overlaid, so the
-                // slot never changes height and a long footnote truncates at the card width.
+                // The footnote is drawn by the card itself, hanging under its caption so it
+                // follows the caption's focus drop (device pass 2026-10-06: a line laid out here
+                // collided with the dropped caption on the focused card).
+                InlineTrailerCard(item: item,
+                                  enabled: inlineTrailersActive,
+                                  onExpansionChange: { expanded in
+                                      expansionChanged(itemId: item.id, expanded: expanded, proxy: proxy)
+                                  },
+                                  footnote: focusedItemId == item.id ? cardFootnote(item) : nil)
+                // Fixed-height sizer (a hidden caption line): the row reserves the footnote's
+                // line so nothing below moves when focus changes.
                 Text(" ")
                     .font(Theme.Font.caption)
                     .lineLimit(1)
                     .hidden()
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .overlay(alignment: .leading) {
-                        if focusedItemId == item.id, let note = cardFootnote(item), !note.isEmpty {
-                            Text(note)
-                                .font(Theme.Font.caption)
-                                .foregroundStyle(Theme.Palette.textSecondary)
-                                .lineLimit(1)
-                        }
-                    }
             }
         } else {
             InlineTrailerCard(item: item, enabled: inlineTrailersActive, onExpansionChange: { expanded in
@@ -5689,8 +5687,10 @@ struct SeeAllCard: View {
 /// (cached artwork, shimmer, brand focus ring, focus-aware title).
 struct PosterCardView: View {
     let item: MetaPreview
+    /// See `PosterCard.footnote`.
+    var footnote: String? = nil
 
     var body: some View {
-        PosterCard(title: item.name, imageURL: item.poster, fallbackImageURL: item.rawPosterUrl)
+        PosterCard(title: item.name, imageURL: item.poster, fallbackImageURL: item.rawPosterUrl, footnote: footnote)
     }
 }

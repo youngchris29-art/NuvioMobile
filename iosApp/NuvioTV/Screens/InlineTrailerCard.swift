@@ -2114,6 +2114,9 @@ struct InlineTrailerCard: View {
     /// (`model.layoutExpanded`), i.e. when the width actually starts growing, not when the
     /// in-place dissolve begins.
     var onExpansionChange: ((Bool) -> Void)? = nil
+    /// Search & Discover batch 2026-10-06: Search's "Found in …" line, handed to the card so it
+    /// hangs under the caption and rides the focus drop (see `PosterCard.footnote`).
+    var footnote: String? = nil
 
     @Environment(\.isFocused) private var isFocused
     @Environment(\.posterStyle) private var posterStyle
@@ -2260,10 +2263,11 @@ struct InlineTrailerCard: View {
             LandscapeCard(
                 title: item.name,
                 imageURL: Self.landscapeArtworkURL(item),
-                depthSurface: .posters
+                depthSurface: .posters,
+                footnote: footnote
             )
         } else {
-            PosterCardView(item: item)
+            PosterCardView(item: item, footnote: footnote)
         }
     }
 

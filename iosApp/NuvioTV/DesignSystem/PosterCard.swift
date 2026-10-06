@@ -876,6 +876,12 @@ struct PosterCard: View {
     /// Library L1 (2026-10-04): a watched tick or a progress bar on the artwork. nil (every call
     /// site but the Library grid) draws nothing, and the overlay below then holds no view.
     var watchBadge: PosterWatchBadge? = nil
+    /// Search & Discover batch 2026-10-06 (device pass 6b): an optional caption line under the
+    /// title — Search's "Found in …". Drawn as an OVERLAY hanging below the title (the pattern
+    /// `LandscapeCard.subtitle` uses), so it rides `CardCaptionFocusDrop` with the caption; a line
+    /// laid out under the card in the row collided with the dropped caption on the focused card.
+    /// The card's frame does not grow: the caller reserves the line (see `CatalogRowView.card`).
+    var footnote: String? = nil
 
     @Environment(\.isFocused) private var isFocused
     @Environment(\.posterStyle) private var style
@@ -1067,8 +1073,46 @@ struct PosterCard: View {
                     .truncationMode(.tail)
                     .padding(.horizontal, Theme.Spacing.xs)
                     .frame(width: resolvedWidth, alignment: .leading)
+                    // The footnote hangs below the title as an overlay (a hidden title twin spaces
+                    // it one caption line down), so the card's frame keeps the single-caption
+                    // height and the line rides the caption's focus drop. Attached AFTER the
+                    // width frame so it is proposed the whole card width (on the title's own
+                    // width a short title truncated it to "Fou…", sim 2026-10-06).
+                    .overlay(alignment: .topLeading) {
+                        if let footnote, !footnote.isEmpty {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(title)
+                                    .font(Theme.Font.cardTitle)
+                                    .lineLimit(1)
+                                    .hidden()
+                                Text(footnote)
+                                    .font(Theme.Font.caption)
+                                    .foregroundStyle(Theme.Palette.textSecondary)
+                                    .lineLimit(1)
+                            }
+                            .padding(.horizontal, Theme.Spacing.xs)
+                            .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
                     // BUG-54: the caption follows the system lift's bottom edge — see
                     // `CardCaptionFocusDrop`.
+                    .modifier(CardCaptionFocusDrop(
+                        mode: focusMode, isFocused: isFocused, artworkHeight: resolvedHeight
+                    ))
+            } else if let footnote, !footnote.isEmpty {
+                // Titles off: a zero-height anchor (the frame must not depend on focus) with the
+                // footnote hanging below the artwork, following the same drop as a caption would.
+                Color.clear
+                    .frame(width: resolvedWidth, height: 0)
+                    .overlay(alignment: .topLeading) {
+                        Text(footnote)
+                            .font(Theme.Font.caption)
+                            .foregroundStyle(Theme.Palette.textSecondary)
+                            .lineLimit(1)
+                            .padding(.horizontal, Theme.Spacing.xs)
+                            .padding(.top, 2)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     .modifier(CardCaptionFocusDrop(
                         mode: focusMode, isFocused: isFocused, artworkHeight: resolvedHeight
                     ))
@@ -1129,6 +1173,9 @@ struct LandscapeCard: View {
     /// Upcoming row: optional second caption line under the title (the show's year). Dims like
     /// the title's unfocused state and rides the same caption focus drop.
     var subtitle: String? = nil
+    /// Search & Discover batch 2026-10-06: Search's "Found in …" line, below the subtitle (or the
+    /// title) in the same hanging overlay. See `PosterCard.footnote`.
+    var footnote: String? = nil
     /// Upcoming/Continue Watching: optional `S02E05` badge drawn bottom-leading on the artwork.
     var overlayLeading: String? = nil
     /// Upcoming row: optional `TODAY` / `IN 4 DAYS` pill drawn bottom-trailing on the artwork.
@@ -1298,26 +1345,39 @@ struct LandscapeCard: View {
                     // (505.5) sit at −5 by the same formula, which is why only this row showed
                     // it. The line draws into the shelf's own 24pt bottom padding / pinned
                     // bottom reach, so nothing below is disturbed.
+                    .padding(.horizontal, Theme.Spacing.xs)
+                    .frame(width: width, alignment: .leading)
+                    // Attached after the width frame so the lines are proposed the whole card
+                    // width (the subtitle keeps its leading x: the padding moved inside).
                     .overlay(alignment: .topLeading) {
-                        if let subtitle, !subtitle.isEmpty {
+                        let hasSubtitle = !(subtitle ?? "").isEmpty
+                        let hasFootnote = !(footnote ?? "").isEmpty
+                        if hasSubtitle || hasFootnote {
                             // A hidden twin of the title spaces the overlay: same font, same
-                            // single line, same proposal width → the subtitle lands exactly one
-                            // caption line below, and the stack may exceed the title's height.
+                            // single line → the subtitle lands exactly one caption line below,
+                            // and the stack may exceed the title's height.
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(title)
                                     .font(Theme.Font.cardTitle)
                                     .lineLimit(1)
                                     .hidden()
-                                Text(subtitle)
-                                    .font(Theme.Font.caption)
-                                    .foregroundStyle(Theme.Palette.textSecondary)
-                                    .lineLimit(1)
+                                if hasSubtitle, let subtitle {
+                                    Text(subtitle)
+                                        .font(Theme.Font.caption)
+                                        .foregroundStyle(Theme.Palette.textSecondary)
+                                        .lineLimit(1)
+                                }
+                                if hasFootnote, let footnote {
+                                    Text(footnote)
+                                        .font(Theme.Font.caption)
+                                        .foregroundStyle(Theme.Palette.textSecondary)
+                                        .lineLimit(1)
+                                }
                             }
+                            .padding(.horizontal, Theme.Spacing.xs)
                             .fixedSize(horizontal: false, vertical: true)
                         }
                     }
-                    .padding(.horizontal, Theme.Spacing.xs)
-                    .frame(width: width, alignment: .leading)
                     // BUG-54: caption follows the lift — see `CardCaptionFocusDrop`.
                     .modifier(CardCaptionFocusDrop(
                         mode: focusMode, isFocused: isFocused, artworkHeight: height
