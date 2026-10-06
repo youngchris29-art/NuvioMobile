@@ -96,7 +96,8 @@ struct PlayerScreen: View {
         return { failure in
             var tagged = failure
             tagged.engine = engine
-            tagged.otherEngineEligible = engine == .native ? true : eligibleForNative
+            // A native run that was itself a forced retry (after mpv failed) never offers mpv back.
+            tagged.otherEngineEligible = engine == .native ? context.forcedEngine == nil : eligibleForNative
             onPlaybackFailed(tagged)
         }
     }

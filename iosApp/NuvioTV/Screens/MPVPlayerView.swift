@@ -314,7 +314,12 @@ final class MPVTVPlayerViewController: UIViewController {
         state.setSubtitleDelay = { [weak self] seconds in self?.setSubtitleDelay(seconds) }
         state.setAudioDelay = { [weak self] seconds in self?.setAudioDelay(seconds) }
         state.replay = { [weak self] in self?.replay() }
-        state.reclaimFocus = { [weak self] in self?.becomeFirstResponder() }
+        state.reclaimFocus = { [weak self] in
+            // Presses begun before the panel/cover took over never end here: drop them so the
+            // light tap is not blocked for the rest of the session.
+            self?.pressesDown.removeAll()
+            self?.becomeFirstResponder()
+        }
         view.accessibilityIdentifier = "player.mpv"
 
         transport.holdMode = TransportPreview.HoldMode(
@@ -384,6 +389,7 @@ final class MPVTVPlayerViewController: UIViewController {
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        pressesDown.removeAll()         // a press begun under a cover never ended on this controller
         becomeFirstResponder()
         if !didLoad {
             didLoad = true
@@ -1379,6 +1385,9 @@ final class MPVTVPlayerViewController: UIViewController {
 
         state.durationSec = snap.duration
         state.positionSec = max(snap.position, 0)
+        // Paused → playing without input (the pause-card-off rule left no hide timer armed):
+        // re-arm the hide so the bar does not stay up until the next press.
+        if state.isPaused && !snap.paused && state.controlsVisible { scheduleHide() }
         state.isPaused = snap.paused
         state.isBuffering = snap.cacheWait || (snap.coreIdle && !snap.paused)
         samplePlayClock(snap)
@@ -1640,7 +1649,8 @@ final class MPVTVPlayerViewController: UIViewController {
                 }
             case .menu:
                 let action = MenuPrecedence.resolve(
-                    panelOpen: state.panelOpen || presentedViewController != nil,
+                    // A presented panel takes its own presses; `state.panelOpen` could go stale.
+                    panelOpen: presentedViewController != nil,
                     modeActive: transport.mode.isActive,
                     upNextShowing: state.upNextVisible?() ?? false,
                     pillFocused: state.transport.focusedPill != nil,
@@ -1715,10 +1725,16 @@ final class MPVTVPlayerViewController: UIViewController {
         }
         for press in presses where press.type == .leftArrow || press.type == .rightArrow {
             let direction = press.type == .leftArrow ? -1 : 1
-            // A latched scan outlives its press; only the hold of this key is dropped.
-            if case .stepping(let current, _, _) = transport.mode, current == direction {
+            // A latched scan outlives its press (it needs no hold timer); a stepping hold of this
+            // key is dropped without committing. The hold of the other key, if one replaced this
+            // press, keeps its timer.
+            if case .stepping(let current, _, _) = transport.mode {
+                if current == direction {
+                    stopHoldTimer()
+                    apply(transport.cancel())
+                }
+            } else {
                 stopHoldTimer()
-                apply(transport.cancel())
             }
             handled = true
         }
@@ -1839,6 +1855,12 @@ final class MPVTVPlayerViewController: UIViewController {
     /// the exact stage, so wait for it: the exact stage runs as soon as mpv reports it.
     private func exactDeadlineFired(generation: Int) {
         guard pendingExact?.generation == generation else { return }
+        // The 1.5 s landing fallback is due now too: firing it would clear the preview while mpv
+        // still sits at the origin (the fill snaps back). Hold the preview until the exact stage
+        // re-arms its own 3 s handback, or 4 s if mpv never even starts the keyframes seek.
+        if commitGeneration == generation {
+            armCommitLanding(generation: generation, fallbackSec: 4)
+        }
         eventQueue.async { [weak self] in
             guard let self else { return }
             if self.awaitingSeekStartGeneration == generation {
