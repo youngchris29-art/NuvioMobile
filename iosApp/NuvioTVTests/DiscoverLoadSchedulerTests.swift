@@ -65,8 +65,12 @@ final class DiscoverLoadSchedulerTests: XCTestCase {
         let start = DiscoverLoadScheduler.next(rows: rows, requested: requested, inFlight: [])
         XCTAssertEqual(start, rows.prefix(5).map(\.id))
         XCTAssertEqual(DiscoverLoadScheduler.next(rows: rows, requested: requested, inFlight: Set(start)), [])
+        // Row 0 finishes: it leaves the in-flight set AND settles, so the freed slot goes to the
+        // next requested row (a row that merely left in-flight while still `.loading` would be
+        // restarted, which is the cancellation-resume path).
+        let settled = settle(rows, 0, as: .loaded)
         let afterOne = Set(start.dropFirst())
-        XCTAssertEqual(DiscoverLoadScheduler.next(rows: rows, requested: requested, inFlight: afterOne), [rows[5].id])
+        XCTAssertEqual(DiscoverLoadScheduler.next(rows: settled, requested: requested, inFlight: afterOne), [rows[5].id])
     }
 
     func testUnrequestedRowsWaitWhileARequestedRowIsLoading() {
