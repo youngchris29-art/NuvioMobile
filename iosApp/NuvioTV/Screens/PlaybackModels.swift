@@ -86,6 +86,10 @@ struct PlaybackContext: Identifiable {
     /// can be dropped (`DirectDebridPlaybackResolver.invalidate` is keyed on the listed stream).
     /// nil on launch paths without a stream.
     var listedStream: StreamItem? = nil
+    /// Failure-alert retry ("Try with mpv" / "Try Native Player"): pins the engine for this attempt.
+    var forcedEngine: PlaybackEngine? = nil
+    /// Failure-alert retry: both engines resume from here instead of the saved progress (> 10 s).
+    var resumeAtSec: Double? = nil
 
     // Headers join the identity (Codex 2026-08-20 round 3): two sources for the same episode can
     // share a URL but require different headers; StreamPickerView rebuilds the player and
@@ -126,6 +130,10 @@ struct PlaybackFailure: Equatable {
     /// Seconds actually played (native seconds before a fallback included).
     let secondsPlayed: Double
     let startedPlaying: Bool
+    /// Which engine reported it (set by `PlayerScreen`).
+    var engine: PlaybackEngine = .mpv
+    /// The other engine could take this stream: the failure alert offers it as a retry.
+    var otherEngineEligible = false
 }
 
 /// The pure decisions behind next-link failover (orivio batch item 2). The picker and the Up Next

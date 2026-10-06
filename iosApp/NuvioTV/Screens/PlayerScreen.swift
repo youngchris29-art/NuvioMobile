@@ -23,6 +23,9 @@ struct PlayerScreen: View {
     var onPlaybackHealthy: ((Double) -> Void)? = nil
 
     @State private var decision: EngineDecision?
+    /// The probe behind `decision` (nil with the native flag off or no probe): decides whether the
+    /// failure alert may offer the native player after an mpv failure.
+    @State private var probe: ProbeResult?
     /// Set when the native path fails; pins this context to mpv.
     @State private var forcedMPV = false
     /// Seconds the native engine played before it fell back to mpv.
@@ -34,7 +37,10 @@ struct PlayerScreen: View {
 
     private enum Shown { case deciding, native, mpv }
     private var shown: Shown {
-        if forcedMPV { return .mpv }
+        if context.forcedEngine == .mpv || forcedMPV { return .mpv }
+        // A failure-alert retry on the native player: no probe wait, and no silent fallback to
+        // the mpv path that just failed (see `NativePlayerScreen`'s `onFallback: nil`).
+        if context.forcedEngine == .native { return .native }
         guard nativeDVEnabled else { return .mpv }       // flag off → mpv immediately, no probe wait
         guard let decision else { return .deciding }
         return decision.engine == .native ? .native : .mpv
@@ -45,7 +51,7 @@ struct PlayerScreen: View {
             switch shown {
             case .native:
                 NativePlayerScreen(context: context, onPlayNext: onPlayNext,
-                                   onFallback: { _, secondsPlayed, startedPlaying in
+                                   onFallback: context.forcedEngine == .native ? nil : { _, secondsPlayed, startedPlaying in
                                        nativeSecondsPlayed = secondsPlayed
                                        // Readiness, not the play clock (review r2 #1): only a native
                                        // item that never became ready shortens mpv's start budget.
@@ -53,12 +59,12 @@ struct PlayerScreen: View {
                                        forcedMPV = true
                                    },
                                    routingNote: decision?.displayNote,
-                                   onPlaybackFailed: onPlaybackFailed,
+                                   onPlaybackFailed: annotated(.native),
                                    onPlaybackHealthy: onPlaybackHealthy)
             case .mpv:
                 MPVPlayerScreen(context: context, onPlayNext: onPlayNext,
                                 routingNote: forcedMPV ? String(localized: "mpv \u{00B7} fallback") : decision?.displayNote,
-                                onPlaybackFailed: onPlaybackFailed,
+                                onPlaybackFailed: annotated(.mpv),
                                 onPlaybackHealthy: onPlaybackHealthy,
                                 startWatchdogShortened: forcedMPV && nativeFailedBeforeStart,
                                 nativeSecondsPlayedBeforeFallback: forcedMPV ? nativeSecondsPlayed : 0)
@@ -78,6 +84,21 @@ struct PlayerScreen: View {
         }
     }
 
+    /// Tags a failure with the reporting engine and whether the other engine could take over.
+    private func annotated(_ engine: PlaybackEngine) -> ((PlaybackFailure) -> Void)? {
+        guard let onPlaybackFailed else { return nil }
+        let eligibleForNative: Bool = {
+            guard !forcedMPV, let probe else { return false }
+            return PlayerEngineRouter.route(probe: probe, nativeDVEnabled: true, dvP7FelToMpv: false).engine == .native
+        }()
+        return { failure in
+            var tagged = failure
+            tagged.engine = engine
+            tagged.otherEngineEligible = engine == .native ? true : eligibleForNative
+            onPlaybackFailed(tagged)
+        }
+    }
+
     /// Probe off-main (hard-bounded) and pick the engine. No-op straight to mpv when the flag is off.
     private func decideEngine() async {
         #if DEBUG
@@ -94,11 +115,12 @@ struct PlayerScreen: View {
         let url = context.url
         let requestHeaders = context.requestHeaders
         let felToMpv = UserDefaults.standard.bool(forKey: PlayerTuning.dvP7FelMpvKey)
-        let result = await Task.detached(priority: .utility) {
+        let (result, probeResult) = await Task.detached(priority: .utility) {
             let probe = MediaProbe.probe(url: url, timeoutSec: 4, requestHeaders: requestHeaders)
-            return PlayerEngineRouter.route(probe: probe, nativeDVEnabled: true, dvP7FelToMpv: felToMpv)
+            return (PlayerEngineRouter.route(probe: probe, nativeDVEnabled: true, dvP7FelToMpv: felToMpv), probe)
         }.value
         print("[PlayerRouter] \(result.engine.rawValue) — \(result.reason) — \(context.title)")
+        probe = probeResult
         decision = result
     }
 }

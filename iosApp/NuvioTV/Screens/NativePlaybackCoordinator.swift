@@ -688,7 +688,7 @@ final class NativePlaybackCoordinator: ObservableObject {
                     if startOver { print("[Failover] start over: ignoring saved progress") }
                     let resume: Double? = startOver
                         ? nil
-                        : self.recorder.resumePositionSec(actualDurationSec: duration.isFinite ? duration : 0)
+                        : (self.context.resumeAtSec.flatMap { $0 > 10 ? $0 : nil } ?? self.recorder.resumePositionSec(actualDurationSec: duration.isFinite ? duration : 0))
                     // Percentage-only row and no finite duration yet: apply on the first tick that has one.
                     if resume == nil, !startOver, !(duration.isFinite && duration > 0) {
                         pendingResumePercent = self.recorder.pendingResumePercent()
