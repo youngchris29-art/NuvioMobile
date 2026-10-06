@@ -53,7 +53,7 @@ final class MdbListLibraryListsViewModel: ObservableObject {
         let previous = options[index]
         errorMessage = nil
         options[index] = MdbListLibraryListOption(key: previous.key, name: previous.name, visible: visible)
-        MdbListLibraryServiceBridgingKt.setListVisibilityAsync(MdbListTracker.shared.library, key: key, visible: visible) { [weak self] message in
+        MdbListTracker.shared.library.setListVisibilityAsync(key: key, visible: visible) { [weak self] (message: String?) in
             guard let message else { return }
             Task { @MainActor in
                 guard let self else { return }
