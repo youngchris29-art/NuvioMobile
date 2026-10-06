@@ -125,4 +125,138 @@ final class PlayerTransportUITests: XCTestCase {
         XCTAssertEqual(after, origin, accuracy: 3.0, probeText(app))
         XCTAssertTrue(app.otherElements["player.mpv"].exists, "Menu during a scan must not exit the player")
     }
+
+    // MARK: Transport bar (P1-B), reads `debug_transportProbe`
+
+    private func barProbeText(_ app: XCUIApplication) -> String {
+        let el = app.descendants(matching: .any)["debug_transportProbe"]
+        guard el.waitForExistence(timeout: 5) else { return "" }
+        return el.label
+    }
+
+    private func bar(_ app: XCUIApplication) -> [String: String] {
+        var out: [String: String] = [:]
+        for part in barProbeText(app).split(separator: " ") {
+            let kv = part.split(separator: "=", maxSplits: 1).map(String.init)
+            if kv.count == 2 { out[kv[0]] = kv[1] }
+        }
+        return out
+    }
+
+    private func waitBar(_ app: XCUIApplication, timeout: TimeInterval = 5, _ cond: ([String: String]) -> Bool) -> Bool {
+        let end = Date().addingTimeInterval(timeout)
+        while Date() < end {
+            if cond(bar(app)) { return true }
+            Thread.sleep(forTimeInterval: 0.25)
+        }
+        return cond(bar(app))
+    }
+
+    /// The bar is up for the first 4 s of playback: let it hide so an Up press starts from a known state.
+    private func launchWithBarHidden(extra: [String] = []) throws -> XCUIApplication {
+        let app = try launch(extra: extra)
+        XCTAssertTrue(waitBar(app, timeout: 10) { $0["vis"] == "0" }, "bar never hid: \(barProbeText(app))")
+        return app
+    }
+
+    func testBarGeometryProbe() throws {
+        let app = try launchWithBarHidden()
+        remote.press(.up)
+        XCTAssertTrue(waitBar(app) { $0["vis"] == "1" && abs((Double($0["y"] ?? "") ?? 0) - 95) <= 2 }, barProbeText(app))
+        let p = bar(app)
+        XCTAssertEqual(Double(p["y"] ?? "") ?? 0, 95, accuracy: 2, barProbeText(app))
+        XCTAssertEqual(Double(p["x0"] ?? "") ?? 0, 86, accuracy: 1, barProbeText(app))
+        XCTAssertEqual(Double(p["x1"] ?? "") ?? 0, 1834, accuracy: 1, barProbeText(app))
+        XCTAssertGreaterThanOrEqual(Int(p["pills"] ?? "") ?? 0, 4, barProbeText(app))
+        XCTAssertEqual(p["focus"], "track", barProbeText(app))
+        print("[BarProbe] geometry: \(barProbeText(app))")
+    }
+
+    func testPillFocusWalk() throws {
+        let app = try launchWithBarHidden()
+        remote.press(.up)
+        XCTAssertTrue(waitBar(app) { $0["vis"] == "1" && $0["focus"] == "track" }, barProbeText(app))
+        remote.press(.up)
+        XCTAssertTrue(waitBar(app) { $0["focus"] == "pill:subtitles" }, barProbeText(app))
+        remote.press(.right)
+        XCTAssertTrue(waitBar(app) { $0["focus"] == "pill:audio" }, barProbeText(app))
+        remote.press(.down)
+        XCTAssertTrue(waitBar(app) { $0["focus"] == "track" }, barProbeText(app))
+        // Left seeks again once the focus is back on the track.
+        let before = Double(bar(app)["pos"] ?? "") ?? -1
+        remote.press(.left)
+        XCTAssertTrue(waitBar(app, timeout: 6) { (Double($0["pos"] ?? "") ?? 9999) < before - 3 }, "Left did not seek: \(barProbeText(app))")
+        remote.press(.up)
+        XCTAssertTrue(waitBar(app) { $0["focus"] == "pill:subtitles" }, barProbeText(app))
+        remote.press(.select)
+        let tab = app.descendants(matching: .any)["player.panel.tab.subtitles"]
+        XCTAssertTrue(tab.waitForExistence(timeout: 6), "subtitles tab did not open")
+        XCTAssertEqual(tab.value as? String, "selected")
+        print("[BarProbe] pillwalk end: \(barProbeText(app))")
+    }
+
+    func testLightTapFlipsEndTime() throws {
+        let app = try launchWithBarHidden()
+        remote.press(.up)
+        XCTAssertTrue(waitBar(app) { $0["vis"] == "1" }, barProbeText(app))
+        CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                             CFNotificationName("com.nuvio.debug.transport.lightTap" as CFString), nil, nil, true)
+        XCTAssertTrue(waitBar(app) { $0["ends"] == "1" }, barProbeText(app))
+        let remaining = app.descendants(matching: .any)["player.bar.time.remaining"]
+        XCTAssertTrue(remaining.waitForExistence(timeout: 3))
+        XCTAssertTrue(remaining.label.hasPrefix("ends"), remaining.label)
+        Thread.sleep(forTimeInterval: 4.5)
+        XCTAssertEqual(bar(app)["ends"], "0", barProbeText(app))
+        print("[BarProbe] endtime end: \(barProbeText(app)) label=\(remaining.label)")
+    }
+
+    func testBarHideRules() throws {
+        let app = try launchWithBarHidden()
+        // Playing: up, then no input -> hidden by ~4 s.
+        remote.press(.up)
+        XCTAssertTrue(waitBar(app) { $0["vis"] == "1" }, barProbeText(app))
+        let t0 = Date()
+        XCTAssertTrue(waitBar(app, timeout: 6.5) { $0["vis"] == "0" }, barProbeText(app))
+        XCTAssertLessThan(Date().timeIntervalSince(t0), 5.6, "bar took too long to hide while playing")
+        // Paused (pause card on by default): bar up at 4.5 s, hidden by ~6 s.
+        remote.press(.select)
+        let t1 = Date()
+        XCTAssertTrue(waitBar(app) { $0["vis"] == "1" }, barProbeText(app))
+        // Probe reads are slow, so only the lower bound is meaningful: not hidden before ~4.5 s.
+        XCTAssertTrue(waitBar(app, timeout: 9) { $0["vis"] == "0" }, "paused bar never hid: \(barProbeText(app))")
+        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(t1), 4.5, "paused bar hid early (card on: 5 s)")
+        // A focused pill pins the bar.
+        remote.press(.up)
+        remote.press(.up)
+        XCTAssertTrue(waitBar(app) { $0["focus"] == "pill:subtitles" }, barProbeText(app))
+        Thread.sleep(forTimeInterval: 6.0)
+        XCTAssertEqual(bar(app)["vis"], "1", "bar hid with a pill focused: \(barProbeText(app))")
+        print("[BarProbe] hide end: \(barProbeText(app))")
+    }
+
+    /// Menu hides the bar first, a second Menu exits. On the simulator a consumed Menu press still
+    /// dismisses the cover (`pressesCancelled` then `viewDidDisappear` ~0.6 s later) even though the
+    /// controller handled it, so the "player still presented" half is an expected failure there.
+    /// Device check: Up, Menu (bar hides, video stays), Menu (exits).
+    func testMenuHidesBarThenExits() throws {
+        let app = try launchWithBarHidden()
+        remote.press(.up)
+        XCTAssertTrue(waitBar(app) { $0["vis"] == "1" }, barProbeText(app))
+        remote.press(.menu)
+        // The simulator dismisses the cover ~0.6 s after a consumed Menu, so the probe can vanish
+        // before it is read: that read is part of the expected failure there.
+        let probeEl = app.descendants(matching: .any)["debug_transportProbe"]
+        XCTExpectFailure("simulator Menu dismisses the cover before the probe can be read", strict: false) {
+            XCTAssertTrue(probeEl.exists && probeEl.label.contains("vis=0"), "Menu did not hide the bar: \(probeEl.exists ? probeEl.label : "gone")")
+        }
+        XCTExpectFailure("simulator Menu dismisses the cover after the press was consumed", strict: false) {
+            XCTAssertTrue(app.otherElements["player.mpv"].exists, "first Menu must hide the bar, not exit")
+        }
+        if app.otherElements["player.mpv"].exists {
+            remote.press(.menu)
+            let gone = NSPredicate(format: "exists == false")
+            let exp = XCTNSPredicateExpectation(predicate: gone, object: app.otherElements["player.mpv"])
+            XCTAssertEqual(XCTWaiter().wait(for: [exp], timeout: 6), .completed, "second Menu did not exit")
+        }
+    }
 }
