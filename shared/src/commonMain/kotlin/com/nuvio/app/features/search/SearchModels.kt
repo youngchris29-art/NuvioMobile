@@ -1,5 +1,6 @@
 package com.nuvio.app.features.search
 
+import com.nuvio.app.features.catalog.CatalogTarget
 import com.nuvio.app.features.home.MetaPreview
 import com.nuvio.app.features.home.HomeCatalogSection
 
@@ -31,6 +32,47 @@ data class SearchUiState(
     /// The normalized (trimmed) query this state answers; null for the cleared/idle state. Lets the
     /// UI say "No results for '…'" without echoing whatever is in the field right now.
     val query: String? = null,
+    /// C2: the same results as [sections], merged across add-ons and grouped (a Top result, then
+    /// one row per media type). Built from the same outcomes on every publish, so a UI can switch
+    /// between grouped rows and per-add-on [sections] without a refetch.
+    val groups: List<SearchResultGroup> = emptyList(),
+    /// C2: up to eight result titles that start with (then contain) the query, excluding the query
+    /// itself. Derived from the merged results, never from a second request.
+    val suggestions: List<String> = emptyList(),
+)
+
+/// Search & Discover batch 2026-10-06 (C2). Swift sees `.topresult` / `.type`.
+enum class SearchResultGroupKind {
+    TopResult,
+    Type,
+}
+
+/// One merged search result. [foundIn] lists the add-on display names that returned it, metadata
+/// add-ons first, distinct.
+data class SearchHit(
+    val item: MetaPreview,
+    val foundIn: List<String>,
+)
+
+/// A grouped search row. [key] is `"top"` for the Top result or `"type:<type>"`; [type] is the
+/// media type of the row (for the Top result, the type of its one hit). [representativeTarget] is
+/// the search target of the first catalog that contributed to the row, so a UI that needs a
+/// `HomeCatalogSection`-shaped row has a target to hand it; grouped rows have no See All.
+data class SearchResultGroup(
+    val key: String,
+    val kind: SearchResultGroupKind,
+    val type: String?,
+    val title: String,
+    val hits: List<SearchHit>,
+    val representativeTarget: CatalogTarget,
+)
+
+/// Caps applied while merging: [perCatalogCap] items per catalog, [perStreamOnlyAddonCap] items in
+/// total per stream-only add-on (by manifest URL), and whether to pick a Top result.
+data class SearchGroupingPolicy(
+    val perCatalogCap: Int = 40,
+    val perStreamOnlyAddonCap: Int = 8,
+    val topResult: Boolean = true,
 )
 
 enum class DiscoverEmptyStateReason {

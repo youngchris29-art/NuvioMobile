@@ -172,48 +172,40 @@ object SearchRepository {
         )
 
         activeJob = scope.launch {
-            val resultChannel = Channel<IndexedSearchResult>(Channel.UNLIMITED)
+            val resultChannel = Channel<IndexedSearchOutcome>(Channel.UNLIMITED)
             val jobs = requests.mapIndexed { index, request ->
                 launch {
-                    runCatching { request.toSection(forceRefresh = forceRefresh) }
-                        .fold(
-                            onSuccess = { section ->
-                                resultChannel.trySend(
-                                    IndexedSearchResult(
-                                        index = index,
-                                        section = section,
-                                    ),
-                                )
-                            },
-                            onFailure = { error ->
-                                if (error is CancellationException) throw error
-                                resultChannel.trySend(
-                                    IndexedSearchResult(
-                                        index = index,
-                                        error = error,
-                                    ),
-                                )
-                            },
-                        )
+                    // C2: an empty page is an Empty outcome, not a thrown error; only real
+                    // failures become Failed.
+                    val outcome = runCatching { request.fetchOutcome(forceRefresh = forceRefresh) }
+                        .getOrElse { error ->
+                            if (error is CancellationException) throw error
+                            SearchCatalogOutcome.Failed(request = request, error = error)
+                        }
+                    resultChannel.trySend(IndexedSearchOutcome(index = index, outcome = outcome))
                 }
             }
             val closeChannelJob = launch {
                 jobs.joinAll()
                 resultChannel.close()
             }
-            val results = arrayOfNulls<IndexedSearchResult>(requests.size)
+            val results = arrayOfNulls<SearchCatalogOutcome>(requests.size)
 
             try {
                 for (result in resultChannel) {
-                    results[result.index] = result
-                    val sections = results.orderedSections()
-                    if (sections.isNotEmpty()) {
+                    results[result.index] = result.outcome
+                    // C2: sections, groups and suggestions come from the same outcome array on
+                    // every publish, so the grouped and per-add-on views never disagree.
+                    val snapshot = buildSearchResultsSnapshot(normalizedQuery, results.filterNotNull())
+                    if (snapshot.sections.isNotEmpty()) {
                         publish(myId) {
                             SearchUiState(
                                 isLoading = true,
-                                sections = sections,
+                                sections = snapshot.sections,
                                 lastFanOut = fanOutLine,
                                 query = normalizedQuery,
+                                groups = snapshot.groups,
+                                suggestions = snapshot.suggestions,
                             )
                         }
                     }
@@ -223,24 +215,29 @@ object SearchRepository {
                 resultChannel.close()
             }
 
-            val completedResults = results.filterNotNull()
-            val sections = results.orderedSections()
-            val firstFailure = completedResults.firstNotNullOfOrNull { it.error?.message }
-            val allFailed = completedResults.isNotEmpty() && completedResults.all { it.error != null }
+            val outcomes = results.filterNotNull()
+            val snapshot = buildSearchResultsSnapshot(normalizedQuery, outcomes)
+            val firstFailure = outcomes.firstNotNullOfOrNull { outcome ->
+                (outcome as? SearchCatalogOutcome.Failed)?.error?.message
+            }
+            val allFailed = outcomes.isNotEmpty() && outcomes.all { it is SearchCatalogOutcome.Failed }
 
             publish(myId) {
                 SearchUiState(
-                    isLoading = sections.isEmpty() && hasPendingAddonManifests,
-                    sections = sections,
-                    emptyStateReason = when {
-                        sections.isNotEmpty() -> null
-                        hasPendingAddonManifests -> null
-                        allFailed -> SearchEmptyStateReason.RequestFailed
-                        else -> SearchEmptyStateReason.NoResults
-                    },
+                    isLoading = snapshot.sections.isEmpty() && hasPendingAddonManifests,
+                    sections = snapshot.sections,
+                    // C2 behaviour change (accepted): an all-empty search is NoResults now, not
+                    // RequestFailed — the empty page used to be thrown as an error.
+                    emptyStateReason = resolveEmptyState(
+                        outcomes = outcomes,
+                        pending = hasPendingAddonManifests,
+                        hasPeople = false,
+                    ),
                     errorMessage = if (allFailed) firstFailure else null,
                     lastFanOut = fanOutLine,
                     query = normalizedQuery,
+                    groups = snapshot.groups,
+                    suggestions = snapshot.suggestions,
                 )
             }
         }
@@ -798,7 +795,9 @@ object SearchRepository {
                 }
         }
 
-    private suspend fun SearchCatalogRequest.toSection(forceRefresh: Boolean): HomeCatalogSection {
+    /// C2: fetch + unreleased filter + custom posters, split from [toSection]. An empty page (or
+    /// one the unreleased filter empties) is [SearchCatalogOutcome.Empty], not a thrown error.
+    private suspend fun SearchCatalogRequest.fetchOutcome(forceRefresh: Boolean): SearchCatalogOutcome {
         val manifest = requireNotNull(addon.manifest)
         val page = (
             searchPageFetcherForTest?.invoke(this)
@@ -810,22 +809,21 @@ object SearchRepository {
                     forceRefresh = forceRefresh,
                 )
             ).withUnreleasedFilter()
+        if (page.items.isEmpty()) return SearchCatalogOutcome.Empty(request = this)
         CustomPosterUrlRepository.ensureLoaded()
         val posterPattern = CustomPosterUrlRepository.patternForScreen(CustomPosterScreen.SEARCH)
         val items = page.items.withCustomPosterUrls(posterPattern)
-        require(items.isNotEmpty()) {
-            resourceString("No search results returned for $catalogName.", StringKey.search_error_no_results_for_catalog, catalogName)
-        }
+        if (items.isEmpty()) return SearchCatalogOutcome.Empty(request = this)
 
-        return HomeCatalogSection(
-            key = sectionKey(),
-            title = resourceString("$catalogName • ${type.displayLabel()}", StringKey.discover_catalog_context, catalogName, type.displayLabel()),
-            subtitle = addon.displayTitle,
-            addonName = addon.displayTitle,
-            target = toCatalogTarget(manifestTransportUrl = manifest.transportUrl),
+        return SearchCatalogOutcome.Success(
+            request = this,
             items = items,
-            availableItemCount = page.rawItemCount,
-            hasMore = supportsPagination && page.nextSkip != null,
+            section = toSection(
+                items = items,
+                manifestTransportUrl = manifest.transportUrl,
+                rawItemCount = page.rawItemCount,
+                nextSkip = page.nextSkip,
+            ),
         )
     }
 
@@ -945,14 +943,10 @@ object SearchRepository {
     }
 }
 
-private data class IndexedSearchResult(
+private data class IndexedSearchOutcome(
     val index: Int,
-    val section: HomeCatalogSection? = null,
-    val error: Throwable? = null,
+    val outcome: SearchCatalogOutcome,
 )
-
-private fun Array<IndexedSearchResult?>.orderedSections(): List<HomeCatalogSection> =
-    mapNotNull { result -> result?.section }
 
 private fun CatalogPage.withUnreleasedFilter(): CatalogPage {
     if (!HomeCatalogSettingsRepository.snapshot().hideUnreleasedContent) return this
@@ -1007,6 +1001,31 @@ internal fun SearchCatalogRequest.toCatalogTarget(manifestTransportUrl: String):
         catalogId = catalogId,
         search = query,
         supportsPagination = supportsPagination,
+    )
+
+/// The per-add-on results section for one catalog (C2: split out of the fetch so grouping tests
+/// can build a [SearchCatalogOutcome.Success] without a network). Unchanged shape: title
+/// "Catalog • Type", the BUG-48 query-carrying See All target, pagination from the page.
+internal fun SearchCatalogRequest.toSection(
+    items: List<MetaPreview>,
+    manifestTransportUrl: String,
+    rawItemCount: Int = items.size,
+    nextSkip: Int? = null,
+): HomeCatalogSection =
+    HomeCatalogSection(
+        key = sectionKey(),
+        title = resourceString(
+            "$catalogName • ${localizedMediaTypeLabel(type)}",
+            StringKey.discover_catalog_context,
+            catalogName,
+            localizedMediaTypeLabel(type),
+        ),
+        subtitle = addon.displayTitle,
+        addonName = addon.displayTitle,
+        target = toCatalogTarget(manifestTransportUrl = manifestTransportUrl),
+        items = items,
+        availableItemCount = rawItemCount,
+        hasMore = supportsPagination && nextSkip != null,
     )
 
 /// BUG-33: the results list is `ForEach(model.sections, id: \.key)` (SearchView.swift), so two
@@ -1126,11 +1145,3 @@ private fun List<MetaPreview>.previewNames(limit: Int = 5): String {
 
 private fun String.displayLabel(): String =
     localizedMediaTypeLabel(this)
-
-private fun String.typeSortKey(): String =
-    when (lowercase()) {
-        "movie" -> "0_movie"
-        "series" -> "1_series"
-        "anime" -> "2_anime"
-        else -> "9_$this"
-    }

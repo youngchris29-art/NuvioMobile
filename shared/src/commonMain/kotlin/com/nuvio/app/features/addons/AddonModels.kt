@@ -123,6 +123,20 @@ fun List<ManagedAddon>.firstEnabledManifestError(): String? =
         .mapNotNull { addon -> addon.errorMessage?.takeIf(String::isNotBlank) }
         .firstOrNull()
 
+// Search & Discover batch 2026-10-06 (C2): add-on classes for grouped search results. Public so
+// tvOS can read them through SharedCore like the predicates above.
+
+/// The add-on serves metadata (`meta` resource), i.e. it is a catalog/metadata source whose search
+/// records are the richest. Its hits lead a merged search row and its name leads "found in".
+fun AddonManifest.providesMeta(): Boolean =
+    resources.any { resource -> resource.name == "meta" }
+
+/// The add-on serves streams but no metadata (a stream scraper that also exposes a search
+/// catalog). Its search hits are capped in merged rows. Catalog-only add-ons (lists, MDBList/Trakt
+/// catalogs) are neither metadata nor stream-only and are not capped.
+fun AddonManifest.isStreamOnly(): Boolean =
+    !providesMeta() && resources.any { resource -> resource.name == "stream" }
+
 sealed interface AddAddonResult {
     data class Success(val manifest: AddonManifest) : AddAddonResult
     data class Error(val message: String) : AddAddonResult
