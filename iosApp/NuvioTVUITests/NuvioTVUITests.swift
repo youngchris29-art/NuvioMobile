@@ -299,7 +299,15 @@ final class NuvioTVUITests: XCTestCase {
     // and Menu down a page pages or pops before it ever reaches the rail.
 
     /// The rail's items in `TabView` selection order (`RailItem`), which is also its `focused=` id.
-    private static let railItemTitles = ["Home", "Search", "Library", "Add-ons", "Settings", "Profile"]
+    private static let railItemTitles = ["Home", "Search", "Library", "Add-ons", "Settings", "Profile", "Discover"]
+
+    /// The rail's items TOP TO BOTTOM by `focused=` id. Search & Discover (A6): with Discover as its
+    /// own tab (the default placement) the Discover item (id 6) sits between Search and Library, so
+    /// ids are no longer in visual order; read from whether `rail_item_Discover` is mounted.
+    private func railVisualOrder(_ app: XCUIApplication) -> [Int] {
+        app.descendants(matching: .any)["rail_item_Discover"].firstMatch.exists
+            ? [0, 1, 6, 2, 3, 4, 5] : [0, 1, 2, 3, 4, 5]
+    }
 
     /// Rail mode is on: `rail_state` is mounted in Rail mode only.
     private func railMode(_ app: XCUIApplication) -> Bool {
@@ -347,11 +355,13 @@ final class NuvioTVUITests: XCTestCase {
     /// With the rail open, moves its focus to item `index` by the probe's `focused=` id.
     @discardableResult
     private func moveRailFocus(_ app: XCUIApplication, to index: Int) -> Bool {
+        let order = railVisualOrder(app)
         for _ in 0..<10 {
             let focused = railFocusedItem(app)
             if focused == index { return true }
             if focused < 0 { pause(0.3); continue }
-            remote.press(focused < index ? .down : .up)
+            let here = order.firstIndex(of: focused) ?? focused, there = order.firstIndex(of: index) ?? index
+            remote.press(here < there ? .down : .up)
             pause(0.5)
         }
         return railFocusedItem(app) == index
@@ -402,7 +412,7 @@ final class NuvioTVUITests: XCTestCase {
     /// it, and waits out the hand-off ladder (2.5 s on Search, whose keyboard arrives late).
     /// Selecting an item hands focus to the tab's content, so no post-select Down is needed.
     private func openTab(_ app: XCUIApplication, named title: String) {
-        let tabNames = ["Home", "Search", "Library", "Add-ons", "Settings", "Profile"]
+        let tabNames = ["Home", "Search", "Discover", "Library", "Add-ons", "Settings", "Profile"]
         if railMode(app) {
             guard let index = Self.railItemTitles.firstIndex(of: title) else {
                 XCTFail("openTab: '\(title)' is not a rail item (the rail branch takes the English tab titles)")
@@ -634,7 +644,7 @@ final class NuvioTVUITests: XCTestCase {
     private func focusSearchKeyboard(_ app: XCUIApplication) -> Bool {
         guard app.keyboards.firstMatch.waitForExistence(timeout: 6) else { return false }
         if ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 { pause(1); return true }
-        let tabNames = ["Home", "Search", "Library", "Add-ons", "Settings", "Profile"]
+        let tabNames = ["Home", "Search", "Discover", "Library", "Add-ons", "Settings", "Profile"]
         for _ in 0..<4 {
             if searchKeyboardHasFocus(app) { return true }
             // Armed rail items carry the same LABELS as the tab bar's buttons, so
@@ -671,17 +681,26 @@ final class NuvioTVUITests: XCTestCase {
     }
 
     /// Moves focus from Search's inline keyboard into the first results row: one Down on the
-    /// linear keyboard, Right×7 across the grid keyboard's six columns. S1 W1.
+    /// linear keyboard, Right×7 across the grid keyboard's six columns. S1 W1. Search & Discover
+    /// (B3 d): the suggestion chips (`search.suggestions`) sit between the keyboard and the
+    /// results, so one more Down steps past them when they are on screen.
     private func enterSearchResults(_ app: XCUIApplication) {
         if searchKeyboardIsGrid(app) { press(.right, times: 7, gap: 0.5) } else { press(.down, times: 1) }
+        if searchSuggestionsShown(app) { press(.down, times: 1) }
         pause(1)
     }
 
     /// The inverse of `enterSearchResults`: first results row back to the inline keyboard (Up on
-    /// the linear keyboard, Left×7 on the grid one). S1 W1.
+    /// the linear keyboard, Left×7 on the grid one), one more Up across the suggestion chips.
     private func returnToSearchKeyboard(_ app: XCUIApplication) {
+        if searchSuggestionsShown(app) { press(.up, times: 1) }
         if searchKeyboardIsGrid(app) { press(.left, times: 7, gap: 0.5) } else { press(.up, times: 1) }
         pause(1)
+    }
+
+    /// The suggestion chip row (B3 d) is on screen.
+    private func searchSuggestionsShown(_ app: XCUIApplication) -> Bool {
+        app.descendants(matching: .any)["search.suggestions"].firstMatch.exists
     }
 
     /// Whichever button currently holds focus, or nil if none does. `hasFocus` isn't a reliable
@@ -1544,7 +1563,10 @@ final class NuvioTVUITests: XCTestCase {
         // Fresh launch (2026-08-02): the Discover asserts below need a Search tab with no
         // leftover query/keyboard state from suite order, and test18's end state fed this test
         // the springboard escape in-suite (see launchToHome's header).
-        let app = launchToHome(forceFreshLaunch: true)
+        // Search & Discover (A5): Discover is its own tab by default now; only the Under Search
+        // placement keeps a Discover section (the entry row, `search.discoverEntry`) on Search's
+        // idle page, so this leg pins it through the argument domain.
+        let app = launchToHome(extraArguments: ["-discover_placement", "search"], forceFreshLaunch: true)
         openTab(app, named: "Search")
         pause(1.5)
         shot(app, "19a_discover_before")
@@ -1589,7 +1611,8 @@ final class NuvioTVUITests: XCTestCase {
         if typedSuccessfully {
             let resultButton = app.buttons.matching(NSPredicate(format: "label CONTAINS[c] %@", query)).firstMatch
             let resultCell = app.cells.firstMatch
-            let noResultsMessage = app.staticTexts["No results."]
+            // B3 g: the empty state reads "No results for ‘<query>’" now.
+            let noResultsMessage = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "No results for")).firstMatch
             XCTAssertTrue(
                 resultButton.waitForExistence(timeout: 8) || resultCell.exists || seeAllCard(app).exists || noResultsMessage.waitForExistence(timeout: 1),
                 "typed query \"\(query)\" produced neither result rows nor an empty-results message"
@@ -1866,7 +1889,9 @@ final class NuvioTVUITests: XCTestCase {
     /// already in the inline keyboard after `openTab`, so there is no Select-to-open-keyboard and
     /// no Menu-to-dismiss step — results render live under the keyboard.
     func test23SearchSeeAllBackNoCrash() throws {
-        let app = launchToHome(forceFreshLaunch: true)
+        // Search & Discover (B6): grouped rows (the default) have no See All; one row per add-on
+        // keeps S1's sections and their See All card.
+        let app = launchToHome(extraArguments: ["-search_rows_mode", "per_addon"], forceFreshLaunch: true)
         openTab(app, named: "Search")
         pause(1.5)
 
@@ -2880,79 +2905,114 @@ final class NuvioTVUITests: XCTestCase {
         try ensureToggleRow(app, labelPrefix: "Card Depth", on: false, sidebarMaxX: sidebarX, category: "Appearance")
     }
 
-    // MARK: - UX-8: Hide Discover toggle round-trip
+    // MARK: - UX-8 → Search & Discover A5: Discover placement round-trip
 
-    /// Settings → Sources (was Content Sources) → "Hide Discover" ON ⇒ the Search tab must show NO Discover
-    /// header; OFF again ⇒ it must come back (test19's existence check, inverted then restored).
-    /// Toggle rows never report focus (test25), so `ensureToggleRow` walks by counted rows and
-    /// asserts the row's accessibility value flipped — a mis-landed walk fails loudly.
-    func test29HideDiscoverToggle() throws {
+    /// Search & Discover (A5) retired UX-8's Sources "Hide Discover" toggle: Discover's place is the
+    /// Appearance › Navigation "Discover" picker (`appearance_row_discover`): Own Tab (default) /
+    /// Under Search / Off, Off syncing as Hide Discover. This leg:
+    ///   1. PICKER-DRIVEN: from the default (Own Tab: a Discover tab, no entry row on Search) picks
+    ///      Under Search → Search's idle page carries `search.discoverEntry` and the tab is gone;
+    ///      then picks Own Tab again → the tab is back, the entry row gone. Only these two values
+    ///      go through the picker: Off writes the synced Hide Discover flag, and a run that failed
+    ///      between Off and the restore would leave the fixture profile with Discover hidden.
+    ///   2. ARGUMENT-DRIVEN: `-discover_placement off` (the DEBUG override over the stored value
+    ///      and the synced flag) → no entry row and no Discover tab. The rail half of each
+    ///      placement (`rail_item_Discover`) is StageDiscoverUITests.testD06.
+    /// The `defer` re-picks Own Tab whenever the picker half moved away from it.
+    func test29DiscoverPlacementRoundTrip() throws {
         let app = launchToHome(forceFreshLaunch: true)
-        // Revamp: "Content Sources" is the "Sources" pane now, reached root → push.
-        func openContentSources() {
-            XCTAssertTrue(openSettingsCategory(app, named: "Sources"), "Settings › Sources pane did not open")
+
+        func entryRow() -> XCUIElement { app.descendants(matching: .any)["search.discoverEntry"].firstMatch }
+        /// The Discover TAB: a tab-bar button labelled "Discover". Read on Search's root, where no
+        /// other button carries that label (the Appearance picker row does, so never read it there).
+        func discoverTab() -> XCUIElement {
+            app.buttons.matching(NSPredicate(format: "label == 'Discover' AND identifier != 'appearance_row_discover'")).firstMatch
         }
-        // Search Sources order (SourcesSettingsPane `searchSourcesSection`): Recent Searches, Hide
-        // Discover, then one toggle per search-capable catalog. The tree-index walk overshot into
-        // Plugins on the 10-02 g4 run (Select landed on another row), so: tree-walk only to the
-        // section's FIRST row, then step by FOCUSED LABEL onto Hide Discover and assert focus is on
-        // it before any Select.
-        func focusedLabels() -> [String] { focusedNodes(app).map(\.label) }
-        func hideDiscoverFocused() -> Bool { focusedLabels().contains { $0.hasPrefix("Hide Discover") } }
-        func setHideDiscover(_ on: Bool) throws {
-            try walkToRowByTreeIndex(app, targetLabelPrefix: "Recent Searches", sidebarMaxX: 0, category: "Sources")
-            for _ in 0..<4 where !hideDiscoverFocused() {
+        func openSearchIdle() {
+            openTab(app, named: "Search")
+            pause(2.5)
+            XCTAssertTrue(app.searchFields.firstMatch.waitForExistence(timeout: 6), "Search tab not reached")
+        }
+        /// Appearance › Navigation › Discover → `option`. Returns whether the row then reads it.
+        func pickPlacement(_ option: String) -> Bool {
+            guard openSettingsCategory(app, named: "Appearance") else {
+                XCTFail("Settings › Appearance pane did not open")
+                return false
+            }
+            let row = app.descendants(matching: .any)["appearance_row_discover"].firstMatch
+            for _ in 0..<16 where !hasFocusByFrame(app, row) {
                 remote.press(.down)
-                pause(0.7)
+                pause(0.6)
             }
-            for _ in 0..<6 where !hideDiscoverFocused() {
-                remote.press(.up)
-                pause(0.7)
+            guard hasFocusByFrame(app, row) else {
+                XCTFail("focus never reached appearance_row_discover — focused: \(focusedNodes(app).map(\.label)); not pressing Select blind")
+                return false
             }
-            guard hideDiscoverFocused() else {
-                XCTFail("focus never landed on the Hide Discover row — focused: \(focusedLabels()); not pressing Select blind")
-                return
+            shot(app, "29_appearance_discover_row")
+            remote.press(.select)
+            pause(1.5)
+            let choice = app.descendants(matching: .any)
+                .matching(NSPredicate(format: "label == %@ AND identifier != 'appearance_row_discover'", option)).firstMatch
+            guard choice.waitForExistence(timeout: 4) else {
+                XCTFail("the Discover picker's option '\(option)' never appeared")
+                remote.press(.menu)
+                return false
             }
-            guard let before = toggleState(app: app, labelPrefix: "Hide Discover") else {
-                XCTFail("Hide Discover state unreadable")
-                return
+            if !moveFocus(app, .up, untilFrameOf: choice, max: 3) {
+                _ = moveFocus(app, .down, untilFrameOf: choice, max: 4)
             }
-            if before != on {
-                remote.press(.select)
-                pause(1.5)
+            guard hasFocusByFrame(app, choice) else {
+                XCTFail("focus never reached the '\(option)' option — focused: \(focusedNodes(app).map(\.label))")
+                remote.press(.menu)
+                return false
             }
-            XCTAssertEqual(toggleState(app: app, labelPrefix: "Hide Discover"), on,
-                           "toggle 'Hide Discover' did not end up \(on ? "ON" : "OFF") (was \(before))")
+            remote.press(.select)
+            pause(3.0) // ContentView remounts on the placement key; the pane path is restored
+            let rowAfter = app.descendants(matching: .any)["appearance_row_discover"].firstMatch
+            let reads = rowAfter.waitForExistence(timeout: 5)
+                && (((rowAfter.value as? String) ?? "").contains(option) || rowAfter.label.contains(option)
+                    || app.staticTexts[option].exists)
+            shot(app, "29_picked_\(option.replacingOccurrences(of: " ", with: "_"))")
+            return reads
         }
 
-        // Always leave the synced profile with Hide Discover OFF, even when an assert below fails.
+        // Precondition: the default is Own Tab.
+        openSearchIdle()
+        shot(app, "29a_default_own_tab")
+        guard discoverTab().exists, !entryRow().exists else {
+            throw XCTSkip("fixture precondition: the default placement is not Own Tab (Discover tab present=\(discoverTab().exists), entry row present=\(entryRow().exists)); a stored discover_placement or a synced Hide Discover is set")
+        }
+
         var restoreNeeded = false
         defer {
-            if restoreNeeded {
-                openContentSources()
-                try? setHideDiscover(false)
-            }
+            if restoreNeeded { _ = pickPlacement("Own Tab") }
         }
 
-        openContentSources()
+        // 1a. Under Search, through the picker.
         restoreNeeded = true
-        try setHideDiscover(true)
-        shot(app, "29a_hide_discover_on")
+        XCTAssertTrue(pickPlacement("Under Search"), "the Discover row must read Under Search after the pick")
+        openSearchIdle()
+        shot(app, "29b_under_search")
+        XCTAssertTrue(entryRow().waitForExistence(timeout: 6), "Under Search: Search's idle page must carry the Discover entry row")
+        XCTAssertFalse(discoverTab().exists, "Under Search: there must be no Discover tab")
 
-        openTab(app, named: "Search")
-        pause(2.5)
-        shot(app, "29b_search_without_discover")
-        XCTAssertTrue(app.searchFields.firstMatch.waitForExistence(timeout: 6), "Search tab not reached")
-        XCTAssertFalse(app.staticTexts["Discover"].exists, "Discover header still on Search with Hide Discover ON")
-
-        openContentSources()
-        try setHideDiscover(false)
+        // 1b. Own Tab again, through the picker (the restore).
+        XCTAssertTrue(pickPlacement("Own Tab"), "the Discover row must read Own Tab after the pick")
         restoreNeeded = false
-        openTab(app, named: "Search")
+        openSearchIdle()
+        shot(app, "29c_own_tab_again")
+        XCTAssertTrue(discoverTab().waitForExistence(timeout: 6), "Own Tab: the Discover tab must be back")
+        XCTAssertFalse(entryRow().exists, "Own Tab: Search's idle page must not carry the entry row")
+
+        // 2. Off, through the argument domain.
+        let off = launchToHome(extraArguments: ["-discover_placement", "off"], forceFreshLaunch: true)
+        openTab(off, named: "Search")
         pause(2.5)
-        shot(app, "29c_search_with_discover_again")
-        XCTAssertTrue(app.staticTexts["Discover"].waitForExistence(timeout: 8), "Discover did not return after Hide Discover OFF")
-        XCTAssertTrue(app.state == .runningForeground)
+        shot(off, "29d_off")
+        XCTAssertTrue(off.searchFields.firstMatch.waitForExistence(timeout: 6), "Search tab not reached (Off)")
+        XCTAssertFalse(off.descendants(matching: .any)["search.discoverEntry"].firstMatch.exists, "Off: no Discover entry row on Search")
+        XCTAssertFalse(off.buttons.matching(NSPredicate(format: "label == 'Discover'")).firstMatch.exists, "Off: no Discover tab")
+        XCTAssertTrue(off.state == .runningForeground)
     }
 
     // MARK: - FEAT-18: in-tile title while the focus trailer plays (Hide Titles on)
@@ -9402,13 +9462,16 @@ extension NuvioTVUITests {
         pause(1)
         XCTAssertEqual(searchFieldText(app), query, "typing must reach the system field")
         // No submit: rows must arrive while the keyboard is still up.
-        let result = app.buttons.matching(NSPredicate(format: "label CONTAINS[c] %@", query)).firstMatch
+        // Search & Discover: a suggestion chip carries the query in its label too, so the results
+        // signal is a result container (the Top result card or a grouped / per-add-on row).
+        let result = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier == 'search.topResult' OR identifier BEGINSWITH 'search.group.'")).firstMatch
         XCTAssertTrue(result.waitForExistence(timeout: 15), "results must appear while typing, without a submit")
         shot(app, "test92-typed")
 
-        let grid = app.keyboards.firstMatch.exists && app.keyboards.firstMatch.frame.width < 900
-        if grid { press(.right, times: 7, gap: 0.5) } else { press(.down, times: 1) }
-        pause(1)
+        // Search & Discover (B3 d): the helper steps past the suggestion chips (selecting chip 0
+        // would only record the query, never open a result).
+        enterSearchResults(app)
         remote.press(.select)
         pause(5)
         shot(app, "test92-detail")
@@ -9422,8 +9485,7 @@ extension NuvioTVUITests {
         shot(app, "test92-back")
 
         // Back to the keyboard and clear the field: the Recent chip must be there now.
-        if grid { press(.left, times: 7, gap: 0.5) } else { press(.up, times: 1) }
-        pause(1)
+        returnToSearchKeyboard(app)
         app.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: query.count + 2))
         pause(2)
         XCTAssertEqual(searchFieldText(app), "", "the field must clear")
@@ -9434,6 +9496,184 @@ extension NuvioTVUITests {
             recentSearchLabels(app).first?.lowercased().contains(query) == true,
             "opening a result must save the query to Recent Searches as the most recent (chips: \(recentSearchLabels(app)))"
         )
+    }
+
+    // MARK: Search & Discover W3 (2026-10-06): grouped rows, empty states, the rail while typing
+
+    /// Polls `condition` every 0.25 s for up to `timeout` seconds.
+    private func searchPoll(_ timeout: TimeInterval, _ condition: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            pause(0.25)
+        }
+        return condition()
+    }
+
+    private func searchNote(_ name: String, _ text: String) {
+        let attachment = XCTAttachment(string: text)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        print("[SearchW3] \(name): \(text)")
+    }
+
+    /// `search_state q= rid= mode= rows= people= hold= empty=`, "" when absent (DEBUG only).
+    private func searchState(_ app: XCUIApplication) -> String {
+        let probe = app.descendants(matching: .any)["search_state"].firstMatch
+        return probe.exists ? probe.label : ""
+    }
+
+    /// Opens Search, puts focus on the inline keyboard and types `query` (asserting it landed).
+    private func typeSearch(_ app: XCUIApplication, _ query: String) {
+        openTab(app, named: "Search")
+        pause(2)
+        XCTAssertTrue(app.searchFields.firstMatch.waitForExistence(timeout: 10), "Search must show the system search field")
+        XCTAssertTrue(focusSearchKeyboard(app), "focus must reach the inline search keyboard before typing")
+        app.typeText(query)
+        pause(1)
+        XCTAssertEqual(searchFieldText(app), query, "typing must reach the system field")
+    }
+
+    /// B3 (grouped results, the default Search Results mode): "dune" on Cinemeta gives a Top result
+    /// card (`search.topResult`) and a Movies row (`search.group.type:movie`), with the suggestion
+    /// chips (`search.suggestions`) first under the keyboard. Down×2 (chips, then the Top result)
+    /// puts "Found in …" on screen; one more Down reaches the Movies row, whose focused card carries
+    /// the same caption (`cardFootnote`). People (`search.people`) appears only when TMDB is on for
+    /// the profile — the FA87 guest fixture's TMDB state is not pinned, so that half is recorded,
+    /// never asserted.
+    func test94SearchGroupedRows() throws {
+        let app = launchToHome(forceFreshLaunch: true)
+        typeSearch(app, "dune")
+        let top = app.descendants(matching: .any)["search.topResult"].firstMatch
+        let movies = app.descendants(matching: .any)["search.group.type:movie"].firstMatch
+        XCTAssertTrue(top.waitForExistence(timeout: 15), "grouped mode must show a Top result for 'dune' — \(searchState(app))")
+        XCTAssertTrue(movies.waitForExistence(timeout: 8), "grouped mode must show a Movies row (search.group.type:movie) — \(searchState(app))")
+        XCTAssertTrue(searchSuggestionsShown(app), "the suggestion chips must sit under the keyboard")
+        pause(1.5)
+        shot(app, "search-typing-dune")
+        let state = searchState(app)
+        searchNote("94_state", state)
+        XCTAssertEqual(Self.probeToken(state, key: "mode"), "grouped", "the default Search Results mode is grouped: \(state)")
+        let groups = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'search.group.'"))
+        searchNote("94_groups", groups.allElementsBoundByIndex.map(\.identifier).joined(separator: ", "))
+
+        press(.down, times: 2, gap: 1.0)
+        pause(1.0)
+        let foundIn = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "Found in")).firstMatch
+        XCTAssertTrue(foundIn.waitForExistence(timeout: 4), "Down×2 (chips → Top result) must put a 'Found in …' caption on screen")
+        searchNote("94_found_in_top", foundIn.exists ? foundIn.label : "<none>")
+        shot(app, "search-topresult-foundin")
+
+        press(.down, times: 1, gap: 1.2)
+        let focusedLabels = focusedNodes(app).map(\.label)
+        let footnote = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "Found in")).count
+        searchNote("94_movies_row", "focused=\(focusedLabels) foundInLabels=\(footnote)")
+        shot(app, "94_movies_row_footnote")
+
+        let people = app.descendants(matching: .any)["search.people"].firstMatch
+        if people.exists {
+            searchNote("94_people", "search.people present (TMDB on): \(people.label)")
+        } else {
+            searchNote("94_people", "search.people absent — TMDB is off for the fixture profile (people=\(Self.probeToken(searchState(app), key: "people") ?? "?")); not asserted")
+        }
+        XCTAssertTrue(app.state == .runningForeground)
+    }
+
+    /// B3 g: two of the four empty states. (1) A query nothing matches → "No results for ‘…’"
+    /// (`empty=no_results`). (2) Every search-capable catalog switched off (Cinemeta's two `top`
+    /// catalogs, the fixture's only search sources, through `-search_disabled_catalog_keys` in the
+    /// argument domain — `SearchSourceSettings` reads the array with `stringArray(forKey:)`) →
+    /// "All search sources are off" with a Settings button that opens Settings › Sources.
+    func test95SearchEmptyStates() throws {
+        let app = launchToHome(forceFreshLaunch: true)
+        typeSearch(app, "zxqvjkwplmq")
+        let noResults = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "No results for")).firstMatch
+        XCTAssertTrue(noResults.waitForExistence(timeout: 15), "a nonsense query must settle on 'No results for …' — \(searchState(app))")
+        pause(1)
+        searchNote("95_no_results", "\(noResults.label) | \(searchState(app))")
+        shot(app, "search-empty-noresults")
+
+        let disabled = "(\"com.linvo.cinemeta:movie:top\",\"com.linvo.cinemeta:series:top\")"
+        let off = launchToHome(extraArguments: ["-search_disabled_catalog_keys", disabled], forceFreshLaunch: true)
+        typeSearch(off, "dune")
+        let allOff = off.staticTexts["All search sources are off"]
+        XCTAssertTrue(allOff.waitForExistence(timeout: 10), "every search source off must read 'All search sources are off' — \(searchState(off))")
+        searchNote("95_all_off", searchState(off))
+        shot(off, "search-empty-allsourcesoff")
+
+        let settingsButton = off.descendants(matching: .any)["search.emptyState.settings"].firstMatch
+        guard settingsButton.waitForExistence(timeout: 4) else {
+            XCTFail("the all-sources-off state must offer a Settings button (search.emptyState.settings)")
+            return
+        }
+        guard moveFocus(off, .down, untilFrameOf: settingsButton, max: 4) else {
+            XCTFail("focus never reached search.emptyState.settings — focused: \(focusedNodes(off).map(\.label)); not pressing Select blind")
+            return
+        }
+        remote.press(.select)
+        let sources = off.descendants(matching: .any)["settings_pane_sources"].firstMatch
+        XCTAssertTrue(sources.waitForExistence(timeout: 6), "Select on the Settings button must land on Settings › Sources")
+        pause(1)
+        shot(off, "95_settings_sources")
+        // Evidence: walk the pane down to the "Search Results" picker (settings.searchRowsMode),
+        // never pressing Select.
+        let rowsMode = off.descendants(matching: .any)["settings.searchRowsMode"].firstMatch
+        for _ in 0..<24 where !hasFocusByFrame(off, rowsMode) {
+            remote.press(.down)
+            pause(0.5)
+        }
+        searchNote("95_search_results_row", rowsMode.exists ? "\(rowsMode.label) value=\(rowsMode.value ?? "-") focused=\(hasFocusByFrame(off, rowsMode))" : "absent")
+        shot(off, "settings-sources-searchresults")
+        XCTAssertTrue(off.state == .runningForeground)
+    }
+
+    /// B4: with the rail Always Visible, keyboard focus on Search hides the rail's pill
+    /// (`rail_state … shown=0 kb=1`), a Down into the results shows it again (`shown=1 kb=0`), and Up
+    /// back to the keyboard hides it again. Read from `rail_state` only; the keyboard's frame is
+    /// recorded for the inset A/B (`test96b`).
+    func test96RailHidesWhileTyping() throws {
+        try railHidesWhileTyping(extra: [], tag: "96")
+    }
+
+    /// B4 A/B: the same walk with `-debug.railSearchInsetHold YES` (the shell keeps its reserved
+    /// width; only the pill hides). Same token oracle.
+    func test96bRailHidesWhileTypingInsetHold() throws {
+        try railHidesWhileTyping(extra: ["-debug.railSearchInsetHold", "YES"], tag: "96b")
+    }
+
+    private func railHidesWhileTyping(extra: [String], tag: String) throws {
+        let app = launchToHome(extraArguments: ["-sidebar_style", "rail", "-rail_visibility", "always"] + extra,
+                               forceFreshLaunch: true, homeLayout: "stage")
+        defer { _ = launchToHome(forceFreshLaunch: true) } // the style was only a launch argument
+        pause(1.5)
+        guard railMode(app) else {
+            XCTFail("rail_state probe missing with -sidebar_style rail — the rail is not on (DEBUG build?)")
+            return
+        }
+        typeSearch(app, "dune")
+        let top = app.descendants(matching: .any)["search.topResult"].firstMatch
+        _ = top.waitForExistence(timeout: 15)
+        pause(1.0)
+        func rs() -> String { railState(app) }
+        let typing = searchPoll(4) { railToken(app, "kb") == "1" && railToken(app, "shown") == "0" }
+        let kbFrame1 = app.keyboards.firstMatch.exists ? "\(app.keyboards.firstMatch.frame)" : "-"
+        searchNote("\(tag)_keyboard", "\(rs()) keyboardFrame=\(kbFrame1)")
+        shot(app, tag == "96" ? "rail-hidden-keyboard" : "\(tag)_rail_hidden_keyboard")
+        XCTAssertTrue(typing, "keyboard focus must hide the rail: expected shown=0 kb=1 — \(rs())")
+
+        remote.press(.down)
+        let results = searchPoll(4) { railToken(app, "kb") == "0" && railToken(app, "shown") == "1" }
+        searchNote("\(tag)_results", "\(rs()) focused=\(focusedNodes(app).map(\.label))")
+        shot(app, "\(tag)_rail_shown_results")
+        XCTAssertTrue(results, "a Down out of the keyboard must show the rail: expected shown=1 kb=0 — \(rs())")
+
+        remote.press(.up)
+        let back = searchPoll(4) { railToken(app, "kb") == "1" && railToken(app, "shown") == "0" }
+        let kbFrame2 = app.keyboards.firstMatch.exists ? "\(app.keyboards.firstMatch.frame)" : "-"
+        searchNote("\(tag)_keyboard_again", "\(rs()) keyboardFrame=\(kbFrame2)")
+        XCTAssertTrue(back, "Up back to the keyboard must hide the rail again: expected shown=0 kb=1 — \(rs())")
+        XCTAssertEqual(railToken(app, "expanded"), "0", "the rail must never expand on its own here — \(rs())")
     }
 
     /// The Recent Searches chips, most recent first: the buttons in the row just under the

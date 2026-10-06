@@ -64,9 +64,14 @@ final class NavigationRailUITests: XCTestCase {
     // MARK: - Launch
 
     /// Rail mode on a Home layout, with no Upcoming row and no trailers (deterministic rows).
-    private static func railArguments(layout: String = "stage", visibility: String = "always") -> [String] {
+    /// Search & Discover (A6): Discover is the rail's sixth item by default (between Search and
+    /// Library); these legs were written against the five-item rail, so they pin the placement Off
+    /// (`-discover_placement off`, the DEBUG override) and their item geometry is unchanged.
+    /// `testRail11` covers the default.
+    private static func railArguments(layout: String = "stage", visibility: String = "always",
+                                      discover: String = "off") -> [String] {
         ["-sidebar_style", "rail", "-rail_visibility", visibility, "-home_layout", layout,
-         "-home_upcoming_row_enabled", "NO", "-inline_trailers_enabled", "NO"]
+         "-home_upcoming_row_enabled", "NO", "-inline_trailers_enabled", "NO", "-discover_placement", discover]
     }
 
     /// Fresh launch, the profile gate (Left, Left, Select: "Chris" is the first profile), `settle`.
@@ -587,7 +592,7 @@ final class NavigationRailUITests: XCTestCase {
         if let classicCard0 { XCTAssertEqual(classicCard0.minX, 176, accuracy: 2, "Classic: card 0 at 140 + 36: \(classicCard0)") }
 
         let tabs = launch(["-sidebar_style", "tabs", "-home_layout", "stage",
-                           "-home_upcoming_row_enabled", "NO", "-inline_trailers_enabled", "NO"])
+                           "-home_upcoming_row_enabled", "NO", "-inline_trailers_enabled", "NO", "-discover_placement", "off"])
         XCTAssertTrue(railState(tabs).isEmpty, "Tabs mode must not mount the rail")
         for _ in 0..<2 where !(focused(tabs).map({ $0.frame.midY > 500 }) ?? false) {
             remote.press(.down)
@@ -608,7 +613,7 @@ final class NavigationRailUITests: XCTestCase {
     /// with the Rail visibility row under it.
     func testRail09_SidebarValueReadsAsRail() throws {
         let app = launch(["-sidebar_style", "sidebar", "-home_layout", "stage",
-                          "-home_upcoming_row_enabled", "NO", "-inline_trailers_enabled", "NO"])
+                          "-home_upcoming_row_enabled", "NO", "-inline_trailers_enabled", "NO", "-discover_placement", "off"])
         try requireRail(app)
         XCTAssertTrue(app.descendants(matching: .any)["navigation_rail"].waitForExistence(timeout: 4), "navigation_rail must show")
         let chrome = label(app, "debug_navchrome")
@@ -671,5 +676,41 @@ final class NavigationRailUITests: XCTestCase {
                       "Right must return to the action the rail was opened from ('\(result.origin)'), got '\(focused(app)?.label ?? "<none>")'")
         XCTAssertTrue(app.descendants(matching: .any)["detail_hero"].exists || actionLabels.contains(where: { app.buttons[$0].exists }),
                       "Right must return into Detail, never pop it")
+    }
+
+    // MARK: - testRail11 (Search & Discover A6)
+
+    /// At the default placement (Own Tab) the rail carries a Discover item (`rail_item_Discover`,
+    /// id 6) directly under Search, and selecting it opens the Discover tab (`rail_state tab=6`, the
+    /// stage Discover page's `discover_rows_state` mounted).
+    func testRail11_DiscoverItemAtDefault() throws {
+        let app = launch(Self.railArguments(discover: "tab"))
+        try requireRail(app)
+        let item = app.descendants(matching: .any)["rail_item_Discover"].firstMatch
+        XCTAssertTrue(item.waitForExistence(timeout: 4), "the rail must carry rail_item_Discover at the default placement")
+        let search = app.descendants(matching: .any)["rail_item_Search"].firstMatch
+        let library = app.descendants(matching: .any)["rail_item_Library"].firstMatch
+        if item.exists, search.exists, library.exists {
+            XCTAssertGreaterThan(item.frame.midY, search.frame.midY, "Discover sits below Search: \(item.frame) vs \(search.frame)")
+            XCTAssertLessThan(item.frame.midY, library.frame.midY, "Discover sits above Library: \(item.frame) vs \(library.frame)")
+        }
+        guard openRailByLeft(app, maxPresses: 15).opened else {
+            throw HarnessAbort("the rail never opened from a Left walk — \(railState(app))")
+        }
+        // Visual order Home 0, Search 1, Discover 6: two Downs from Home.
+        for _ in 0..<6 where railFocused(app) != 6 {
+            let current = railFocused(app)
+            remote.press(current == 0 || current == 1 ? .down : .up)
+            pause(0.5)
+        }
+        XCTAssertEqual(railFocused(app), 6, "focus must reach the Discover item — \(railState(app))")
+        shot("rail11_discover_item")
+        guard railFocused(app) == 6 else { return }
+        remote.press(.select)
+        XCTAssertTrue(poll(6) { rail(app, "tab") == "6" }, "selecting Discover must switch to tab 6 — \(railState(app))")
+        XCTAssertTrue(app.descendants(matching: .any)["discover_rows_state"].firstMatch.waitForExistence(timeout: 8),
+                      "the Discover tab must mount the stage Discover page (discover_rows_state)")
+        pause(2)
+        shot("rail11_discover_tab")
     }
 }
