@@ -9,10 +9,18 @@ import Foundation
 /// replaces them starts, even when nothing more arrives (`tick`; review r1 P2-1: a catalog with no
 /// matches emits nothing, so a slow add-on used to keep stale rows up until its 60 s timeout).
 /// The view model reports each search start itself (`searchStarted`), since the repository's
-/// start state can be swallowed (review r5 P2-1), and drops a cancelled search's late writes that
-/// carry rows (`isStale`, review r4 P2-1). A late write with NO rows (a settled "no results") can't
-/// be told apart and may flash until the active search's next write (review r5 P3-1, accepted:
-/// the fix is a request id on `SearchUiState`, in `shared/`).
+/// start state can be swallowed (review r5 P2-1), and drops a cancelled search's late writes
+/// (`isStale`, review r4 P2-1).
+///
+/// Search & Discover batch 2026-10-06 (B2): `SearchUiState.requestId` (C1) is now the identity. The
+/// view model keeps the id `search()` returned as the active one, so ANY write of another search
+/// is stale, including a settled "no results" with no rows (the r5 P3-1 flash S1 accepted), and
+/// `relation` compares ids. The query-label pair stays as the fallback: after a clear there is no
+/// active id (`clear()` returns none), and a re-search of the same query (Retry, a manifest
+/// landing) gets a new id but should still hold its rows like a restart. Rows are whatever the
+/// active `SearchRowsMode` draws (grouped type rows or per-add-on sections); `isFollowingIncoming`
+/// tells the view model when to adopt the emission's Top result, "Found in", People and
+/// suggestions along with its rows.
 ///
 /// Device evidence (S1 Wave 0, Living Room Apple TV, Grid, "dune" one letter at a time): swapping
 /// on the FIRST new row collapsed the page to one row and regrew it on every letter; holding until
@@ -33,6 +41,26 @@ struct SearchRowsHold {
         case otherQuery
     }
 
+    /// The relation by request id (B2): the same id is the same search, so `.sameSearch` when the
+    /// emission contains every shown row and `.sameQueryRestart` when it hasn't caught up. Different
+    /// ids fall back to the query labels (`relation(shownQuery:...)`): the same query searched again
+    /// relates like a restart, anything else is `.otherQuery`. A nil id (nothing shown yet, or the
+    /// field was cleared) also falls back.
+    static func relation(
+        shownRequestId: Int64?,
+        activeRequestId: Int64?,
+        shownKeys: [String],
+        incomingKeys: [String],
+        shownQuery: String? = nil,
+        activeQuery: String? = nil
+    ) -> Relation {
+        if let shownRequestId, let activeRequestId, shownRequestId == activeRequestId {
+            let incoming = Set(incomingKeys)
+            return shownKeys.allSatisfy { incoming.contains($0) } ? .sameSearch : .sameQueryRestart
+        }
+        return relation(shownQuery: shownQuery, activeQuery: activeQuery, shownKeys: shownKeys, incomingKeys: incomingKeys)
+    }
+
     /// The relation for the rows on screen, from facts the view model reads off the rows
     /// themselves (review r3 P2-1: a query stamped when rows were taken can be the NEXT query's,
     /// when a deadline tick or a late write from a cancelled search lands after the query changed).
@@ -49,7 +77,17 @@ struct SearchRowsHold {
         return shownKeys.allSatisfy { incoming.contains($0) } ? .sameSearch : .sameQueryRestart
     }
 
-    /// Whether an emission's rows came from a search other than the active one (review r4 P2-1).
+    /// Whether an emission answers a search other than the active one (B2). Every
+    /// `SearchRepository` publish carries the id of the call it answers, and the view model keeps
+    /// the id `search()` returned, so this catches every late write of a cancelled search: rows,
+    /// a start state, or a settled empty one. With no active id (the field was cleared, or no
+    /// search has run) this can't judge; the caller uses `isStale(emissionQuery:activeQuery:)`.
+    static func isStale(emissionRequestId: Int64, activeRequestId: Int64?) -> Bool {
+        guard let activeRequestId else { return false }
+        return emissionRequestId != activeRequestId
+    }
+
+    /// Fallback (S1): whether an emission's rows came from a search other than the active one (review r4 P2-1).
     /// A cancelled search can still write after the next one starts (a `StateFlow` write is not a
     /// suspension point), and its rows must neither reach the screen nor be what a hold releases
     /// to. `emissionQuery` is nil for an emission with no rows to label (start states, empty
@@ -92,6 +130,11 @@ struct SearchRowsHold {
         return false
     }
 
+    /// B2: the rows on screen are the latest emission's (idle or following), so the view model
+    /// adopts that emission's Top result, "Found in", People and suggestions too. While holding it
+    /// keeps the previous ones, so the extras never describe rows that aren't shown.
+    var isFollowingIncoming: Bool { !isHolding }
+
     /// When a hold over ANOTHER query's rows must end even if the repository emits nothing more.
     /// A same-query restart has none.
     var holdDeadline: TimeInterval? {
@@ -103,7 +146,7 @@ struct SearchRowsHold {
     /// the emission's sections, `now` a `systemUptime` value, `relation` how `current` relates to
     /// the loading search.
     ///
-    /// - Settled (`isLoading == false`): exactly what the search found (empty = "No results.").
+    /// - Settled (`isLoading == false`): exactly what the search found (empty = the view model's `SearchEmptyState`).
     /// - Rows on screen and the emission doesn't extend them (an empty start emission, a
     ///   restart that hasn't caught up, or another query's rows under conflated partial rows;
     ///   review r1 P3-1): hold them.

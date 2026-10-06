@@ -2,12 +2,19 @@ import Combine
 import Foundation
 import SharedCore
 
-/// Drives the Search screen. Observes the installed addons (to pass into `SearchRepository.search`
-/// and `refreshDiscover`), the shared `SearchRepository.uiState` (results, as `[HomeCatalogSection]`),
-/// the Discover state (`discoverUiState` — genre/catalog browsing shown while the query is empty),
-/// and the per-profile search history (`SearchHistoryRepository`).
+/// Drives the Search screen. Observes the installed addons (to pass into `SearchRepository.search`),
+/// the shared `SearchRepository.uiState` (results), the per-profile search history
+/// (`SearchHistoryRepository`) and where Discover lives (`DiscoverPlacement`).
 ///
-/// Queries are debounced so we don't fire a request on every keystroke.
+/// Search & Discover batch 2026-10-06 (B2): results arrive grouped (C2): a Top result, one row per
+/// media type merged across add-ons ("Found in …" per card), TMDB People (C3), and suggestion
+/// chips. `SearchResultsAdapter` turns a state into rows for the active `SearchRowsMode`
+/// (grouped by type, or the S1 one-row-per-add-on sections), and `SearchRowsHold` keeps the
+/// previous rows up while the next query loads, keyed on `SearchUiState.requestId` (C1). Discover
+/// no longer lives here: it is a stage page of its own (`DiscoverPlacement`), so the Discover
+/// watcher and its selection calls are gone.
+///
+/// Queries are debounced (350 ms) so we don't fire a request on every keystroke.
 @MainActor
 final class SearchViewModel: ObservableObject {
     /// FEAT-10: which search-capable catalogs the user has switched OFF in Settings →
@@ -37,15 +44,31 @@ final class SearchViewModel: ObservableObject {
             UserDefaults.standard.set(Array(keys).sorted(), forKey: defaultsKey)
         }
     }
-    @Published private(set) var sections: [HomeCatalogSection] = []
+    /// B6: grouped by type (default) or one row per add-on. Device-local, re-read on
+    /// `UserDefaults.didChangeNotification`; a change re-derives the rows from the last emission
+    /// (no network).
+    @Published private(set) var rowsMode: SearchRowsMode = SearchRowsMode.current()
+    /// The result rows for `rowsMode`, as the hold lets them through: grouped mode has one row per
+    /// media type (key `search.group.type:<type>`, title "Movies · 12", no See All); per-add-on
+    /// mode has the repository's sections. The Top result is NOT one of these rows.
+    @Published private(set) var rows: [HomeCatalogSection] = []
+    /// `type:id` (Kotlin `MetaPreview.stableKey()`) → the add-on names that returned that title,
+    /// metadata add-ons first. Grouped mode only (empty per add-on). Read via `foundInCaption`.
+    @Published private(set) var foundIn: [String: [String]] = [:]
+    /// The Top result card's title; nil in per-add-on mode or with nothing found.
+    @Published private(set) var topResult: MetaPreview?
+    /// TMDB people for the People row (empty when TMDB is off or nothing matched).
+    @Published private(set) var people: [MetaPerson] = []
+    /// The suggestion chips: the typed query in curly quotes first (`SearchSuggestionPolicy.quoted`,
+    /// selecting it records the query to Recent), then up to eight completions (selecting one
+    /// sets the query). Empty while the field is empty.
+    @Published private(set) var suggestions: [String] = []
+    /// What a settled search with nothing to show says (B3 g). Replaces S1's `emptyMessage` and
+    /// `searchError`. Nil while loading, while anything is shown, or with an empty field.
+    @Published private(set) var emptyState: SearchEmptyState?
+    /// True while the add-ons are still answering, or while only the People lookup is outstanding
+    /// and nothing is shown yet (so "Searching…" covers the gap instead of an empty page).
     @Published private(set) var isLoading: Bool = false
-    @Published private(set) var emptyMessage: String?
-    /// Upstream 085e8dc6 / Codex r1+r4: a non-empty query that could not be searched because every
-    /// enabled add-on's MANIFEST failed to load — the state this batch introduced. Rendered with a
-    /// Retry that re-fetches the manifests. Deliberately NOT set for catalog-level RequestFailed:
-    /// the shared `toSection()` treats an empty catalog page as an error, so an all-empty search
-    /// also publishes RequestFailed and must keep reading as "No results." (pre-existing behaviour).
-    @Published private(set) var searchError: String?
     /// BUG-33 defect 1 instrumentation: passthrough of `SearchUiState.lastFanOut` — a
     /// human-readable "searched N of M catalogs" line set by the shared repo right after the
     /// last `search()` call. Settings → Content Sources → Search Sources renders the same value
@@ -55,24 +78,28 @@ final class SearchViewModel: ObservableObject {
     @Published private(set) var lastFanOut: String?
     /// Recent searches for this profile (most recent first).
     @Published private(set) var history: [String] = []
-    /// Shared Discover state: type/catalog/genre options + a paginated item grid.
-    @Published private(set) var discover: DiscoverUiState?
-    /// UX-8: the user hid the whole Discover section (synced home-catalog setting). Seeded from
-    /// the repository snapshot so the very first frame is right, then live via the watcher.
-    @Published private(set) var hideDiscover = HomeCatalogSettingsRepository.shared.snapshot().hideDiscover
-    private var catalogSettingsWatcher: FlowWatcher?
+    /// A5: where Discover lives. Search shows its entry row only for `.underSearch`. Re-read on
+    /// `UserDefaults.didChangeNotification` and on the synced Hide Discover flag (UX-8, which wins).
+    @Published private(set) var discoverPlacement: DiscoverPlacement = DiscoverPlacement.current()
 
+    private var catalogSettingsWatcher: FlowWatcher?
     private var addonWatcher: FlowWatcher?
     private var searchWatcher: FlowWatcher?
-    private var discoverWatcher: FlowWatcher?
     private var historyWatcher: FlowWatcher?
+    private var defaultsObserver: AnyCancellable?
     private var enabledAddons: [ManagedAddon] = []
-    private var lastDiscoverAddonSignature: String?
+    /// Keys of every search-capable catalog across the enabled add-ons (the Search Sources list),
+    /// for the "all sources off" empty state.
+    private var searchOptionKeys: [String] = []
     /// Upstream 085e8dc6 (#1819): the trimmed query currently being searched (nil while the field
     /// is empty). `SearchRepository.search` only recomputes its pending-manifest state when it is
     /// called again, and this screen otherwise calls it only from the typing debounce — so an addon
     /// manifest landing or failing mid-query has to re-issue the search itself.
     private var activeQuery: String?
+    /// B2: the `SearchUiState.requestId` of the active search: what `search()` returned (a deduped
+    /// same-key call returns the live id). Nil while the field is empty. Every emission with
+    /// another id is a late write of another search and is dropped (`SearchRowsHold.isStale`).
+    private var activeRequestId: Int64?
     private var lastSearchAddonSignature: String?
     private var debounce: Task<Void, Never>?
     private var started = false
@@ -80,14 +107,19 @@ final class SearchViewModel: ObservableObject {
     /// H2 hardening (BUG-47), mirrors `CatalogGridViewModel.stopped`: `FlowWatcher.cancel()`'s
     /// cancellation is cooperative, so a resume already queued on the main run loop can deliver one
     /// more value to a callback AFTER `stop()` returns, driving `@Published` mutations into a view
-    /// mid-pop. One flag for all four watchers — they're always started and stopped together.
+    /// mid-pop. One flag for all the watchers — they're always started and stopped together.
     private var stopped = false
     /// S1 W1: what to show while the next query loads. See `SearchRowsHold`.
     private var rowsHold = SearchRowsHold()
     /// The repository's last ACCEPTED emission (not stale when it arrived), for the hold's
-    /// deadline tick (review r1 P2-1) and `holdSearchStarted`. It can be the previous search's
-    /// once the next one starts; the tick checks.
+    /// deadline tick (review r1 P2-1), `holdSearchStarted` and a rows-mode switch. It can be the
+    /// previous search's once the next one starts; the tick checks.
     private var lastSearchState: SearchUiState?
+    /// The request id and query of the emission whose rows are on screen (set while following).
+    private var shownRequestId: Int64?
+    private var shownQuery: String?
+    /// Completion candidates of the emission on screen (`SearchResultsAdapter.suggestionCandidates`).
+    private var suggestionCandidates: [String] = []
     private var holdTickGeneration = 0
     private var scheduledHoldDeadline: TimeInterval?
 
@@ -95,52 +127,12 @@ final class SearchViewModel: ObservableObject {
         guard !started else { return }
         started = true
         stopped = false
+        refreshDefaults()
 
         searchWatcher = FlowWatcherKt.watch(SearchRepository.shared.uiState) { [weak self] emitted in
             guard let self, !self.stopped else { return }
             guard let state = emitted as? SearchUiState else { return }
-            // Review r4 P2-1: a cancelled search can write after the next one started (or after
-            // the field was cleared); its rows are another query's, so the whole emission is
-            // dropped rather than shown or held for the tick.
-            guard !SearchRowsHold.isStale(
-                emissionQuery: Self.searchedQuery(of: state.sections),
-                activeQuery: self.activeQuery
-            ) else {
-                // `stop()` cancels the tick but keeps the hold; if this was the first value after
-                // `start()`, nothing else would re-arm it (review r6 P3-3). Idempotent.
-                self.scheduleHoldTick()
-                return
-            }
-            self.isLoading = state.isLoading
-            // S1 W1: keep the previous query's rows while the next one loads (`SearchRowsHold`);
-            // the repository starts every search with empty sections.
-            self.lastSearchState = state
-            self.sections = self.rowsHold.rows(
-                current: self.sections,
-                incoming: state.sections,
-                isLoading: state.isLoading,
-                now: ProcessInfo.processInfo.systemUptime,
-                relation: self.holdRelation(current: self.sections, incoming: state.sections)
-            )
-            self.scheduleHoldTick()
-            let settledEmpty = state.sections.isEmpty && !state.isLoading
-            // KMP exports enum entries all-lowercase (like DiscoverEmptyStateReason.requestfailed).
-            // Manifest failure = RequestFailed while no enabled add-on has a manifest at all.
-            let manifestFailure = settledEmpty
-                && state.emptyStateReason == SearchEmptyStateReason.requestfailed
-                && !self.enabledAddons.contains(where: { $0.manifest != nil })
-            let errorText: String? = state.errorMessage
-            self.searchError = manifestFailure ? (errorText ?? String(localized: "Couldn't load your add-ons.")) : nil
-            self.emptyMessage = settledEmpty && !manifestFailure && state.emptyStateReason != nil
-                ? String(localized: "No results.")
-                : nil
-            self.lastFanOut = state.lastFanOut
-        }
-
-        discoverWatcher = FlowWatcherKt.watch(SearchRepository.shared.discoverUiState) { [weak self] emitted in
-            guard let self, !self.stopped else { return }
-            guard let state = emitted as? DiscoverUiState else { return }
-            self.discover = state
+            self.accept(state)
         }
 
         historyWatcher = FlowWatcherKt.watch(SearchHistoryRepository.shared.uiState) { [weak self] emitted in
@@ -150,27 +142,34 @@ final class SearchViewModel: ObservableObject {
         }
         SearchHistoryRepository.shared.ensureLoaded()
 
-        // UX-8: follow the synced Hide Discover flag. When it flips back OFF while the screen is
-        // up, re-arm so the section rebuilds (refreshDiscoverIfNeeded early-returns on a matching
-        // addon signature and would otherwise leave `discover` stale/nil).
+        // UX-8: the synced Hide Discover flag is the Off value of the placement (`DiscoverPlacement`
+        // lets it win), so follow it live.
         catalogSettingsWatcher = FlowWatcherKt.watch(HomeCatalogSettingsRepository.shared.uiState) { [weak self] emitted in
             guard let self, !self.stopped else { return }
-            guard let state = emitted as? HomeCatalogSettingsUiState else { return }
-            let wasHidden = self.hideDiscover
-            self.hideDiscover = state.hideDiscover
-            if wasHidden && !state.hideDiscover {
-                self.lastDiscoverAddonSignature = nil
-                self.refreshDiscoverIfNeeded()
-            }
+            guard emitted is HomeCatalogSettingsUiState else { return }
+            self.refreshPlacement()
         }
 
         addonWatcher = FlowWatcherKt.watch(AddonRepository.shared.uiState) { [weak self] emitted in
             guard let self, !self.stopped else { return }
             guard let state = emitted as? AddonsUiState else { return }
             self.enabledAddons = AddonModelsKt.enabledAddons(state.addons)
-            self.refreshDiscoverIfNeeded()
+            self.searchOptionKeys = SearchRepository.shared
+                .searchCatalogOptions(addons: self.enabledAddons)
+                .map(\.key)
             self.researchIfAddonsChanged()
+            self.refreshEmptyState()
         }
+
+        // B6 / A5: the rows mode, the Discover placement and the Search Sources switches are all
+        // device-local defaults; any write may be one of them.
+        defaultsObserver = NotificationCenter.default
+            .publisher(for: UserDefaults.didChangeNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self, !self.stopped else { return }
+                self.refreshDefaults()
+            }
 
         AddonRepository.shared.initialize()
     }
@@ -181,43 +180,177 @@ final class SearchViewModel: ObservableObject {
         debounce?.cancel()
         addonWatcher?.cancel()
         searchWatcher?.cancel()
-        discoverWatcher?.cancel()
         historyWatcher?.cancel()
         catalogSettingsWatcher?.cancel()
+        defaultsObserver?.cancel()
         addonWatcher = nil
         searchWatcher = nil
-        discoverWatcher = nil
         historyWatcher = nil
         catalogSettingsWatcher = nil
+        defaultsObserver = nil
         started = false
-        // Re-arm Discover for the next start(): refreshDiscoverIfNeeded() early-returns when
-        // the signature already matches, so without this the section would never rebuild.
-        // canReuseDiscoverState in the repository still avoids redundant network work.
-        lastDiscoverAddonSignature = nil
-        // `activeQuery` deliberately survives: the query box (`SearchQueryBox`) outlives a tab
-        // switch and `SearchFieldLayer`'s `.onChange` won't refire, so the next addon emission
-        // after start() must still be able to re-issue. The repository's same-key early return
-        // keeps that a no-op otherwise.
+        // `activeQuery` / `activeRequestId` deliberately survive: the query box (`SearchQueryBox`)
+        // outlives a tab switch and `SearchFieldLayer`'s `.onChange` won't refire, so the next addon
+        // emission after start() must still be able to re-issue, and the repository's state for it
+        // must still read as the active one. The same-key early return keeps that a no-op otherwise.
         lastSearchAddonSignature = nil
         cancelHoldTick()
     }
 
+    // MARK: - Emissions
+
+    /// One repository emission: drop it if it answers another search, else run the rows through
+    /// the hold and, when the hold lets this emission's rows through, adopt its extras too.
+    private func accept(_ state: SearchUiState) {
+        // Review r4 P2-1, now by request id (B2): a cancelled search can write after the next one
+        // started (or after the field was cleared); its rows, start state or empty settle are
+        // another query's, so the whole emission is dropped rather than shown or held for the tick.
+        guard !isStale(state) else {
+            // `stop()` cancels the tick but keeps the hold; if this was the first value after
+            // `start()`, nothing else would re-arm it (review r6 P3-3). Idempotent.
+            scheduleHoldTick()
+            return
+        }
+        lastSearchState = state
+        let incoming = SearchResultsAdapter.rows(from: state, mode: rowsMode)
+        // S1 W1: keep the previous query's rows while the next one loads (`SearchRowsHold`); the
+        // repository starts every search with empty results.
+        rows = rowsHold.rows(
+            current: rows,
+            incoming: incoming,
+            isLoading: state.isLoading,
+            now: ProcessInfo.processInfo.systemUptime,
+            relation: holdRelation(incoming: incoming)
+        )
+        if rowsHold.isFollowingIncoming { adoptExtras(from: state) }
+        scheduleHoldTick()
+        isLoading = state.isLoading || (state.peopleLoading && rows.isEmpty)
+        refreshEmptyState()
+        lastFanOut = state.lastFanOut
+    }
+
+    /// Whether an emission answers a search other than the active one. By request id while a
+    /// search is active; with an empty field (no active id) by the query it answers, so a late
+    /// search write can't refill a cleared page.
+    private func isStale(_ state: SearchUiState) -> Bool {
+        if activeRequestId != nil {
+            return SearchRowsHold.isStale(emissionRequestId: state.requestId, activeRequestId: activeRequestId)
+        }
+        return SearchRowsHold.isStale(emissionQuery: Self.emissionQuery(of: state), activeQuery: activeQuery)
+    }
+
+    /// The query an emission answers: Kotlin's `query` (C1), else the label on its per-add-on rows.
+    private static func emissionQuery(of state: SearchUiState) -> String? {
+        state.query ?? searchedQuery(of: state.sections)
+    }
+
+    /// Take the Top result, "Found in", People and suggestion candidates of the emission whose
+    /// rows are now on screen (nil: nothing is, e.g. a hold released to "Searching…"). Writes
+    /// only on change, so an unchanged partial emission re-renders nothing.
+    private func adoptExtras(from state: SearchUiState?) {
+        let newFoundIn = state.map { SearchResultsAdapter.foundIn(from: $0, mode: rowsMode) } ?? [:]
+        let newTop = state.flatMap { SearchResultsAdapter.topResult(from: $0, mode: rowsMode) }
+        let newPeople = state.map { SearchResultsAdapter.people(from: $0) } ?? []
+        if foundIn != newFoundIn { foundIn = newFoundIn }
+        if topResult != newTop { topResult = newTop }
+        if people != newPeople { people = newPeople }
+        suggestionCandidates = state.map { SearchResultsAdapter.suggestionCandidates(from: $0) } ?? []
+        shownRequestId = state?.requestId
+        shownQuery = state.flatMap { Self.emissionQuery(of: $0) }
+        refreshSuggestions()
+    }
+
+    private func refreshSuggestions() {
+        let chips = SearchSuggestionPolicy.chips(query: activeQuery, candidates: suggestionCandidates)
+        if suggestions != chips { suggestions = chips }
+    }
+
+    /// B3 g: resolved only for a settled search of the ACTIVE request with nothing on screen (no
+    /// rows, no Top result, no people, the People lookup answered).
+    private func refreshEmptyState() {
+        var resolved: SearchEmptyState?
+        if let state = lastSearchState, activeQuery != nil, !isStale(state),
+           rowsHold.isFollowingIncoming,
+           !state.isLoading, !state.peopleLoading,
+           rows.isEmpty, topResult == nil, people.isEmpty {
+            let disabled = SearchSourceSettings.disabledKeys
+            resolved = SearchEmptyState.resolve(
+                reason: state.emptyStateReason,
+                hasEnabledAddons: !enabledAddons.isEmpty,
+                anyManifestLoaded: enabledAddons.contains { $0.manifest != nil },
+                searchOptionCount: searchOptionKeys.count,
+                disabledOptionCount: searchOptionKeys.filter { disabled.contains($0) }.count,
+                query: state.query ?? activeQuery ?? "",
+                errorMessage: state.errorMessage
+            )
+        }
+        if emptyState != resolved { emptyState = resolved }
+    }
+
+    // MARK: - Device-local settings
+
+    /// Re-read the rows mode and the Discover placement (both device-local defaults), and the
+    /// empty state (Search Sources switches live in defaults too).
+    private func refreshDefaults() {
+        let mode = SearchRowsMode.current()
+        if mode != rowsMode {
+            rowsMode = mode
+            rederiveRows()
+        }
+        refreshPlacement()
+        refreshEmptyState()
+    }
+
+    private func refreshPlacement() {
+        let placement = DiscoverPlacement.current()
+        if placement != discoverPlacement { discoverPlacement = placement }
+    }
+
+    /// B2 mode switch mid-hold: drop the hold and redraw the last accepted emission in the new
+    /// mode. No network: both layouts come from the same state.
+    private func rederiveRows() {
+        rowsHold.reset()
+        cancelHoldTick()
+        guard let state = lastSearchState, !isStale(state) else {
+            rows = []
+            adoptExtras(from: nil)
+            refreshEmptyState()
+            return
+        }
+        rows = SearchResultsAdapter.rows(from: state, mode: rowsMode)
+        adoptExtras(from: state)
+        isLoading = state.isLoading || (state.peopleLoading && rows.isEmpty)
+        refreshEmptyState()
+    }
+
+    // MARK: - "Found in"
+
+    /// B3 f: the caption under a focused grouped-row card, "Found in Cinemeta and Torrentio"
+    /// (locale list join). Shown even for a single source; nil when unknown (per-add-on mode).
+    func foundInCaption(for item: MetaPreview) -> String? {
+        guard let names = foundIn[item.stableKey()], !names.isEmpty else { return nil }
+        let joined = ListFormatter.localizedString(byJoining: names)
+        return String(localized: "Found in \(joined)")
+    }
+
     // MARK: - Rows hold (S1 W1)
 
-    /// How the rows on screen relate to the search now loading (`SearchRowsHold.relation`).
-    private func holdRelation(current: [HomeCatalogSection], incoming: [HomeCatalogSection]) -> SearchRowsHold.Relation {
+    /// How the rows on screen relate to the search now loading (`SearchRowsHold.relation`): by
+    /// request id, with the query labels as the fallback for a re-search of the same query.
+    private func holdRelation(incoming: [HomeCatalogSection]) -> SearchRowsHold.Relation {
         SearchRowsHold.relation(
-            shownQuery: Self.searchedQuery(of: current),
-            activeQuery: activeQuery,
-            shownKeys: current.map(\.key),
-            incomingKeys: incoming.map(\.key)
+            shownRequestId: rows.isEmpty ? nil : shownRequestId,
+            activeRequestId: activeRequestId,
+            shownKeys: rows.map(\.key),
+            incomingKeys: incoming.map(\.key),
+            shownQuery: rows.isEmpty ? nil : shownQuery,
+            activeQuery: activeQuery
         )
     }
 
-    /// The query a set of result rows was searched with, read off the rows themselves (review r3
-    /// P2-1): every search section's See All target carries the exact query (BUG-48), so the label
-    /// can't drift from the rows the way a query stamped at display time can. Nil when unknown or
-    /// mixed.
+    /// The query a set of per-add-on result rows was searched with, read off the rows themselves
+    /// (review r3 P2-1): every search section's See All target carries the exact query (BUG-48).
+    /// Nil when unknown or mixed. B2: the fallback label for an emission without `query`.
     static func searchedQuery(of sections: [HomeCatalogSection]) -> String? {
         var query: String?
         for section in sections {
@@ -231,17 +364,18 @@ final class SearchViewModel: ObservableObject {
     /// The debounce started a new search: tell the hold now rather than wait for the repository's
     /// start state, which may never be seen (review r3 P3-1, r5 P2-1; `SearchRowsHold.searchStarted`).
     private func holdSearchStarted() {
+        let incoming = lastSearchState.map { SearchResultsAdapter.rows(from: $0, mode: rowsMode) } ?? []
         rowsHold.searchStarted(
-            relation: holdRelation(current: sections, incoming: lastSearchState?.sections ?? []),
-            hasRows: !sections.isEmpty,
+            relation: holdRelation(incoming: incoming),
+            hasRows: !rows.isEmpty,
             now: ProcessInfo.processInfo.systemUptime
         )
         scheduleHoldTick()
     }
 
     /// A hold must end on time even when the repository emits nothing more (review r1 P2-1): a
-    /// catalog with no matches throws without changing the sections, so after the fast add-ons
-    /// answer, a slow one could keep the previous query's rows up until its 60 s timeout.
+    /// catalog with no matches emits nothing, so after the fast add-ons answer, a slow one could
+    /// keep the previous query's rows up until its 60 s timeout.
     private func scheduleHoldTick() {
         guard let deadline = rowsHold.holdDeadline else {
             cancelHoldTick()
@@ -260,20 +394,19 @@ final class SearchViewModel: ObservableObject {
             // The last accepted emission can predate the active search when its start state was
             // never seen: never release to the previous search's rows (review r4 P2-1), and that
             // search is still loading as far as anything here knows ("Searching…").
-            let stale = SearchRowsHold.isStale(
-                emissionQuery: Self.searchedQuery(of: state.sections),
-                activeQuery: self.activeQuery
-            )
-            let incoming = stale ? [] : state.sections
+            let stale = self.isStale(state)
+            let incoming = stale ? [] : SearchResultsAdapter.rows(from: state, mode: self.rowsMode)
             let loading = stale || state.isLoading
-            if let rows = self.rowsHold.tick(
+            if let released = self.rowsHold.tick(
                 lastIncoming: incoming,
                 isLoading: loading,
                 now: now,
-                relation: self.holdRelation(current: self.sections, incoming: incoming)
+                relation: self.holdRelation(incoming: incoming)
             ) {
-                self.sections = rows
+                self.rows = released
+                self.adoptExtras(from: stale ? nil : state)
                 if stale { self.isLoading = true }
+                self.refreshEmptyState()
             } else if let pending = self.rowsHold.holdDeadline, now < pending {
                 // Fired before its deadline (review r2 P3-4): reschedule while it is still ahead.
                 self.scheduleHoldTick()
@@ -292,16 +425,16 @@ final class SearchViewModel: ObservableObject {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !trimmed.isEmpty else {
-            // `.reset()` is the nuclear account/profile-teardown variant — it also wipes
-            // discoverSources, which permanently kills the Discover section here since
-            // nothing ever re-arms it. Use `.clear()`, which only resets search state. (BUG-33(2))
+            // `.reset()` is the nuclear account/profile-teardown variant (it also wipes the
+            // Discover sources). Use `.clear()`, which only resets search state. (BUG-33(2))
             SearchRepository.shared.clear()
             rowsHold.reset()
             cancelHoldTick()
-            sections = []
-            emptyMessage = nil
-            searchError = nil
             activeQuery = nil
+            activeRequestId = nil
+            rows = []
+            adoptExtras(from: nil)
+            emptyState = nil
             return
         }
 
@@ -310,7 +443,7 @@ final class SearchViewModel: ObservableObject {
             guard !Task.isCancelled, let self else { return }
             self.activeQuery = trimmed
             self.lastSearchAddonSignature = self.addonManifestSignature
-            SearchRepository.shared.search(
+            self.activeRequestId = SearchRepository.shared.search(
                 query: trimmed,
                 addons: self.enabledAddons,
                 // FEAT-10: sources switched off in Settings → Content Sources → Search
@@ -319,6 +452,8 @@ final class SearchViewModel: ObservableObject {
                 forceRefresh: false
             )
             self.holdSearchStarted()
+            self.refreshSuggestions()
+            self.refreshEmptyState()
         }
     }
 
@@ -335,13 +470,11 @@ final class SearchViewModel: ObservableObject {
         SearchHistoryRepository.shared.removeSearch(query: query)
     }
 
-    // MARK: - Discover
+    // MARK: - Add-on manifests
 
     /// Per-addon manifest-load state, not just the URL set: a manifest landing or failing changes
-    /// nothing about `manifestUrl`, so the old URL-only signature never re-armed Discover after the
-    /// initial pending state and the "Install and enable an add-on" copy stuck for an addon that
-    /// WAS installed (upstream 085e8dc6, #1819). Only flips when `manifest`/`isRefreshing` change,
-    /// so a normal launch with cached manifests still dedupes exactly as before.
+    /// nothing about `manifestUrl` (upstream 085e8dc6, #1819). Only flips when
+    /// `manifest`/`isRefreshing` change, so a normal launch with cached manifests dedupes.
     private var addonManifestSignature: String {
         enabledAddons
             .map { "\($0.manifestUrl)|\($0.manifest != nil ? 1 : 0)|\($0.isRefreshing ? 1 : 0)" }
@@ -349,64 +482,35 @@ final class SearchViewModel: ObservableObject {
             .joined(separator: ",")
     }
 
-    /// (Re)build the Discover catalog options when the enabled-addon set changes.
-    private func refreshDiscoverIfNeeded() {
-        // UX-8: nothing to build while the section is hidden — skips the addon fan-out too. The
-        // catalog-settings watcher re-arms `lastDiscoverAddonSignature` when the flag clears.
-        guard !hideDiscover else { return }
-        let signature = addonManifestSignature
-        guard signature != lastDiscoverAddonSignature else { return }
-        lastDiscoverAddonSignature = signature
-        SearchRepository.shared.refreshDiscover(addons: enabledAddons, forceRefresh: false)
-    }
-
-    /// Retry for `searchError` (a manifest failure): re-fetch the manifests — the same recovery
-    /// Discover offers. The addon watcher then re-issues the active search when they land.
+    /// Retry for `SearchEmptyState.manifestFailure`: re-fetch the manifests. The addon watcher
+    /// then re-issues the active search when they land.
     func retrySearch() {
         AddonRepository.shared.refreshAll()
     }
 
     /// Re-issue the active search when an enabled addon's manifest state changes. The repository
-    /// keys requests on the pending flag + catalog set, so an unchanged fan-out is a no-op there.
+    /// keys requests on the pending flag + catalog set, so an unchanged fan-out is a no-op there
+    /// (and returns the live request id).
     private func researchIfAddonsChanged() {
         guard let activeQuery else { return }
         let signature = addonManifestSignature
         guard signature != lastSearchAddonSignature else { return }
         lastSearchAddonSignature = signature
-        SearchRepository.shared.search(
+        activeRequestId = SearchRepository.shared.search(
             query: activeQuery,
             addons: enabledAddons,
             disabledCatalogKeys: Self.SearchSourceSettings.disabledKeys,
             forceRefresh: false
         )
-    }
-
-    func selectDiscoverType(_ type: String) {
-        SearchRepository.shared.selectDiscoverType(type: type)
-    }
-
-    func selectDiscoverCatalog(_ key: String) {
-        SearchRepository.shared.selectDiscoverCatalog(catalogKey: key)
-    }
-
-    func selectDiscoverGenre(_ genre: String?) {
-        SearchRepository.shared.selectDiscoverGenre(genre: genre)
-    }
-
-    /// Load-more sentinel: fire pagination as the grid approaches its end.
-    func discoverItemAppeared(at index: Int) {
-        guard let discover, discover.canLoadMore, !discover.isLoading else { return }
-        if index >= discover.items.count - 8 {
-            SearchRepository.shared.loadMoreDiscover()
-        }
+        holdSearchStarted()
     }
 
     deinit {
         debounce?.cancel()
         addonWatcher?.cancel()
         searchWatcher?.cancel()
-        discoverWatcher?.cancel()
         historyWatcher?.cancel()
         catalogSettingsWatcher?.cancel()
+        defaultsObserver?.cancel()
     }
 }

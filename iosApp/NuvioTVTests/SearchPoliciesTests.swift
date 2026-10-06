@@ -349,3 +349,65 @@ final class SearchHistoryOnOpenTests: XCTestCase {
         XCTAssertEqual(history.pathChanged(from: 0, to: 1, query: "severance"), "severance")
     }
 }
+
+/// Search & Discover batch 2026-10-06 (B2): the hold keyed on `SearchUiState.requestId`.
+final class SearchRowsHoldRequestIdTests: XCTestCase {
+    // A cancelled search's late write is stale whatever it carries: rows, a start state, or a
+    // settled empty one (the "no results" flash S1 accepted in review r5 P3-1).
+    func testAnotherRequestIdIsStaleRowsOrEmptySettles() {
+        XCTAssertTrue(SearchRowsHold.isStale(emissionRequestId: 3, activeRequestId: 4))
+        XCTAssertTrue(SearchRowsHold.isStale(emissionRequestId: 5, activeRequestId: 4))
+        XCTAssertFalse(SearchRowsHold.isStale(emissionRequestId: 4, activeRequestId: 4))
+        // No active id (field cleared): can't judge by id; the caller falls back to the label.
+        XCTAssertFalse(SearchRowsHold.isStale(emissionRequestId: 4, activeRequestId: nil))
+    }
+
+    func testTheSameIdExtendingTheRowsIsTheSameSearch() {
+        XCTAssertEqual(
+            SearchRowsHold.relation(shownRequestId: 7, activeRequestId: 7, shownKeys: ["a"], incomingKeys: ["a", "b"]),
+            .sameSearch
+        )
+    }
+
+    func testTheSameIdNotCaughtUpIsARestart() {
+        XCTAssertEqual(
+            SearchRowsHold.relation(shownRequestId: 7, activeRequestId: 7, shownKeys: ["a", "b"], incomingKeys: ["a"]),
+            .sameQueryRestart
+        )
+    }
+
+    func testDifferentIdsFallBackToTheQueryLabels() {
+        // Another query: other.
+        XCTAssertEqual(
+            SearchRowsHold.relation(shownRequestId: 7, activeRequestId: 8, shownKeys: ["a"], incomingKeys: ["a"],
+                                    shownQuery: "dun", activeQuery: "dune"),
+            .otherQuery
+        )
+        // The same query searched again (Retry, a manifest landing): a restart until it catches up.
+        XCTAssertEqual(
+            SearchRowsHold.relation(shownRequestId: 7, activeRequestId: 8, shownKeys: ["a"], incomingKeys: [],
+                                    shownQuery: "dune", activeQuery: "Dune"),
+            .sameQueryRestart
+        )
+        // Unlabelled: other.
+        XCTAssertEqual(
+            SearchRowsHold.relation(shownRequestId: 7, activeRequestId: 8, shownKeys: ["a"], incomingKeys: ["a"]),
+            .otherQuery
+        )
+        XCTAssertEqual(
+            SearchRowsHold.relation(shownRequestId: nil, activeRequestId: 8, shownKeys: [], incomingKeys: ["a"]),
+            .otherQuery
+        )
+    }
+
+    func testFollowingFlipsOnRelease() {
+        var hold = SearchRowsHold()
+        XCTAssertTrue(hold.isFollowingIncoming)
+        _ = hold.rows(current: [1, 2], incoming: [Int](), isLoading: true, now: 10, relation: .otherQuery)
+        XCTAssertFalse(hold.isFollowingIncoming)
+        _ = hold.rows(current: [1, 2], incoming: [9], isLoading: true, now: 10.2, relation: .otherQuery)
+        XCTAssertFalse(hold.isFollowingIncoming)
+        XCTAssertEqual(hold.rows(current: [1, 2], incoming: [9, 8], isLoading: false, now: 10.4, relation: .otherQuery), [9, 8])
+        XCTAssertTrue(hold.isFollowingIncoming)
+    }
+}
