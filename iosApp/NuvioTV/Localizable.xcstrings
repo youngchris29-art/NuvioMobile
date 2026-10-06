@@ -1161,7 +1161,40 @@
         }
       }
     },
-    "%lld of %lld shown": {},
+    "%lld of %lld shown": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld von %lld angezeigt"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld de %lld mostradas"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld sur %lld affichées"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld di %lld mostrate"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hiển thị %lld/%lld"
+          }
+        }
+      }
+    },
     "%lld of %lld · in the Subtitles tab": {
       "localizations": {
         "de": {
@@ -4528,7 +4561,40 @@
         }
       }
     },
-    "All search sources are off": {},
+    "All search sources are off": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alle Suchquellen sind aus"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Todas las fuentes de búsqueda están desactivadas"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Toutes les sources de recherche sont désactivées"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tutte le fonti di ricerca sono disattivate"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tất cả nguồn tìm kiếm đang tắt"
+          }
+        }
+      }
+    },
     "Also set in tvOS Settings › Video and Audio › Match Content.": {
       "localizations": {
         "de": {
@@ -7827,7 +7893,40 @@
         }
       }
     },
-    "Catalog": {},
+    "Catalog": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Katalog"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Catálogo"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Catalogue"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Catalogo"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Danh mục"
+          }
+        }
+      }
+    },
     "Catalog & search posters": {
       "localizations": {
         "de": {
@@ -8474,7 +8573,40 @@
         }
       }
     },
-    "Choose which MDBList lists appear in the Library and in Manage Lists. The Watchlist is always shown.": {},
+    "Choose which MDBList lists appear in the Library and in Manage Lists. The Watchlist is always shown.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wähle, welche MDBList-Listen in der Bibliothek und unter „Listen verwalten“ erscheinen. Die Merkliste wird immer angezeigt."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Elige qué listas de MDBList aparecen en la biblioteca y en Gestionar listas. La lista de seguimiento siempre se muestra."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choisis les listes MDBList affichées dans la bibliothèque et dans Gérer les listes. La liste à regarder est toujours affichée."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scegli quali liste MDBList compaiono nella libreria e in Gestisci liste. La watchlist è sempre visibile."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chọn danh sách MDBList hiển thị trong thư viện và trong Quản lý danh sách. Danh sách theo dõi luôn được hiển thị."
+          }
+        }
+      }
+    },
     "Choose which catalogs Search looks through. Fewer sources means faster, more focused results. Applies to this Apple TV only.": {
       "extractionState": "manual",
       "localizations": {
@@ -10958,7 +11090,40 @@
         }
       }
     },
-    "Couldn't load Discover.": {},
+    "Couldn't load Discover.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Entdecken konnte nicht geladen werden."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se pudo cargar Descubrir."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Impossible de charger Découvrir."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Impossibile caricare Scopri."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không thể tải Khám phá."
+          }
+        }
+      }
+    },
     "Couldn't load this catalog. Try another genre or catalog.": {
       "localizations": {
         "de": {
@@ -11265,7 +11430,40 @@
         }
       }
     },
-    "Couldn't update this list. Try again.": {},
+    "Couldn't update this list. Try again.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diese Liste konnte nicht aktualisiert werden. Versuche es erneut."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se pudo actualizar esta lista. Inténtalo de nuevo."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Impossible de mettre à jour cette liste. Réessaie."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Impossibile aggiornare questa lista. Riprova."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không thể cập nhật danh sách này. Hãy thử lại."
+          }
+        }
+      }
+    },
     "Couldn’t load details for %@. A TMDB API key is required for cast profiles.": {
       "localizations": {
         "de": {
@@ -15788,7 +15986,40 @@
         }
       }
     },
-    "Found in %@": {},
+    "Found in %@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gefunden in %@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Encontrado en %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trouvé dans %@"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trovato in %@"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tìm thấy trong %@"
+          }
+        }
+      }
+    },
     "Four-digit year, for example 2024.": {
       "localizations": {
         "de": {
@@ -16367,8 +16598,74 @@
         }
       }
     },
-    "Grouped by type": {},
-    "Groups results into Top result, Movies, Series and People, merged across your add-ons. One row per add-on shows each catalog separately. Default: Grouped by type.": {},
+    "Grouped by type": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nach Typ gruppiert"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agrupado por tipo"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Groupés par type"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Raggruppati per tipo"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nhóm theo loại"
+          }
+        }
+      }
+    },
+    "Groups results into Top result, Movies, Series and People, merged across your add-ons. One row per add-on shows each catalog separately. Default: Grouped by type.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gruppiert die Ergebnisse in Bestes Ergebnis, Filme, Serien und Personen, zusammengeführt über deine Add-ons. „Eine Reihe pro Add-on“ zeigt jeden Katalog einzeln. Standard: Nach Typ gruppiert."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agrupa los resultados en Mejor resultado, Películas, Series y Personas, combinados entre tus complementos. Una fila por complemento muestra cada catálogo por separado. Predeterminado: Agrupado por tipo."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Regroupe les résultats en Meilleur résultat, Films, Séries et Personnes, fusionnés entre tes add-ons. Une rangée par add-on affiche chaque catalogue séparément. Par défaut : Groupés par type."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Raggruppa i risultati in Risultato migliore, Film, Serie e Persone, uniti tra i tuoi add-on. Una riga per add-on mostra ogni catalogo separatamente. Predefinito: Raggruppati per tipo."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gộp kết quả thành Kết quả hàng đầu, Phim, Series và Nhân vật, hợp nhất từ các add-on của bạn. Mỗi add-on một hàng sẽ hiển thị từng danh mục riêng. Mặc định: Nhóm theo loại."
+          }
+        }
+      }
+    },
     "Guest data on this Apple TV (profiles, library, watch progress) will be cleared. You can then sign in on the welcome screen.": {
       "localizations": {
         "de": {
@@ -19329,7 +19626,40 @@
         }
       }
     },
-    "Library lists": {},
+    "Library lists": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bibliothekslisten"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Listas de la biblioteca"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Listes de la bibliothèque"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Liste della libreria"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Danh sách thư viện"
+          }
+        }
+      }
+    },
     "Lighting": {
       "localizations": {
         "de": {
@@ -21746,7 +22076,40 @@
         }
       }
     },
-    "No lists found in your MDBList account yet. Sync to load them.": {},
+    "No lists found in your MDBList account yet. Sync to load them.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "In deinem MDBList-Konto wurden noch keine Listen gefunden. Synchronisiere, um sie zu laden."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aún no hay listas en tu cuenta de MDBList. Sincroniza para cargarlas."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aucune liste trouvée dans ton compte MDBList pour l’instant. Synchronise pour les charger."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nessuna lista trovata nel tuo account MDBList. Sincronizza per caricarle."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chưa có danh sách nào trong tài khoản MDBList của bạn. Hãy đồng bộ để tải."
+          }
+        }
+      }
+    },
     "No playable files": {
       "localizations": {
         "de": {
@@ -21849,7 +22212,40 @@
         }
       }
     },
-    "No results for ‘%@’": {},
+    "No results for ‘%@’": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keine Ergebnisse für ‘%@’"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sin resultados para ‘%@’"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aucun résultat pour ‘%@’"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nessun risultato per ‘%@’"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không có kết quả cho ‘%@’"
+          }
+        }
+      }
+    },
     "No results.": {
       "localizations": {
         "de": {
@@ -22292,7 +22688,40 @@
         }
       }
     },
-    "None of your add-ons can search": {},
+    "None of your add-ons can search": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keines deiner Add-ons kann suchen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ninguno de tus complementos puede buscar"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aucun de tes add-ons ne peut rechercher"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nessuno dei tuoi add-on può cercare"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không add-on nào của bạn hỗ trợ tìm kiếm"
+          }
+        }
+      }
+    },
     "None of your addons provide streams for this title.": {
       "localizations": {
         "de": {
@@ -24745,7 +25174,40 @@
         }
       }
     },
-    "One row per add-on": {},
+    "One row per add-on": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Eine Reihe pro Add-on"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Una fila por complemento"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Une rangée par add-on"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Una riga per add-on"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mỗi add-on một hàng"
+          }
+        }
+      }
+    },
     "Online": {
       "localizations": {
         "de": {
@@ -24916,7 +25378,40 @@
         }
       }
     },
-    "Open Search Sources": {},
+    "Open Search Sources": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Suchquellen öffnen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abrir fuentes de búsqueda"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ouvrir les sources de recherche"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Apri fonti di ricerca"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mở nguồn tìm kiếm"
+          }
+        }
+      }
+    },
     "Open in %@": {
       "localizations": {
         "de": {
@@ -25427,8 +25922,74 @@
         }
       }
     },
-    "Own Tab": {},
-    "Own Tab puts Discover on the tab bar and rail. Under Search adds a Discover row to the Search page that opens it. Off hides Discover everywhere, and syncs as Hide Discover to your other devices. Default: Own Tab.": {},
+    "Own Tab": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Eigener Tab"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pestaña propia"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Onglet dédié"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scheda dedicata"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tab riêng"
+          }
+        }
+      }
+    },
+    "Own Tab puts Discover on the tab bar and rail. Under Search adds a Discover row to the Search page that opens it. Off hides Discover everywhere, and syncs as Hide Discover to your other devices. Default: Own Tab.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "„Eigener Tab“ legt Entdecken in die Tab-Leiste und die Seitenleiste. „Unter Suche“ fügt der Suchseite eine Entdecken-Zeile hinzu, die es öffnet. „Aus“ blendet Entdecken überall aus und wird als „Entdecken ausblenden“ mit deinen anderen Geräten synchronisiert. Standard: Eigener Tab."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pestaña propia coloca Descubrir en la barra de pestañas y en el carril. Bajo Buscar añade a la página de búsqueda una fila de Descubrir que lo abre. Desactivado oculta Descubrir en todas partes y se sincroniza como Ocultar Descubrir con tus otros dispositivos. Predeterminado: Pestaña propia."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Onglet dédié place Découvrir dans la barre d’onglets et le rail. Sous Recherche ajoute à la page de recherche une rangée Découvrir qui l’ouvre. Désactivé masque Découvrir partout et se synchronise comme Masquer Découvrir avec tes autres appareils. Par défaut : Onglet dédié."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scheda dedicata mette Scopri nella barra delle schede e nella barra laterale. Sotto Cerca aggiunge alla pagina di ricerca una riga Scopri che lo apre. Disattivato nasconde Scopri ovunque e si sincronizza come Nascondi Scopri con i tuoi altri dispositivi. Predefinito: Scheda dedicata."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tab riêng đặt Khám phá trên thanh tab và thanh bên. Trong Tìm kiếm thêm một hàng Khám phá vào trang tìm kiếm để mở nó. Tắt sẽ ẩn Khám phá ở mọi nơi và đồng bộ dưới dạng Ẩn Khám phá tới các thiết bị khác của bạn. Mặc định: Tab riêng."
+          }
+        }
+      }
+    },
     "PRIMARY": {
       "localizations": {
         "de": {
@@ -25735,7 +26296,40 @@
         }
       }
     },
-    "People": {},
+    "People": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Personen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Personas"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Personnes"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Persone"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nhân vật"
+          }
+        }
+      }
+    },
     "Personal API Key (Optional)": {
       "localizations": {
         "de": {
@@ -25838,7 +26432,40 @@
         }
       }
     },
-    "Pick which lists show in the Library.": {},
+    "Pick which lists show in the Library.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wähle, welche Listen in der Bibliothek erscheinen."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Elige qué listas se muestran en la biblioteca."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choisis les listes affichées dans la bibliothèque."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scegli quali liste mostrare nella libreria."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chọn danh sách hiển thị trong thư viện."
+          }
+        }
+      }
+    },
     "Picks where the More Like This row on a title page gets its suggestions. If the account you choose is not connected, TMDB is used instead. Default: Trakt.": {
       "localizations": {
         "de": {
@@ -31007,7 +31634,40 @@
         }
       }
     },
-    "Search Results": {},
+    "Search Results": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Suchergebnisse"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Resultados de búsqueda"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Résultats de recherche"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Risultati di ricerca"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kết quả tìm kiếm"
+          }
+        }
+      }
+    },
     "Search Sources": {
       "extractionState": "manual",
       "localizations": {
@@ -31043,7 +31703,40 @@
         }
       }
     },
-    "Search for %@": {},
+    "Search for %@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nach %@ suchen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Buscar %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rechercher %@"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cerca %@"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tìm %@"
+          }
+        }
+      }
+    },
     "Search movies & shows": {
       "localizations": {
         "de": {
@@ -36926,7 +37619,40 @@
         }
       }
     },
-    "Suggestions": {},
+    "Suggestions": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vorschläge"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sugerencias"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Suggestions"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Suggerimenti"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gợi ý"
+          }
+        }
+      }
+    },
     "Swipe down for info": {
       "localizations": {
         "de": {
@@ -40125,7 +40851,40 @@
         }
       }
     },
-    "Top result": {},
+    "Top result": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bestes Ergebnis"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mejor resultado"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Meilleur résultat"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Risultato migliore"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kết quả hàng đầu"
+          }
+        }
+      }
+    },
     "Track %lld": {
       "localizations": {
         "de": {
@@ -41622,7 +42381,40 @@
         }
       }
     },
-    "Type": {},
+    "Type": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Typ"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tipo"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Type"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tipo"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loại"
+          }
+        }
+      }
+    },
     "Typeface": {
       "extractionState": "manual",
       "localizations": {
@@ -41692,7 +42484,40 @@
         }
       }
     },
-    "Under Search": {},
+    "Under Search": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unter Suche"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bajo Buscar"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sous Recherche"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sotto Cerca"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trong Tìm kiếm"
+          }
+        }
+      }
+    },
     "Unknown": {
       "localizations": {
         "de": {
