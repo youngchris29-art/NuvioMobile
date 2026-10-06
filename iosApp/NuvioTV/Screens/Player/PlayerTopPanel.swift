@@ -33,7 +33,13 @@ struct PlayerPanelExtraTab {
 struct PlayerTopPanel: View {
     @ObservedObject var model: PlayerTopPanelModel
     var extraTab: PlayerPanelExtraTab? = nil
-    @State private var tab: PlayerPanelTab = .info
+    @State private var tab: PlayerPanelTab
+
+    init(model: PlayerTopPanelModel, extraTab: PlayerPanelExtraTab? = nil, initialTab: PlayerPanelTab = .info) {
+        _model = ObservedObject(wrappedValue: model)
+        self.extraTab = extraTab
+        _tab = State(initialValue: initialTab)
+    }
     @State private var shown = false
     @FocusState private var focusedTab: PlayerPanelTab?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion

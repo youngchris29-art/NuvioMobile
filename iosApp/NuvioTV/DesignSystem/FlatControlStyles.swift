@@ -186,6 +186,31 @@ struct ChipButtonStyle: ButtonStyle {
     }
 }
 
+/// A pill on the mpv player's transport bar. Not a `ButtonStyle`: the pills are not focusable (the
+/// controller routes the remote and passes `focused`). At rest a plain glass disc; focused, the
+/// app's system-focus look (near-white platter, dark glyph, small lift).
+struct PlayerPillDisc: View {
+    let symbol: String
+    let focused: Bool
+
+    var body: some View {
+        let glyph = Image(systemName: symbol)
+            .font(.system(size: 26, weight: .semibold))
+            .foregroundStyle(focused ? FocusLook.onPlatter : Color.white)
+            .frame(width: 62, height: 62)
+        Group {
+            if focused {
+                glyph.background(Circle().fill(FocusLook.platter))
+            } else {
+                glyph.glassEffect(.regular, in: Circle())
+            }
+        }
+        .shadow(color: FocusLook.liftShadow(focused), radius: 16, y: 8)
+        .scaleEffect(focused ? FocusLook.liftScale : 1)
+        .animation(FocusLook.anim, value: focused)
+    }
+}
+
 extension ButtonStyle where Self == ChipButtonStyle {
     /// Capsule chip with no selection state.
     static var chip: ChipButtonStyle { .init() }

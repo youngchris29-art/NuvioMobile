@@ -11,6 +11,10 @@ enum PlayerChipStyle {
     static let animation: Animation = .easeInOut(duration: 0.25)
     /// Bottom-trailing inset from the screen edge (overscan-safe), both engines.
     static let edgePadding: CGFloat = Theme.Spacing.screen
+    /// Chip insets while the mpv transport bar is up: clear of the pill row (top at 213 from the
+    /// bottom) and aligned with the track end.
+    static let barUpBottomInset: CGFloat = 240
+    static let barUpTrailingInset: CGFloat = 86
     /// SF Symbols mirrored on the native contextual actions.
     static let skipSymbol = "forward.frame.fill"
     static let nextSymbol = "forward.end.fill"
