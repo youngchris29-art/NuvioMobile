@@ -22,6 +22,15 @@ data class SearchUiState(
     /// after `clear()`/`reset()`). Shown verbatim in Settings → Content Sources → Search
     /// Sources so a tester can screenshot one line instead of a device log capture.
     val lastFanOut: String? = null,
+    /// Search & Discover batch 2026-10-06 (C1): the id of the `search()`/`clear()`/`reset()` call
+    /// this state answers. Monotonic per repository; every publish of a running search is a
+    /// compare-and-set on it, so a cancelled search's late write can never overwrite a newer one
+    /// (the S1 late-write race). `search()` returns the id it published or re-used, which is how
+    /// tvOS's `SearchRowsHold` tells a stale emission from the active one.
+    val requestId: Long = 0L,
+    /// The normalized (trimmed) query this state answers; null for the cleared/idle state. Lets the
+    /// UI say "No results for '…'" without echoing whatever is in the field right now.
+    val query: String? = null,
 )
 
 enum class DiscoverEmptyStateReason {

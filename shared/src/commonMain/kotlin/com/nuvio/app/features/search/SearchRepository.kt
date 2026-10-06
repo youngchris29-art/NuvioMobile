@@ -34,6 +34,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import com.nuvio.app.core.i18n.StringKey
@@ -59,6 +60,10 @@ object SearchRepository {
     private var activeJob: Job? = null
     private var activeDiscoverJob: Job? = null
     private var lastRequestKey: String? = null
+    /// C1 (Search & Discover batch 2026-10-06): the id published with [lastRequestKey], returned
+    /// again by a deduped same-key `search()`.
+    private var lastRequestId: Long = 0L
+    private var requestSequence: Long = 0L
     private var discoverSources: List<DiscoverCatalogOption> = emptyList()
     private var lastDiscoverHideUnreleasedContent: Boolean? = null
     /// Upstream 085e8dc6 / Codex r3: whether an enabled addon's manifest was still loading when the
@@ -69,16 +74,18 @@ object SearchRepository {
     private var discoverManifestsPending = false
     private var lastDiscoverHasPendingAddonManifests: Boolean? = null
 
+    /// Returns the [SearchUiState.requestId] this call published, or the one it re-used when the
+    /// same-key guard deduped it (Search & Discover batch 2026-10-06, C1). Kotlin callers that
+    /// ignore the value are unaffected; tvOS keeps it as the hold's active request id.
     fun search(
         query: String,
         addons: List<ManagedAddon>,
         disabledCatalogKeys: Set<String> = emptySet(),
         forceRefresh: Boolean = false,
-    ) {
+    ): Long {
         val normalizedQuery = query.trim()
         if (normalizedQuery.isBlank()) {
-            clear()
-            return
+            return publishCleared()
         }
 
         // Upstream 085e8dc6 (#1819): manifests still loading are not "no addons" — publish loading,
@@ -90,6 +97,7 @@ object SearchRepository {
         if (activeAddons.isEmpty()) {
             activeJob?.cancel()
             lastRequestKey = null
+            val requestId = nextRequestId()
             _uiState.value = SearchUiState(
                 isLoading = hasPendingAddonManifests,
                 emptyStateReason = when {
@@ -98,8 +106,10 @@ object SearchRepository {
                     else -> SearchEmptyStateReason.NoActiveAddons
                 },
                 errorMessage = addonManifestErrorMessage,
+                requestId = requestId,
+                query = normalizedQuery,
             )
-            return
+            return requestId
         }
 
         val requests = buildSearchRequests(
@@ -114,12 +124,15 @@ object SearchRepository {
         if (requests.isEmpty()) {
             activeJob?.cancel()
             lastRequestKey = null
+            val requestId = nextRequestId()
             _uiState.value = SearchUiState(
                 isLoading = hasPendingAddonManifests,
                 emptyStateReason = if (hasPendingAddonManifests) null else SearchEmptyStateReason.NoSearchCatalogs,
                 lastFanOut = fanOutLine,
+                requestId = requestId,
+                query = normalizedQuery,
             )
-            return
+            return requestId
         }
 
         val requestKey = buildString {
@@ -143,11 +156,20 @@ object SearchRepository {
         // Upstream (981b8bc7) also refetches a completed same-key search when not forced; tvOS
         // keeps the plain same-key reuse — search here only re-fires from the typing debounce on
         // screen re-entry, where a refetch would just flash-blank retained results.
-        if (!forceRefresh && requestKey == lastRequestKey) return
+        // C1: a deduped call publishes nothing and hands back the id the running/settled state
+        // already carries, so the caller's hold stays keyed on the live request.
+        if (!forceRefresh && requestKey == lastRequestKey) return lastRequestId
         lastRequestKey = requestKey
 
         activeJob?.cancel()
-        _uiState.value = SearchUiState(isLoading = true, lastFanOut = fanOutLine)
+        val myId = nextRequestId()
+        lastRequestId = myId
+        _uiState.value = SearchUiState(
+            isLoading = true,
+            lastFanOut = fanOutLine,
+            requestId = myId,
+            query = normalizedQuery,
+        )
 
         activeJob = scope.launch {
             val resultChannel = Channel<IndexedSearchResult>(Channel.UNLIMITED)
@@ -186,11 +208,14 @@ object SearchRepository {
                     results[result.index] = result
                     val sections = results.orderedSections()
                     if (sections.isNotEmpty()) {
-                        _uiState.value = SearchUiState(
-                            isLoading = true,
-                            sections = sections,
-                            lastFanOut = fanOutLine,
-                        )
+                        publish(myId) {
+                            SearchUiState(
+                                isLoading = true,
+                                sections = sections,
+                                lastFanOut = fanOutLine,
+                                query = normalizedQuery,
+                            )
+                        }
                     }
                 }
             } finally {
@@ -203,36 +228,71 @@ object SearchRepository {
             val firstFailure = completedResults.firstNotNullOfOrNull { it.error?.message }
             val allFailed = completedResults.isNotEmpty() && completedResults.all { it.error != null }
 
-            _uiState.value = SearchUiState(
-                isLoading = sections.isEmpty() && hasPendingAddonManifests,
-                sections = sections,
-                emptyStateReason = when {
-                    sections.isNotEmpty() -> null
-                    hasPendingAddonManifests -> null
-                    allFailed -> SearchEmptyStateReason.RequestFailed
-                    else -> SearchEmptyStateReason.NoResults
-                },
-                errorMessage = if (allFailed) firstFailure else null,
-                lastFanOut = fanOutLine,
-            )
+            publish(myId) {
+                SearchUiState(
+                    isLoading = sections.isEmpty() && hasPendingAddonManifests,
+                    sections = sections,
+                    emptyStateReason = when {
+                        sections.isNotEmpty() -> null
+                        hasPendingAddonManifests -> null
+                        allFailed -> SearchEmptyStateReason.RequestFailed
+                        else -> SearchEmptyStateReason.NoResults
+                    },
+                    errorMessage = if (allFailed) firstFailure else null,
+                    lastFanOut = fanOutLine,
+                    query = normalizedQuery,
+                )
+            }
         }
+        return myId
     }
 
     fun clear() {
+        publishCleared()
+    }
+
+    private fun publishCleared(): Long {
         activeJob?.cancel()
         lastRequestKey = null
-        _uiState.value = SearchUiState()
+        val requestId = nextRequestId()
+        _uiState.value = SearchUiState(requestId = requestId)
+        return requestId
+    }
+
+    private fun nextRequestId(): Long {
+        requestSequence += 1
+        return requestSequence
+    }
+
+    /// C1 (Search & Discover batch 2026-10-06): the only way a running search writes its state.
+    /// Compare-and-set on [SearchUiState.requestId]: once a newer `search()`/`clear()`/`reset()`
+    /// has published its own id, a late write from the cancelled job (its channel loop can still
+    /// be draining when `cancel()` lands) is dropped here instead of reaching the UI.
+    private inline fun publish(requestId: Long, transform: (SearchUiState) -> SearchUiState) {
+        _uiState.update { current ->
+            if (current.requestId != requestId) current else transform(current).copy(requestId = requestId)
+        }
+    }
+
+    /// Test seam (C1): replaces the per-catalog network fetch so common tests can hold a search
+    /// in flight (or feed it pages) without touching the network. Null in production.
+    internal var searchPageFetcherForTest: (suspend (SearchCatalogRequest) -> CatalogPage)? = null
+
+    /// Test seam for [publish]: lets common tests show a stale id is a no-op without a network.
+    internal fun publishForTest(requestId: Long, transform: (SearchUiState) -> SearchUiState) {
+        publish(requestId, transform)
     }
 
     fun reset() {
         activeJob?.cancel()
         activeDiscoverJob?.cancel()
         lastRequestKey = null
+        lastRequestId = 0L
         discoverSources = emptyList()
         lastDiscoverHideUnreleasedContent = null
         discoverManifestsPending = false
         lastDiscoverHasPendingAddonManifests = null
-        _uiState.value = SearchUiState()
+        _uiState.value = SearchUiState(requestId = nextRequestId())
         _discoverUiState.value = DiscoverUiState()
     }
 
@@ -740,13 +800,16 @@ object SearchRepository {
 
     private suspend fun SearchCatalogRequest.toSection(forceRefresh: Boolean): HomeCatalogSection {
         val manifest = requireNotNull(addon.manifest)
-        val page = fetchCatalogPage(
-            manifestUrl = manifest.transportUrl,
-            type = type,
-            catalogId = catalogId,
-            search = query,
-            forceRefresh = forceRefresh,
-        ).withUnreleasedFilter()
+        val page = (
+            searchPageFetcherForTest?.invoke(this)
+                ?: fetchCatalogPage(
+                    manifestUrl = manifest.transportUrl,
+                    type = type,
+                    catalogId = catalogId,
+                    search = query,
+                    forceRefresh = forceRefresh,
+                )
+            ).withUnreleasedFilter()
         CustomPosterUrlRepository.ensureLoaded()
         val posterPattern = CustomPosterUrlRepository.patternForScreen(CustomPosterScreen.SEARCH)
         val items = page.items.withCustomPosterUrls(posterPattern)
