@@ -392,7 +392,10 @@ struct MainTabView: View {
     /// A6: resolved once per tree identity (`@State`'s initial value), never re-read while this
     /// shell lives, so the set of tabs is constant for the tree's lifetime (T3). The rail's item
     /// list is fed from this same value.
-    @State private var showsDiscoverTab = DiscoverPlacement.current() == .ownTab
+    @State private var discoverPlacement = DiscoverPlacement.current()
+    /// Own Tab adds `Tab(value: 6)` and the rail item; derived from the same once-per-tree value
+    /// Search reads through `\.discoverPlacementResolved` (review r2 P3-1).
+    private var showsDiscoverTab: Bool { discoverPlacement == .ownTab }
 
     var body: some View {
         // tvOS 26+ `Tab` syntax: gets the modern floating Liquid Glass top bar (the legacy
@@ -408,6 +411,8 @@ struct MainTabView: View {
             }
             Tab("Search", systemImage: "magnifyingglass", value: 1) {
                 SearchView()
+                    // Review r2 P3-1: Search's entry row reads the same once-per-tree value.
+                    .environment(\.discoverPlacementResolved, discoverPlacement)
                     .tabBarImmersiveHide()
                     .railTabRoot(1)
             }

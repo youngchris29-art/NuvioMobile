@@ -1,5 +1,6 @@
 import Foundation
 import SharedCore
+import SwiftUI
 
 /// Search & Discover batch 2026-10-06 (A5): where Discover lives. Device-local `@AppStorage`
 /// (`discover_placement`), mirroring `HomeLayout`. The synced "Hide Discover" flag still wins, so
@@ -74,5 +75,19 @@ nonisolated enum DiscoverPlacement: String, CaseIterable, Sendable {
         case .underSearch: return String(localized: "Under Search")
         case .ownTab: return String(localized: "Own Tab")
         }
+    }
+}
+
+// Review r2 P3-1: the placement the tab tree resolved once (`MainTabView`), for screens inside it
+// (Search's entry row) so they never disagree with the tab set. A manual key like every other
+// environment key in this target.
+private struct DiscoverPlacementResolvedKey: EnvironmentKey {
+    static let defaultValue: DiscoverPlacement = DiscoverPlacement.defaultValue
+}
+
+extension EnvironmentValues {
+    var discoverPlacementResolved: DiscoverPlacement {
+        get { self[DiscoverPlacementResolvedKey.self] }
+        set { self[DiscoverPlacementResolvedKey.self] = newValue }
     }
 }

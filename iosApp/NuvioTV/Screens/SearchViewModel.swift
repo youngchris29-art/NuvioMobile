@@ -78,11 +78,10 @@ final class SearchViewModel: ObservableObject {
     @Published private(set) var lastFanOut: String?
     /// Recent searches for this profile (most recent first).
     @Published private(set) var history: [String] = []
-    /// A5: where Discover lives. Search shows its entry row only for `.underSearch`. Re-read on
-    /// `UserDefaults.didChangeNotification` and on the synced Hide Discover flag (UX-8, which wins).
-    @Published private(set) var discoverPlacement: DiscoverPlacement = DiscoverPlacement.current()
+    // A5: where Discover lives is NOT read here. `SearchView` reads the tab tree's once-per-tree
+    // value (`\.discoverPlacementResolved`, review r2 P3-1), so the entry row and `Tab(value: 6)`
+    // always agree; a synced flip applies at the next remount, like the tab bar.
 
-    private var catalogSettingsWatcher: FlowWatcher?
     private var addonWatcher: FlowWatcher?
     private var searchWatcher: FlowWatcher?
     private var historyWatcher: FlowWatcher?
@@ -147,14 +146,6 @@ final class SearchViewModel: ObservableObject {
         }
         SearchHistoryRepository.shared.ensureLoaded()
 
-        // UX-8: the synced Hide Discover flag is the Off value of the placement (`DiscoverPlacement`
-        // lets it win), so follow it live.
-        catalogSettingsWatcher = FlowWatcherKt.watch(HomeCatalogSettingsRepository.shared.uiState) { [weak self] emitted in
-            guard let self, !self.stopped else { return }
-            guard emitted is HomeCatalogSettingsUiState else { return }
-            self.refreshPlacement()
-        }
-
         addonWatcher = FlowWatcherKt.watch(AddonRepository.shared.uiState) { [weak self] emitted in
             guard let self, !self.stopped else { return }
             guard let state = emitted as? AddonsUiState else { return }
@@ -186,12 +177,10 @@ final class SearchViewModel: ObservableObject {
         addonWatcher?.cancel()
         searchWatcher?.cancel()
         historyWatcher?.cancel()
-        catalogSettingsWatcher?.cancel()
         defaultsObserver?.cancel()
         addonWatcher = nil
         searchWatcher = nil
         historyWatcher = nil
-        catalogSettingsWatcher = nil
         defaultsObserver = nil
         started = false
         // `activeQuery` / `activeRequestId` deliberately survive: the query box (`SearchQueryBox`)
@@ -294,21 +283,14 @@ final class SearchViewModel: ObservableObject {
 
     // MARK: - Device-local settings
 
-    /// Re-read the rows mode and the Discover placement (both device-local defaults), and the
-    /// empty state (Search Sources switches live in defaults too).
+    /// Re-read the rows mode (a device-local default) and the empty state (Search Sources switches live in defaults too).
     private func refreshDefaults() {
         let mode = SearchRowsMode.current()
         if mode != rowsMode {
             rowsMode = mode
             rederiveRows()
         }
-        refreshPlacement()
         refreshEmptyState()
-    }
-
-    private func refreshPlacement() {
-        let placement = DiscoverPlacement.current()
-        if placement != discoverPlacement { discoverPlacement = placement }
     }
 
     /// B2 mode switch mid-hold: drop the hold and redraw the last accepted emission in the new
@@ -491,6 +473,9 @@ final class SearchViewModel: ObservableObject {
     /// re-issues the active search when they land). With manifests already loaded (every catalog
     /// request failed, review r1 P3-1) the manifests may not change at all, so the query is also
     /// searched again now, past the repository's same-request dedup and the HTTP cache.
+    /// `refreshAll` can flip `isRefreshing` and make the addon watcher re-issue a non-forced
+    /// search that cancels this forced one (review r2 P3-4): it gets a new id and the hold sees
+    /// `.sameQueryRestart`, so the double fetch is harmless and accepted.
     func retrySearch() {
         AddonRepository.shared.refreshAll()
         guard let activeQuery, enabledAddons.contains(where: { $0.manifest != nil }) else { return }
@@ -525,7 +510,6 @@ final class SearchViewModel: ObservableObject {
         addonWatcher?.cancel()
         searchWatcher?.cancel()
         historyWatcher?.cancel()
-        catalogSettingsWatcher?.cancel()
         defaultsObserver?.cancel()
     }
 }

@@ -190,7 +190,7 @@ nonisolated enum SearchEmptyState: Equatable, Sendable {
     /// (Swift sees `.noactiveaddons / .nosearchcatalogs / .noresults / .requestfailed`); nil →
     /// nil. "All sources off" is Swift-side: Kotlin only knows the fan-out was empty.
     /// `errorMessage` is the state's `errorMessage` (the first manifest error, or the first catalog
-    /// failure when all of them failed), used for the failure copy.
+    /// failure when all of them failed); only a manifest failure's message reaches the screen.
     ///
     /// Review r1 P3-1: `.requestfailed` is a failure whatever the manifest state. Kotlin emits it
     /// only when a manifest failed with none loaded, or when EVERY catalog of the fan-out failed
@@ -208,6 +208,13 @@ nonisolated enum SearchEmptyState: Equatable, Sendable {
     ) -> SearchEmptyState? {
         guard let reason else { return nil }
         if reason == SearchEmptyStateReason.requestfailed {
+            // Review r2 P2-A: Kotlin's message is shown only when it came from a manifest failure
+            // (an add-on is enabled and no manifest loaded). When every catalog request failed with
+            // the manifests cached, the message is a Ktor / NSError transport string that carries
+            // the request URL, and a keyed add-on's URL holds its key: fixed copy instead.
+            guard hasEnabledAddons && !anyManifestLoaded else {
+                return .manifestFailure(String(localized: "Couldn't reach your add-ons. Check your connection."))
+            }
             let message = errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
             return .manifestFailure(
                 (message?.isEmpty == false ? message : nil) ?? String(localized: "Couldn't load your add-ons.")

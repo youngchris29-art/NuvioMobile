@@ -132,6 +132,8 @@ private struct SearchContent: View {
     @Binding var query: String
     /// Held for the keyboard flag only (Rail mode sets it; B4).
     @Environment(\.navigationChrome) private var navigationChrome
+    /// A5: the tab tree's placement, resolved once per tree in `MainTabView` (review r2 P3-1).
+    @Environment(\.discoverPlacementResolved) private var discoverPlacement
 
     var body: some View {
         ScrollView(.vertical) {
@@ -264,7 +266,7 @@ private struct SearchContent: View {
         recentRow
         // A5 / B3 h: Own Tab puts Discover on the tab bar and rail, Off hides it; only Under
         // Search adds the entry row here.
-        if model.discoverPlacement == .underSearch {
+        if discoverPlacement == .underSearch {
             DiscoverEntryRow()
         }
     }

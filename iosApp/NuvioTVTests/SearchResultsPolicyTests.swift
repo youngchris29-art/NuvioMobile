@@ -197,15 +197,34 @@ final class SearchEmptyStateTests: XCTestCase {
     }
 
     /// Review r1 P3-1: every catalog failed with the manifests cached (a Wi-Fi drop) is a failure
-    /// with Retry, not "No results".
+    /// with Retry, not "No results". Review r2 P2-A: its copy is fixed, never Kotlin's message.
     func testRequestFailedWithManifestsLoadedIsAFailureWithRetry() {
-        XCTAssertEqual(resolve(.requestfailed, error: "The Internet connection appears to be offline."),
-                       .manifestFailure("The Internet connection appears to be offline."))
-        XCTAssertEqual(resolve(.requestfailed), .manifestFailure(String(localized: "Couldn't load your add-ons.")))
-        XCTAssertEqual(resolve(.requestfailed, error: "  "), .manifestFailure(String(localized: "Couldn't load your add-ons.")))
+        let unreachable = SearchEmptyState.manifestFailure(
+            String(localized: "Couldn't reach your add-ons. Check your connection."))
+        XCTAssertEqual(resolve(.requestfailed, error: "The Internet connection appears to be offline."), unreachable)
+        XCTAssertEqual(resolve(.requestfailed), unreachable)
+        XCTAssertEqual(resolve(.requestfailed, error: "  "), unreachable)
         XCTAssertEqual(resolve(.requestfailed).flatMap(\.actionTitle), String(localized: "Retry"))
         // Even with every source switched off the failure wins (it is what the fan-out reported).
-        XCTAssertEqual(resolve(.requestfailed, options: 2, disabled: 2), .manifestFailure(String(localized: "Couldn't load your add-ons.")))
+        XCTAssertEqual(resolve(.requestfailed, options: 2, disabled: 2), unreachable)
+    }
+
+    /// Review r2 P2-A: a transport error carries the request URL, and a keyed add-on's URL holds
+    /// its key. With the manifests loaded that message must never reach the screen.
+    func testRequestFailedTransportMessageNeverShowsTheURL() {
+        let leaky = "Request timeout has expired [url=https://torrentio.example/key=SECRETKEY123/catalog/movie/top/search=dune.json, request_timeout=10000 ms]"
+        let state = resolve(.requestfailed, error: leaky)
+        XCTAssertNotNil(state)
+        XCTAssertFalse(state?.copy.contains("SECRETKEY123") ?? true)
+        XCTAssertFalse(state?.copy.contains("https://") ?? true)
+        XCTAssertEqual(state?.actionTitle, String(localized: "Retry"))
+        // No enabled add-on: not a manifest failure either, still the fixed copy.
+        XCTAssertFalse(resolve(.requestfailed, enabled: false, manifests: false, error: leaky)?.copy.contains("SECRETKEY123") ?? true)
+    }
+
+    /// The manifest-failure path keeps showing its own message.
+    func testManifestFailureStillShowsItsMessage() {
+        XCTAssertEqual(resolve(.requestfailed, manifests: false, error: "Manifest HTTP 404").map(\.copy), "Manifest HTTP 404")
     }
 
     func testNoAddonOrNoSearchCatalogIsNoneCanSearch() {

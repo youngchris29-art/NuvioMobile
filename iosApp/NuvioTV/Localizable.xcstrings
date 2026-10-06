@@ -11260,6 +11260,40 @@
         }
       }
     },
+    "Couldn't reach your add-ons. Check your connection.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deine Add-ons sind nicht erreichbar. Prüfe deine Verbindung."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se ha podido conectar con tus complementos. Comprueba tu conexión."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Impossible de joindre vos add-ons. Vérifiez votre connexion."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Impossibile raggiungere i tuoi add-on. Controlla la connessione."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không thể kết nối tới các add-on của bạn. Hãy kiểm tra kết nối."
+          }
+        }
+      }
+    },
     "Couldn't resolve a playback link.": {
       "localizations": {
         "de": {
