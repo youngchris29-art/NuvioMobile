@@ -46670,7 +46670,29 @@
           }
         }
       }
-    }
+    },
+    "0.15 s": {},
+    "0.4 s": {},
+    "300 ms": {},
+    "75 ms": {},
+    "An A/B switch for how long the player waits after a jump before it lands on the exact frame. Auto is 150 ms. Keyframes Only skips that second step.": {},
+    "An A/B switch for how often a held Left or Right adds a step. Auto is 0.25 seconds.": {},
+    "An A/B switch for how quickly a held Left or Right moves up to bigger steps. Auto reaches 60-second steps after 2 seconds; Faster after 1 second; Slower after 4 seconds.": {},
+    "Choose what holding Left or Right does in the mpv player. Step jumps further the longer you hold and moves once when you let go. Scan plays at 2× and keeps going after you let go: press Right again for 3× or 4×, Select to carry on from there, Menu to go back. Default: Step.": {},
+    "Exact Seek Delay (A/B)": {},
+    "Faster": {},
+    "Hold Left/Right": {},
+    "Hold Ramp Speed (A/B)": {},
+    "Hold Step Interval (A/B)": {},
+    "Keyframes Only": {},
+    "Scan": {},
+    "Show Clock": {},
+    "Show the time of day while the controls are up (mpv player)": {},
+    "Shows the time of day in the corner while the player controls are up. Off by default.": {},
+    "Slower": {},
+    "Step": {},
+    "Try Native Player": {},
+    "Try with mpv": {}
   },
   "version": "1.0"
 }

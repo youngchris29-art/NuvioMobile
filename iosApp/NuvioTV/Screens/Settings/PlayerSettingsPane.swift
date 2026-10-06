@@ -51,6 +51,19 @@ struct PlayerSettingsPane: View {
                 isOn: Binding(get: { model.pauseOverlayEnabled }, set: { model.setPauseOverlayEnabled($0) }),
                 descriptionID: .playerPauseInfoCard
             )
+            SettingsPickerRow(
+                title: String(localized: "Hold Left/Right"),
+                selection: Binding(get: { model.holdMode }, set: { model.setHoldMode($0) }),
+                options: ["step", "scan"],
+                descriptionID: .playerHoldMode,
+                label: { $0 == "scan" ? String(localized: "Scan") : String(localized: "Step") }
+            )
+            SettingsToggleRow(
+                title: String(localized: "Show Clock"),
+                subtitle: String(localized: "Show the time of day while the controls are up (mpv player)"),
+                isOn: Binding(get: { model.showClock }, set: { model.setShowClock($0) }),
+                descriptionID: .playerShowClock
+            )
         }
 
         SettingsSection(String(localized: "Video")) {

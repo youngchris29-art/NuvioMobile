@@ -115,6 +115,10 @@ struct DeveloperSettingsPane: View {
     @AppStorage("debug.trailerMaxFps") private var trailerMaxFps = 0
     @AppStorage("debug.trailerBufferSeconds") private var trailerBufferSeconds = 0
     @AppStorage("debug.trailerLetterboxProbeOff") private var trailerLetterboxProbeOff = false
+    /// Player P1 A/B knobs (read once when a playback starts; removed at the next cut, D9).
+    @AppStorage("debug.holdTickSec") private var holdTickSec = 0.0
+    @AppStorage("debug.holdRampScale") private var holdRampScale = 0.0
+    @AppStorage("debug.commitExactDelayMs") private var commitExactDelayMs = 0
 
     @ViewBuilder
     private var detailScrollAndTrailerTuningRows: some View {
@@ -158,6 +162,41 @@ struct DeveloperSettingsPane: View {
             descriptionID: .devTrailerBuffer,
             label: { seconds in
                 seconds == 0 ? String(localized: "Auto") : String(localized: "\(seconds) s")
+            }
+        )
+
+        SettingsPickerRow(
+            title: String(localized: "Hold Step Interval (A/B)"),
+            selection: $holdTickSec,
+            options: [0.0, 0.15, 0.4],
+            descriptionID: .devHoldTick,
+            label: { value in
+                value == 0 ? String(localized: "Auto") : value == 0.15 ? String(localized: "0.15 s") : String(localized: "0.4 s")
+            }
+        )
+
+        SettingsPickerRow(
+            title: String(localized: "Hold Ramp Speed (A/B)"),
+            selection: $holdRampScale,
+            options: [0.0, 0.5, 2.0],
+            descriptionID: .devHoldRamp,
+            label: { value in
+                value == 0 ? String(localized: "Auto") : value == 0.5 ? String(localized: "Faster") : String(localized: "Slower")
+            }
+        )
+
+        SettingsPickerRow(
+            title: String(localized: "Exact Seek Delay (A/B)"),
+            selection: $commitExactDelayMs,
+            options: [0, 75, 300, -1],
+            descriptionID: .devCommitExactDelay,
+            label: { ms in
+                switch ms {
+                case 0: return String(localized: "Auto")
+                case 75: return String(localized: "75 ms")
+                case 300: return String(localized: "300 ms")
+                default: return String(localized: "Keyframes Only")
+                }
             }
         )
 

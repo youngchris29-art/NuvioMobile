@@ -171,7 +171,11 @@ final class MPVTVPlayerViewController: UIViewController {
     /// Simkl/MDBList (every connected tracker except Trakt) — same start-once/stop-once lifecycle.
     private let trackerScrobble: TrackerScrobbleSession
     /// Skip chip + auto-skip policy shared with the native engine (`SkipSegmentPlanner`).
-    private var skipPlanner = SkipSegmentPlanner()
+    private var skipPlanner: SkipSegmentPlanner = {
+        var planner = SkipSegmentPlanner()
+        planner.autoHidesChip = true   // mpv can bring the chip back on a press (P1 §6)
+        return planner
+    }()
     /// Main thread: bumped for every seek the app issues (`issueSeek`); a completion is only
     /// reported to `skipPlanner` for the latest one.
     private var seekGeneration = 0
@@ -860,6 +864,10 @@ final class MPVTVPlayerViewController: UIViewController {
         if let storedMs = PlayerTrackPreferenceStorage.shared.loadSubtitleDelayMs(videoId: context.videoId) {
             setSubtitleDelay(Double(storedMs.intValue) / 1000.0)
         }
+        // Audio delay persists the same way (per title/episode, per profile).
+        if let storedMs = PlayerTrackPreferenceStorage.shared.loadAudioDelayMs(videoId: context.videoId) {
+            setAudioDelay(Double(storedMs.intValue) / 1000.0)
+        }
         for sub in context.externalSubtitles {
             subAdd(url: sub.url, title: sub.name ?? sub.language, lang: sub.language)
         }
@@ -875,6 +883,9 @@ final class MPVTVPlayerViewController: UIViewController {
         applySubtitleStyle()
         applyDisplayCriteriaIfEnabled()
         fetchSkipSegments()
+        #if DEBUG
+        applySmokeSkipInterval()
+        #endif
         startTraktScrobble()
         trackerScrobble.start(positionSec: state.positionSec, durationSec: state.durationSec)
     }
@@ -1106,6 +1117,17 @@ final class MPVTVPlayerViewController: UIViewController {
         }
     }
 
+    #if DEBUG
+    /// `debug.mpvSmokeSkipInterval` = "start,end,type" (smoke harness only): one synthetic interval.
+    private func applySmokeSkipInterval() {
+        guard UserDefaults.standard.string(forKey: "debug.mpvSmokeURL") != nil,
+              let raw = UserDefaults.standard.string(forKey: "debug.mpvSmokeSkipInterval") else { return }
+        let parts = raw.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        guard parts.count == 3, let start = Double(parts[0]), let end = Double(parts[1]) else { return }
+        applySkipIntervals([SkipInterval(startTime: start, endTime: end, type: parts[2], provider: "smoke")])
+    }
+    #endif
+
     private func applySkipIntervals(_ intervals: [SkipInterval]) {
         skipPlanner.setIntervals(intervals)
         state.skipIntervals = intervals
@@ -1206,6 +1228,7 @@ final class MPVTVPlayerViewController: UIViewController {
         guard mpv != nil else { return }
         setMpvDouble("audio-delay", seconds)
         state.audioDelaySec = seconds
+        PlayerTrackPreferenceStorage.shared.saveAudioDelayMs(videoId: context.videoId, delayMs: Int32((seconds * 1000).rounded()))
     }
 
     private func setMpvDouble(_ name: String, _ value: Double) {
@@ -1255,6 +1278,8 @@ final class MPVTVPlayerViewController: UIViewController {
     // MARK: - Watch progress (resume + save)
 
     private func computeResumePosition() {
+        // A failure-alert retry resumes where the failed attempt stopped.
+        if let s = context.resumeAtSec, s > 10 { pendingResumeSec = s; return }
         // Start Over: play from 0 whatever progress is saved. Not after a native fallback that
         // already played: that session's own saved progress is the point to continue from.
         if context.startFromBeginning, nativeSecondsPlayedBeforeFallback <= 0 {
@@ -1497,6 +1522,13 @@ final class MPVTVPlayerViewController: UIViewController {
 
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         var handled = false
+        // A press brings an auto-hidden skip chip back for another 10 s (the press still acts,
+        // except a Down that revealed the chip: that one only reveals it, the next Down skips).
+        let chipRevealed = skipPlanner.noteInput(now: ProcessInfo.processInfo.systemUptime)
+        if chipRevealed {
+            let snap = cachedProps()
+            updateSkipPrompt(position: snap.position, duration: snap.duration, paused: snap.paused)
+        }
         for press in presses {
             // A new press between a commit's two stages cancels the exact stage; the new gesture
             // starts from the keyframes landing.
@@ -1555,7 +1587,7 @@ final class MPVTVPlayerViewController: UIViewController {
                     handled = true
                 }
             case .downArrow:
-                var consumed = false
+                var consumed = chipRevealed
                 switch transport.mode {
                 case .scanning:
                     apply(transport.endScanInPlace()); consumed = true   // no chip, no panel

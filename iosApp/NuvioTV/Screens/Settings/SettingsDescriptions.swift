@@ -130,6 +130,8 @@ enum SettingsDescriptionID: String, CaseIterable {
     case playerAutoSkipCredits = "player.autoSkipCredits"
     case playerEpisodeShuffle = "player.episodeShuffle"
     case playerPauseInfoCard = "player.pauseInfoCard"
+    case playerHoldMode = "player.holdMode"
+    case playerShowClock = "player.showClock"
     case playerMatchFrameRate = "player.matchFrameRate"
     case playerEnhancedRenderer = "player.enhancedRenderer"
     case playerNativeDolbyVision = "player.nativeDolbyVision"
@@ -194,6 +196,9 @@ enum SettingsDescriptionID: String, CaseIterable {
     case devTrailerMaxFps = "dev.trailerMaxFps"
     case devTrailerBuffer = "dev.trailerBuffer"
     case devTrailerLetterbox = "dev.trailerLetterbox"
+    case devHoldTick = "dev.holdTick"
+    case devHoldRamp = "dev.holdRamp"
+    case devCommitExactDelay = "dev.commitExactDelay"
     case devCollectionProbe = "dev.collectionProbe"
     case devCollectionProbeClear = "dev.collectionProbeClear"
     case devCollectionAB = "dev.collectionAB"
@@ -377,6 +382,11 @@ enum SettingsDescriptions {
         case .devDetailScrollAB: return LocalizedStringResource("An A/B switch that tries different ways of scrolling title pages to test a stutter. Leave it Off unless asked.")
         case .devDetailScrollProbe: return LocalizedStringResource("Counts hitches during one title page visit and logs the result when you press Menu to leave.")
         case .devTrailerMaxFps: return LocalizedStringResource("An A/B switch that prefers 30 fps trailers over higher frame rates to test choppy playback. Auto is the normal behavior.")
+        case .playerHoldMode: return LocalizedStringResource("Choose what holding Left or Right does in the mpv player. Step jumps further the longer you hold and moves once when you let go. Scan plays at 2\u{00D7} and keeps going after you let go: press Right again for 3\u{00D7} or 4\u{00D7}, Select to carry on from there, Menu to go back. Default: Step.")
+        case .playerShowClock: return LocalizedStringResource("Shows the time of day in the corner while the player controls are up. Off by default.")
+        case .devHoldTick: return LocalizedStringResource("An A/B switch for how often a held Left or Right adds a step. Auto is 0.25 seconds.")
+        case .devHoldRamp: return LocalizedStringResource("An A/B switch for how quickly a held Left or Right moves up to bigger steps. Auto reaches 60-second steps after 2 seconds; Faster after 1 second; Slower after 4 seconds.")
+        case .devCommitExactDelay: return LocalizedStringResource("An A/B switch for how long the player waits after a jump before it lands on the exact frame. Auto is 150 ms. Keyframes Only skips that second step.")
         case .devTrailerBuffer: return LocalizedStringResource("An A/B switch that sets how many seconds of trailer are buffered before playing. Auto is the normal behavior.")
         case .devTrailerLetterbox: return LocalizedStringResource("An A/B switch that skips the check for black bars around trailers. Leave it off unless asked.")
         case .devCollectionProbe: return LocalizedStringResource("Records how long each focus step takes on collection rows. Turn it on only when asked.")
@@ -400,6 +410,8 @@ enum SettingsDescriptions {
         case .playerMatchFrameRate: return LocalizedStringResource("Also set in tvOS Settings › Video and Audio › Match Content.")
         case .playerStreamingBuffer: return LocalizedStringResource("Applies to the next playback.")
         case .playerNetworkReadahead: return LocalizedStringResource("Applies to the next playback.")
+        case .playerHoldMode, .devHoldTick, .devHoldRamp, .devCommitExactDelay:
+            return LocalizedStringResource("Applies to the next playback.")
         case .servicesDebridPrepare: return LocalizedStringResource("Debrid services limit how many links you can make in a period. Preparing links ahead can use that allowance even if you never press Play, so use a lower number when you can.")
         case .devTrailerMaxFps: return LocalizedStringResource("Takes effect on next launch.")
         case .devTrailerBuffer: return LocalizedStringResource("Takes effect on next launch.")

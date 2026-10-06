@@ -466,6 +466,10 @@ final class SettingsViewModel: ObservableObject {
     /// Ask tvOS to match the display's refresh rate (and dynamic range) to the content.
     @Published var matchFrameRate: Bool = UserDefaults.standard.bool(forKey: PlayerTuning.matchFrameRateKey)
     /// Use mpv's `gpu-next` (libplacebo) renderer for better HDR (real Apple TV only).
+    /// What holding Left/Right does in the mpv player: "step" or "scan". Device-local.
+    @Published var holdMode: String = UserDefaults.standard.string(forKey: PlayerTuning.holdModeKey) ?? "step"
+    /// Show the time of day while the mpv player controls are up. Device-local.
+    @Published var showClock: Bool = UserDefaults.standard.bool(forKey: PlayerTuning.showClockKey)
     @Published var enhancedRenderer: Bool = UserDefaults.standard.bool(forKey: PlayerTuning.enhancedRendererKey)
     /// Route Dolby Vision / native-friendly files to the AVPlayer engine for true DV output (beta).
     @Published var nativeDolbyVision: Bool = UserDefaults.standard.bool(forKey: PlayerTuning.nativeDVKey)
@@ -486,6 +490,16 @@ final class SettingsViewModel: ObservableObject {
     func setMatchFrameRate(_ value: Bool) {
         matchFrameRate = value
         UserDefaults.standard.set(value, forKey: PlayerTuning.matchFrameRateKey)
+    }
+
+    func setHoldMode(_ value: String) {
+        holdMode = value
+        UserDefaults.standard.set(value, forKey: PlayerTuning.holdModeKey)
+    }
+
+    func setShowClock(_ value: Bool) {
+        showClock = value
+        UserDefaults.standard.set(value, forKey: PlayerTuning.showClockKey)
     }
 
     func setEnhancedRenderer(_ value: Bool) {
