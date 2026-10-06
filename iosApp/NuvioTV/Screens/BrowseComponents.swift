@@ -4956,6 +4956,12 @@ struct CatalogRowView: View {
     /// (`section:previewLimit:`) both compile unchanged. Gating and backdrop prefetch live in
     /// the callback (HomeView.reportRowFocus), not here.
     var onItemFocusChange: ((MetaPreview?) -> Void)? = nil
+    /// Search & Discover batch 2026-10-06, "Found in …" under the focused card. When non-nil,
+    /// every card reserves one fixed `Theme.Font.caption` line under its title caption (inside the
+    /// focusable label, so it rides the focus lift and nothing jumps when focus moves) and the
+    /// footnote text is drawn only on the currently focused card. Nil (the default) adds nothing:
+    /// Home, Library and the folder page lay out exactly as before.
+    var cardFootnote: ((MetaPreview) -> String?)? = nil
 
     /// Inline trailer previews on focus dwell (see `InlineTrailerCard`). Device-local on purpose —
     /// whether a living-room Apple TV should autoplay trailers is a per-device call, not a synced
@@ -5358,10 +5364,34 @@ struct CatalogRowView: View {
     /// rows — both rendered by `InlineTrailerCard`, which also grows the muted trailer preview once
     /// focus rests on the card. With inline trailers off it is a straight pass-through to the same
     /// two cards, so the row is unchanged.
+    @ViewBuilder
     private func card(for item: MetaPreview, proxy: ScrollViewProxy) -> some View {
-        InlineTrailerCard(item: item, enabled: inlineTrailersActive, onExpansionChange: { expanded in
-            expansionChanged(itemId: item.id, expanded: expanded, proxy: proxy)
-        })
+        if let cardFootnote {
+            VStack(alignment: .leading, spacing: 0) {
+                InlineTrailerCard(item: item, enabled: inlineTrailersActive, onExpansionChange: { expanded in
+                    expansionChanged(itemId: item.id, expanded: expanded, proxy: proxy)
+                })
+                // Fixed-height sizer (a hidden caption line) with the footnote overlaid, so the
+                // slot never changes height and a long footnote truncates at the card width.
+                Text(" ")
+                    .font(Theme.Font.caption)
+                    .lineLimit(1)
+                    .hidden()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .overlay(alignment: .leading) {
+                        if focusedItemId == item.id, let note = cardFootnote(item), !note.isEmpty {
+                            Text(note)
+                                .font(Theme.Font.caption)
+                                .foregroundStyle(Theme.Palette.textSecondary)
+                                .lineLimit(1)
+                        }
+                    }
+            }
+        } else {
+            InlineTrailerCard(item: item, enabled: inlineTrailersActive, onExpansionChange: { expanded in
+                expansionChanged(itemId: item.id, expanded: expanded, proxy: proxy)
+            })
+        }
     }
 
     /// BUG-29: an inline-trailer expansion morphs the focused card wider **to the right** in place —

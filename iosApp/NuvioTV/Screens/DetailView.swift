@@ -2786,7 +2786,7 @@ private struct InfoRow: Identifiable {
 /// Circular cast avatar + name/role. Platter-free: used inside a `.poster`-styled NavigationLink
 /// when tappable, so it supplies its own focus visuals (ring + scale + shadow); rendered bare for
 /// non-tappable cast, where `isFocused` simply never fires.
-private struct CastCard: View {
+struct CastCard: View {
     let person: MetaPerson
     /// Caller-supplied focus truth for the no-zoom still ring (Codex 2026-08-29 rounds 3-5):
     /// with the system focus effect disabled this card's only treatment was caption opacity, and
@@ -2882,7 +2882,7 @@ private struct CastCard: View {
     /// BUG-41 failure/no-photo fallback — pulled out of `body` so both the "no `person.photo`"
     /// branch and `CachedAsyncImage`'s `failure:` builder render the identical glyph.
     @ViewBuilder
-    private static var personFallback: some View {
+    static var personFallback: some View {
         ZStack {
             Theme.Palette.surface
             Image(systemName: "person.fill")
