@@ -49,6 +49,9 @@ final class MdbListLibraryListsViewModel: ObservableObject {
     private var watcher: FlowWatcher?
     /// Keys whose toggle is in flight → the optimistic value (review r2 P3-3).
     private var pendingKeys: [String: Bool] = [:]
+    /// Per-key generation: each `setVisible` call captures its own number, so an A→B→A toggle
+    /// inside one round trip cannot let the first call clear or revert the third (review r3).
+    private var pendingGeneration: [String: Int] = [:]
 
     var rows: [MdbListLibraryListOption] { MdbListLibraryListsPolicy.rows(options) }
 
@@ -83,13 +86,17 @@ final class MdbListLibraryListsViewModel: ObservableObject {
         let previous = options[index]
         errorMessage = nil
         pendingKeys[key] = visible
+        let generation = (pendingGeneration[key] ?? 0) &+ 1
+        pendingGeneration[key] = generation
         options[index] = MdbListLibraryListOption(key: previous.key, name: previous.name, visible: visible)
         MdbListTracker.shared.library.setListVisibilityAsync(key: key, visible: visible) { [weak self] (message: String?) in
             Task { @MainActor in
                 guard let self else { return }
-                // A newer toggle of the same key owns the override (and its own revert).
-                guard self.pendingKeys[key] == visible else { return }
+                // A newer toggle of the same key owns the override (and its own revert): compare
+                // the captured generation, not the value, so A→B→A is told apart from A.
+                guard self.pendingGeneration[key] == generation else { return }
                 self.pendingKeys[key] = nil
+                self.pendingGeneration[key] = nil
                 guard let message else { return }
                 if let i = self.options.firstIndex(where: { $0.key == key }) {
                     self.options[i] = MdbListLibraryListOption(key: previous.key, name: previous.name, visible: previous.visible)

@@ -41,7 +41,8 @@ object TmdbPersonSearchService {
         } catch (error: CancellationException) {
             throw error
         } catch (error: Throwable) {
-            log.w { "TMDB person search failed: ${error.message}" }
+            // The message of a transport error carries the request URL, api_key included: log the type only.
+            log.w { "TMDB person search failed: ${error::class.simpleName}" }
             emptyList()
         }
 

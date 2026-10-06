@@ -301,7 +301,8 @@ object AddonRepository {
                 )
             }
         } catch (error: Throwable) {
-            return AddAddonResult.Error(error.message ?: resourceString("Unable to load manifest", StringKey.addon_load_manifest_failed))
+            // The same rule as the refresh path: a transport error carries the keyed URL (AddonFailureMessages.kt).
+            return AddAddonResult.Error(manifestFailureMessage(error))
         }
 
         _uiState.update { current ->
