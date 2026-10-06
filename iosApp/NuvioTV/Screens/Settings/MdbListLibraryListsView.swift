@@ -95,8 +95,9 @@ final class MdbListLibraryListsViewModel: ObservableObject {
                 // A newer toggle of the same key owns the override (and its own revert): compare
                 // the captured generation, not the value, so A→B→A is told apart from A.
                 guard self.pendingGeneration[key] == generation else { return }
+                // The generation stays in the map (monotonic per key): clearing it would let a
+                // late callback from an older round trip match the next toggle's generation 1.
                 self.pendingKeys[key] = nil
-                self.pendingGeneration[key] = nil
                 guard let message else { return }
                 if let i = self.options.firstIndex(where: { $0.key == key }) {
                     self.options[i] = MdbListLibraryListOption(key: previous.key, name: previous.name, visible: previous.visible)
