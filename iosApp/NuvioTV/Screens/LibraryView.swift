@@ -134,24 +134,11 @@ struct LibraryView: View {
                 .foregroundStyle(Theme.Palette.textPrimary)
 
             if showsSavedChrome {
-                if model.content == .grid, !model.countLine.isEmpty {
-                    Text(model.countLine)
-                        .font(Theme.Font.meta)
-                        .foregroundStyle(Theme.Palette.textSecondary)
-                }
-                if let badge = LibraryGridPolicy.sourceBadge(sourceModeName: model.sourceModeName) {
-                    Text(badge)
-                        .font(Theme.Font.caption)
-                        .tracking(2)
-                        .foregroundStyle(Theme.Palette.textSecondary)
-                        .padding(.horizontal, Theme.Spacing.xs)
-                        .padding(.vertical, Theme.Spacing.xxs)
-                        .overlay {
-                            RoundedRectangle(cornerRadius: Theme.Radius.chip)
-                                .stroke(Theme.Palette.textSecondary, lineWidth: 1)
-                        }
-                        .accessibilityLabel(Text(model.providerName ?? badge))
-                }
+                CountLine(
+                    text: model.content == .grid ? model.countLine : nil,
+                    badge: LibraryGridPolicy.sourceBadge(sourceModeName: model.sourceModeName),
+                    badgeAccessibilityLabel: model.providerName
+                )
             }
         }
     }
@@ -219,11 +206,11 @@ struct LibraryView: View {
                     listMenu
                 }
                 if model.types.count > 1 {
-                    sourceChip(String(localized: "All"), isActive: model.selectedType == nil) {
+                    FilterChip(title: String(localized: "All"), isActive: model.selectedType == nil) {
                         model.selectType(nil)
                     }
                     ForEach(model.types, id: \.self) { type in
-                        sourceChip(LibraryGridPolicy.typeLabel(type), isActive: model.selectedType == type) {
+                        FilterChip(title: LibraryGridPolicy.typeLabel(type), isActive: model.selectedType == type) {
                             model.selectType(type)
                         }
                     }
@@ -232,7 +219,7 @@ struct LibraryView: View {
                     sortMenu
                 }
                 ForEach(model.visibleSmartFilters, id: \.self) { filter in
-                    sourceChip(filter.title, isActive: model.activeSmartFilters.contains(filter)) {
+                    FilterChip(title: filter.title, isActive: model.activeSmartFilters.contains(filter)) {
                         model.toggleSmartFilter(filter)
                     }
                 }
@@ -247,46 +234,33 @@ struct LibraryView: View {
     /// The provider's lists (Trakt watchlist and lists, Simkl statuses, MDBList lists) as a native
     /// `Menu { Picker }`, the same control Settings uses for its choice rows.
     private var listMenu: some View {
-        Menu {
-            Picker(String(localized: "List"), selection: Binding(
+        PillMenu(
+            title: model.selectedSectionTitle ?? String(localized: "List"),
+            systemImage: "list.bullet",
+            selection: Binding(
                 get: { model.selectedSectionKey ?? "" },
                 set: { model.selectSection($0) }
-            )) {
-                ForEach(model.sections, id: \.type) { section in
-                    Text(section.displayTitle).tag(section.type)
-                }
-            }
-        } label: {
-            pillLabel(model.selectedSectionTitle ?? String(localized: "List"), systemImage: "list.bullet")
-        }
-        .accessibilityIdentifier("library.listPicker")
+            ),
+            options: model.sections.map(\.type),
+            id: "library.listPicker",
+            pickerTitle: String(localized: "List"),
+            label: { key in model.sections.first { $0.type == key }?.displayTitle ?? key }
+        )
     }
 
     private var sortMenu: some View {
-        Menu {
-            Picker(String(localized: "Sort"), selection: Binding(
+        PillMenu(
+            title: model.sortLabel(model.effectiveSortOption),
+            systemImage: "arrow.up.arrow.down",
+            selection: Binding(
                 get: { model.effectiveSortOption },
                 set: { model.setSort($0) }
-            )) {
-                ForEach(model.availableSortOptions, id: \.name) { option in
-                    Text(model.sortLabel(option)).tag(option)
-                }
-            }
-        } label: {
-            pillLabel(model.sortLabel(model.effectiveSortOption), systemImage: "arrow.up.arrow.down")
-        }
-        .accessibilityIdentifier("library.sortPicker")
-    }
-
-    private func pillLabel(_ title: String, systemImage: String) -> some View {
-        HStack(spacing: Theme.Spacing.xs) {
-            Image(systemName: systemImage)
-            Text(title)
-            Image(systemName: "chevron.down")
-                .font(Theme.Font.caption)
-        }
-        .font(Theme.Font.meta)
-        .padding(.horizontal, Theme.Spacing.xs)
+            ),
+            options: model.availableSortOptions,
+            id: "library.sortPicker",
+            pickerTitle: String(localized: "Sort"),
+            label: { model.sortLabel($0) }
+        )
     }
 
     // MARK: - States
@@ -365,28 +339,13 @@ struct LibraryView: View {
 
     private var sourceChips: some View {
         HStack(spacing: Theme.Spacing.md) {
-            sourceChip(String(localized: "Saved"), isActive: !showingCloud) { showingCloud = false }
-            sourceChip(String(localized: "Debrid Cloud"), isActive: showingCloud) { showingCloud = true }
+            FilterChip(title: String(localized: "Saved"), isActive: !showingCloud) { showingCloud = false }
+            FilterChip(title: String(localized: "Debrid Cloud"), isActive: showingCloud) { showingCloud = true }
         }
         // One focus section as wide as the screen: the focus engine only searches straight up, so
         // without it Up from the Sort pill (or anything right of these two chips) found nothing.
         .frame(maxWidth: .infinity, alignment: .leading)
         .focusSection()
-    }
-
-    private func sourceChip(_ label: String, isActive: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: Theme.Spacing.xs) {
-                if isActive {
-                    Image(systemName: "checkmark.circle.fill")
-                }
-                Text(label)
-            }
-            .font(Theme.Font.meta)
-            .padding(.horizontal, Theme.Spacing.md)
-            .padding(.vertical, Theme.Spacing.xs)
-        }
-        .buttonStyle(.chip(selected: isActive))
     }
 
     // MARK: - Debrid cloud content
