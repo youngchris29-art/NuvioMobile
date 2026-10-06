@@ -30,6 +30,11 @@ struct HiddenTabBarFocusBlocker: UIViewRepresentable {
     /// moves it there on Menu; see `HiddenTabBarRedirect`). The rail opens and takes focus.
     var onFocusLandedInHiddenBar: () -> Void = {}
 
+    /// Search & Discover B4: called with `true` when focus enters tvOS's system search keyboard and
+    /// `false` when it leaves (only on a change). Judged by `SystemKeyboardFocus` over the focused
+    /// item's view-class chain; fails closed (unknown → false).
+    var onKeyboardFocusChanged: ((Bool) -> Void)? = nil
+
     /// True once a backing `UITabBar` has had interaction disabled. Read by the rail's hand-off:
     /// default focus placement is only safe when the invisible bar cannot be its first candidate
     /// (internal review r3 P1-2b).
@@ -69,13 +74,15 @@ struct HiddenTabBarFocusBlocker: UIViewRepresentable {
     /// search container. Full-bleed backgrounds still reach x = 0 (they ignore the safe area), and
     /// Stage and the folder Rows page ignore it by design and read `\.railLeadingInset` instead.
     /// 0 outside Always Visible. Applied whenever the blocker finds the tab controller.
-    static func setReservedLeadingInset(_ inset: CGFloat) {
+    /// `animated` (B4): the search keyboard's collapse and restore slide the content with
+    /// `UIView.animate(withDuration: 0.25)`; mode and visibility changes stay instant.
+    static func setReservedLeadingInset(_ inset: CGFloat, animated: Bool = false) {
         reservedLeadingInset = inset
         #if DEBUG
         // A/B knob for the UI legs: the environment half (`\.railLeadingInset`) stays on.
         if UserDefaults.standard.bool(forKey: "debug.railShellInsetOff") { reservedLeadingInset = 0 }
         #endif
-        current?.applyReservedInset()
+        current?.applyReservedInset(animated: animated)
     }
 
     nonisolated(unsafe) private static var reservedLeadingInset: CGFloat = 0
@@ -122,6 +129,7 @@ struct HiddenTabBarFocusBlocker: UIViewRepresentable {
     func makeUIView(context: Context) -> BlockerView { BlockerView() }
     func updateUIView(_ uiView: BlockerView, context: Context) {
         uiView.onFocusLandedInHiddenBar = onFocusLandedInHiddenBar
+        uiView.onKeyboardFocusChanged = onKeyboardFocusChanged
         uiView.apply()
     }
     /// Restore the bar (and open the content gate) if the overlay is ever torn down without the
@@ -142,6 +150,12 @@ struct HiddenTabBarFocusBlocker: UIViewRepresentable {
         private weak var gatedView: UIView?
         private var focusObserver: NSObjectProtocol?
         var onFocusLandedInHiddenBar: () -> Void = {}
+        var onKeyboardFocusChanged: ((Bool) -> Void)?
+        /// B4: the last keyboard verdict reported, so the callback fires only on a change.
+        private var keyboardFocused = false
+        #if DEBUG
+        private var lastLoggedChain = ""
+        #endif
 
         override func didMoveToWindow() {
             super.didMoveToWindow()
@@ -161,6 +175,7 @@ struct HiddenTabBarFocusBlocker: UIViewRepresentable {
                 ) { [weak self] note in
                     self?.apply()
                     self?.redirectIfLandedInBar(note)
+                    self?.updateKeyboardFocus(note)
                 }
             }
         }
@@ -202,12 +217,62 @@ struct HiddenTabBarFocusBlocker: UIViewRepresentable {
         }
 
         /// See `HiddenTabBarFocusBlocker.setReservedLeadingInset`. One comparison when unchanged.
-        func applyReservedInset() {
+        func applyReservedInset(animated: Bool = false) {
             guard let tab = tabController else { return }
             let inset = HiddenTabBarFocusBlocker.reservedLeadingInset
             guard tab.additionalSafeAreaInsets.left != inset else { return }
-            tab.additionalSafeAreaInsets.left = inset
-            NSLog("[NavRail] reserved leading safe area=%.0f", inset)
+            if animated, window != nil {
+                UIView.animate(withDuration: 0.25) {
+                    tab.additionalSafeAreaInsets.left = inset
+                    tab.view.layoutIfNeeded()
+                }
+            } else {
+                tab.additionalSafeAreaInsets.left = inset
+            }
+            NSLog("[NavRail] reserved leading safe area=%.0f%@", inset, animated ? " (animated)" : "")
+        }
+
+        /// B4: whether the newly focused item is inside the system search keyboard. The chain is the
+        /// focus environments up to the first `UIView` (SwiftUI items are not views), then that
+        /// view's superviews. Reports only a change.
+        private func updateKeyboardFocus(_ note: Notification) {
+            let context = note.userInfo?[UIFocusSystem.focusUpdateContextUserInfoKey] as? UIFocusUpdateContext
+            let item: UIFocusEnvironment? = context?.nextFocusedItem
+                ?? window.flatMap { UIFocusSystem.focusSystem(for: $0)?.focusedItem }
+            let chain = Self.classChain(of: item)
+            #if DEBUG
+            let joined = chain.joined(separator: "→")
+            if joined != lastLoggedChain {
+                lastLoggedChain = joined
+                NSLog("[KBFocus] chain=%@", joined)
+            }
+            #endif
+            let isKeyboard = SystemKeyboardFocus.isKeyboard(classChain: chain)
+            guard isKeyboard != keyboardFocused else { return }
+            keyboardFocused = isKeyboard
+            NSLog("[KBFocus] keyboard=%d", isKeyboard ? 1 : 0)
+            onKeyboardFocusChanged?(isKeyboard)
+        }
+
+        static func classChain(of item: UIFocusEnvironment?) -> [String] {
+            var names: [String] = []
+            var cursor = item
+            var hops = 0
+            var firstView: UIView?
+            while let node = cursor, hops < 64 {
+                if let view = node as? UIView { firstView = view; break }
+                names.append(String(describing: type(of: node)))
+                cursor = node.parentFocusEnvironment
+                hops += 1
+            }
+            var view = firstView
+            hops = 0
+            while let current = view, hops < 64 {
+                names.append(String(describing: type(of: current)))
+                view = current.superview
+                hops += 1
+            }
+            return names
         }
 
         /// The tab controller's view, finding the controller first if this view has not yet.
@@ -287,6 +352,14 @@ struct HiddenTabBarFocusBlocker: UIViewRepresentable {
             }
             if let focusObserver { NotificationCenter.default.removeObserver(focusObserver) }
             focusObserver = nil
+            // B4: a torn-down rail never leaves the keyboard flag set.
+            // Deferred: dismantle runs inside a SwiftUI update, where a model write would publish
+            // from within the update.
+            if keyboardFocused {
+                keyboardFocused = false
+                let callback = onKeyboardFocusChanged
+                DispatchQueue.main.async { callback?(false) }
+            }
         }
 
         /// Children first, presented controllers last (internal review r3 P3-11): a presented

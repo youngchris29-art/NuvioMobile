@@ -183,6 +183,31 @@ final class NavigationChromeTests: XCTestCase {
                              NavigationChrome.pillTrailingEdge)
     }
 
+    // MARK: Search keyboard inset (B4)
+
+    func testReservedLeadingInsetCollapsesOnlyForTheSearchKeyboard() {
+        func inset(_ visibility: NavigationChrome.RailVisibility, tab: Int, kb: Bool, hold: Bool = false) -> CGFloat {
+            RailVisibilityRule.reservedLeadingInset(sideSafeArea: 80, visibility: visibility,
+                                                    selectedTab: tab, keyboardFocused: kb, holdInset: hold)
+        }
+        XCTAssertEqual(inset(.always, tab: 1, kb: false), 36)
+        XCTAssertEqual(inset(.always, tab: 1, kb: true), 0, "Search keyboard: the content takes the width")
+        XCTAssertEqual(inset(.always, tab: 0, kb: true), 36, "the flag means nothing off Search")
+        XCTAssertEqual(inset(.always, tab: 1, kb: true, hold: true), 36, "the A/B knob holds the inset")
+        XCTAssertEqual(inset(.whileBrowsing, tab: 1, kb: true), 0)
+        XCTAssertEqual(inset(.whileBrowsing, tab: 0, kb: false), 0)
+    }
+
+    func testKeyboardHidesRailOnlyOnSearch() {
+        XCTAssertTrue(RailVisibilityRule.keyboardHidesRail(selectedTab: RailVisibilityRule.searchTab, keyboardFocused: true))
+        XCTAssertFalse(RailVisibilityRule.keyboardHidesRail(selectedTab: RailVisibilityRule.searchTab, keyboardFocused: false))
+        XCTAssertFalse(RailVisibilityRule.keyboardHidesRail(selectedTab: 0, keyboardFocused: true))
+    }
+
+    func testSearchInsetHoldKnobKey() {
+        XCTAssertEqual(RailSearchInsetHold.defaultsKey, "debug.railSearchInsetHold")
+    }
+
     // MARK: Content gate knob (DEBUG A/B)
 
     func testRailGateModeResolution() {

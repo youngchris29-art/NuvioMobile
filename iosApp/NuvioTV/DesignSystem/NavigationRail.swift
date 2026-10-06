@@ -56,6 +56,10 @@ final class NavigationChromeModel: ObservableObject {
     /// `isFocusedChrome`, except that an exit opens the gate one beat BEFORE focus leaves the rail,
     /// so the restore's focus write can land. The `perTab` gate fallback follows this.
     @Published private(set) var contentGated: Bool = false
+    /// Search & Discover B4: focus is inside tvOS's system search keyboard. Written by
+    /// `HiddenTabBarFocusBlocker`'s focus observer (Rail mode only); the rail hides its Always
+    /// Visible pill on Search while this holds, and the Search tab root's reserved width follows.
+    @Published private(set) var searchKeyboardFocused: Bool = false
     /// The motion of each tab's last real `scrolledDownByTab` change (#8). Not published: the rail
     /// reads it when the mirror it observes changes, and it is written just before that change.
     private(set) var motionByTab: [Int: RailMotion] = [:]
@@ -90,6 +94,12 @@ final class NavigationChromeModel: ObservableObject {
     func setContentGated(_ gated: Bool) {
         guard contentGated != gated else { return }
         contentGated = gated
+    }
+
+    /// Write-on-change (B4).
+    func setSearchKeyboardFocused(_ focused: Bool) {
+        guard searchKeyboardFocused != focused else { return }
+        searchKeyboardFocused = focused
     }
 
     /// Registers (or re-registers, keeping one entry per token) a screen's return route on top of
@@ -166,21 +176,41 @@ struct RailItem: Identifiable, Equatable {
 
     var localizedTitle: String { String(localized: String.LocalizationValue(title)) }
 
-    /// Home, Search, Library, Add-ons, Settings: titles and SF Symbols identical to `MainTabView`'s
-    /// `Tab` declarations. If a tab is added, renamed or reordered there, this list moves with it.
-    static let tabs: [RailItem] = [
-        RailItem(id: 0, title: "Home", systemImage: "house"),
-        RailItem(id: 1, title: "Search", systemImage: "magnifyingglass"),
-        RailItem(id: 2, title: "Library", systemImage: "books.vertical"),
-        RailItem(id: 3, title: "Add-ons", systemImage: "puzzlepiece.extension"),
-        RailItem(id: 4, title: "Settings", systemImage: "gearshape"),
-    ]
+    /// Search & Discover A6: the Discover tab, selection value 6, shown right after Search when
+    /// Discover is placed on its own tab (`DiscoverPlacement.ownTab`).
+    static let discover = RailItem(id: 6, title: "Discover", systemImage: "safari")
+
+    /// Home, Search, (Discover), Library, Add-ons, Settings: titles and SF Symbols identical to
+    /// `MainTabView`'s `Tab` declarations. If a tab is added, renamed or reordered there, this list
+    /// moves with it. Variable length: the pill is a VStack sized by its items (6 items plus the
+    /// avatar is ≈ 552 pt), nothing assumes a count.
+    static func tabs(showsDiscover: Bool) -> [RailItem] {
+        var items: [RailItem] = [
+            RailItem(id: 0, title: "Home", systemImage: "house"),
+            RailItem(id: 1, title: "Search", systemImage: "magnifyingglass"),
+        ]
+        if showsDiscover { items.append(discover) }
+        items += [
+            RailItem(id: 2, title: "Library", systemImage: "books.vertical"),
+            RailItem(id: 3, title: "Add-ons", systemImage: "puzzlepiece.extension"),
+            RailItem(id: 4, title: "Settings", systemImage: "gearshape"),
+        ]
+        return items
+    }
+
+    /// The live list: reads `DiscoverPlacement.current()` on every access.
+    static var tabs: [RailItem] {
+        tabs(showsDiscover: DiscoverPlacement.current() == .ownTab)
+    }
+
     /// The Profile tab, drawn as the profile's avatar at the bottom of the pill.
     static let profile = RailItem(id: 5, title: "Profile", systemImage: "person.crop.circle")
 
+    /// Every id the rail can address, Discover included whatever the placement (a selection value
+    /// keeps its title even while its item is hidden).
     static func title(for id: Int) -> String? {
         if id == profile.id { return profile.title }
-        return tabs.first { $0.id == id }?.title
+        return tabs(showsDiscover: true).first { $0.id == id }?.title
     }
 }
 
@@ -252,6 +282,9 @@ struct NavigationRail: View {
     let tabBarVisibility: TabBarVisibility
 
     @AppStorage(NavigationChrome.railVisibilityKey) private var visibilityRaw = NavigationChrome.RailVisibility.always.rawValue
+    /// A6: observed only so a Settings change of the placement redraws the item list
+    /// (`RailItem.tabs` reads `DiscoverPlacement.current()` live).
+    @AppStorage(DiscoverPlacement.defaultsKey) private var discoverPlacementRaw = DiscoverPlacement.defaultValue.rawValue
     @Environment(\.resetFocus) private var resetFocus
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -295,14 +328,31 @@ struct NavigationRail: View {
             immersive: immersiveHidden,
             scrolledDown: !restingShown,
             visibility: visibility,
-            selectedTab: selectedTab
+            selectedTab: selectedTab,
+            keyboardFocused: chrome.searchKeyboardFocused
         ))
+    }
+
+    /// B4: the shell's reserved leading safe area right now (36 / 0). See
+    /// `RailVisibilityRule.reservedLeadingInset`.
+    private var shellInset: CGFloat {
+        RailVisibilityRule.reservedLeadingInset(sideSafeArea: PinnedRowGeometry.sideSafeArea,
+                                                visibility: visibility,
+                                                selectedTab: selectedTab,
+                                                keyboardFocused: chrome.searchKeyboardFocused,
+                                                holdInset: RailSearchInsetHold.current)
     }
 
     /// R3: what Always Visible adds to every tab root's leading safe area (36), for the probe.
     private var contentInset: CGFloat {
         NavigationChrome.contentSafeAreaExtra(sideSafeArea: PinnedRowGeometry.sideSafeArea,
                                               reservesWidth: visibility == .always)
+    }
+
+    /// A6: the live item list. Reads `discoverPlacementRaw` so a placement change redraws the pill.
+    private var railItems: [RailItem] {
+        _ = discoverPlacementRaw
+        return RailItem.tabs
     }
 
     private var defaultSlide: Animation {
@@ -332,16 +382,23 @@ struct NavigationRail: View {
         // Zero-sized, always mounted in Rail mode: keeps the hidden system bar out of the focus
         // engine, redirects a stranded landing into the rail (S1), and carries the UIKit gate.
         .background(alignment: .topLeading) {
-            HiddenTabBarFocusBlocker(onFocusLandedInHiddenBar: revealForStrandedFocus)
+            HiddenTabBarFocusBlocker(onFocusLandedInHiddenBar: revealForStrandedFocus,
+                                     onKeyboardFocusChanged: { [chrome] focused in
+                                         chrome.setSearchKeyboardFocused(focused)
+                                     })
                 .frame(width: 0, height: 0)
                 .allowsHitTesting(false)
         }
         // R3: Always Visible's reserved width, as UIKit safe area at the shell (see
-        // `HiddenTabBarFocusBlocker.setReservedLeadingInset`). Follows the visibility live.
-        .onChange(of: visibility, initial: true) { _, newVisibility in
-            HiddenTabBarFocusBlocker.setReservedLeadingInset(
-                NavigationChrome.contentSafeAreaExtra(sideSafeArea: PinnedRowGeometry.sideSafeArea,
-                                                      reservesWidth: newVisibility == .always))
+        // `HiddenTabBarFocusBlocker.setReservedLeadingInset`). Follows the visibility live, and
+        // (B4) collapses to 0 while Search's keyboard holds focus unless `-debug.railSearchInsetHold`.
+        // Only the keyboard's collapse and restore animate (0.25 s); a visibility change is instant.
+        .onChange(of: visibility, initial: true) { _, _ in
+            HiddenTabBarFocusBlocker.setReservedLeadingInset(shellInset)
+        }
+        .onChange(of: RailVisibilityRule.keyboardHidesRail(selectedTab: selectedTab,
+                                                           keyboardFocused: chrome.searchKeyboardFocused)) { _, _ in
+            HiddenTabBarFocusBlocker.setReservedLeadingInset(shellInset, animated: true)
         }
         // ALWAYS mounted (DEBUG): its `shown=` token is the hide test.
         .overlay(alignment: .topLeading) { stateProbe }
@@ -380,7 +437,7 @@ struct NavigationRail: View {
     /// trap, `docs/research/orivio-tv-handoff.md`).
     private var pill: some View {
         VStack(alignment: .leading, spacing: RailMetrics.itemSpacing) {
-            ForEach(RailItem.tabs) { item in
+            ForEach(railItems) { item in
                 itemView(item)
             }
             itemView(RailItem.profile)
@@ -493,7 +550,7 @@ struct NavigationRail: View {
     @ViewBuilder
     private var stateProbe: some View {
         #if DEBUG
-        Text(verbatim: "rail_state armed=\(armed ? 1 : 0) expanded=\(expanded ? 1 : 0) focused=\(focusedItem ?? -1) reason=\(openedBy?.rawValue ?? "-") gated=\(chrome.contentGated ? 1 : 0) vis=\(visibility.rawValue) shown=\(shown ? 1 : 0) tab=\(selectedTab) route=\(lastExitRoute) inset=\(Int(contentInset.rounded())) gmode=\(RailGateMode.current.rawValue)")
+        Text(verbatim: "rail_state armed=\(armed ? 1 : 0) expanded=\(expanded ? 1 : 0) focused=\(focusedItem ?? -1) reason=\(openedBy?.rawValue ?? "-") gated=\(chrome.contentGated ? 1 : 0) vis=\(visibility.rawValue) shown=\(shown ? 1 : 0) tab=\(selectedTab) route=\(lastExitRoute) inset=\(Int(contentInset.rounded())) gmode=\(RailGateMode.current.rawValue) kb=\(chrome.searchKeyboardFocused ? 1 : 0)")
             .font(.system(size: 8))
             .opacity(0.011)
             .accessibilityIdentifier("rail_state")
@@ -802,7 +859,7 @@ private struct RailTabRootModifier: ViewModifier {
         if NavigationChrome.isRail() {
             content
                 .environment(\.railTabIndex, index)
-                .modifier(RailReservedWidthModifier())
+                .modifier(RailReservedWidthModifier(index: index))
                 .modifier(RailContentGateModifier())
         } else {
             content
@@ -819,18 +876,50 @@ private struct RailTabRootModifier: ViewModifier {
 /// folder Rows page ignore the safe area by design and read the same 36 pt from
 /// `\.railLeadingInset` (R1), and `\.rowEdgeMargins` tells the rows where the visible edge is.
 /// Environment values flow into NavigationStack destinations, so pushed pages inherit both.
+///
+/// B4: on the Search tab the environment half follows the shell's keyboard collapse (36 → 0 while
+/// the system keyboard holds focus), through a narrow subscription to `$searchKeyboardFocused` that
+/// re-renders this modifier only, never `MainTabView`. Every other tab, and Search under the
+/// `-debug.railSearchInsetHold` knob, stays launch-constant.
 private struct RailReservedWidthModifier: ViewModifier {
+    let index: Int
+
     @ViewBuilder
     func body(content: Content) -> some View {
         if NavigationChrome.reservesWidth() {
-            let side = PinnedRowGeometry.sideSafeArea
-            let extra = NavigationChrome.contentSafeAreaExtra(sideSafeArea: side, reservesWidth: true)
-            content
-                .environment(\.railLeadingInset, extra)
-                .environment(\.rowEdgeMargins, NavigationChrome.rowEdgeMargins(sideSafeArea: side, reservesWidth: true))
+            if index == RailVisibilityRule.searchTab, !RailSearchInsetHold.current {
+                content.modifier(RailSearchReservedWidth())
+            } else {
+                content.modifier(RailReservedWidthValues(reserves: true))
+            }
         } else {
             content
         }
+    }
+}
+
+/// The two environment values for a reserved (or, B4, collapsed) width.
+private struct RailReservedWidthValues: ViewModifier {
+    let reserves: Bool
+
+    func body(content: Content) -> some View {
+        let side = PinnedRowGeometry.sideSafeArea
+        content
+            .environment(\.railLeadingInset, NavigationChrome.contentSafeAreaExtra(sideSafeArea: side, reservesWidth: reserves))
+            .environment(\.rowEdgeMargins, NavigationChrome.rowEdgeMargins(sideSafeArea: side, reservesWidth: reserves))
+    }
+}
+
+/// B4: the Search tab root's environment half, collapsed while the system keyboard holds focus.
+private struct RailSearchReservedWidth: ViewModifier {
+    @Environment(\.navigationChrome) private var chrome
+    @State private var keyboardFocused = false
+
+    func body(content: Content) -> some View {
+        content
+            .modifier(RailReservedWidthValues(reserves: !keyboardFocused))
+            // Payload, not the property: `@Published` emits on willSet.
+            .onReceive(chrome.$searchKeyboardFocused) { keyboardFocused = $0 }
     }
 }
 

@@ -246,25 +246,55 @@ nonisolated enum RailVisibilityRule {
         var scrolledDown: Bool
         var visibility: NavigationChrome.RailVisibility
         var selectedTab: Int
+        /// Search & Discover B4: focus is inside tvOS's system search keyboard
+        /// (`NavigationChromeModel.searchKeyboardFocused`). Last, with a default, so existing call
+        /// sites compile unchanged.
+        var keyboardFocused: Bool = false
     }
 
     /// The Search tab's selection value: Hide While Browsing keeps the rail off its keyboard (R7).
     static let searchTab = 1
 
     /// `!railMode` → hidden; holds focus → shown; root cover → hidden; revealed → shown; Always
-    /// Visible → shown; then (Hide While Browsing, R7) immersive → hidden; Search → hidden;
-    /// scrolled down → hidden; otherwise shown.
+    /// Visible → shown, except on Search while its keyboard holds focus (B4); then (Hide While
+    /// Browsing, R7) immersive → hidden; Search → hidden; scrolled down → hidden; otherwise shown.
     static func shown(_ i: Inputs) -> Bool {
         guard i.railMode else { return false }
         if i.holdsFocus { return true }
         if i.rootCoverActive { return false }
         if i.revealed { return true }
-        if i.visibility == .always { return true }
+        if i.visibility == .always { return !keyboardHidesRail(selectedTab: i.selectedTab, keyboardFocused: i.keyboardFocused) }
         if i.immersive { return false }
         if i.selectedTab == searchTab { return false }
         if i.scrolledDown { return false }
         return true
     }
+
+    /// B4: Search's keyboard holds focus. Hides the Always Visible pill and (unless the
+    /// `-debug.railSearchInsetHold` A/B knob holds it) collapses the reserved leading inset.
+    static func keyboardHidesRail(selectedTab: Int, keyboardFocused: Bool) -> Bool {
+        keyboardFocused && selectedTab == searchTab
+    }
+
+    /// B4: the shell's reserved leading safe area. Always Visible's extra (36 pt on a standard
+    /// screen), 0 while Search's keyboard holds focus unless `holdInset` (the A/B knob).
+    static func reservedLeadingInset(sideSafeArea: CGFloat,
+                                     visibility: NavigationChrome.RailVisibility,
+                                     selectedTab: Int,
+                                     keyboardFocused: Bool,
+                                     holdInset: Bool) -> CGFloat {
+        guard visibility == .always else { return 0 }
+        if !holdInset, keyboardHidesRail(selectedTab: selectedTab, keyboardFocused: keyboardFocused) { return 0 }
+        return NavigationChrome.contentSafeAreaExtra(sideSafeArea: sideSafeArea, reservesWidth: true)
+    }
+}
+
+/// B4's A/B knob: `-debug.railSearchInsetHold YES` keeps Always Visible's reserved inset while the
+/// Search keyboard holds focus, so only the pill hides (animating the inset re-lays out the search
+/// container and shifts the Grid keyboard 36 pt). Read in DEBUG and Release, latched at launch.
+nonisolated enum RailSearchInsetHold {
+    static let defaultsKey = "debug.railSearchInsetHold"
+    static let current: Bool = UserDefaults.standard.bool(forKey: defaultsKey)
 }
 
 /// How a scrolled-down write should move the rail (P4 §1.3, #8). Recorded per tab with the write.

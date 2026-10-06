@@ -77,11 +77,56 @@ final class RailFocusPolicyTests: XCTestCase {
                        immersive: Bool = false,
                        scrolledDown: Bool = false,
                        visibility: NavigationChrome.RailVisibility = .whileBrowsing,
-                       selectedTab: Int = 0) -> Bool {
+                       selectedTab: Int = 0,
+                       keyboardFocused: Bool = false) -> Bool {
         RailVisibilityRule.shown(RailVisibilityRule.Inputs(
             railMode: railMode, holdsFocus: holdsFocus, revealed: revealed,
             rootCoverActive: rootCoverActive, immersive: immersive, scrolledDown: scrolledDown,
-            visibility: visibility, selectedTab: selectedTab))
+            visibility: visibility, selectedTab: selectedTab, keyboardFocused: keyboardFocused))
+    }
+
+    // MARK: Search keyboard (B4)
+
+    func testAlwaysVisibleHidesOnSearchWhileTheKeyboardHoldsFocus() {
+        XCTAssertFalse(shown(visibility: .always, selectedTab: RailVisibilityRule.searchTab, keyboardFocused: true))
+        XCTAssertTrue(shown(visibility: .always, selectedTab: RailVisibilityRule.searchTab, keyboardFocused: false),
+                      "Down into the results shows it again")
+    }
+
+    func testAlwaysVisibleKeyboardFlagOffSearchKeepsTheRail() {
+        XCTAssertTrue(shown(visibility: .always, selectedTab: 0, keyboardFocused: true))
+        XCTAssertTrue(shown(visibility: .always, selectedTab: 6, keyboardFocused: true))
+    }
+
+    func testRailFocusAndRevealWinOverTheKeyboard() {
+        XCTAssertTrue(shown(holdsFocus: true, visibility: .always, selectedTab: 1, keyboardFocused: true))
+        XCTAssertTrue(shown(revealed: true, visibility: .always, selectedTab: 1, keyboardFocused: true),
+                      "Menu from the keyboard still opens the rail")
+    }
+
+    func testHideWhileBrowsingIsUnchangedByTheKeyboard() {
+        XCTAssertFalse(shown(selectedTab: 1, keyboardFocused: true))
+        XCTAssertFalse(shown(selectedTab: 1, keyboardFocused: false))
+        XCTAssertTrue(shown(selectedTab: 0, keyboardFocused: true))
+    }
+
+    func testNotRailModeIgnoresTheKeyboard() {
+        XCTAssertFalse(shown(railMode: false, visibility: .always, selectedTab: 1, keyboardFocused: false))
+        XCTAssertFalse(shown(railMode: false, visibility: .always, selectedTab: 0, keyboardFocused: true))
+    }
+
+    func testSearchKeyboardFlagIsWriteOnChange() {
+        let model = NavigationChromeModel()
+        var publishes = 0
+        let token = model.objectWillChange.sink { _ in publishes += 1 }
+        XCTAssertFalse(model.searchKeyboardFocused)
+        model.setSearchKeyboardFocused(true)
+        model.setSearchKeyboardFocused(true)
+        XCTAssertTrue(model.searchKeyboardFocused)
+        model.setSearchKeyboardFocused(false)
+        XCTAssertFalse(model.searchKeyboardFocused)
+        XCTAssertEqual(publishes, 2)
+        token.cancel()
     }
 
     func testNotRailModeIsNeverShown() {
@@ -220,10 +265,15 @@ final class RailFocusPolicyTests: XCTestCase {
     // MARK: Items
 
     func testRailItemsMatchTheTabShell() {
-        XCTAssertEqual(RailItem.tabs.map(\.id), [0, 1, 2, 3, 4])
-        XCTAssertEqual(RailItem.tabs.map(\.title), ["Home", "Search", "Library", "Add-ons", "Settings"])
+        XCTAssertEqual(RailItem.tabs(showsDiscover: false).map(\.id), [0, 1, 2, 3, 4])
+        XCTAssertEqual(RailItem.tabs(showsDiscover: false).map(\.title), ["Home", "Search", "Library", "Add-ons", "Settings"])
+        XCTAssertEqual(RailItem.tabs(showsDiscover: true).map(\.id), [0, 1, 6, 2, 3, 4])
+        XCTAssertEqual(RailItem.tabs(showsDiscover: true).map(\.title),
+                       ["Home", "Search", "Discover", "Library", "Add-ons", "Settings"])
+        XCTAssertEqual(RailItem.discover.systemImage, "safari")
         XCTAssertEqual(RailItem.profile.id, 5)
         XCTAssertEqual(RailItem.title(for: 1), "Search")
+        XCTAssertEqual(RailItem.title(for: 6), "Discover")
         XCTAssertEqual(RailItem.title(for: 5), "Profile")
         XCTAssertNil(RailItem.title(for: 9))
         // The hand-off ladder keys Search's longer wait on the item title.
