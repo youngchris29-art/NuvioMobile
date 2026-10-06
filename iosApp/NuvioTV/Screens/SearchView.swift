@@ -21,8 +21,14 @@ import Combine
 /// The inline keyboard has no Search/Done key, so a query joins Recent Searches when something is
 /// opened from it (`SearchHistoryOnOpen`) or on the iPhone keyboard's return key.
 ///
-/// While the query is empty the screen doubles as **Discover**: recent-search chips plus shared
-/// `SearchRepository.discoverUiState`-driven browsing (type → catalog → genre → paginated grid).
+/// Search & Discover batch 2026-10-06 (O1 Dressed Search, plan B1/B3) dressed the page in the
+/// stage's look: the ambient wash at layer 0 follows the focused result (`SearchWashDriver`); a typed
+/// query shows the suggestion chips first, then the Top result card, the results grouped by type
+/// ("Movies · 12", "Found in …" under the focused card) or one row per add-on (Settings > Sources >
+/// Search Results), then People; a settled empty search names which of four empty states it is. While
+/// the query is empty the page shows Recent Searches and, when Discover lives Under Search, a
+/// Discover entry row that pushes the stage Discover page (`DiscoverRowsPage`). The inline
+/// Discover browser (type / catalog / genre chips over a grid) left this page in that batch.
 struct SearchView: View {
     @StateObject private var owner = SearchViewOwner()
     @State private var path = NavigationPath()
@@ -31,6 +37,10 @@ struct SearchView: View {
         NavigationStack(path: $path) {
             ZStack {
                 Theme.Palette.background.ignoresSafeArea()
+                // B3 a: layer 0, like the folder page's. Only the wash observes the driver's feed,
+                // so a focus report never re-renders the page.
+                AmbientWashLayer(feed: owner.wash.feed, probeID: "debug_wash_search")
+                    .ignoresSafeArea()
                 SearchFieldLayer(owner: owner, queryBox: owner.queryBox)
             }
             .navigationDestination(for: TitleRoute.self) { route in
@@ -44,6 +54,14 @@ struct SearchView: View {
             }
             .navigationDestination(for: EntityRoute.self) { route in
                 EntityBrowseView(route: route)
+            }
+            // A4 / B3 h: the stage Discover page, pushed from the idle page's entry row (Under
+            // Search placement). Its view model lives on the owner, so loaded rows survive a pop;
+            // the pushed page starts and stops it itself.
+            .navigationDestination(for: DiscoverRoute.self) { _ in
+                DiscoverRowsPage(model: owner.discoverModel, host: .pushed, onOpenGrid: { route in
+                    path.append(route)
+                })
             }
         }
         // Recent Searches on intent: anything opened from a query saves it (see `SearchHistoryOnOpen`).
@@ -69,6 +87,11 @@ final class SearchViewOwner: ObservableObject {
     let model = SearchViewModel()
     let queryBox = SearchQueryBox()
     var historyOnOpen = SearchHistoryOnOpen()
+    /// B3 a: the wash's feed and timing. Not published; only `AmbientWashLayer` observes its feed.
+    let wash = SearchWashDriver()
+    /// A4: the pushed stage Discover page's model (Under Search), created on first push and kept
+    /// for the tab's life so its rows survive pop and push. Not published.
+    lazy var discoverModel = DiscoverRowsViewModel()
 }
 
 /// Carries the system search field. Observes only the query box, so results updates never re-apply
@@ -79,7 +102,7 @@ private struct SearchFieldLayer: View {
     @ObservedObject var queryBox: SearchQueryBox
 
     var body: some View {
-        SearchContent(model: owner.model, query: $queryBox.text)
+        SearchContent(model: owner.model, owner: owner, query: $queryBox.text)
             .searchable(text: $queryBox.text, prompt: Text("Search movies & shows"))
             // The iPhone keyboard's return key. The remote's inline keyboard has none.
             .onSubmit(of: .search) {
@@ -89,34 +112,31 @@ private struct SearchFieldLayer: View {
             .onChange(of: queryBox.text) { _, newValue in
                 owner.historyOnOpen.queryChanged(to: newValue)
                 owner.model.queryChanged(newValue)
+                // B3 a: the view model stays UI-free, so the view clears the wash on an empty field.
+                if newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    owner.wash.clear()
+                } else {
+                    owner.wash.queryTyped()
+                }
             }
     }
 }
 
-/// The page under the search field: Recent Searches and Discover while the query is empty, the
-/// results otherwise. Observes the model.
+/// The page under the search field: Recent Searches (and the Discover entry row, Under Search) while
+/// the query is empty, the results otherwise. Observes the model.
 private struct SearchContent: View {
     @ObservedObject var model: SearchViewModel
+    /// A plain reference, never observed.
+    let owner: SearchViewOwner
     @Binding var query: String
-    @Environment(\.posterStyle) private var posterStyle
-
-    private var gridColumns: [GridItem] {
-        [GridItem(
-            .adaptive(minimum: posterStyle.width + Theme.Spacing.rowGap),
-            spacing: Theme.Spacing.rowGap
-        )]
-    }
+    /// Held for the keyboard flag only (Rail mode sets it; B4).
+    @Environment(\.navigationChrome) private var navigationChrome
 
     var body: some View {
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: Theme.Spacing.xl) {
                 if queryIsEmpty {
-                    historyChips
-                    // UX-8: the user can hide the whole Discover section (synced per
-                    // profile) — the page is then the search field + recent searches.
-                    if !model.hideDiscover {
-                        discoverSection
-                    }
+                    idlePage
                 } else {
                     searchResults
                 }
@@ -134,53 +154,122 @@ private struct SearchContent: View {
         // to the system default and exits, so the exit convention survives one step
         // further in. Structurally absent in tabs mode — see `RailMenuRevealModifier`.
         .railMenuReveal()
+        // B3 a: while focus is outside the results, the wash shows the Top result.
+        .onChange(of: topResultIdentity) { _, _ in
+            owner.wash.topResultChanged(model.topResult)
+        }
+        .onReceive(navigationChrome.$searchKeyboardFocused) { focused in
+            if focused { owner.wash.keyboardFocused(topResult: model.topResult) }
+        }
+        #if DEBUG
+        .overlay(alignment: .topLeading) { searchStateProbe }
+        #endif
     }
 
     private var queryIsEmpty: Bool {
-        query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        trimmedQuery.isEmpty
+    }
+
+    private var trimmedQuery: String {
+        query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var topResultIdentity: String? {
+        model.topResult.map { "\($0.type):\($0.id)" }
     }
 
     // MARK: - Search results (query non-empty)
 
     @ViewBuilder
     private var searchResults: some View {
-        // While a search loads over the previous query's rows (`SearchRowsHold`), the rows stay
-        // and "Searching…" doesn't show.
-        if model.isLoading && model.sections.isEmpty {
-            HStack(spacing: Theme.Spacing.md) {
-                ProgressView()
-                Text("Searching\u{2026}")
-                    .font(Theme.Font.body)
-                    .foregroundStyle(Theme.Palette.textSecondary)
-            }
-        } else if let error = model.searchError {
-            // Codex r1 on upstream 085e8dc6: a failed fan-out is not "No results." — name it and
-            // offer the recovery (manifest re-fetch or a forced re-query, see retrySearch()).
-            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                Text(error).font(Theme.Font.body).foregroundStyle(Theme.Palette.textSecondary)
-                Button {
-                    model.retrySearch()
-                } label: {
-                    Label("Retry", systemImage: "arrow.clockwise")
-                        .font(Theme.Font.meta)
-                        .padding(.horizontal, Theme.Spacing.md)
-                        .padding(.vertical, Theme.Spacing.xs)
+        // B3 d: first under the system band; hidden until the first rows (or a settle) arrive.
+        if !model.suggestions.isEmpty, !(model.rows.isEmpty && model.isLoading) {
+            SearchSuggestionRow(suggestions: model.suggestions, query: trimmedQuery) { index, text in
+                if index == 0 {
+                    // The quoted chip: the Search key the inline keyboard lacks.
+                    model.recordSearch(trimmedQuery)
+                    owner.historyOnOpen.submitted(trimmedQuery)
+                } else {
+                    query = text
                 }
-                .buttonStyle(.chip)
             }
-        } else if let message = model.emptyMessage {
-            Text(message).font(Theme.Font.body).foregroundStyle(Theme.Palette.textSecondary)
         }
 
-        ForEach(model.sections, id: \.key) { section in
-            CatalogRowView(section: section)
+        if let emptyState = model.emptyState {
+            SearchEmptyStateView(
+                state: emptyState,
+                onRetry: { model.retrySearch() },
+                onOpenSettings: {
+                    NotificationCenter.default.post(name: .nuvioOpenSettings,
+                                                    object: nil,
+                                                    userInfo: ["category": "sources"])
+                }
+            )
+        } else {
+            // While a search loads over the previous query's rows (`SearchRowsHold`), the rows stay
+            // and "Searching…" doesn't show.
+            if model.isLoading && model.rows.isEmpty && model.topResult == nil {
+                HStack(spacing: Theme.Spacing.md) {
+                    ProgressView()
+                    Text("Searching\u{2026}")
+                        .font(Theme.Font.body)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                }
+            }
+
+            if let top = model.topResult {
+                SearchTopResultCard(item: top, foundIn: model.foundInCaption(for: top)) { item in
+                    owner.wash.report(item)
+                }
+            }
+
+            let footnote = cardFootnote
+            ForEach(model.rows, id: \.key) { section in
+                CatalogRowView(
+                    section: section,
+                    onItemFocusChange: { owner.wash.report($0) },
+                    cardFootnote: footnote
+                )
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier(Self.groupID(section.key))
+            }
+
+            if !model.people.isEmpty {
+                SearchPeopleRow(people: model.people) {
+                    owner.wash.noteResultFocus()
+                }
+            }
         }
     }
 
-    // MARK: - Recent searches
+    /// B3 f: "Found in …" under the focused card, grouped mode only (per add-on, the row heading
+    /// already names the source).
+    private var cardFootnote: ((MetaPreview) -> String?)? {
+        guard model.rowsMode == .grouped else { return nil }
+        let model = model
+        return { model.foundInCaption(for: $0) }
+    }
+
+    /// `search.group.<key>`. Grouped rows' keys already read `search.group.type:<type>`; a
+    /// per-add-on row's key gets the prefix.
+    static func groupID(_ key: String) -> String {
+        key.hasPrefix("search.group.") ? key : "search.group.\(key)"
+    }
+
+    // MARK: - Idle page (query empty)
 
     @ViewBuilder
-    private var historyChips: some View {
+    private var idlePage: some View {
+        recentRow
+        // A5 / B3 h: Own Tab puts Discover on the tab bar and rail, Off hides it; only Under
+        // Search adds the entry row here.
+        if model.discoverPlacement == .underSearch {
+            DiscoverEntryRow()
+        }
+    }
+
+    @ViewBuilder
+    private var recentRow: some View {
         if !model.history.isEmpty {
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
                 Text("Recent Searches")
@@ -189,7 +278,7 @@ private struct SearchContent: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: Theme.Spacing.md) {
                         ForEach(model.history, id: \.self) { item in
-                            RecentSearchChip(item: item) {
+                            FilterChip(title: item, systemImage: "clock.arrow.circlepath", isActive: false) {
                                 query = item
                             }
                             .contextMenu {
@@ -203,225 +292,46 @@ private struct SearchContent: View {
                     }
                     .padding(.vertical, Theme.Spacing.xs)
                 }
+                .scrollClipDisabled()
+                .focusSection()
             }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("search.recent")
         }
     }
 
-    // MARK: - Discover (query empty)
+    // MARK: - DEBUG probe
 
-    @ViewBuilder
-    private var discoverSection: some View {
-        if let discover = model.discover {
-            VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
-                Text("Discover")
-                    .font(Theme.Font.sectionTitle)
-                    .foregroundStyle(Theme.Palette.textPrimary)
-
-                if !discover.typeOptions.isEmpty {
-                    chipRow(
-                        options: discover.typeOptions,
-                        isSelected: { widen(discover.selectedType) == $0 },
-                        label: { typeLabel($0) }
-                    ) { model.selectDiscoverType($0) }
-                }
-
-                if discover.catalogOptions.count > 1 {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: Theme.Spacing.md) {
-                            ForEach(discover.catalogOptions, id: \.key) { option in
-                                DiscoverChip(
-                                    title: option.catalogName,
-                                    subtitle: option.addonName,
-                                    isSelected: widen(discover.selectedCatalogKey) == option.key
-                                ) {
-                                    model.selectDiscoverCatalog(option.key)
-                                }
-                            }
-                        }
-                        .padding(.vertical, Theme.Spacing.xs)
-                    }
-                }
-
-                if !discover.genreOptions.isEmpty {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: Theme.Spacing.md) {
-                            if discover.selectedCatalog?.genreRequired != true {
-                                DiscoverChip(title: String(localized: "All"), subtitle: nil, isSelected: widen(discover.selectedGenre) == nil) {
-                                    model.selectDiscoverGenre(nil)
-                                }
-                            }
-                            ForEach(discover.genreOptions, id: \.self) { genre in
-                                DiscoverChip(title: genre, subtitle: nil, isSelected: widen(discover.selectedGenre) == genre) {
-                                    model.selectDiscoverGenre(genre)
-                                }
-                            }
-                        }
-                        .padding(.vertical, Theme.Spacing.xs)
-                    }
-                }
-
-                discoverGrid(discover)
-            }
-        }
+    #if DEBUG
+    /// `search_state q=<query, spaces as +> rid=- mode=<grouped|per_addon> rows=<n> people=<n>
+    /// hold=- empty=<token|->`. The view model keeps the request id and the hold phase private,
+    /// so `rid` and `hold` read `-` until it publishes them.
+    private var searchStateProbe: some View {
+        Text(verbatim: Self.stateLine(query: trimmedQuery,
+                                      mode: model.rowsMode,
+                                      rows: model.rows.count,
+                                      people: model.people.count,
+                                      empty: model.emptyState))
+            .font(.system(size: 8))
+            .opacity(0.011)
+            .allowsHitTesting(false)
+            .accessibilityIdentifier("search_state")
     }
 
-    @ViewBuilder
-    private func discoverGrid(_ discover: DiscoverUiState) -> some View {
-        if discover.items.isEmpty {
-            if discover.isLoading {
-                HStack(spacing: Theme.Spacing.md) {
-                    ProgressView()
-                    Text("Loading\u{2026}")
-                        .font(Theme.Font.body)
-                        .foregroundStyle(Theme.Palette.textSecondary)
-                }
-            } else if let reason = discover.emptyStateReason {
-                // Upstream 085e8dc6: RequestFailed with NO catalog options means an add-on MANIFEST
-                // failed (SearchRepository.refreshDiscover's early return), not a catalog page —
-                // say so and offer the honest recovery (re-fetch the manifests) instead of
-                // "try another genre".
-                if reason == DiscoverEmptyStateReason.requestfailed, discover.catalogOptions.isEmpty {
-                    VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                        Text(widen(discover.errorMessage) ?? String(localized: "Couldn't load your add-ons."))
-                            .font(Theme.Font.body)
-                            .foregroundStyle(Theme.Palette.textSecondary)
-                        Button {
-                            AddonRepository.shared.refreshAll()
-                        } label: {
-                            Label("Retry", systemImage: "arrow.clockwise")
-                                .font(Theme.Font.meta)
-                                .padding(.horizontal, Theme.Spacing.md)
-                                .padding(.vertical, Theme.Spacing.xs)
-                        }
-                        .buttonStyle(.chip)
-                    }
-                } else {
-                    Text(discoverEmptyMessage(reason))
-                        .font(Theme.Font.body)
-                        .foregroundStyle(Theme.Palette.textSecondary)
-                }
-            }
-        } else {
-            LazyVGrid(columns: gridColumns, spacing: Theme.Spacing.xl) {
-                ForEach(Array(discover.items.enumerated()), id: \.element.id) { index, item in
-                    NavigationLink(value: TitleRoute(preview: item)) {
-                        PosterCard(title: item.name, imageURL: item.poster, fallbackImageURL: item.rawPosterUrl)
-                    }
-                    .cardFocusButtonStyle()
-                    .posterButtonShape()
-                    .titleHoldMenu(preview: item)
-                    .onAppear { model.discoverItemAppeared(at: index) }
-                }
-            }
-            if discover.isLoading {
-                HStack {
-                    Spacer()
-                    ProgressView()
-                    Spacer()
-                }
-                .padding(.vertical, Theme.Spacing.md)
-            }
-        }
+    static func stateLine(query: String, mode: SearchRowsMode, rows: Int, people: Int,
+                          empty: SearchEmptyState?) -> String {
+        let q = query.isEmpty ? "-" : query.replacingOccurrences(of: " ", with: "+")
+        return "search_state q=\(q) rid=- mode=\(mode.rawValue) rows=\(rows) people=\(people) hold=- empty=\(emptyToken(empty))"
     }
 
-    // MARK: - Chip helpers
-
-    private func chipRow(
-        options: [String],
-        isSelected: @escaping (String) -> Bool,
-        label: @escaping (String) -> String,
-        onSelect: @escaping (String) -> Void
-    ) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: Theme.Spacing.md) {
-                ForEach(options, id: \.self) { option in
-                    DiscoverChip(title: label(option), subtitle: nil, isSelected: isSelected(option)) {
-                        onSelect(option)
-                    }
-                }
-            }
-            .padding(.vertical, Theme.Spacing.xs)
+    static func emptyToken(_ state: SearchEmptyState?) -> String {
+        switch state {
+        case nil: return "-"
+        case .manifestFailure: return "manifest_failure"
+        case .noneCanSearch: return "none_can_search"
+        case .allSourcesOff: return "all_sources_off"
+        case .noResults: return "no_results"
         }
     }
-
-    /// Kotlin `String?` properties can surface non-optional; force an explicit optional for ==.
-    private func widen(_ value: String?) -> String? { value }
-
-    private func typeLabel(_ type: String) -> String {
-        switch type.lowercased() {
-        case "movie": return String(localized: "Movies")
-        case "series": return String(localized: "Series")
-        case "tv": return String(localized: "TV")
-        case "anime": return String(localized: "Anime")
-        default: return type.capitalized
-        }
-    }
-
-    private func discoverEmptyMessage(_ reason: DiscoverEmptyStateReason) -> String {
-        // KMP exports these enum entries all-lowercase (like CloudLibraryItemType.webdownload).
-        if reason == DiscoverEmptyStateReason.noactiveaddons {
-            return String(localized: "Install and enable an add-on to browse its catalogs.")
-        }
-        if reason == DiscoverEmptyStateReason.nodiscovercatalogs {
-            return String(localized: "Your add-ons don't expose browsable catalogs.")
-        }
-        if reason == DiscoverEmptyStateReason.requestfailed {
-            return String(localized: "Couldn't load this catalog. Try another genre or catalog.")
-        }
-        return String(localized: "Nothing here yet \u{2014} try another genre or catalog.")
-    }
-}
-
-private struct RecentSearchChip: View {
-    let item: String
-    let action: () -> Void
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: Theme.Spacing.xs) {
-                Image(systemName: "clock.arrow.circlepath")
-                Text(item)
-            }
-            .font(Theme.Font.meta)
-            .padding(.horizontal, Theme.Spacing.md)
-            .padding(.vertical, Theme.Spacing.xs)
-            .foregroundStyle(focused ? Theme.Palette.onFocusPlatter : Theme.Palette.textPrimary)
-        }
-        .buttonStyle(.chip)
-        .focused($focused)
-        .environment(\.settingsRowIsFocused, focused)
-    }
-}
-
-private struct DiscoverChip: View {
-    let title: String
-    let subtitle: String?
-    let isSelected: Bool
-    let action: () -> Void
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: Theme.Spacing.xs) {
-                if isSelected {
-                    Image(systemName: "checkmark.circle.fill")
-                }
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(title)
-                    if let subtitle, !subtitle.isEmpty {
-                        Text(subtitle)
-                            .font(Theme.Font.caption)
-                            .chipMetaText(selected: isSelected)
-                    }
-                }
-            }
-            .font(Theme.Font.meta)
-            .padding(.horizontal, Theme.Spacing.md)
-            .padding(.vertical, Theme.Spacing.xs)
-        }
-        .buttonStyle(.chip(selected: isSelected))
-        .focused($focused)
-        .environment(\.settingsRowIsFocused, focused)
-    }
+    #endif
 }
