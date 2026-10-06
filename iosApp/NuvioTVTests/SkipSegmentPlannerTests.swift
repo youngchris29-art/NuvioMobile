@@ -495,4 +495,48 @@ final class SkipSegmentPlannerTests: XCTestCase {
         p.seekCompleted(atSec: 120, now: 5.3)
         XCTAssertNil(tick(&p, 120, at: 6, types: [.intro]).autoSkipTargetSec)
     }
+
+    // MARK: - Chip auto-hide (P1)
+
+    func testChipAutoHidesAfterTenSeconds() {
+        var p = planner([interval(5, 60, "op")])
+        p.autoHidesChip = true
+        XCTAssertNotNil(tick(&p, 10, at: 0).prompt)
+        XCTAssertNotNil(tick(&p, 20, at: 9.9).prompt)
+        XCTAssertNil(tick(&p, 20.1, at: 10).prompt)
+    }
+
+    func testChipAutoHideOffByDefault() {
+        var p = planner([interval(5, 60, "op")])
+        XCTAssertNotNil(tick(&p, 10, at: 0).prompt)
+        XCTAssertNotNil(tick(&p, 25, at: 15).prompt)
+    }
+
+    func testNoteInputRevealsHiddenChipForAnotherTenSeconds() {
+        var p = planner([interval(5, 60, "op")])
+        p.autoHidesChip = true
+        XCTAssertNotNil(tick(&p, 10, at: 0).prompt)
+        XCTAssertNil(tick(&p, 20, at: 10).prompt)
+        XCTAssertTrue(p.noteInput(now: 12))
+        XCTAssertNotNil(tick(&p, 22, at: 12).prompt)
+        XCTAssertNotNil(tick(&p, 31, at: 21.9).prompt)
+        XCTAssertNil(tick(&p, 32, at: 22).prompt)
+    }
+
+    func testNoteInputWhenChipVisibleReturnsFalse() {
+        var p = planner([interval(5, 60, "op")])
+        p.autoHidesChip = true
+        XCTAssertNotNil(tick(&p, 10, at: 0).prompt)
+        XCTAssertFalse(p.noteInput(now: 3))
+    }
+
+    func testLeavingAndReenteringIntervalRestartsTheTimer() {
+        var p = planner([interval(5, 60, "op")])
+        p.autoHidesChip = true
+        XCTAssertNotNil(tick(&p, 10, at: 0).prompt)
+        XCTAssertNil(tick(&p, 20, at: 10).prompt)
+        XCTAssertNil(tick(&p, 70, at: 11).prompt)   // left the interval
+        XCTAssertNotNil(tick(&p, 10, at: 12).prompt) // re-entered: fresh 10 s
+        XCTAssertNotNil(tick(&p, 15, at: 21.9).prompt)
+    }
 }

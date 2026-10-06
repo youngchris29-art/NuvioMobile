@@ -93,6 +93,13 @@ struct SkipSegmentPlanner {
     /// An app seek completed since the last `observeTick` (AVPlayer scrub detector).
     private var seekCompletedSinceLastObservedTick = false
 
+    /// Official `SkipIntroVisibilityRules`: the chip hides this long after it appeared.
+    static let chipAutoHideSec: TimeInterval = 10
+    /// mpv sets this true (it can bring the chip back on a press); the native engine keeps it false.
+    var autoHidesChip = false
+    private var chipShown: (index: Int, since: TimeInterval)?
+    private var chipHiddenIndex: Int?
+
     /// The seek currently in flight, if any.
     var seekInFlight: Seek? {
         if case .seeking(let seek) = seekState { return seek }
@@ -217,6 +224,14 @@ struct SkipSegmentPlanner {
         return true
     }
 
+    /// Any remote press: a chip hidden by the auto-hide comes back for another 10 s. True when it did.
+    mutating func noteInput(now: TimeInterval) -> Bool {
+        guard let index = chipHiddenIndex else { return false }
+        chipShown = (index, now)
+        chipHiddenIndex = nil
+        return true
+    }
+
     // MARK: - Evaluation
 
     /// Call on every position tick. `autoSkipTypes` nil = auto-skip off (Skip Intro disabled).
@@ -246,6 +261,8 @@ struct SkipSegmentPlanner {
         }), let action = intervals[index].internalSkipAction(intervals: intervals, durationMs: durationMs)
         else {
             chipSuppressedIndex = nil
+            chipShown = nil
+            chipHiddenIndex = nil
             return Decision()
         }
         if chipSuppressedIndex != index { chipSuppressedIndex = nil }
@@ -276,6 +293,11 @@ struct SkipSegmentPlanner {
                 (durationSec <= 0 || $0.startTime < durationSec)
         }
         let label = Self.label(for: interval.type, skipsToPostCredits: explicitPostCredits)
+        if chipShown?.index != index { chipShown = (index, now) }
+        if autoHidesChip, let shown = chipShown, now - shown.since >= Self.chipAutoHideSec {
+            chipHiddenIndex = index
+            return Decision()
+        }
         promptIndex = index
         return Decision(prompt: SkipPrompt(label: label, targetSec: target), autoSkipTargetSec: nil)
     }
