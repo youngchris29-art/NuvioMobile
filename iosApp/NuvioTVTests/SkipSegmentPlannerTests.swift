@@ -450,4 +450,49 @@ final class SkipSegmentPlannerTests: XCTestCase {
         XCTAssertTrue(q.observeTick(fromSec: 183, toSec: 40, now: 12))
         XCTAssertNil(tick(&q, 40, at: 12, types: [.intro, .recap]).autoSkipTargetSec)
     }
+
+    // MARK: - Two-stage gesture (P1 preview-then-commit)
+
+    func testRefineSeekAfterKeyframesLandingKeepsOneGestureSpan() {
+        var p = planner([interval(100, 190, "op")])
+        p.beginSeek(kind: .user, targetSec: 140, fromSec: 50, now: 0)
+        p.seekCompleted(atSec: 138, now: 0.3)
+        p.refineSeek(targetSec: 140, fromSec: 50, now: 0.45)
+        XCTAssertNotNil(p.seekInFlight)
+        p.seekCompleted(atSec: 140, now: 0.8)
+        XCTAssertNil(p.seekInFlight)
+        let d = tick(&p, 141, at: 1.2, types: [.intro])
+        XCTAssertNil(d.autoSkipTargetSec)
+        XCTAssertNotNil(d.prompt)
+    }
+
+    func testRefineSeekWhileKeyframesInFlightReplacesTarget() {
+        var p = planner([interval(100, 190, "op")])
+        p.beginSeek(kind: .user, targetSec: 140, fromSec: 50, now: 0)
+        p.refineSeek(targetSec: 160, fromSec: 140, now: 0.2)
+        XCTAssertEqual(p.seekInFlight?.targetSec, 160)
+        XCTAssertEqual(p.seekInFlight?.fromSec, 50)
+        XCTAssertEqual(p.seekInFlight?.kind, .user)
+    }
+
+    func testRefineSeekDoesNotResetChipSuppression() {
+        var p = planner([interval(100, 190, "op")])
+        XCTAssertNotNil(tick(&p, 120, at: 0).prompt)
+        p.beginSeek(kind: .chip, targetSec: 190, now: 1)
+        p.refineSeek(targetSec: 125, fromSec: 120, now: 1.1)
+        p.seekCompleted(atSec: 125, now: 1.4)
+        XCTAssertNil(tick(&p, 126, at: 1.8).prompt)
+        XCTAssertNil(tick(&p, 127, at: 2.0, types: [.intro]).autoSkipTargetSec)
+    }
+
+    func testRecordUserSpanConsumesScannedIntervals() {
+        var control = planner([interval(100, 190, "op")])
+        XCTAssertEqual(tick(&control, 120, at: 0, types: [.intro]).autoSkipTargetSec, 190)
+
+        var p = planner([interval(100, 190, "op")])
+        p.recordUserSpan(fromSec: 0, toSec: 300)
+        p.beginSeek(kind: .user, targetSec: 120, fromSec: 300, now: 5)
+        p.seekCompleted(atSec: 120, now: 5.3)
+        XCTAssertNil(tick(&p, 120, at: 6, types: [.intro]).autoSkipTargetSec)
+    }
 }

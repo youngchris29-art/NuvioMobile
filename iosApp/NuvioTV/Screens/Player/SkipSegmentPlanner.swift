@@ -143,6 +143,24 @@ struct SkipSegmentPlanner {
         seekState = .seeking(Seek(kind: kind, targetSec: targetSec, fromSec: from, startedAt: now))
     }
 
+    /// The second stage of ONE user gesture (keyframes landing, then the exact seek). Replaces a
+    /// `.user` seek still in flight (keeping its `fromSec`), or starts one when idle. Unlike
+    /// `beginSeek` it leaves `promptIndex`, `consumed`, `chipSuppressedIndex` and `abandonedSeek`
+    /// alone: the gesture's completion records the same span, and intervals it touched stay consumed.
+    mutating func refineSeek(targetSec: Double, fromSec: Double, now: TimeInterval) {
+        if let inFlight = seekInFlight, inFlight.kind == .user {
+            seekState = .seeking(Seek(kind: .user, targetSec: targetSec, fromSec: inFlight.fromSec, startedAt: now))
+        } else {
+            seekState = .seeking(Seek(kind: .user, targetSec: targetSec, fromSec: fromSec, startedAt: now))
+        }
+    }
+
+    /// A deliberate span the user covered without a seek (an in-place scan): intervals it touched
+    /// stop auto-skipping. Same bookkeeping as a completed `.user` seek.
+    mutating func recordUserSpan(fromSec: Double, toSec: Double) {
+        recordDeliberate(fromSec: fromSec, toSec: toSec)
+    }
+
     /// Call when the ENGINE confirms the seek finished, with the actual position. No seek in flight
     /// (e.g. mpv's playback-restart at start of playback or after a track switch) = no-op, except
     /// for the late confirmation of a seek that timed out.
