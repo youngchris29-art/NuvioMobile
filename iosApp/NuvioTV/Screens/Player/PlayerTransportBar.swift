@@ -379,3 +379,24 @@ extension Notification.Name {
     static let nuvioDebugTransportLightTap = Notification.Name("nuvio.debug.transport.lightTap")
 }
 #endif
+
+#if DEBUG
+/// DEBUG: reposts the Darwin notification `com.nuvio.debug.transport.lightTap` (posted by the UI
+/// test runner, which has no touch-surface tap) as a `NotificationCenter` notification. Process-wide
+/// and installed once; the controller's block observer is the part that is torn down.
+enum TransportDebugDarwinBridge {
+    private static var installed = false
+    static func install() {
+        guard !installed else { return }
+        installed = true
+        CFNotificationCenterAddObserver(
+            CFNotificationCenterGetDarwinNotifyCenter(), nil,
+            { _, _, _, _, _ in
+                DispatchQueue.main.async {
+                    NotificationCenter.default.post(name: .nuvioDebugTransportLightTap, object: nil)
+                }
+            },
+            "com.nuvio.debug.transport.lightTap" as CFString, nil, .deliverImmediately)
+    }
+}
+#endif

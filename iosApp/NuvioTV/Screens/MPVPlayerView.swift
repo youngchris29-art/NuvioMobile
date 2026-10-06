@@ -31,7 +31,18 @@ final class MPVPlaybackState: ObservableObject {
     @Published var durationSec: Double = 0
     @Published var isPaused: Bool = false
     @Published var isBuffering: Bool = true
-    @Published var controlsVisible: Bool = false
+    /// The transport bar is up. Every hidden-to-shown edge bumps `controlsSession` and resets the
+    /// bar's per-raise state (focus on the track, right label back to remaining time).
+    @Published var controlsVisible: Bool = false {
+        didSet {
+            if controlsVisible && !oldValue {
+                controlsSession &+= 1
+                transport.focusedPill = nil
+                transport.showsEndTime = false
+            }
+        }
+    }
+    @Published private(set) var controlsSession = 0
 
     @Published var audioTracks: [PlayerTrack] = []
     @Published var subtitleTracks: [PlayerTrack] = []
@@ -220,8 +231,17 @@ final class MPVTVPlayerViewController: UIViewController {
     /// Set when a Menu press was consumed by the up-next dismiss so the matching release is
     /// swallowed too (same pattern as `PlayerPanelHostController`) — nothing above sees a half press.
     private var swallowMenuRelease = false
-    /// Open the swipe-down top panel (D-pad Down with nothing else to do, or a down swipe).
-    var onOpenPanel: (() -> Void)?
+    /// Open the top panel on a tab (D-pad Down with nothing else to do, a down swipe: `.info`; a
+    /// pill's Select: that pill's tab).
+    var onOpenPanel: ((PlayerPanelTab) -> Void)?
+    /// `systemUptime` of the last Select / Play-Pause press: a click is also a touch, so the light-tap
+    /// recogniser ignores a tap that follows one within 0.5 s.
+    private var lastClickUptime: TimeInterval = 0
+    private var endTimeWork: DispatchWorkItem?
+    #if DEBUG
+    /// Block token for the DEBUG light-tap notification; removed in `destroyPlayer`, never `deinit`.
+    private var lightTapObserver: NSObjectProtocol?
+    #endif
 
     // MARK: Failover hooks (set by the host, `PlayerScreen`; all unset = today's behaviour)
     /// Fired on the main thread, at most once per player, when this engine cannot give the viewer
@@ -296,6 +316,20 @@ final class MPVTVPlayerViewController: UIViewController {
         swipeDown.direction = .down
         view.addGestureRecognizer(swipeDown)
 
+        // Light tap on the touch surface: raise the bar, or flip the right label to the end time.
+        let lightTap = UITapGestureRecognizer(target: self, action: #selector(handleLightTap))
+        lightTap.allowedPressTypes = []
+        lightTap.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirect.rawValue)]
+        view.addGestureRecognizer(lightTap)
+        #if DEBUG
+        TransportDebugDarwinBridge.install()
+        lightTapObserver = NotificationCenter.default.addObserver(
+            forName: .nuvioDebugTransportLightTap, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.performLightTap(force: true) }
+        }
+        #endif
+
         setupMpv()
     }
 
@@ -304,7 +338,31 @@ final class MPVTVPlayerViewController: UIViewController {
         cancelExactStage()
         stopHoldTimer()
         apply(transport.cancel())
-        onOpenPanel?()
+        onOpenPanel?(.info)
+    }
+
+    @objc private func handleLightTap() { performLightTap(force: false) }
+
+    /// Light tap: ignored right after a click; hidden bar → raise it; bar up → flip the right label
+    /// between remaining time and end time (4 s, then back). `force` skips the click guard (the
+    /// DEBUG notification has no preceding click).
+    private func performLightTap(force: Bool) {
+        if !force, ProcessInfo.processInfo.systemUptime - lastClickUptime < 0.5 { return }
+        guard presentedViewController == nil else { return }
+        guard state.controlsVisible else { flashControls(); return }
+        let t = state.transport
+        if !t.showsEndTime {
+            guard t.durationSec > 0 else { flashControls(); return }
+            t.showsEndTime = true
+            endTimeWork?.cancel()
+            let work = DispatchWorkItem { [weak self] in self?.state.transport.showsEndTime = false }
+            endTimeWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: work)
+        } else {
+            t.showsEndTime = false
+            endTimeWork?.cancel()
+        }
+        flashControls()
     }
 
     override func viewDidLayoutSubviews() {
@@ -1450,17 +1508,24 @@ final class MPVTVPlayerViewController: UIViewController {
             }
             switch press.type {
             case .playPause, .select:
+                lastClickUptime = ProcessInfo.processInfo.systemUptime
                 if case .scanning = transport.mode {
                     // Ends the scan where it is; playback continues at the user's speed.
                     apply(transport.endScanInPlace())
                 } else {
                     if case .stepping = transport.mode { stopHoldTimer(); apply(transport.cancel()) }
-                    togglePause(); flashControls()
+                    if press.type == .select, let pill = state.transport.focusedPill {
+                        activatePill(pill)
+                    } else {
+                        togglePause(); flashControls()
+                    }
                 }
                 handled = true
             case .leftArrow:
                 if case .scanning = transport.mode {
                     apply(transport.endScanInPlace())
+                } else if state.transport.focusedPill != nil {
+                    movePill(by: -1)        // a focused pill row never seeks
                 } else {
                     beginHold(-1)
                 }
@@ -1468,19 +1533,26 @@ final class MPVTVPlayerViewController: UIViewController {
             case .rightArrow:
                 if case .scanning = transport.mode {
                     apply(transport.pressBegan(direction: 1, positionSec: 0))   // next rate
+                } else if state.transport.focusedPill != nil {
+                    movePill(by: 1)
                 } else {
                     beginHold(1)
                 }
                 handled = true
             case .upArrow:
-                // Idle behaviour (raise the bar, focus the pills) belongs to the bar work.
                 switch transport.mode {
                 case .scanning:
                     apply(transport.endScanInPlace()); handled = true
                 case .stepping:
                     stopHoldTimer(); apply(transport.cancel()); handled = true
                 default:
-                    break
+                    // Hidden bar: raise it (focus on the track). Bar up: focus the first pill; with
+                    // a pill already focused Up does nothing but keep the bar up.
+                    if state.controlsVisible, state.transport.focusedPill == nil {
+                        state.transport.focusedPill = state.transport.pills.first
+                    }
+                    flashControls()
+                    handled = true
                 }
             case .downArrow:
                 var consumed = false
@@ -1493,6 +1565,11 @@ final class MPVTVPlayerViewController: UIViewController {
                     break
                 }
                 if consumed {
+                    handled = true
+                } else if state.transport.focusedPill != nil {
+                    // Back to the track; the next Down fires the chip or opens the panel.
+                    state.transport.focusedPill = nil
+                    flashControls()
                     handled = true
                 } else if state.upNextPlayNow?() == true {
                     handled = true
@@ -1508,7 +1585,7 @@ final class MPVTVPlayerViewController: UIViewController {
                     // Same gesture as the native player: Down opens the top panel. Track lists
                     // are refreshed on open (the async walk fills them if this raced the events).
                     refreshTracksAsync()
-                    onOpenPanel?()
+                    onOpenPanel?(.info)
                     handled = true
                 }
             case .menu:
@@ -1520,6 +1597,11 @@ final class MPVTVPlayerViewController: UIViewController {
                 } else if state.upNextDismiss?() == true {
                     // Back out of the transient up-next chip first; the next Menu exits (same
                     // convention as the top panel: overlay first, player second).
+                    swallowMenuRelease = true
+                } else if state.transport.focusedPill != nil || state.controlsVisible {
+                    // A focused pill, or the bar itself: Menu hides the bar at once (hideControlsNow
+                    // clears the pill focus); the next Menu exits.
+                    hideControlsNow()
                     swallowMenuRelease = true
                 } else {
                     closeFailover()
@@ -1800,15 +1882,53 @@ final class MPVTVPlayerViewController: UIViewController {
         return generation
     }
 
+    /// Raise the bar (or keep it up) and re-arm its hide timer: every input comes through here.
     private func flashControls() {
         state.controlsVisible = true
+        scheduleHide()
+    }
+
+    /// Hide rule: 4 s after the last input while playing; paused, 5 s when the pause card is on and
+    /// never when it is off. A timer that fires with a pill focused or a seek mode active does
+    /// nothing (the next input re-arms it).
+    private func scheduleHide() {
         hideWork?.cancel()
+        hideWork = nil
+        guard let delay = TransportHideRule.delay(isPaused: cachedProps().paused,
+                                                  pauseCardEnabled: playerSettings?.pauseOverlayEnabled != false)
+        else { return }
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            if !self.state.isPaused { self.state.controlsVisible = false }
+            guard TransportHideRule.mayHide(pillFocused: self.state.transport.focusedPill != nil,
+                                            modeActive: self.transport.mode.isActive) else { return }
+            self.state.transport.focusedPill = nil
+            self.state.controlsVisible = false
         }
         hideWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 4.0, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func hideControlsNow() {
+        hideWork?.cancel()
+        hideWork = nil
+        state.transport.focusedPill = nil
+        state.controlsVisible = false
+    }
+
+    private func movePill(by delta: Int) {
+        let t = state.transport
+        if let current = t.focusedPill, let next = PillKind.move(from: current, by: delta, in: t.pills) {
+            t.focusedPill = next
+        }
+        flashControls()
+    }
+
+    private func activatePill(_ pill: PillKind) {
+        state.transport.focusedPill = nil
+        flashControls()
+        guard presentedViewController == nil else { return }
+        refreshTracksAsync()
+        onOpenPanel?(pill.panelTab)
     }
 
     // MARK: - Failover signals
@@ -1986,6 +2106,14 @@ final class MPVTVPlayerViewController: UIViewController {
     }
 
     private func destroyPlayer() {
+        #if DEBUG
+        if let token = lightTapObserver {
+            NotificationCenter.default.removeObserver(token)
+            lightTapObserver = nil
+        }
+        #endif
+        endTimeWork?.cancel()
+        hideWork?.cancel()
         guard let ctx = mpv else { return }
         mpv = nil
         // mpv invokes the wakeup callback under the lock this call takes, so once it returns no
@@ -2233,9 +2361,9 @@ private struct MPVPlayerRepresentable: UIViewControllerRepresentable {
         controller.startWatchdogShortened = startWatchdogShortened
         controller.nativeSecondsPlayedBeforeFallback = nativeSecondsPlayedBeforeFallback
         let state = state, model = panelModel, makeExtraTab = makeExtraTab
-        controller.onOpenPanel = { [weak controller] in
+        controller.onOpenPanel = { [weak controller] tab in
             guard let controller, controller.presentedViewController == nil else { return }
-            let panel = PlayerPanelHostController(rootView: PlayerTopPanel(model: model, extraTab: makeExtraTab()))
+            let panel = PlayerPanelHostController(rootView: PlayerTopPanel(model: model, extraTab: makeExtraTab(), initialTab: tab))
             panel.modalPresentationStyle = .overFullScreen
             panel.modalTransitionStyle = .crossDissolve
             model.onClose = { [weak panel] in panel?.close(animated: true) }
@@ -2276,8 +2404,8 @@ struct MPVPlayerScreen: View {
     @StateObject private var state: MPVPlaybackState
     @StateObject private var upNext: NextEpisodeEngine
     @Environment(\.dismiss) private var dismiss
-    @State private var showPauseInfo = false
-    @State private var pauseInfoTask: Task<Void, Never>?
+    /// `pauseOverlayEnabled` (the shared Pause Info Card setting), read once in `onAppear`.
+    @State private var pauseCardEnabled = true
     @StateObject private var panelModel: PlayerTopPanelModel
     @State private var panelAdapter: MPVPlayerPanelAdapter?
 
@@ -2317,6 +2445,17 @@ struct MPVPlayerScreen: View {
             info: PlayerPanelInfo(header: NativeInfoHeader(context: context))))
     }
 
+    /// Chip insets: above the pill row while the bar shows, the plain edge padding otherwise.
+    private var chipBottomInset: CGFloat {
+        state.controlsVisible ? PlayerChipStyle.barUpBottomInset : PlayerChipStyle.edgePadding
+    }
+    private var chipTrailingInset: CGFloat {
+        state.controlsVisible ? PlayerChipStyle.barUpTrailingInset : PlayerChipStyle.edgePadding
+    }
+    private var pauseCardVisible: Bool {
+        state.isPaused && !state.controlsVisible && !state.isBuffering && pauseCardEnabled
+    }
+
     var body: some View {
         ZStack(alignment: .bottom) {
             MPVPlayerRepresentable(
@@ -2341,28 +2480,40 @@ struct MPVPlayerScreen: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
-            PlayerControlsOverlay(state: state)
-                .opacity(state.controlsVisible ? 1 : 0)
-                .animation(.easeInOut(duration: 0.25), value: state.controlsVisible)
+            PlayerTransportBar(model: state.transport, state: state)
 
             #if DEBUG
             SeekProbeLabel(probe: state.seekProbe)
             #endif
 
             // Metadata card after a sustained pause (Android TV PauseOverlay parity).
-            if showPauseInfo, state.isPaused, !state.isBuffering {
+            // It waits for the bar's fade (0.25 s) before fading in; any press raises the bar,
+            // which removes it.
+            if pauseCardVisible {
                 PauseInfoCard(context: context, state: state)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .padding(60)
-                    .transition(.opacity)
+                    .transition(.opacity.animation(.easeInOut(duration: 0.25).delay(0.25)))
             }
 
-            // Live diagnostics, toggled from the playback-settings panel.
-            if state.showStreamInfo, let info = state.streamInfo {
-                StreamInfoOverlayView(info: info)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                    .padding(60)
-                    .transition(.opacity)
+            // Clock (Settings → player.showClock) above the live diagnostics, one trailing stack;
+            // the clock fades with the bar.
+            let showsClock = state.transport.showsClock
+            if showsClock || (state.showStreamInfo && state.streamInfo != nil) {
+                VStack(alignment: .trailing, spacing: Theme.Spacing.md) {
+                    if showsClock {
+                        PlayerTransportClock()
+                            .opacity(state.controlsVisible ? 1 : 0)
+                            .animation(.easeInOut(duration: 0.25), value: state.controlsVisible)
+                    }
+                    // Live diagnostics, toggled from the playback-settings panel.
+                    if state.showStreamInfo, let info = state.streamInfo {
+                        StreamInfoOverlayView(info: info)
+                            .transition(.opacity)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .padding(60)
             }
 
             // Transient prompts, bottom-trailing — same chip family as the native screen's
@@ -2376,18 +2527,20 @@ struct MPVPlayerScreen: View {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                .padding(PlayerChipStyle.edgePadding)
+                .padding(.bottom, chipBottomInset)
+                .padding(.trailing, chipTrailingInset)
                 .transition(.opacity)
             } else if let prompt = state.skipPrompt {
                 PlayerActionChip(label: prompt.label, symbol: PlayerChipStyle.skipSymbol, showsPressHint: true)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                    .padding(PlayerChipStyle.edgePadding)
+                    .padding(.bottom, chipBottomInset)
+                    .padding(.trailing, chipTrailingInset)
                     .transition(.opacity)
             }
         }
         .animation(PlayerChipStyle.animation, value: state.skipPrompt)
         .animation(PlayerChipStyle.animation, value: upNext.phase)
-        .animation(.easeInOut(duration: 0.25), value: showPauseInfo)
+        .animation(PlayerChipStyle.animation, value: state.controlsVisible)
         .animation(.easeInOut(duration: 0.25), value: state.showStreamInfo)
         .fullScreenCover(
             isPresented: Binding(
@@ -2405,6 +2558,17 @@ struct MPVPlayerScreen: View {
         }
         .onAppear {
             if let routingNote { state.routingNote = routingNote }
+            // Transport bar feeds (P1): lockup text, pill row, clock, pause-card setting.
+            let header = NativeInfoHeader(context: context)
+            state.transport.title = context.title
+            state.transport.metaLine = [header.subtitle, context.providerName]
+                .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+            state.transport.pills = PillKind.visible(
+                isSeries: context.contentType == "series", canSwitchStreams: onPlayNext != nil,
+                hasEpisodes: !context.episodes.isEmpty)
+            state.transport.showsClock = UserDefaults.standard.bool(forKey: PlayerTuning.showClockKey)
+            pauseCardEnabled = (PlayerSettingsRepository.shared.uiState.value_ as? PlayerSettingsUiState)?
+                .pauseOverlayEnabled != false
             if panelAdapter == nil {
                 panelAdapter = MPVPlayerPanelAdapter(state: state, model: panelModel, context: context)
             }
@@ -2432,84 +2596,6 @@ struct MPVPlayerScreen: View {
             // Paused → let the idle timer run again (a long-paused frame should be allowed to
             // hand off to the screensaver, same as the native player); playing → hold it.
             UIApplication.shared.isIdleTimerDisabled = !paused
-            pauseInfoTask?.cancel()
-            // Upstream ecb69a88 ("pause overlay toggle"): synchronous read, same idiom as the
-            // `ensureLoaded()` call in the controller (L257) — this overlay struct keeps no
-            // `playerSettings` copy of its own, so there's nothing to watch.
-            guard (PlayerSettingsRepository.shared.uiState.value_ as? PlayerSettingsUiState)?.pauseOverlayEnabled != false else {
-                showPauseInfo = false
-                return
-            }
-            if paused {
-                pauseInfoTask = Task {
-                    try? await Task.sleep(nanoseconds: 1_500_000_000)
-                    guard !Task.isCancelled else { return }
-                    showPauseInfo = true
-                }
-            } else {
-                showPauseInfo = false
-            }
-        }
-    }
-}
-
-/// Bottom transport bar: title, scrubber, elapsed/remaining time, play/pause indicator.
-private struct PlayerControlsOverlay: View {
-    @ObservedObject var state: MPVPlaybackState
-
-    var body: some View {
-        // Floating glass transport bar (HIG revamp): mirrors the native AVPlayerViewController
-        // tvOS 26 chrome — an inset Liquid Glass panel over the video instead of the old
-        // full-width black gradient.
-        VStack(alignment: .leading, spacing: 16) {
-            Text(state.title)
-                .font(Theme.Font.screenTitle)
-                .lineLimit(1)
-
-            HStack(spacing: 20) {
-                Image(systemName: state.isPaused ? "pause.fill" : "play.fill")
-                    .font(Theme.Font.screenTitle.weight(.regular))
-
-                Text(timeString(state.positionSec))
-                    .font(Theme.Font.body).monospacedDigit()
-
-                ProgressBar(fraction: state.fraction)
-                    .frame(height: 10)
-
-                Text("-\(timeString(max(state.durationSec - state.positionSec, 0)))")
-                    .font(Theme.Font.body).monospacedDigit()
-            }
-
-            Label("Swipe down for info", systemImage: "chevron.down")
-                .font(Theme.Font.caption).foregroundStyle(.white.opacity(0.7))
-        }
-        .foregroundStyle(.white)
-        .padding(28)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .glassEffect(.regular.tint(.black.opacity(0.35)), in: RoundedRectangle(cornerRadius: 24))
-        .shadow(color: .black.opacity(0.35), radius: 14, y: 6)
-        .padding(.horizontal, Theme.Spacing.screen)
-        .padding(.bottom, Theme.Spacing.xl)
-    }
-
-    private func timeString(_ seconds: Double) -> String {
-        guard seconds.isFinite, seconds >= 0 else { return "0:00" }
-        let total = Int(seconds)
-        let h = total / 3600, m = (total % 3600) / 60, s = total % 60
-        return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
-    }
-}
-
-private struct ProgressBar: View {
-    let fraction: Double
-
-    var body: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Capsule().fill(.white.opacity(0.25))
-                Capsule().fill(.white)
-                    .frame(width: max(0, geo.size.width * fraction))
-            }
         }
     }
 }
