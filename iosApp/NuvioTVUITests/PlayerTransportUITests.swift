@@ -107,23 +107,35 @@ final class PlayerTransportUITests: XCTestCase {
 
     /// Menu during a scan cancels back to where the scan started and keeps the player open. On the
     /// simulator the XCUIRemote Menu press is followed by the system dismissing the cover anyway
-    /// (`pressesCancelled` .menu right after `pressesBegan` consumed it; the cancel itself runs:
-    /// the mode goes idle before the exit), so the leg is recorded as an expected failure there.
-    /// Device pass item: scan, Menu, the playhead returns and the controls stay up.
+    /// (a consumed Menu is still cancelled and acted on above the player there; device-pass item:
+    /// scan, Menu, the playhead returns and the controls stay up). Only the "player still
+    /// presented" assertion is an expected failure; when the cover is gone the dependent reads are
+    /// skipped, never passed. Menu precedence itself is unit-tested (`PlayerRemoteRulesTests`).
     func testScanMenuCancelsBackToOrigin() throws {
         let app = try launch(extra: ["-player.holdMode", "scan"])
-        XCTExpectFailure("simulator Menu dismisses the cover after the press was consumed", strict: false)
         let origin = pos(app)
         remote.press(.right, forDuration: 1.0)
         XCTAssertTrue(waitFor(app) { $0["mode"] == "scanning" }, probeText(app))
         Thread.sleep(forTimeInterval: 2.0)
         remote.press(.menu)
+        try requirePlayerStillPresented(app, "Menu during a scan must not exit the player")
         XCTAssertTrue(waitFor(app) { $0["mode"] == "idle" && $0["speed"] == "1.0" }, probeText(app))
         Thread.sleep(forTimeInterval: 2.0)
         let p = probe(app)
         let after = Double(p["pos"] ?? "") ?? -1
         XCTAssertEqual(after, origin, accuracy: 3.0, probeText(app))
-        XCTAssertTrue(app.otherElements["player.mpv"].exists, "Menu during a scan must not exit the player")
+    }
+
+    /// The one simulator-only expected failure of the Menu legs; a dismissed cover skips the rest.
+    private func requirePlayerStillPresented(_ app: XCUIApplication, _ message: String) throws {
+        Thread.sleep(forTimeInterval: 1.0)          // the simulator dismisses ~0.6 s after the press
+        let presented = app.otherElements["player.mpv"].exists
+        XCTExpectFailure("simulator Menu dismisses the cover after the press was consumed", strict: false) {
+            XCTAssertTrue(presented, message)
+        }
+        if !presented {
+            throw XCTSkip("cover dismissed by the simulator after Menu; the remaining checks are device-pass items")
+        }
     }
 
     // MARK: Transport bar (P1-B), reads `debug_transportProbe`
@@ -235,29 +247,20 @@ final class PlayerTransportUITests: XCTestCase {
     }
 
     /// Menu hides the bar first, a second Menu exits. On the simulator a consumed Menu press still
-    /// dismisses the cover (`pressesCancelled` then `viewDidDisappear` ~0.6 s later) even though the
-    /// controller handled it, so the "player still presented" half is an expected failure there.
-    /// Device check: Up, Menu (bar hides, video stays), Menu (exits).
+    /// dismisses the cover, so "player still presented" is the leg's one expected failure there and
+    /// the rest is skipped (`requirePlayerStillPresented`). Device check: Up, Menu (bar hides, video
+    /// stays), Menu (exits).
     func testMenuHidesBarThenExits() throws {
         let app = try launchWithBarHidden()
         remote.press(.up)
         XCTAssertTrue(waitBar(app) { $0["vis"] == "1" }, barProbeText(app))
         remote.press(.menu)
-        // The simulator dismisses the cover ~0.6 s after a consumed Menu, so the probe can vanish
-        // before it is read: that read is part of the expected failure there.
-        let probeEl = app.descendants(matching: .any)["debug_transportProbe"]
-        XCTExpectFailure("simulator Menu dismisses the cover before the probe can be read", strict: false) {
-            XCTAssertTrue(probeEl.exists && probeEl.label.contains("vis=0"), "Menu did not hide the bar: \(probeEl.exists ? probeEl.label : "gone")")
-        }
-        XCTExpectFailure("simulator Menu dismisses the cover after the press was consumed", strict: false) {
-            XCTAssertTrue(app.otherElements["player.mpv"].exists, "first Menu must hide the bar, not exit")
-        }
-        if app.otherElements["player.mpv"].exists {
-            remote.press(.menu)
-            let gone = NSPredicate(format: "exists == false")
-            let exp = XCTNSPredicateExpectation(predicate: gone, object: app.otherElements["player.mpv"])
-            XCTAssertEqual(XCTWaiter().wait(for: [exp], timeout: 6), .completed, "second Menu did not exit")
-        }
+        try requirePlayerStillPresented(app, "first Menu must hide the bar, not exit")
+        XCTAssertTrue(waitBar(app) { $0["vis"] == "0" }, "Menu did not hide the bar: \(barProbeText(app))")
+        remote.press(.menu)
+        let gone = NSPredicate(format: "exists == false")
+        let exp = XCTNSPredicateExpectation(predicate: gone, object: app.otherElements["player.mpv"])
+        XCTAssertEqual(XCTWaiter().wait(for: [exp], timeout: 6), .completed, "second Menu did not exit")
     }
 
     // MARK: Skip chip (P1-C)

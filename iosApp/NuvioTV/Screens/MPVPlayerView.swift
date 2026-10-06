@@ -92,6 +92,8 @@ final class MPVPlaybackState: ObservableObject {
     /// Menu while the up-next chip is visible dismisses the chip instead of exiting the player;
     /// returns true when it consumed the press. The next Menu exits as before (upstream 4026ec92).
     var upNextDismiss: (() -> Bool)?
+    /// Whether the up-next chip is showing (Menu precedence reads it before dismissing).
+    var upNextVisible: (() -> Bool)?
     /// Main thread. Set when a context swap (next episode, stream switch) is underway, so the
     /// outgoing controller never reports a failover for a player the viewer already left.
     var playbackFailoverSuppressed = false
@@ -137,7 +139,9 @@ final class MPVTVPlayerViewController: UIViewController {
     private var exactWork: DispatchWorkItem?
     private var commitLandWork: DispatchWorkItem?       // 1.5 s fallback for noteCommitLanded()
     private var commitGeneration: Int?                  // generation of the last commit's first stage
-    private var scanRestore: (speed: Double, wasMuted: Bool)?
+    private var scanRestoreSpeed: Double?               // main: the user's speed when the scan started
+    private var scanWasMuted: Bool?                     // `eventQueue` only: mute before the scan
+    private var exactAwaitsSeekStart: Int?              // `eventQueue` only: keyframes gen whose SEEK the exact stage waits for
     private var bufferedReadPending = false
     private var lastPublishedModeActive = false
     private let holdTickSec: TimeInterval               // `debug.holdTickSec` (0 = Auto 0.25)
@@ -238,9 +242,12 @@ final class MPVTVPlayerViewController: UIViewController {
     /// Open the top panel on a tab (D-pad Down with nothing else to do, a down swipe: `.info`; a
     /// pill's Select: that pill's tab).
     var onOpenPanel: ((PlayerPanelTab) -> Void)?
-    /// `systemUptime` of the last Select / Play-Pause press: a click is also a touch, so the light-tap
-    /// recogniser ignores a tap that follows one within 0.5 s.
+    /// `systemUptime` of the last press of any button beginning, ending or being cancelled: a click
+    /// (arrows included) is also a touch, so the light-tap recogniser ignores a tap within 0.5 s of
+    /// one (`LightTapGuard`).
     private var lastClickUptime: TimeInterval = 0
+    /// Presses currently down (began, not yet ended or cancelled): no light tap while any is.
+    private var pressesDown = Set<ObjectIdentifier>()
     private var endTimeWork: DispatchWorkItem?
     #if DEBUG
     /// Block token for the DEBUG light-tap notification; removed in `destroyPlayer`, never `deinit`.
@@ -351,7 +358,8 @@ final class MPVTVPlayerViewController: UIViewController {
     /// between remaining time and end time (4 s, then back). `force` skips the click guard (the
     /// DEBUG notification has no preceding click).
     private func performLightTap(force: Bool) {
-        if !force, ProcessInfo.processInfo.systemUptime - lastClickUptime < 0.5 { return }
+        if !force, !LightTapGuard.allows(now: ProcessInfo.processInfo.systemUptime,
+                                         lastPressUptime: lastClickUptime, pressesDown: pressesDown.count) { return }
         guard presentedViewController == nil else { return }
         guard state.controlsVisible else { flashControls(); return }
         let t = state.transport
@@ -1528,10 +1536,15 @@ final class MPVTVPlayerViewController: UIViewController {
 
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         var handled = false
+        lastClickUptime = ProcessInfo.processInfo.systemUptime
+        for press in presses { pressesDown.insert(ObjectIdentifier(press)) }
         // A press brings an auto-hidden skip chip back for another 10 s (the press still acts,
         // except a Down that revealed the chip: that one only reveals it, the next Down skips).
+        // Left/Right seek: the chip comes back on the tick after the seek lands, not now (an
+        // immediate publish would flash it for one tick while the seek is in flight).
         let chipRevealed = skipPlanner.noteInput(now: ProcessInfo.processInfo.systemUptime)
-        if chipRevealed {
+        let arrowSeekPress = presses.contains { $0.type == .leftArrow || $0.type == .rightArrow }
+        if chipRevealed && !arrowSeekPress {
             let snap = cachedProps()
             updateSkipPrompt(position: snap.position, duration: snap.duration, paused: snap.paused)
         }
@@ -1546,7 +1559,6 @@ final class MPVTVPlayerViewController: UIViewController {
             }
             switch press.type {
             case .playPause, .select:
-                lastClickUptime = ProcessInfo.processInfo.systemUptime
                 if case .scanning = transport.mode {
                     // Ends the scan where it is; playback continues at the user's speed.
                     apply(transport.endScanInPlace())
@@ -1627,25 +1639,33 @@ final class MPVTVPlayerViewController: UIViewController {
                     handled = true
                 }
             case .menu:
-                if transport.mode.isActive {
+                let action = MenuPrecedence.resolve(
+                    panelOpen: state.panelOpen || presentedViewController != nil,
+                    modeActive: transport.mode.isActive,
+                    upNextShowing: state.upNextVisible?() ?? false,
+                    pillFocused: state.transport.focusedPill != nil,
+                    barUp: state.controlsVisible)
+                switch action {
+                case .panel:
+                    break           // the panel host closes itself; never reaches here in practice
+                case .cancelMode:
                     // Stepping: nothing committed. Scanning: back to where the scan started.
                     stopHoldTimer()
                     apply(transport.cancel())
-                    swallowMenuRelease = true
-                } else if state.upNextDismiss?() == true {
+                case .dismissUpNext:
                     // Back out of the transient up-next chip first; the next Menu exits (same
                     // convention as the top panel: overlay first, player second).
-                    swallowMenuRelease = true
-                } else if state.transport.focusedPill != nil || state.controlsVisible {
-                    // A focused pill, or the bar itself: Menu hides the bar at once (hideControlsNow
-                    // clears the pill focus); the next Menu exits.
+                    _ = state.upNextDismiss?()
+                case .hidePill, .hideBar:
+                    // Menu hides the bar at once (hideControlsNow clears the pill focus); the next
+                    // Menu exits.
                     hideControlsNow()
-                    swallowMenuRelease = true
-                } else {
+                case .exit:
                     closeFailover()
                     onExit?()
                 }
-                handled = true
+                if MenuPrecedence.swallowsRelease(action) { swallowMenuRelease = true }
+                if action != .panel { handled = true }
             default:
                 break
             }
@@ -1660,6 +1680,9 @@ final class MPVTVPlayerViewController: UIViewController {
 
     override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         var handled = false
+        // The light tap recognises at touch-up: the release restarts the click window.
+        lastClickUptime = ProcessInfo.processInfo.systemUptime
+        for press in presses { pressesDown.remove(ObjectIdentifier(press)) }
         if swallowMenuRelease, presses.contains(where: { $0.type == .menu }) {
             swallowMenuRelease = false
             handled = true
@@ -1679,6 +1702,29 @@ final class MPVTVPlayerViewController: UIViewController {
         if !handled { super.pressesEnded(presses, with: event) }
     }
 
+    /// A press cancelled mid-hold (Home / TV button, Siri, a recogniser claiming it) never ends:
+    /// a held arrow stops its timer and drops the preview without committing, and a Menu whose
+    /// begin was consumed is swallowed here too (UIKit would otherwise act on the half press).
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        var handled = false
+        lastClickUptime = ProcessInfo.processInfo.systemUptime
+        for press in presses { pressesDown.remove(ObjectIdentifier(press)) }
+        if swallowMenuRelease, presses.contains(where: { $0.type == .menu }) {
+            swallowMenuRelease = false
+            handled = true
+        }
+        for press in presses where press.type == .leftArrow || press.type == .rightArrow {
+            let direction = press.type == .leftArrow ? -1 : 1
+            // A latched scan outlives its press; only the hold of this key is dropped.
+            if case .stepping(let current, _, _) = transport.mode, current == direction {
+                stopHoldTimer()
+                apply(transport.cancel())
+            }
+            handled = true
+        }
+        if !handled { super.pressesCancelled(presses, with: event) }
+    }
+
     // MARK: - Hold / preview / commit (P1)
 
     /// Start a Left/Right gesture in `dir` (±1). The first press is a plain ±10 s seek (Step mode);
@@ -1689,6 +1735,7 @@ final class MPVTVPlayerViewController: UIViewController {
         if dir < 0, case .idle = transport.mode { state.upNextCancel?() }
         let base = skipPlanner.seekInFlight?.targetSec ?? cachedProps().position   // seekBy's rule
         holdStartUptime = ProcessInfo.processInfo.systemUptime
+        transport.paused = cachedProps().paused        // a paused hold steps, never scans
         apply(transport.pressBegan(direction: Int(dir), positionSec: base))
         restartHoldTimer()
         flashControls()
@@ -1750,10 +1797,14 @@ final class MPVTVPlayerViewController: UIViewController {
         let t = String(format: "%.3f", r.targetSec)
         let gen: Int
         if r.stages.first == .keyframes {
+            let expected = seekGeneration + 1           // issueSeek's generation for this seek
             gen = issueSeek(kind: .user, targetSec: r.targetSec, fromSec: r.fromSec,
-                            args: [t, "absolute+keyframes"], onRejected: { [weak self] in self?.pendingExact = nil })
+                            args: [t, "absolute+keyframes"], onRejected: { [weak self] in
+                                // A late rejection must not drop a newer commit's exact stage.
+                                if self?.pendingExact?.generation == expected { self?.pendingExact = nil }
+                            })
             if commitExactDelaySec >= 0 {
-                let deadline = DispatchWorkItem { [weak self] in self?.runExactStage() }
+                let deadline = DispatchWorkItem { [weak self] in self?.exactDeadlineFired(generation: expected) }
                 pendingExact = (gen, r, deadline)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: deadline)
             }
@@ -1766,7 +1817,13 @@ final class MPVTVPlayerViewController: UIViewController {
             state.seekProbe.note(commit: r.targetSec, stages: "e")
             #endif
         }
-        commitGeneration = gen
+        armCommitLanding(generation: gen, fallbackSec: 1.5)
+    }
+
+    /// The preview playhead hands back to the real position when this generation lands, or after
+    /// `fallbackSec` if it never reports.
+    private func armCommitLanding(generation: Int, fallbackSec: TimeInterval) {
+        commitGeneration = generation
         commitLandWork?.cancel()
         let landWork = DispatchWorkItem { [weak self] in
             guard let self else { return }
@@ -1774,7 +1831,22 @@ final class MPVTVPlayerViewController: UIViewController {
             self.state.transport.previewSec = self.transport.previewSec
         }
         commitLandWork = landWork
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: landWork)
+        DispatchQueue.main.asyncAfter(deadline: .now() + fallbackSec, execute: landWork)
+    }
+
+    /// The keyframes stage has not landed within 1.5 s (slow uncached seek). Stacking the exact
+    /// seek before mpv has even started the keyframes one would misattribute that SEEK event to
+    /// the exact stage, so wait for it: the exact stage runs as soon as mpv reports it.
+    private func exactDeadlineFired(generation: Int) {
+        guard pendingExact?.generation == generation else { return }
+        eventQueue.async { [weak self] in
+            guard let self else { return }
+            if self.awaitingSeekStartGeneration == generation {
+                self.exactAwaitsSeekStart = generation
+            } else {
+                DispatchQueue.main.async { self.runExactStage(ifGeneration: generation) }
+            }
+        }
     }
 
     private func scheduleExact(after delay: TimeInterval) {
@@ -1786,15 +1858,22 @@ final class MPVTVPlayerViewController: UIViewController {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
-    private func runExactStage() {
+    private func runExactStage(ifGeneration expected: Int? = nil) {
         guard let p = pendingExact else { return }
+        if let expected, p.generation != expected { return }
+        p.deadline.cancel()
         pendingExact = nil
         exactWork = nil
         let now = ProcessInfo.processInfo.systemUptime
         skipPlanner.refineSeek(targetSec: p.request.targetSec, fromSec: p.request.fromSec, now: now)
         // The planner already knows about this seek (`refineSeek`): no second `beginSeek`.
-        issueSeek(kind: .user, targetSec: p.request.targetSec, fromSec: p.request.fromSec,
-                  args: [String(format: "%.3f", p.request.targetSec), "absolute+exact"], planner: false)
+        let gen = issueSeek(kind: .user, targetSec: p.request.targetSec, fromSec: p.request.fromSec,
+                            args: [String(format: "%.3f", p.request.targetSec), "absolute+exact"], planner: false)
+        // The keyframes landing may never report now (`issueSeek` drops its restart): the preview
+        // hands back on the exact stage's landing instead, so the fill never snaps to the origin.
+        if commitGeneration == p.generation {
+            armCommitLanding(generation: gen, fallbackSec: 3)
+        }
         #if DEBUG
         state.seekProbe.stages = "ke"
         #endif
@@ -1810,14 +1889,14 @@ final class MPVTVPlayerViewController: UIViewController {
     // MARK: Scan
 
     private func startScan(_ rate: Int) {
-        let userSpeed = state.playbackSpeed
+        scanRestoreSpeed = state.playbackSpeed      // captured on main before any hop
         #if DEBUG
         state.seekProbe.speed = Double(rate)
         #endif
         eventQueue.async { [weak self] in
             guard let self, self.mpv != nil else { return }
-            let wasMuted = self.getFlag("mute")                 // eventQueue read, never main
-            DispatchQueue.main.async { self.scanRestore = (userSpeed, wasMuted) }
+            // eventQueue read and store, never main: `endScan`'s block runs after this one.
+            self.scanWasMuted = self.getFlag("mute")
             self.setFlag("mute", true)
             _ = self.command("set", args: ["audio-pitch-correction", "no"])
             self.setMpvDouble("speed", Double(rate))
@@ -1825,25 +1904,28 @@ final class MPVTVPlayerViewController: UIViewController {
     }
 
     private func endScan(from: Double, returnTo: Double?) {
-        let restore = scanRestore ?? (state.playbackSpeed, false)
+        let restoreSpeed = scanRestoreSpeed ?? state.playbackSpeed
         eventQueue.async { [weak self] in
             guard let self, self.mpv != nil else { return }
-            self.setMpvDouble("speed", restore.speed)
-            self.setFlag("mute", restore.wasMuted)
+            self.setMpvDouble("speed", restoreSpeed)
+            self.setFlag("mute", self.scanWasMuted ?? false)
+            self.scanWasMuted = nil
             _ = self.command("set", args: ["audio-pitch-correction", "yes"])
         }
         #if DEBUG
-        state.seekProbe.speed = restore.speed
+        state.seekProbe.speed = restoreSpeed
         #endif
         if let target = returnTo {
             // Menu: the scanned stretch was not watched, so no span is recorded (its intervals must
             // still auto-skip when played). Exact only: the origin sits in the back buffer.
-            issueSeek(kind: .user, targetSec: target, fromSec: cachedProps().position,
+            // `fromSec: target`: the span scan-end → origin must not mark the interval at the scan
+            // end as deliberate.
+            issueSeek(kind: .user, targetSec: target, fromSec: target,
                       args: [String(format: "%.3f", target), "absolute+exact"])
         } else {
             skipPlanner.recordUserSpan(fromSec: from, toSec: cachedProps().position)
         }
-        scanRestore = nil
+        scanRestoreSpeed = nil
         state.transport.previewSec = nil
         flashControls()
     }
@@ -1932,18 +2014,33 @@ final class MPVTVPlayerViewController: UIViewController {
     private func scheduleHide() {
         hideWork?.cancel()
         hideWork = nil
-        guard let delay = TransportHideRule.delay(isPaused: cachedProps().paused,
-                                                  pauseCardEnabled: playerSettings?.pauseOverlayEnabled != false)
-        else { return }
+        guard let delay = currentHideDelay() else { return }
+        armHide(after: delay, elapsed: delay)
+    }
+
+    private func currentHideDelay() -> TimeInterval? {
+        TransportHideRule.delay(isPaused: cachedProps().paused,
+                                pauseCardEnabled: playerSettings?.pauseOverlayEnabled != false)
+    }
+
+    /// `elapsed`: seconds since the last input once this fires. The pause state can change without
+    /// input (programmatic pause), so the rule is re-read when the timer fires: paused with the card
+    /// off never hides, paused with the card on waits out the longer delay.
+    private func armHide(after seconds: TimeInterval, elapsed: TimeInterval) {
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             guard TransportHideRule.mayHide(pillFocused: self.state.transport.focusedPill != nil,
                                             modeActive: self.transport.mode.isActive) else { return }
+            guard let due = self.currentHideDelay() else { return }
+            if due > elapsed {
+                self.armHide(after: due - elapsed, elapsed: due)
+                return
+            }
             self.state.transport.focusedPill = nil
             self.state.controlsVisible = false
         }
         hideWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
     }
 
     private func hideControlsNow() {
@@ -2194,6 +2291,10 @@ final class MPVTVPlayerViewController: UIViewController {
             if id == MPV_EVENT_SEEK, let generation = self.awaitingSeekStartGeneration {
                 self.awaitingSeekStartGeneration = nil
                 self.startedSeekGeneration = generation
+                if self.exactAwaitsSeekStart == generation {
+                    self.exactAwaitsSeekStart = nil
+                    DispatchQueue.main.async { self.runExactStage(ifGeneration: generation) }
+                }
             }
             if id == MPV_EVENT_PLAYBACK_RESTART, let generation = self.startedSeekGeneration {
                 self.startedSeekGeneration = nil

@@ -683,12 +683,15 @@ final class NativePlaybackCoordinator: ObservableObject {
                     print("[NativePlayer] item readyToPlay")
                     if self.readyUptime == nil { self.readyUptime = ProcessInfo.processInfo.systemUptime }
                     let duration = CMTimeGetSeconds(item.duration)
-                    // Start Over ignores saved progress (gated here: `PlaybackProgressRecorder` is untouched).
-                    let startOver = self.context.startFromBeginning
+                    // A failure-alert retry resumes where the failed attempt stopped, Start Over
+                    // included (mpv's `computeResumePosition` rule). Otherwise Start Over ignores saved
+                    // progress (gated here: `PlaybackProgressRecorder` is untouched).
+                    let retryResume = self.context.resumeAtSec.flatMap { $0 > 10 ? $0 : nil }
+                    let startOver = retryResume == nil && self.context.startFromBeginning
                     if startOver { print("[Failover] start over: ignoring saved progress") }
                     let resume: Double? = startOver
                         ? nil
-                        : (self.context.resumeAtSec.flatMap { $0 > 10 ? $0 : nil } ?? self.recorder.resumePositionSec(actualDurationSec: duration.isFinite ? duration : 0))
+                        : (retryResume ?? self.recorder.resumePositionSec(actualDurationSec: duration.isFinite ? duration : 0))
                     // Percentage-only row and no finite duration yet: apply on the first tick that has one.
                     if resume == nil, !startOver, !(duration.isFinite && duration > 0) {
                         pendingResumePercent = self.recorder.pendingResumePercent()

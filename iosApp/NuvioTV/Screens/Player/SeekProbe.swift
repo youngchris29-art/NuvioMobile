@@ -25,7 +25,7 @@ struct SeekProbeLabel: View {
     @ObservedObject var probe: SeekProbe
 
     var body: some View {
-        Text(verbatim: "commits=\(probe.commits) lastTarget=\(Int(probe.lastTarget)) stages=\(probe.stages) speed=\(String(format: "%.1f", probe.speed)) mode=\(probe.modeName) chip=\(probe.chip ? 1 : 0) paused=\(probe.paused ? 1 : 0) pos=\(String(format: "%.1f", probe.pos))")
+        Text(verbatim: "commits=\(probe.commits) lastTarget=\(String(format: "%.0f", probe.lastTarget)) stages=\(probe.stages) speed=\(String(format: "%.1f", probe.speed)) mode=\(probe.modeName) chip=\(probe.chip ? 1 : 0) paused=\(probe.paused ? 1 : 0) pos=\(String(format: "%.1f", probe.pos))")
             .font(.system(size: 8))
             .opacity(0.011)
             .accessibilityIdentifier("debug_seekProbe")

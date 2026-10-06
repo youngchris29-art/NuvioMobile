@@ -367,6 +367,10 @@ struct StreamPickerView: View {
                 if let retry = alert.retry, let engine = alert.retryEngine {
                     Button(engine == .mpv ? LocalizedStringKey("Try with mpv") : LocalizedStringKey("Try Native Player")) {
                         manualFailureAlert = nil
+                        // The link is being retried on the other engine: it is not dead yet (a retry
+                        // that works but closes before 300 s must not leave it flagged for 8 h).
+                        RejectedStreamLinks.keep(retry.streamKey, title: retry.videoId)
+                        rejectedKeys = RejectedStreamLinks.rejected(for: videoId)
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
                             selected = retry
                         }

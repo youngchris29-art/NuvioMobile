@@ -485,15 +485,15 @@ final class SkipSegmentPlannerTests: XCTestCase {
         XCTAssertNil(tick(&p, 127, at: 2.0, types: [.intro]).autoSkipTargetSec)
     }
 
-    func testRecordUserSpanConsumesScannedIntervals() {
+    /// A scan that ends inside an interval marks it deliberate (`intervalsAtSeekPositions` checks
+    /// the span's endpoints, not what it passed through): no seek after the span is needed.
+    func testRecordUserSpanConsumesIntervalAtEndpoint() {
         var control = planner([interval(100, 190, "op")])
-        XCTAssertEqual(tick(&control, 120, at: 0, types: [.intro]).autoSkipTargetSec, 190)
+        XCTAssertEqual(tick(&control, 150, at: 0, types: [.intro]).autoSkipTargetSec, 190)
 
         var p = planner([interval(100, 190, "op")])
-        p.recordUserSpan(fromSec: 0, toSec: 300)
-        p.beginSeek(kind: .user, targetSec: 120, fromSec: 300, now: 5)
-        p.seekCompleted(atSec: 120, now: 5.3)
-        XCTAssertNil(tick(&p, 120, at: 6, types: [.intro]).autoSkipTargetSec)
+        p.recordUserSpan(fromSec: 0, toSec: 150)
+        XCTAssertNil(tick(&p, 150, at: 1, types: [.intro]).autoSkipTargetSec)
     }
 
     // MARK: - Chip auto-hide (P1)

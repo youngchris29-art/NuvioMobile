@@ -109,12 +109,20 @@ enum TransportTimeFormat {
                          locale: Locale = .current, timeZone: TimeZone = .current) -> String? {
         guard duration > 0 else { return nil }
         let end = now.addingTimeInterval(max(duration - position, 0) / max(speed, 0.1))
+        return endClockFormatter(locale: locale, timeZone: timeZone).string(from: end)
+    }
+
+    /// One formatter per locale + time zone (main thread: SwiftUI renders and the tests).
+    nonisolated(unsafe) private static var cachedEndClockFormatter: DateFormatter?
+    private static func endClockFormatter(locale: Locale, timeZone: TimeZone) -> DateFormatter {
+        if let f = cachedEndClockFormatter, f.locale == locale, f.timeZone == timeZone { return f }
         let f = DateFormatter()
         f.locale = locale
         f.timeZone = timeZone
         f.timeStyle = .short
         f.dateStyle = .none
-        return f.string(from: end)
+        cachedEndClockFormatter = f
+        return f
     }
 }
 

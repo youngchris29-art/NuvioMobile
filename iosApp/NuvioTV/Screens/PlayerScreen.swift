@@ -87,8 +87,10 @@ struct PlayerScreen: View {
     /// Tags a failure with the reporting engine and whether the other engine could take over.
     private func annotated(_ engine: PlaybackEngine) -> ((PlaybackFailure) -> Void)? {
         guard let onPlaybackFailed else { return nil }
+        // A forced-mpv run (a retry, or the native fallback) never offers native back: the alert
+        // would alternate engines. Explicit here, not left to when the representable captures this.
         let eligibleForNative: Bool = {
-            guard !forcedMPV, let probe else { return false }
+            guard context.forcedEngine == nil, !forcedMPV, let probe else { return false }
             return PlayerEngineRouter.route(probe: probe, nativeDVEnabled: true, dvP7FelToMpv: false).engine == .native
         }()
         return { failure in

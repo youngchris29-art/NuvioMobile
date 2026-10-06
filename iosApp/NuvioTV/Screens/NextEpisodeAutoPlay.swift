@@ -158,6 +158,7 @@ final class NextEpisodeEngine: ObservableObject {
         state.upNextPlayNow = { [weak self] in self?.playNow() ?? false }
         state.upNextCancel = { [weak self] in self?.cancel() }
         state.upNextDismiss = { [weak self] in self?.dismissIfVisible() ?? false }
+        state.upNextVisible = { [weak self] in self.map { $0.phase != .hidden } ?? false }
         // FEAT-49 layer 2: the in-player source list (mpv only) shares `episodeStreamsState` and
         // clears it, which throws away a preload. When the panel closes, release the list's
         // watcher so the preload guard opens again, and re-issue a preload the list clobbered.

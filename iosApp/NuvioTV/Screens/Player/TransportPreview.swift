@@ -71,11 +71,16 @@ struct TransportPreview {
     var rampScale: Double = 1
     var durationSec: Double = 0
     var seekableRanges: [BufferedRange] = []
+    /// Set by the controller before a press: a hold that starts while paused steps (a scan would
+    /// latch a rate on a core that does not move).
+    var paused = false
     private(set) var mode: Mode = .idle
     private(set) var originSec: Double = 0
     private(set) var previewSec: Double? = nil
     /// The preview moved beyond the press's own 10 s (a tick or a second press).
     private var moved = false
+    /// This gesture may turn into a scan: Scan mode, Right, not paused (fixed when it starts).
+    private var scanArmed = false
 
     static let firstStepSec: Double = 10
     static let holdStartSec: TimeInterval = 0.4
@@ -94,10 +99,11 @@ struct TransportPreview {
         case .idle:
             originSec = positionSec
             moved = false
+            scanArmed = holdMode == .scan && dir > 0 && !paused
             let acc = clamp(originSec + Double(dir) * Self.firstStepSec) - originSec
             mode = .stepping(direction: dir, accumulatedSec: acc, ticks: 0)
             previewSec = originSec + acc
-            if holdMode == .scan && dir > 0 { return .none }
+            if scanArmed { return .none }
             return .immediateSeek(deltaSec: Double(dir) * Self.firstStepSec)
         case .stepping(_, let acc, _):
             let next = clamp(originSec + acc + Double(dir) * Self.firstStepSec) - originSec
@@ -120,7 +126,7 @@ struct TransportPreview {
     mutating func holdTick(heldSec: Double) -> Output {
         guard case .stepping(let d, let acc, let n) = mode else { return .none }
         let ticks = n + 1
-        if holdMode == .scan && d > 0 && ticks == 1 && !moved {
+        if scanArmed && d > 0 && ticks == 1 && !moved {
             mode = .scanning(rate: 2)
             previewSec = originSec
             return .startScan(rate: 2)
@@ -139,7 +145,7 @@ struct TransportPreview {
         if n == 0 && !moved {
             mode = .idle
             previewSec = nil
-            if holdMode == .scan && d > 0 { return .immediateSeek(deltaSec: Self.firstStepSec) }
+            if scanArmed && d > 0 { return .immediateSeek(deltaSec: Self.firstStepSec) }
             return .none
         }
         let target = clamp(originSec + acc)

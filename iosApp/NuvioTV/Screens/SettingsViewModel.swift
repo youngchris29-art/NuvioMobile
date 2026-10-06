@@ -465,11 +465,11 @@ final class SettingsViewModel: ObservableObject {
     @Published var readaheadSec: Int = UserDefaults.standard.integer(forKey: PlayerTuning.readaheadSecKey)
     /// Ask tvOS to match the display's refresh rate (and dynamic range) to the content.
     @Published var matchFrameRate: Bool = UserDefaults.standard.bool(forKey: PlayerTuning.matchFrameRateKey)
-    /// Use mpv's `gpu-next` (libplacebo) renderer for better HDR (real Apple TV only).
     /// What holding Left/Right does in the mpv player: "step" or "scan". Device-local.
     @Published var holdMode: String = UserDefaults.standard.string(forKey: PlayerTuning.holdModeKey) ?? "step"
     /// Show the time of day while the mpv player controls are up. Device-local.
     @Published var showClock: Bool = UserDefaults.standard.bool(forKey: PlayerTuning.showClockKey)
+    /// Use mpv's `gpu-next` (libplacebo) renderer for better HDR (real Apple TV only).
     @Published var enhancedRenderer: Bool = UserDefaults.standard.bool(forKey: PlayerTuning.enhancedRendererKey)
     /// Route Dolby Vision / native-friendly files to the AVPlayer engine for true DV output (beta).
     @Published var nativeDolbyVision: Bool = UserDefaults.standard.bool(forKey: PlayerTuning.nativeDVKey)

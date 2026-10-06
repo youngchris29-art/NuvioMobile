@@ -237,6 +237,32 @@ final class TransportPreviewTests: XCTestCase {
         XCTAssertEqual(t.pressEnded(direction: 1), .none)
     }
 
+    /// `pressesCancelled` (Home / Siri mid-hold): the run-on preview is dropped and the next
+    /// gesture starts from the live position, not from the cancelled hold's accumulation.
+    func testCancelledHoldThenNewPressStartsFresh() {
+        var t = make()
+        _ = t.pressBegan(direction: 1, positionSec: 100)
+        ticks(&t, 8)
+        XCTAssertEqual(t.cancel(), .none)
+        XCTAssertEqual(t.pressBegan(direction: 1, positionSec: 110), .immediateSeek(deltaSec: 10))
+        XCTAssertEqual(t.previewSec, 120)
+        XCTAssertEqual(t.pressEnded(direction: 1), .none)
+    }
+
+    func testScanHoldWhilePausedSteps() {
+        var t = make(mode: .scan)
+        t.paused = true
+        XCTAssertEqual(t.pressBegan(direction: 1, positionSec: 100), .immediateSeek(deltaSec: 10))
+        XCTAssertEqual(t.holdTick(heldSec: held(1)), .none)
+        XCTAssertEqual(t.mode, .stepping(direction: 1, accumulatedSec: 20, ticks: 1))
+        guard case .commit(let r) = t.pressEnded(direction: 1) else { return XCTFail("no commit") }
+        XCTAssertEqual(r.targetSec, 120)
+        // Unpaused again: the next hold scans.
+        t.paused = false
+        _ = t.pressBegan(direction: 1, positionSec: 120)
+        XCTAssertEqual(t.holdTick(heldSec: held(1)), .startScan(rate: 2))
+    }
+
     func testCancelWhileScanningReturnsToOrigin() {
         var t = make(mode: .scan)
         _ = t.pressBegan(direction: 1, positionSec: 100)
