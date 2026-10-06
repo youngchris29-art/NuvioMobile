@@ -425,12 +425,22 @@ private struct AmbientWashContent: View {
         .accessibilityHidden(true)
     }
 
+    /// One wash, aspect-filled and centre-cropped to exactly the space it is given. The fill is an
+    /// overlay on `Color.clear`, so it can never report a size larger than its proposal (the
+    /// `HeroCrossfadeImage` rule, BUG-95). As a plain `.aspectRatio(contentMode: .fill)` inside a
+    /// flexible frame it did: Home's tab region under the tab bar's top inset is not 16:9 (1920x1128.5
+    /// on FA87), the 16:9 fill came back 2006 wide, and that width spread up through Stage to
+    /// HomeView's root ZStack, which then centred its page background 80 pt to the right. The
+    /// background stopped 160 pt short of the left bezel, and under OLED True Black's 40 % wash that
+    /// strip showed as a light grey bar (device pass 2026-10-05).
     private func washImage(_ layer: AmbientWashModel.Layer) -> some View {
-        Image(decorative: layer.image, scale: 1)
-            .resizable()
-            .interpolation(.medium)
-            .aspectRatio(contentMode: .fill)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        Color.clear
+            .overlay {
+                Image(decorative: layer.image, scale: 1)
+                    .resizable()
+                    .interpolation(.medium)
+                    .aspectRatio(contentMode: .fill)
+            }
             .clipped()
             .id(layer.id)
             .transition(.identity)

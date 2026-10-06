@@ -279,4 +279,79 @@ final class StageGate1EvidenceTests: XCTestCase {
         shot("folderpage-5-back-home")
         note("folderpage-5-probes", probes(app))
     }
+
+    // MARK: - OLED True Black (device pass 2026-10-05: light bar on the left edge)
+
+    /// Stage Home with OLED True Black on and off (FA87's guest "Chris" is profile 1, so the
+    /// profile-scoped key is `amoled_enabled_1`), plus two reference legs: OLED with the ambient
+    /// wash off, and Classic with OLED. Screenshots at row 0 and after one Down.
+    ///
+    /// The bar: the wash's aspect fill came back 2006 pt wide on Home's 1920x1128.5 tab region,
+    /// widened HomeView's root ZStack, and its page background moved to x = 160…1920. Under OLED's
+    /// 40 % wash the uncovered strip read about 15 levels lighter than the page next to it, with a
+    /// sharp edge at x = 160. The oracle compares two 16 pt strips either side of that edge in the
+    /// empty band above the stage text (left of the tab bar): the art mask's own ramp moves less than
+    /// 4 levels across them, so a step of 8 or more is the bar.
+    func testOledBarEvidence() {
+        let legs: [(name: String, args: [String], checked: Bool)] = [
+            ("oled-on", ["-home_layout", "stage", "-amoled_enabled_1", "YES"], true),
+            ("oled-off", ["-home_layout", "stage", "-amoled_enabled_1", "NO"], true),
+            ("oled-on-washoff", ["-home_layout", "stage", "-amoled_enabled_1", "YES",
+                                 "-home_ambient_background", "NO"], true),
+            ("classic-oled-on", ["-home_layout", "classic", "-amoled_enabled_1", "YES"], false),
+        ]
+        var report: [String] = []
+        for leg in legs {
+            let app = launch(leg.args + ["-debug.posterSizeOverride", "large"])
+            pause(16)
+            XCTAssertEqual(app.state, .runningForeground)
+            for row in 0...1 {
+                if row == 1 {
+                    remote.press(.down)
+                    pause(3)
+                }
+                let screenshot = XCUIScreen.main.screenshot()
+                let attachment = XCTAttachment(screenshot: screenshot)
+                attachment.name = "\(leg.name)-row\(row)"
+                attachment.lifetime = .keepAlways
+                add(attachment)
+                let step = leftEdgeStep(screenshot)
+                report.append(String(format: "%@ row%d left=%.1f right=%.1f step=%.1f",
+                                     leg.name, row, step.left, step.right, step.left - step.right))
+                if leg.checked {
+                    XCTAssertLessThan(abs(step.left - step.right), 8,
+                                      "\(leg.name) row \(row): a step at x = 160 pt (the OLED bar)")
+                }
+            }
+            note("\(leg.name)-row0-probes", probes(app))
+            app.terminate()
+        }
+        note("oled-bar-steps", report.joined(separator: "\n"))
+    }
+
+    /// Mean Rec. 709 luma (0…255) of x 140…156 pt and of x 164…180 pt, y 20…100 pt. The tvOS screen
+    /// is 1920 pt wide whatever the screenshot's pixel size.
+    private func leftEdgeStep(_ screenshot: XCUIScreenshot) -> (left: Double, right: Double) {
+        guard let image = screenshot.image.cgImage else { return (-1, -1) }
+        let scale = CGFloat(image.width) / 1920
+        func luma(_ x0: CGFloat, _ x1: CGFloat) -> Double {
+            let rect = CGRect(x: x0 * scale, y: 20 * scale, width: (x1 - x0) * scale, height: 80 * scale).integral
+            guard let crop = image.cropping(to: rect), let space = CGColorSpace(name: CGColorSpace.sRGB) else { return -1 }
+            let width = crop.width, height = crop.height
+            var pixels = [UInt8](repeating: 0, count: width * height * 4)
+            return pixels.withUnsafeMutableBytes { raw -> Double in
+                guard let context = CGContext(data: raw.baseAddress, width: width, height: height,
+                                              bitsPerComponent: 8, bytesPerRow: width * 4, space: space,
+                                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return -1 }
+                context.draw(crop, in: CGRect(x: 0, y: 0, width: width, height: height))
+                var sum = 0.0
+                for index in 0..<(width * height) {
+                    let offset = index * 4
+                    sum += 0.2126 * Double(raw[offset]) + 0.7152 * Double(raw[offset + 1]) + 0.0722 * Double(raw[offset + 2])
+                }
+                return sum / Double(max(width * height, 1))
+            }
+        }
+        return (luma(140, 156), luma(164, 180))
+    }
 }
