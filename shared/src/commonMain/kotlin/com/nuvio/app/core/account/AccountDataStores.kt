@@ -248,7 +248,10 @@ object AccountDataStores {
         AccountDataStore(
             name = "DiscoverSelectionStorage",
             androidPreferences = "nuvio_discover_selection",
-            appleKeys = listOf(AppleKeySpec.ProfileScoped("discover_catalog_key")),
+            appleKeys = listOf(
+                AppleKeySpec.ProfileScoped("discover_catalog_key"),
+                AppleKeySpec.ProfileScoped("discover_genre_by_catalog"),
+            ),
         ),
 
         // ── Catalog / details / appearance ──────────────────────────────────────────────────────

@@ -81,7 +81,8 @@ nonisolated enum StripRowsPlan {
         /// Settled and every row failed: "Couldn't load this folder." + Try Again + Go Back.
         case failed
 
-        /// The `folder_rows_state … state=` token.
+        /// The page-state token the strip page's debug label carries (`state=`), for both hosts (the folder
+        /// page and Search / Discover).
         var token: String {
             switch self {
             case .rows: return "rows"
@@ -164,8 +165,8 @@ nonisolated enum StripRowsPlan {
         return .empty
     }
 
-    /// Blank and whitespace-only payload URLs count as absent (the rule every folder artwork check
-    /// applies).
+    /// Blank and whitespace-only payload URLs count as absent (the rule every strip-page artwork check
+    /// applies, on both hosts).
     static func nonBlank(_ value: String?) -> String? {
         guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
         return value
