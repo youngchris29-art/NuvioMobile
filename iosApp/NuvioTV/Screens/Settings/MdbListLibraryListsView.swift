@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import SharedCore
 
@@ -28,7 +29,9 @@ final class MdbListLibraryListsViewModel: ObservableObject {
     func start() {
         guard watcher == nil else { return }
         MdbListTracker.shared.ensureLoaded(profileId: ProfileRepository.shared.activeProfileId)
-        watcher = FlowWatcherKt.watch(MdbListTracker.shared.library.listOptions) { [weak self] emitted in
+        // `listOptions` is a plain Flow (a `map` over the snapshot StateFlow), so it takes the
+        // Flow overload; the first value arrives once the snapshot has loaded.
+        watcher = FlowWatcherKt.watchFlow(MdbListTracker.shared.library.listOptions) { [weak self] emitted in
             guard let list = emitted as? [MdbListLibraryListOption] else { return }
             Task { @MainActor in self?.options = list }
         }
