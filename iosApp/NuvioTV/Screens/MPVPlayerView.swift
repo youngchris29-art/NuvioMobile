@@ -1833,16 +1833,21 @@ final class MPVTVPlayerViewController: UIViewController {
             state.seekProbe.note(commit: r.targetSec, stages: "e")
             #endif
         }
-        armCommitLanding(generation: gen, fallbackSec: 1.5)
+        armCommitLanding(generation: gen, fallbackSec: 1.5, yieldsToExact: r.stages.first == .keyframes)
     }
 
     /// The preview playhead hands back to the real position when this generation lands, or after
     /// `fallbackSec` if it never reports.
-    private func armCommitLanding(generation: Int, fallbackSec: TimeInterval) {
+    /// `yieldsToExact`: the first (1.5 s) fallback of a keyframes-first commit must not clear the
+    /// preview while that commit's exact stage is still pending; the deadline re-arms a longer
+    /// fallback that does not yield (review r3 P3-2 hardening; libdispatch orders the two timers
+    /// today, this makes the order irrelevant).
+    private func armCommitLanding(generation: Int, fallbackSec: TimeInterval, yieldsToExact: Bool = false) {
         commitGeneration = generation
         commitLandWork?.cancel()
         let landWork = DispatchWorkItem { [weak self] in
             guard let self else { return }
+            if yieldsToExact, self.pendingExact?.generation == generation { return }
             self.transport.noteCommitLanded()
             self.state.transport.previewSec = self.transport.previewSec
         }
@@ -1875,7 +1880,10 @@ final class MPVTVPlayerViewController: UIViewController {
         guard let p = pendingExact else { return }
         p.deadline.cancel()
         exactWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.runExactStage() }
+        // Generation-bound: a leftover item must never run a NEWER commit's exact stage before mpv
+        // has reported that commit's keyframes seek (review r3 P3-1).
+        let gen = p.generation
+        let work = DispatchWorkItem { [weak self] in self?.runExactStage(ifGeneration: gen) }
         exactWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
@@ -1885,6 +1893,7 @@ final class MPVTVPlayerViewController: UIViewController {
         if let expected, p.generation != expected { return }
         p.deadline.cancel()
         pendingExact = nil
+        exactWork?.cancel()   // the 0.15 s item may still be queued when the deadline hop ran us first
         exactWork = nil
         let now = ProcessInfo.processInfo.systemUptime
         skipPlanner.refineSeek(targetSec: p.request.targetSec, fromSec: p.request.fromSec, now: now)
