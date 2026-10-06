@@ -174,8 +174,9 @@ nonisolated enum SearchSuggestionPolicy {
 /// Search & Discover batch 2026-10-06 (B3 g): what a settled search with nothing to show says.
 /// Replaces S1's `emptyMessage` + `searchError` pair.
 nonisolated enum SearchEmptyState: Equatable, Sendable {
-    /// Every enabled add-on's manifest failed to load, so nothing could be searched. Action: Retry
-    /// (`AddonRepository.refreshAll()`).
+    /// Nothing could be searched: every enabled add-on's manifest failed to load, or (manifests
+    /// cached, e.g. a Wi-Fi drop) every search catalog's request failed. Action: Retry
+    /// (`SearchViewModel.retrySearch`: manifests refreshed and the query searched again).
     case manifestFailure(String)
     /// No add-on offers a search catalog at all.
     case noneCanSearch
@@ -188,8 +189,14 @@ nonisolated enum SearchEmptyState: Equatable, Sendable {
     /// Precedence top-down (the plan's B3 g table). `reason` is Kotlin's `SearchEmptyStateReason`
     /// (Swift sees `.noactiveaddons / .nosearchcatalogs / .noresults / .requestfailed`); nil →
     /// nil. "All sources off" is Swift-side: Kotlin only knows the fan-out was empty.
-    /// `errorMessage` is the state's `errorMessage` (the first manifest error), used for the
-    /// manifest-failure copy.
+    /// `errorMessage` is the state's `errorMessage` (the first manifest error, or the first catalog
+    /// failure when all of them failed), used for the failure copy.
+    ///
+    /// Review r1 P3-1: `.requestfailed` is a failure whatever the manifest state. Kotlin emits it
+    /// only when a manifest failed with none loaded, or when EVERY catalog of the fan-out failed
+    /// (`resolveEmptyState`); an empty page is `Empty`, so a real "nothing matched" never gets
+    /// here. Reading it as "No results" hid a dropped connection behind a wrong message with no
+    /// Retry.
     static func resolve(
         reason: SearchEmptyStateReason?,
         hasEnabledAddons: Bool,
@@ -200,7 +207,7 @@ nonisolated enum SearchEmptyState: Equatable, Sendable {
         errorMessage: String? = nil
     ) -> SearchEmptyState? {
         guard let reason else { return nil }
-        if reason == SearchEmptyStateReason.requestfailed && hasEnabledAddons && !anyManifestLoaded {
+        if reason == SearchEmptyStateReason.requestfailed {
             let message = errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
             return .manifestFailure(
                 (message?.isEmpty == false ? message : nil) ?? String(localized: "Couldn't load your add-ons.")

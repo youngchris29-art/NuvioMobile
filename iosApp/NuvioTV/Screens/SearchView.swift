@@ -304,15 +304,18 @@ private struct SearchContent: View {
     // MARK: - DEBUG probe
 
     #if DEBUG
-    /// `search_state q=<query, spaces as +> rid=- mode=<grouped|per_addon> rows=<n> people=<n>
-    /// hold=- empty=<token|->`. The view model keeps the request id and the hold phase private,
-    /// so `rid` and `hold` read `-` until it publishes them.
+    /// `search_state q=<query, spaces as +> rid=<active request id|-> mode=<grouped|per_addon>
+    /// rows=<n> people=<n> hold=<idle|follow|hold|hold_other> empty=<token|->`. `rid` and `hold`
+    /// are read off the view model (`debugActiveRequestId`, `debugHoldPhase`) when the leaf renders,
+    /// which is on every published change (rows, people, empty state, loading).
     private var searchStateProbe: some View {
         Text(verbatim: Self.stateLine(query: trimmedQuery,
                                       mode: model.rowsMode,
                                       rows: model.rows.count,
                                       people: model.people.count,
-                                      empty: model.emptyState))
+                                      empty: model.emptyState,
+                                      requestId: model.debugActiveRequestId,
+                                      hold: model.debugHoldPhase))
             .font(.system(size: 8))
             .opacity(0.011)
             .allowsHitTesting(false)
@@ -320,9 +323,10 @@ private struct SearchContent: View {
     }
 
     static func stateLine(query: String, mode: SearchRowsMode, rows: Int, people: Int,
-                          empty: SearchEmptyState?) -> String {
+                          empty: SearchEmptyState?, requestId: Int64? = nil, hold: String = "-") -> String {
         let q = query.isEmpty ? "-" : query.replacingOccurrences(of: " ", with: "+")
-        return "search_state q=\(q) rid=- mode=\(mode.rawValue) rows=\(rows) people=\(people) hold=- empty=\(emptyToken(empty))"
+        let rid = requestId.map { String($0) } ?? "-"
+        return "search_state q=\(q) rid=\(rid) mode=\(mode.rawValue) rows=\(rows) people=\(people) hold=\(hold) empty=\(emptyToken(empty))"
     }
 
     static func emptyToken(_ state: SearchEmptyState?) -> String {

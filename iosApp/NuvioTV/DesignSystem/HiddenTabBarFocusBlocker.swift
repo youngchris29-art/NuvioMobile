@@ -235,25 +235,77 @@ struct HiddenTabBarFocusBlocker: UIViewRepresentable {
         /// B4: whether the newly focused item is inside the system search keyboard. The chain is the
         /// focus environments up to the first `UIView` (SwiftUI items are not views), then that
         /// view's superviews. Reports only a change.
+        ///
+        /// Review r1 P2-4: this runs on every focus move, so it is gated and cheap. It only looks
+        /// while the Search tab is selected (the keyboard lives nowhere else) or while the flag is
+        /// set (so a tab switch away from the keyboard still clears it). The walk names classes with
+        /// `NSStringFromClass` and stops at the first keyboard class. The full chain (DEBUG
+        /// `[KBFocus] chain=`) is built only when the verdict flips, or on every move with
+        /// `-debug.kbFocusChain YES`.
         private func updateKeyboardFocus(_ note: Notification) {
+            guard keyboardFocused || searchTabSelected else { return }
             let context = note.userInfo?[UIFocusSystem.focusUpdateContextUserInfoKey] as? UIFocusUpdateContext
             let item: UIFocusEnvironment? = context?.nextFocusedItem
                 ?? window.flatMap { UIFocusSystem.focusSystem(for: $0)?.focusedItem }
-            let chain = Self.classChain(of: item)
+            let isKeyboard = Self.chainHasKeyboard(item)
             #if DEBUG
-            let joined = chain.joined(separator: "→")
-            if joined != lastLoggedChain {
-                lastLoggedChain = joined
-                NSLog("[KBFocus] chain=%@", joined)
+            if isKeyboard != keyboardFocused || Self.logsEveryChain {
+                let joined = Self.classChain(of: item).joined(separator: "→")
+                if joined != lastLoggedChain {
+                    lastLoggedChain = joined
+                    NSLog("[KBFocus] chain=%@", joined)
+                }
             }
             #endif
-            let isKeyboard = SystemKeyboardFocus.isKeyboard(classChain: chain)
             guard isKeyboard != keyboardFocused else { return }
             keyboardFocused = isKeyboard
             NSLog("[KBFocus] keyboard=%d", isKeyboard ? 1 : 0)
             onKeyboardFocusChanged?(isKeyboard)
         }
 
+        /// The Search tab is the selected one. Search is always the second tab (Home · Search · …,
+        /// `ContentView`), whatever the language, so the index is the test, not the title.
+        private var searchTabSelected: Bool {
+            guard let tab = tabController else { return false }
+            return tab.selectedIndex == 1
+        }
+
+        #if DEBUG
+        /// `-debug.kbFocusChain YES`: log the chain on every focus move, not only on a flip.
+        private static let logsEveryChain = UserDefaults.standard.bool(forKey: "debug.kbFocusChain")
+        #endif
+
+        /// The same verdict as `SystemKeyboardFocus.isKeyboard(classChain: classChain(of: item))`,
+        /// walking the same chain but stopping at the first keyboard class.
+        static func chainHasKeyboard(_ item: UIFocusEnvironment?) -> Bool {
+            var cursor = item
+            var hops = 0
+            var firstView: UIView?
+            while let node = cursor, hops < 64 {
+                if let view = node as? UIView { firstView = view; break }
+                if isKeyboardClass(type(of: node)) { return true }
+                cursor = node.parentFocusEnvironment
+                hops += 1
+            }
+            var view = firstView
+            hops = 0
+            while let current = view, hops < 64 {
+                if isKeyboardClass(type(of: current)) { return true }
+                view = current.superview
+                hops += 1
+            }
+            return false
+        }
+
+        /// `NSStringFromClass` (cheap) for Objective-C names; a Swift-mangled generic name (`_Tt…`)
+        /// would carry its generic arguments unbracketed, so those fall back to the demangled
+        /// `String(describing:)` form the classifier strips at `<`.
+        private static func isKeyboardClass(_ cls: AnyClass) -> Bool {
+            let name = NSStringFromClass(cls)
+            return SystemKeyboardFocus.isKeyboardClass(name.hasPrefix("_Tt") ? String(describing: cls) : name)
+        }
+
+        /// The full chain, for the DEBUG log only.
         static func classChain(of item: UIFocusEnvironment?) -> [String] {
             var names: [String] = []
             var cursor = item

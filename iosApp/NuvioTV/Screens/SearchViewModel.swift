@@ -100,6 +100,11 @@ final class SearchViewModel: ObservableObject {
     /// same-key call returns the live id). Nil while the field is empty. Every emission with
     /// another id is a late write of another search and is dropped (`SearchRowsHold.isStale`).
     private var activeRequestId: Int64?
+    /// Read-only for the DEBUG `search_state` probe (review r1 P3-7): the id the active search's
+    /// emissions must carry.
+    var debugActiveRequestId: Int64? { activeRequestId }
+    /// Read-only for the probe: the rows hold's phase (`SearchRowsHold.phaseToken`).
+    var debugHoldPhase: String { rowsHold.phaseToken }
     private var lastSearchAddonSignature: String?
     private var debounce: Task<Void, Never>?
     private var started = false
@@ -482,10 +487,20 @@ final class SearchViewModel: ObservableObject {
             .joined(separator: ",")
     }
 
-    /// Retry for `SearchEmptyState.manifestFailure`: re-fetch the manifests. The addon watcher
-    /// then re-issues the active search when they land.
+    /// Retry for `SearchEmptyState.manifestFailure`: re-fetch the manifests (the addon watcher
+    /// re-issues the active search when they land). With manifests already loaded (every catalog
+    /// request failed, review r1 P3-1) the manifests may not change at all, so the query is also
+    /// searched again now, past the repository's same-request dedup and the HTTP cache.
     func retrySearch() {
         AddonRepository.shared.refreshAll()
+        guard let activeQuery, enabledAddons.contains(where: { $0.manifest != nil }) else { return }
+        activeRequestId = SearchRepository.shared.search(
+            query: activeQuery,
+            addons: enabledAddons,
+            disabledCatalogKeys: Self.SearchSourceSettings.disabledKeys,
+            forceRefresh: true
+        )
+        holdSearchStarted()
     }
 
     /// Re-issue the active search when an enabled addon's manifest state changes. The repository

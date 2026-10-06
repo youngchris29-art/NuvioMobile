@@ -130,6 +130,16 @@ struct SearchRowsHold {
         return false
     }
 
+    /// The phase as a probe token (review r1 P3-7): `idle`, `follow`, `hold` (a same-query
+    /// restart, no deadline) or `hold_other` (another query's rows, bounded by `holdLimit`).
+    var phaseToken: String {
+        switch phase {
+        case .idle: return "idle"
+        case .following: return "follow"
+        case .holding(_, let overOtherQuery): return overOtherQuery ? "hold_other" : "hold"
+        }
+    }
+
     /// B2: the rows on screen are the latest emission's (idle or following), so the view model
     /// adopts that emission's Top result, "Found in", People and suggestions too. While holding it
     /// keeps the previous ones, so the extras never describe rows that aren't shown.

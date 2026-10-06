@@ -78,6 +78,34 @@ final class SearchRowsHoldTests: XCTestCase {
 
     // Review r2 P3-1: a manifest refresh or Retry searches the SAME query again; its valid rows
     // stay until the restart catches up or settles, never blanked by the clock.
+    /// Review r1 P3-10: a Retry or a manifest re-search issues a NEW request id for the SAME
+    /// query. By id that is not the shown search, so the relation falls back to the query labels
+    /// and reads as a same-query restart: the rows hold with no deadline until the new search
+    /// catches up or settles. A different query under a new id is another query (bounded hold).
+    func testNewRequestIdSameQueryHoldsAsARestartWithNoDeadline() {
+        let shown = ["a", "b"]
+        let relation = SearchRowsHold.relation(shownRequestId: 4, activeRequestId: 5,
+                                               shownKeys: shown, incomingKeys: [],
+                                               shownQuery: "Dune", activeQuery: "  dune ")
+        XCTAssertEqual(relation, .sameQueryRestart)
+        XCTAssertEqual(SearchRowsHold.relation(shownRequestId: 4, activeRequestId: 5,
+                                               shownKeys: shown, incomingKeys: [],
+                                               shownQuery: "Dune", activeQuery: "Dun"), .otherQuery)
+
+        var hold = SearchRowsHold()
+        hold.searchStarted(relation: relation, hasRows: true, now: 10)
+        XCTAssertEqual(hold.rows(current: shown, incoming: [], isLoading: true, now: 10, relation: relation), shown)
+        XCTAssertTrue(hold.isHolding)
+        XCTAssertNil(hold.holdDeadline, "a same-query restart holds with no clock")
+        XCTAssertEqual(hold.phaseToken, "hold")
+        XCTAssertNil(hold.tick(lastIncoming: [String](), isLoading: true, now: 30, relation: relation))
+        XCTAssertEqual(hold.rows(current: shown, incoming: ["a"], isLoading: true, now: 30, relation: relation), shown)
+        // Caught up: the new search's rows contain the shown ones, so it follows.
+        XCTAssertEqual(hold.rows(current: shown, incoming: ["a", "b", "c"], isLoading: true, now: 31, relation: .sameSearch),
+                       ["a", "b", "c"])
+        XCTAssertEqual(hold.phaseToken, "follow")
+    }
+
     func testASameQueryRestartKeepsItsRowsPastTheLimitUntilItCatchesUp() {
         var hold = SearchRowsHold()
         XCTAssertEqual(hold.rows(current: previous, incoming: [], isLoading: true, now: 10, relation: .sameQueryRestart), previous)

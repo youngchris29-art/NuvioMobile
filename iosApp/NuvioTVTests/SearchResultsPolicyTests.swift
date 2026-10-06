@@ -196,8 +196,16 @@ final class SearchEmptyStateTests: XCTestCase {
         XCTAssertEqual(resolve(.requestfailed, manifests: false).flatMap(\.actionTitle), String(localized: "Retry"))
     }
 
-    func testRequestFailedWithManifestsLoadedReadsNoResults() {
-        XCTAssertEqual(resolve(.requestfailed), .noResults("dnue"))
+    /// Review r1 P3-1: every catalog failed with the manifests cached (a Wi-Fi drop) is a failure
+    /// with Retry, not "No results".
+    func testRequestFailedWithManifestsLoadedIsAFailureWithRetry() {
+        XCTAssertEqual(resolve(.requestfailed, error: "The Internet connection appears to be offline."),
+                       .manifestFailure("The Internet connection appears to be offline."))
+        XCTAssertEqual(resolve(.requestfailed), .manifestFailure(String(localized: "Couldn't load your add-ons.")))
+        XCTAssertEqual(resolve(.requestfailed, error: "  "), .manifestFailure(String(localized: "Couldn't load your add-ons.")))
+        XCTAssertEqual(resolve(.requestfailed).flatMap(\.actionTitle), String(localized: "Retry"))
+        // Even with every source switched off the failure wins (it is what the fan-out reported).
+        XCTAssertEqual(resolve(.requestfailed, options: 2, disabled: 2), .manifestFailure(String(localized: "Couldn't load your add-ons.")))
     }
 
     func testNoAddonOrNoSearchCatalogIsNoneCanSearch() {
