@@ -15,6 +15,30 @@ nonisolated enum MdbListLibraryListsPolicy {
     static func summary(shown: Int, total: Int) -> String {
         String(format: String(localized: "%lld of %lld shown"), shown, total)
     }
+
+    /// Review r2 P3-3: a `listOptions` emission that lands while a toggle is in flight carries
+    /// the old value; the pending (optimistic) value wins until the shared service answers.
+    static func applying(
+        pending: [String: Bool],
+        to options: [MdbListLibraryListOption]
+    ) -> [MdbListLibraryListOption] {
+        guard !pending.isEmpty else { return options }
+        return options.map { option in
+            guard let visible = pending[option.key], visible != option.visible else { return option }
+            return MdbListLibraryListOption(key: option.key, name: option.name, visible: visible)
+        }
+    }
+
+    /// Review r2 P3-2: the shared service passes `require`'s English text through
+    /// (`mdbListListVisibilityFailureMessage`); the one text it can send is localized here.
+    /// Empty → the generic failure copy.
+    static func failureCopy(_ message: String) -> String {
+        switch message.trimmingCharacters(in: .whitespacesAndNewlines) {
+        case "": return String(localized: "Couldn't update this list. Try again.")
+        case "This list is no longer available": return String(localized: "This list is no longer available")
+        default: return message
+        }
+    }
 }
 
 @MainActor
@@ -23,6 +47,8 @@ final class MdbListLibraryListsViewModel: ObservableObject {
     @Published var errorMessage: String?
 
     private var watcher: FlowWatcher?
+    /// Keys whose toggle is in flight → the optimistic value (review r2 P3-3).
+    private var pendingKeys: [String: Bool] = [:]
 
     var rows: [MdbListLibraryListOption] { MdbListLibraryListsPolicy.rows(options) }
 
@@ -33,7 +59,10 @@ final class MdbListLibraryListsViewModel: ObservableObject {
         // Flow overload; the first value arrives once the snapshot has loaded.
         watcher = FlowWatcherKt.watchFlow(MdbListTracker.shared.library.listOptions) { [weak self] emitted in
             guard let list = emitted as? [MdbListLibraryListOption] else { return }
-            Task { @MainActor in self?.options = list }
+            Task { @MainActor in
+                guard let self else { return }
+                self.options = MdbListLibraryListsPolicy.applying(pending: self.pendingKeys, to: list)
+            }
         }
     }
 
@@ -47,20 +76,25 @@ final class MdbListLibraryListsViewModel: ObservableObject {
     }
 
     /// Optimistic: flips locally, then asks the shared service. A failure puts the old value back
-    /// and shows the message.
+    /// and shows the message. While the call is in flight the key's value is held in
+    /// `pendingKeys`, so a concurrent `listOptions` emission cannot flick the switch back.
     func setVisible(key: String, visible: Bool) {
         guard let index = options.firstIndex(where: { $0.key == key }) else { return }
         let previous = options[index]
         errorMessage = nil
+        pendingKeys[key] = visible
         options[index] = MdbListLibraryListOption(key: previous.key, name: previous.name, visible: visible)
         MdbListTracker.shared.library.setListVisibilityAsync(key: key, visible: visible) { [weak self] (message: String?) in
-            guard let message else { return }
             Task { @MainActor in
                 guard let self else { return }
+                // A newer toggle of the same key owns the override (and its own revert).
+                guard self.pendingKeys[key] == visible else { return }
+                self.pendingKeys[key] = nil
+                guard let message else { return }
                 if let i = self.options.firstIndex(where: { $0.key == key }) {
                     self.options[i] = MdbListLibraryListOption(key: previous.key, name: previous.name, visible: previous.visible)
                 }
-                self.errorMessage = message.isEmpty ? String(localized: "Couldn't update this list. Try again.") : message
+                self.errorMessage = MdbListLibraryListsPolicy.failureCopy(message)
             }
         }
     }
