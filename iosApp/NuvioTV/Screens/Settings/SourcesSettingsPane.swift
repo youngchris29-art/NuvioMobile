@@ -8,6 +8,16 @@ import SharedCore
 struct SourcesSettingsPane: View {
     @ObservedObject var model: SettingsViewModel
     @ObservedObject var plugins: PluginsViewModel
+    /// B6: device-local Search layout. Read through `SearchRowsMode.resolve` so a stale or
+    /// unknown stored value shows the default.
+    @AppStorage(SearchRowsMode.defaultsKey) private var searchRowsModeRaw = SearchRowsMode.defaultValue.rawValue
+
+    private var searchRowsModeBinding: Binding<SearchRowsMode> {
+        Binding(
+            get: { SearchRowsMode.resolve(searchRowsModeRaw) },
+            set: { searchRowsModeRaw = $0.rawValue }
+        )
+    }
 
     var body: some View {
         Group {
@@ -289,20 +299,16 @@ struct SourcesSettingsPane: View {
             descriptionID: .sourcesRecentSearches
         )
 
-        // UX-8 (u/mrStevenx3, restated three times, finally "completely hide the Discover
-        // section"): one container-level toggle. Synced per profile — deliberately NOT under the
-        // "this Apple TV only" caption below, which describes the per-catalog rows.
-        SettingsToggleRow(
-            title: String(localized: "Hide Discover"),
-            subtitle: model.hideDiscover
-                ? String(localized: "Search shows only the search field and recent searches")
-                : String(localized: "Search shows the Discover section (types, catalogs, genres) below the field"),
-            isOn: Binding(
-                get: { model.hideDiscover },
-                set: { model.setHideDiscover($0) }
-            ),
-            descriptionID: .sourcesHideDiscover
+        // Search & Discover batch (B6): replaces the UX-8 "Hide Discover" toggle, which moved into
+        // Appearance > Navigation > Discover (placement Off). Device-local.
+        SettingsPickerRow(
+            title: String(localized: "Search Results"),
+            selection: searchRowsModeBinding,
+            options: SearchRowsMode.allCases,
+            descriptionID: .sourcesSearchRowsMode,
+            label: { $0.label }
         )
+        .accessibilityIdentifier("settings.searchRowsMode")
 
         Text("Choose which catalogs Search looks through. Fewer sources means faster, more focused results. Applies to this Apple TV only.")
             .font(Theme.Font.caption)

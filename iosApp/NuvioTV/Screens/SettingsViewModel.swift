@@ -577,6 +577,15 @@ final class SettingsViewModel: ObservableObject {
         HomeCatalogSettingsRepository.shared.setHideDiscover(enabled: enabled)
     }
 
+    /// Search & Discover batch (A5): where Discover lives. Writes the device-local placement and
+    /// mirrors Off into the synced Hide Discover flag (so the phone hides it too, and a profile
+    /// that hid it elsewhere reads back as Off here).
+    func setDiscoverPlacement(_ choice: DiscoverPlacement) {
+        let writes = DiscoverPlacement.writes(for: choice)
+        UserDefaults.standard.set(writes.placementRaw, forKey: DiscoverPlacement.defaultsKey)
+        setHideDiscover(writes.hideDiscover)
+    }
+
     // MARK: - Subtitles
 
     /// Rebuild the whole `SubtitleStyleState` with one field changed (KMP has no partial copy in

@@ -35,6 +35,7 @@ enum SettingsDescriptionID: String, CaseIterable {
     case servicesSimklSyncInfo = "services.simklSyncInfo"
     case servicesSimklAnimeId = "services.simklAnimeId"
     case servicesMdblist = "services.mdblist"
+    case servicesMdblistLists = "services.mdblistLists"
     case servicesMoreLikeThisSource = "services.moreLikeThisSource"
     case servicesDebridProvider = "services.debridProvider"
     case servicesDebridDismiss = "services.debridDismiss"
@@ -56,6 +57,8 @@ enum SettingsDescriptionID: String, CaseIterable {
     case appearanceNavigation = "appearance.navigation"
     // Home Stage & Strip (H9, FEAT-45): the Rail row under Navigation, shown only with Rail.
     case appearanceRail = "appearance.rail"
+    // Search & Discover batch (A5): where Discover lives.
+    case appearanceDiscoverPlacement = "appearance.discoverPlacement"
     case appearanceTypeface = "appearance.typeface"
     case appearancePosterSize = "appearance.posterSize"
     case appearancePosterCorners = "appearance.posterCorners"
@@ -152,7 +155,7 @@ enum SettingsDescriptionID: String, CaseIterable {
     case sourcesLibrarySource = "sources.librarySource"
     case sourcesWatchProgressSource = "sources.watchProgressSource"
     case sourcesRecentSearches = "sources.recentSearches"
-    case sourcesHideDiscover = "sources.hideDiscover"
+    case sourcesSearchRowsMode = "sources.searchRowsMode"
     case sourcesSearchCatalog = "sources.searchCatalog"
     case sourcesPluginsEnabled = "sources.pluginsEnabled"
     case sourcesPluginRepoAdd = "sources.pluginRepoAdd"
@@ -221,6 +224,7 @@ enum SettingsDescriptions {
         case .servicesSimklSyncInfo: return LocalizedStringResource("Opens a short explanation of what Nuvio sends to Simkl, how often it checks back, and why shows on hold or dropped disappear from Continue Watching.")
         case .servicesSimklAnimeId: return LocalizedStringResource("Chooses which ID identifies anime in Simkl. MyAnimeList and Kitsu keep each season separate. IMDB and TVDB group all seasons together. Default: IMDB.")
         case .servicesMdblist: return LocalizedStringResource("Connect shows a short code to enter on mdblist.com. Once connected, your MDBList watchlist and history sync with this Apple TV. Press again to disconnect.")
+        case .servicesMdblistLists: return LocalizedStringResource("Choose which MDBList lists appear in the Library and in Manage Lists. The Watchlist is always shown.")
         case .servicesMoreLikeThisSource: return LocalizedStringResource("Picks where the More Like This row on a title page gets its suggestions. If the account you choose is not connected, TMDB is used instead. Default: Trakt.")
         case .servicesDebridProvider: return LocalizedStringResource("Connects or disconnects a debrid service. Debrid services download torrents on their servers and stream the finished file to you. Connect shows a short code to enter on your phone. After a sign-in expires, disconnect the service and connect it again.")
         case .servicesDebridDismiss: return LocalizedStringResource("Clears the failed sign-in message and goes back to the connect options for this service.")
@@ -240,6 +244,7 @@ enum SettingsDescriptions {
         case .appearanceSettingsStyle: return LocalizedStringResource("Default shows an icon beside each Settings category. Minimal removes the icons and tightens the rows so more fit on screen.")
         case .appearanceNavigation: return LocalizedStringResource("Top Tabs keeps the tab bar across the top of the screen. Rail replaces it with a column of icons on the left edge. Press Left at the edge of a page, or Menu, to open it. Default: Top Tabs.")
         case .appearanceRail: return LocalizedStringResource("Always Visible keeps the rail on screen and moves pages a little to the right to make room for it. Hide While Browsing slides it away while you scroll or open a title, and brings it back at the top of a page. Default: Always Visible.")
+        case .appearanceDiscoverPlacement: return LocalizedStringResource("Own Tab puts Discover on the tab bar and rail. Under Search adds a Discover row to the Search page that opens it. Off hides Discover everywhere, and syncs as Hide Discover to your other devices. Default: Own Tab.")
         case .appearanceTypeface: return LocalizedStringResource("Chooses the font used across the app. Default: the Apple TV system font.")
         case .appearancePosterSize: return LocalizedStringResource("Sets how large posters appear in rows and grids. Larger posters leave less room for the description at the top of Home.")
         case .appearancePosterCorners: return LocalizedStringResource("Sets how round the poster corners are, from square to fully round.")
@@ -335,7 +340,7 @@ enum SettingsDescriptions {
         case .sourcesLibrarySource: return LocalizedStringResource("Chooses where your library is saved and read from. If the service you pick is not connected, Nuvio Library is used instead. Default: Nuvio Library.")
         case .sourcesWatchProgressSource: return LocalizedStringResource("Chooses which service keeps Continue Watching and watched history. If the service you pick is not connected, Nuvio Sync is used instead. Default: Nuvio Sync.")
         case .sourcesRecentSearches: return LocalizedStringResource("Remembers what you search for and shows it on the Search screen. Off hides past searches and stops saving new ones. On by default.")
-        case .sourcesHideDiscover: return LocalizedStringResource("Hides the Discover section on the Search screen so only the search field shows. Off by default.")
+        case .sourcesSearchRowsMode: return LocalizedStringResource("Groups results into Top result, Movies, Series and People, merged across your add-ons. One row per add-on shows each catalog separately. Default: Grouped by type.")
         case .sourcesSearchCatalog: return LocalizedStringResource("Turns this catalog on or off for Search. Fewer catalogs gives faster results. This applies to this Apple TV only.")
         case .sourcesPluginsEnabled: return LocalizedStringResource("Runs your enabled plugin providers when streams load. Plugins add extra sources.")
         case .sourcesPluginRepoAdd: return LocalizedStringResource("Installs a plugin repository from its manifest web address. The repository then syncs to your other Nuvio devices.")

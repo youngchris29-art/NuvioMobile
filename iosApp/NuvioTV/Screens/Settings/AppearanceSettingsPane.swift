@@ -27,6 +27,7 @@ struct AppearanceSettingsPane: View {
     /// when any focusable descendant (here, the row's `Menu`) has it, and there is exactly one
     /// such descendant per row.
     @FocusState private var appearanceRowFocus: String?
+    @State private var discoverPlacementRevision = 0
 
     /// Mirrors HomeView's `hero_poster_focus_only` @AppStorage key (same UserDefaults key, read
     /// independently here) so this toggle can flip the Home hero's focus-gated artwork fade back
@@ -121,6 +122,22 @@ struct AppearanceSettingsPane: View {
                 guard newValue != NavigationChrome.railVisibility(raw: railVisibility).rawValue else { return }
                 pendingAppearanceRowFocus = "railVisibility"
                 railVisibility = newValue
+            }
+        )
+    }
+
+    /// Search & Discover batch (A5): Discover placement. The write remounts the tab tree (a tab
+    /// appears or goes), so arm the focus-restore hint first, same ordering rule as Navigation.
+    /// `discoverPlacementRevision` forces a re-read of `DiscoverPlacement.current()` (the stored
+    /// value and the synced flag are not `@AppStorage`).
+    private var discoverPlacementBinding: Binding<DiscoverPlacement> {
+        Binding(
+            get: { _ = discoverPlacementRevision; return DiscoverPlacement.current() },
+            set: { newValue in
+                guard newValue != DiscoverPlacement.current() else { return }
+                pendingAppearanceRowFocus = "discoverPlacement"
+                model.setDiscoverPlacement(newValue)
+                discoverPlacementRevision += 1
             }
         )
     }
@@ -297,6 +314,18 @@ struct AppearanceSettingsPane: View {
                     .accessibilityIdentifier("appearance_row_rail")
                     .focused($appearanceRowFocus, equals: "railVisibility")
                 }
+
+                // Search & Discover batch (A5): Own Tab / Under Search / Off. Off syncs as Hide
+                // Discover; the other two are this Apple TV only.
+                SettingsPickerRow(
+                    title: String(localized: "Discover"),
+                    selection: discoverPlacementBinding,
+                    options: DiscoverPlacement.allCases,
+                    descriptionID: .appearanceDiscoverPlacement,
+                    label: { $0.label }
+                )
+                .accessibilityIdentifier("appearance_row_discover")
+                .focused($appearanceRowFocus, equals: "discoverPlacement")
             }
 
             // FEAT-31: opt-in Open Sans typeface. The binding's setter applies the font family

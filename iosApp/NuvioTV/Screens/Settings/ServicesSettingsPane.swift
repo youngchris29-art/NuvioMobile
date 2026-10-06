@@ -231,6 +231,15 @@ struct ServicesSettingsPane: View {
                 confirmingMdbListDisconnect = true
             }
             .disabled(mdblist.isBusy)
+            // Search & Discover batch (B7, upstream a9797ff8): pick which lists show in the Library.
+            SettingsLinkRow(
+                title: String(localized: "Library lists"),
+                subtitle: String(localized: "Pick which lists show in the Library."),
+                systemImage: "list.bullet.rectangle",
+                descriptionID: .servicesMdblistLists
+            ) {
+                MdbListLibraryListsView()
+            }
             // While connected, `errorMessage` carries only our own failed call (a disconnect that
             // threw); without this caption the failure was never shown.
             if let error = mdblist.errorMessage {
