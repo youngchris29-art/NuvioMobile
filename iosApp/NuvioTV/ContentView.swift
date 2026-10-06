@@ -75,9 +75,13 @@ struct ContentView: View {
     @AppStorage(Theme.AppFontFamily.defaultsKey) private var uiFont = "system"
     /// Search & Discover batch 2026-10-06 (A5): where Discover lives. Tab presence must be
     /// launch-constant (T3), so the stored value joins the remount key below and `MainTabView`
-    /// resolves `showsDiscoverTab` once per tree. A value that arrives by sync (`hideDiscover`)
-    /// is read inside the tree and takes effect at the next remount or launch.
+    /// resolves `showsDiscoverTab` once per tree (and hands it to the rail). A value that arrives
+    /// by sync (`hideDiscover`) is read inside the tree and takes effect at the next remount or
+    /// launch.
     @AppStorage(DiscoverPlacement.defaultsKey) private var discoverPlacementRaw = ""
+    /// Review r1 P2-1: bumped by every Settings pick, so a pick that leaves the stored string
+    /// unchanged (it only cleared the synced flag) still remounts the tree.
+    @AppStorage(DiscoverPlacement.revisionKey) private var discoverPlacementRevision = 0
     /// Deep link currently presented (Top Shelf → resume / title). Held until the user is past
     /// the auth + profile gates when the app is cold-launched from the Top Shelf.
     @State private var deepLink: DeepLink?
@@ -162,7 +166,7 @@ struct ContentView: View {
         //    `Palette.accent` uses, so it needs the same re-identification to take effect.
         // Selected tab, Settings path and the two focus hints above are all held ABOVE this
         // boundary, so a mode or font change costs the user nothing but the rebuild.
-        .id("\(appTheme.paletteKey)|\(navigationStyle)|\(railVisibility)|\(uiFont)|\(discoverPlacementRaw)")
+        .id("\(appTheme.paletteKey)|\(navigationStyle)|\(railVisibility)|\(uiFont)|\(discoverPlacementRaw)|\(discoverPlacementRevision)")
         .onAppear {
             auth.start()
             posterStyle.start()
@@ -386,7 +390,8 @@ struct MainTabView: View {
     /// content with `resetFocus(in:)` (see `NavigationRail.fallbackHandOff`).
     @Namespace private var shellFocusScope
     /// A6: resolved once per tree identity (`@State`'s initial value), never re-read while this
-    /// shell lives, so the set of tabs is constant for the tree's lifetime (T3).
+    /// shell lives, so the set of tabs is constant for the tree's lifetime (T3). The rail's item
+    /// list is fed from this same value.
     @State private var showsDiscoverTab = DiscoverPlacement.current() == .ownTab
 
     var body: some View {
@@ -500,7 +505,8 @@ struct MainTabView: View {
                     rootCoverActive: rootCoverActive,
                     shellFocusScope: shellFocusScope,
                     chrome: navigationChrome,
-                    tabBarVisibility: tabBarVisibility
+                    tabBarVisibility: tabBarVisibility,
+                    showsDiscover: showsDiscoverTab
                 )
             }
         }

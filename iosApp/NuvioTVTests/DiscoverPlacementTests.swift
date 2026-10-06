@@ -25,6 +25,28 @@ final class DiscoverPlacementTests: XCTestCase {
         XCTAssertEqual(DiscoverPlacement.effective(stored: "tab", hideDiscover: false, argumentOverride: "search"), .underSearch)
     }
 
+    /// Review r1 P3-6: the picker's value is the stored value plus the synced flag, never the
+    /// DEBUG launch-argument override, so a pick under the override still reads back.
+    func testSettingValueIgnoresTheArgumentOverride() {
+        let suite = "DiscoverPlacementTests.settingValue"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertEqual(DiscoverPlacement.settingValue(defaults: defaults, hideDiscover: false), .ownTab)
+        defaults.set("search", forKey: DiscoverPlacement.defaultsKey)
+        XCTAssertEqual(DiscoverPlacement.settingValue(defaults: defaults, hideDiscover: false), .underSearch)
+        XCTAssertEqual(DiscoverPlacement.settingValue(defaults: defaults, hideDiscover: true), .off)
+        // Same answer as `effective` with no override, whatever override the tree would apply.
+        XCTAssertEqual(DiscoverPlacement.settingValue(defaults: defaults, hideDiscover: false),
+                       DiscoverPlacement.effective(stored: "search", hideDiscover: false, argumentOverride: nil))
+        XCTAssertNotEqual(DiscoverPlacement.settingValue(defaults: defaults, hideDiscover: false),
+                          DiscoverPlacement.effective(stored: "search", hideDiscover: false, argumentOverride: "tab"))
+    }
+
+    func testRevisionKeyIsSeparateFromThePlacementKey() {
+        XCTAssertEqual(DiscoverPlacement.revisionKey, "discover_placement_revision")
+        XCTAssertNotEqual(DiscoverPlacement.revisionKey, DiscoverPlacement.defaultsKey)
+    }
+
     func testWrites() {
         XCTAssertEqual(DiscoverPlacement.writes(for: .off).placementRaw, "off")
         XCTAssertTrue(DiscoverPlacement.writes(for: .off).hideDiscover)

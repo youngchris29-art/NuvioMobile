@@ -198,11 +198,6 @@ struct RailItem: Identifiable, Equatable {
         return items
     }
 
-    /// The live list: reads `DiscoverPlacement.current()` on every access.
-    static var tabs: [RailItem] {
-        tabs(showsDiscover: DiscoverPlacement.current() == .ownTab)
-    }
-
     /// The Profile tab, drawn as the profile's avatar at the bottom of the pill.
     static let profile = RailItem(id: 5, title: "Profile", systemImage: "person.crop.circle")
 
@@ -282,9 +277,11 @@ struct NavigationRail: View {
     let tabBarVisibility: TabBarVisibility
 
     @AppStorage(NavigationChrome.railVisibilityKey) private var visibilityRaw = NavigationChrome.RailVisibility.always.rawValue
-    /// A6: observed only so a Settings change of the placement redraws the item list
-    /// (`RailItem.tabs` reads `DiscoverPlacement.current()` live).
-    @AppStorage(DiscoverPlacement.defaultsKey) private var discoverPlacementRaw = DiscoverPlacement.defaultValue.rawValue
+    /// A6: whether the Discover item is listed. Handed down from `MainTabView.showsDiscoverTab`,
+    /// the same once-per-tree value that decides whether `Tab(value: 6)` exists, so the rail never
+    /// lists an item without a tab or the reverse (review r1 P2-1). The rail never reads
+    /// `DiscoverPlacement` itself.
+    let showsDiscover: Bool
     @Environment(\.resetFocus) private var resetFocus
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -349,10 +346,9 @@ struct NavigationRail: View {
                                               reservesWidth: visibility == .always)
     }
 
-    /// A6: the live item list. Reads `discoverPlacementRaw` so a placement change redraws the pill.
+    /// A6: the item list for this tree's tabs.
     private var railItems: [RailItem] {
-        _ = discoverPlacementRaw
-        return RailItem.tabs
+        RailItem.tabs(showsDiscover: showsDiscover)
     }
 
     private var defaultSlide: Animation {

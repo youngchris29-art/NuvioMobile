@@ -22,8 +22,6 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var heroEnabled = true
     /// Home rows append the media type to catalog titles (synced; default on).
     @Published private(set) var showCatalogType = true
-    /// UX-8: hide the entire Discover section on the Search screen (synced; default off).
-    @Published private(set) var hideDiscover = false
     /// TMDB enrichment (cast profiles, studios/networks, collections, artwork). Upstream 60ee0160:
     /// a bundled key (`TmdbConfig.API_KEY`) is the default; an optional personal key overrides it.
     @Published private(set) var tmdbEnabled = false
@@ -295,7 +293,6 @@ final class SettingsViewModel: ObservableObject {
             self.catalogs = state.items
             self.showCatalogType = state.showCatalogType
             self.heroEnabled = state.heroEnabled
-            self.hideDiscover = state.hideDiscover
         }
 
         // BUG-33 defect 1 instrumentation: the Search Sources pane's fan-out caption. Watches
@@ -584,6 +581,11 @@ final class SettingsViewModel: ObservableObject {
         let writes = DiscoverPlacement.writes(for: choice)
         UserDefaults.standard.set(writes.placementRaw, forKey: DiscoverPlacement.defaultsKey)
         setHideDiscover(writes.hideDiscover)
+        // Review r1 P2-1: every pick remounts the tab tree, even one that leaves the stored string
+        // unchanged (`ContentView`'s `.id` key carries this revision).
+        let defaults = UserDefaults.standard
+        defaults.set(defaults.integer(forKey: DiscoverPlacement.revisionKey) &+ 1,
+                     forKey: DiscoverPlacement.revisionKey)
     }
 
     // MARK: - Subtitles

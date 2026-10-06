@@ -128,13 +128,14 @@ struct AppearanceSettingsPane: View {
 
     /// Search & Discover batch (A5): Discover placement. The write remounts the tab tree (a tab
     /// appears or goes), so arm the focus-restore hint first, same ordering rule as Navigation.
-    /// `discoverPlacementRevision` forces a re-read of `DiscoverPlacement.current()` (the stored
-    /// value and the synced flag are not `@AppStorage`).
+    /// `discoverPlacementRevision` forces a re-read of `DiscoverPlacement.settingValue()` (the
+    /// stored value and the synced flag are not `@AppStorage`). `settingValue()`, not `current()`:
+    /// the DEBUG `-discover_placement` override must not lock the picker (review r1 P3-6).
     private var discoverPlacementBinding: Binding<DiscoverPlacement> {
         Binding(
-            get: { _ = discoverPlacementRevision; return DiscoverPlacement.current() },
+            get: { _ = discoverPlacementRevision; return DiscoverPlacement.settingValue() },
             set: { newValue in
-                guard newValue != DiscoverPlacement.current() else { return }
+                guard newValue != DiscoverPlacement.settingValue() else { return }
                 pendingAppearanceRowFocus = "discoverPlacement"
                 model.setDiscoverPlacement(newValue)
                 discoverPlacementRevision += 1

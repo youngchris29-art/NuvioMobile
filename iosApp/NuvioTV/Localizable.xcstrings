@@ -8573,36 +8573,36 @@
         }
       }
     },
-    "Choose which MDBList lists appear in the Library and in Manage Lists. The Watchlist is always shown.": {
+    "Choose which MDBList lists appear in the Library. The Watchlist is always shown.": {
       "localizations": {
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Wähle, welche MDBList-Listen in der Bibliothek und unter „Listen verwalten“ erscheinen. Die Merkliste wird immer angezeigt."
+            "value": "Wähle, welche MDBList-Listen in der Bibliothek erscheinen. Die Merkliste wird immer angezeigt."
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Elige qué listas de MDBList aparecen en la biblioteca y en Gestionar listas. La lista de seguimiento siempre se muestra."
+            "value": "Elige qué listas de MDBList aparecen en la biblioteca. La lista de seguimiento siempre se muestra."
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Choisis les listes MDBList affichées dans la bibliothèque et dans Gérer les listes. La liste à regarder est toujours affichée."
+            "value": "Choisis les listes MDBList affichées dans la bibliothèque. La liste à regarder est toujours affichée."
           }
         },
         "it": {
           "stringUnit": {
             "state": "translated",
-            "value": "Scegli quali liste MDBList compaiono nella libreria e in Gestisci liste. La watchlist è sempre visibile."
+            "value": "Scegli quali liste MDBList compaiono nella libreria. La watchlist è sempre visibile."
           }
         },
         "vi": {
           "stringUnit": {
             "state": "translated",
-            "value": "Chọn danh sách MDBList hiển thị trong thư viện và trong Quản lý danh sách. Danh sách theo dõi luôn được hiển thị."
+            "value": "Chọn danh sách MDBList hiển thị trong thư viện. Danh sách theo dõi luôn được hiển thị."
           }
         }
       }
@@ -17109,40 +17109,6 @@
         }
       }
     },
-    "Hide Discover": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Entdecken ausblenden"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ocultar Descubrir"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Masquer Découvrir"
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Nascondi Scopri"
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ẩn Khám phá"
-          }
-        }
-      }
-    },
     "Hide Hero Artwork While Browsing": {
       "extractionState": "manual",
       "localizations": {
@@ -17446,40 +17412,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Ẩn các nguồn mà dịch vụ debrid của bạn chưa lưu đệm. Hàng này chỉ xuất hiện khi đã kết nối dịch vụ debrid. Mặc định tắt."
-          }
-        }
-      }
-    },
-    "Hides the Discover section on the Search screen so only the search field shows. Off by default.": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Blendet den Bereich „Entdecken“ auf dem Suchbildschirm aus, sodass nur das Suchfeld angezeigt wird. Standardmäßig aus."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Oculta la sección Descubrir de la pantalla de búsqueda para que solo se vea el campo de búsqueda. Desactivado por defecto."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Masque la section Découvrir de l’écran Recherche pour n’afficher que le champ de recherche. Désactivé par défaut."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Nasconde la sezione Scopri nella schermata Cerca, così resta solo il campo di ricerca. Disattivato per impostazione predefinita."
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ẩn mục Khám phá trên màn hình Tìm kiếm để chỉ còn ô tìm kiếm. Mặc định tắt."
           }
         }
       }
@@ -23880,40 +23812,6 @@
         }
       }
     },
-    "Off · Search shows the Discover section (types, catalogs, genres) below the field": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Aus · Die Suche zeigt den Bereich „Entdecken“ (Typen, Kataloge, Genres) unter dem Feld"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Desactivado · La búsqueda muestra la sección Descubrir (tipos, catálogos, géneros) debajo del campo"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Désactivé · La recherche affiche la section Découvrir (types, catalogues, genres) sous le champ"
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Disattivato · La ricerca mostra la sezione Scopri (tipi, cataloghi, generi) sotto il campo"
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tắt · Tìm kiếm hiển thị mục Khám phá (loại, danh mục, thể loại) bên dưới ô tìm kiếm"
-          }
-        }
-      }
-    },
     "Off · The hero shows artwork only": {
       "localizations": {
         "de": {
@@ -24898,40 +24796,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Bật · Bộ đếm hình học cuộn và push/pop bên dưới — hãy chụp lại sau khi kiểm tra"
-          }
-        }
-      }
-    },
-    "On · Search shows only the search field and recent searches": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "An · Die Suche zeigt nur das Suchfeld und die letzten Suchen"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Activado · La búsqueda muestra solo el campo de búsqueda y las búsquedas recientes"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Activé · La recherche n’affiche que le champ de recherche et les recherches récentes"
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Attivato · La ricerca mostra solo il campo di ricerca e le ricerche recenti"
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Bật · Tìm kiếm chỉ hiển thị ô tìm kiếm và các tìm kiếm gần đây"
           }
         }
       }
@@ -31801,74 +31665,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Tìm kiếm ghi nhớ những gì bạn đã tìm"
-          }
-        }
-      }
-    },
-    "Search shows only the search field and recent searches": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Die Suche zeigt nur das Suchfeld und letzte Suchanfragen"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "La búsqueda solo muestra el campo de búsqueda y las búsquedas recientes"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "La recherche n’affiche que le champ de recherche et les recherches récentes"
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cerca mostra solo il campo di ricerca e le ricerche recenti"
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tìm kiếm chỉ hiển thị ô tìm kiếm và các tìm kiếm gần đây"
-          }
-        }
-      }
-    },
-    "Search shows the Discover section (types, catalogs, genres) below the field": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Die Suche zeigt unter dem Feld den Bereich „Entdecken“ (Typen, Kataloge, Genres)"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "La búsqueda muestra la sección Descubrir (tipos, catálogos, géneros) bajo el campo"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "La recherche affiche la section Découvrir (types, catalogues, genres) sous le champ"
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cerca mostra la sezione Scopri (tipi, cataloghi, generi) sotto il campo"
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tìm kiếm hiển thị mục Khám phá (loại, danh mục, thể loại) bên dưới ô"
           }
         }
       }

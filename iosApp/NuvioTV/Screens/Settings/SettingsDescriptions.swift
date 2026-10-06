@@ -224,7 +224,7 @@ enum SettingsDescriptions {
         case .servicesSimklSyncInfo: return LocalizedStringResource("Opens a short explanation of what Nuvio sends to Simkl, how often it checks back, and why shows on hold or dropped disappear from Continue Watching.")
         case .servicesSimklAnimeId: return LocalizedStringResource("Chooses which ID identifies anime in Simkl. MyAnimeList and Kitsu keep each season separate. IMDB and TVDB group all seasons together. Default: IMDB.")
         case .servicesMdblist: return LocalizedStringResource("Connect shows a short code to enter on mdblist.com. Once connected, your MDBList watchlist and history sync with this Apple TV. Press again to disconnect.")
-        case .servicesMdblistLists: return LocalizedStringResource("Choose which MDBList lists appear in the Library and in Manage Lists. The Watchlist is always shown.")
+        case .servicesMdblistLists: return LocalizedStringResource("Choose which MDBList lists appear in the Library. The Watchlist is always shown.")
         case .servicesMoreLikeThisSource: return LocalizedStringResource("Picks where the More Like This row on a title page gets its suggestions. If the account you choose is not connected, TMDB is used instead. Default: Trakt.")
         case .servicesDebridProvider: return LocalizedStringResource("Connects or disconnects a debrid service. Debrid services download torrents on their servers and stream the finished file to you. Connect shows a short code to enter on your phone. After a sign-in expires, disconnect the service and connect it again.")
         case .servicesDebridDismiss: return LocalizedStringResource("Clears the failed sign-in message and goes back to the connect options for this service.")

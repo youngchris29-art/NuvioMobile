@@ -6,7 +6,9 @@ import SharedCore
 /// a profile that hid Discover on another device keeps it off here (`effective`).
 ///
 /// Launch argument (DEBUG only): `-discover_placement off|search|tab` lands in the argument
-/// domain; `current()` treats it as an override over both the stored value and the synced flag.
+/// domain; `current()` (what the tab tree resolves) treats it as an override over both the stored
+/// value and the synced flag. `settingValue()` (what the Settings picker shows) ignores it, so the
+/// picker still follows picks under the override (review r1 P3-6).
 nonisolated enum DiscoverPlacement: String, CaseIterable, Sendable {
     case off
     case underSearch = "search"
@@ -16,6 +18,13 @@ nonisolated enum DiscoverPlacement: String, CaseIterable, Sendable {
     static let defaultsKey = "discover_placement"
 
     static let defaultValue: DiscoverPlacement = .ownTab
+
+    /// Device-local Int bumped by every Settings pick (`SettingsViewModel.setDiscoverPlacement`).
+    /// It joins `ContentView`'s remount key, so a pick that leaves the stored string unchanged
+    /// (stored "tab" while the synced flag hid Discover, then Own Tab again) still rebuilds the tab
+    /// tree. A synced flip does not bump it: it applies at the next remount or launch (review r1
+    /// P2-1).
+    static let revisionKey = "discover_placement_revision"
 
     /// nil, blank or unknown resolves to `defaultValue`. Trimmed and lower-cased.
     static func resolve(_ raw: String?) -> DiscoverPlacement {
@@ -38,7 +47,16 @@ nonisolated enum DiscoverPlacement: String, CaseIterable, Sendable {
         (choice.rawValue, choice == .off)
     }
 
-    /// Reads the stored value, the synced flag and (DEBUG) the launch-argument override.
+    /// The stored value and the synced flag, without the DEBUG override: what the Settings picker
+    /// shows and compares a pick against.
+    /// `defaults` and `hideDiscover` are test seams (nil reads the synced flag).
+    static func settingValue(defaults: UserDefaults = .standard, hideDiscover: Bool? = nil) -> DiscoverPlacement {
+        effective(stored: defaults.string(forKey: defaultsKey),
+                  hideDiscover: hideDiscover ?? HomeCatalogSettingsRepository.shared.snapshot().hideDiscover)
+    }
+
+    /// Reads the stored value, the synced flag and (DEBUG) the launch-argument override. What the
+    /// tab tree resolves, once per tree (`MainTabView.showsDiscoverTab`).
     static func current() -> DiscoverPlacement {
         let stored = UserDefaults.standard.string(forKey: defaultsKey)
         let hide = HomeCatalogSettingsRepository.shared.snapshot().hideDiscover

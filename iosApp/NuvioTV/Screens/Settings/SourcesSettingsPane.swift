@@ -285,8 +285,8 @@ struct SourcesSettingsPane: View {
     private var searchSourcesSection: some View {
         // Upstream 7c1c6578: on/off switch for recording new recent searches (and showing
         // existing ones) on the Search screen. rc13: this Apple TV only — `SearchHistoryStorage`
-        // has no sync export/import, the key is a device-local NSUserDefaults value (unlike
-        // "Hide Discover" below, which really is synced per profile).
+        // has no sync export/import, the key is a device-local NSUserDefaults value (unlike the
+        // Hide Discover flag behind Appearance > Discover, which really is synced per profile).
         SettingsToggleRow(
             title: String(localized: "Recent Searches"),
             subtitle: model.recentSearchesEnabled
