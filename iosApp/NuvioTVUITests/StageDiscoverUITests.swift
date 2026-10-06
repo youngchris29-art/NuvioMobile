@@ -451,6 +451,66 @@ final class StageDiscoverUITests: XCTestCase {
         XCTAssertEqual(under.state, .runningForeground)
     }
 
+    // MARK: - D06b
+
+    /// D06b (review r2 P2-B): a later push whose route type is already cached still lands focus.
+    /// Under Search: Movies tile → Menu → Series tile → Menu → Movies tile. On the third push the
+    /// movie selection is a cache hit, so its rows and `selectionKey` land in one update; the page
+    /// must still put focus on row 0's first card with `type=movie`.
+    func testD06b_RepeatPushLandsFocus() throws {
+        let app = launch(Self.arguments(placement: "search"))
+        for _ in 0..<40 where !tabBarFocused(app) {
+            remote.press(.up)
+            pause(0.35)
+        }
+        let search = app.buttons["Search"]
+        for _ in 0..<4 where !search.hasFocus {
+            remote.press(.right)
+            pause(0.6)
+        }
+        remote.press(.select)
+        pause(3.0)
+        let entry = app.descendants(matching: .any)["search.discoverEntry"].firstMatch
+        XCTAssertTrue(entry.waitForExistence(timeout: 6), "Under Search: Search's idle page must carry search.discoverEntry")
+        let movies = app.buttons.matching(NSPredicate(format: "label == 'Movies'")).firstMatch
+        let series = app.buttons.matching(NSPredicate(format: "label == 'Series'")).firstMatch
+        func onTile() -> Bool { hasFocusByFrame(app, movies) || hasFocusByFrame(app, series) }
+        for _ in 0..<5 where !onTile() {
+            remote.press(.down)
+            pause(0.8)
+        }
+        guard onTile() else {
+            XCTFail("focus never reached a Discover entry tile — focused=\(focusedNodes(app).map(\.label))")
+            return
+        }
+
+        func push(_ tile: XCUIElement, type: String, step: String) throws {
+            if !hasFocusByFrame(app, tile) {
+                let toRight = tile.frame.midX > (focusedNodes(app).first?.frame.midX ?? 0)
+                moveFocus(app, toRight ? .right : .left, untilFrameOf: tile, max: 2)
+            }
+            XCTAssertTrue(hasFocusByFrame(app, tile), "\(step): the \(type) tile must take focus")
+            remote.press(.select)
+            XCTAssertTrue(poll(8) { !discover(app).isEmpty }, "\(step): the tile must push the stage Discover page")
+            try requireRows(app)
+            XCTAssertTrue(poll(8) { Self.token(discover(app), "type") == type },
+                          "\(step): the page must open on type=\(type): \(discover(app))")
+            XCTAssertTrue(poll(8) { stripFocused(app) && row(app) == 0 },
+                          "\(step): the pushed page must put focus on row 0's first card (row=0 strip=1): \(discover(app))")
+            note("D06b_\(step)", discover(app))
+            remote.press(.menu)
+            pause(1.0)
+            if !discover(app).isEmpty { remote.press(.menu); pause(1.0) }
+            XCTAssertTrue(poll(4) { discover(app).isEmpty && entry.exists }, "\(step): Menu must pop back to Search's idle page")
+            pause(1.0)
+        }
+
+        try push(movies, type: "movie", step: "push1_movies")
+        try push(series, type: "series", step: "push2_series")
+        try push(movies, type: "movie", step: "push3_movies")
+        XCTAssertEqual(app.state, .runningForeground)
+    }
+
     // MARK: - D07
 
     /// D07: a Type change through the `discover.typePicker` Menu flips `type=` and rebuilds the rows

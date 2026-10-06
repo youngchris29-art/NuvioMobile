@@ -590,6 +590,17 @@ struct DiscoverRowsPage: View {
         model.debug.set(row: nil, order: nil)
         model.debug.setStrip(false)
         #endif
+        // Review r2 P2-B: a re-armed request is consumed here when the new selection already has
+        // a target. On a later push whose route type is a cache hit (Movies → Back → Series →
+        // Back → Movies), the target handler has already spent the request on the stale
+        // selection's row, and the new target lands in the SAME update as `selectionKey`, so the
+        // target `onChange` never fires again to consume the re-arm. `activate` sets `stripRows`
+        // before `selectionKey`, so the model's rows are already the new selection's. Loading
+        // rows give no target yet; the target handler takes it when they arrive.
+        if keepsInitialFocus {
+            let rows = StripRowsPlan.visible(model.stripRows, focusedOrder: nil)
+            requestInitialFocus(StripRowsPlan.initialFocusTarget(rows, waitOver: initialFocusWaitOver)?.id)
+        }
     }
 
     /// `StripPager.onRowChange`: a row took focus (or its index moved under rows inserted above it).
