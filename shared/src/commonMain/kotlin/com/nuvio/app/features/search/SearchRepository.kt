@@ -7,7 +7,6 @@ import com.nuvio.app.core.poster.CustomPosterScreen
 import com.nuvio.app.core.poster.CustomPosterUrlRepository
 import com.nuvio.app.core.poster.withCustomPosterUrls
 import com.nuvio.app.features.addons.AddonCatalog
-import com.nuvio.app.features.addons.AddonExtraProperty
 import com.nuvio.app.features.addons.ManagedAddon
 import com.nuvio.app.features.addons.enabledAddons
 import com.nuvio.app.features.addons.firstEnabledManifestError
@@ -772,29 +771,6 @@ object SearchRepository {
     private fun searchCatalogKey(manifestId: String, type: String, catalogId: String): String =
         "$manifestId:$type:$catalogId"
 
-    private fun buildDiscoverSources(addons: List<ManagedAddon>): List<DiscoverCatalogOption> =
-        addons.mapNotNull { addon ->
-            val manifest = addon.manifest ?: return@mapNotNull null
-            addon to manifest
-        }.flatMap { (addon, manifest) ->
-            manifest.catalogs
-                .filter { catalog -> catalog.supportsDiscover() }
-                .map { catalog ->
-                    val genreExtra = catalog.genreExtra()
-                    DiscoverCatalogOption(
-                        key = "${manifest.id}:${catalog.type}:${catalog.id}",
-                        addonName = addon.displayTitle,
-                        manifestUrl = addon.manifestUrl,
-                        type = catalog.type,
-                        catalogId = catalog.id,
-                        catalogName = catalog.name,
-                        genreOptions = genreExtra?.options.orEmpty(),
-                        genreRequired = genreExtra?.isRequired == true,
-                        supportsPagination = catalog.supportsPagination(),
-                    )
-                }
-        }
-
     /// C2: fetch + unreleased filter + custom posters, split from [toSection]. An empty page (or
     /// one the unreleased filter empties) is [SearchCatalogOutcome.Empty], not a thrown error.
     private suspend fun SearchCatalogRequest.fetchOutcome(forceRefresh: Boolean): SearchCatalogOutcome {
@@ -1088,32 +1064,6 @@ private fun String.stripIdentitySuffix(): String {
 private fun AddonCatalog.supportsSearch(): Boolean =
     extra.any { property -> property.name == "search" } &&
         extra.none { property -> property.isRequired && property.name != "search" }
-
-private fun AddonCatalog.supportsDiscover(): Boolean {
-    if (extra.any { property -> property.name == "search" && property.isRequired }) {
-        return false
-    }
-
-    return extra.none { property ->
-        when (property.name) {
-            "genre" -> property.isRequired && property.options.isEmpty()
-            "skip" -> false
-            "search" -> false
-            else -> property.isRequired
-        }
-    }
-}
-
-private fun AddonCatalog.genreExtra(): AddonExtraProperty? =
-    extra.firstOrNull { property -> property.name == "genre" }
-
-private fun DiscoverCatalogOption.resolveGenreSelection(requestedGenre: String?): String? =
-    when {
-        genreOptions.isEmpty() -> null
-        requestedGenre != null && genreOptions.contains(requestedGenre) -> requestedGenre
-        genreRequired -> genreOptions.firstOrNull()
-        else -> null
-    }
 
 private fun DiscoverUiState.canReuseDiscoverState(
     sources: List<DiscoverCatalogOption>,
