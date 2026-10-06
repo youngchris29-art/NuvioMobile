@@ -86,7 +86,7 @@ final class FolderRowsPlanTests: XCTestCase {
             tab(2, label: "Trending", loading: true),
             tab(3, label: "Missing", error: "Addon not found: zz"),
         ])
-        XCTAssertEqual(built.map(\.tabIndex), [1, 2, 3], "one row per source tab, in tab order")
+        XCTAssertEqual(built.map(\.order), [1, 2, 3], "one row per source tab, in tab order")
         XCTAssertEqual(built.map(\.heading), ["Popular", "Trending", "Missing"])
         XCTAssertFalse(built.contains { $0.heading == "All" }, "Rows mode has no merged All row")
         XCTAssertEqual(built.map(\.id), ["folder_f1_1", "folder_f1_2", "folder_f1_3"])
@@ -137,15 +137,15 @@ final class FolderRowsPlanTests: XCTestCase {
 
     func testNoFocusRemovesEveryEmptyAndFailedRowAndKeepsLoading() {
         let shown = FolderRowsPlan.visible(mixedRows, focusedTabIndex: nil)
-        XCTAssertEqual(shown.map(\.tabIndex), [1, 3, 5])
+        XCTAssertEqual(shown.map(\.order), [1, 3, 5])
     }
 
     func testEmptyAndFailedRowsShowOnlyAboveTheFocusedRow() {
-        XCTAssertEqual(FolderRowsPlan.visible(mixedRows, focusedTabIndex: 5).map(\.tabIndex), [1, 2, 3, 4, 5],
+        XCTAssertEqual(FolderRowsPlan.visible(mixedRows, focusedTabIndex: 5).map(\.order), [1, 2, 3, 4, 5],
                        "above the focus: kept")
-        XCTAssertEqual(FolderRowsPlan.visible(mixedRows, focusedTabIndex: 3).map(\.tabIndex), [1, 2, 3, 5],
+        XCTAssertEqual(FolderRowsPlan.visible(mixedRows, focusedTabIndex: 3).map(\.order), [1, 2, 3, 5],
                        "the failed row above stays, the empty row below goes")
-        XCTAssertEqual(FolderRowsPlan.visible(mixedRows, focusedTabIndex: 1).map(\.tabIndex), [1, 3, 5],
+        XCTAssertEqual(FolderRowsPlan.visible(mixedRows, focusedTabIndex: 1).map(\.order), [1, 3, 5],
                        "below the focus: removed; the loading row always stays")
     }
 

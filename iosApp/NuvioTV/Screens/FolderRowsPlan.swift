@@ -131,83 +131,16 @@ extension FolderTabSnapshot {
 
 // MARK: - Row model (§2.3)
 
-/// What a strip row draws. First match, top down: loaded, loading, failed, empty.
-nonisolated enum FolderRowStatus: Equatable, Sendable {
-    /// Posters, and a buildable See All target (an `error` from a later page is ignored).
-    case loaded
-    /// The first page is still on its way: heading + skeleton cards.
-    case loading
-    /// Settled with an error: heading + "Couldn't load this source."
-    case failed
-    /// Settled with nothing (or with no buildable target): heading + "Nothing here yet."
-    case empty
-}
-
-/// One strip row: one source tab of the folder.
-///
-/// `id` is the row's strip key AND its section's key (`FolderRowsPlan.rowKey`): `CatalogRowView`
-/// reports focus ownership, records card memory and matches focus requests under `section.key`
-/// (its `pinnedRowUpFallbackTarget(rowKey: section.key, …)`), and the strip pager pages by the key
-/// a row reports, so the two must be the same string. One key per tab, whatever the status, so a
-/// row keeps its identity from loading to loaded.
-nonisolated struct FolderStripRow: Identifiable, Equatable {
-    let id: String
-    let tabIndex: Int
-    let heading: String
-    let status: FolderRowStatus
-    /// Non-nil only when `.loaded`.
-    let section: HomeCatalogSection?
-    /// The shown items' identities (first `previewLimit`), part of the equality key.
-    let itemKeys: [String]
-    /// The tab's whole item count (`availableItemCount`, the See All gate), part of the equality key.
-    let itemCount: Int
-    /// The tab can page further (`hasMore`, the See All gate), part of the equality key.
-    let hasMore: Bool
-
-    var isFocusable: Bool { status == .loaded }
-
-    /// The equality key: everything a row draws, never the section instance. A rebuild with the same
-    /// items is `==`, so the view model keeps the previous row and its `HomeCatalogSection`.
-    static func == (lhs: FolderStripRow, rhs: FolderStripRow) -> Bool {
-        lhs.id == rhs.id
-            && lhs.tabIndex == rhs.tabIndex
-            && lhs.heading == rhs.heading
-            && lhs.status == rhs.status
-            && lhs.itemKeys == rhs.itemKeys
-            && lhs.itemCount == rhs.itemCount
-            && lhs.hasMore == rhs.hasMore
-    }
-}
+// The row model, the visibility rule, the initial focus wait and the page states live in
+// `StripRowsPlan.swift` (shared with other strip pages). The folder page keeps its old names.
+typealias FolderRowStatus = StripRowStatus
+/// One strip row: one source tab of the folder (`order` is the tab index). See `StripRow`.
+typealias FolderStripRow = StripRow
 
 nonisolated enum FolderRowsPlan {
-    /// `CatalogRowView.homePreviewLimit` (18): folder rows don't paginate in place (P2-5). They show
-    /// the first 18 items plus the See All tile, exactly like Home rows. A literal here because the
-    /// view's constant is main-actor isolated; `FolderRowsPlanTests` pins the two together.
-    static let previewLimit = 18
-    /// Skeleton cards drawn by a loading row.
-    static let skeletonCount = 6
-
-    /// What the page draws in its strip area (§2.3, "Page states").
-    nonisolated enum PageState: Equatable, Sendable {
-        /// At least one row has posters.
-        case rows
-        /// Nothing focusable yet and the sources are still loading: the skeleton rows.
-        case loading
-        /// Settled, nothing focusable, not every row failed: "Nothing here yet." + Go Back.
-        case empty
-        /// Settled and every row failed: "Couldn't load this folder." + Try Again + Go Back.
-        case failed
-
-        /// The `folder_rows_state … state=` token.
-        var token: String {
-            switch self {
-            case .rows: return "rows"
-            case .loading: return "loading"
-            case .empty: return "empty"
-            case .failed: return "failed"
-            }
-        }
-    }
+    static var previewLimit: Int { StripRowsPlan.previewLimit }
+    static var skeletonCount: Int { StripRowsPlan.skeletonCount }
+    typealias PageState = StripRowsPlan.PageState
 
     /// The strip key of tab `tabIndex`, which is also its section key (see `FolderStripRow`). The
     /// tab INDEX, not the label (`getCatalogSectionsForRows` keys on the label), so two sources with
@@ -216,11 +149,7 @@ nonisolated enum FolderRowsPlan {
         "folder_\(folderId)_\(tabIndex)"
     }
 
-    /// One shown item's identity in the row's equality key. The poster is part of it so a re-postered
-    /// item (custom poster pattern) re-renders.
-    static func itemKey(_ item: MetaPreview) -> String {
-        "\(item.type):\(item.id)|\(item.poster ?? "")"
-    }
+    static func itemKey(_ item: MetaPreview) -> String { StripRowsPlan.itemKey(item) }
 
     static func status(_ t: FolderTabSnapshot) -> FolderRowStatus {
         if !t.items.isEmpty, t.target != nil { return .loaded }
@@ -269,7 +198,7 @@ nonisolated enum FolderRowsPlan {
             let rowStatus = status(t)
             let rowSection = rowStatus == .loaded ? section(t, collectionId: collectionId, folderId: folderId) : nil
             return FolderStripRow(id: rowKey(folderId: folderId, tabIndex: t.tabIndex),
-                                  tabIndex: t.tabIndex,
+                                  order: t.tabIndex,
                                   heading: t.label,
                                   status: rowStatus,
                                   section: rowSection,
@@ -279,78 +208,36 @@ nonisolated enum FolderRowsPlan {
         }
     }
 
-    /// `next`, where every row equal to the previous row with the same id is that previous
-    /// instance, so its `HomeCatalogSection` (and the row view's input) does not change identity.
+    // Forwarders to `StripRowsPlan` (the folder page's names, unchanged behaviour).
+
     static func reusing(_ previous: [FolderStripRow], for next: [FolderStripRow]) -> [FolderStripRow] {
-        guard !previous.isEmpty else { return next }
-        var byId: [String: FolderStripRow] = [:]
-        for row in previous where byId[row.id] == nil {
-            byId[row.id] = row
-        }
-        return next.map { row in
-            if let kept = byId[row.id], kept == row { return kept }
-            return row
-        }
+        StripRowsPlan.reusing(previous, for: next)
     }
 
-    /// Visibility: loading and loaded rows always show. An empty or failed row shows only above the
-    /// focused tab (`tabIndex < focusedTabIndex`); with no focused tab every one is removed. So a
-    /// source that loads to nothing never leaves a dead page below the viewer, and nothing above the
-    /// focused row ever vanishes.
+    /// The focused TAB's index is the row `order` on the folder page.
     static func visible(_ rows: [FolderStripRow], focusedTabIndex: Int?) -> [FolderStripRow] {
-        rows.filter { row in
-            switch row.status {
-            case .loaded, .loading:
-                return true
-            case .empty, .failed:
-                guard let focusedTabIndex else { return false }
-                return row.tabIndex < focusedTabIndex
-            }
-        }
+        StripRowsPlan.visible(rows, focusedOrder: focusedTabIndex)
     }
 
     static func firstFocusable(_ rows: [FolderStripRow]) -> FolderStripRow? {
-        rows.first(where: \.isFocusable)
+        StripRowsPlan.firstFocusable(rows)
     }
 
-    /// How long initial focus waits for an earlier row that is still loading (§2.3).
-    static let initialFocusWaitLimit: TimeInterval = 2.0
+    static var initialFocusWaitLimit: TimeInterval { StripRowsPlan.initialFocusWaitLimit }
 
-    /// §2.3's "open → row 0, first card": the row initial focus lands on. The rows load in parallel,
-    /// so a later row can be focusable before an earlier one has finished, and landing there opened
-    /// the page on its second row (end-of-Wave-2 FA87 walk). While a row ABOVE the first focusable
-    /// row is still loading, wait (nil) until `waitOver`, then take the first focusable row. Failed
-    /// and empty rows never hold it up.
     static func initialFocusTarget(_ rows: [FolderStripRow], waitOver: Bool) -> FolderStripRow? {
-        for row in rows {
-            if row.isFocusable { return row }
-            if row.status == .loading, !waitOver { return nil }
-        }
-        return nil
+        StripRowsPlan.initialFocusTarget(rows, waitOver: waitOver)
     }
 
-    /// The row's index among the FOCUSABLE rows of `rows` (0 = the top row the viewer can land
-    /// on), or nil when it is not a focusable row there. The Edit band shows at position 0, which
-    /// holds even when an empty or failed row sits above the first focusable one.
     static func focusablePosition(of rowId: String, in rows: [FolderStripRow]) -> Int? {
-        rows.filter(\.isFocusable).firstIndex { $0.id == rowId }
+        StripRowsPlan.focusablePosition(of: rowId, in: rows)
     }
 
-    /// What the strip area draws. `rows` is EVERY row (not only the visible ones): "every row failed"
-    /// counts the failed rows the visibility rule hides.
     static func pageState(_ rows: [FolderStripRow], allSettled: Bool) -> PageState {
-        if rows.contains(where: \.isFocusable) { return .rows }
-        if !allSettled { return .loading }
-        if !rows.isEmpty, rows.allSatisfy({ $0.status == .failed }) { return .failed }
-        return .empty
+        StripRowsPlan.pageState(rows, allSettled: allSettled)
     }
 
-    /// Blank and whitespace-only payload URLs count as absent (the rule every folder artwork check
-    /// applies).
-    static func nonBlank(_ value: String?) -> String? {
-        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
-        return value
-    }
+    static func nonBlank(_ value: String?) -> String? { StripRowsPlan.nonBlank(value) }
 
     /// §2.4: the stage preview of a folder with neither a backdrop nor a logo, for which
     /// `HomeRowPreviews.folder` returns nil (Home keeps the previous title for such a folder, but the

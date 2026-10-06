@@ -221,11 +221,11 @@ struct FolderRowsPage: View {
                     )
                 }
             case .loading:
-                FolderLoadingRow(heading: row.heading)
+                StripLoadingRow(heading: row.heading)
             case .failed:
-                FolderMessageRow(heading: row.heading, message: "Couldn't load this source.")
+                StripMessageRow(heading: row.heading, message: "Couldn't load this source.")
             case .empty:
-                FolderMessageRow(heading: row.heading, message: "Nothing here yet.")
+                StripMessageRow(heading: row.heading, message: "Nothing here yet.")
             }
         }
     }
@@ -379,7 +379,7 @@ struct FolderRowsPage: View {
         box.focusedRowKey = key
         box.stripHasFocus = true
         let rows = model.stripRows
-        if let tab = rows.first(where: { $0.id == key })?.tabIndex, tab > (deepestFocusedTab ?? Int.min) {
+        if let tab = rows.first(where: { $0.id == key })?.order, tab > (deepestFocusedTab ?? Int.min) {
             deepestFocusedTab = tab
         }
         refreshFocusDerived(rows: rows)
@@ -401,7 +401,7 @@ struct FolderRowsPage: View {
         #if DEBUG
         var tab: Int?
         if position != nil, let key = box.focusedRowKey {
-            tab = rows.first(where: { $0.id == key })?.tabIndex
+            tab = rows.first(where: { $0.id == key })?.order
         }
         debug.set(row: position, tab: tab)
         #endif
@@ -465,58 +465,7 @@ private struct FolderStageLogoLayer: View {
 
 // MARK: - Non-focusable rows (§2.3)
 
-/// A row heading, as `CatalogRowView` draws it outside pinned Home.
-private struct FolderRowHeading: View {
-    let text: String
-
-    var body: some View {
-        Text(text)
-            .font(Theme.Font.sectionTitle)
-            .foregroundStyle(Theme.Palette.textPrimary)
-            .lineLimit(1)
-    }
-}
-
-/// A source still loading: its heading over skeleton cards at the row's card size, laid out like a
-/// loaded row so its posters land where the real ones will. Nothing here is focusable.
-private struct FolderLoadingRow: View {
-    let heading: String
-    @Environment(\.posterStyle) private var style
-
-    var body: some View {
-        let width = style.landscapeCatalogRows ? Theme.Size.landscapeWidth : style.width
-        let height = style.landscapeCatalogRows ? Theme.Size.landscapeHeight : style.height
-        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-            FolderRowHeading(text: heading)
-            HStack(spacing: Theme.Spacing.rowGap) {
-                ForEach(0..<FolderRowsPlan.skeletonCount, id: \.self) { _ in
-                    ShimmerView()
-                        .frame(width: width, height: height)
-                        .clipShape(RoundedRectangle(cornerRadius: style.cornerRadius, style: .continuous))
-                }
-            }
-            .padding(.vertical, Theme.Spacing.lg)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-/// A settled source with nothing to show: its heading and one line.
-private struct FolderMessageRow: View {
-    let heading: String
-    let message: LocalizedStringKey
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-            FolderRowHeading(text: heading)
-            Text(message)
-                .font(Theme.Font.body)
-                .foregroundStyle(Theme.Palette.textSecondary)
-                .padding(.vertical, Theme.Spacing.lg)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
+// `StripRowHeading`, `StripLoadingRow` and `StripMessageRow` live in `Home/StripRowViews.swift`.
 
 // MARK: - DEBUG readout (§2.8)
 
