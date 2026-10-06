@@ -417,7 +417,8 @@ final class StageDiscoverUITests: XCTestCase {
         XCTAssertTrue(entry.waitForExistence(timeout: 6), "Under Search: Search's idle page must carry search.discoverEntry")
         shot("search-idle-undersearch")
         // Down from the keyboard: Recent (when the profile has history), then the entry tiles.
-        // The focus engine may land on either tile (FA87 landed on Series); both push DiscoverRoute.
+        // The focus engine may land on either tile (FA87 landed on Series). Review r1 P2-5: each
+        // tile carries its type, so the leg opens Series and asserts the page lands on it.
         let movies = under.buttons.matching(NSPredicate(format: "label == 'Movies'")).firstMatch
         let series = under.buttons.matching(NSPredicate(format: "label == 'Series'")).firstMatch
         func onTile() -> Bool { hasFocusByFrame(under, movies) || hasFocusByFrame(under, series) }
@@ -429,9 +430,18 @@ final class StageDiscoverUITests: XCTestCase {
             XCTFail("focus never reached a Discover entry tile — focused=\(focusedNodes(under).map(\.label))")
             return
         }
+        if !hasFocusByFrame(under, series) { moveFocus(under, .right, untilFrameOf: series, max: 2) }
+        XCTAssertTrue(hasFocusByFrame(under, series), "the Series tile must take focus")
         remote.press(.select)
-        XCTAssertTrue(poll(8) { !discover(under).isEmpty }, "the Movies tile must push the stage Discover page")
+        XCTAssertTrue(poll(8) { !discover(under).isEmpty }, "the Series tile must push the stage Discover page")
         try requireRows(under)
+        XCTAssertTrue(poll(8) { Self.token(discover(under), "type") == "series" && Self.token(discover(under), "state") == "rows" },
+                      "the Series tile must open the page on type=series: \(discover(under))")
+        // Bug 2: the pushed page lands focus on its first card and the stage shows that title.
+        XCTAssertTrue(poll(8) { stripFocused(under) && row(under) == 0 },
+                      "the pushed page must put focus on row 0's first card: \(discover(under))")
+        XCTAssertTrue(poll(8) { (Self.token(discover(under), "disp") ?? "-") != "-" },
+                      "the pushed page's stage must show a title: \(discover(under))")
         note("D06_pushed", discover(under))
         shot("D06_pushed_discover")
         remote.press(.menu)

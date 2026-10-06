@@ -58,8 +58,9 @@ struct SearchView: View {
             // A4 / B3 h: the stage Discover page, pushed from the idle page's entry row (Under
             // Search placement). Its view model lives on the owner, so loaded rows survive a pop;
             // the pushed page starts and stops it itself.
-            .navigationDestination(for: DiscoverRoute.self) { _ in
-                DiscoverRowsPage(model: owner.discoverModel, host: .pushed, onOpenGrid: { route in
+            .navigationDestination(for: DiscoverRoute.self) { discoverRoute in
+                DiscoverRowsPage(model: owner.discoverModel, host: .pushed, routeType: discoverRoute.type,
+                                 onOpenGrid: { route in
                     path.append(route)
                 })
             }

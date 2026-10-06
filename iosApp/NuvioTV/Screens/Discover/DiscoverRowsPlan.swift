@@ -97,8 +97,8 @@ nonisolated enum DiscoverRowsPlan {
         "\(type)|\(catalogKey)"
     }
 
-    /// The Type pill's labels, Search's mapping (`SearchView.typeLabel`), with the catalog's own
-    /// type capitalised for anything else.
+    /// The Type pill's labels: "Movies" / "Series" for the two Stremio types (the mapping Search's
+    /// old inline Discover section used), with the catalog's own type capitalised for anything else.
     static func typeLabel(_ type: String) -> String {
         switch type.lowercased() {
         case "movie": return String(localized: "Movies")

@@ -24,7 +24,9 @@ import SharedCore
 // twin of `fetchCatalogPage`: the plain suspend export would abort the process on an HTTP error),
 // then through Search's Discover filters (`DiscoverRowsPlan.displayItems`).
 //
-// A selection change cancels every fetch in flight (`[Discover] cancel` in the Console) and keeps
+// A selection change cancels every fetch in flight (`[Discover] cancel` in the Console). That is the
+// Swift `Task` only: cancelling it does not cancel the Kotlin request underneath, which runs to its
+// end; the generation guard (`finish`) drops its result when it lands. The view model also keeps
 // the rows of the last four selections (`DiscoverSelectionCache`), so going back to a type or
 // catalog is instant; a row whose fetch was cancelled is still `.loading` there and starts again
 // when the scheduler next runs.
@@ -379,6 +381,9 @@ final class DiscoverRowsViewModel: ObservableObject {
         pump()
     }
 
+    /// Cancels the Swift tasks in flight and bumps the generation. The Kotlin request under each task
+    /// is not cancelled (the suspend bridge does not propagate it) and runs to its end; `finish`
+    /// drops its result because its token is now stale.
     private func cancelInFlight(reason: String) {
         generation &+= 1
         guard !inFlight.isEmpty else { return }

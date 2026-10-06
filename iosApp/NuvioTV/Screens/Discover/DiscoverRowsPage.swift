@@ -45,8 +45,11 @@ import SwiftUI
 // reference box; the band gate (`rowsAtTop`) is written only when it changes; the DEBUG probe is a
 // leaf over its own readout state.
 
-/// Search's navigation value for the pushed stage Discover page (Under Search placement).
-struct DiscoverRoute: Hashable {}
+/// Search's navigation value for the pushed stage Discover page (Under Search placement). `type`
+/// is the Stremio type the entry tile stands for ("movie" / "series"); nil keeps the selection.
+struct DiscoverRoute: Hashable {
+    var type: String? = nil
+}
 
 /// Where the page is mounted (A4).
 enum DiscoverHost {
@@ -63,6 +66,8 @@ enum DiscoverHost {
 struct DiscoverRowsPage: View {
     @ObservedObject var model: DiscoverRowsViewModel
     let host: DiscoverHost
+    /// Pushed: the entry tile's type (`DiscoverRoute.type`), selected once on first appear.
+    let routeType: String?
     /// Pushes the Grid pill's (and nothing else's) `CatalogRoute` on the host's stack.
     let onOpenGrid: (CatalogRoute) -> Void
 
@@ -90,9 +95,13 @@ struct DiscoverRowsPage: View {
     @Environment(\.navigationChrome) private var navigationChrome
     @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
 
-    init(model: DiscoverRowsViewModel, host: DiscoverHost, onOpenGrid: @escaping (CatalogRoute) -> Void) {
+    init(model: DiscoverRowsViewModel,
+         host: DiscoverHost,
+         routeType: String? = nil,
+         onOpenGrid: @escaping (CatalogRoute) -> Void) {
         self.model = model
         self.host = host
+        self.routeType = routeType
         self.onOpenGrid = onOpenGrid
     }
 
@@ -160,6 +169,7 @@ struct DiscoverRowsPage: View {
             stage.setCovered(false, restoresFocus: true)
             // The pushed host's view model belongs to Search; the tab root starts its own.
             if host == .pushed { model.start() }
+            applyRouteType()
             seedStage()
         }
         .onDisappear {
@@ -183,8 +193,13 @@ struct DiscoverRowsPage: View {
             stage.memory.prune(keeping: Set(rows.map(\.id)))
             refreshFocusDerived(rows: rows)
         }
-        .onChange(of: model.selectionKey) { _, _ in
-            selectionChanged()
+        .onChange(of: model.selectionKey) { old, _ in
+            selectionChanged(from: old)
+        }
+        // The entry tile's type, once the add-on options have arrived (a first push can land
+        // before the watcher's first value).
+        .onChange(of: model.typeOptions) { _, _ in
+            applyRouteType()
         }
         .onChange(of: reduceMotion) { _, motion in
             stage.swap.setReduceMotion(motion)
@@ -431,6 +446,7 @@ struct DiscoverRowsPage: View {
         if item != nil {
             // Any card focus answers the initial-focus request.
             box.pendingInitialFocus = false
+            box.cardFocused = true
         }
         stage.report(item,
                      source: row.id,
@@ -528,14 +544,41 @@ struct DiscoverRowsPage: View {
         }
     }
 
+    /// P2-5: the pushed page opens on the entry tile's type. Applied once per push, as soon as the
+    /// type options name it; a type the add-ons don't offer leaves the selection alone. Runs before
+    /// any card has focus, so the selection change it causes keeps the initial-focus request
+    /// armed (`selectionChanged`).
+    private func applyRouteType() {
+        guard host == .pushed, let type = routeType, !box.routeTypeApplied else { return }
+        let types = model.typeOptions
+        guard !types.isEmpty else { return }
+        box.routeTypeApplied = true
+        guard types.contains(type), model.selectedType != type else { return }
+        box.routeSelecting = true
+        model.select(type: type)
+        // No catalog for it after all: no selection change will come to clear the flag.
+        if model.selectedType != type { box.routeSelecting = false }
+    }
+
     /// A Type or Catalog pick: the new rows start from the top with focus on the band. The pager
     /// remounts on its own (`.id(selectionKey)`).
-    private func selectionChanged() {
+    ///
+    /// Two selection changes are not picks and keep the pushed page's initial-focus request armed
+    /// while no card has had focus yet: the FIRST selection (`old` empty: the view model's sources
+    /// arrived after the push, `[Discover] select … reason=sources`) and the route's own type
+    /// (`applyRouteType`). Gate 2 bug 2: the first one used to disarm the request, so a fresh
+    /// push landed focus only if the focus engine happened to pick a card by itself; when it
+    /// didn't (focus → nil while the rows loaded), the page sat with no focus at all.
+    private func selectionChanged(from old: String) {
+        // `cardFocused`, not `pendingInitialFocus`: a request already spent on the old selection's
+        // row (which the remount just threw away) is re-armed too.
+        let keepsInitialFocus = host == .pushed && !box.cardFocused && (old.isEmpty || box.routeSelecting)
+        box.routeSelecting = false
         deepestFocusedOrder = nil
         box.focusedRowKey = nil
         box.stripHasFocus = false
         box.railSavedRow = nil
-        box.pendingInitialFocus = false
+        box.pendingInitialFocus = keepsInitialFocus
         // The old selection's row keys mean nothing to the new pager (a rail restore would ask it
         // for a row it doesn't have).
         stage.currentRowKey = nil
@@ -598,6 +641,12 @@ final class DiscoverRowsPageBox {
     var railCaptured = false
     /// The last `seedSignature` the stage was seeded or reported for.
     var seededSignature: String?
+    /// A card on this page has had focus (any row, any selection).
+    var cardFocused = false
+    /// Pushed: the route's type has been looked at (applied or found absent).
+    var routeTypeApplied = false
+    /// Pushed: the selection change in flight is the route's own, not a pill pick.
+    var routeSelecting = false
 }
 
 /// `.railMenuReveal()` for the tab host only (a pushed page pops on Menu, the system default).

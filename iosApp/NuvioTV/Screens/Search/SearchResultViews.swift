@@ -238,8 +238,9 @@ struct SearchEmptyStateView: View {
 // MARK: - h. Discover entry (Under Search placement)
 
 /// B3 h: the idle page's way into the stage Discover page when Discover lives under Search. Two
-/// tiles, Movies and Series, both pushing `DiscoverRoute()` (the page's own Type pill picks the
-/// rest). The tiles report nothing to the wash.
+/// tiles, Movies and Series, pushing `DiscoverRoute(type: "movie")` / `DiscoverRoute(type: "series")`
+/// (the page opens on that type; its own Type pill picks the rest). The tiles report nothing to
+/// the wash.
 struct DiscoverEntryRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
@@ -247,8 +248,8 @@ struct DiscoverEntryRow: View {
                 .font(Theme.Font.sectionTitle)
                 .foregroundStyle(Theme.Palette.textPrimary)
             HStack(spacing: Theme.Spacing.lg) {
-                DiscoverEntryTile(title: String(localized: "Movies"), systemImage: "film")
-                DiscoverEntryTile(title: String(localized: "Series"), systemImage: "tv")
+                DiscoverEntryTile(title: String(localized: "Movies"), systemImage: "film", type: "movie")
+                DiscoverEntryTile(title: String(localized: "Series"), systemImage: "tv", type: "series")
             }
             .padding(.vertical, Theme.Spacing.xs)
             .focusSection()
@@ -263,11 +264,13 @@ struct DiscoverEntryRow: View {
 private struct DiscoverEntryTile: View {
     let title: String
     let systemImage: String
+    /// The Stremio type the page opens on.
+    let type: String
 
     @Environment(\.posterStyle) private var style
 
     var body: some View {
-        NavigationLink(value: DiscoverRoute()) {
+        NavigationLink(value: DiscoverRoute(type: type)) {
             VStack(spacing: Theme.Spacing.sm) {
                 Image(systemName: systemImage)
                     .font(.system(size: 44, weight: .semibold))
