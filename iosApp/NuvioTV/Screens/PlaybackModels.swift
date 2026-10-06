@@ -24,6 +24,10 @@ enum PlayerTuning {
     /// them to 8.1 (the conversion discards FEL enhancement data; MEL converts losslessly and is
     /// unaffected by this preference).
     static let dvP7FelMpvKey = "player.dvP7FelPreferMpv"
+    /// What holding Left/Right does in the mpv player: "step" (default) or "scan". Device-local.
+    static let holdModeKey = "player.holdMode"
+    /// Show the time of day while the mpv player controls are up. Device-local, off by default.
+    static let showClockKey = "player.showClock"
 }
 
 /// Everything the player needs to render a stream and record watch progress for it.
