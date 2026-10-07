@@ -121,7 +121,10 @@ struct TransportPreview {
             releaseClick = clickOnRelease
             let acc = clamp(originSec + Double(dir) * Self.firstStepSec) - originSec
             mode = .stepping(direction: dir, accumulatedSec: acc, ticks: 0)
-            previewSec = originSec + acc
+            // A click that acts on release (chapter mode) draws no +10 s preview while it is down:
+            // the seek may land on a chapter start elsewhere (review r1 P3 #6). The first hold
+            // tick sets the preview.
+            previewSec = releaseClick ? nil : originSec + acc
             if scanArmed || releaseClick { return .none }
             return .immediateSeek(deltaSec: Double(dir) * Self.firstStepSec)
         case .stepping(_, let acc, _):

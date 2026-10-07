@@ -113,6 +113,18 @@ final class HarvestSchedulerTests: XCTestCase {
         XCTAssertEqual(fired.first, 30)
     }
 
+    /// Review r1 P3 #8: once backed off, a landed seek schedules no extra harvest; the tripled
+    /// interval keeps running.
+    func testBackedOffFileSkipsSeekHarvest() {
+        var h = H(intervalSec: 10)
+        h.noteStarted()
+        XCTAssertTrue(h.noteFinished(tookMs: 90))
+        h.noteSeekLanded(now: 5)
+        XCTAssertNil(h.seekHarvestDue)
+        let fired = run(&h, from: 0, count: 32)
+        XCTAssertEqual(fired.first, 30, "no harvest 1 s after the landing, only the 30 s interval")
+    }
+
     func testFailedHarvestDoesNotBackOff() {
         var h = H(intervalSec: 10)
         h.noteStarted()

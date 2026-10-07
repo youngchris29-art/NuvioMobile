@@ -8,7 +8,7 @@ import Foundation
 /// ineligible, and ineligible time does not count toward the interval. A landed seek schedules
 /// one extra harvest 1 s later (a newer landing replaces it); a due seek harvest that meets an
 /// ineligible tick waits for the next eligible one. A harvest that took over 60 ms triples the
-/// interval for the rest of the file (critique C18).
+/// interval for the rest of the file (critique C18) and ends seek harvests for it.
 nonisolated struct HarvestScheduler {
     static let slowHarvestMs: Double = 60
     static let recentInputSec: TimeInterval = 1.5
@@ -46,8 +46,11 @@ nonisolated struct HarvestScheduler {
         return false
     }
 
-    /// A seek landed: one harvest 1 s later (debounced: a newer landing replaces it).
+    /// A seek landed: one harvest 1 s later (debounced: a newer landing replaces it). Not once
+    /// the file has backed off: a slow readback right after a seek lands just when the picture is
+    /// being watched (review r1 P3 #8); the tripled interval still harvests.
     mutating func noteSeekLanded(now: TimeInterval) {
+        guard !backedOff else { return }
         seekHarvestDue = now + Self.seekDebounceSec
     }
 

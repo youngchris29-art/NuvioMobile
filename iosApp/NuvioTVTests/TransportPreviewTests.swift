@@ -420,7 +420,7 @@ final class TransportPreviewTests: XCTestCase {
         var t = make()
         t.clickOnRelease = true
         XCTAssertEqual(t.pressBegan(direction: -1, positionSec: 100), .none)
-        XCTAssertEqual(t.previewSec, 90)
+        XCTAssertNil(t.previewSec, "no +10 s preview while a release-click is down (review r1 P3 #6)")
         XCTAssertEqual(t.pressEnded(direction: -1), .immediateSeek(deltaSec: -10))
         XCTAssertEqual(t.mode, .idle)
         XCTAssertNil(t.previewSec)
@@ -432,7 +432,10 @@ final class TransportPreviewTests: XCTestCase {
         var t = make()
         t.clickOnRelease = true
         XCTAssertEqual(t.pressBegan(direction: 1, positionSec: 100), .none)   // no immediate seek
-        ticks(&t, 2)
+        XCTAssertNil(t.previewSec)
+        _ = t.holdTick(heldSec: held(1))
+        XCTAssertNotNil(t.previewSec, "the first hold tick draws the preview")
+        _ = t.holdTick(heldSec: held(2))
         // Latched at the gesture's start: flipping it mid-hold changes nothing.
         t.clickOnRelease = false
         XCTAssertEqual(t.pressEnded(direction: 1),
