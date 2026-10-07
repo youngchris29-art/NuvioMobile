@@ -189,12 +189,13 @@ final class MPVTVPlayerViewController: UIViewController {
     private var edgeClickMode: EdgeClickMode = .skip10
     /// Clears the aspect flash 2 s after the last Aspect pill press.
     private var aspectFlashWork: DispatchWorkItem?
-    /// The resize mode the profile holds (set at FILE_LOADED, then by each write and by the
-    /// settings watcher), and whether the pill moved since the last write (review r1 P2 #1).
-    private var aspectPersisted: PlayerAspectMode = .fit {
+    /// The resize mode the profile holds and the session-start value Stretch puts back (reset at
+    /// FILE_LOADED, then moved by each write and by the settings watcher), and whether the pill
+    /// moved since the last write (review r1 P2 #1, r2 P2 #1).
+    private var aspectWriteback = AspectWriteback(start: .fit) {
         didSet {
             #if DEBUG
-            state.transport.debugAspectStored = aspectPersisted
+            state.transport.debugAspectStored = aspectWriteback.stored
             #endif
         }
     }
@@ -612,7 +613,7 @@ final class MPVTVPlayerViewController: UIViewController {
                 self.playerSettings = settings
                 // The profile's stored resize mode (our own write echoing back, or the phone's):
                 // the baseline the Aspect pill's write-back compares against.
-                self.aspectPersisted = .initial(syncedName: settings.resizeMode.name)
+                self.aspectWriteback.watcherReported(.initial(syncedName: settings.resizeMode.name))
                 if self.fileLoaded { self.applySubtitleStyle() }
             }
         } else if mpv != nil, pollTimer == nil {
@@ -1144,7 +1145,7 @@ final class MPVTVPlayerViewController: UIViewController {
         applySubtitleStyle()
         // Picture fit from the synced resize mode (the phone shares it); Stretch never persists.
         let startAspect = PlayerAspectMode.initial(syncedName: playerSettings?.resizeMode.name)
-        aspectPersisted = startAspect
+        aspectWriteback = AspectWriteback(start: startAspect)
         applyAspect(startAspect)
         applyDisplayCriteriaIfEnabled()
         fetchSkipSegments()
@@ -2201,9 +2202,9 @@ final class MPVTVPlayerViewController: UIViewController {
     }
 
     /// The Aspect pill: next mode and flash its name for 2 s. The synced resize mode (the phone
-    /// follows, C23) is written once, when the flash clears or the player closes, and only for
-    /// Fit/Fill/Zoom: Stretch is session-only (C9), and a mode only cycled through is never stored
-    /// (review r1 P2 #1).
+    /// follows, C23) is written once, when the flash clears or the player closes: Fit/Fill/Zoom
+    /// write themselves, Stretch (session-only, C9) puts the session-start value back, and a mode
+    /// only cycled through is never stored (review r1 P2 #1, r2 P2 #1).
     private func cycleAspect() {
         let mode = state.transport.aspectMode.next
         applyAspect(mode)
@@ -2225,9 +2226,10 @@ final class MPVTVPlayerViewController: UIViewController {
         guard aspectPillDirty else { return }
         aspectPillDirty = false
         let resting = state.transport.aspectMode
-        guard let mode = AspectWriteback.valueToPersist(resting: resting, persisted: aspectPersisted) else {
+        guard let mode = aspectWriteback.valueToPersist(resting: resting) else {
             #if DEBUG
-            NSLog("[Aspect] persist none resting=%@ stored=%@", resting.rawValue, aspectPersisted.rawValue)
+            NSLog("[Aspect] persist none resting=%@ stored=%@ start=%@", resting.rawValue,
+                  aspectWriteback.stored.rawValue, aspectWriteback.sessionStart.rawValue)
             #endif
             return
         }
@@ -2237,11 +2239,11 @@ final class MPVTVPlayerViewController: UIViewController {
         case .fill: synced = .fill
         case .zoom: synced = .zoom
         }
+        aspectWriteback.didPersist(mode)
         PlayerSettingsRepository.shared.setResizeMode(mode: synced)
-        aspectPersisted = mode
         #if DEBUG
         state.transport.debugAspectWrites += 1
-        NSLog("[Aspect] persist %@", mode.rawValue)
+        NSLog("[Aspect] persist %@ resting=%@", mode.rawValue, resting.rawValue)
         #endif
     }
 

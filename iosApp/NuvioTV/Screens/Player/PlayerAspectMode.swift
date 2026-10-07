@@ -57,16 +57,58 @@ enum PlayerAspectMode: String, CaseIterable {
     }
 }
 
-/// When the Aspect pill's choice reaches the synced resize mode (review r1 P2 #1): once, when the
-/// 2 s flash clears or the player closes, so a mode the user only cycles through (Fill and Zoom on
-/// the way to Stretch) is never written to the profile, and the phone never inherits it.
-enum AspectWriteback {
-    /// The mode to persist, given where the pill came to rest and the value the profile already
-    /// holds (the session-start value, or the last write). Stretch never persists, so the profile
-    /// keeps what it had; a resting mode equal to the stored one writes nothing.
-    static func valueToPersist(resting: PlayerAspectMode, persisted: PlayerAspectMode) -> PlayerAspectMode? {
-        guard resting.syncedName != nil, resting != persisted else { return nil }
-        return resting
+/// When the Aspect pill's choice reaches the synced resize mode (review r1 P2 #1, r2 P2 #1): once,
+/// when the flash clears or the player closes, so a mode the user only cycles through is never
+/// written to the profile, and the phone never inherits it.
+///
+/// Fit/Fill/Zoom at rest persist when they differ from the stored value. Stretch is session-only,
+/// so at rest it puts back the session-start value: Fit, Fill (rests, written), Zoom (rests,
+/// written), Stretch leaves the profile and the phone on Fit, not on the rejected Zoom.
+///
+/// The session-start value is the profile's value when the file loaded, moved by an outside change
+/// the settings watcher reports mid-playback (the phone, Settings): that change was deliberate, so
+/// a later Stretch puts it back instead of overwriting it with the value from before. Our own
+/// writes echoing back through the watcher do not move it (`pendingEchoes`).
+struct AspectWriteback: Equatable {
+    /// The value Stretch at rest puts back.
+    private(set) var sessionStart: PlayerAspectMode
+    /// What the profile holds: the session-start value, our last write, or the last outside change.
+    private(set) var stored: PlayerAspectMode
+    /// Our writes not yet seen on the watcher, oldest first. The watcher is a conflated StateFlow
+    /// collected on main, so it can skip an older write and report only a later one.
+    private var pendingEchoes: [PlayerAspectMode] = []
+
+    init(start: PlayerAspectMode) {
+        let s = start == .stretch ? .fit : start
+        sessionStart = s
+        stored = s
+    }
+
+    /// The mode to write for the mode the pill came to rest on, or nil when the profile already
+    /// holds the right value.
+    func valueToPersist(resting: PlayerAspectMode) -> PlayerAspectMode? {
+        let target = resting.syncedName != nil ? resting : sessionStart
+        return target != stored ? target : nil
+    }
+
+    /// Record a write we made.
+    mutating func didPersist(_ mode: PlayerAspectMode) {
+        stored = mode
+        pendingEchoes.append(mode)
+    }
+
+    /// The settings watcher reported `mode` (any player setting change emits, so it often repeats
+    /// the stored value). Our own echo is consumed; a different value is an outside change and
+    /// becomes the new session-start value.
+    mutating func watcherReported(_ mode: PlayerAspectMode) {
+        if let i = pendingEchoes.firstIndex(of: mode) {
+            pendingEchoes.removeFirst(i + 1)
+            return
+        }
+        guard mode != stored else { return }
+        stored = mode
+        sessionStart = mode
+        pendingEchoes.removeAll()
     }
 }
 
