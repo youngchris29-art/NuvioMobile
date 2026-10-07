@@ -74,6 +74,16 @@ enum PlayerChapters {
         return chapters.filter { $0.sec < durationSec - endSlackSec }
     }
 
+    /// The list to publish when the duration moves (review r2 P3 #5): trimming is a pure function
+    /// of the untrimmed list and the duration, so a duration that starts as an estimate and grows
+    /// (a progressive download without an index, an event playlist) brings its late chapters
+    /// back. Nil when `published` is already right (most ticks).
+    static func republished(raw: [TransportChapter], published: [TransportChapter],
+                            durationSec: Double) -> [TransportChapter]? {
+        let next = trimmed(raw, durationSec: durationSec)
+        return next == published ? nil : next
+    }
+
     /// A chapter seek target kept inside the file: at most `durationSec − seekEndMarginSec` when
     /// the duration is known, never negative.
     static func clampedSeek(_ sec: Double, durationSec: Double) -> Double {

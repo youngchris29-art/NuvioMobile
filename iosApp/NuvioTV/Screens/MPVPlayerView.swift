@@ -189,6 +189,10 @@ final class MPVTVPlayerViewController: UIViewController {
     private var edgeClickMode: EdgeClickMode = .skip10
     /// Clears the aspect flash 2 s after the last Aspect pill press.
     private var aspectFlashWork: DispatchWorkItem?
+    /// Main: the chapter list as read at FILE_LOADED, before the end trim, and the duration the
+    /// published list was last trimmed for (review r2 P3 #5).
+    private var rawChapters: [TransportChapter] = []
+    private var chaptersTrimDuration: Double = -1
     /// The resize mode the profile holds and the session-start value Stretch puts back (reset at
     /// FILE_LOADED, then moved by each write and by the settings watcher), and whether the pill
     /// moved since the last write (review r1 P2 #1, r2 P2 #1).
@@ -1657,11 +1661,15 @@ final class MPVTVPlayerViewController: UIViewController {
         // Transport bar mirror + preview model inputs (P1).
         transport.durationSec = snap.duration
         state.transport.durationSec = snap.duration
-        // A chapter list read before the duration was known drops its end markers once it is
-        // (review r1 P2 #2); a no-op whenever nothing is past the end.
-        if snap.duration > 0, let last = state.transport.chapters.last,
-           last.sec >= snap.duration - PlayerChapters.endSlackSec {
-            state.transport.chapters = PlayerChapters.trimmed(state.transport.chapters, durationSec: snap.duration)
+        // The published chapter list is re-derived from the untrimmed one whenever the duration
+        // moves: end markers drop once the duration is known (review r1 P2 #2), and come back if a
+        // growing duration passes them (review r2 P3 #5).
+        if snap.duration != chaptersTrimDuration {
+            chaptersTrimDuration = snap.duration
+            if let next = PlayerChapters.republished(raw: rawChapters, published: state.transport.chapters,
+                                                     durationSec: snap.duration) {
+                state.transport.chapters = next
+            }
         }
         state.transport.positionSec = max(snap.position, 0)
         state.transport.isPaused = snap.paused
@@ -2163,16 +2171,19 @@ final class MPVTVPlayerViewController: UIViewController {
             }
         }
         // A marker at or past the end would make a chapter click seek to EOF (review r1 P2 #2).
+        // The untrimmed list is kept so a growing duration can bring late chapters back (r2 P3 #5).
         let duration = getDouble("duration")
-        let parsed = chapters.count
+        let rawList = chapters
         chapters = PlayerChapters.trimmed(chapters, durationSec: duration)
         #if DEBUG
-        NSLog("[Chapters] n=%ld dropped=%ld dur=%.1f src=%@ raw=%@", chapters.count, parsed - chapters.count,
+        NSLog("[Chapters] n=%ld dropped=%ld dur=%.1f src=%@ raw=%@", chapters.count, rawList.count - chapters.count,
               duration, source, String((raw ?? "nil").prefix(200)))
-        #else
-        _ = parsed
         #endif
-        DispatchQueue.main.async { self.state.transport.chapters = chapters }
+        DispatchQueue.main.async {
+            self.rawChapters = rawList
+            self.chaptersTrimDuration = duration
+            self.state.transport.chapters = chapters
+        }
     }
 
     /// Main: publish the mode, then write all three mpv properties on `eventQueue`.

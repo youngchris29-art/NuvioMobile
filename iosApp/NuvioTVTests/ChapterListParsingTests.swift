@@ -88,6 +88,23 @@ final class ChapterListParsingTests: XCTestCase {
         XCTAssertEqual(PlayerChapters.trimmed(c, durationSec: 601.5).map(\.sec), [0, 300, 600])
     }
 
+    /// Review r2 P3 #5: the published list is re-derived from the untrimmed one, so a duration
+    /// that grows past a late chapter brings it back.
+    func testGrowingDurationBringsLateChaptersBack() {
+        let raw = PlayerChapters.parse(json: #"[{"title":"A","time":0},{"title":"B","time":300},{"title":"C","time":600}]"#)
+        var published = PlayerChapters.trimmed(raw, durationSec: 0)
+        XCTAssertEqual(published.map(\.sec), [0, 300, 600], "unknown duration keeps the list")
+        // An early estimate puts C inside the end slack: dropped.
+        published = PlayerChapters.republished(raw: raw, published: published, durationSec: 600.5) ?? published
+        XCTAssertEqual(published.map(\.sec), [0, 300])
+        XCTAssertNil(PlayerChapters.republished(raw: raw, published: published, durationSec: 600.7),
+                     "nothing to publish while the list is already right")
+        // The duration grows past C + slack: C is back.
+        published = PlayerChapters.republished(raw: raw, published: published, durationSec: 900) ?? published
+        XCTAssertEqual(published.map(\.sec), [0, 300, 600])
+        XCTAssertNil(PlayerChapters.republished(raw: raw, published: published, durationSec: 1200))
+    }
+
     func testUnknownDurationKeepsTheList() {
         let c = PlayerChapters.parse(json: fiveJSON)
         XCTAssertEqual(PlayerChapters.trimmed(c, durationSec: 0), c)
