@@ -286,4 +286,134 @@ final class PlayerTransportUITests: XCTestCase {
         XCTAssertTrue(waitFor(app, timeout: 4) { $0["chip"] == "1" }, "a press did not bring the chip back: \(probeText(app))")
         print("[SeekProbe] chip leg end: \(probeText(app))")
     }
+
+    // MARK: Swipe scrub (P2-A), driven by `-debug.scrubInject` (the simulator cannot swipe)
+
+    /// 10 samples of 20 pt: the stroke turns horizontal at 60 pt (bar up: 45 pt threshold) and the
+    /// remaining 140 pt move the preview (Orivio on the 600 s fixture: 0.25 s/pt → +35 s).
+    private static let scrubScript = Array(repeating: "20,0.03", count: 10).joined(separator: ";")
+
+    private func postScrubInject() {
+        CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                             CFNotificationName("com.nuvio.debug.transport.scrubInject" as CFString), nil, nil, true)
+    }
+
+    /// Bar up from a hidden bar, then 0.6 s so the Up press is outside the arbiter's move suppression.
+    private func raiseBarForScrub(_ app: XCUIApplication) {
+        remote.press(.up)
+        XCTAssertTrue(waitBar(app) { $0["vis"] == "1" }, barProbeText(app))
+        Thread.sleep(forTimeInterval: 0.6)
+    }
+
+    /// Posts the inject and waits for the scrub to start and the script (0.3 s) to finish; returns
+    /// the scrub target.
+    private func injectAndReadTarget(_ app: XCUIApplication) -> Double {
+        postScrubInject()
+        XCTAssertTrue(waitBar(app) { $0["mode"] == "scrubbing" }, "scrub never started: \(barProbeText(app))")
+        Thread.sleep(forTimeInterval: 0.6)
+        let p = bar(app)
+        print("[ScrubLeg] after inject: \(barProbeText(app))")
+        return Double(p["scrub"] ?? "") ?? -1
+    }
+
+    func testScrubSelectCommitsOnce() throws {
+        let app = try launchWithBarHidden(extra: ["-debug.scrubInject", Self.scrubScript])
+        raiseBarForScrub(app)
+        let c0 = Int(probe(app)["commits"] ?? "") ?? -1
+        let before = Double(bar(app)["pos"] ?? "") ?? -1
+        let target = injectAndReadTarget(app)
+        let b = bar(app)
+        XCTAssertEqual(b["curve"], "o", barProbeText(app))
+        XCTAssertEqual(b["arb"], "h", barProbeText(app))
+        XCTAssertGreaterThanOrEqual(target - before, 30, "scrub moved too little: before=\(before) \(barProbeText(app))")
+        XCTAssertLessThanOrEqual(target - before, 42, "scrub moved too far: before=\(before) \(barProbeText(app))")
+        remote.press(.select)
+        let selectedAt = Date()
+        XCTAssertTrue(waitFor(app, timeout: 5) {
+            Int($0["commits"] ?? "") == c0 + 1 && $0["scrubs"] == "1" && $0["mode"] == "idle"
+                && abs((Double($0["lastTarget"] ?? "") ?? -999) - target) <= 1
+        }, "scrub commit not recorded: \(probeText(app))")
+        Thread.sleep(forTimeInterval: 4.0)
+        let p = probe(app)
+        let elapsed = Date().timeIntervalSince(selectedAt)
+        let livePos = Double(bar(app)["pos"] ?? "") ?? -1
+        XCTAssertEqual(livePos, target + elapsed, accuracy: 2.5,
+                       "playback did not continue from the target \(target) (+\(elapsed) s): \(barProbeText(app))")
+        XCTAssertEqual(Int(p["commits"] ?? ""), c0 + 1, "a scrub must be exactly one commit: \(probeText(app))")
+        XCTAssertEqual(bar(app)["mode"], "idle", barProbeText(app))
+        print("[ScrubLeg] select end: \(probeText(app)) | \(barProbeText(app))")
+    }
+
+    /// Menu cancels the scrub (nothing committed) and the player stays: since 0c10ca4a4 the cover's
+    /// Menu tap is gated, so this asserts the player directly (critique C26).
+    func testScrubMenuCancels() throws {
+        let app = try launchWithBarHidden(extra: ["-debug.scrubInject", Self.scrubScript])
+        raiseBarForScrub(app)
+        let c0 = Int(probe(app)["commits"] ?? "") ?? -1
+        _ = injectAndReadTarget(app)
+        remote.press(.menu)
+        XCTAssertTrue(waitBar(app) { $0["mode"] == "idle" && $0["prev"] == "nil" && $0["vis"] == "1" },
+                      "Menu did not cancel back to idle with the bar up: \(barProbeText(app))")
+        Thread.sleep(forTimeInterval: 1.0)
+        XCTAssertTrue(app.otherElements["player.mpv"].exists, "Menu during a scrub exited the player")
+        let p = probe(app)
+        XCTAssertEqual(p["scrubs"], "0", probeText(app))
+        XCTAssertEqual(Int(p["commits"] ?? ""), c0, "Menu must commit nothing: \(probeText(app))")
+        print("[ScrubLeg] menu end: \(probeText(app)) | \(barProbeText(app))")
+    }
+
+    /// A focused pill needs 190 pt: a 150 pt stroke does nothing and the pill keeps focus. The same
+    /// stroke with the focus back on the track scrubs (proves the inject ran).
+    func testPillFocusedScrubIgnored() throws {
+        let script = Array(repeating: "25,0.03", count: 6).joined(separator: ";")
+        let app = try launchWithBarHidden(extra: ["-debug.scrubInject", script])
+        remote.press(.up)
+        XCTAssertTrue(waitBar(app) { $0["vis"] == "1" }, barProbeText(app))
+        remote.press(.up)
+        XCTAssertTrue(waitBar(app) { $0["focus"] == "pill:subtitles" }, barProbeText(app))
+        Thread.sleep(forTimeInterval: 0.6)
+        postScrubInject()
+        Thread.sleep(forTimeInterval: 1.5)
+        let b = bar(app)
+        XCTAssertEqual(b["mode"], "idle", barProbeText(app))
+        XCTAssertEqual(b["focus"], "pill:subtitles", barProbeText(app))
+        XCTAssertEqual(b["arb"], "u", barProbeText(app))
+        XCTAssertEqual(probe(app)["scrubs"], "0", probeText(app))
+        // Control: focus back on the track, same stroke → a scrub.
+        remote.press(.down)
+        XCTAssertTrue(waitBar(app) { $0["focus"] == "track" }, barProbeText(app))
+        Thread.sleep(forTimeInterval: 0.6)
+        postScrubInject()
+        XCTAssertTrue(waitBar(app) { $0["mode"] == "scrubbing" && $0["arb"] == "h" },
+                      "control stroke did not scrub: \(barProbeText(app))")
+        print("[ScrubLeg] pill end: \(barProbeText(app))")
+        remote.press(.menu)
+        XCTAssertTrue(waitBar(app) { $0["mode"] == "idle" }, barProbeText(app))
+    }
+
+    /// A 150 pt downward stroke (decided at 120 pt) opens the top panel on Info.
+    func testVerticalSwipeOpensPanel() throws {
+        let script = Array(repeating: "0,0.03,30", count: 5).joined(separator: ";")
+        let app = try launchWithBarHidden(extra: ["-debug.scrubInject", script])
+        raiseBarForScrub(app)
+        postScrubInject()
+        let tab = app.descendants(matching: .any)["player.panel.tab.info"]
+        XCTAssertTrue(tab.waitForExistence(timeout: 6), "info tab did not open")
+        XCTAssertEqual(tab.value as? String, "selected")
+        XCTAssertEqual(probe(app)["scrubs"], "0", probeText(app))
+    }
+
+    /// `-debug.scrubCurve bobsupra` ("Flick"): 7 × 20 pt at 600 s = +40.32 s.
+    func testScrubCurveFlick() throws {
+        let app = try launchWithBarHidden(extra: ["-debug.scrubInject", Self.scrubScript, "-debug.scrubCurve", "bobsupra"])
+        raiseBarForScrub(app)
+        let before = Double(bar(app)["pos"] ?? "") ?? -1
+        let target = injectAndReadTarget(app)
+        XCTAssertEqual(bar(app)["curve"], "b", barProbeText(app))
+        XCTAssertGreaterThanOrEqual(target - before, 36, "before=\(before) \(barProbeText(app))")
+        XCTAssertLessThanOrEqual(target - before, 47, "before=\(before) \(barProbeText(app))")
+        remote.press(.menu)
+        XCTAssertTrue(waitBar(app) { $0["mode"] == "idle" }, barProbeText(app))
+    }
 }
+
