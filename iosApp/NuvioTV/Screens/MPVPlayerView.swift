@@ -239,6 +239,56 @@ final class MPVTVPlayerViewController: UIViewController {
     /// Set when a Menu press was consumed by the up-next dismiss so the matching release is
     /// swallowed too (same pattern as `PlayerPanelHostController`) — nothing above sees a half press.
     private var swallowMenuRelease = false
+    /// A consumed Menu's action, performed when the press ends (never while it is down).
+    private var pendingMenuAction: MenuPrecedence.Action?
+
+    #if DEBUG
+    /// Diagnostic for the "consumed Menu still dismisses the cover" class: who sits above this
+    /// controller, and which gesture recognisers on that chain could claim a Menu press.
+    func dumpMenuResponderChain(tag: String) {
+        var lines: [String] = ["[MenuProbe] \(tag) firstResponder=\(isFirstResponder)"]
+        var responder: UIResponder? = self
+        var depth = 0
+        while let r = responder, depth < 40 {
+            var line = "  [\(depth)] \(type(of: r))"
+            if let v = r as? UIView, let grs = v.gestureRecognizers, !grs.isEmpty {
+                let descs = grs.map { gr -> String in
+                    let types = (gr.allowedPressTypes).map { $0.intValue }
+                    return "\(type(of: gr))(state=\(gr.state.rawValue) press=\(types) enabled=\(gr.isEnabled))"
+                }
+                line += " grs=" + descs.joined(separator: ", ")
+            }
+            lines.append(line)
+            responder = r.next
+            depth += 1
+        }
+        if let w = view.window, let grs = w.gestureRecognizers {
+            lines.append("  window grs=" + grs.map { "\(type(of: $0))(state=\($0.state.rawValue) press=\($0.allowedPressTypes.map { $0.intValue }))" }.joined(separator: ", "))
+        }
+        NSLog("%@", lines.joined(separator: "\n"))
+    }
+    #endif
+
+    private func performMenuAction(_ action: MenuPrecedence.Action) {
+        #if DEBUG
+        NSLog("[MenuProbe] perform action=%@ mode=%@", String(describing: action), String(describing: transport.mode))
+        #endif
+        switch action {
+        case .cancelMode:
+            // Stepping: nothing committed. Scanning: back to where the scan started.
+            stopHoldTimer()
+            apply(transport.cancel())
+        case .dismissUpNext:
+            // Back out of the transient up-next chip first; the next Menu exits (same
+            // convention as the top panel: overlay first, player second).
+            _ = state.upNextDismiss?()
+        case .hidePill, .hideBar:
+            // Menu hides the bar (hideControlsNow clears the pill focus); the next Menu exits.
+            hideControlsNow()
+        case .panel, .exit:
+            break
+        }
+    }
     /// Open the top panel on a tab (D-pad Down with nothing else to do, a down swipe: `.info`; a
     /// pill's Select: that pill's tab).
     var onOpenPanel: ((PlayerPanelTab) -> Void)?
@@ -391,6 +441,7 @@ final class MPVTVPlayerViewController: UIViewController {
         super.viewDidAppear(animated)
         pressesDown.removeAll()         // a press begun under a cover never ended on this controller
         becomeFirstResponder()
+        gateCoverMenuTap(enabled: false)
         if !didLoad {
             didLoad = true
             computeResumePosition()
@@ -443,6 +494,38 @@ final class MPVTVPlayerViewController: UIViewController {
         // Device-pass probe (review r2 #3): must read true on a Menu exit, false under the card.
         print("[Failover] viewWillDisappear isLeavingPlayer=\(isLeavingPlayer)")
         if isLeavingPlayer { closeFailover() }
+        gateCoverMenuTap(enabled: true)
+    }
+
+    /// The SwiftUI full-screen cover that hosts this controller carries its own Menu press
+    /// recogniser (a `UITapGestureRecognizer` for the Menu press on the `UITransitionView`). It
+    /// recognises in parallel with the responder chain and cancels the press this controller
+    /// consumed, so a Menu meant to hide the bar, cancel a scan or dismiss the up-next chip closed
+    /// the player instead (P1 device pass 2026-10-06, steps 4 + 9; the simulator probe below
+    /// showed the recogniser at state 3 on `pressesCancelled`, and `interactiveDismissDisabled`
+    /// leaves it enabled). While this controller is on screen that recogniser is switched off:
+    /// every Menu is decided by `MenuPrecedence`, and `.exit` dismisses through `onExit`.
+    /// `UIPress.PressType.menu` is press type 5, the only entry in the recogniser's allowed set.
+    private weak var coverMenuTap: UIGestureRecognizer?
+
+    private func gateCoverMenuTap(enabled: Bool) {
+        if coverMenuTap == nil, !enabled {
+            var responder: UIResponder? = self
+            var depth = 0
+            while let r = responder, depth < 40 {
+                if let v = r as? UIView, String(describing: type(of: v)) == "UITransitionView",
+                   let tap = v.gestureRecognizers?.first(where: {
+                       $0 is UITapGestureRecognizer
+                           && $0.allowedPressTypes.map(\.intValue) == [UIPress.PressType.menu.rawValue]
+                   }) {
+                    coverMenuTap = tap
+                    break
+                }
+                responder = r.next
+                depth += 1
+            }
+        }
+        coverMenuTap?.isEnabled = enabled
     }
 
     override func viewDidDisappear(_ animated: Bool) {
@@ -1658,21 +1741,16 @@ final class MPVTVPlayerViewController: UIViewController {
                 switch action {
                 case .panel:
                     break           // the panel host closes itself; never reaches here in practice
-                case .cancelMode:
-                    // Stepping: nothing committed. Scanning: back to where the scan started.
-                    stopHoldTimer()
-                    apply(transport.cancel())
-                case .dismissUpNext:
-                    // Back out of the transient up-next chip first; the next Menu exits (same
-                    // convention as the top panel: overlay first, player second).
-                    _ = state.upNextDismiss?()
-                case .hidePill, .hideBar:
-                    // Menu hides the bar at once (hideControlsNow clears the pill focus); the next
-                    // Menu exits.
-                    hideControlsNow()
                 case .exit:
                     closeFailover()
                     onExit?()
+                case .cancelMode, .dismissUpNext, .hidePill, .hideBar:
+                    // Consumed, but PERFORMED ON RELEASE (`pressesEnded`). Acting here changed the
+                    // view tree while the press was still down (the bar leaving, the chip leaving),
+                    // and the system then treated the half-finished Menu as unhandled and dismissed
+                    // the cover (P1 device pass 2026-10-06, steps 4 + 9; the simulator shows the
+                    // same `pressesCancelled` → cover gone). Nothing moves until the key is up.
+                    pendingMenuAction = action
                 }
                 if MenuPrecedence.swallowsRelease(action) { swallowMenuRelease = true }
                 if action != .panel { handled = true }
@@ -1696,6 +1774,10 @@ final class MPVTVPlayerViewController: UIViewController {
         if swallowMenuRelease, presses.contains(where: { $0.type == .menu }) {
             swallowMenuRelease = false
             handled = true
+            if let action = pendingMenuAction {
+                pendingMenuAction = nil
+                performMenuAction(action)
+            }
         }
         for press in presses where press.type == .leftArrow || press.type == .rightArrow {
             let direction = press.type == .leftArrow ? -1 : 1
@@ -1722,6 +1804,10 @@ final class MPVTVPlayerViewController: UIViewController {
         if swallowMenuRelease, presses.contains(where: { $0.type == .menu }) {
             swallowMenuRelease = false
             handled = true
+            pendingMenuAction = nil     // a cancelled Menu performs nothing
+            #if DEBUG
+            dumpMenuResponderChain(tag: "pressesCancelled(menu)")
+            #endif
         }
         for press in presses where press.type == .leftArrow || press.type == .rightArrow {
             let direction = press.type == .leftArrow ? -1 : 1
@@ -1936,6 +2022,10 @@ final class MPVTVPlayerViewController: UIViewController {
 
     private func endScan(from: Double, returnTo: Double?) {
         let restoreSpeed = scanRestoreSpeed ?? state.playbackSpeed
+        #if DEBUG
+        NSLog("[MenuProbe] endScan from=%.2f returnTo=%@ live=%.2f", from,
+              returnTo.map { String(format: "%.2f", $0) } ?? "nil", cachedProps().position ?? -1)
+        #endif
         eventQueue.async { [weak self] in
             guard let self, self.mpv != nil else { return }
             self.setMpvDouble("speed", restoreSpeed)
@@ -1953,6 +2043,9 @@ final class MPVTVPlayerViewController: UIViewController {
             // end as deliberate.
             issueSeek(kind: .user, targetSec: target, fromSec: target,
                       args: [String(format: "%.3f", target), "absolute+exact"])
+            #if DEBUG
+            state.seekProbe.note(commit: target, stages: "r")   // "r" = scan return (Menu)
+            #endif
         } else {
             skipPlanner.recordUserSpan(fromSec: from, toSec: cachedProps().position)
         }
@@ -2020,7 +2113,12 @@ final class MPVTVPlayerViewController: UIViewController {
             self.awaitingSeekStartGeneration = generation
             // An older seek's restart is not this one's completion.
             self.startedSeekGeneration = nil
-            guard self.command("seek", args: args) < 0 else { return }
+            let status = self.command("seek", args: args)
+            #if DEBUG
+            NSLog("[SeekProbe] seek gen=%ld args=%@ status=%d", generation,
+                  args.compactMap { $0 }.joined(separator: " "), status)
+            #endif
+            guard status < 0 else { return }
             // Rejected: no SEEK/PLAYBACK_RESTART will follow, and a later mpv-internal seek (e.g.
             // an audio-track switch refresh) must not pass for this one's completion.
             self.awaitingSeekStartGeneration = nil
@@ -2333,6 +2431,9 @@ final class MPVTVPlayerViewController: UIViewController {
                 var timePos = Double.nan
                 let ok = mpv_get_property(mpv, "time-pos", MPV_FORMAT_DOUBLE, &timePos) >= 0
                 let landed = ok ? timePos : .nan
+                #if DEBUG
+                NSLog("[SeekProbe] restart gen=%ld landed=%.3f", generation, landed)
+                #endif
                 DispatchQueue.main.async {
                     // The preview playhead hands back to the real position on a commit's first
                     // landing, whether or not the planner guard below passes.
@@ -2377,6 +2478,9 @@ final class MPVTVPlayerViewController: UIViewController {
                 let level = String(cString: msg.pointee.level!)
                 let text = String(cString: msg.pointee.text!)
                 print("[MPV] \(level): \(text)", terminator: "")
+                #if DEBUG
+                NSLog("[MPV] %@: %@", level, text.trimmingCharacters(in: .newlines))   // reaches `log stream`
+                #endif
             }
         }
     }

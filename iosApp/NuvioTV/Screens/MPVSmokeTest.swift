@@ -39,7 +39,7 @@ struct MPVSmokeModifier: ViewModifier {
                 DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                     print("[MPVSmoke] presenting PlayerScreen for \(url)")
                     let poster = UserDefaults.standard.string(forKey: "debug.mpvSmokePosterURL")
-                    context = PlaybackContext(
+                    var ctx = PlaybackContext(
                         url: url, title: "MPV Smoke", contentType: "movie",
                         parentMetaId: "smoke-mpv", videoId: "smoke-mpv",
                         season: nil, episode: nil, poster: poster, background: nil,
@@ -48,6 +48,11 @@ struct MPVSmokeModifier: ViewModifier {
                         // Info-tab header content for headed sim checks (poster optional).
                         synopsis: "Headless smoke run. This synopsis exists so the native player's Info tab header can be checked in the simulator without a signed-in catalog."
                     )
+                    // `debug.mpvSmokeStartOver`: ignore the saved progress of earlier runs. The UI
+                    // legs set it so a hold-step leg never starts a few seconds before the
+                    // fixture's end (the P1 legs hit EOF once the saved position passed ~560 s).
+                    ctx.startFromBeginning = UserDefaults.standard.bool(forKey: "debug.mpvSmokeStartOver")
+                    context = ctx
                 }
             }
             .fullScreenCover(item: $context) { ctx in

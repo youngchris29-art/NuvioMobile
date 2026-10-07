@@ -16,8 +16,10 @@ final class PlayerTransportUITests: XCTestCase {
         let app = XCUIApplication()
         // 8 MiB forward cache keeps a long hold's target outside the cached range, so the
         // keyframes stage is exercised (the default cache swallows the whole smoke file).
+        // Start-over: the rig would otherwise resume from the previous run's saved position and a
+        // hold-step leg could run into the 600 s fixture's end.
         app.launchArguments += ["-debug.mpvSmokeURL", url, "-player.nativeDolbyVision", "NO",
-                                "-player.bufferMB", "8"] + extra
+                                "-player.bufferMB", "8", "-debug.mpvSmokeStartOver", "YES"] + extra
         app.launch()
         XCTAssertTrue(app.otherElements["player.mpv"].waitForExistence(timeout: 30), "player did not appear")
         let deadline = Date().addingTimeInterval(30)
@@ -117,13 +119,22 @@ final class PlayerTransportUITests: XCTestCase {
         remote.press(.right, forDuration: 1.0)
         XCTAssertTrue(waitFor(app) { $0["mode"] == "scanning" }, probeText(app))
         Thread.sleep(forTimeInterval: 2.0)
+        let scanEnd = pos(app)
         remote.press(.menu)
         try requirePlayerStillPresented(app, "Menu during a scan must not exit the player")
         XCTAssertTrue(waitFor(app) { $0["mode"] == "idle" && $0["speed"] == "1.0" }, probeText(app))
-        Thread.sleep(forTimeInterval: 2.0)
+        // The return seek is recorded on the probe as stages=r with its target; the playhead keeps
+        // moving once it lands, so the target is the oracle and the position only has to drop
+        // below the scan end at some poll (the exact backward seek can take a few seconds here).
         let p = probe(app)
-        let after = Double(p["pos"] ?? "") ?? -1
-        XCTAssertEqual(after, origin, accuracy: 3.0, probeText(app))
+        XCTAssertEqual(p["stages"], "r", "Menu did not issue the return seek: \(probeText(app))")
+        let target = Double(p["lastTarget"] ?? "") ?? -1
+        XCTAssertEqual(target, origin, accuracy: 3.0, "return seek target off the origin: \(probeText(app))")
+        XCTAssertGreaterThan(scanEnd, origin + 1.5, "the scan did not move before Menu: scanEnd=\(scanEnd)")
+        XCTAssertTrue(waitFor(app, timeout: 12) {
+            guard let after = Double($0["pos"] ?? "") else { return false }
+            return after < scanEnd - 1.0
+        }, "position never dropped below the scan end \(scanEnd): \(probeText(app))")
     }
 
     /// The one simulator-only expected failure of the Menu legs; a dismissed cover skips the rest.
