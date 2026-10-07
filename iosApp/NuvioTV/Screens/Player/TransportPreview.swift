@@ -40,7 +40,7 @@ struct TransportPreview {
         case idle
         case stepping(direction: Int, accumulatedSec: Double, ticks: Int)
         case scanning(rate: Int)
-        case scrubbing(targetSec: Double)               // P2 only; P1 never enters it
+        case scrubbing(targetSec: Double)               // P2 swipe scrub (`scrubBegan` … `scrubCommit`)
 
         var isActive: Bool { if case .idle = self { return false }; return true }
         var probeName: String {
@@ -65,6 +65,9 @@ struct TransportPreview {
         case setScanRate(Int)
         case endScan(fromSec: Double, returnToSec: Double?)
         case commit(CommitRequest)
+        /// A scrub moved the preview more than 1 s behind its origin: cancel next-episode autoplay
+        /// (once per scrub, like a backward hold).
+        case cancelUpNext
     }
 
     var holdMode: HoldMode = .step
@@ -74,6 +77,13 @@ struct TransportPreview {
     /// Set by the controller before a press: a hold that starts while paused steps (a scan would
     /// latch a rate on a core that does not move).
     var paused = false
+    /// Set by the controller before a press (critique C8, chapter mode): a click acts on RELEASE
+    /// (`.immediateSeek(±10)` from `pressEnded`, which the controller routes to a chapter jump), so
+    /// a hold steps from the origin with no jump first. Latched per gesture when it starts.
+    var clickOnRelease = false
+    /// Swipe scrub rate (`debug.scrubCurve`, `debug.scrubRateScale`).
+    var scrubCurve: ScrubRateCurve = .orivio
+    var scrubRateScale: Double = 1
     private(set) var mode: Mode = .idle
     private(set) var originSec: Double = 0
     private(set) var previewSec: Double? = nil
@@ -81,10 +91,18 @@ struct TransportPreview {
     private var moved = false
     /// This gesture may turn into a scan: Scan mode, Right, not paused (fixed when it starts).
     private var scanArmed = false
+    /// `clickOnRelease` as it was when this gesture started.
+    private var releaseClick = false
+    /// The scrub preview moved at least once (a scrub with no movement commits nothing).
+    private var scrubMovedAny = false
+    /// `.cancelUpNext` was already returned for this scrub.
+    private var scrubBackwardNoted = false
 
     static let firstStepSec: Double = 10
     static let holdStartSec: TimeInterval = 0.4
     static let defaultTickSec: TimeInterval = 0.25
+    /// While playing, a scrub with no input for this long is cancelled (no seek).
+    static let scrubIdleCancelSec: TimeInterval = 8
     static func stepSec(heldSec: Double, rampScale: Double = 1) -> Double {
         heldSec < 0.6 * rampScale ? 10 : heldSec < 1.2 * rampScale ? 20 : heldSec < 2.0 * rampScale ? 30 : 60
     }
@@ -100,10 +118,11 @@ struct TransportPreview {
             originSec = positionSec
             moved = false
             scanArmed = holdMode == .scan && dir > 0 && !paused
+            releaseClick = clickOnRelease
             let acc = clamp(originSec + Double(dir) * Self.firstStepSec) - originSec
             mode = .stepping(direction: dir, accumulatedSec: acc, ticks: 0)
             previewSec = originSec + acc
-            if scanArmed { return .none }
+            if scanArmed || releaseClick { return .none }
             return .immediateSeek(deltaSec: Double(dir) * Self.firstStepSec)
         case .stepping(_, let acc, _):
             let next = clamp(originSec + acc + Double(dir) * Self.firstStepSec) - originSec
@@ -145,15 +164,79 @@ struct TransportPreview {
         if n == 0 && !moved {
             mode = .idle
             previewSec = nil
+            if releaseClick { return .immediateSeek(deltaSec: Double(d) * Self.firstStepSec) }
             if scanArmed && d > 0 { return .immediateSeek(deltaSec: Self.firstStepSec) }
             return .none
         }
         let target = clamp(originSec + acc)
-        let covered = seekableRanges.contains { $0.start <= target && target <= $0.end }
         mode = .idle
         previewSec = target
-        return .commit(CommitRequest(targetSec: target, fromSec: originSec,
-                                     stages: covered ? [.exact] : [.keyframes, .exact]))
+        return .commit(commitRequest(target: target))
+    }
+
+    /// Two stages unless the target is already cached (then exact only).
+    private func commitRequest(target: Double) -> CommitRequest {
+        let covered = seekableRanges.contains { $0.start <= target && target <= $0.end }
+        return CommitRequest(targetSec: target, fromSec: originSec,
+                             stages: covered ? [.exact] : [.keyframes, .exact])
+    }
+
+    // MARK: Swipe scrub (P2)
+
+    /// From idle only: the controller ends a scan or a step first.
+    mutating func scrubBegan(positionSec: Double) -> Output {
+        guard case .idle = mode else { return .none }
+        originSec = positionSec
+        let t = clamp(positionSec)
+        mode = .scrubbing(targetSec: t)
+        previewSec = t
+        scrubMovedAny = false
+        scrubBackwardNoted = false
+        return .none
+    }
+
+    /// One pan sample's dx increment, through the rate curve and the scale.
+    mutating func scrubMoved(deltaPoints: Double) -> Output {
+        scrubShift(by: scrubCurve.deltaSec(points: deltaPoints, durationSec: durationSec) * scrubRateScale)
+    }
+
+    /// A Left / Right click while scrubbing: ±10 s on the preview.
+    mutating func scrubNudge(direction: Int) -> Output {
+        scrubShift(by: Double(direction >= 0 ? 1 : -1) * Self.firstStepSec)
+    }
+
+    private mutating func scrubShift(by d: Double) -> Output {
+        guard case .scrubbing(let t) = mode else { return .none }
+        let next = clamp(t + d)
+        mode = .scrubbing(targetSec: next)
+        previewSec = next
+        if next != t { scrubMovedAny = true }
+        if !scrubBackwardNoted && next < originSec - 1 {
+            scrubBackwardNoted = true
+            return .cancelUpNext
+        }
+        return .none
+    }
+
+    /// Select / Play: one deliberate seek to the target (same two-stage commit as a hold). A scrub
+    /// that never moved seeks nowhere.
+    mutating func scrubCommit() -> Output {
+        guard case .scrubbing(let t) = mode else { return .none }
+        mode = .idle
+        guard scrubMovedAny else {
+            previewSec = nil
+            return .none
+        }
+        previewSec = t          // held until the commit lands, as the hold does
+        return .commit(commitRequest(target: t))
+    }
+
+    /// Menu / Up / Down / idle timeout / panel: nothing committed.
+    mutating func scrubCancel() -> Output {
+        guard case .scrubbing = mode else { return .none }
+        mode = .idle
+        previewSec = nil
+        return .none
     }
 
     mutating func endScanInPlace() -> Output {
@@ -182,7 +265,9 @@ struct TransportPreview {
             mode = .idle
             previewSec = nil
             return .endScan(fromSec: originSec, returnToSec: originSec)
-        case .idle, .scrubbing:
+        case .scrubbing:
+            return scrubCancel()
+        case .idle:
             return .none
         }
     }

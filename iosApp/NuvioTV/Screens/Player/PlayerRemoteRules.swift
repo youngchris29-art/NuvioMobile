@@ -6,7 +6,7 @@ import Foundation
 enum MenuPrecedence {
     enum Action: Equatable {
         case panel           // the presented panel handles it (it never reaches the player)
-        case cancelMode      // stepping: nothing committed; scanning: back to the scan origin
+        case cancelMode      // stepping / scrubbing: nothing committed; scanning: back to the scan origin
         case dismissUpNext
         case hidePill        // hides the bar and clears the pill focus
         case hideBar

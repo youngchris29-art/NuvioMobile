@@ -1879,6 +1879,7 @@ final class MPVTVPlayerViewController: UIViewController {
             #endif
             eventQueue.async { [weak self] in self?.setMpvDouble("speed", Double(r)) }
         case .endScan(let from, let returnTo): endScan(from: from, returnTo: returnTo)
+        case .cancelUpNext: state.upNextCancel?()
         }
         publishTransport()
     }

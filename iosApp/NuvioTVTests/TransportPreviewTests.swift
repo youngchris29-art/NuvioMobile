@@ -286,4 +286,158 @@ final class TransportPreviewTests: XCTestCase {
         t.noteCommitLanded()
         XCTAssertNil(t.previewSec)
     }
+
+    // MARK: Swipe scrub (P2)
+
+    private func scrubbing(origin: Double = 100, duration: Double = 600) -> TP {
+        var t = make(duration: duration)
+        XCTAssertEqual(t.scrubBegan(positionSec: origin), .none)
+        return t
+    }
+
+    func testScrubBeganFromIdle() {
+        let t = scrubbing()
+        XCTAssertEqual(t.mode, .scrubbing(targetSec: 100))
+        XCTAssertEqual(t.previewSec, 100)
+        XCTAssertEqual(t.originSec, 100)
+    }
+
+    func testScrubMovedOrivio() {
+        var t = scrubbing()
+        XCTAssertEqual(t.scrubMoved(deltaPoints: 140), .none)
+        XCTAssertEqual(t.mode, .scrubbing(targetSec: 135))
+        XCTAssertEqual(t.previewSec, 135)
+    }
+
+    func testScrubRateScale() {
+        var t = scrubbing()
+        t.scrubRateScale = 2
+        _ = t.scrubMoved(deltaPoints: 140)
+        XCTAssertEqual(t.previewSec, 170)
+    }
+
+    func testScrubBobsupraCurve() {
+        var t = scrubbing()
+        t.scrubCurve = .bobsupra
+        for _ in 0..<7 { _ = t.scrubMoved(deltaPoints: 20) }
+        XCTAssertEqual(t.previewSec ?? -1, 140.32, accuracy: 0.01)
+    }
+
+    func testScrubClamps() {
+        var t = scrubbing(origin: 590)
+        _ = t.scrubMoved(deltaPoints: 400)
+        XCTAssertEqual(t.previewSec, 599.5)
+        var u = scrubbing(origin: 5)
+        _ = u.scrubMoved(deltaPoints: -400)
+        XCTAssertEqual(u.previewSec, 0)
+    }
+
+    func testScrubBackwardCancelsUpNextOnce() {
+        var t = scrubbing()
+        XCTAssertEqual(t.scrubNudge(direction: 1), .none)          // 110
+        XCTAssertEqual(t.scrubNudge(direction: -1), .none)         // 100, not below origin − 1
+        XCTAssertEqual(t.scrubNudge(direction: -1), .cancelUpNext) // 90
+        XCTAssertEqual(t.previewSec, 90)
+        XCTAssertEqual(t.scrubNudge(direction: -1), .none)         // only once
+        XCTAssertEqual(t.scrubMoved(deltaPoints: -40), .none)
+        XCTAssertEqual(t.previewSec, 70)
+    }
+
+    func testScrubCommitAfterMovesUncoveredAndCovered() {
+        var t = scrubbing()
+        _ = t.scrubMoved(deltaPoints: 140)
+        XCTAssertEqual(t.scrubCommit(), .commit(.init(targetSec: 135, fromSec: 100, stages: [.keyframes, .exact])))
+        XCTAssertEqual(t.mode, .idle)
+        XCTAssertEqual(t.previewSec, 135)
+
+        var c = scrubbing()
+        c.seekableRanges = [BufferedRange(start: 0, end: 200)]
+        _ = c.scrubMoved(deltaPoints: 140)
+        XCTAssertEqual(c.scrubCommit(), .commit(.init(targetSec: 135, fromSec: 100, stages: [.exact])))
+        c.noteCommitLanded()
+        XCTAssertNil(c.previewSec)
+    }
+
+    func testScrubCommitWithoutMovementSeeksNowhere() {
+        var t = scrubbing()
+        XCTAssertEqual(t.scrubMoved(deltaPoints: 0), .none)
+        XCTAssertEqual(t.scrubCommit(), .none)
+        XCTAssertEqual(t.mode, .idle)
+        XCTAssertNil(t.previewSec)
+        // Moved away and back to the origin still counts as moved (the user scrubbed).
+        var u = scrubbing()
+        _ = u.scrubNudge(direction: 1)
+        _ = u.scrubNudge(direction: -1)
+        XCTAssertEqual(u.scrubCommit(), .commit(.init(targetSec: 100, fromSec: 100, stages: [.keyframes, .exact])))
+    }
+
+    func testScrubCancelAndGenericCancel() {
+        var t = scrubbing()
+        _ = t.scrubMoved(deltaPoints: 40)
+        XCTAssertEqual(t.scrubCancel(), .none)
+        XCTAssertEqual(t.mode, .idle)
+        XCTAssertNil(t.previewSec)
+        var u = scrubbing()
+        _ = u.scrubMoved(deltaPoints: 40)
+        XCTAssertEqual(u.cancel(), .none)
+        XCTAssertEqual(u.mode, .idle)
+        XCTAssertNil(u.previewSec)
+    }
+
+    func testScrubBeganOutsideIdleChangesNothing() {
+        var t = make(mode: .scan, duration: 600)
+        _ = t.pressBegan(direction: 1, positionSec: 100)
+        _ = t.holdTick(heldSec: held(1))
+        XCTAssertEqual(t.mode, .scanning(rate: 2))
+        XCTAssertEqual(t.scrubBegan(positionSec: 300), .none)
+        XCTAssertEqual(t.mode, .scanning(rate: 2))
+
+        var s = make(duration: 600)
+        _ = s.pressBegan(direction: -1, positionSec: 100)
+        let before = s.mode
+        XCTAssertEqual(s.scrubBegan(positionSec: 300), .none)
+        XCTAssertEqual(s.mode, before)
+        XCTAssertEqual(s.previewSec, 90)
+    }
+
+    func testScrubMethodsOutsideScrubbingDoNothing() {
+        var t = make(duration: 600)
+        XCTAssertEqual(t.scrubMoved(deltaPoints: 100), .none)
+        XCTAssertEqual(t.scrubNudge(direction: 1), .none)
+        XCTAssertEqual(t.scrubCommit(), .none)
+        XCTAssertEqual(t.scrubCancel(), .none)
+        XCTAssertEqual(t.mode, .idle)
+        XCTAssertNil(t.previewSec)
+        // A press while scrubbing does nothing to the model (the controller nudges instead).
+        var s = scrubbing()
+        XCTAssertEqual(s.pressBegan(direction: 1, positionSec: 0), .none)
+        XCTAssertEqual(s.mode, .scrubbing(targetSec: 100))
+    }
+
+    // MARK: Click on release (critique C8)
+
+    func testClickOnReleaseActsOnRelease() {
+        var t = make()
+        t.clickOnRelease = true
+        XCTAssertEqual(t.pressBegan(direction: -1, positionSec: 100), .none)
+        XCTAssertEqual(t.previewSec, 90)
+        XCTAssertEqual(t.pressEnded(direction: -1), .immediateSeek(deltaSec: -10))
+        XCTAssertEqual(t.mode, .idle)
+        XCTAssertNil(t.previewSec)
+        XCTAssertEqual(t.pressBegan(direction: 1, positionSec: 100), .none)
+        XCTAssertEqual(t.pressEnded(direction: 1), .immediateSeek(deltaSec: 10))
+    }
+
+    func testClickOnReleaseHoldStepsFromOriginWithNoJump() {
+        var t = make()
+        t.clickOnRelease = true
+        XCTAssertEqual(t.pressBegan(direction: 1, positionSec: 100), .none)   // no immediate seek
+        ticks(&t, 2)
+        // Latched at the gesture's start: flipping it mid-hold changes nothing.
+        t.clickOnRelease = false
+        XCTAssertEqual(t.pressEnded(direction: 1),
+                       .commit(.init(targetSec: 140, fromSec: 100, stages: [.keyframes, .exact])))
+        // Off again: the first press is the P1 immediate seek.
+        XCTAssertEqual(t.pressBegan(direction: 1, positionSec: 140), .immediateSeek(deltaSec: 10))
+    }
 }
