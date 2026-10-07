@@ -394,7 +394,7 @@ enum SettingsDescriptions {
         case .devCommitExactDelay: return LocalizedStringResource("An A/B switch for how long the player waits after a jump before it lands on the exact frame. Auto is 150 ms. Keyframes Only skips that second step.")
         case .devScrubCurve: return LocalizedStringResource("An A/B switch for how a swipe moves the position. Auto moves it at a steady rate that scales with the video's length; Flick moves it further the faster you swipe.")
         case .devScrubSpeed: return LocalizedStringResource("An A/B switch for how far a swipe moves the position. Slower halves it; Faster doubles it.")
-        case .devHarvestInterval: return LocalizedStringResource("An A/B switch for how often the mpv player saves a small picture of the video for the seek preview. Auto saves one every 10 seconds of playback. Off saves none.")
+        case .devHarvestInterval: return LocalizedStringResource("An A/B switch for how often the mpv player saves a small picture of the video for the seek preview. Auto saves one every 10 seconds of playback. Off saves none. If the app closes while saving one, saving stops on this Apple TV until you pick a value here.")
         case .devTrailerBuffer: return LocalizedStringResource("An A/B switch that sets how many seconds of trailer are buffered before playing. Auto is the normal behavior.")
         case .devTrailerLetterbox: return LocalizedStringResource("An A/B switch that skips the check for black bars around trailers. Leave it off unless asked.")
         case .devCollectionProbe: return LocalizedStringResource("Records how long each focus step takes on collection rows. Turn it on only when asked.")

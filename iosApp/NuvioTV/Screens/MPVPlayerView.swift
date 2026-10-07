@@ -71,7 +71,8 @@ final class MPVPlaybackState: ObservableObject {
     @Published var isEnded: Bool = false
     /// A swipe scrub is on screen (its preview card): the chips move above it.
     @Published var scrubCardUp = false
-    /// Info tab "Seek Previews" row: frames · store MB · process RSS (empty until a harvest lands).
+    /// Info tab "Seek Previews" row: frames · store MB (· process RSS in debug builds); empty until
+    /// a harvest lands, or the reason the harvest is off on this device.
     @Published var previewStoreSummary: String = ""
 
     /// The transport bar's published state (preview playhead, mode, buffered ranges, skip spans).
@@ -180,6 +181,10 @@ final class MPVTVPlayerViewController: UIViewController {
     /// `screenshot-raw` (the simulator cannot screenshot, see `viewDidLoad`). Set once in
     /// `viewDidLoad`, read on `eventQueue`.
     private var harvestSynthetic = false
+    /// Crash guard around `screenshot-raw` (review r1 P2 #3); `eventQueue` arms and clears it.
+    private let harvestSentinel = HarvestCrashSentinel(store: UserDefaults.standard)
+    /// `eventQueue` only: the first real capture of this file flushes the armed flag to disk.
+    private var harvestSentinelFlushed = false
     /// One Left/Right click: ±10 s or a chapter jump (`player.edgeClickMode`, read in viewDidLoad).
     private var edgeClickMode: EdgeClickMode = .skip10
     /// Clears the aspect flash 2 s after the last Aspect pill press.
@@ -450,6 +455,15 @@ final class MPVTVPlayerViewController: UIViewController {
         #if DEBUG
         harvestSynthetic = UserDefaults.standard.bool(forKey: "debug.harvestSynthetic")
         #endif
+        // A capture that never returned in an earlier playback turns the harvest off on this
+        // device until a value is picked in Settings › Developer (review r1 P2 #3).
+        if harvestSentinel.checkAtLaunch() {
+            print("[Harvest] disabled: previous capture did not return")
+        }
+        if harvestSentinel.isDisabled, !harvestSynthetic {
+            harvest = HarvestScheduler(intervalSec: 0)
+            state.previewStoreSummary = String(localized: "Off after a crash in an earlier playback")
+        }
         #if targetEnvironment(simulator)
         // `screenshot-raw` aborts the app on the simulator: libplacebo's texture download asks
         // MoltenVK for a host-imported buffer and MTLSimDriver traps in `xpc_shmem_create`
@@ -1822,6 +1836,14 @@ final class MPVTVPlayerViewController: UIViewController {
         #if targetEnvironment(simulator)
         return nil
         #else
+        // Armed for the length of the native call: if it takes the process down, the next player
+        // open finds the flag still set and turns the harvest off (review r1 P2 #3).
+        harvestSentinel.arm()
+        if !harvestSentinelFlushed {
+            harvestSentinelFlushed = true
+            CFPreferencesAppSynchronize(kCFPreferencesCurrentApplication)
+        }
+        defer { harvestSentinel.clear() }
         if harvestFormatArgWorks != false {
             if let frame = screenshotRaw(withFormat: true) {
                 harvestFormatArgWorks = true
@@ -1864,7 +1886,12 @@ final class MPVTVPlayerViewController: UIViewController {
         let publish: @MainActor @Sendable (Int, Int, Int) -> Void = { [weak state = self.state] n, bytes, rss in
             guard let state else { return }
             state.transport.previewFrames = n
-            state.previewStoreSummary = "\(n) · \(String(format: "%.1f", Double(bytes) / 1_048_576)) MB · RSS \(rss) MB"
+            let mb = "\(n) · \(String(format: "%.1f", Double(bytes) / 1_048_576)) MB"
+            #if DEBUG
+            state.previewStoreSummary = mb + " · RSS \(rss) MB"   // jargon: debug builds only (review r1 P3 #9)
+            #else
+            state.previewStoreSummary = mb
+            #endif
             #if DEBUG
             NSLog("%@", "[Harvest] stored n=\(n) bytes=\(bytes) rss=\(rss)MB")
             #endif

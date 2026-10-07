@@ -122,6 +122,20 @@ struct DeveloperSettingsPane: View {
     @AppStorage("debug.scrubCurve") private var scrubCurve = ""
     @AppStorage("debug.scrubRateScale") private var scrubRateScale = 0.0
     @AppStorage("debug.harvestIntervalSec") private var harvestIntervalSec = 0
+    /// Set by the harvest's crash guard (review r1 P2 #3); picking any value clears it.
+    @AppStorage(HarvestCrashSentinel.disabledKey) private var harvestDisabledByCrash = false
+    /// The Thumbnail Harvest picker's value: -2 stands for "Off After a Crash" while the guard
+    /// holds; choosing anything (that entry included, as a no-op) writes through.
+    private var harvestSelection: Binding<Int> {
+        Binding(
+            get: { harvestDisabledByCrash ? -2 : harvestIntervalSec },
+            set: { value in
+                guard value != -2 else { return }
+                harvestDisabledByCrash = false
+                harvestIntervalSec = value
+            }
+        )
+    }
 
     @ViewBuilder
     private var detailScrollAndTrailerTuningRows: some View {
@@ -225,11 +239,12 @@ struct DeveloperSettingsPane: View {
 
         SettingsPickerRow(
             title: String(localized: "Thumbnail Harvest (A/B)"),
-            selection: $harvestIntervalSec,
-            options: [0, 5, 30, -1],
+            selection: harvestSelection,
+            options: harvestDisabledByCrash ? [-2, 0, 5, 30, -1] : [0, 5, 30, -1],
             descriptionID: .devHarvestInterval,
             label: { seconds in
                 switch seconds {
+                case -2: return String(localized: "Off After a Crash")
                 case 0: return String(localized: "Auto")
                 case ..<0: return String(localized: "Off")
                 default: return String(localized: "\(seconds) s")
