@@ -415,5 +415,45 @@ final class PlayerTransportUITests: XCTestCase {
         remote.press(.menu)
         XCTAssertTrue(waitBar(app) { $0["mode"] == "idle" }, barProbeText(app))
     }
+
+    // MARK: Seek preview harvest (P2-B)
+
+    /// ~25 s of uninterrupted play harvests at least two frames (Auto = one per 10 s of play).
+    /// Reads the bar probe's `thumbs=` (it is drawn while the bar is hidden too, so no press is
+    /// needed: a press would hold the harvest off for 1.5 s).
+    func testHarvestGrows() throws {
+        #if targetEnvironment(simulator)
+        // Device-only (critique C12/C29): on the simulator `screenshot-raw` traps in MTLSimDriver
+        // (`xpc_shmem_create` misuse under MoltenVK's buffer import), so the app turns the real
+        // harvest off there. `testHarvestPlumbingSynthetic` covers the rest of the path.
+        throw XCTSkip("device-only: screenshot-raw cannot run on the simulator's Metal driver")
+        #endif
+        let app = try launch()
+        let ok = waitBar(app, timeout: 35) { (Int($0["thumbs"] ?? "") ?? 0) >= 2 }
+        print("[HarvestLeg] end: \(barProbeText(app))")
+        XCTAssertTrue(ok, "store never reached 2 frames: \(barProbeText(app))")
+    }
+
+    /// The harvest path minus `screenshot-raw` (DEBUG synthetic frames, same scheduler, scaler,
+    /// store, probe and card): frames grow while playing, and a scrub back over played ground
+    /// shows a frame on the card (`frame=1`).
+    func testHarvestPlumbingSynthetic() throws {
+        // Leads with a zero sample: a launch-argument value starting with "-" would be read as a key.
+        let back = (["0,0.03"] + Array(repeating: "-10,0.03", count: 10)).joined(separator: ";")
+        let app = try launch(extra: ["-debug.harvestSynthetic", "YES", "-debug.scrubInject", back])
+        XCTAssertTrue(waitBar(app, timeout: 45) { (Int($0["thumbs"] ?? "") ?? 0) >= 3 },
+                      "store never reached 3 frames: \(barProbeText(app))")
+        print("[HarvestLeg] synthetic grown: \(barProbeText(app))")
+        XCTAssertTrue(waitBar(app, timeout: 10) { $0["vis"] == "0" }, "bar never hid: \(barProbeText(app))")
+        raiseBarForScrub(app)
+        let before = Double(bar(app)["pos"] ?? "") ?? -1
+        postScrubInject()
+        XCTAssertTrue(waitBar(app) { $0["mode"] == "scrubbing" }, "scrub never started: \(barProbeText(app))")
+        let framed = waitBar(app, timeout: 3) { $0["frame"] == "1" }
+        print("[HarvestLeg] scrub back from \(before): \(barProbeText(app))")
+        XCTAssertTrue(framed, "no preview frame on a scrub back over played ground: \(barProbeText(app))")
+        remote.press(.menu)
+        XCTAssertTrue(waitBar(app) { $0["mode"] == "idle" && $0["frame"] == "0" }, barProbeText(app))
+    }
 }
 

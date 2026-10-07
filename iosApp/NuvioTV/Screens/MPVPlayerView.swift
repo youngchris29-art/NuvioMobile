@@ -174,6 +174,10 @@ final class MPVTVPlayerViewController: UIViewController {
     /// `eventQueue` only: nil = untried; false = this mpv rejected the format argument, call
     /// `screenshot-raw video` without it from now on.
     private var harvestFormatArgWorks: Bool?
+    /// DEBUG `-debug.harvestSynthetic YES`: harvest a generated grey frame instead of calling
+    /// `screenshot-raw` (the simulator cannot screenshot, see `viewDidLoad`). Set once in
+    /// `viewDidLoad`, read on `eventQueue`.
+    private var harvestSynthetic = false
     /// Last edge-to-edge panel opened by a gesture (the swipe recogniser and the arbiter both fire).
     private var lastGesturePanelUptime: TimeInterval = 0
     // `eventQueue` only: the one-shot DEBUG cache-state logs.
@@ -427,6 +431,20 @@ final class MPVTVPlayerViewController: UIViewController {
         seekPreviewSource = store
         harvest = HarvestScheduler(intervalSec: HarvestScheduler.interval(
             fromSetting: UserDefaults.standard.integer(forKey: "debug.harvestIntervalSec")))
+        #if DEBUG
+        harvestSynthetic = UserDefaults.standard.bool(forKey: "debug.harvestSynthetic")
+        #endif
+        #if targetEnvironment(simulator)
+        // `screenshot-raw` aborts the app on the simulator: libplacebo's texture download asks
+        // MoltenVK for a host-imported buffer and MTLSimDriver traps in `xpc_shmem_create`
+        // (EXC_BREAKPOINT, `_xpc_api_misuse`). Harvest only with the synthetic DEBUG source here.
+        if !harvestSynthetic {
+            harvest = HarvestScheduler(intervalSec: 0)
+            #if DEBUG
+            NSLog("[Harvest] off on the simulator (screenshot-raw traps in MTLSimDriver); -debug.harvestSynthetic YES to test the plumbing")
+            #endif
+        }
+        #endif
 
         // Touch-surface swipe down → top panel (presses arrive as `.downArrow`; real swipes don't).
         let swipeDown = UISwipeGestureRecognizer(target: self, action: #selector(handleSwipeDown))
@@ -1731,8 +1749,9 @@ final class MPVTVPlayerViewController: UIViewController {
             let frame = self.captureHarvestFrame()
             let tookMs = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
             #if DEBUG
-            NSLog("%@", String(format: "[Harvest] took=%.1fms size=%dx%d fmt=%@ at=%.1f", tookMs,
-                               frame?.width ?? 0, frame?.height ?? 0, frame?.format ?? "-", sec))
+            NSLog("%@", String(format: "[Harvest] took=%.1fms size=%dx%d fmt=%@ at=%.1f src=%@", tookMs,
+                               frame?.width ?? 0, frame?.height ?? 0, frame?.format ?? "-", sec,
+                               self.harvestSynthetic ? "synthetic" : "mpv"))
             #endif
             // Strong hop to main (critique C13, the `refreshBufferedAsync` shape): `deinit` can
             // never run on `eventQueue`.
@@ -1743,6 +1762,10 @@ final class MPVTVPlayerViewController: UIViewController {
     /// `eventQueue` only. `screenshot-raw video bgr0`; if this mpv rejects the format argument,
     /// retries once without it (the default is `bgr0`) and keeps that form for the session.
     private func captureHarvestFrame() -> MPVRawFrame? {
+        if harvestSynthetic { return Self.syntheticHarvestFrame(at: getDouble("time-pos")) }
+        #if targetEnvironment(simulator)
+        return nil
+        #else
         if harvestFormatArgWorks != false {
             if let frame = screenshotRaw(withFormat: true) {
                 harvestFormatArgWorks = true
@@ -1760,6 +1783,15 @@ final class MPVTVPlayerViewController: UIViewController {
             harvestFormatArgWorks = nil
         }
         return frame
+        #endif
+    }
+
+    /// A 640 × 360 `bgr0` frame whose grey level follows `sec` (DEBUG plumbing tests only).
+    private static func syntheticHarvestFrame(at sec: Double) -> MPVRawFrame {
+        let w = 640, h = 360, stride = w * 4
+        let level = UInt8(truncatingIfNeeded: Int(sec.isFinite ? sec : 0) * 4)
+        return MPVRawFrame(width: w, height: h, stride: stride, format: "bgr0",
+                           bytes: Data(repeating: level, count: stride * h))
     }
 
     /// Main. The mpv side is done: free the scheduler, then scale + encode + insert on a utility
