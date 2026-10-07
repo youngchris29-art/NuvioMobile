@@ -78,4 +78,41 @@ final class ChapterListParsingTests: XCTestCase {
         m.chapters = [TransportChapter(title: "", sec: 0)]
         XCTAssertNil(m.chapterTitle(at: 5))
     }
+    // MARK: End markers (review r1 P2 #2)
+
+    func testMarkerAtOrPastTheEndIsDropped() {
+        let c = PlayerChapters.parse(json: #"[{"title":"A","time":0},{"title":"B","time":300},{"title":"End","time":600},{"title":"Past","time":700}]"#)
+        XCTAssertEqual(PlayerChapters.trimmed(c, durationSec: 600).map(\.sec), [0, 300])
+        // Within the 1 s slack of the end counts as the end; a second earlier is kept.
+        XCTAssertEqual(PlayerChapters.trimmed(c, durationSec: 600.8).map(\.sec), [0, 300])
+        XCTAssertEqual(PlayerChapters.trimmed(c, durationSec: 601.5).map(\.sec), [0, 300, 600])
+    }
+
+    func testUnknownDurationKeepsTheList() {
+        let c = PlayerChapters.parse(json: fiveJSON)
+        XCTAssertEqual(PlayerChapters.trimmed(c, durationSec: 0), c)
+        XCTAssertEqual(PlayerChapters.trimmed(c, durationSec: .nan), c)
+    }
+
+    func testChapterSeekClampsInsideTheFile() {
+        XCTAssertEqual(PlayerChapters.clampedSeek(600, durationSec: 600), 599.5)
+        XCTAssertEqual(PlayerChapters.clampedSeek(700, durationSec: 600), 599.5)
+        XCTAssertEqual(PlayerChapters.clampedSeek(240, durationSec: 600), 240)
+        XCTAssertEqual(PlayerChapters.clampedSeek(700, durationSec: 0), 700, "unknown duration: no clamp")
+        XCTAssertEqual(PlayerChapters.clampedSeek(-2, durationSec: 600), 0)
+    }
+
+    /// A Right click from the last real chapter with an end marker left in: the resolver still
+    /// picks the marker, and the controller's clamp keeps the seek short of EOF.
+    func testEdgeClickToAnEndMarkerIsClamped() {
+        let c = [TransportChapter(title: "A", sec: 0), TransportChapter(title: "B", sec: 300),
+                 TransportChapter(title: "End", sec: 600)]
+        guard case .absolute(let t) = PlayerChapters.edgeClick(mode: .chapter, direction: 1, baseSec: 320, chapters: c) else {
+            return XCTFail("expected an absolute chapter seek")
+        }
+        XCTAssertEqual(PlayerChapters.clampedSeek(t, durationSec: 600), 599.5)
+        // Trimmed first (the duration known at FILE_LOADED), the same click is a plain +10 s.
+        XCTAssertEqual(PlayerChapters.edgeClick(mode: .chapter, direction: 1, baseSec: 320,
+                                                chapters: PlayerChapters.trimmed(c, durationSec: 600)), .relative(10))
+    }
 }

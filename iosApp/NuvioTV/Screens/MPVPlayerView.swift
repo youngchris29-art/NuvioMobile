@@ -1642,6 +1642,12 @@ final class MPVTVPlayerViewController: UIViewController {
         // Transport bar mirror + preview model inputs (P1).
         transport.durationSec = snap.duration
         state.transport.durationSec = snap.duration
+        // A chapter list read before the duration was known drops its end markers once it is
+        // (review r1 P2 #2); a no-op whenever nothing is past the end.
+        if snap.duration > 0, let last = state.transport.chapters.last,
+           last.sec >= snap.duration - PlayerChapters.endSlackSec {
+            state.transport.chapters = PlayerChapters.trimmed(state.transport.chapters, durationSec: snap.duration)
+        }
         state.transport.positionSec = max(snap.position, 0)
         state.transport.isPaused = snap.paused
         state.transport.playbackSpeed = state.playbackSpeed
@@ -2128,8 +2134,15 @@ final class MPVTVPlayerViewController: UIViewController {
                 source = "indexed"
             }
         }
+        // A marker at or past the end would make a chapter click seek to EOF (review r1 P2 #2).
+        let duration = getDouble("duration")
+        let parsed = chapters.count
+        chapters = PlayerChapters.trimmed(chapters, durationSec: duration)
         #if DEBUG
-        NSLog("[Chapters] n=%ld src=%@ raw=%@", chapters.count, source, String((raw ?? "nil").prefix(200)))
+        NSLog("[Chapters] n=%ld dropped=%ld dur=%.1f src=%@ raw=%@", chapters.count, parsed - chapters.count,
+              duration, source, String((raw ?? "nil").prefix(200)))
+        #else
+        _ = parsed
         #endif
         DispatchQueue.main.async { self.state.transport.chapters = chapters }
     }
@@ -2734,10 +2747,21 @@ final class MPVTVPlayerViewController: UIViewController {
 
     /// Absolute seek to a chapter start (the Chapters tab, a chapter-mode click). A backward jump
     /// cancels the up-next countdown, like any backward seek.
-    private func seekToChapter(_ sec: Double) {
+    private func seekToChapter(_ chapterSec: Double) {
         guard mpv != nil else { return }
+        // Backstop for a list read before the duration was known (review r1 P2 #2).
+        let sec = PlayerChapters.clampedSeek(chapterSec, durationSec: cachedProps().duration)
         let base = skipPlanner.seekInFlight?.targetSec ?? cachedProps().position
         if sec < base { state.upNextCancel?() }
+        // A chapter seek supersedes a held commit (review r1 P3 #7): its pending exact stage must
+        // not pull the playhead back to the old target, and its preview hands back now, not when
+        // the old landing fires.
+        cancelExactStage()
+        commitLandWork?.cancel()
+        commitLandWork = nil
+        commitGeneration = nil
+        transport.noteCommitLanded()
+        state.transport.previewSec = transport.previewSec
         issueSeek(kind: .user, targetSec: sec, fromSec: base, args: [String(format: "%.3f", sec), "absolute"])
         #if DEBUG
         state.seekProbe.note(commit: sec, stages: "ch")

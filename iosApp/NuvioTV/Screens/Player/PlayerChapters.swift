@@ -60,6 +60,27 @@ enum PlayerChapters {
         return out
     }
 
+    /// How close to the end a chapter may start and still be kept (review r1 P2 #2): an end marker
+    /// (disc rips), a list from a longer cut, or a broken muxer can put a chapter at or past the
+    /// duration, and a seek there drops straight into the post-play card or wedges mpv.
+    static let endSlackSec: Double = 1
+    /// How far before the end a chapter seek may land (the skip chip's clamp).
+    static let seekEndMarginSec: Double = 0.5
+
+    /// Drops chapters starting at or after `durationSec − endSlackSec`. An unknown duration (≤ 0
+    /// or not finite) keeps the list as it is; `clampedSeek` is the backstop for that case.
+    static func trimmed(_ chapters: [TransportChapter], durationSec: Double) -> [TransportChapter] {
+        guard durationSec.isFinite, durationSec > 0 else { return chapters }
+        return chapters.filter { $0.sec < durationSec - endSlackSec }
+    }
+
+    /// A chapter seek target kept inside the file: at most `durationSec − seekEndMarginSec` when
+    /// the duration is known, never negative.
+    static func clampedSeek(_ sec: Double, durationSec: Double) -> Double {
+        guard durationSec.isFinite, durationSec > 0 else { return max(sec, 0) }
+        return max(0, min(sec, durationSec - seekEndMarginSec))
+    }
+
     /// The index of the chapter `sec` is in: the last one starting at or before `sec + 0.01`.
     static func index(at sec: Double, in chapters: [TransportChapter]) -> Int? {
         chapters.lastIndex { $0.sec <= sec + 0.01 }
