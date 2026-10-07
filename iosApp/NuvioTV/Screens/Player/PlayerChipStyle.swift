@@ -15,6 +15,9 @@ enum PlayerChipStyle {
     /// bottom) and aligned with the track end.
     static let barUpBottomInset: CGFloat = 240
     static let barUpTrailingInset: CGFloat = 86
+    /// While a swipe scrub's preview card is up: above the card's chapter label (top at 681 on a
+    /// 1080 canvas, 1080 − 681 + 21).
+    static let scrubCardBottomInset: CGFloat = 420
     /// SF Symbols mirrored on the native contextual actions.
     static let skipSymbol = "forward.frame.fill"
     static let nextSymbol = "forward.end.fill"

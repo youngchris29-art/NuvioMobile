@@ -148,6 +148,24 @@ final class MPVTVPlayerViewController: UIViewController {
     private var lastPublishedModeActive = false
     private let holdTickSec: TimeInterval               // `debug.holdTickSec` (0 = Auto 0.25)
     private let commitExactDelaySec: TimeInterval       // `debug.commitExactDelayMs`; < 0 = never run the exact stage
+    // Swipe scrub (P2-A1): a horizontal stroke on the touch surface moves a preview, Select commits.
+    private var scrubArbiter = ScrubGestureArbiter()
+    private weak var scrubPan: UIPanGestureRecognizer?
+    private weak var swipeDownRecognizer: UISwipeGestureRecognizer?
+    private weak var lightTapRecognizer: UITapGestureRecognizer?
+    private let scrubCurve: ScrubRateCurve              // `debug.scrubCurve`: "bobsupra", else Orivio
+    private let scrubRateScale: Double                  // `debug.scrubRateScale`; <= 0 = Auto 1.0
+    private var scrubIdleWork: DispatchWorkItem?        // playing: cancel a scrub after 8 s without input
+    private var scrubPublishWork: DispatchWorkItem?     // trailing publish of the 30 Hz scrub throttle
+    private var lastScrubPublishUptime: TimeInterval = 0
+    private var previewFrameThrottle = PreviewFrameThrottle()
+    private var previewFrameWork: DispatchWorkItem?     // the throttle's `.wait` timer
+    private var previewFrameToken = 0                   // bumped when a scrub ends: late frames are dropped
+    private var lastPublishedScrubbing = false
+    /// Where the scrub card's frames come from (the seek-preview store); nil = time only.
+    var seekPreviewSource: SeekPreviewSource?
+    /// Last edge-to-edge panel opened by a gesture (the swipe recogniser and the arbiter both fire).
+    private var lastGesturePanelUptime: TimeInterval = 0
     // `eventQueue` only: the one-shot DEBUG cache-state logs.
     private var cacheStateLogCount = 0
     private var subtitleWatcher: FlowWatcher?
@@ -277,8 +295,9 @@ final class MPVTVPlayerViewController: UIViewController {
         #endif
         switch action {
         case .cancelMode:
-            // Stepping: nothing committed. Scanning: back to where the scan started.
+            // Stepping / scrubbing: nothing committed. Scanning: back to where the scan started.
             stopHoldTimer()
+            cancelScrub(why: "menu")
             apply(transport.cancel())
         case .dismissUpNext:
             // Back out of the transient up-next chip first; the next Menu exits (same
@@ -304,6 +323,9 @@ final class MPVTVPlayerViewController: UIViewController {
     #if DEBUG
     /// Block token for the DEBUG light-tap notification; removed in `destroyPlayer`, never `deinit`.
     private var lightTapObserver: NSObjectProtocol?
+    /// Block token for the DEBUG scrub-inject notification; removed in `destroyPlayer`.
+    private var scrubInjectObserver: NSObjectProtocol?
+    private var scrubInjectTimer: Timer?
     #endif
 
     // MARK: Failover hooks (set by the host, `PlayerScreen`; all unset = today's behaviour)
@@ -341,6 +363,9 @@ final class MPVTVPlayerViewController: UIViewController {
         self.holdTickSec = tick > 0 ? tick : TransportPreview.defaultTickSec
         let exactMs = UserDefaults.standard.integer(forKey: "debug.commitExactDelayMs")
         self.commitExactDelaySec = exactMs == 0 ? 0.15 : (exactMs < 0 ? -1 : Double(exactMs) / 1000)
+        self.scrubCurve = ScrubRateCurve.fromSetting(UserDefaults.standard.string(forKey: "debug.scrubCurve"))
+        let scrubScale = UserDefaults.standard.double(forKey: "debug.scrubRateScale")
+        self.scrubRateScale = scrubScale > 0 ? scrubScale : 1
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -378,17 +403,38 @@ final class MPVTVPlayerViewController: UIViewController {
             rawValue: UserDefaults.standard.string(forKey: PlayerTuning.holdModeKey) ?? "step") ?? .step
         let ramp = UserDefaults.standard.double(forKey: "debug.holdRampScale")
         transport.rampScale = ramp > 0 ? ramp : 1
+        transport.scrubCurve = scrubCurve
+        transport.scrubRateScale = scrubRateScale
+        state.transport.scrubCurveCode = scrubCurve.probeCode
 
         // Touch-surface swipe down → top panel (presses arrive as `.downArrow`; real swipes don't).
         let swipeDown = UISwipeGestureRecognizer(target: self, action: #selector(handleSwipeDown))
         swipeDown.direction = .down
+        swipeDown.delegate = self
         view.addGestureRecognizer(swipeDown)
+        swipeDownRecognizer = swipeDown
 
         // Light tap on the touch surface: raise the bar, or flip the right label to the end time.
         let lightTap = UITapGestureRecognizer(target: self, action: #selector(handleLightTap))
         lightTap.allowedPressTypes = []
         lightTap.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirect.rawValue)]
         view.addGestureRecognizer(lightTap)
+        lightTapRecognizer = lightTap
+
+        // Swipe scrub (P2): every touch-surface stroke goes through `ScrubGestureArbiter`. Presses
+        // never reach the pan (`allowedPressTypes = []`), so `pressesBegan/Ended/Cancelled` and the
+        // Menu-on-release path are untouched. No focus suppression is needed: this controller is
+        // first responder and the pills are drawn non-focusable, so the focus engine has nothing
+        // to move during a pan.
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(handleScrubPan(_:)))
+        pan.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirect.rawValue)]
+        pan.allowedPressTypes = []
+        pan.cancelsTouchesInView = false
+        pan.delaysTouchesBegan = false
+        pan.delegate = self
+        view.addGestureRecognizer(pan)
+        scrubPan = pan
+        lightTap.require(toFail: pan)        // a tap only when the pan never began
         #if DEBUG
         TransportDebugDarwinBridge.install()
         lightTapObserver = NotificationCenter.default.addObserver(
@@ -396,15 +442,31 @@ final class MPVTVPlayerViewController: UIViewController {
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.performLightTap(force: true) }
         }
+        scrubInjectObserver = NotificationCenter.default.addObserver(
+            forName: .nuvioDebugTransportScrubInject, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.runScrubInject() }
+        }
         #endif
 
         setupMpv()
     }
 
     @objc private func handleSwipeDown() {
-        guard presentedViewController == nil else { return }
+        // A scrub stroke that drifts down must not open the panel.
+        guard scrubArbiter.intent != .horizontal else { return }
+        openPanelFromGesture()
+    }
+
+    /// The one panel opener for gestures: the swipe recogniser and the arbiter's vertical-down both
+    /// land here, deduped within 0.6 s.
+    private func openPanelFromGesture() {
+        let now = ProcessInfo.processInfo.systemUptime
+        guard presentedViewController == nil, now - lastGesturePanelUptime > 0.6 else { return }
+        lastGesturePanelUptime = now
         cancelExactStage()
         stopHoldTimer()
+        cancelScrub(why: "panel")
         apply(transport.cancel())
         onOpenPanel?(.info)
     }
@@ -415,6 +477,7 @@ final class MPVTVPlayerViewController: UIViewController {
     /// between remaining time and end time (4 s, then back). `force` skips the click guard (the
     /// DEBUG notification has no preceding click).
     private func performLightTap(force: Bool) {
+        if isScrubbing { return }           // a tap does nothing to a scrub
         if !force, !LightTapGuard.allows(now: ProcessInfo.processInfo.systemUptime,
                                          lastPressUptime: lastClickUptime, pressesDown: pressesDown.count) { return }
         guard presentedViewController == nil else { return }
@@ -1653,7 +1716,12 @@ final class MPVTVPlayerViewController: UIViewController {
             }
             switch press.type {
             case .playPause, .select:
-                if case .scanning = transport.mode {
+                if isScrubbing {
+                    // Commit the scrub (two-stage unless cached); Play also resumes a paused file.
+                    commitScrub()
+                    if press.type == .playPause, cachedProps().paused { togglePause() }
+                    flashControls()
+                } else if case .scanning = transport.mode {
                     // Ends the scan where it is; playback continues at the user's speed.
                     apply(transport.endScanInPlace())
                 } else {
@@ -1666,7 +1734,9 @@ final class MPVTVPlayerViewController: UIViewController {
                 }
                 handled = true
             case .leftArrow:
-                if case .scanning = transport.mode {
+                if isScrubbing {
+                    nudgeScrub(-1)              // ±10 s on the preview; never a hold, never a seek
+                } else if case .scanning = transport.mode {
                     apply(transport.endScanInPlace())
                 } else if state.transport.focusedPill != nil {
                     movePill(by: -1)        // a focused pill row never seeks
@@ -1675,7 +1745,9 @@ final class MPVTVPlayerViewController: UIViewController {
                 }
                 handled = true
             case .rightArrow:
-                if case .scanning = transport.mode {
+                if isScrubbing {
+                    nudgeScrub(1)
+                } else if case .scanning = transport.mode {
                     apply(transport.pressBegan(direction: 1, positionSec: 0))   // next rate
                 } else if state.transport.focusedPill != nil {
                     movePill(by: 1)
@@ -1685,6 +1757,8 @@ final class MPVTVPlayerViewController: UIViewController {
                 handled = true
             case .upArrow:
                 switch transport.mode {
+                case .scrubbing:
+                    cancelScrub(why: "up"); handled = true      // the idle edge keeps the bar up
                 case .scanning:
                     apply(transport.endScanInPlace()); handled = true
                 case .stepping:
@@ -1701,6 +1775,14 @@ final class MPVTVPlayerViewController: UIViewController {
             case .downArrow:
                 var consumed = chipRevealed
                 switch transport.mode {
+                case .scrubbing:
+                    // Cancel, then the panel: no chip, no up-next, no pill.
+                    cancelScrub(why: "down")
+                    if presentedViewController == nil {
+                        refreshTracksAsync()
+                        onOpenPanel?(.info)
+                    }
+                    consumed = true
                 case .scanning:
                     apply(transport.endScanInPlace()); consumed = true   // no chip, no panel
                 case .stepping:
@@ -1892,11 +1974,260 @@ final class MPVTVPlayerViewController: UIViewController {
         let active = transport.mode.isActive
         let wasActive = lastPublishedModeActive
         lastPublishedModeActive = active
+        let scrubbing = isScrubbing
+        if scrubbing != lastPublishedScrubbing {
+            lastPublishedScrubbing = scrubbing
+            if scrubbing {
+                state.scrubCardUp = true
+            } else {
+                // Every way out of a scrub (commit, cancel, Menu, idle timeout, panel) cleans up here.
+                scrubIdleWork?.cancel(); scrubIdleWork = nil
+                scrubPublishWork?.cancel(); scrubPublishWork = nil
+                previewFrameWork?.cancel(); previewFrameWork = nil
+                previewFrameThrottle.reset()
+                previewFrameToken += 1
+                state.transport.previewFrame = nil
+                scrubArbiter.abandon()
+                #if DEBUG
+                state.transport.debugArbiter = scrubArbiter.probeCode
+                #endif
+                state.scrubCardUp = false
+            }
+        }
         #if DEBUG
         updateSeekProbe()
         #endif
         if wasActive && !active { flashControls() }
     }
+
+    // MARK: - Swipe scrub (P2)
+
+    private var isScrubbing: Bool {
+        if case .scrubbing = transport.mode { return true }
+        return false
+    }
+
+    private func scrubContext() -> ScrubContext {
+        let snap = cachedProps()
+        return ScrubContext(
+            barVisible: state.controlsVisible,
+            paused: snap.paused,
+            pillFocused: state.transport.focusedPill != nil,
+            scrubbing: isScrubbing,
+            canScrub: fileLoaded && snap.duration > 0 && presentedViewController == nil && !state.isEnded,
+            pressesDown: pressesDown.count,
+            lastPressUptime: lastClickUptime)
+    }
+
+    @objc private func handleScrubPan(_ gr: UIPanGestureRecognizer) {
+        let t = gr.translation(in: view)
+        let now = ProcessInfo.processInfo.systemUptime
+        switch gr.state {
+        case .began:
+            scrubArbiter.touchBegan()
+            routeScrub(scrubArbiter.moved(tx: t.x, ty: t.y, now: now, context: scrubContext()))
+        case .changed:
+            routeScrub(scrubArbiter.moved(tx: t.x, ty: t.y, now: now, context: scrubContext()))
+        case .ended, .cancelled, .failed:
+            #if DEBUG
+            NSLog("[Scrub] stroke end intent=%@ travel=%.0f vx=%.0f", scrubArbiter.probeCode,
+                  scrubArbiter.travel, gr.velocity(in: view).x)
+            #endif
+            routeScrub(scrubArbiter.touchEnded(context: scrubContext()))
+        default:
+            break
+        }
+        #if DEBUG
+        state.transport.debugArbiter = scrubArbiter.probeCode
+        #endif
+    }
+
+    private func routeScrub(_ event: ScrubGestureArbiter.Event) {
+        switch event {
+        case .none:
+            break
+        case .beginScrub:
+            switch transport.mode {
+            case .scanning:
+                apply(transport.endScanInPlace())
+            case .stepping:
+                stopHoldTimer()
+                apply(transport.cancel())
+            case .idle, .scrubbing:
+                break
+            }
+            // A new stroke while already scrubbing just keeps moving the same preview.
+            guard case .idle = transport.mode else { restartScrubIdle(); return }
+            cancelExactStage()
+            state.transport.focusedPill = nil
+            let base = skipPlanner.seekInFlight?.targetSec ?? cachedProps().position   // beginHold's rule
+            #if DEBUG
+            NSLog("[Scrub] begin base=%.2f thr=%.0f curve=%@", base,
+                  ScrubGestureArbiter.horizontalThreshold(scrubContext()), scrubCurve.rawValue)
+            #endif
+            apply(transport.scrubBegan(positionSec: base))
+            flashControls()
+            restartScrubIdle()
+            requestPreviewFrame()
+        case .scrubDelta(let points):
+            performScrubOutput(transport.scrubMoved(deltaPoints: points))
+        case .openPanel:
+            cancelScrub(why: "panel")
+            openPanelFromGesture()
+        case .swipeUp:
+            if isScrubbing {
+                cancelScrub(why: "up")
+            } else if !state.controlsVisible {
+                flashControls()
+            }
+        case .lightTap:
+            if !isScrubbing { performLightTap(force: false) }
+        }
+    }
+
+    /// The throttled sibling of `apply` for scrub samples: the bar publishes at most 30 times a
+    /// second, and a trailing publish makes sure the last sample always lands.
+    private func performScrubOutput(_ out: TransportPreview.Output) {
+        if out == .cancelUpNext { state.upNextCancel?() }
+        let now = ProcessInfo.processInfo.systemUptime
+        let interval: TimeInterval = 1.0 / 30
+        let since = now - lastScrubPublishUptime
+        if since >= interval {
+            scrubPublishWork?.cancel(); scrubPublishWork = nil
+            lastScrubPublishUptime = now
+            publishTransport()
+        } else if scrubPublishWork == nil {
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                self.scrubPublishWork = nil
+                self.lastScrubPublishUptime = ProcessInfo.processInfo.systemUptime
+                self.publishTransport()
+            }
+            scrubPublishWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + (interval - since), execute: work)
+        }
+        requestPreviewFrame()
+        restartScrubIdle()
+    }
+
+    private func nudgeScrub(_ direction: Int) {
+        restartScrubIdle()
+        apply(transport.scrubNudge(direction: direction))
+        requestPreviewFrame()
+        flashControls()
+    }
+
+    private func commitScrub() {
+        let out = transport.scrubCommit()
+        if case .commit(let r) = out {
+            #if DEBUG
+            state.seekProbe.scrubs += 1
+            NSLog("[Scrub] commit target=%.2f from=%.2f stages=%@", r.targetSec, r.fromSec,
+                  r.stages.map { $0 == .keyframes ? "k" : "e" }.joined())
+            #endif
+            _ = r
+        }
+        apply(out)
+    }
+
+    private func cancelScrub(why: String) {
+        guard isScrubbing else { return }
+        #if DEBUG
+        NSLog("[Scrub] cancel why=%@", why)
+        #endif
+        apply(transport.scrubCancel())
+    }
+
+    /// Playing: a scrub with no input for 8 s is cancelled (no seek), so a stray swipe cannot pin
+    /// the bar up. Paused: no timeout.
+    private func restartScrubIdle() {
+        scrubIdleWork?.cancel()
+        scrubIdleWork = nil
+        guard isScrubbing, !cachedProps().paused else { return }
+        let work = DispatchWorkItem { [weak self] in self?.cancelScrub(why: "idle") }
+        scrubIdleWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + TransportPreview.scrubIdleCancelSec, execute: work)
+    }
+
+    /// Ask for a frame near the scrub target, throttled (critique C17): at most one lookup in
+    /// flight, a new one at most every 66 ms, and always a trailing one after the last sample.
+    private func requestPreviewFrame() {
+        handlePreviewFrameDecision(previewFrameThrottle.sample(now: ProcessInfo.processInfo.systemUptime))
+    }
+
+    private func handlePreviewFrameDecision(_ decision: PreviewFrameThrottle.Decision) {
+        switch decision {
+        case .none:
+            break
+        case .wait(let seconds):
+            guard previewFrameWork == nil else { return }
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                self.previewFrameWork = nil
+                self.handlePreviewFrameDecision(
+                    self.previewFrameThrottle.timerFired(now: ProcessInfo.processInfo.systemUptime))
+            }
+            previewFrameWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
+        case .start:
+            guard case .scrubbing(let target) = transport.mode else {
+                previewFrameThrottle.reset()
+                return
+            }
+            guard let source = seekPreviewSource else {
+                // No store: the card shows time only. Nothing runs, so the lookup is done at once.
+                state.transport.previewFrame = nil
+                _ = previewFrameThrottle.finished(now: ProcessInfo.processInfo.systemUptime)
+                return
+            }
+            let token = previewFrameToken
+            Task { @MainActor [weak self] in
+                let image = await source.thumbnail(near: target)
+                // A scrub that ended (or a newer one) bumped the token: drop the late frame, and
+                // do not touch the reset throttle.
+                guard let self, self.previewFrameToken == token else { return }
+                self.state.transport.previewFrame = image
+                self.handlePreviewFrameDecision(
+                    self.previewFrameThrottle.finished(now: ProcessInfo.processInfo.systemUptime))
+            }
+        }
+    }
+
+    #if DEBUG
+    /// `-debug.scrubInject`: replays a scripted stroke through the arbiter (the simulator cannot
+    /// swipe). Same path as the real recogniser below `handleScrubPan`.
+    private func runScrubInject() {
+        guard let script = UserDefaults.standard.string(forKey: "debug.scrubInject") else { return }
+        let samples = ScrubInjectScript.parse(script)
+        guard !samples.isEmpty else { return }
+        scrubInjectTimer?.invalidate()
+        scrubArbiter.touchBegan()
+        state.transport.debugArbiter = scrubArbiter.probeCode
+        NSLog("[Scrub] inject samples=%ld", samples.count)
+        injectScrubSample(samples, at: 0, tx: 0, ty: 0)
+    }
+
+    private func injectScrubSample(_ samples: [ScrubInjectScript.Sample], at index: Int, tx: Double, ty: Double) {
+        guard index < samples.count else {
+            scrubInjectTimer = nil
+            NSLog("[Scrub] stroke end intent=%@ travel=%.0f vx=inject", scrubArbiter.probeCode, scrubArbiter.travel)
+            routeScrub(scrubArbiter.touchEnded(context: scrubContext()))
+            state.transport.debugArbiter = scrubArbiter.probeCode
+            return
+        }
+        let sample = samples[index]
+        let timer = Timer(timeInterval: sample.dt, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            let nx = tx + sample.dx, ny = ty + sample.dy
+            self.routeScrub(self.scrubArbiter.moved(tx: nx, ty: ny, now: ProcessInfo.processInfo.systemUptime,
+                                                    context: self.scrubContext()))
+            self.state.transport.debugArbiter = self.scrubArbiter.probeCode
+            self.injectScrubSample(samples, at: index + 1, tx: nx, ty: ny)
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        scrubInjectTimer = timer
+    }
+    #endif
 
     private func issueCommit(_ r: TransportPreview.CommitRequest) {
         let t = String(format: "%.3f", r.targetSec)
@@ -2378,9 +2709,19 @@ final class MPVTVPlayerViewController: UIViewController {
             NotificationCenter.default.removeObserver(token)
             lightTapObserver = nil
         }
+        if let token = scrubInjectObserver {
+            NotificationCenter.default.removeObserver(token)
+            scrubInjectObserver = nil
+        }
+        scrubInjectTimer?.invalidate()
+        scrubInjectTimer = nil
         #endif
         endTimeWork?.cancel()
         hideWork?.cancel()
+        scrubIdleWork?.cancel()
+        scrubPublishWork?.cancel()
+        previewFrameWork?.cancel()
+        previewFrameToken += 1
         guard let ctx = mpv else { return }
         mpv = nil
         // mpv invokes the wakeup callback under the lock this call takes, so once it returns no
@@ -2617,6 +2958,16 @@ final class MPVTVPlayerViewController: UIViewController {
     }
 }
 
+/// The touch-surface recognisers (scrub pan, swipe down, light tap) see the same strokes together;
+/// `ScrubGestureArbiter` decides what each stroke is. Anything else recognises on its own.
+extension MPVTVPlayerViewController: UIGestureRecognizerDelegate {
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        let mine: [UIGestureRecognizer?] = [scrubPan, swipeDownRecognizer, lightTapRecognizer]
+        return mine.contains { $0 === gestureRecognizer } && mine.contains { $0 === other }
+    }
+}
+
 private struct MPVPlayerRepresentable: UIViewControllerRepresentable {
     let context: PlaybackContext
     let state: MPVPlaybackState
@@ -2724,7 +3075,8 @@ struct MPVPlayerScreen: View {
 
     /// Chip insets: above the pill row while the bar shows, the plain edge padding otherwise.
     private var chipBottomInset: CGFloat {
-        state.controlsVisible ? PlayerChipStyle.barUpBottomInset : PlayerChipStyle.edgePadding
+        if state.scrubCardUp { return PlayerChipStyle.scrubCardBottomInset }   // above the scrub card
+        return state.controlsVisible ? PlayerChipStyle.barUpBottomInset : PlayerChipStyle.edgePadding
     }
     private var chipTrailingInset: CGFloat {
         state.controlsVisible ? PlayerChipStyle.barUpTrailingInset : PlayerChipStyle.edgePadding
