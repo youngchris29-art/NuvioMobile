@@ -519,6 +519,26 @@ final class PlayerTransportUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: gone, object: chaptersTab)], timeout: 5),
                        .completed, "panel did not close")
         XCTAssertTrue(waitFor(app, timeout: 8) { (Double($0["pos"] ?? "") ?? 0) >= 239 }, "never landed at 240: \(probeText(app))")
+        print("[ChapterLeg] tab seek: \(probeText(app)) | \(barProbeText(app))")
+
+        // Review r2 P3 #4: re-opened mid-file, the tab ticks Act Two and one Down into the list
+        // lands on it (the list's default focus), not on the first row.
+        XCTAssertTrue(waitBar(app, timeout: 8) { $0["vis"] == "0" }, "bar never hid: \(barProbeText(app))")
+        remote.press(.down)
+        XCTAssertTrue(chaptersTab.waitForExistence(timeout: 6), "panel did not re-open")
+        for _ in 0..<6 where (chaptersTab.value as? String) != "selected" {
+            remote.press(.right)
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+        XCTAssertEqual(chaptersTab.value as? String, "selected", "never reached the Chapters tab again")
+        XCTAssertTrue(row.waitForExistence(timeout: 3), "no chapter row 2 on re-open")
+        XCTAssertEqual(row.value as? String, "selected", "the current chapter (Act Two) is not ticked")
+        let first = app.descendants(matching: .any)["player.panel.chapter.0"]
+        XCTAssertFalse(row.hasFocus, "a list row is focused before entering the list")
+        remote.press(.down)
+        Thread.sleep(forTimeInterval: 0.8)
+        XCTAssertFalse(first.hasFocus, "focus entered the list on the first row, not the current chapter")
+        XCTAssertTrue(row.hasFocus, "focus did not enter the list on the current chapter (row 2)")
         print("[ChapterLeg] tab end: \(probeText(app)) | \(barProbeText(app))")
     }
 
