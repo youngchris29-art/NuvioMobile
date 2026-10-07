@@ -44,6 +44,10 @@ enum PillKind: String, CaseIterable { case subtitles, audio, speed, aspect, sour
     #if DEBUG
     /// The gesture arbiter's verdict on the last stroke ("u", "h", "v", "i").
     @Published var debugArbiter = "u"
+    /// The resize mode the profile holds and the Aspect pill's synced writes this session, for
+    /// the probe's `stored=` / `aw=` fields (review r1 P2 #1).
+    @Published var debugAspectStored: PlayerAspectMode = .fit
+    @Published var debugAspectWrites = 0
     #endif
     var pillsEngaged: Bool { focusedPill != nil }
     /// The chapter title at `sec` (the one rule, `PlayerChapters.title(at:in:)`); nil = none or untitled.

@@ -184,6 +184,16 @@ final class MPVTVPlayerViewController: UIViewController {
     private var edgeClickMode: EdgeClickMode = .skip10
     /// Clears the aspect flash 2 s after the last Aspect pill press.
     private var aspectFlashWork: DispatchWorkItem?
+    /// The resize mode the profile holds (set at FILE_LOADED, then by each write and by the
+    /// settings watcher), and whether the pill moved since the last write (review r1 P2 #1).
+    private var aspectPersisted: PlayerAspectMode = .fit {
+        didSet {
+            #if DEBUG
+            state.transport.debugAspectStored = aspectPersisted
+            #endif
+        }
+    }
+    private var aspectPillDirty = false
     /// Last edge-to-edge panel opened by a gesture (the swipe recogniser and the arbiter both fire).
     private var lastGesturePanelUptime: TimeInterval = 0
     // `eventQueue` only: the one-shot DEBUG cache-state logs.
@@ -586,6 +596,9 @@ final class MPVTVPlayerViewController: UIViewController {
             playerSettingsWatcher = FlowWatcherKt.watch(PlayerSettingsRepository.shared.uiState) { [weak self] emitted in
                 guard let self, let settings = emitted as? PlayerSettingsUiState else { return }
                 self.playerSettings = settings
+                // The profile's stored resize mode (our own write echoing back, or the phone's):
+                // the baseline the Aspect pill's write-back compares against.
+                self.aspectPersisted = .initial(syncedName: settings.resizeMode.name)
                 if self.fileLoaded { self.applySubtitleStyle() }
             }
         } else if mpv != nil, pollTimer == nil {
@@ -611,6 +624,12 @@ final class MPVTVPlayerViewController: UIViewController {
         print("[Failover] viewWillDisappear isLeavingPlayer=\(isLeavingPlayer)")
         if isLeavingPlayer { closeFailover() }
         gateCoverMenuTap(enabled: true)
+        // An exit inside the Aspect flash's 2 s still stores the resting mode (review r1 P2 #1).
+        if aspectPillDirty {
+            aspectFlashWork?.cancel()
+            state.transport.aspectFlash = nil
+            persistAspectIfNeeded()
+        }
     }
 
     /// The SwiftUI full-screen cover that hosts this controller carries its own Menu press
@@ -771,6 +790,21 @@ final class MPVTVPlayerViewController: UIViewController {
             didApplyAlang = true
         }
         alangTrace("targets=\(preferredAudioLanguages) applied=\(didApplyAlang)")
+
+        // Picture fit as OPTIONS too (review r1 P3 #4): `playerSettings` was just seeded, so a
+        // Fill/Zoom profile shows its first frame filled instead of snapping from Fit at
+        // FILE_LOADED (where `applyAspect` publishes the mode and writes the same values again).
+        let startAspect = PlayerAspectMode.initial(syncedName: playerSettings?.resizeMode.name)
+        if startAspect != .fit {
+            let p = startAspect.mpvProps
+            for (key, value) in [("video-aspect-override", p.aspectOverride),
+                                 ("panscan", String(p.panscan)), ("video-zoom", String(p.videoZoom))] {
+                let status = mpv_set_option_string(mpv, key, value)
+                if status < 0 {
+                    print("[MPV] option rejected: \(key)=\(value) (\(String(cString: mpv_error_string(status))))")
+                }
+            }
+        }
 
         // User-tunable streaming buffer (Settings > Playback > Streaming Buffer). 0 = mpv defaults.
         let bufferMB = UserDefaults.standard.integer(forKey: PlayerTuning.bufferMBKey)
@@ -1095,7 +1129,9 @@ final class MPVTVPlayerViewController: UIViewController {
         }
         applySubtitleStyle()
         // Picture fit from the synced resize mode (the phone shares it); Stretch never persists.
-        applyAspect(.initial(syncedName: playerSettings?.resizeMode.name))
+        let startAspect = PlayerAspectMode.initial(syncedName: playerSettings?.resizeMode.name)
+        aspectPersisted = startAspect
+        applyAspect(startAspect)
         applyDisplayCriteriaIfEnabled()
         fetchSkipSegments()
         #if DEBUG
@@ -2103,35 +2139,70 @@ final class MPVTVPlayerViewController: UIViewController {
         state.transport.aspectMode = mode
         let p = mode.mpvProps
         eventQueue.async { [weak self] in
-            guard let self, self.mpv != nil else { return }
-            self.setMpvString("video-aspect-override", p.aspectOverride)
-            self.setMpvDouble("panscan", p.panscan)
-            self.setMpvDouble("video-zoom", p.videoZoom)
+            guard let self else { return }
+            if self.mpv != nil {
+                self.setMpvString("video-aspect-override", p.aspectOverride)
+                self.setMpvDouble("panscan", p.panscan)
+                self.setMpvDouble("video-zoom", p.videoZoom)
+            }
             #if DEBUG
-            NSLog("[Aspect] %@ override=%@ panscan=%.2f zoom=%.2f read=%@", mode.rawValue, p.aspectOverride,
-                  p.panscan, p.videoZoom, self.getString("video-aspect-override") ?? "nil")
+            let read = self.mpv != nil ? (self.getString("video-aspect-override") ?? "nil") : "nil"
             #endif
+            // Strong hop to main (critique C13, review r1 P3 #5): this block's release is never
+            // the last one, so `deinit` cannot run on `eventQueue`.
+            DispatchQueue.main.async {
+                _ = self
+                #if DEBUG
+                NSLog("[Aspect] %@ override=%@ panscan=%.2f zoom=%.2f read=%@", mode.rawValue, p.aspectOverride,
+                      p.panscan, p.videoZoom, read)
+                #endif
+            }
         }
     }
 
-    /// The Aspect pill: next mode, flash its name for 2 s, and write Fit/Fill/Zoom to the synced
-    /// resize mode (the phone follows, C23). Stretch is session-only (C9).
+    /// The Aspect pill: next mode and flash its name for 2 s. The synced resize mode (the phone
+    /// follows, C23) is written once, when the flash clears or the player closes, and only for
+    /// Fit/Fill/Zoom: Stretch is session-only (C9), and a mode only cycled through is never stored
+    /// (review r1 P2 #1).
     private func cycleAspect() {
         let mode = state.transport.aspectMode.next
         applyAspect(mode)
-        let synced: PlayerResizeMode?
-        switch mode {
-        case .fit: synced = .fit
-        case .fill: synced = .fill
-        case .zoom: synced = .zoom
-        case .stretch: synced = nil
-        }
-        if let synced { PlayerSettingsRepository.shared.setResizeMode(mode: synced) }
+        aspectPillDirty = true
         state.transport.aspectFlash = mode.label
         aspectFlashWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.state.transport.aspectFlash = nil }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.state.transport.aspectFlash = nil
+            self.persistAspectIfNeeded()
+        }
         aspectFlashWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
+    }
+
+    /// Main. Writes the resting Aspect mode to the synced resize mode when the pill moved and the
+    /// result differs from what the profile holds (`AspectWriteback`).
+    private func persistAspectIfNeeded() {
+        guard aspectPillDirty else { return }
+        aspectPillDirty = false
+        let resting = state.transport.aspectMode
+        guard let mode = AspectWriteback.valueToPersist(resting: resting, persisted: aspectPersisted) else {
+            #if DEBUG
+            NSLog("[Aspect] persist none resting=%@ stored=%@", resting.rawValue, aspectPersisted.rawValue)
+            #endif
+            return
+        }
+        let synced: PlayerResizeMode
+        switch mode {
+        case .fit, .stretch: synced = .fit
+        case .fill: synced = .fill
+        case .zoom: synced = .zoom
+        }
+        PlayerSettingsRepository.shared.setResizeMode(mode: synced)
+        aspectPersisted = mode
+        #if DEBUG
+        state.transport.debugAspectWrites += 1
+        NSLog("[Aspect] persist %@", mode.rawValue)
+        #endif
     }
 
     // MARK: - Hold / preview / commit (P1)

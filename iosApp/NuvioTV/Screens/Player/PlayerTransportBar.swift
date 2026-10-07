@@ -449,7 +449,7 @@ struct PlayerTransportBar: View {
             + "vis=\(visible ? 1 : 0) ends=\(model.showsEndTime ? 1 : 0) pills=\(model.pills.count)"
             + " scrub=\(scrub) curve=\(model.scrubCurveCode) frame=\(model.previewFrame != nil ? 1 : 0) arb=\(model.debugArbiter)"
             + " chapters=\(model.chapters.count) aspect=\(model.aspectMode.rawValue)"
-            + " thumbs=\(model.previewFrames)"
+            + " thumbs=\(model.previewFrames) stored=\(model.debugAspectStored.rawValue) aw=\(model.debugAspectWrites)"
         return Text(verbatim: text)
             .font(.system(size: 8))
             .opacity(0.011)

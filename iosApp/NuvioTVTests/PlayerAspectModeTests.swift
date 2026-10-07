@@ -49,4 +49,43 @@ final class PlayerAspectModeTests: XCTestCase {
     func testLabels() {
         XCTAssertEqual(PlayerAspectMode.allCases.map(\.label), ["Fit", "Fill", "Zoom", "Stretch"])
     }
+    // MARK: Write-back (review r1 P2 #1)
+
+    /// Walks the pill from `start` through `presses` and returns what the profile ends up holding,
+    /// writing only where the pill comes to rest (the controller's flash-clear rule).
+    private func settle(start: PlayerAspectMode, presses: Int) -> (stored: PlayerAspectMode, writes: Int) {
+        var mode = start
+        for _ in 0..<presses { mode = mode.next }
+        if let write = AspectWriteback.valueToPersist(resting: mode, persisted: start) { return (write, 1) }
+        return (start, 0)
+    }
+
+    func testFitToStretchPersistsNothing() {
+        let r = settle(start: .fit, presses: 3)   // fit → fill → zoom → stretch
+        XCTAssertEqual(r.stored, .fit)
+        XCTAssertEqual(r.writes, 0, "Fill and Zoom were only passed through")
+    }
+
+    func testFitToFillPersistsFill() {
+        let r = settle(start: .fit, presses: 1)
+        XCTAssertEqual(r.stored, .fill)
+        XCTAssertEqual(r.writes, 1)
+    }
+
+    func testFullCycleBackToStartWritesNothing() {
+        for start in [PlayerAspectMode.fit, .fill, .zoom] {
+            XCTAssertEqual(settle(start: start, presses: 4).writes, 0, "\(start)")
+        }
+    }
+
+    func testStretchNeverPersists() {
+        for stored in [PlayerAspectMode.fit, .fill, .zoom] {
+            XCTAssertNil(AspectWriteback.valueToPersist(resting: .stretch, persisted: stored))
+        }
+    }
+
+    func testRestingEqualToStoredWritesNothing() {
+        XCTAssertNil(AspectWriteback.valueToPersist(resting: .zoom, persisted: .zoom))
+        XCTAssertEqual(AspectWriteback.valueToPersist(resting: .fit, persisted: .zoom), .fit)
+    }
 }

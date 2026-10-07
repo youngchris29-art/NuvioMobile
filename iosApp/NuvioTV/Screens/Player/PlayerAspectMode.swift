@@ -57,6 +57,19 @@ enum PlayerAspectMode: String, CaseIterable {
     }
 }
 
+/// When the Aspect pill's choice reaches the synced resize mode (review r1 P2 #1): once, when the
+/// 2 s flash clears or the player closes, so a mode the user only cycles through (Fill and Zoom on
+/// the way to Stretch) is never written to the profile, and the phone never inherits it.
+enum AspectWriteback {
+    /// The mode to persist, given where the pill came to rest and the value the profile already
+    /// holds (the session-start value, or the last write). Stretch never persists, so the profile
+    /// keeps what it had; a resting mode equal to the stored one writes nothing.
+    static func valueToPersist(resting: PlayerAspectMode, persisted: PlayerAspectMode) -> PlayerAspectMode? {
+        guard resting.syncedName != nil, resting != persisted else { return nil }
+        return resting
+    }
+}
+
 /// The 2 s label after an Aspect pill press ("Fill"), centred over the video.
 struct PlayerAspectFlash: View {
     let text: String
