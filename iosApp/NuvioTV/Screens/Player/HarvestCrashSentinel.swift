@@ -23,6 +23,12 @@ nonisolated extension UserDefaults: HarvestSentinelStore {}
 /// Only a file's first capture is synchronised to disk (`CFPreferencesAppSynchronize`), so a crash
 /// on a later capture of the same file can lose the armed write; the first-capture case is the
 /// deterministic one this guards.
+///
+/// Known limit (review r3 P3 #4): the key is one per process, so two controllers of the same
+/// process capturing at once (the next-episode hand-off window) share it and the first `clear()`
+/// removes the second capture's flag. A crash inside that overlap goes undetected on that launch
+/// and is caught on the next capture that dies. Per-controller keys were not worth the extra
+/// launch-time scan for a window this short.
 nonisolated struct HarvestCrashSentinel {
     static let inFlightKey = "player.harvestInFlightOwner"
     static let disabledKey = "player.harvestDisabledByCrash"

@@ -152,6 +152,22 @@ final class PlayerAspectModeTests: XCTestCase {
         XCTAssertEqual(wb.valueToPersist(resting: .fit), .fit)
     }
 
+    /// r3 P3 #1: a write the repository already held never echoes. The leftover queue entry must
+    /// not swallow a later outside change to that same value.
+    func testStaleEchoDoesNotSwallowAnOutsideChange() {
+        var w = AspectWriteback(start: .fit)
+        w.didPersist(.fill)            // pending [fill]
+        w.watcherReported(.fill)       // echo consumed, stored = fill
+        w.didPersist(.zoom)            // pending [zoom]
+        w.didPersist(.fill)            // pending [zoom, fill]; stored = fill
+        w.watcherReported(.fill)       // repository caught up: every pending echo dropped
+        w.watcherReported(.zoom)       // an outside change to zoom must register
+        XCTAssertEqual(w.stored, .zoom)
+        XCTAssertEqual(w.sessionStart, .zoom)
+        w.watcherReported(.fill)       // and a later outside change to the once-pending fill too
+        XCTAssertEqual(w.sessionStart, .fill)
+    }
+
     func testStretchIsNeverAStartValue() {
         XCTAssertEqual(AspectWriteback(start: .stretch).sessionStart, .fit)
     }

@@ -536,9 +536,11 @@ final class PlayerTransportUITests: XCTestCase {
         let first = app.descendants(matching: .any)["player.panel.chapter.0"]
         XCTAssertFalse(row.hasFocus, "a list row is focused before entering the list")
         remote.press(.down)
-        Thread.sleep(forTimeInterval: 0.8)
-        XCTAssertFalse(first.hasFocus, "focus entered the list on the first row, not the current chapter")
+        // Wait for the focus to land rather than sleeping a fixed 0.8 s (review r3 P3 #3).
+        let landed = Date()
+        while !row.hasFocus && Date().timeIntervalSince(landed) < 4 { Thread.sleep(forTimeInterval: 0.2) }
         XCTAssertTrue(row.hasFocus, "focus did not enter the list on the current chapter (row 2)")
+        XCTAssertFalse(first.hasFocus, "focus entered the list on the first row, not the current chapter")
         print("[ChapterLeg] tab end: \(probeText(app)) | \(barProbeText(app))")
     }
 
@@ -596,6 +598,9 @@ final class PlayerTransportUITests: XCTestCase {
         let order = ["fit", "fill", "zoom", "stretch"]
         let start = try XCTUnwrap(bar(app)["aspect"], barProbeText(app))
         XCTAssertNotEqual(start, "stretch", "Stretch is session-only, never a start mode")
+        // On a Zoom start the walk reaches Stretch first and the old write-back rule passes too
+        // (review r3 P3 #2): the proof needs a Fit or Fill start, so say so instead of passing.
+        XCTAssertNotEqual(start, "zoom", "the Stretch rule cannot be told from the old one on a Zoom start; set the Test profile's resize mode to Fit or Fill")
         remote.press(.up)
         XCTAssertTrue(waitBar(app) { $0["vis"] == "1" }, barProbeText(app))
         remote.press(.up)

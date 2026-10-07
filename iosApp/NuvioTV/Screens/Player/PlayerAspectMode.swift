@@ -101,11 +101,18 @@ struct AspectWriteback: Equatable {
     /// the stored value). Our own echo is consumed; a different value is an outside change and
     /// becomes the new session-start value.
     mutating func watcherReported(_ mode: PlayerAspectMode) {
+        // The watcher reporting the stored value means the repository has caught up with our
+        // latest write, so every older pending echo is moot. Dropping them here keeps an echo that
+        // never arrives (a write the repository already held, or an A→B→A conflated into one
+        // report) from swallowing a later outside change to the same value (review r3 P3 #1).
+        if mode == stored {
+            pendingEchoes.removeAll()
+            return
+        }
         if let i = pendingEchoes.firstIndex(of: mode) {
             pendingEchoes.removeFirst(i + 1)
             return
         }
-        guard mode != stored else { return }
         stored = mode
         sessionStart = mode
         pendingEchoes.removeAll()
