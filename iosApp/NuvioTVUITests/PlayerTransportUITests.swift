@@ -346,10 +346,12 @@ final class PlayerTransportUITests: XCTestCase {
         }, "scrub commit not recorded: \(probeText(app))")
         Thread.sleep(forTimeInterval: 4.0)
         let p = probe(app)
-        // The position read first, then the clock: the bar read itself takes ~1 s on the
-        // simulator and must not bias the oracle (review r1 P3 #10).
+        // The bar read takes ~1 s on the simulator: the clock before and after it, and the
+        // midpoint as the read time, so the bias is neither side of the read (review r2 P3 #3).
+        let readStart = Date()
         let livePos = Double(bar(app)["pos"] ?? "") ?? -1
-        let elapsed = Date().timeIntervalSince(selectedAt)
+        let readEnd = Date()
+        let elapsed = (readStart.timeIntervalSince(selectedAt) + readEnd.timeIntervalSince(selectedAt)) / 2
         XCTAssertEqual(livePos, target + elapsed, accuracy: 2.5,
                        "playback did not continue from the target \(target) (+\(elapsed) s): \(barProbeText(app))")
         XCTAssertEqual(Int(p["commits"] ?? ""), c0 + 1, "a scrub must be exactly one commit: \(probeText(app))")
@@ -557,11 +559,20 @@ final class PlayerTransportUITests: XCTestCase {
         print("[ChapterLeg] edge end: \(probeText(app)) | \(barProbeText(app))")
     }
 
-    /// Up, Up, Right ×3 to the Aspect pill; each Select moves to the next mode, flashes its name for
-    /// 2 s and keeps the pill focused; the leg cycles back to the mode it started on (C28: the pill
-    /// writes the profile's synced resize mode).
+    /// Up, Up, Right ×3 to the Aspect pill; each Select moves to the next mode, flashes its name and
+    /// keeps the pill focused. The write-back (C28, review r1 P2 #1, r2 P2 #1) is asserted on the
+    /// probe's stored= / aw= fields:
+    /// 1. one press, rest: one write (the next mode);
+    /// 2. three presses inside one flash back to the start mode: one more write (the start), the
+    ///    modes passed through are never written;
+    /// 3. rest on each mode in turn up to Stretch: each synced mode is written, and Stretch at rest
+    ///    puts the start mode back; one more press returns to the start mode and writes nothing.
+    /// The flash is 6 s here (`-debug.aspectFlashSec`, review r2 P3 #3) so the presses of step 2,
+    /// 0.5 s apart plus a press's own cost, can never outlast it on a slow simulator; the oracle for
+    /// every write is the flash clearing (the controller's only write trigger short of an exit).
     func testAspectPillCycles() throws {
-        let app = try launchWithBarHidden()
+        let flashSec = 6.0
+        let app = try launchWithBarHidden(extra: ["-debug.aspectFlashSec", String(flashSec)])
         let order = ["fit", "fill", "zoom", "stretch"]
         let start = try XCTUnwrap(bar(app)["aspect"], barProbeText(app))
         XCTAssertNotEqual(start, "stretch", "Stretch is session-only, never a start mode")
@@ -571,38 +582,66 @@ final class PlayerTransportUITests: XCTestCase {
         XCTAssertTrue(waitBar(app) { $0["focus"] == "pill:subtitles" }, barProbeText(app))
         for _ in 0..<3 { remote.press(.right) }
         XCTAssertTrue(waitBar(app) { $0["focus"] == "pill:aspect" }, barProbeText(app))
-        let i0 = try XCTUnwrap(order.firstIndex(of: start))
-        let first = order[(i0 + 1) % 4]
+        var i = try XCTUnwrap(order.firstIndex(of: start))
         XCTAssertEqual(bar(app)["stored"], start, "the profile's resize mode is the start mode: \(barProbeText(app))")
         XCTAssertEqual(bar(app)["aw"], "0", barProbeText(app))
-        remote.press(.select)
-        // The flash lasts 2 s and a probe read costs ~1 s: look for it before reading the probe.
         let flash = app.descendants(matching: .any)["player.aspect.flash"]
-        XCTAssertTrue(flash.waitForExistence(timeout: 2), "no aspect flash")
-        XCTAssertTrue(waitBar(app) { $0["aspect"] == first && $0["focus"] == "pill:aspect" }, barProbeText(app))
         let gone = NSPredicate(format: "exists == false")
-        XCTAssertEqual(XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: gone, object: flash)], timeout: 4),
-                       .completed, "flash did not clear")
-        // One write when the flash clears (review r1 P2 #1); `first` is never Stretch from a
-        // synced start (Stretch is fourth in the cycle and never a start mode).
-        XCTAssertTrue(waitBar(app) { $0["stored"] == first && $0["aw"] == "1" },
+        func waitFlashClear(_ step: String) {
+            XCTAssertEqual(XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: gone, object: flash)],
+                                            timeout: flashSec + 4), .completed, "flash did not clear (\(step))")
+        }
+        var writes = 0
+        var stored = start
+
+        // 1. One press, rest.
+        remote.press(.select)
+        i = (i + 1) % 4
+        XCTAssertTrue(flash.waitForExistence(timeout: 3), "no aspect flash")
+        XCTAssertTrue(waitBar(app) { $0["aspect"] == order[i] && $0["focus"] == "pill:aspect" }, barProbeText(app))
+        XCTAssertEqual(bar(app)["aw"], "0", "written before the flash cleared: \(barProbeText(app))")
+        waitFlashClear("step 1")
+        writes += 1; stored = order[i]   // never Stretch: Stretch is fourth and never a start mode
+        XCTAssertTrue(waitBar(app) { $0["stored"] == stored && $0["aw"] == String(writes) },
                       "the settled mode was not written once: \(barProbeText(app))")
-        // The other three presses inside one flash (0.5 s apart, under its 2 s), so the modes
-        // passed through never rest long enough to be written; a probe read costs ~1 s, so the
-        // per-step reads of the old loop let a flash clear between presses.
-        for _ in 2...4 {
+        print("[AspectLeg] step1: \(barProbeText(app))")
+
+        // 2. Three presses inside one flash, back to the start mode.
+        for _ in 0..<3 {
             remote.press(.select)
             Thread.sleep(forTimeInterval: 0.5)
         }
+        i = (i + 3) % 4
+        XCTAssertEqual(order[i], start)
         XCTAssertTrue(waitBar(app) { $0["aspect"] == start }, "did not cycle back to \(start): \(barProbeText(app))")
-        let current = bar(app)["aspect"] ?? "?"
-        XCTAssertEqual(current, start, "could not cycle back to the start mode \(start); the profile's resize mode may be left at \(current)")
-        // The modes passed through on the way back are never written: one more write, the start
-        // mode, once the flash clears (C28's restore).
-        XCTAssertEqual(XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: gone, object: flash)], timeout: 4),
-                       .completed, "flash did not clear")
-        XCTAssertTrue(waitBar(app) { $0["stored"] == start && $0["aw"] == "2" },
+        XCTAssertEqual(bar(app)["aw"], String(writes), "a mode passed through was written: \(barProbeText(app))")
+        waitFlashClear("step 2")
+        writes += 1; stored = start
+        XCTAssertTrue(waitBar(app) { $0["stored"] == stored && $0["aw"] == String(writes) },
                       "the restore was not exactly one more write: \(barProbeText(app))")
+        print("[AspectLeg] step2: \(barProbeText(app))")
+
+        // 3. Rest on each mode up to Stretch, then one more press back to the start mode.
+        repeat {
+            remote.press(.select)
+            i = (i + 1) % 4
+            let mode = order[i]
+            XCTAssertTrue(waitBar(app) { $0["aspect"] == mode }, barProbeText(app))
+            waitFlashClear("step 3 \(mode)")
+            let target = mode == "stretch" ? start : mode
+            if target != stored { writes += 1; stored = target }
+            XCTAssertTrue(waitBar(app) { $0["stored"] == stored && $0["aw"] == String(writes) },
+                          "resting on \(mode): expected stored=\(stored) aw=\(writes): \(barProbeText(app))")
+            print("[AspectLeg] step3 \(mode): \(barProbeText(app))")
+        } while order[i] != "stretch"
+        XCTAssertEqual(stored, start, "Stretch at rest must leave the profile on the start mode")
+        remote.press(.select)
+        i = (i + 1) % 4
+        XCTAssertEqual(order[i], start)
+        XCTAssertTrue(waitBar(app) { $0["aspect"] == start }, barProbeText(app))
+        waitFlashClear("back to start")
+        XCTAssertTrue(waitBar(app) { $0["stored"] == start && $0["aw"] == String(writes) },
+                      "back on the start mode must write nothing: \(barProbeText(app))")
         print("[AspectLeg] end: \(barProbeText(app))")
     }
 

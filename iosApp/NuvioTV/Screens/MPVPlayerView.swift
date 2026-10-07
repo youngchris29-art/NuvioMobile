@@ -193,6 +193,9 @@ final class MPVTVPlayerViewController: UIViewController {
     /// published list was last trimmed for (review r2 P3 #5).
     private var rawChapters: [TransportChapter] = []
     private var chaptersTrimDuration: Double = -1
+    /// How long the aspect flash stays up; DEBUG `-debug.aspectFlashSec` lengthens it for the UI
+    /// leg, so a slow simulator press cannot clear a flash mid-cycle (review r2 P3 #3).
+    private var aspectFlashSec: TimeInterval = 2
     /// The resize mode the profile holds and the session-start value Stretch puts back (reset at
     /// FILE_LOADED, then moved by each write and by the settings watcher), and whether the pill
     /// moved since the last write (review r1 P2 #1, r2 P2 #1).
@@ -459,6 +462,8 @@ final class MPVTVPlayerViewController: UIViewController {
             fromSetting: UserDefaults.standard.integer(forKey: "debug.harvestIntervalSec")))
         #if DEBUG
         harvestSynthetic = UserDefaults.standard.bool(forKey: "debug.harvestSynthetic")
+        let flashSec = UserDefaults.standard.double(forKey: "debug.aspectFlashSec")
+        if flashSec > 0 { aspectFlashSec = flashSec }
         #endif
         // A capture that never returned in an earlier playback turns the harvest off on this
         // device until a value is picked in Settings › Developer (review r1 P2 #3).
@@ -2228,7 +2233,7 @@ final class MPVTVPlayerViewController: UIViewController {
             self.persistAspectIfNeeded()
         }
         aspectFlashWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + aspectFlashSec, execute: work)
     }
 
     /// Main. Writes the resting Aspect mode to the synced resize mode when the pill moved and the
