@@ -54,10 +54,11 @@ final class MPVPlayerPanelAdapter {
             }
             .store(in: &cancellables)
 
-        Publishers.Merge3(
+        Publishers.Merge4(
             state.$streamInfo.map { _ in () }.eraseToAnyPublisher(),
             state.$durationSec.map { _ in () }.eraseToAnyPublisher(),
-            state.$routingNote.map { _ in () }.eraseToAnyPublisher()
+            state.$routingNote.map { _ in () }.eraseToAnyPublisher(),
+            state.$previewStoreSummary.map { _ in () }.eraseToAnyPublisher()
         )
         .receive(on: RunLoop.main)
         .sink { [weak self] in self?.rebuildInfo() }
@@ -108,6 +109,9 @@ final class MPVPlayerPanelAdapter {
         if !rows.contains(where: { $0.label == String(localized: "Engine") }) {
             rows.insert(NativeInfoRow(label: String(localized: "Engine"),
                                       value: state.routingNote.isEmpty ? "mpv" : state.routingNote), at: 0)
+        }
+        if !state.previewStoreSummary.isEmpty {
+            rows.append(NativeInfoRow(label: String(localized: "Seek Previews"), value: state.previewStoreSummary))
         }
         if model.info.rows != rows { model.info.rows = rows }
 

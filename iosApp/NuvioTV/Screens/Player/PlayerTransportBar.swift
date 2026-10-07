@@ -455,6 +455,7 @@ struct PlayerTransportBar: View {
             + "x0=\(String(format: "%.0f", trackGlobal.minX)) x1=\(String(format: "%.0f", trackGlobal.maxX)) "
             + "vis=\(visible ? 1 : 0) ends=\(model.showsEndTime ? 1 : 0) pills=\(model.pills.count)"
             + " scrub=\(scrub) curve=\(model.scrubCurveCode) frame=\(model.previewFrame != nil ? 1 : 0) arb=\(model.debugArbiter)"
+            + " thumbs=\(model.previewFrames)"
         return Text(verbatim: text)
             .font(.system(size: 8))
             .opacity(0.011)

@@ -71,6 +71,8 @@ final class MPVPlaybackState: ObservableObject {
     @Published var isEnded: Bool = false
     /// A swipe scrub is on screen (its preview card): the chips move above it.
     @Published var scrubCardUp = false
+    /// Info tab "Seek Previews" row: frames · store MB · process RSS (empty until a harvest lands).
+    @Published var previewStoreSummary: String = ""
 
     /// The transport bar's published state (preview playhead, mode, buffered ranges, skip spans).
     let transport = TransportBarModel()
@@ -164,6 +166,14 @@ final class MPVTVPlayerViewController: UIViewController {
     private var lastPublishedScrubbing = false
     /// Where the scrub card's frames come from (the seek-preview store); nil = time only.
     var seekPreviewSource: SeekPreviewSource?
+    // Seek preview harvest (P2-B): frames from the playing decode, one per ~10 s of playback.
+    /// Held strongly here; created in `viewDidLoad`, released in `destroyPlayer`.
+    private var previewStore: SeekPreviewStore?
+    /// Main only. Interval from `debug.harvestIntervalSec`, read in `viewDidLoad`.
+    private var harvest = HarvestScheduler(intervalSec: 10)
+    /// `eventQueue` only: nil = untried; false = this mpv rejected the format argument, call
+    /// `screenshot-raw video` without it from now on.
+    private var harvestFormatArgWorks: Bool?
     /// Last edge-to-edge panel opened by a gesture (the swipe recogniser and the arbiter both fire).
     private var lastGesturePanelUptime: TimeInterval = 0
     // `eventQueue` only: the one-shot DEBUG cache-state logs.
@@ -406,6 +416,17 @@ final class MPVTVPlayerViewController: UIViewController {
         transport.scrubCurve = scrubCurve
         transport.scrubRateScale = scrubRateScale
         state.transport.scrubCurveCode = scrubCurve.probeCode
+
+        // Seek preview store (P2-B): in memory, for the life of this controller.
+        let previewKey = context.streamKey.isEmpty
+            ? PlaybackStreamKey.make(infoHash: nil, fileIdx: nil, addonId: "local",
+                                     url: context.url.absoluteString, label: context.title)
+            : context.streamKey
+        let store = SeekPreviewStore(streamKey: previewKey)
+        previewStore = store
+        seekPreviewSource = store
+        harvest = HarvestScheduler(intervalSec: HarvestScheduler.interval(
+            fromSetting: UserDefaults.standard.integer(forKey: "debug.harvestIntervalSec")))
 
         // Touch-surface swipe down → top panel (presses arrive as `.downArrow`; real swipes don't).
         let swipeDown = UISwipeGestureRecognizer(target: self, action: #selector(handleSwipeDown))
@@ -1540,6 +1561,16 @@ final class MPVTVPlayerViewController: UIViewController {
         state.isBuffering = snap.cacheWait || (snap.coreIdle && !snap.paused)
         samplePlayClock(snap)
 
+        // Seek preview harvest (P2-B): playback time only, never while the transport moves.
+        let harvestNow = ProcessInfo.processInfo.systemUptime
+        if harvest.tick(now: harvestNow,
+                        playing: fileLoaded && !snap.paused && !snap.cacheWait && !snap.coreIdle && !snap.eof && snap.videoW > 0,
+                        transportIdle: !transport.mode.isActive,
+                        seekInFlight: skipPlanner.seekInFlight != nil,
+                        recentInput: harvestNow - lastClickUptime < HarvestScheduler.recentInputSec) {
+            startHarvest()
+        }
+
         // Transport bar mirror + preview model inputs (P1).
         transport.durationSec = snap.duration
         state.transport.durationSec = snap.duration
@@ -1679,6 +1710,91 @@ final class MPVTVPlayerViewController: UIViewController {
             }
         }
         if changed { state.transport.bufferedRanges = merged }
+    }
+
+    // MARK: - Seek preview harvest (P2)
+
+    /// Main. Grabs the current decoded frame on `eventQueue` (`screenshot-raw`, the heaviest mpv
+    /// call in this file), then scales, encodes and stores it on a utility queue.
+    private func startHarvest() {
+        guard previewStore != nil else { return }
+        harvest.noteStarted()
+        eventQueue.async { [weak self] in
+            guard let self else { return }
+            guard self.mpv != nil else {
+                // Strong hop to main (critique C13): this block's release is never the last one.
+                DispatchQueue.main.async { self.harvestCaptured(nil, at: .nan, tookMs: 0) }
+                return
+            }
+            let t0 = DispatchTime.now().uptimeNanoseconds
+            let sec = self.getDouble("time-pos")
+            let frame = self.captureHarvestFrame()
+            let tookMs = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
+            #if DEBUG
+            NSLog("%@", String(format: "[Harvest] took=%.1fms size=%dx%d fmt=%@ at=%.1f", tookMs,
+                               frame?.width ?? 0, frame?.height ?? 0, frame?.format ?? "-", sec))
+            #endif
+            // Strong hop to main (critique C13, the `refreshBufferedAsync` shape): `deinit` can
+            // never run on `eventQueue`.
+            DispatchQueue.main.async { self.harvestCaptured(frame, at: sec, tookMs: tookMs) }
+        }
+    }
+
+    /// `eventQueue` only. `screenshot-raw video bgr0`; if this mpv rejects the format argument,
+    /// retries once without it (the default is `bgr0`) and keeps that form for the session.
+    private func captureHarvestFrame() -> MPVRawFrame? {
+        if harvestFormatArgWorks != false {
+            if let frame = screenshotRaw(withFormat: true) {
+                harvestFormatArgWorks = true
+                return frame
+            }
+            guard harvestFormatArgWorks == nil else { return nil }
+            harvestFormatArgWorks = false
+            #if DEBUG
+            NSLog("[Harvest] screenshot-raw video bgr0 failed; retrying without the format argument")
+            #endif
+        }
+        let frame = screenshotRaw(withFormat: false)
+        if frame == nil, harvestFormatArgWorks == false {
+            // Neither form worked yet: try the format argument again next time.
+            harvestFormatArgWorks = nil
+        }
+        return frame
+    }
+
+    /// Main. The mpv side is done: free the scheduler, then scale + encode + insert on a utility
+    /// queue that carries only the frame bytes, the store and the (main-actor) state object.
+    private func harvestCaptured(_ frame: MPVRawFrame?, at sec: Double, tookMs: Double) {
+        if harvest.noteFinished(tookMs: frame == nil ? nil : tookMs) {
+            #if DEBUG
+            NSLog("%@", String(format: "[Harvest] slow (%.1fms > %.0fms): interval now %.0fs for this file",
+                               tookMs, HarvestScheduler.slowHarvestMs, harvest.intervalSec))
+            #endif
+        }
+        guard let frame, sec.isFinite, let store = previewStore else { return }
+        // Built on main; the utility work holds this closure, never the controller.
+        let publish: @MainActor @Sendable (Int, Int, Int) -> Void = { [weak state = self.state] n, bytes, rss in
+            guard let state else { return }
+            state.transport.previewFrames = n
+            state.previewStoreSummary = "\(n) · \(String(format: "%.1f", Double(bytes) / 1_048_576)) MB · RSS \(rss) MB"
+            #if DEBUG
+            NSLog("%@", "[Harvest] stored n=\(n) bytes=\(bytes) rss=\(rss)MB")
+            #endif
+        }
+        DispatchQueue.global(qos: .utility).async {
+            guard let thumb = PreviewFrameScaler.makeThumbnail(frame) else {
+                #if DEBUG
+                NSLog("%@", "[Harvest] unsupported frame format \(frame.format)")
+                #endif
+                return
+            }
+            Task {
+                await store.insert(thumb, at: sec)
+                let n = await store.count
+                let bytes = await store.byteCount
+                await publish(n, bytes, ProcessMemory.footprintMB())
+            }
+        }
     }
 
     #if DEBUG
@@ -2731,6 +2847,9 @@ final class MPVTVPlayerViewController: UIViewController {
         // (and the relay already turns one that slips in earlier into a no-op).
         mpv_set_wakeup_callback(ctx, nil, nil)
         mpv_terminate_destroy(ctx)
+        // Plain property writes (no weak reference formed): the store goes with the controller.
+        seekPreviewSource = nil
+        previewStore = nil
     }
 
     // MARK: - Event loop
@@ -2791,6 +2910,7 @@ final class MPVTVPlayerViewController: UIViewController {
                     }
                     // A newer seek was issued meanwhile: this is not its completion.
                     guard generation == self.seekGeneration else { return }
+                    self.harvest.noteSeekLanded(now: ProcessInfo.processInfo.systemUptime)
                     self.skipPlanner.seekCompleted(atSec: landed, now: ProcessInfo.processInfo.systemUptime)
                     // Keyframes landed: show that picture first, then run the exact stage.
                     if let p = self.pendingExact, p.generation == generation {
@@ -2916,6 +3036,46 @@ final class MPVTVPlayerViewController: UIViewController {
         let status = mpv_command(mpv, &cargs)
         checkError(status)
         return status
+    }
+
+    /// `eventQueue` only. Runs `args` through `mpv_command_ret`, hands the result node to `read`
+    /// while it is valid, then frees it. `read` must copy out anything it keeps.
+    private func withCommandResult<T>(_ args: [String], _ read: (mpv_node) -> T?) -> T? {
+        guard let mpv else { return nil }
+        var cargs: [UnsafePointer<CChar>?] = args.map { UnsafePointer(strdup($0)) } + [nil]
+        defer { for p in cargs where p != nil { free(UnsafeMutablePointer(mutating: p!)) } }
+        var result = mpv_node()
+        let status = mpv_command_ret(mpv, &cargs, &result)
+        guard status >= 0 else { checkError(status); return nil }
+        defer { mpv_free_node_contents(&result) }
+        return read(result)
+    }
+
+    /// `eventQueue` only. `screenshot-raw video [bgr0]`: the decoded frame without subtitles or
+    /// OSD, copied out of the node.
+    private func screenshotRaw(withFormat: Bool) -> MPVRawFrame? {
+        let args = withFormat ? ["screenshot-raw", "video", "bgr0"] : ["screenshot-raw", "video"]
+        return withCommandResult(args) { node in
+            guard node.format == MPV_FORMAT_NODE_MAP, let list = node.u.list else { return nil }
+            var w = 0, h = 0, stride = 0, fmt = "", bytes: Data?
+            for i in 0..<Int(list.pointee.num) {
+                guard let k = list.pointee.keys?[i] else { continue }
+                let v = list.pointee.values[i]
+                switch String(cString: k) {
+                case "w": w = Int(v.u.int64)
+                case "h": h = Int(v.u.int64)
+                case "stride": stride = Int(v.u.int64)
+                case "format": if v.format == MPV_FORMAT_STRING, let s = v.u.string { fmt = String(cString: s) }
+                case "data":
+                    if v.format == MPV_FORMAT_BYTE_ARRAY, let ba = v.u.ba, let p = ba.pointee.data {
+                        bytes = Data(bytes: p, count: ba.pointee.size)
+                    }
+                default: break
+                }
+            }
+            guard w > 0, h > 0, stride >= w * 4, let bytes, bytes.count >= stride * h else { return nil }
+            return MPVRawFrame(width: w, height: h, stride: stride, format: fmt, bytes: bytes)
+        }
     }
 
     private func getDouble(_ name: String) -> Double {

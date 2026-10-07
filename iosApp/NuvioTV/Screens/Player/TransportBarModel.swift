@@ -35,6 +35,8 @@ enum PillKind: String, CaseIterable { case subtitles, audio, speed, sources, epi
     @Published var previewFrame: CGImage? = nil
     /// The swipe scrub rate curve, for the probe: "o" Orivio, "b" bobsupra.
     @Published var scrubCurveCode = "o"
+    /// Frames in the seek-preview store (P2-B), for the probe's `thumbs=` field.
+    @Published var previewFrames: Int = 0
     #if DEBUG
     /// The gesture arbiter's verdict on the last stroke ("u", "h", "v", "i").
     @Published var debugArbiter = "u"
