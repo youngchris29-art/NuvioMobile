@@ -119,6 +119,8 @@ struct DeveloperSettingsPane: View {
     @AppStorage("debug.holdTickSec") private var holdTickSec = 0.0
     @AppStorage("debug.holdRampScale") private var holdRampScale = 0.0
     @AppStorage("debug.commitExactDelayMs") private var commitExactDelayMs = 0
+    @AppStorage("debug.scrubCurve") private var scrubCurve = ""
+    @AppStorage("debug.scrubRateScale") private var scrubRateScale = 0.0
 
     @ViewBuilder
     private var detailScrollAndTrailerTuningRows: some View {
@@ -197,6 +199,26 @@ struct DeveloperSettingsPane: View {
                 case 300: return String(localized: "300 ms")
                 default: return String(localized: "Keyframes Only")
                 }
+            }
+        )
+
+        SettingsPickerRow(
+            title: String(localized: "Swipe Scrub Curve (A/B)"),
+            selection: $scrubCurve,
+            options: ["", "bobsupra"],
+            descriptionID: .devScrubCurve,
+            label: { value in
+                value.isEmpty ? String(localized: "Auto") : String(localized: "Flick")
+            }
+        )
+
+        SettingsPickerRow(
+            title: String(localized: "Swipe Scrub Speed (A/B)"),
+            selection: $scrubRateScale,
+            options: [0.0, 0.5, 2.0],
+            descriptionID: .devScrubSpeed,
+            label: { value in
+                value == 0 ? String(localized: "Auto") : value == 0.5 ? String(localized: "Slower") : String(localized: "Faster")
             }
         )
 
