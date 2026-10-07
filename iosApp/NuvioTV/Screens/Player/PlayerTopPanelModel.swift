@@ -8,7 +8,7 @@ import SwiftUI
 
 /// One selectable row in the Subtitles or Audio tab.
 struct PlayerPanelOption: Identifiable, Equatable {
-    enum Group: Equatable { case off, embedded, addon, audio }
+    enum Group: Equatable { case off, embedded, addon, audio, chapter }
     /// Stable id: the rendition NAME on the native path (AVPlayer keys options by name), the mpv
     /// track id on the mpv path. `"off"` for the Off row.
     let id: String
