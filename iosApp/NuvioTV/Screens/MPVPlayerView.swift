@@ -2217,12 +2217,14 @@ final class MPVTVPlayerViewController: UIViewController {
         }
         let sample = samples[index]
         let timer = Timer(timeInterval: sample.dt, repeats: false) { [weak self] _ in
-            guard let self else { return }
-            let nx = tx + sample.dx, ny = ty + sample.dy
-            self.routeScrub(self.scrubArbiter.moved(tx: nx, ty: ny, now: ProcessInfo.processInfo.systemUptime,
-                                                    context: self.scrubContext()))
-            self.state.transport.debugArbiter = self.scrubArbiter.probeCode
-            self.injectScrubSample(samples, at: index + 1, tx: nx, ty: ny)
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let nx = tx + sample.dx, ny = ty + sample.dy
+                self.routeScrub(self.scrubArbiter.moved(tx: nx, ty: ny, now: ProcessInfo.processInfo.systemUptime,
+                                                        context: self.scrubContext()))
+                self.state.transport.debugArbiter = self.scrubArbiter.probeCode
+                self.injectScrubSample(samples, at: index + 1, tx: nx, ty: ny)
+            }
         }
         RunLoop.main.add(timer, forMode: .common)
         scrubInjectTimer = timer

@@ -26,6 +26,12 @@ struct TransportBarLayout: Equatable {
     static let lockupPillGap: CGFloat = 40
     static let scrimHeight: CGFloat = 300
     static let labelGap: CGFloat = 16
+    // Swipe scrub preview card (P2).
+    static let cardSize = CGSize(width: 400, height: 225)
+    static let cardGapAboveTrack: CGFloat = 30          // above the 14 pt active track's top
+    static let cardCornerRadius: CGFloat = 12
+    static let chapterGap: CGFloat = 8
+    static let chapterHeight: CGFloat = 34
 
     let canvas: CGSize
     let pillCount: Int
@@ -78,6 +84,23 @@ struct TransportBarLayout: Equatable {
     func targetLabelFrame(centreX: CGFloat, width: CGFloat) -> CGRect {
         let x = min(max(centreX - width / 2, trackMinX), max(trackMaxX - width, trackMinX))
         return CGRect(x: x, y: timesTop, width: width, height: Self.timesHeight)
+    }
+
+    /// The scrub preview card, centred on `centreX` and clamped inside the track span. On a 1080
+    /// canvas it spans y 723 … 948 (30 pt above the active track).
+    func previewCardFrame(centreX: CGFloat) -> CGRect {
+        let w = Self.cardSize.width
+        let x = min(max(centreX - w / 2, trackMinX), max(trackMaxX - w, trackMinX))
+        let y = trackCentreY - Self.trackActiveHeight / 2 - Self.cardGapAboveTrack - Self.cardSize.height
+        return CGRect(x: x, y: y, width: w, height: Self.cardSize.height)
+    }
+
+    /// The chapter title above the card, same clamp, `width` wide. One position whether or not a
+    /// card frame is shown (`cardShown`), so nothing jumps when a frame arrives.
+    func chapterLabelFrame(centreX: CGFloat, width: CGFloat, cardShown: Bool) -> CGRect {
+        let x = min(max(centreX - width / 2, trackMinX), max(trackMaxX - width, trackMinX))
+        let y = previewCardFrame(centreX: centreX).minY - Self.chapterGap - Self.chapterHeight
+        return CGRect(x: x, y: y, width: width, height: Self.chapterHeight)
     }
 
     /// While a preview shows, the end labels give way to the target label when they would touch it.
@@ -178,6 +201,7 @@ struct PlayerTransportBar: View {
     @State private var elapsedWidth: CGFloat = 80
     @State private var remainingWidth: CGFloat = 100
     @State private var targetWidth: CGFloat = 80
+    @State private var chapterWidth: CGFloat = 0
 
     private var visible: Bool { state.controlsVisible }
 
@@ -213,15 +237,16 @@ struct PlayerTransportBar: View {
 
             lockup(layout)
                 .opacity(active ? 0 : 1)
-                .animation(.easeInOut(duration: 0.15), value: active)
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: active)
             PlayerPillRow(model: model)
                 .frame(width: layout.pillRowFrame.width, height: layout.pillRowFrame.height)
                 .position(x: layout.pillRowFrame.midX, y: layout.pillRowFrame.midY)
                 .opacity(active ? 0 : 1)
-                .animation(.easeInOut(duration: 0.15), value: active)
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: active)
 
             track(layout, active: active)
             timesRow(layout)
+            scrubCard(layout)
         }
         .foregroundStyle(.white)
     }
@@ -284,6 +309,68 @@ struct PlayerTransportBar: View {
         .position(x: container.midX, y: container.midY)
     }
 
+    // MARK: Scrub card (P2)
+
+    private var scrubTarget: Double? {
+        if case .scrubbing(let t) = model.mode { return t }
+        return nil
+    }
+
+    /// The chapter the target sits in; empty titles show nothing. (Agent C swaps this for the one
+    /// shared chapter rule, `TransportBarModel.chapterTitle(at:)`.)
+    private func chapterTitle(at sec: Double) -> String? {
+        guard let title = model.chapters.last(where: { $0.sec <= sec + 0.001 })?.title, !title.isEmpty else { return nil }
+        return title
+    }
+
+    /// The frame you will land on (letterboxed on a black body, never cropped), with the chapter
+    /// title above it. No frame: no card body, the title keeps its position.
+    @ViewBuilder
+    private func scrubCard(_ layout: TransportBarLayout) -> some View {
+        let fade: Animation? = reduceMotion ? nil : .easeInOut(duration: 0.15)
+        ZStack(alignment: .topLeading) {
+            if let target = scrubTarget {
+                let cx = layout.x(forSec: target, durationSec: model.durationSec)
+                if let frame = model.previewFrame {
+                    let f = layout.previewCardFrame(centreX: cx)
+                    let shape = RoundedRectangle(cornerRadius: TransportBarLayout.cardCornerRadius, style: .continuous)
+                    ZStack {
+                        Color.black
+                        Image(decorative: frame, scale: 1)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                    }
+                    .frame(width: f.width, height: f.height)
+                    .clipShape(shape)
+                    .overlay(shape.strokeBorder(.white.opacity(0.4), lineWidth: 2))
+                    .position(x: f.midX, y: f.midY)
+                    .transition(.opacity)
+                    .accessibilityIdentifier("player.bar.previewCard")
+                    .accessibilityHidden(true)
+                }
+                if let title = chapterTitle(at: target) {
+                    let w = min(chapterWidth, TransportBarLayout.cardSize.width)
+                    let f = layout.chapterLabelFrame(centreX: cx, width: w, cardShown: model.previewFrame != nil)
+                    Text(verbatim: title)
+                        .font(PlayerTransportMetrics.meta)
+                        .lineLimit(1).truncationMode(.tail)
+                        .frame(width: w, height: f.height)
+                        .background(
+                            // The natural width, measured off-screen (the visible text is clamped).
+                            Text(verbatim: title).font(PlayerTransportMetrics.meta).lineLimit(1)
+                                .fixedSize().hidden()
+                                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { chapterWidth = $0 }
+                        )
+                        .position(x: f.midX, y: f.midY)
+                        .transition(.opacity)
+                        .accessibilityIdentifier("player.bar.previewChapter")
+                }
+            }
+        }
+        .animation(fade, value: model.previewFrame != nil)
+        .animation(fade, value: scrubTarget != nil)
+    }
+
     private func rightLabel() -> String {
         if model.showsEndTime,
            let clock = TransportTimeFormat.endClock(now: Date(), position: model.positionSec,
@@ -306,6 +393,10 @@ struct PlayerTransportBar: View {
                 remaining: CGRect(x: row.maxX - remainingWidth, y: row.minY, width: remainingWidth, height: row.height))
             showElapsed = vis.elapsed; showRemaining = vis.remaining
         }
+        // While scrubbing, the target label is the only time on the row.
+        let scrubbing = scrubTarget != nil
+        if scrubbing { showElapsed = false; showRemaining = false }
+        let labelFade: Animation? = reduceMotion ? nil : .easeInOut(duration: 0.15)
         let elapsedText = TransportTimeFormat.elapsed(model.positionSec)
         let rightText = rightLabel()
         return ZStack(alignment: .topLeading) {
@@ -315,6 +406,7 @@ struct PlayerTransportBar: View {
                         .font(PlayerTransportMetrics.time)
                         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { elapsedWidth = $0 }
                         .opacity(showElapsed ? 1 : 0)
+                        .animation(labelFade, value: scrubbing)
                         .accessibilityIdentifier("player.bar.time.elapsed")
                         .accessibilityValue(elapsedText)
                     Spacer(minLength: 0)
@@ -322,6 +414,7 @@ struct PlayerTransportBar: View {
                         .font(PlayerTransportMetrics.time)
                         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { remainingWidth = $0 }
                         .opacity(showRemaining ? 1 : 0)
+                        .animation(labelFade, value: scrubbing)
                         .accessibilityIdentifier("player.bar.time.remaining")
                         .accessibilityValue(rightText)
                 }

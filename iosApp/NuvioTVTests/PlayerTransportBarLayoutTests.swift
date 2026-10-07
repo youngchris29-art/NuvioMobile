@@ -136,4 +136,23 @@ final class PlayerTransportBarLayoutTests: XCTestCase {
         XCTAssertEqual(f?.end, 0.2)
         XCTAssertNil(TransportSpanMath.fractions(TransportSpan(start: 10, end: 20, kind: nil), durationSec: 0))
     }
+
+    func testPreviewCardSitsAboveTheTrackAndClamps() {
+        let l = layout()
+        let mid = l.previewCardFrame(centreX: 960)
+        XCTAssertEqual(mid, CGRect(x: 760, y: 723, width: 400, height: 225))
+        XCTAssertEqual(mid.maxY, 948)
+        XCTAssertEqual(l.previewCardFrame(centreX: 100).minX, 86)
+        XCTAssertEqual(l.previewCardFrame(centreX: 1900).maxX, 1834)
+    }
+
+    func testChapterLabelAboveTheCardInOnePosition() {
+        let l = layout()
+        let withCard = l.chapterLabelFrame(centreX: 960, width: 200, cardShown: true)
+        let noCard = l.chapterLabelFrame(centreX: 960, width: 200, cardShown: false)
+        XCTAssertEqual(withCard, noCard)
+        XCTAssertEqual(withCard, CGRect(x: 860, y: 681, width: 200, height: 34))
+        XCTAssertEqual(l.chapterLabelFrame(centreX: 90, width: 300, cardShown: true).minX, 86)
+        XCTAssertEqual(l.chapterLabelFrame(centreX: 1830, width: 300, cardShown: true).maxX, 1834)
+    }
 }
