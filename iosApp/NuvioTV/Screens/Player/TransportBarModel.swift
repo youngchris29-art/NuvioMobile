@@ -1,6 +1,13 @@
 import Foundation
 import Combine
 import SwiftUI
+import CoreGraphics
+
+/// The read side of the seek-preview thumbnail store (P2): a frame within about one GOP of `sec`,
+/// or nil. The controller holds one as `seekPreviewSource`; nil means the scrub card shows time only.
+protocol SeekPreviewSource: AnyObject, Sendable {
+    func thumbnail(near sec: Double) async -> CGImage?
+}
 
 struct TransportSpan: Equatable, Hashable { var start: Double; var end: Double; var kind: String? }
 struct TransportChapter: Equatable { let title: String; let sec: Double }
@@ -24,5 +31,13 @@ enum PillKind: String, CaseIterable { case subtitles, audio, speed, sources, epi
     @Published var showsClock = false
     @Published var pills: [PillKind] = []
     @Published var focusedPill: PillKind? = nil
+    /// The scrub card's frame for the current preview target (nil = time only).
+    @Published var previewFrame: CGImage? = nil
+    /// The swipe scrub rate curve, for the probe: "o" Orivio, "b" bobsupra.
+    @Published var scrubCurveCode = "o"
+    #if DEBUG
+    /// The gesture arbiter's verdict on the last stroke ("u", "h", "v", "i").
+    @Published var debugArbiter = "u"
+    #endif
     var pillsEngaged: Bool { focusedPill != nil }
 }

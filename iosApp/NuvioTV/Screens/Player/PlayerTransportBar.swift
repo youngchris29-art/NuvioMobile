@@ -355,10 +355,13 @@ struct PlayerTransportBar: View {
         else if let p = model.focusedPill { focus = "pill:\(p.rawValue)" }
         else { focus = "track" }
         let prev = model.previewSec.map { String(format: "%.1f", $0) } ?? "nil"
+        let scrub: String
+        if case .scrubbing(let t) = model.mode { scrub = String(format: "%.1f", t) } else { scrub = "nil" }
         let text = "mode=\(model.mode.probeName) pos=\(String(format: "%.1f", model.positionSec)) prev=\(prev) "
             + "buf=\(model.bufferedRanges.count) focus=\(focus) y=\(String(format: "%.0f", canvasHeight - trackGlobal.midY)) "
             + "x0=\(String(format: "%.0f", trackGlobal.minX)) x1=\(String(format: "%.0f", trackGlobal.maxX)) "
             + "vis=\(visible ? 1 : 0) ends=\(model.showsEndTime ? 1 : 0) pills=\(model.pills.count)"
+            + " scrub=\(scrub) curve=\(model.scrubCurveCode) frame=\(model.previewFrame != nil ? 1 : 0) arb=\(model.debugArbiter)"
         return Text(verbatim: text)
             .font(.system(size: 8))
             .opacity(0.011)
@@ -385,13 +388,16 @@ struct PlayerTransportClock: View {
 extension Notification.Name {
     /// Reposted from the Darwin notification `com.nuvio.debug.transport.lightTap` (UI legs).
     static let nuvioDebugTransportLightTap = Notification.Name("nuvio.debug.transport.lightTap")
+    /// Reposted from `com.nuvio.debug.transport.scrubInject` (UI legs): run `-debug.scrubInject`.
+    static let nuvioDebugTransportScrubInject = Notification.Name("nuvio.debug.transport.scrubInject")
 }
 #endif
 
 #if DEBUG
-/// DEBUG: reposts the Darwin notification `com.nuvio.debug.transport.lightTap` (posted by the UI
-/// test runner, which has no touch-surface tap) as a `NotificationCenter` notification. Process-wide
-/// and installed once; the controller's block observer is the part that is torn down.
+/// DEBUG: reposts the Darwin notifications `com.nuvio.debug.transport.lightTap` and
+/// `com.nuvio.debug.transport.scrubInject` (posted by the UI test runner, which has no touch
+/// surface) as `NotificationCenter` notifications. Process-wide and installed once; the
+/// controller's block observers are the part that is torn down.
 enum TransportDebugDarwinBridge {
     private static var installed = false
     static func install() {
@@ -405,6 +411,14 @@ enum TransportDebugDarwinBridge {
                 }
             },
             "com.nuvio.debug.transport.lightTap" as CFString, nil, .deliverImmediately)
+        CFNotificationCenterAddObserver(
+            CFNotificationCenterGetDarwinNotifyCenter(), nil,
+            { _, _, _, _, _ in
+                DispatchQueue.main.async {
+                    NotificationCenter.default.post(name: .nuvioDebugTransportScrubInject, object: nil)
+                }
+            },
+            "com.nuvio.debug.transport.scrubInject" as CFString, nil, .deliverImmediately)
     }
 }
 #endif

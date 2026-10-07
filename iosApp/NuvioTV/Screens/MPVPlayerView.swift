@@ -69,6 +69,8 @@ final class MPVPlaybackState: ObservableObject {
 
     /// True once playback hit end-of-file (keep-open holds the last frame; drives the post-play cover).
     @Published var isEnded: Bool = false
+    /// A swipe scrub is on screen (its preview card): the chips move above it.
+    @Published var scrubCardUp = false
 
     /// The transport bar's published state (preview playhead, mode, buffered ranges, skip spans).
     let transport = TransportBarModel()
