@@ -316,13 +316,6 @@ struct PlayerTransportBar: View {
         return nil
     }
 
-    /// The chapter the target sits in; empty titles show nothing. (Agent C swaps this for the one
-    /// shared chapter rule, `TransportBarModel.chapterTitle(at:)`.)
-    private func chapterTitle(at sec: Double) -> String? {
-        guard let title = model.chapters.last(where: { $0.sec <= sec + 0.001 })?.title, !title.isEmpty else { return nil }
-        return title
-    }
-
     /// The frame you will land on (letterboxed on a black body, never cropped), with the chapter
     /// title above it. No frame: no card body, the title keeps its position.
     @ViewBuilder
@@ -348,7 +341,7 @@ struct PlayerTransportBar: View {
                     .accessibilityIdentifier("player.bar.previewCard")
                     .accessibilityHidden(true)
                 }
-                if let title = chapterTitle(at: target) {
+                if let title = model.chapterTitle(at: target) {
                     let w = min(chapterWidth, TransportBarLayout.cardSize.width)
                     let f = layout.chapterLabelFrame(centreX: cx, width: w, cardShown: model.previewFrame != nil)
                     Text(verbatim: title)
@@ -455,6 +448,7 @@ struct PlayerTransportBar: View {
             + "x0=\(String(format: "%.0f", trackGlobal.minX)) x1=\(String(format: "%.0f", trackGlobal.maxX)) "
             + "vis=\(visible ? 1 : 0) ends=\(model.showsEndTime ? 1 : 0) pills=\(model.pills.count)"
             + " scrub=\(scrub) curve=\(model.scrubCurveCode) frame=\(model.previewFrame != nil ? 1 : 0) arb=\(model.debugArbiter)"
+            + " chapters=\(model.chapters.count) aspect=\(model.aspectMode.rawValue)"
             + " thumbs=\(model.previewFrames)"
         return Text(verbatim: text)
             .font(.system(size: 8))

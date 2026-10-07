@@ -28,6 +28,14 @@ struct PlayerPanelChip: Identifiable, Hashable {
     var id: String { text }
 }
 
+/// One row of the Chapters tab (mpv player). `id` is the chapter's index in the list.
+struct PlayerPanelChapter: Identifiable, Equatable {
+    let id: Int
+    let title: String
+    let sec: Double
+    var isCurrent: Bool
+}
+
 /// Info tab content: what's-playing header, metadata chips, live stream rows.
 struct PlayerPanelInfo: Equatable {
     var header: NativeInfoHeader
@@ -57,12 +65,15 @@ final class PlayerTopPanelModel: ObservableObject {
     /// "Timing" row entirely. mpv sets this true (`MPVPlayerPanelAdapter`); the native AVPlayer
     /// adapter leaves it false until the delay mechanism lands (beta.15 §B3).
     @Published var supportsSubtitleDelay: Bool = false
+    /// Chapters tab rows; empty hides the tab (the native engine never fills it).
+    @Published var chapters: [PlayerPanelChapter] = []
 
     /// nil = Off.
     var onSelectSubtitle: ((PlayerPanelOption?) -> Void)?
     var onSelectAudio: ((PlayerPanelOption) -> Void)?
     /// New delay in milliseconds, already clamped to ±`SUBTITLE_DELAY_MAX_MS`.
     var onSubtitleDelayChange: ((Int) -> Void)?
+    var onSelectChapter: ((PlayerPanelChapter) -> Void)?
     var onClose: (() -> Void)?
 
     init(info: PlayerPanelInfo) {

@@ -1,9 +1,9 @@
 import SwiftUI
 
 extension PillKind {
-    /// Fixed order: subtitles, audio, speed, sources, episodes, more.
+    /// Fixed order: subtitles, audio, speed, aspect, sources, episodes, more.
     static func visible(isSeries: Bool, canSwitchStreams: Bool, hasEpisodes: Bool) -> [PillKind] {
-        var out: [PillKind] = [.subtitles, .audio, .speed]
+        var out: [PillKind] = [.subtitles, .audio, .speed, .aspect]
         if canSwitchStreams { out.append(.sources) }
         if canSwitchStreams && isSeries && hasEpisodes { out.append(.episodes) }
         out.append(.more)
@@ -15,7 +15,7 @@ extension PillKind {
         switch self {
         case .subtitles: return .subtitles
         case .audio: return .audio
-        case .speed, .sources, .episodes: return .playback
+        case .speed, .aspect, .sources, .episodes: return .playback   // aspect cycles in place
         case .more: return .info
         }
     }
@@ -25,6 +25,7 @@ extension PillKind {
         case .subtitles: return "captions.bubble"
         case .audio: return "speaker.wave.2"
         case .speed: return "gauge.with.dots.needle.67percent"
+        case .aspect: return "aspectratio"
         case .sources: return "square.stack.3d.up"
         case .episodes: return "list.bullet.rectangle"
         case .more: return "ellipsis"
@@ -36,6 +37,7 @@ extension PillKind {
         case .subtitles: return String(localized: "Subtitles")
         case .audio: return String(localized: "Audio")
         case .speed: return String(localized: "Speed")
+        case .aspect: return String(localized: "Aspect")
         case .sources: return String(localized: "Sources")
         case .episodes: return String(localized: "Episodes")
         case .more: return String(localized: "More")

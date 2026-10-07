@@ -4,6 +4,8 @@ enum PlayerPanelTab: String, CaseIterable, Identifiable {
     case info, subtitles, audio
     /// Engine-specific fourth tab (the mpv player's Playback: speed · timing · episodes · sources).
     case playback
+    /// Files with chapters (mpv player).
+    case chapters
     var id: String { rawValue }
 
     var title: String {
@@ -12,6 +14,7 @@ enum PlayerPanelTab: String, CaseIterable, Identifiable {
         case .subtitles: return String(localized: "Subtitles")
         case .audio: return String(localized: "Audio")
         case .playback: return String(localized: "Playback")
+        case .chapters: return String(localized: "Chapters")
         }
     }
 }
@@ -106,7 +109,10 @@ struct PlayerTopPanel: View {
     }
 
     private var tabs: [PlayerPanelTab] {
-        extraTab == nil ? [.info, .subtitles, .audio] : PlayerPanelTab.allCases
+        var out: [PlayerPanelTab] = [.info, .subtitles, .audio]
+        if extraTab != nil { out.append(.playback) }
+        if !model.chapters.isEmpty { out.append(.chapters) }
+        return out
     }
 
     @ViewBuilder
@@ -120,6 +126,8 @@ struct PlayerTopPanel: View {
             PlayerAudioTab(model: model)
         case .playback:
             if let extraTab { extraTab.content } else { EmptyView() }
+        case .chapters:
+            PlayerChaptersTab(model: model)
         }
     }
 }

@@ -111,16 +111,17 @@ final class PlayerTransportBarLayoutTests: XCTestCase {
 
     func testPillVisibilityAndTabs() {
         XCTAssertEqual(PillKind.visible(isSeries: false, canSwitchStreams: false, hasEpisodes: false),
-                       [.subtitles, .audio, .speed, .more])
+                       [.subtitles, .audio, .speed, .aspect, .more])
         XCTAssertEqual(PillKind.visible(isSeries: true, canSwitchStreams: true, hasEpisodes: true),
-                       [.subtitles, .audio, .speed, .sources, .episodes, .more])
+                       [.subtitles, .audio, .speed, .aspect, .sources, .episodes, .more])
         XCTAssertEqual(PillKind.visible(isSeries: false, canSwitchStreams: true, hasEpisodes: false),
-                       [.subtitles, .audio, .speed, .sources, .more])
+                       [.subtitles, .audio, .speed, .aspect, .sources, .more])
         XCTAssertEqual(PillKind.visible(isSeries: true, canSwitchStreams: false, hasEpisodes: true),
-                       [.subtitles, .audio, .speed, .more])
+                       [.subtitles, .audio, .speed, .aspect, .more])
         XCTAssertEqual(PillKind.subtitles.panelTab, .subtitles)
         XCTAssertEqual(PillKind.audio.panelTab, .audio)
         XCTAssertEqual(PillKind.speed.panelTab, .playback)
+        XCTAssertEqual(PillKind.aspect.panelTab, .playback)
         XCTAssertEqual(PillKind.sources.panelTab, .playback)
         XCTAssertEqual(PillKind.episodes.panelTab, .playback)
         XCTAssertEqual(PillKind.more.panelTab, .info)

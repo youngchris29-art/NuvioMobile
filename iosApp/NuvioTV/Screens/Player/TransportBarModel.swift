@@ -11,7 +11,7 @@ protocol SeekPreviewSource: AnyObject, Sendable {
 
 struct TransportSpan: Equatable, Hashable { var start: Double; var end: Double; var kind: String? }
 struct TransportChapter: Equatable { let title: String; let sec: Double }
-enum PillKind: String, CaseIterable { case subtitles, audio, speed, sources, episodes, more }
+enum PillKind: String, CaseIterable { case subtitles, audio, speed, aspect, sources, episodes, more }
 
 /// The one published transport state of the mpv player (`MPVPlaybackState.transport`): what the
 /// bar draws, and what the controller's preview model writes.
@@ -37,9 +37,15 @@ enum PillKind: String, CaseIterable { case subtitles, audio, speed, sources, epi
     @Published var scrubCurveCode = "o"
     /// Frames in the seek-preview store (P2-B), for the probe's `thumbs=` field.
     @Published var previewFrames: Int = 0
+    /// The picture fit the Aspect pill cycles (P2).
+    @Published var aspectMode: PlayerAspectMode = .fit
+    /// The aspect label shown for 2 s after a cycle; nil = no flash.
+    @Published var aspectFlash: String? = nil
     #if DEBUG
     /// The gesture arbiter's verdict on the last stroke ("u", "h", "v", "i").
     @Published var debugArbiter = "u"
     #endif
     var pillsEngaged: Bool { focusedPill != nil }
+    /// The chapter title at `sec` (the one rule, `PlayerChapters.title(at:in:)`); nil = none or untitled.
+    func chapterTitle(at sec: Double) -> String? { PlayerChapters.title(at: sec, in: chapters) }
 }
