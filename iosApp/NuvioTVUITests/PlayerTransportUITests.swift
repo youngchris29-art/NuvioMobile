@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 
 /// mpv transport legs (P1 preview-then-commit seek, scan). Run against a long (>= 10 min) file on
 /// the mpv smoke rig. Skipped unless `PLAYER_BAR_PROBE=1` and `PLAYER_SMOKE_URL` are in the
@@ -9,10 +10,12 @@ final class PlayerTransportUITests: XCTestCase {
 
     // MARK: Harness
 
-    private func launch(extra: [String] = []) throws -> XCUIApplication {
+    /// `url`: a fixture other than `PLAYER_SMOKE_URL` (the chapter legs pass
+    /// `PLAYER_SMOKE_CHAPTERS_URL`, critique C24); nil = the plain smoke file.
+    private func launch(url fixture: String? = nil, extra: [String] = []) throws -> XCUIApplication {
         let env = ProcessInfo.processInfo.environment
         try XCTSkipUnless(env["PLAYER_BAR_PROBE"] == "1")
-        let url = try XCTUnwrap(env["PLAYER_SMOKE_URL"], "PLAYER_SMOKE_URL not set")
+        let url = try fixture ?? XCTUnwrap(env["PLAYER_SMOKE_URL"], "PLAYER_SMOKE_URL not set")
         let app = XCUIApplication()
         // 8 MiB forward cache keeps a long hold's target outside the cached range, so the
         // keyframes stage is exercised (the default cache swallows the whole smoke file).
@@ -176,8 +179,8 @@ final class PlayerTransportUITests: XCTestCase {
     }
 
     /// The bar is up for the first 4 s of playback: let it hide so an Up press starts from a known state.
-    private func launchWithBarHidden(extra: [String] = []) throws -> XCUIApplication {
-        let app = try launch(extra: extra)
+    private func launchWithBarHidden(url: String? = nil, extra: [String] = []) throws -> XCUIApplication {
+        let app = try launch(url: url, extra: extra)
         XCTAssertTrue(waitBar(app, timeout: 10) { $0["vis"] == "0" }, "bar never hid: \(barProbeText(app))")
         return app
     }
@@ -461,5 +464,179 @@ final class PlayerTransportUITests: XCTestCase {
         remote.press(.menu)
         XCTAssertTrue(waitBar(app) { $0["mode"] == "idle" && $0["frame"] == "0" }, barProbeText(app))
     }
-}
 
+    // MARK: Chapters and aspect (P2-C)
+
+    /// The chapters fixture (five chapters at 0/90/240/390/540 s); skips when unset.
+    private func chaptersURL() throws -> String {
+        let url = ProcessInfo.processInfo.environment["PLAYER_SMOKE_CHAPTERS_URL"]
+        try XCTSkipIf(url == nil, "PLAYER_SMOKE_CHAPTERS_URL not set")
+        return url!
+    }
+
+    /// The bar draws one tick per chapter; the probe counts what it was given.
+    func testChapterTicksProbe() throws {
+        let app = try launch(url: try chaptersURL())
+        XCTAssertTrue(waitBar(app, timeout: 10) { $0["chapters"] == "5" }, "chapters never reached 5: \(barProbeText(app))")
+        print("[ChapterLeg] ticks: \(barProbeText(app))")
+    }
+
+    /// Down opens the panel; the Chapters tab is last; its third row seeks to 240 s and closes the panel.
+    func testChaptersTabSeeks() throws {
+        let app = try launchWithBarHidden(url: try chaptersURL())
+        XCTAssertTrue(waitBar(app) { $0["chapters"] == "5" }, barProbeText(app))
+        let c0 = Int(probe(app)["commits"] ?? "") ?? -1
+        remote.press(.down)
+        let chaptersTab = app.descendants(matching: .any)["player.panel.tab.chapters"]
+        XCTAssertTrue(chaptersTab.waitForExistence(timeout: 6), "no Chapters tab")
+        for _ in 0..<6 where (chaptersTab.value as? String) != "selected" {
+            remote.press(.right)
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+        XCTAssertEqual(chaptersTab.value as? String, "selected", "never reached the Chapters tab")
+        let row = app.descendants(matching: .any)["player.panel.chapter.2"]
+        XCTAssertTrue(row.waitForExistence(timeout: 3), "no chapter row 2")
+        XCTAssertTrue(row.label.contains("Act Two"), row.label)
+        XCTAssertEqual(app.descendants(matching: .any)["player.panel.chapter.0"].value as? String, "selected",
+                       "the current chapter (Opening) is not ticked")
+        for _ in 0..<6 where !row.hasFocus {
+            remote.press(.down)
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+        XCTAssertTrue(row.hasFocus, "focus never reached chapter row 2")
+        remote.press(.select)
+        XCTAssertTrue(waitFor(app, timeout: 5) {
+            Int($0["commits"] ?? "") == c0 + 1 && $0["stages"] == "ch" && $0["lastTarget"] == "240"
+        }, "chapter seek not recorded: \(probeText(app))")
+        let gone = NSPredicate(format: "exists == false")
+        XCTAssertEqual(XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: gone, object: chaptersTab)], timeout: 5),
+                       .completed, "panel did not close")
+        XCTAssertTrue(waitFor(app, timeout: 8) { (Double($0["pos"] ?? "") ?? 0) >= 239 }, "never landed at 240: \(probeText(app))")
+        print("[ChapterLeg] tab end: \(probeText(app)) | \(barProbeText(app))")
+    }
+
+    /// Chapter mode: one Right click jumps to the next chapter (on release, C8); a hold after
+    /// that steps from where it is and commits once, with no chapter jump first; Left goes back to
+    /// the start of the chapter it lands in.
+    func testEdgeClickChapterMode() throws {
+        let app = try launch(url: try chaptersURL(), extra: ["-player.edgeClickMode", "chapter"])
+        XCTAssertTrue(waitBar(app, timeout: 10) { $0["chapters"] == "5" }, barProbeText(app))
+        XCTAssertLessThan(pos(app), 80, probeText(app))
+        let c0 = Int(probe(app)["commits"] ?? "") ?? -1
+        remote.press(.right)
+        XCTAssertTrue(waitFor(app, timeout: 5) {
+            Int($0["commits"] ?? "") == c0 + 1 && $0["stages"] == "ch" && $0["lastTarget"] == "90"
+                && (Double($0["pos"] ?? "") ?? 0) >= 89
+        }, "Right click did not jump to chapter 2 (90 s): \(probeText(app))")
+        // Click-then-hold: a held Right steps from the current position and commits once.
+        let origin = pos(app)
+        remote.press(.right, forDuration: 2.0)
+        Thread.sleep(forTimeInterval: 2.0)
+        var p = probe(app)
+        XCTAssertEqual(Int(p["commits"] ?? ""), c0 + 2, "a hold must be one commit, no chapter jump: \(probeText(app))")
+        XCTAssertTrue(["ke", "e", "k"].contains(p["stages"] ?? ""), "the hold landed as a chapter seek: \(probeText(app))")
+        let held = Double(p["lastTarget"] ?? "") ?? -1
+        XCTAssertGreaterThanOrEqual(held, origin + 140 - 4, "hold jumped back or stepped short: origin=\(origin) \(probeText(app))")
+        XCTAssertLessThanOrEqual(held, origin + 230 + 4, "origin=\(origin) \(probeText(app))")
+        XCTAssertTrue(waitFor(app, timeout: 8) { abs((Double($0["pos"] ?? "") ?? 0) - held) < 6 }, probeText(app))
+        print("[ChapterLeg] hold: origin=\(origin) \(probeText(app))")
+        // Left: back to the start of the chapter the hold landed in (more than 3 s past it).
+        let here = pos(app)
+        let starts = [0.0, 90, 240, 390, 540]
+        let expected = starts.last { $0 < here - 3 } ?? 0
+        remote.press(.left)
+        XCTAssertTrue(waitFor(app, timeout: 5) {
+            Int($0["commits"] ?? "") == c0 + 3 && $0["stages"] == "ch" && $0["lastTarget"] == String(format: "%.0f", expected)
+        }, "Left click from \(here) did not go to \(expected): \(probeText(app))")
+        p = probe(app)
+        print("[ChapterLeg] edge end: \(probeText(app)) | \(barProbeText(app))")
+    }
+
+    /// Up, Up, Right ×3 to the Aspect pill; each Select moves to the next mode, flashes its name for
+    /// 2 s and keeps the pill focused; the leg cycles back to the mode it started on (C28: the pill
+    /// writes the profile's synced resize mode).
+    func testAspectPillCycles() throws {
+        let app = try launchWithBarHidden()
+        let order = ["fit", "fill", "zoom", "stretch"]
+        let start = try XCTUnwrap(bar(app)["aspect"], barProbeText(app))
+        XCTAssertNotEqual(start, "stretch", "Stretch is session-only, never a start mode")
+        remote.press(.up)
+        XCTAssertTrue(waitBar(app) { $0["vis"] == "1" }, barProbeText(app))
+        remote.press(.up)
+        XCTAssertTrue(waitBar(app) { $0["focus"] == "pill:subtitles" }, barProbeText(app))
+        for _ in 0..<3 { remote.press(.right) }
+        XCTAssertTrue(waitBar(app) { $0["focus"] == "pill:aspect" }, barProbeText(app))
+        let i0 = try XCTUnwrap(order.firstIndex(of: start))
+        let first = order[(i0 + 1) % 4]
+        remote.press(.select)
+        // The flash lasts 2 s and a probe read costs ~1 s: look for it before reading the probe.
+        let flash = app.descendants(matching: .any)["player.aspect.flash"]
+        XCTAssertTrue(flash.waitForExistence(timeout: 2), "no aspect flash")
+        XCTAssertTrue(waitBar(app) { $0["aspect"] == first && $0["focus"] == "pill:aspect" }, barProbeText(app))
+        let gone = NSPredicate(format: "exists == false")
+        XCTAssertEqual(XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: gone, object: flash)], timeout: 4),
+                       .completed, "flash did not clear")
+        var current = first
+        for step in 2...4 {
+            remote.press(.select)
+            let want = order[(i0 + step) % 4]
+            let ok = waitBar(app) { $0["aspect"] == want }
+            current = bar(app)["aspect"] ?? "?"
+            XCTAssertTrue(ok, "Select \(step) did not reach \(want) (start \(start), at \(current)): \(barProbeText(app))")
+            if !ok { break }
+        }
+        XCTAssertEqual(current, start, "could not cycle back to the start mode \(start); the profile's resize mode may be left at \(current)")
+        print("[AspectLeg] end: \(barProbeText(app))")
+    }
+
+    /// C12 one-off: on a 4:3 source, Fit leaves black bars at the screen edges and Stretch
+    /// (`video-aspect-override 16:9`) fills them; back to Fit restores the bars. Skips unless
+    /// `PLAYER_SMOKE_ASPECT_URL` (a 4:3 file whose left edge is not black) is set.
+    func testAspectStretchFillsOn43() throws {
+        let url = ProcessInfo.processInfo.environment["PLAYER_SMOKE_ASPECT_URL"]
+        try XCTSkipIf(url == nil, "PLAYER_SMOKE_ASPECT_URL not set")
+        let app = try launchWithBarHidden(url: url)
+        let order = ["fit", "fill", "zoom", "stretch"]
+        let start = try XCTUnwrap(bar(app)["aspect"], barProbeText(app))
+        remote.press(.up)
+        XCTAssertTrue(waitBar(app) { $0["vis"] == "1" }, barProbeText(app))
+        remote.press(.up)
+        XCTAssertTrue(waitBar(app) { $0["focus"] == "pill:subtitles" }, barProbeText(app))
+        for _ in 0..<3 { remote.press(.right) }
+        XCTAssertTrue(waitBar(app) { $0["focus"] == "pill:aspect" }, barProbeText(app))
+        var i = try XCTUnwrap(order.firstIndex(of: start))
+        var lumas: [String: Double] = [:]
+        if start == "fit" { Thread.sleep(forTimeInterval: 0.5); lumas["fit"] = edgeLuma() }
+        for _ in 0..<4 {
+            remote.press(.select)
+            i = (i + 1) % 4
+            XCTAssertTrue(waitBar(app) { $0["aspect"] == order[i] }, barProbeText(app))
+            Thread.sleep(forTimeInterval: 0.8)
+            lumas[order[i]] = edgeLuma()
+        }
+        XCTAssertEqual(bar(app)["aspect"], start, "not back at \(start)")
+        print("[AspectLeg] edge luma by mode: \(lumas)")
+        XCTAssertLessThan(lumas["fit"] ?? 1, 0.05, "Fit should leave a black bar at the left edge of a 4:3 source")
+        XCTAssertGreaterThan(lumas["stretch"] ?? 0, 0.15, "Stretch should fill the left edge")
+    }
+
+    /// Mean brightness (0…1) of a strip at 1–3 % of the screen width, 25–45 % of its height.
+    private func edgeLuma() -> Double {
+        guard let cg = XCUIScreen.main.screenshot().image.cgImage else { return -1 }
+        let w = cg.width, h = cg.height
+        var px = [UInt8](repeating: 0, count: w * h * 4)
+        guard let ctx = CGContext(data: &px, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return -1 }
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+        var sum = 0.0, n = 0.0
+        for y in stride(from: h * 25 / 100, to: h * 45 / 100, by: 4) {
+            for x in stride(from: w / 100, to: w * 3 / 100, by: 2) {
+                let o = (y * w + x) * 4
+                sum += (Double(px[o]) + Double(px[o + 1]) + Double(px[o + 2])) / (3 * 255)
+                n += 1
+            }
+        }
+        return n > 0 ? sum / n : -1
+    }
+}
