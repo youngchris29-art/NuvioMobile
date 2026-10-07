@@ -121,6 +121,7 @@ struct DeveloperSettingsPane: View {
     @AppStorage("debug.commitExactDelayMs") private var commitExactDelayMs = 0
     @AppStorage("debug.scrubCurve") private var scrubCurve = ""
     @AppStorage("debug.scrubRateScale") private var scrubRateScale = 0.0
+    @AppStorage("debug.harvestIntervalSec") private var harvestIntervalSec = 0
 
     @ViewBuilder
     private var detailScrollAndTrailerTuningRows: some View {
@@ -219,6 +220,20 @@ struct DeveloperSettingsPane: View {
             descriptionID: .devScrubSpeed,
             label: { value in
                 value == 0 ? String(localized: "Auto") : value == 0.5 ? String(localized: "Slower") : String(localized: "Faster")
+            }
+        )
+
+        SettingsPickerRow(
+            title: String(localized: "Thumbnail Harvest (A/B)"),
+            selection: $harvestIntervalSec,
+            options: [0, 5, 30, -1],
+            descriptionID: .devHarvestInterval,
+            label: { seconds in
+                switch seconds {
+                case 0: return String(localized: "Auto")
+                case ..<0: return String(localized: "Off")
+                default: return String(localized: "\(seconds) s")
+                }
             }
         )
 

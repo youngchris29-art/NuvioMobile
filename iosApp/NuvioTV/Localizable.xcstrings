@@ -46677,6 +46677,7 @@
     "75 ms": {},
     "An A/B switch for how a swipe moves the position. Auto moves it at a steady rate that scales with the video's length; Flick moves it further the faster you swipe.": {},
     "An A/B switch for how far a swipe moves the position. Slower halves it; Faster doubles it.": {},
+    "An A/B switch for how often the mpv player saves a small picture of the video for the seek preview. Auto saves one every 10 seconds of playback. Off saves none.": {},
     "An A/B switch for how long the player waits after a jump before it lands on the exact frame. Auto is 150 ms. Keyframes Only skips that second step.": {},
     "An A/B switch for how often a held Left or Right adds a step. Auto is 0.25 seconds.": {},
     "An A/B switch for how quickly a held Left or Right moves up to bigger steps. Auto reaches 60-second steps after 2 seconds; Faster after 1 second; Slower after 4 seconds.": {},
@@ -46696,6 +46697,8 @@
     "Step": {},
     "Swipe Scrub Curve (A/B)": {},
     "Swipe Scrub Speed (A/B)": {},
+    "Seek Previews": {},
+    "Thumbnail Harvest (A/B)": {},
     "Try Native Player": {},
     "Try with mpv": {}
   },
