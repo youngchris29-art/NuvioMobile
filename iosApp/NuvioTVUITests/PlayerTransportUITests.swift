@@ -335,7 +335,9 @@ final class PlayerTransportUITests: XCTestCase {
         XCTAssertEqual(b["curve"], "o", barProbeText(app))
         XCTAssertEqual(b["arb"], "h", barProbeText(app))
         XCTAssertGreaterThanOrEqual(target - before, 30, "scrub moved too little: before=\(before) \(barProbeText(app))")
-        XCTAssertLessThanOrEqual(target - before, 42, "scrub moved too far: before=\(before) \(barProbeText(app))")
+        // 35 s of scrub plus the playback drift between the `before` read and the scrub's base
+        // (review r1 P3 #10: 42 left ~3 s of headroom).
+        XCTAssertLessThanOrEqual(target - before, 45, "scrub moved too far: before=\(before) \(barProbeText(app))")
         remote.press(.select)
         let selectedAt = Date()
         XCTAssertTrue(waitFor(app, timeout: 5) {
@@ -344,8 +346,10 @@ final class PlayerTransportUITests: XCTestCase {
         }, "scrub commit not recorded: \(probeText(app))")
         Thread.sleep(forTimeInterval: 4.0)
         let p = probe(app)
-        let elapsed = Date().timeIntervalSince(selectedAt)
+        // The position read first, then the clock: the bar read itself takes ~1 s on the
+        // simulator and must not bias the oracle (review r1 P3 #10).
         let livePos = Double(bar(app)["pos"] ?? "") ?? -1
+        let elapsed = Date().timeIntervalSince(selectedAt)
         XCTAssertEqual(livePos, target + elapsed, accuracy: 2.5,
                        "playback did not continue from the target \(target) (+\(elapsed) s): \(barProbeText(app))")
         XCTAssertEqual(Int(p["commits"] ?? ""), c0 + 1, "a scrub must be exactly one commit: \(probeText(app))")
@@ -435,12 +439,13 @@ final class PlayerTransportUITests: XCTestCase {
         // Device-only (critique C12/C29): on the simulator `screenshot-raw` traps in MTLSimDriver
         // (`xpc_shmem_create` misuse under MoltenVK's buffer import), so the app turns the real
         // harvest off there. `testHarvestPlumbingSynthetic` covers the rest of the path.
-        throw XCTSkip("device-only: screenshot-raw cannot run on the simulator's Metal driver")
-        #endif
+        try XCTSkipIf(true, "device-only: screenshot-raw cannot run on the simulator's Metal driver")
+        #else
         let app = try launch()
         let ok = waitBar(app, timeout: 35) { (Int($0["thumbs"] ?? "") ?? 0) >= 2 }
         print("[HarvestLeg] end: \(barProbeText(app))")
         XCTAssertTrue(ok, "store never reached 2 frames: \(barProbeText(app))")
+        #endif
     }
 
     /// The harvest path minus `screenshot-raw` (DEBUG synthetic frames, same scheduler, scaler,
@@ -470,7 +475,7 @@ final class PlayerTransportUITests: XCTestCase {
     /// The chapters fixture (five chapters at 0/90/240/390/540 s); skips when unset.
     private func chaptersURL() throws -> String {
         let url = ProcessInfo.processInfo.environment["PLAYER_SMOKE_CHAPTERS_URL"]
-        try XCTSkipIf(url == nil, "PLAYER_SMOKE_CHAPTERS_URL not set")
+        try XCTSkipIf(url == nil, "PLAYER_SMOKE_CHAPTERS_URL not set: run with TEST_RUNNER_PLAYER_SMOKE_CHAPTERS_URL=http://127.0.0.1:8000/test-long-chapters.mkv")
         return url!
     }
 
@@ -568,6 +573,8 @@ final class PlayerTransportUITests: XCTestCase {
         XCTAssertTrue(waitBar(app) { $0["focus"] == "pill:aspect" }, barProbeText(app))
         let i0 = try XCTUnwrap(order.firstIndex(of: start))
         let first = order[(i0 + 1) % 4]
+        XCTAssertEqual(bar(app)["stored"], start, "the profile's resize mode is the start mode: \(barProbeText(app))")
+        XCTAssertEqual(bar(app)["aw"], "0", barProbeText(app))
         remote.press(.select)
         // The flash lasts 2 s and a probe read costs ~1 s: look for it before reading the probe.
         let flash = app.descendants(matching: .any)["player.aspect.flash"]
@@ -576,16 +583,26 @@ final class PlayerTransportUITests: XCTestCase {
         let gone = NSPredicate(format: "exists == false")
         XCTAssertEqual(XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: gone, object: flash)], timeout: 4),
                        .completed, "flash did not clear")
-        var current = first
-        for step in 2...4 {
+        // One write when the flash clears (review r1 P2 #1); `first` is never Stretch from a
+        // synced start (Stretch is fourth in the cycle and never a start mode).
+        XCTAssertTrue(waitBar(app) { $0["stored"] == first && $0["aw"] == "1" },
+                      "the settled mode was not written once: \(barProbeText(app))")
+        // The other three presses inside one flash (0.5 s apart, under its 2 s), so the modes
+        // passed through never rest long enough to be written; a probe read costs ~1 s, so the
+        // per-step reads of the old loop let a flash clear between presses.
+        for _ in 2...4 {
             remote.press(.select)
-            let want = order[(i0 + step) % 4]
-            let ok = waitBar(app) { $0["aspect"] == want }
-            current = bar(app)["aspect"] ?? "?"
-            XCTAssertTrue(ok, "Select \(step) did not reach \(want) (start \(start), at \(current)): \(barProbeText(app))")
-            if !ok { break }
+            Thread.sleep(forTimeInterval: 0.5)
         }
+        XCTAssertTrue(waitBar(app) { $0["aspect"] == start }, "did not cycle back to \(start): \(barProbeText(app))")
+        let current = bar(app)["aspect"] ?? "?"
         XCTAssertEqual(current, start, "could not cycle back to the start mode \(start); the profile's resize mode may be left at \(current)")
+        // The modes passed through on the way back are never written: one more write, the start
+        // mode, once the flash clears (C28's restore).
+        XCTAssertEqual(XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: gone, object: flash)], timeout: 4),
+                       .completed, "flash did not clear")
+        XCTAssertTrue(waitBar(app) { $0["stored"] == start && $0["aw"] == "2" },
+                      "the restore was not exactly one more write: \(barProbeText(app))")
         print("[AspectLeg] end: \(barProbeText(app))")
     }
 
@@ -594,7 +611,7 @@ final class PlayerTransportUITests: XCTestCase {
     /// `PLAYER_SMOKE_ASPECT_URL` (a 4:3 file whose left edge is not black) is set.
     func testAspectStretchFillsOn43() throws {
         let url = ProcessInfo.processInfo.environment["PLAYER_SMOKE_ASPECT_URL"]
-        try XCTSkipIf(url == nil, "PLAYER_SMOKE_ASPECT_URL not set")
+        try XCTSkipIf(url == nil, "PLAYER_SMOKE_ASPECT_URL not set: run with TEST_RUNNER_PLAYER_SMOKE_ASPECT_URL=<a 4:3 file>, e.g. http://127.0.0.1:8000/test-43.mkv")
         let app = try launchWithBarHidden(url: url)
         let order = ["fit", "fill", "zoom", "stretch"]
         let start = try XCTUnwrap(bar(app)["aspect"], barProbeText(app))
@@ -615,6 +632,8 @@ final class PlayerTransportUITests: XCTestCase {
             lumas[order[i]] = edgeLuma()
         }
         XCTAssertEqual(bar(app)["aspect"], start, "not back at \(start)")
+        // Let the last flash clear so the profile's resize mode settles back on the start (P2 #1).
+        XCTAssertTrue(waitBar(app, timeout: 6) { $0["stored"] == start }, "profile left off \(start): \(barProbeText(app))")
         print("[AspectLeg] edge luma by mode: \(lumas)")
         XCTAssertLessThan(lumas["fit"] ?? 1, 0.05, "Fit should leave a black bar at the left edge of a 4:3 source")
         XCTAssertGreaterThan(lumas["stretch"] ?? 0, 0.15, "Stretch should fill the left edge")
