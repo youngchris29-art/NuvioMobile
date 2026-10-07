@@ -299,6 +299,10 @@ final class PlayerTransportUITests: XCTestCase {
     }
 
     /// Bar up from a hidden bar, then 0.6 s so the Up press is outside the arbiter's move suppression.
+    /// Call it LAST before the inject: the bar auto-hides 4 s after Up, and with the bar hidden the
+    /// arbiter's horizontal intent is 160 pt instead of 45 pt, which eats most of the 200 pt script
+    /// (a probe read is ~1–1.5 s on the simulator, so two reads in between raced the auto-hide).
+    /// Read `commits`/`pos` before raising: the probes report them with the bar hidden too.
     private func raiseBarForScrub(_ app: XCUIApplication) {
         remote.press(.up)
         XCTAssertTrue(waitBar(app) { $0["vis"] == "1" }, barProbeText(app))
@@ -309,19 +313,21 @@ final class PlayerTransportUITests: XCTestCase {
     /// the scrub target.
     private func injectAndReadTarget(_ app: XCUIApplication) -> Double {
         postScrubInject()
-        XCTAssertTrue(waitBar(app) { $0["mode"] == "scrubbing" }, "scrub never started: \(barProbeText(app))")
+        let started = waitBar(app) { $0["mode"] == "scrubbing" }
+        XCTAssertTrue(started, "scrub never started (vis=\(bar(app)["vis"] ?? "?")): \(barProbeText(app))")
         Thread.sleep(forTimeInterval: 0.6)
         let p = bar(app)
-        print("[ScrubLeg] after inject: \(barProbeText(app))")
+        print("[ScrubLeg] after inject vis=\(p["vis"] ?? "?"): \(barProbeText(app))")
         return Double(p["scrub"] ?? "") ?? -1
     }
 
     func testScrubSelectCommitsOnce() throws {
         let app = try launchWithBarHidden(extra: ["-debug.scrubInject", Self.scrubScript])
-        raiseBarForScrub(app)
         let c0 = Int(probe(app)["commits"] ?? "") ?? -1
         let before = Double(bar(app)["pos"] ?? "") ?? -1
+        raiseBarForScrub(app)
         let target = injectAndReadTarget(app)
+        print("[ScrubLeg] select before=\(before) scrub=\(target) delta=\(target - before)")
         let b = bar(app)
         XCTAssertEqual(b["curve"], "o", barProbeText(app))
         XCTAssertEqual(b["arb"], "h", barProbeText(app))
@@ -348,8 +354,8 @@ final class PlayerTransportUITests: XCTestCase {
     /// Menu tap is gated, so this asserts the player directly (critique C26).
     func testScrubMenuCancels() throws {
         let app = try launchWithBarHidden(extra: ["-debug.scrubInject", Self.scrubScript])
-        raiseBarForScrub(app)
         let c0 = Int(probe(app)["commits"] ?? "") ?? -1
+        raiseBarForScrub(app)
         _ = injectAndReadTarget(app)
         remote.press(.menu)
         XCTAssertTrue(waitBar(app) { $0["mode"] == "idle" && $0["prev"] == "nil" && $0["vis"] == "1" },
@@ -406,8 +412,8 @@ final class PlayerTransportUITests: XCTestCase {
     /// `-debug.scrubCurve bobsupra` ("Flick"): 7 × 20 pt at 600 s = +40.32 s.
     func testScrubCurveFlick() throws {
         let app = try launchWithBarHidden(extra: ["-debug.scrubInject", Self.scrubScript, "-debug.scrubCurve", "bobsupra"])
-        raiseBarForScrub(app)
         let before = Double(bar(app)["pos"] ?? "") ?? -1
+        raiseBarForScrub(app)
         let target = injectAndReadTarget(app)
         XCTAssertEqual(bar(app)["curve"], "b", barProbeText(app))
         XCTAssertGreaterThanOrEqual(target - before, 36, "before=\(before) \(barProbeText(app))")
@@ -445,8 +451,8 @@ final class PlayerTransportUITests: XCTestCase {
                       "store never reached 3 frames: \(barProbeText(app))")
         print("[HarvestLeg] synthetic grown: \(barProbeText(app))")
         XCTAssertTrue(waitBar(app, timeout: 10) { $0["vis"] == "0" }, "bar never hid: \(barProbeText(app))")
-        raiseBarForScrub(app)
         let before = Double(bar(app)["pos"] ?? "") ?? -1
+        raiseBarForScrub(app)
         postScrubInject()
         XCTAssertTrue(waitBar(app) { $0["mode"] == "scrubbing" }, "scrub never started: \(barProbeText(app))")
         let framed = waitBar(app, timeout: 3) { $0["frame"] == "1" }
