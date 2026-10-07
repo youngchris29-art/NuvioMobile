@@ -26,6 +26,8 @@ enum PlayerTuning {
     static let dvP7FelMpvKey = "player.dvP7FelPreferMpv"
     /// What holding Left/Right does in the mpv player: "step" (default) or "scan". Device-local.
     static let holdModeKey = "player.holdMode"
+    /// What one click on Left/Right does in the mpv player: "skip10" (default) or "chapter". Device-local.
+    static let edgeClickModeKey = "player.edgeClickMode"
     /// Show the time of day while the mpv player controls are up. Device-local, off by default.
     static let showClockKey = "player.showClock"
 }

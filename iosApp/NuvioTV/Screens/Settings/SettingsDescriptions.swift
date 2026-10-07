@@ -131,6 +131,7 @@ enum SettingsDescriptionID: String, CaseIterable {
     case playerEpisodeShuffle = "player.episodeShuffle"
     case playerPauseInfoCard = "player.pauseInfoCard"
     case playerHoldMode = "player.holdMode"
+    case playerEdgeClick = "player.edgeClick"
     case playerShowClock = "player.showClock"
     case playerMatchFrameRate = "player.matchFrameRate"
     case playerEnhancedRenderer = "player.enhancedRenderer"
@@ -386,6 +387,7 @@ enum SettingsDescriptions {
         case .devDetailScrollProbe: return LocalizedStringResource("Counts hitches during one title page visit and logs the result when you press Menu to leave.")
         case .devTrailerMaxFps: return LocalizedStringResource("An A/B switch that prefers 30 fps trailers over higher frame rates to test choppy playback. Auto is the normal behavior.")
         case .playerHoldMode: return LocalizedStringResource("Choose what holding Left or Right does in the mpv player. Step jumps further the longer you hold and moves once when you let go. Scan plays at 2\u{00D7} and keeps going after you let go: press Right again for 3\u{00D7} or 4\u{00D7}, Select to carry on from there, Menu to go back. Default: Step.")
+        case .playerEdgeClick: return LocalizedStringResource("Choose what one click on Left or Right does in the mpv player. Skip 10 s jumps ten seconds. Previous/Next Chapter jumps to the next chapter, or back to the start of this one, when the video has chapters, and skips 10 seconds when it does not. Default: Skip 10 s.")
         case .playerShowClock: return LocalizedStringResource("Shows the time of day in the corner while the player controls are up. Off by default.")
         case .devHoldTick: return LocalizedStringResource("An A/B switch for how often a held Left or Right adds a step. Auto is 0.25 seconds.")
         case .devHoldRamp: return LocalizedStringResource("An A/B switch for how quickly a held Left or Right moves up to bigger steps. Auto reaches 60-second steps after 2 seconds; Faster after 1 second; Slower after 4 seconds.")
@@ -416,7 +418,7 @@ enum SettingsDescriptions {
         case .playerMatchFrameRate: return LocalizedStringResource("Also set in tvOS Settings › Video and Audio › Match Content.")
         case .playerStreamingBuffer: return LocalizedStringResource("Applies to the next playback.")
         case .playerNetworkReadahead: return LocalizedStringResource("Applies to the next playback.")
-        case .playerHoldMode, .devHoldTick, .devHoldRamp, .devCommitExactDelay, .devScrubCurve, .devScrubSpeed, .devHarvestInterval:
+        case .playerHoldMode, .playerEdgeClick, .devHoldTick, .devHoldRamp, .devCommitExactDelay, .devScrubCurve, .devScrubSpeed, .devHarvestInterval:
             return LocalizedStringResource("Applies to the next playback.")
         case .servicesDebridPrepare: return LocalizedStringResource("Debrid services limit how many links you can make in a period. Preparing links ahead can use that allowance even if you never press Play, so use a lower number when you can.")
         case .devTrailerMaxFps: return LocalizedStringResource("Takes effect on next launch.")

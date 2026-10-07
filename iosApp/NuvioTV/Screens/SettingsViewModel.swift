@@ -467,6 +467,8 @@ final class SettingsViewModel: ObservableObject {
     @Published var matchFrameRate: Bool = UserDefaults.standard.bool(forKey: PlayerTuning.matchFrameRateKey)
     /// What holding Left/Right does in the mpv player: "step" or "scan". Device-local.
     @Published var holdMode: String = UserDefaults.standard.string(forKey: PlayerTuning.holdModeKey) ?? "step"
+    /// What one click on Left/Right does in the mpv player: "skip10" or "chapter". Device-local.
+    @Published var edgeClickMode: String = UserDefaults.standard.string(forKey: PlayerTuning.edgeClickModeKey) ?? "skip10"
     /// Show the time of day while the mpv player controls are up. Device-local.
     @Published var showClock: Bool = UserDefaults.standard.bool(forKey: PlayerTuning.showClockKey)
     /// Use mpv's `gpu-next` (libplacebo) renderer for better HDR (real Apple TV only).
@@ -495,6 +497,11 @@ final class SettingsViewModel: ObservableObject {
     func setHoldMode(_ value: String) {
         holdMode = value
         UserDefaults.standard.set(value, forKey: PlayerTuning.holdModeKey)
+    }
+
+    func setEdgeClickMode(_ value: String) {
+        edgeClickMode = value
+        UserDefaults.standard.set(value, forKey: PlayerTuning.edgeClickModeKey)
     }
 
     func setShowClock(_ value: Bool) {

@@ -58,6 +58,13 @@ struct PlayerSettingsPane: View {
                 descriptionID: .playerHoldMode,
                 label: { $0 == "scan" ? String(localized: "Scan") : String(localized: "Step") }
             )
+            SettingsPickerRow(
+                title: String(localized: "Left/Right Click"),
+                selection: Binding(get: { model.edgeClickMode }, set: { model.setEdgeClickMode($0) }),
+                options: ["skip10", "chapter"],
+                descriptionID: .playerEdgeClick,
+                label: { $0 == "chapter" ? String(localized: "Previous/Next Chapter") : String(localized: "Skip 10 s") }
+            )
             SettingsToggleRow(
                 title: String(localized: "Show Clock"),
                 subtitle: String(localized: "Show the time of day while the controls are up (mpv player)"),
