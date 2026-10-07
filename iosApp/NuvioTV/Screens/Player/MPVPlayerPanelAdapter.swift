@@ -64,6 +64,20 @@ final class MPVPlayerPanelAdapter {
         .sink { [weak self] in self?.rebuildInfo() }
         .store(in: &cancellables)
 
+        // Chapters tab (P2-C): rebuilt when the list arrives and on every panel open (the current
+        // chapter follows the playhead). Select seeks and closes the panel.
+        model.onSelectChapter = { [weak state, weak model] chapter in
+            state?.seekToChapter?(chapter.sec)
+            model?.onClose?()
+        }
+        Publishers.Merge(
+            state.transport.$chapters.map { _ in () }.eraseToAnyPublisher(),
+            state.$panelOpen.removeDuplicates().filter { $0 }.map { _ in () }.eraseToAnyPublisher()
+        )
+        .receive(on: RunLoop.main)
+        .sink { [weak self] in self?.rebuildChapters() }
+        .store(in: &cancellables)
+
         rebuildSelections()
         rebuildInfo()
         refreshRoute()
@@ -99,6 +113,15 @@ final class MPVPlayerPanelAdapter {
             PlayerPanelOption(id: String($0.id), title: $0.label, group: .audio, isSelected: $0.isSelected)
         }
         if model.audio != audio { model.audio = audio }
+    }
+
+    private func rebuildChapters() {
+        let list = state.transport.chapters
+        let current = PlayerChapters.index(at: state.positionSec, in: list)
+        let rows = list.enumerated().map { i, c in
+            PlayerPanelChapter(id: i, title: PlayerChapters.displayTitle(c, index: i), sec: c.sec, isCurrent: i == current)
+        }
+        if model.chapters != rows { model.chapters = rows }
     }
 
     private func rebuildInfo() {

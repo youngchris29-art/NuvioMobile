@@ -26,8 +26,19 @@ final class ChapterListParsingTests: XCTestCase {
     }
 
     func testInvalidTimesDropped() {
-        let c = PlayerChapters.parse(json: #"[{"title":"x","time":-1},{"title":"y"},{"title":"z","time":"5"},{"title":"ok","time":5}]"#)
+        let c = PlayerChapters.parse(json: #"[{"title":"x","time":-1.5},{"title":"y"},{"title":"z","time":"5"},{"title":"b","time":true},{"title":"ok","time":5}]"#)
         XCTAssertEqual(c, [TransportChapter(title: "ok", sec: 5)])
+    }
+
+    /// What mpv printed for the fixture on the simulator: times shifted by the container start.
+    func testMpvStartOffsetClampsFirstChapter() {
+        let raw = #"[{"title":"Opening","time":-0.023000},{"title":"Act One","time":89.977000},{"title":"Act Two","time":239.977000},{"title":"Act Three","time":389.977000},{"title":"Credits","time":539.977000}]"#
+        let c = PlayerChapters.parse(json: raw)
+        XCTAssertEqual(c.count, 5)
+        XCTAssertEqual(c.first, TransportChapter(title: "Opening", sec: 0))
+        XCTAssertEqual(PlayerChapters.title(at: 1, in: c), "Opening")
+        let indexed = PlayerChapters.parseIndexed(count: 2, title: { _ in "" }, time: { [-0.02, 90][$0] })
+        XCTAssertEqual(indexed.map(\.sec), [0, 90])
     }
 
     func testMissingTitleAndDisplayTitle() {

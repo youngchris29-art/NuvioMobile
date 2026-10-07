@@ -88,6 +88,8 @@ final class MPVPlaybackState: ObservableObject {
     var setAudioDelay: ((Double) -> Void)?
     var replay: (() -> Void)?
     var reclaimFocus: (() -> Void)?
+    /// Seek to a chapter start (the Chapters tab), absolute seconds.
+    var seekToChapter: ((Double) -> Void)?
 
     /// Wired by `NextEpisodeEngine`: down-press plays the ready next episode (returns true when
     /// consumed, so the skip pill doesn't also fire); backward seek cancels the countdown.
@@ -178,6 +180,10 @@ final class MPVTVPlayerViewController: UIViewController {
     /// `screenshot-raw` (the simulator cannot screenshot, see `viewDidLoad`). Set once in
     /// `viewDidLoad`, read on `eventQueue`.
     private var harvestSynthetic = false
+    /// One Left/Right click: ±10 s or a chapter jump (`player.edgeClickMode`, read in viewDidLoad).
+    private var edgeClickMode: EdgeClickMode = .skip10
+    /// Clears the aspect flash 2 s after the last Aspect pill press.
+    private var aspectFlashWork: DispatchWorkItem?
     /// Last edge-to-edge panel opened by a gesture (the swipe recogniser and the arbiter both fire).
     private var lastGesturePanelUptime: TimeInterval = 0
     // `eventQueue` only: the one-shot DEBUG cache-state logs.
@@ -445,6 +451,12 @@ final class MPVTVPlayerViewController: UIViewController {
             #endif
         }
         #endif
+
+        // Chapters (P2-C): the Chapters tab seeks through here; one click on Left/Right follows
+        // Settings › Playback › Left/Right Click.
+        state.seekToChapter = { [weak self] sec in self?.seekToChapter(sec) }
+        edgeClickMode = EdgeClickMode(
+            rawValue: UserDefaults.standard.string(forKey: PlayerTuning.edgeClickModeKey) ?? "skip10") ?? .skip10
 
         // Touch-surface swipe down → top panel (presses arrive as `.downArrow`; real swipes don't).
         let swipeDown = UISwipeGestureRecognizer(target: self, action: #selector(handleSwipeDown))
@@ -1082,6 +1094,8 @@ final class MPVTVPlayerViewController: UIViewController {
             addAddonSubtitles(prefetched)
         }
         applySubtitleStyle()
+        // Picture fit from the synced resize mode (the phone shares it); Stretch never persists.
+        applyAspect(.initial(syncedName: playerSettings?.resizeMode.name))
         applyDisplayCriteriaIfEnabled()
         fetchSkipSegments()
         #if DEBUG
@@ -2059,6 +2073,67 @@ final class MPVTVPlayerViewController: UIViewController {
         if !handled { super.pressesCancelled(presses, with: event) }
     }
 
+    // MARK: - Chapters and aspect (P2-C)
+
+    /// `eventQueue` (from `drainEvents`' FILE_LOADED): mpv's `chapter-list` as JSON through the
+    /// string path (the one `demuxer-cache-state` proved), else the indexed sub-properties; then
+    /// published on main.
+    private func readChapters() {
+        guard mpv != nil else { return }
+        let raw = getString("chapter-list")
+        var chapters = raw.map { PlayerChapters.parse(json: $0) } ?? []
+        var source = "json"
+        if chapters.isEmpty {
+            let n = getInt("chapters")
+            if n > 0 {
+                chapters = PlayerChapters.parseIndexed(count: n,
+                                                       title: { self.getString("chapter-list/\($0)/title") },
+                                                       time: { self.getDouble("chapter-list/\($0)/time") })
+                source = "indexed"
+            }
+        }
+        #if DEBUG
+        NSLog("[Chapters] n=%ld src=%@ raw=%@", chapters.count, source, String((raw ?? "nil").prefix(200)))
+        #endif
+        DispatchQueue.main.async { self.state.transport.chapters = chapters }
+    }
+
+    /// Main: publish the mode, then write all three mpv properties on `eventQueue`.
+    private func applyAspect(_ mode: PlayerAspectMode) {
+        state.transport.aspectMode = mode
+        let p = mode.mpvProps
+        eventQueue.async { [weak self] in
+            guard let self, self.mpv != nil else { return }
+            self.setMpvString("video-aspect-override", p.aspectOverride)
+            self.setMpvDouble("panscan", p.panscan)
+            self.setMpvDouble("video-zoom", p.videoZoom)
+            #if DEBUG
+            NSLog("[Aspect] %@ override=%@ panscan=%.2f zoom=%.2f read=%@", mode.rawValue, p.aspectOverride,
+                  p.panscan, p.videoZoom, self.getString("video-aspect-override") ?? "nil")
+            #endif
+        }
+    }
+
+    /// The Aspect pill: next mode, flash its name for 2 s, and write Fit/Fill/Zoom to the synced
+    /// resize mode (the phone follows, C23). Stretch is session-only (C9).
+    private func cycleAspect() {
+        let mode = state.transport.aspectMode.next
+        applyAspect(mode)
+        let synced: PlayerResizeMode?
+        switch mode {
+        case .fit: synced = .fit
+        case .fill: synced = .fill
+        case .zoom: synced = .zoom
+        case .stretch: synced = nil
+        }
+        if let synced { PlayerSettingsRepository.shared.setResizeMode(mode: synced) }
+        state.transport.aspectFlash = mode.label
+        aspectFlashWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.state.transport.aspectFlash = nil }
+        aspectFlashWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
+    }
+
     // MARK: - Hold / preview / commit (P1)
 
     /// Start a Left/Right gesture in `dir` (±1). The first press is a plain ±10 s seek (Step mode);
@@ -2070,6 +2145,8 @@ final class MPVTVPlayerViewController: UIViewController {
         let base = skipPlanner.seekInFlight?.targetSec ?? cachedProps().position   // seekBy's rule
         holdStartUptime = ProcessInfo.processInfo.systemUptime
         transport.paused = cachedProps().paused        // a paused hold steps, never scans
+        // Chapter mode (C8): the click acts on release, so a hold steps from the origin, no jump first.
+        transport.clickOnRelease = edgeClickMode == .chapter && state.transport.chapters.count >= 2
         apply(transport.pressBegan(direction: Int(dir), positionSec: base))
         restartHoldTimer()
         flashControls()
@@ -2102,7 +2179,7 @@ final class MPVTVPlayerViewController: UIViewController {
     private func apply(_ output: TransportPreview.Output) {
         switch output {
         case .none: break
-        case .immediateSeek(let d): seekBy(d)
+        case .immediateSeek(let d): edgeClick(d)
         case .commit(let r): issueCommit(r)
         case .startScan(let rate): startScan(rate)
         case .setScanRate(let r):
@@ -2574,6 +2651,29 @@ final class MPVTVPlayerViewController: UIViewController {
                   args: [String(format: "%.3f", seconds), "relative"])
     }
 
+    /// One Left/Right click (P1's `.immediateSeek`): ±10 s, or in chapter mode a chapter jump.
+    private func edgeClick(_ d: Double) {
+        let base = skipPlanner.seekInFlight?.targetSec ?? cachedProps().position   // seekBy's rule
+        switch PlayerChapters.edgeClick(mode: edgeClickMode, direction: d < 0 ? -1 : 1, baseSec: base,
+                                        chapters: state.transport.chapters, skipSec: abs(d)) {
+        case .relative(let r): seekBy(r)
+        case .absolute(let t): seekToChapter(t)
+        }
+    }
+
+    /// Absolute seek to a chapter start (the Chapters tab, a chapter-mode click). A backward jump
+    /// cancels the up-next countdown, like any backward seek.
+    private func seekToChapter(_ sec: Double) {
+        guard mpv != nil else { return }
+        let base = skipPlanner.seekInFlight?.targetSec ?? cachedProps().position
+        if sec < base { state.upNextCancel?() }
+        issueSeek(kind: .user, targetSec: sec, fromSec: base, args: [String(format: "%.3f", sec), "absolute"])
+        #if DEBUG
+        state.seekProbe.note(commit: sec, stages: "ch")
+        #endif
+        flashControls()
+    }
+
     private func seekAbsolute(_ seconds: Double, kind: SkipSegmentPlanner.SeekKind) {
         issueSeek(kind: kind, targetSec: seconds, args: [String(format: "%.3f", seconds), "absolute"])
     }
@@ -2672,6 +2772,8 @@ final class MPVTVPlayerViewController: UIViewController {
     }
 
     private func activatePill(_ pill: PillKind) {
+        // Aspect cycles in place: focus stays on the pill so repeated Select keeps cycling.
+        if pill == .aspect { cycleAspect(); flashControls(); return }
         state.transport.focusedPill = nil
         flashControls()
         guard presentedViewController == nil else { return }
@@ -2910,6 +3012,7 @@ final class MPVTVPlayerViewController: UIViewController {
                     self.onFileLoaded()
                 }
                 self.refreshTracksAsync()
+                self.readChapters()
             }
             // Engine-confirmed seek completion for `skipPlanner` (see `issueSeek`): our seek
             // started (SEEK), then playback restarted after it (PLAYBACK_RESTART). A restart
@@ -3309,6 +3412,8 @@ struct MPVPlayerScreen: View {
             SeekProbeLabel(probe: state.seekProbe)
             #endif
 
+            PlayerAspectFlashHost(model: state.transport)
+
             // Metadata card after a sustained pause (Android TV PauseOverlay parity).
             // It waits for the bar's fade (0.25 s) before fading in; any press raises the bar,
             // which removes it.
@@ -3558,3 +3663,20 @@ private struct StreamInfoOverlayView: View {
     }
 }
 
+
+/// Observes the transport model directly (the screen observes only `MPVPlaybackState`), so the
+/// aspect flash appears and fades on its own publishes.
+private struct PlayerAspectFlashHost: View {
+    @ObservedObject var model: TransportBarModel
+
+    var body: some View {
+        ZStack {
+            if let text = model.aspectFlash {
+                PlayerAspectFlash(text: text)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .allowsHitTesting(false)
+        .animation(.easeInOut(duration: 0.2), value: model.aspectFlash)
+    }
+}

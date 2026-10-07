@@ -12,7 +12,8 @@ enum EdgeClickAction: Equatable { case relative(Double), absolute(Double) }
 /// the edge click all read it from there.
 enum PlayerChapters {
     /// mpv's `chapter-list` printed as JSON (`mpv_get_property_string` on a node property): a
-    /// top-level array of `{"title": String?, "time": Number}`. `time` is required, finite, ≥ 0;
+    /// top-level array of `{"title": String?, "time": Number}`. `time` is required and finite (a
+    /// slightly negative one is clamped to 0, see `clampedTime`);
     /// a missing title is "". Malformed JSON or a non-array → []. Sorted by time, exact-duplicate
     /// times dropped (the first kept).
     static func parse(json: String) -> [TransportChapter] {
@@ -22,8 +23,7 @@ enum PlayerChapters {
         for item in array {
             guard let object = item as? [String: Any], let number = object["time"] as? NSNumber,
                   CFGetTypeID(number) != CFBooleanGetTypeID() else { continue }
-            let sec = number.doubleValue
-            guard sec.isFinite, sec >= 0 else { continue }
+            guard let sec = clampedTime(number.doubleValue) else { continue }
             let title = (object["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             out.append(TransportChapter(title: title, sec: sec))
         }
@@ -36,11 +36,20 @@ enum PlayerChapters {
         guard count > 0 else { return [] }
         var out: [TransportChapter] = []
         for i in 0..<count {
-            let sec = time(i)
-            guard sec.isFinite, sec >= 0 else { continue }
+            guard let sec = clampedTime(time(i)) else { continue }
             out.append(TransportChapter(title: title(i)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "", sec: sec))
         }
         return normalized(out)
+    }
+
+    /// mpv reports chapter times relative to the container's start time, so the first chapter of
+    /// a file whose streams start a few ms late reads slightly negative (the fixture: −0.023).
+    /// A small negative time is the start; anything further back, or not finite, is dropped.
+    static let negativeTimeSlack: Double = 1
+
+    private static func clampedTime(_ sec: Double) -> Double? {
+        guard sec.isFinite, sec >= -negativeTimeSlack else { return nil }
+        return max(sec, 0)
     }
 
     private static func normalized(_ chapters: [TransportChapter]) -> [TransportChapter] {
