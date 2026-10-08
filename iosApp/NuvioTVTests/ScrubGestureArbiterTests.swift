@@ -53,12 +53,35 @@ final class ScrubGestureArbiterTests: XCTestCase {
     }
 
     // 7
-    func testVerticalDownOpensPanelAt110() {
+    func testVerticalDownDecidesAt110AndOpensAtTheLift() {
         XCTAssertEqual(stroke(0, 109).1, .none)
-        let (a, e) = stroke(0, 110)
-        XCTAssertEqual(e, .openPanel)
+        var (a, e) = stroke(0, 110)
+        XCTAssertEqual(e, .none, "the threshold decides the stroke, the lift opens the panel")
         XCTAssertEqual(a.intent, .vertical(down: true))
         XCTAssertEqual(a.probeCode, "v")
+        XCTAssertEqual(a.moved(tx: 0, ty: 300, now: now, context: ctx()), .none)
+        XCTAssertEqual(a.touchEnded(context: ctx()), .openPanel)
+    }
+
+    /// Device pass 2026-10-08: the finger rolling onto a clickpad edge before a Left/Right click
+    /// read as 112–127 pt of slow downward travel and opened the panel mid pill walk.
+    func testVerticalDownWithAClickInTheStrokeNeverOpens() {
+        var (a, _) = stroke(0, 120)
+        XCTAssertEqual(a.intent, .vertical(down: true))
+        a.pressBegan()
+        XCTAssertEqual(a.intent, .ignored)
+        XCTAssertEqual(a.touchEnded(context: ctx()), .none)
+        // A press that began before the threshold counts too.
+        var b = A()
+        b.touchBegan()
+        b.pressBegan()
+        XCTAssertEqual(b.moved(tx: 0, ty: 120, now: now, context: ctx(lastPress: 90)), .none)
+        XCTAssertEqual(b.touchEnded(context: ctx()), .none)
+    }
+
+    func testVerticalDownLiftWithThePressStillDownDoesNotOpen() {
+        var (a, _) = stroke(0, 120)
+        XCTAssertEqual(a.touchEnded(context: ctx(presses: 1)), .none)
     }
 
     // 8
@@ -68,7 +91,10 @@ final class ScrubGestureArbiterTests: XCTestCase {
 
     // 9
     func testVerticalWinsOverHorizontal() {
-        XCTAssertEqual(stroke(60, 120).1, .openPanel)
+        var (a, e) = stroke(60, 120)
+        XCTAssertEqual(e, .none)
+        XCTAssertEqual(a.intent, .vertical(down: true))
+        XCTAssertEqual(a.touchEnded(context: ctx()), .openPanel)
     }
 
     // 10

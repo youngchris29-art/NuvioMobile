@@ -70,6 +70,11 @@ struct ScrubGestureArbiter {
     static let moveSuppressSec: TimeInterval = 0.4
 
     private(set) var intent: Intent = .undecided
+    /// A press arrived during this stroke (device pass 10-08: the finger rolling onto a clickpad edge
+    /// before the click reads as 110+ pt of slow vertical travel, and the 0.4 s suppression only
+    /// starts AT the press). A downward stroke therefore opens the panel at the lift, never at the
+    /// threshold, and not at all once a press has happened in it.
+    private(set) var pressedDuringStroke = false
     private var originX: Double = 0
     private var originY: Double = 0
     private(set) var travel: Double = 0
@@ -87,6 +92,7 @@ struct ScrubGestureArbiter {
 
     mutating func touchBegan() {
         intent = .undecided
+        pressedDuringStroke = false
         originX = 0; originY = 0
         travel = 0
         lastTx = 0
@@ -114,7 +120,9 @@ struct ScrubGestureArbiter {
         }
         if abs(dy) >= Self.verticalIntentPt && abs(dy) >= Self.axisRatio * abs(dx) {
             intent = .vertical(down: dy > 0)
-            return dy > 0 ? .openPanel : .swipeUp
+            // Down decides the stroke (no scrub can start) but opens the panel only at the lift,
+            // see `touchEnded`. Up acts at once: it raises the bar or cancels a scrub, both cheap.
+            return dy > 0 ? .none : .swipeUp
         }
         if abs(dx) >= Self.horizontalThreshold(context) && abs(dx) >= Self.axisRatio * abs(dy) {
             guard context.canScrub else {
@@ -132,7 +140,15 @@ struct ScrubGestureArbiter {
         // The arbiter keeps `intent` (the probe shows the last stroke's verdict) until the next
         // `touchBegan`.
         if intent == .undecided && travel < Self.tapMaxTravelPt { return .lightTap }
+        if intent == .vertical(down: true), !pressedDuringStroke, context.pressesDown == 0 { return .openPanel }
         return .none
+    }
+
+    /// A press began while the finger is on the surface: this stroke can no longer open the panel
+    /// (a click-roll is not a swipe). Called for every press type from `pressesBegan`.
+    mutating func pressBegan() {
+        pressedDuringStroke = true
+        if intent == .vertical(down: true) { intent = .ignored }
     }
 
     /// The scrub ended mid-stroke (Select, Menu, a press): the rest of this stroke does nothing.

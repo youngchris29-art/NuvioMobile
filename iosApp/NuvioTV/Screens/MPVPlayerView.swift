@@ -1940,6 +1940,7 @@ final class MPVTVPlayerViewController: UIViewController {
         var handled = false
         lastClickUptime = ProcessInfo.processInfo.systemUptime
         for press in presses { pressesDown.insert(ObjectIdentifier(press)) }
+        scrubArbiter.pressBegan()
         // A press brings an auto-hidden skip chip back for another 10 s (the press still acts,
         // except a Down that revealed the chip: that one only reveals it, the next Down skips).
         // Left/Right seek: the chip comes back on the tick after the seek lands, not now (an
