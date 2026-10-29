@@ -77,6 +77,14 @@ data class StreamBadgeRules(
         ).normalized()
     }
 
+    /**
+     * Rules to match the player's badges with: a blank [sourceUrl] means "same pack as the
+     * stream list" (the active import), a known source activates that pack, and a source that
+     * is no longer imported falls back to the active import (upstream 83e528f00).
+     */
+    fun forPlayer(sourceUrl: String): StreamBadgeRules =
+        if (sourceUrl.isBlank()) normalized() else setActiveSource(sourceUrl)
+
     fun removeSource(sourceUrl: String): StreamBadgeRules =
         copy(imports = imports.filterNot { it.sourceUrl.equals(sourceUrl.trim(), ignoreCase = true) }).normalized()
 
@@ -217,8 +225,12 @@ object StreamBadgeMatcher {
 
     fun matchedBadges(stream: StreamItem, filters: List<CompiledStreamBadgeFilter>): List<StreamBadge> {
         if (filters.isEmpty()) return emptyList()
-        val candidates = badgeMatchCandidates(stream)
-        if (candidates.isEmpty()) return emptyList()
+        return matchedBadges(badgeMatchCandidates(stream), filters)
+    }
+
+    /** Badges whose pattern matches any of [candidates]; the player passes its live-media match text (upstream 344117e73). */
+    fun matchedBadges(candidates: List<String>, filters: List<CompiledStreamBadgeFilter>): List<StreamBadge> {
+        if (filters.isEmpty() || candidates.isEmpty()) return emptyList()
 
         val matched = linkedMapOf<String, StreamBadge>()
         filters.forEach { filter ->

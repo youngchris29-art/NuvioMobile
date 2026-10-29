@@ -371,6 +371,8 @@ object AccountDataStores {
                 AppleKeySpec.ProfileScoped("stream_badge_rules"),
                 AppleKeySpec.ProfileScoped("show_file_size_badges"),
                 AppleKeySpec.ProfileScoped("show_addon_logo"),
+                AppleKeySpec.ProfileScoped("show_badges_in_player"),
+                AppleKeySpec.ProfileScoped("player_badge_source"),
                 AppleKeySpec.ProfileScoped("stream_badge_placement"),
                 AppleKeySpec.ProfileScoped("stream_background_mode"),
                 AppleKeySpec.ProfileScoped("stream_grouping_mode"),
