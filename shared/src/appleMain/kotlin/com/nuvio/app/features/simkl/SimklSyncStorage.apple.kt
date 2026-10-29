@@ -24,6 +24,10 @@ internal actual object SimklSyncStorage {
         PayloadFileStore.save(subdirectory, ProfileScopedKey.of(payloadKey), payload)
     }
 
+    actual fun savePayload(profileId: Int, payload: String) {
+        PayloadFileStore.save(subdirectory, ProfileScopedKey.of(payloadKey, profileId), payload)
+    }
+
     actual fun removeProfile(profileId: Int) =
         PayloadFileStore.remove(subdirectory, ProfileScopedKey.of(payloadKey, profileId))
 

@@ -1,46 +1,74 @@
 package com.nuvio.app.features.simkl
 
+import com.nuvio.app.core.storage.ProfileScopedKey
+import com.nuvio.app.core.storage.jvmSharedPreferences
+import com.nuvio.app.features.profiles.ProfileRepository
+import com.nuvio.app.features.tracking.TrackingExternalIds
+import com.nuvio.app.features.tracking.TrackingMediaKind
+import com.nuvio.app.features.tracking.TrackingMediaReference
 import com.nuvio.app.features.tracking.TrackingMutationResult
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonPrimitive
-import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.coroutines.CoroutineContext
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Commits run their snapshot work (reconcile, JSON encode, file write) on
- * [SimklSyncRepository.commitDispatcher], not on whichever thread resumed the network call.
+ * Commits run their snapshot work (reconcile, JSON encode, file write, publish) on
+ * [SimklSyncRepository.commitDispatcher], not on whichever thread resumed the network call, and
+ * never write a snapshot into a profile or sign-in state that has moved on.
  * JVM-only: the repository is a process-wide object backed by the in-memory JVM storage actual.
  */
 class SimklSyncRepositoryCommitDispatcherTest {
     private class RecordingDispatcher : CoroutineDispatcher() {
-        val dispatches = AtomicInteger()
+        val threads = ConcurrentLinkedQueue<Thread>()
         override fun dispatch(context: CoroutineContext, block: Runnable) {
-            dispatches.incrementAndGet()
-            Dispatchers.Default.dispatch(context, block)
+            Dispatchers.Default.dispatch(context, Runnable {
+                threads.add(Thread.currentThread())
+                block.run()
+            })
         }
     }
 
     private val recorder = RecordingDispatcher()
+    private val saveThreads = ConcurrentLinkedQueue<Thread>()
+    private val publishThreads = ConcurrentLinkedQueue<Thread>()
     private var original: CoroutineDispatcher = Dispatchers.Default
+    private var publishScope: CoroutineScope? = null
 
     @BeforeTest
     fun install() {
         original = SimklSyncRepository.commitDispatcher
         SimklSyncRepository.commitDispatcher = recorder
+        SimklSyncRepository.beforeSaveHook = { saveThreads.add(Thread.currentThread()) }
         SimklSyncRepository.clearLocalState()
         SimklSyncRepository.ensureLoaded()
+        // Unconfined: the collector resumes on the thread that sets the state, i.e. the publisher.
+        val scope = CoroutineScope(Dispatchers.Unconfined)
+        publishScope = scope
+        SimklSyncRepository.state
+            .onEach { state -> if (state.snapshot != SimklSyncSnapshot()) publishThreads.add(Thread.currentThread()) }
+            .launchIn(scope)
+        publishThreads.clear()
     }
 
     @AfterTest
     fun restore() {
+        publishScope?.cancel()
         SimklSyncRepository.commitDispatcher = original
+        SimklSyncRepository.beforeSaveHook = {}
         SimklSyncRepository.clearLocalState()
     }
 
@@ -55,29 +83,98 @@ class SimklSyncRepositoryCommitDispatcherTest {
         episode = null,
     )
 
+    private fun addToWatchlist() = SimklMutationReceipt(
+        TrackingMutationResult(attemptedCount = 1),
+        SimklCommittedMutation.MoveToList(
+            listOf(
+                SimklResolvedListMutation(
+                    request = TrackingMediaReference(
+                        TrackingMediaKind.MOVIE, "Watchlist movie", ids = TrackingExternalIds(imdb = "tt7654321"),
+                    ),
+                    status = SimklListStatus.entries.first(),
+                    responseMedia = SimklMedia(title = "Watchlist movie", ids = mapOf("imdb" to JsonPrimitive("tt7654321"))),
+                ),
+            ),
+        ),
+    )
+
+    private fun assertOffCallerThread(caller: Thread, label: String) {
+        assertTrue(saveThreads.isNotEmpty(), "$label: the save ran")
+        assertTrue(saveThreads.all { it !== caller && it in recorder.threads }, "$label: save on the commit dispatcher")
+        assertTrue(publishThreads.isNotEmpty(), "$label: the snapshot was published")
+        assertTrue(publishThreads.all { it !== caller && it in recorder.threads }, "$label: publish on the commit dispatcher")
+    }
+
     @Test
-    fun `scrobble commits hop to the commit dispatcher and still publish the snapshot`() = runBlocking {
-        val before = recorder.dispatches.get()
+    fun `scrobble commit saves and publishes on the commit dispatcher`() = runBlocking {
         SimklSyncRepository.commitScrobble(pause(5))
-        assertTrue(recorder.dispatches.get() > before, "commitScrobble must dispatch through commitDispatcher")
         assertEquals(listOf(5L), SimklSyncRepository.state.value.snapshot.playback.map { it.id })
+        assertOffCallerThread(Thread.currentThread(), "commitScrobble")
+        assertTrue(SimklSyncStorage.loadPayload().orEmpty().contains("\"id\":5"), "snapshot persisted for the active profile")
     }
 
     @Test
-    fun `playback removal hops to the commit dispatcher and removes the session`() = runBlocking {
+    fun `playback removal saves and publishes on the commit dispatcher`() = runBlocking {
         SimklSyncRepository.commitScrobble(pause(6))
-        val before = recorder.dispatches.get()
+        saveThreads.clear()
+        publishThreads.clear()
         SimklSyncRepository.commitPlaybackRemoval(setOf(6L))
-        assertTrue(recorder.dispatches.get() > before, "commitPlaybackRemoval must dispatch through commitDispatcher")
         assertTrue(SimklSyncRepository.state.value.snapshot.playback.isEmpty())
+        assertTrue(saveThreads.all { it !== Thread.currentThread() && it in recorder.threads } && saveThreads.isNotEmpty(), "save on the commit dispatcher")
+        assertFalse(SimklSyncStorage.loadPayload().orEmpty().contains("\"id\":6"), "removal persisted")
     }
 
     @Test
-    fun `mutation commits hop to the commit dispatcher`() = runBlocking {
-        val before = recorder.dispatches.get()
-        SimklSyncRepository.commitMutation(
-            SimklMutationReceipt(TrackingMutationResult(attemptedCount = 0), SimklCommittedMutation.MoveToList(emptyList())),
-        )
-        assertTrue(recorder.dispatches.get() > before, "commitMutation must dispatch through commitDispatcher")
+    fun `mutation commit that changes the snapshot saves and publishes on the commit dispatcher`() = runBlocking {
+        SimklSyncRepository.commitMutation(addToWatchlist())
+        assertEquals(1, SimklSyncRepository.state.value.snapshot.entries.size)
+        assertOffCallerThread(Thread.currentThread(), "commitMutation")
+        assertTrue(SimklSyncStorage.loadPayload().orEmpty().contains("tt7654321"))
+    }
+
+    @Test
+    fun `a profile change landing after the encode stops the write and the publish`() = runBlocking {
+        SimklSyncRepository.beforeSaveHook = { SimklSyncRepository.onProfileChanged() }
+        SimklSyncRepository.commitScrobble(pause(7))
+        assertTrue(SimklSyncRepository.state.value.snapshot.playback.isEmpty(), "stale snapshot not published")
+        assertTrue(SimklSyncStorage.loadPayload().isNullOrBlank(), "stale snapshot not written")
+
+        SimklSyncRepository.commitMutation(addToWatchlist())
+        assertTrue(SimklSyncRepository.state.value.snapshot.entries.isEmpty())
+        assertTrue(SimklSyncStorage.loadPayload().isNullOrBlank())
+    }
+
+    @Test
+    fun `a sign out landing after the encode does not recreate the wiped file`() = runBlocking {
+        SimklSyncRepository.beforeSaveHook = { SimklSyncRepository.clearLocalState() }
+        SimklSyncRepository.commitScrobble(pause(8))
+        assertTrue(SimklSyncRepository.state.value.snapshot.playback.isEmpty())
+        assertTrue(SimklSyncStorage.loadPayload().isNullOrBlank(), "wiped file stays wiped")
+    }
+
+    @Test
+    fun `playback removal is dropped when the profile changed after the encode`() = runBlocking {
+        SimklSyncRepository.commitScrobble(pause(9))
+        val persisted = SimklSyncStorage.loadPayload()
+        SimklSyncRepository.beforeSaveHook = { SimklSyncRepository.onProfileChanged() }
+        SimklSyncRepository.commitPlaybackRemoval(setOf(9L))
+        assertEquals(persisted, SimklSyncStorage.loadPayload(), "removal not written over the reloaded profile")
+    }
+
+    @Test
+    fun `save by profile id writes that profile's file and leaves the active one alone`() {
+        val active = ProfileRepository.activeProfileId
+        val other = active + 6
+        val preferences = jvmSharedPreferences("nuvio_simkl_sync")
+        try {
+            SimklSyncStorage.savePayload("active-payload")
+            SimklSyncStorage.savePayload(other, "other-payload")
+            assertEquals("other-payload", preferences.getString(ProfileScopedKey.of("simkl_sync_snapshot", other), null))
+            assertEquals("active-payload", SimklSyncStorage.loadPayload())
+            assertEquals("active-payload", preferences.getString(ProfileScopedKey.of("simkl_sync_snapshot", active), null))
+        } finally {
+            SimklSyncStorage.removeProfile(other)
+            assertNull(preferences.getString(ProfileScopedKey.of("simkl_sync_snapshot", other), null))
+        }
     }
 }

@@ -25,6 +25,13 @@ internal actual object SimklSyncStorage {
             ?.apply()
     }
 
+    actual fun savePayload(profileId: Int, payload: String) {
+        preferences
+            ?.edit()
+            ?.putString(ProfileScopedKey.of(payloadKey, profileId), payload)
+            ?.apply()
+    }
+
     actual fun removeProfile(profileId: Int) {
         preferences
             ?.edit()
