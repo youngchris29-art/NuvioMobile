@@ -64,6 +64,49 @@ final class PlaybackFailoverPolicyTests: XCTestCase {
         }
     }
 
+    // MARK: Permanent HTTP errors (NuvioTV 830e8e83c)
+
+    /// Upstream stopped libmpv auto-retrying a 400/401/403/404/410. The tvOS player has no
+    /// auto-retry: mpv's END_FILE error goes straight to `onPlaybackFailed` with the classified
+    /// verdict, and the host acts on it at once. This pins that chain for every permanent status:
+    /// the log line classifies as `.http` with its status, the link is remembered, and an
+    /// automatic flow moves on to the next candidate.
+    func testPermanentHttpErrorFailsOverAtOnceAndIsRemembered() {
+        for status in [400, 401, 403, 404, 410] {
+            let verdict = PlaybackFailureClassifier.fromMpvLog(["ffmpeg: HTTP error \(status)"],
+                                                               endFileError: "loading failed", watchdogFired: false)
+            XCTAssertEqual(verdict, PlaybackFailureClassifier.Verdict(.http, http: status), "\(status)")
+            var failed = failure(played: 0)
+            failed.kind = verdict.kind
+            failed.httpStatus = verdict.httpStatus
+            XCTAssertTrue(PlaybackFailoverPolicy.shouldReject(failed), "\(status)")
+        }
+        XCTAssertEqual(PlaybackFailoverPolicy.response(for: .autoPlay), .autoFailover)
+    }
+
+    /// The FFmpeg AVERROR form (remux / probe open) of the same statuses, 4XX catch-all included.
+    func testPermanentHttpAVErrorsClassifyAsHttp() {
+        typealias C = PlaybackFailureClassifier
+        for (code, status) in [(C.httpBadRequest, 400), (C.httpUnauthorized, 401), (C.httpForbidden, 403),
+                               (C.httpNotFound, 404), (C.httpOther4xx, 400)] {
+            XCTAssertEqual(C.fromAVError(code, atOpen: true), C.Verdict(.http, http: status), "\(status)")
+        }
+    }
+
+    /// 5xx, timeouts and network errors keep their current path: a 5xx is link evidence like a
+    /// 4xx, network trouble is never remembered (the failover walk still moves on).
+    func testServerAndNetworkErrorsKeepTheirCurrentPath() {
+        let serverError = PlaybackFailureClassifier.fromMpvLog(["ffmpeg: Server returned 5XX Server Error reply"],
+                                                               endFileError: nil, watchdogFired: false)
+        XCTAssertEqual(serverError, PlaybackFailureClassifier.Verdict(.http, http: 500))
+        let timeout = PlaybackFailureClassifier.fromMpvLog(["tcp: Connection timed out"],
+                                                           endFileError: nil, watchdogFired: false)
+        XCTAssertEqual(timeout.kind, .network)
+        var failed = failure(played: 0)
+        failed.kind = timeout.kind
+        XCTAssertFalse(PlaybackFailoverPolicy.shouldReject(failed))
+    }
+
     func testFiveMinutesOfPlayIsHealthy() {
         XCTAssertFalse(PlaybackFailoverPolicy.shouldKeep(secondsPlayed: 299))
         XCTAssertTrue(PlaybackFailoverPolicy.shouldKeep(secondsPlayed: 300))
