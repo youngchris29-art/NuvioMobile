@@ -77,7 +77,7 @@ internal fun MdbListSyncSnapshot.mutationTarget(reference: TrackingMediaReferenc
 }
 
 internal fun TrackingExternalIds.toMdbListIds(): MdbListIds? = MdbListIds(
-    imdb = imdb?.takeIf { it.matches(Regex("tt[0-9]+")) },
+    imdb = imdb?.takeIf(String::isMdbListImdbId),
     tmdb = tmdb?.takeIf { it > 0L },
     tvdb = tvdb?.toLongOrNull()?.takeIf { it > 0L },
     trakt = trakt?.takeIf { it > 0L },

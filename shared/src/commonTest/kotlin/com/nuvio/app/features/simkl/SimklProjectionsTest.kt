@@ -564,6 +564,27 @@ class SimklProjectionsTest {
     }
 
     @Test
+    fun `timestamp parser pins exact epoch values trimming case and fraction rules`() {
+        assertEquals(1_738_517_302_000L, parseSimklUtcEpochMs("2025-02-02T17:28:22Z"))
+        assertEquals(1_738_517_302_000L, parseSimklUtcEpochMs("  2025-02-02T17:28:22Z\n"))
+        assertEquals(1_738_517_302_000L, parseSimklUtcEpochMs("2025-02-02t17:28:22z"))
+        assertEquals(1_738_517_302_500L, parseSimklUtcEpochMs("2025-02-02T17:28:22.5Z"))
+        assertEquals(1_738_517_302_123L, parseSimklUtcEpochMs("2025-02-02T17:28:22.123456789Z"))
+        assertEquals(946_684_799_000L, parseSimklUtcEpochMs("1999-12-31T23:59:59Z"))
+        assertNull(parseSimklUtcEpochMs(null))
+        assertNull(parseSimklUtcEpochMs(""))
+        assertNull(parseSimklUtcEpochMs("1969-12-31T23:59:59Z"))
+        assertNull(parseSimklUtcEpochMs("2025-02-02T17:28:22"))
+        assertNull(parseSimklUtcEpochMs("2025-02-02T17:28:22.Z"))
+        assertNull(parseSimklUtcEpochMs("2025-02-02T17:28:22.1234567890Z"))
+        assertNull(parseSimklUtcEpochMs("2025-02-02 17:28:22Z"))
+        assertNull(parseSimklUtcEpochMs("2025-02-02T24:00:00Z"))
+        assertNull(parseSimklUtcEpochMs("2025-02-02T17:60:00Z"))
+        assertNull(parseSimklUtcEpochMs("2025-02-02T17:28:60Z"))
+        assertNull(parseSimklUtcEpochMs("2025-04-31T00:00:00Z"))
+    }
+
+    @Test
     fun `tvdb preference picks tvdb id for anime entries`() {
         val media = idsMedia("imdb" to "tt2560140", "tvdb" to "267440", "mal" to "16498")
 

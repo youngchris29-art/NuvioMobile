@@ -112,6 +112,8 @@ internal class MdbListProgressProjection(snapshot: MdbListSyncSnapshot) {
 internal val MdbListItemType.contentType: String
     get() = if (this == MdbListItemType.MOVIE) "movie" else "series"
 
+private val MdbListSlug = Regex("[A-Za-z0-9_-]+")
+
 internal fun MdbListMedia.sourceUrl(type: MdbListItemType): String? =
-    ids.mdblist?.takeIf { it.matches(Regex("[A-Za-z0-9_-]+")) }
+    ids.mdblist?.takeIf { it.matches(MdbListSlug) }
         ?.let { "https://mdblist.com/${if (type == MdbListItemType.MOVIE) "movie" else "show"}/$it" }

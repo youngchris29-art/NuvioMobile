@@ -1,5 +1,9 @@
 package com.nuvio.app.features.simkl
 
+import com.nuvio.app.core.util.daysInMonth
+import com.nuvio.app.core.util.daysSinceEpoch
+import com.nuvio.app.core.util.decimalAt
+import com.nuvio.app.core.util.fractionMillisAt
 import com.nuvio.app.features.tracking.TrackingCatalogReference
 import com.nuvio.app.features.tracking.TrackingEpisode
 import com.nuvio.app.features.tracking.TrackingExternalIds
@@ -380,23 +384,30 @@ internal fun buildSimklSourceUrl(mediaType: SimklMediaType, media: SimklMedia): 
 }
 
 internal fun parseSimklUtcEpochMs(value: String?): Long? {
-    val match = value?.trim()?.let(SIMKL_UTC_PATTERN::matchEntire) ?: return null
-    val year = match.groupValues[1].toIntOrNull() ?: return null
-    val month = match.groupValues[2].toIntOrNull() ?: return null
-    val day = match.groupValues[3].toIntOrNull() ?: return null
-    val hour = match.groupValues[4].toIntOrNull() ?: return null
-    val minute = match.groupValues[5].toIntOrNull() ?: return null
-    val second = match.groupValues[6].toIntOrNull() ?: return null
-    val millis = match.groupValues[7].padEnd(3, '0').take(3).toIntOrNull() ?: 0
-    if (year < 1970 || month !in 1..12 || hour !in 0..23 || minute !in 0..59 || second !in 0..59) return null
-    val monthDays = daysInMonths(year)
-    if (day !in 1..monthDays[month - 1]) return null
-
-    var days = 0L
-    for (currentYear in 1970 until year) days += if (currentYear.isLeapYear()) 366L else 365L
-    for (monthIndex in 0 until month - 1) days += monthDays[monthIndex]
-    days += day - 1L
-    return (((days * 24L + hour) * 60L + minute) * 60L + second) * 1_000L + millis
+    val text = value?.trim() ?: return null
+    val length = text.length
+    if (length < SIMKL_UTC_MIN_LENGTH) return null
+    if (text[4] != '-' || text[7] != '-' || text[13] != ':' || text[16] != ':') return null
+    if (text[10] != 'T' && text[10] != 't') return null
+    if (text[length - 1] != 'Z' && text[length - 1] != 'z') return null
+    val year = decimalAt(text, 0, 4)
+    val month = decimalAt(text, 5, 2)
+    val day = decimalAt(text, 8, 2)
+    val hour = decimalAt(text, 11, 2)
+    val minute = decimalAt(text, 14, 2)
+    val second = decimalAt(text, 17, 2)
+    if (year < 1970 || month !in 1..12 || day < 1) return null
+    if (hour !in 0..23 || minute !in 0..59 || second !in 0..59) return null
+    if (day > daysInMonth(year, month)) return null
+    var millis = 0
+    if (length > SIMKL_UTC_MIN_LENGTH) {
+        if (text[SIMKL_UTC_SECONDS_END] != '.') return null
+        if (length - 1 - SIMKL_UTC_FRACTION_START !in 1..9) return null
+        millis = fractionMillisAt(text, SIMKL_UTC_FRACTION_START, length - 1)
+        if (millis < 0) return null
+    }
+    val seconds = ((daysSinceEpoch(year, month, day) * 24L + hour) * 60L + minute) * 60L + second
+    return seconds * 1_000L + millis
 }
 
 internal fun SimklPlaybackSession.toWatchProgressEntry(
@@ -509,14 +520,6 @@ private fun TrackingExternalIds.sharesIdentityWith(other: TrackingExternalIds): 
         (anidb != null && anidb == other.anidb) ||
         (anilist != null && anilist == other.anilist) ||
         (kitsu != null && kitsu == other.kitsu)
-
-private fun Int.isLeapYear(): Boolean = (this % 4 == 0 && this % 100 != 0) || this % 400 == 0
-
-private fun daysInMonths(year: Int): IntArray = if (year.isLeapYear()) {
-    intArrayOf(31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
-} else {
-    intArrayOf(31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
-}
 
 /**
  * For anime with per-season MAL/Kitsu/AniDB/AniList video IDs, resolves both the
@@ -637,9 +640,8 @@ private fun parseSimklAnimeVideoId(videoId: String): SimklAnimeVideoIdParts? {
     return SimklAnimeVideoIdParts(prefix, idValue, episodePart.toIntOrNull())
 }
 
-private val SIMKL_UTC_PATTERN = Regex(
-    "^(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2}):(\\d{2})(?:\\.(\\d{1,9}))?Z$",
-    RegexOption.IGNORE_CASE,
-)
+private const val SIMKL_UTC_MIN_LENGTH = 20
+private const val SIMKL_UTC_SECONDS_END = 19
+private const val SIMKL_UTC_FRACTION_START = 20
 
 private const val SIMKL_WATCHED_THRESHOLD_PERCENT = 80.0

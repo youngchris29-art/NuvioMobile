@@ -1,5 +1,9 @@
 package com.nuvio.app.features.mdblist
 
+import com.nuvio.app.core.util.daysInMonth
+import com.nuvio.app.core.util.daysSinceEpoch
+import com.nuvio.app.core.util.decimalAt
+import com.nuvio.app.core.util.fractionMillisAt
 import kotlin.time.Instant
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -38,9 +42,78 @@ private val MdbListLocalTimestamp = Regex(
     """^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?$""",
 )
 
-internal fun mdbListTimestamp(value: String): Long = runCatching { Instant.parse(value).toEpochMilliseconds() }
+internal fun mdbListTimestamp(value: String): Long =
+    parseMdbListTimestampFast(value) ?: parseMdbListTimestampSlow(value)
+
+// The original chain, kept as the fallback so any input the fast path does not recognise behaves
+// exactly as before (including the exceptions it raised).
+private fun parseMdbListTimestampSlow(value: String): Long = runCatching { Instant.parse(value).toEpochMilliseconds() }
     .recoverCatching { Instant.parse(mdbListUtcInstant(value)).toEpochMilliseconds() }
     .getOrElse { throw MdbListDecodingException() }
+
+/**
+ * Fixed-position parser for the two shapes MDBList actually sends: `YYYY-MM-DDTHH:MM:SS[.f]Z` (or a
+ * `±HH:MM` offset) and the zone-less `YYYY-MM-DD HH:MM:SS[.f]` read as UTC. Returns null for
+ * anything else (lowercase separators, `+HHMM` offsets, leap seconds, bad calendar fields) so the
+ * slow path decides. NuvioTV 07e041bee.
+ */
+private fun parseMdbListTimestampFast(text: String): Long? {
+    val length = text.length
+    if (length < MDBLIST_TIMESTAMP_MIN_LENGTH) return null
+    if (text[4] != '-' || text[7] != '-' || text[13] != ':' || text[16] != ':') return null
+    val separator = text[10]
+    if (separator != ' ' && separator != 'T') return null
+    val year = decimalAt(text, 0, 4)
+    val month = decimalAt(text, 5, 2)
+    val day = decimalAt(text, 8, 2)
+    val hour = decimalAt(text, 11, 2)
+    val minute = decimalAt(text, 14, 2)
+    val second = decimalAt(text, 17, 2)
+    if (year < 1 || month !in 1..12 || day < 1) return null
+    if (hour !in 0..23 || minute !in 0..59 || second !in 0..59) return null
+    if (day > daysInMonth(year, month)) return null
+    var index = MDBLIST_TIMESTAMP_MIN_LENGTH
+    var millis = 0
+    if (index < length && text[index] == '.') {
+        val fractionStart = index + 1
+        var fractionEnd = fractionStart
+        while (fractionEnd < length && text[fractionEnd] in '0'..'9') fractionEnd++
+        if (fractionEnd - fractionStart !in 1..9) return null
+        millis = fractionMillisAt(text, fractionStart, fractionEnd)
+        if (millis < 0) return null
+        index = fractionEnd
+    }
+    val offsetSeconds = when {
+        index == length -> if (separator == ' ') 0L else return null
+        separator == ' ' -> return null
+        text[index] == 'Z' -> {
+            if (index != length - 1) return null
+            0L
+        }
+        text[index] == '+' || text[index] == '-' -> {
+            if (length - index != 6 || text[index + 3] != ':') return null
+            val zoneHour = decimalAt(text, index + 1, 2)
+            val zoneMinute = decimalAt(text, index + 4, 2)
+            if (zoneHour < 0 || zoneMinute < 0 || zoneMinute > 59) return null
+            if (zoneHour > 18 || (zoneHour == 18 && zoneMinute != 0)) return null
+            val magnitude = zoneHour * 3_600L + zoneMinute * 60L
+            if (text[index] == '-') -magnitude else magnitude
+        }
+        else -> return null
+    }
+    val localSeconds = daysSinceEpoch(year, month, day) * 86_400L + hour * 3_600L + minute * 60L + second
+    return (localSeconds - offsetSeconds) * 1_000L + millis
+}
+
+private const val MDBLIST_TIMESTAMP_MIN_LENGTH = 19
+
+internal fun String.isMdbListImdbId(): Boolean {
+    if (length < 3 || this[0] != 't' || this[1] != 't') return false
+    for (index in 2 until length) {
+        if (this[index] !in '0'..'9') return false
+    }
+    return true
+}
 
 private fun mdbListUtcInstant(value: String): String {
     val match = MdbListLocalTimestamp.matchEntire(value.trim()) ?: throw MdbListDecodingException()
@@ -54,7 +127,7 @@ internal fun JsonObject.timestamp(vararg names: String): String? = text(*names)?
 internal fun decodeMdbListIds(value: JsonObject): MdbListIds {
     val ids = value.objectValue("ids") ?: value
     return MdbListIds(
-        imdb = ids.text("imdb", "imdbid")?.takeIf { it.matches(Regex("tt[0-9]+")) },
+        imdb = ids.text("imdb", "imdbid")?.takeIf(String::isMdbListImdbId),
         tmdb = ids.number("tmdb", "tmdbid")?.takeIf { it > 0L },
         tvdb = ids.number("tvdb", "tvdbid")?.takeIf { it > 0L },
         trakt = ids.number("trakt", "traktid")?.takeIf { it > 0L },
