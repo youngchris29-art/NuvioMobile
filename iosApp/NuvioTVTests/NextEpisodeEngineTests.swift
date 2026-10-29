@@ -7,7 +7,8 @@ import SharedCore
 /// (upstream 22c9ab20) through the engine's `Hooks.loadStreams` seam, and the #2150 end-of-file
 /// re-arm decision. The engine is driven with `configureForTesting`, so no SharedCore singleton
 /// (settings, streams, shuffle) is touched; `settings` stays nil, so `beginSearch()` returns right
-/// after the `Hooks.searchBegan` signal.
+/// after the `Hooks.searchBegan` signal (the offline gate sits before that call, in the engine's
+/// two automatic start paths).
 @MainActor
 final class NextEpisodeEngineTests: XCTestCase {
 
@@ -290,19 +291,93 @@ final class NextEpisodeEngineTests: XCTestCase {
         XCTAssertEqual(recorder.searchBegan, 1)
     }
 
-    /// Upstream bb94cb1c1: offline, `beginSearch()` records the attempt and returns before the
-    /// flow is touched: no clear, no load, no watcher, and the phase never leaves `.hidden`.
-    func testOfflineSearchRecordsTheAttemptButNeverTouchesTheFlow() {
+    /// Upstream bb94cb1c1: offline at the threshold, the auto-play search is skipped before
+    /// `beginSearch()` runs (no `searchBegan`, no clear, no load, no watcher), but the card still
+    /// shows (upstream keeps `showNextEpisodeCard = true`): the phase is `.searching`, the
+    /// engine's visible state, and the threshold stays spent.
+    func testOfflineThresholdSkipsTheSearchButStillShowsTheCard() {
         let recorder = Recorder()
         let engine = makeEngine(trigger: trigger(percent: 99), recorder: recorder, network: { false })
 
         engine.onProgress(positionSec: 2376, durationSec: Self.duration)
 
-        XCTAssertEqual(recorder.searchBegan, 1)
+        XCTAssertEqual(recorder.searchBegan, 0, "the offline threshold entered beginSearch()")
         XCTAssertTrue(recorder.calls.isEmpty, "the search loaded streams while offline")
         XCTAssertEqual(recorder.clears, 0)
         XCTAssertEqual(recorder.watches, 0)
+        XCTAssertEqual(engine.phase, .searching, "the card must stay up offline")
+        XCTAssertTrue(engine.searchDeferredOffline)
+
+        engine.onProgress(positionSec: 2377, durationSec: Self.duration)
+        XCTAssertEqual(recorder.searchBegan, 0, "the threshold re-fired")
+    }
+
+    /// Offline card, then the path returns: one press starts the next episode's search through
+    /// `playNow()`, and it plays as soon as a stream resolves (`immediatePlay`).
+    func testPressAfterReconnectStartsTheSearchFromTheOfflineCard() {
+        let recorder = Recorder()
+        var online = false
+        let engine = makeEngine(trigger: trigger(percent: 99), recorder: recorder, network: { online })
+
+        engine.onProgress(positionSec: 2376, durationSec: Self.duration)
+        XCTAssertEqual(engine.phase, .searching)
+        XCTAssertEqual(recorder.searchBegan, 0)
+
+        online = true
+        XCTAssertTrue(engine.playNow(), "the press was not consumed by the offline card")
+        // `settings` is nil in tests, so `beginSearch()` returns right after this signal and the
+        // `loadStreams` call behind it is unreachable here; `searchBegan` is the observable.
+        XCTAssertEqual(recorder.searchBegan, 1)
+        XCTAssertFalse(engine.searchDeferredOffline)
+        XCTAssertFalse(engine.playNow(), "a second press must not start a second search")
+        XCTAssertEqual(recorder.searchBegan, 1)
+    }
+
+    /// Menu on the offline card dismisses it and drops the deferral, so a later press cannot
+    /// start a search for a card nobody sees.
+    func testDismissingTheOfflineCardDropsTheDeferral() {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(percent: 99), recorder: recorder, network: { false })
+        engine.onProgress(positionSec: 2376, durationSec: Self.duration)
+        XCTAssertTrue(engine.dismissIfVisible())
         XCTAssertEqual(engine.phase, .hidden)
+        XCTAssertFalse(engine.searchDeferredOffline)
+        XCTAssertFalse(engine.playNow())
+        XCTAssertEqual(recorder.searchBegan, 0)
+    }
+
+    /// Offline, the #2150 end-of-file re-arm is gated like the threshold: card back up, no search.
+    func testOfflineRearmShowsTheCardWithoutSearching() {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(percent: 99), recorder: recorder, network: { false })
+        engine.onProgress(positionSec: 2380, durationSec: Self.duration)
+        engine.simulateDismissForTesting()
+        engine.onProgress(positionSec: 2398.5, durationSec: Self.duration)
+
+        XCTAssertEqual(recorder.searchBegan, 0)
+        XCTAssertEqual(engine.phase, .searching)
+        XCTAssertTrue(engine.searchDeferredOffline)
+    }
+
+    /// A manual episode jump is a user action and is never gated on the path (upstream gates only
+    /// the automatic launch and the preload): offline, it still reaches `beginSearch()`, keeps its
+    /// busy-line flags, and is not mistaken for the offline card.
+    func testOfflineManualJumpStillBeginsTheSearch() {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder, network: { false })
+        engine.sourceColumnAppeared()
+        engine.loadSources()
+
+        engine.jumpForTesting(to: episode(season: 1, episode: 5))
+
+        XCTAssertEqual(recorder.searchBegan, 1, "the offline gate swallowed the manual jump")
+        XCTAssertFalse(engine.searchDeferredOffline)
+        XCTAssertTrue(engine.sourcesBlockedBySearch)
+        XCTAssertTrue(engine.sourcesBlockedByJump)
+
+        engine.finishWithoutStreamForTesting()
+        XCTAssertFalse(engine.sourcesBlockedBySearch, "the jump's block was left stuck")
+        engine.cancel()
     }
 
     func testDismissedCardRearmsOnceAtEndOfFileThenSticks() {
