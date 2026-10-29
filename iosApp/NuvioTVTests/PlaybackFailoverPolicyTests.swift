@@ -66,12 +66,17 @@ final class PlaybackFailoverPolicyTests: XCTestCase {
 
     // MARK: Permanent HTTP errors (NuvioTV 830e8e83c)
 
-    /// Upstream stopped libmpv auto-retrying a 400/401/403/404/410. The tvOS player has no
-    /// auto-retry: mpv's END_FILE error goes straight to `onPlaybackFailed` with the classified
-    /// verdict, and the host acts on it at once. This pins that chain for every permanent status:
-    /// the log line classifies as `.http` with its status, the link is remembered, and an
-    /// automatic flow moves on to the next candidate.
-    func testPermanentHttpErrorFailsOverAtOnceAndIsRemembered() {
+    /// NuvioTV 830e8e83c (no retry on a permanent HTTP error): the fork never had mpv / lavf
+    /// auto-retry. mpv's END_FILE error goes straight to `onPlaybackFailed` once, with the classified
+    /// verdict (`MPVPlayerView.reportEndFileError` → `reportPlaybackFailure`, guarded by
+    /// `failoverReported`; not a pure seam, read rather than tested). What is pure, and pinned here
+    /// for every permanent status: the log line classifies as `.http` with its status, the failure is
+    /// remembered, and the next source the walk picks is never the failed link again: a retry of the
+    /// same link is impossible from either the failed key or the rejected memory.
+    func testPermanentHttpErrorIsRememberedAndNeverRetried() {
+        let list = [PlaybackFailoverPolicy.Entry(key: "a1", addonId: "A"),
+                    PlaybackFailoverPolicy.Entry(key: "a2", addonId: "A"),
+                    PlaybackFailoverPolicy.Entry(key: "b1", addonId: "B")]
         for status in [400, 401, 403, 404, 410] {
             let verdict = PlaybackFailureClassifier.fromMpvLog(["ffmpeg: HTTP error \(status)"],
                                                                endFileError: "loading failed", watchdogFired: false)
@@ -80,8 +85,16 @@ final class PlaybackFailoverPolicyTests: XCTestCase {
             failed.kind = verdict.kind
             failed.httpStatus = verdict.httpStatus
             XCTAssertTrue(PlaybackFailoverPolicy.shouldReject(failed), "\(status)")
+            let rejected: Set<String> = PlaybackFailoverPolicy.shouldReject(failed) ? ["a2"] : []
+            // a2 failed with a permanent status: the walk moves past it, never back to it.
+            XCTAssertEqual(PlaybackFailoverPolicy.nextManualIndex(entries: list, failedKey: "a2", failedAddonId: "A",
+                                                                  rejected: rejected), 2, "\(status)")
+            // Even listed again as the next candidate (a reloaded list puts it first), it is skipped.
+            XCTAssertEqual(PlaybackFailoverPolicy.nextManualIndex(entries: [list[1], list[0], list[2]], failedKey: "gone",
+                                                                  failedAddonId: "A", rejected: rejected), 1, "\(status)")
+            XCTAssertNil(PlaybackFailoverPolicy.nextManualIndex(entries: [list[1]], failedKey: "gone", failedAddonId: "A",
+                                                                rejected: rejected), "\(status): nothing left but the failed link")
         }
-        XCTAssertEqual(PlaybackFailoverPolicy.response(for: .autoPlay), .autoFailover)
     }
 
     /// The FFmpeg AVERROR form (remux / probe open) of the same statuses, 4XX catch-all included.
