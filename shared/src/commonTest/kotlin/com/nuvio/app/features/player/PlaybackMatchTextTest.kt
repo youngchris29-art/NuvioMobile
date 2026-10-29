@@ -1,10 +1,12 @@
 package com.nuvio.app.features.player
 
+import com.nuvio.app.features.streams.AddonStreamGroup
 import com.nuvio.app.features.streams.StreamBadgeFilter
 import com.nuvio.app.features.streams.StreamBadgeImport
 import com.nuvio.app.features.streams.StreamBadgeMatcher
 import com.nuvio.app.features.streams.StreamBadgePresentation
 import com.nuvio.app.features.streams.StreamBadgeRules
+import com.nuvio.app.features.streams.StreamItem
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -150,6 +152,29 @@ class PlaybackMatchTextTest {
     }
 
     @Test
+    fun readsCommaSeparatedCodecsStringsWhateverTheOrder() {
+        // HLS-style CODECS lists put audio first as often as video.
+        val audioFirstDv = text(videoCodecString = "ec-3,dvh1.05.06").split(" ")
+        assertTrue("DV" in audioFirstDv && "DoVi" in audioFirstDv, "DV found after an audio entry")
+        assertTrue("10bit" in audioFirstDv, "DV profile implies 10-bit")
+        assertTrue("Vision" in names(text(videoCodecString = "ec-3, dvh1.05.06")))
+
+        val audioLastMain10 = text(videoCodec = "HEVC", videoCodecString = "hvc1.2.4.L150.B0,ec-3").split(" ")
+        assertTrue("10bit" in audioLastMain10)
+        val audioFirstMain10 = text(videoCodec = "HEVC", videoCodecString = "ec-3,hvc1.2.4.L150.B0").split(" ")
+        assertTrue("10bit" in audioFirstMain10)
+        assertTrue("10bit" !in text(videoCodec = "HEVC", videoCodecString = "ec-3,hvc1.1.6.L93.B0").split(" "))
+        assertTrue("DV" !in text(videoCodec = "HEVC", videoCodecString = "hvc1.2.4.L150.B0,ec-3").split(" "))
+
+        // The video token comes from the first video entry, never from an audio one.
+        val audioFirst = text(videoCodecString = "ec-3,dvh1.05.06")
+        assertTrue("HEVC" in audioFirst.split(" "), "audio-first list still yields the HEVC token")
+        assertTrue(audioFirst.split(" ").none { it.contains("EC-3", ignoreCase = true) || it.contains(",") }, "no junk token: $audioFirst")
+        val audioOnly = text(videoCodecString = "ec-3,mp4a.40.2")
+        assertEquals("", audioOnly, "audio-only codecs string adds no video token")
+    }
+
+    @Test
     fun readsDtsAndAc4Variants() {
         val ma = text(audioCodec = "DTS", audioProfile = "DTS-HD MA")
         assertEquals("DTS DTS-HD DTS-HD MA", ma)
@@ -199,22 +224,71 @@ class PlaybackMatchTextTest {
     fun playerBadgesUsesThePlayerPackWithItsOwnFilterCache() {
         val streamPack = StreamBadgeImport(
             sourceUrl = "https://example.com/stream.json",
-            filters = listOf(filter("Stream4K", "⁣​⁣")),
+            filters = listOf(filter("Stream4K", "(?i)\\b2160p\\b")),
         )
         val playerPack = StreamBadgeImport(
             sourceUrl = "https://example.com/player.json",
             filters = listOf(filter("Player4K", "(?i)\\b2160p\\b")),
         )
         val rules = StreamBadgeRules(imports = listOf(streamPack, playerPack)).normalized()
+        val otherRules = StreamBadgeRules(
+            imports = listOf(
+                StreamBadgeImport(
+                    sourceUrl = "https://example.com/other.json",
+                    filters = listOf(filter("Other4K", "(?i)\\b2160p\\b")),
+                ),
+            ),
+        ).normalized()
+        val playerSource = "https://example.com/player.json"
+        val text = text(videoWidth = 3840, videoHeight = 2160)
+        val groups = listOf(
+            AddonStreamGroup(
+                addonName = "Addon",
+                addonId = "addon",
+                streams = listOf(StreamItem(name = "Movie 2160p", addonName = "Addon", addonId = "addon")),
+            ),
+        )
+        fun listBadges(r: StreamBadgeRules) =
+            StreamBadgePresentation.apply(groups, r).single().streams.single().badges.map { it.name }
+        fun playerBadges(r: StreamBadgeRules, source: String, matchText: String = text) =
+            StreamBadgePresentation.playerBadges(r, source, matchText).map { it.name }
+
+        // The stream list uses the active (first) pack, the player its own: alternate them with
+        // different rules and sources so a shared cache slot would be evicted on every call.
+        assertEquals(listOf("Stream4K"), listBadges(rules))
+        assertEquals(listOf("Stream4K"), playerBadges(rules, ""), "blank source = the stream list's pack")
+        assertEquals(listOf("Player4K"), playerBadges(rules, playerSource))
+        assertEquals(listOf("Stream4K"), listBadges(rules))
+        assertEquals(listOf("Other4K"), listBadges(otherRules))
+        assertEquals(listOf("Player4K"), playerBadges(rules, playerSource))
+        assertEquals(listOf("Other4K"), listBadges(otherRules))
+        assertEquals(listOf("Stream4K"), listBadges(rules))
+        assertEquals(listOf("Player4K"), playerBadges(rules, playerSource))
+        assertEquals(emptyList(), playerBadges(rules, playerSource, ""))
+        assertEquals(emptyList(), playerBadges(StreamBadgeRules(), "", text))
+        assertEquals(listOf("Stream4K"), listBadges(rules))
+    }
+
+    @Test
+    fun playerBadgesDropsFiltersWithoutAnImage() {
+        val pack = StreamBadgeImport(
+            sourceUrl = "https://example.com/player.json",
+            filters = listOf(
+                StreamBadgeFilter(name = "NoImage", pattern = "(?i)\\b2160p\\b", imageURL = ""),
+                StreamBadgeFilter(name = "Blank", pattern = "(?i)\\b4k\\b", imageURL = "   "),
+                filter("WithImage", "(?i)\\b2160p\\b"),
+            ),
+        )
+        val rules = StreamBadgeRules(imports = listOf(pack)).normalized()
         val text = text(videoWidth = 3840, videoHeight = 2160)
 
-        assertEquals(emptyList(), StreamBadgePresentation.playerBadges(rules, "", text).map { it.name })
+        // The matcher itself still returns the image-less badges; only the player drops them.
+        val matched = StreamBadgeMatcher.matchedBadges(listOf(text), StreamBadgeMatcher.compile(rules)).map { it.name }
+        assertTrue("NoImage" in matched && "Blank" in matched)
         assertEquals(
-            listOf("Player4K"),
+            listOf("WithImage"),
             StreamBadgePresentation.playerBadges(rules, "https://example.com/player.json", text).map { it.name },
         )
-        assertEquals(emptyList(), StreamBadgePresentation.playerBadges(rules, "https://example.com/player.json", ""))
-        assertEquals(emptyList(), StreamBadgePresentation.playerBadges(StreamBadgeRules(), "", text))
     }
 
     @Test

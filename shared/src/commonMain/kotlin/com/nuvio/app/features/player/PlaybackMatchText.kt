@@ -81,7 +81,7 @@ object PlaybackMatchText {
         val flags = hdr.map { it.trim().lowercase() }
         // Dual-layer Dolby Vision carries an HEVC/AV1 mime type, so the codecs string is the tell
         // (NuvioTV 13683564d).
-        val dvFromCodec = dolbyVisionCodecPrefixes.any { codecString.startsWith(it) } ||
+        val dvFromCodec = codecEntries(codecString).any { entry -> dolbyVisionCodecPrefixes.any(entry::startsWith) } ||
             videoCodec?.trim()?.lowercase()?.let { codec ->
                 codec == "dolby vision" || dolbyVisionCodecPrefixes.any(codec::startsWith)
             } == true
@@ -110,7 +110,7 @@ object PlaybackMatchText {
 
     private fun videoCodecTokens(codec: String?, codecString: String): List<String> {
         val label = codec?.trim()?.takeIf { it.isNotEmpty() }
-        val key = (label ?: codecString.substringBefore('.')).lowercase()
+        val key = (label ?: firstVideoCodecEntry(codecString)?.substringBefore('.').orEmpty()).lowercase()
         return when {
             key.isEmpty() -> emptyList()
             key == "hevc" || key == "h265" || key == "h.265" || key == "dolby vision" ||
@@ -128,13 +128,28 @@ object PlaybackMatchText {
      * HEVC Main 10 (profile 2), Dolby Vision profiles and AV1's explicit depth field are 10-bit
      * (NuvioTV 13683564d). Returns null when the string says nothing.
      */
-    private fun bitDepthFromCodecString(codecString: String): Int? = when {
-        codecString.startsWith("hev1.2.") || codecString.startsWith("hvc1.2.") -> 10
-        codecString.startsWith("dvhe") || codecString.startsWith("dvh1") -> 10
-        codecString.startsWith("av01.") ->
-            codecString.split('.').getOrNull(3)?.toIntOrNull()?.takeIf { it > 0 }
-        else -> null
-    }
+    private fun bitDepthFromCodecString(codecString: String): Int? =
+        codecEntries(codecString).firstNotNullOfOrNull { entry ->
+            when {
+                entry.startsWith("hev1.2.") || entry.startsWith("hvc1.2.") -> 10
+                entry.startsWith("dvhe") || entry.startsWith("dvh1") -> 10
+                entry.startsWith("av01.") ->
+                    entry.split('.').getOrNull(3)?.toIntOrNull()?.takeIf { it > 0 }
+                else -> null
+            }
+        }
+
+    private val audioCodecPrefixes = listOf(
+        "ec-3", "ac-3", "ac-4", "mp4a", "dtsc", "dtse", "dtsh", "dtsl", "opus", "flac", "alac", "mp3", "vorbis",
+    )
+
+    /** The first non-audio entry of the codecs list, or null when it only names audio. */
+    private fun firstVideoCodecEntry(codecString: String): String? =
+        codecEntries(codecString).firstOrNull { entry -> audioCodecPrefixes.none(entry::startsWith) }
+
+    /** An HLS-style CODECS attribute is a comma list ("ec-3,dvh1.05.06"); audio may come first. */
+    private fun codecEntries(codecString: String): List<String> =
+        codecString.split(',').map { it.trim() }.filter { it.isNotEmpty() }
 
     private fun normalizedAudioCodec(codec: String?): String? {
         val trimmed = codec?.trim()?.takeIf { it.isNotEmpty() } ?: return null

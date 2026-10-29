@@ -35,7 +35,10 @@ object StreamBadgePresentation {
         if (matchText.isBlank()) return emptyList()
         val filters = playerFilters.filtersFor(rules, playerBadgeSource)
         if (filters.isEmpty()) return emptyList()
+        // A pack filter with a name but no image would render as an empty chip in the player
+        // (upstream 344117e73 / 83e528f00 / NuvioTV 13683564d drop them).
         return StreamBadgeMatcher.matchedBadges(listOf(matchText), filters)
+            .filter { it.imageURL.isNotBlank() }
     }
 
     private class CompiledFilterCache {

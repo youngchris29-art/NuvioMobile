@@ -613,7 +613,7 @@ object TraktProgressRepository {
                     headers = headers,
                 ),
             )
-        }.getOrDefault(emptyList())
+        }.onFailure { if (it is CancellationException) throw it }.getOrDefault(emptyList())
         val playbackEpisodes = runCatching {
             json.decodeFromString<List<TraktPlaybackItem>>(
                 httpGetTextWithHeaders(
@@ -621,7 +621,7 @@ object TraktProgressRepository {
                     headers = headers,
                 ),
             )
-        }.getOrDefault(emptyList())
+        }.onFailure { if (it is CancellationException) throw it }.getOrDefault(emptyList())
 
         playbackMovies
             .filter { item -> normalizeTraktContentId(item.movie?.ids, fallback = item.movie?.title) == normalizedContentId }
