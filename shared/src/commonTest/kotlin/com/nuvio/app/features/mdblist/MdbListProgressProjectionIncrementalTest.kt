@@ -250,6 +250,36 @@ class MdbListProgressProjectionIncrementalTest {
     }
 
     @Test
+    fun `an overlay index resolves exactly like an index built over history and playback`() {
+        val sessions = listOf(
+            session(30, bridgeMedia, 2, 2, 10f, "2026-02-04T00:00:00Z"),
+            session(31, newShow, 1, 1, 10f, "2026-02-04T00:00:00Z"),
+            session(32, aliasedShowC, 2, 7, 10f, "2026-02-04T00:00:00Z"),
+            session(33, movie.copy(ids = movie.ids.copy(trakt = 55)), null, null, 10f, "2026-02-04T00:00:00Z", MdbListItemType.MOVIE),
+        )
+        val snapshot = base.copy(playback = sessions)
+        val full = MdbListMediaIndex(snapshot)
+        val watchedBase = MdbListMediaIndex.watchedOnly(snapshot.watched)
+        val overlay = watchedBase.withPlayback(sessions)
+        assertNotSame(watchedBase, overlay)
+        val probes = listOf(
+            MdbListIds(imdb = "tt200"), MdbListIds(tmdb = 200), MdbListIds(tvdb = 201), MdbListIds(imdb = "tt300"),
+            MdbListIds(tmdb = 300), MdbListIds(imdb = "tt999"), MdbListIds(tmdb = 999), MdbListIds(trakt = 55),
+            MdbListIds(imdb = "tt500"), MdbListIds(imdb = "tt100"), MdbListIds(imdb = "tt404"),
+        )
+        for (type in listOf(MdbListItemType.SHOW, MdbListItemType.MOVIE)) {
+            for (ids in probes) {
+                assertEquals(full.resolve(type, ids), overlay.resolve(type, ids), "resolve $type $ids")
+                assertEquals(
+                    full.resolveMedia(type, MdbListMedia(ids, "probe")), overlay.resolveMedia(type, MdbListMedia(ids, "probe")),
+                    "resolveMedia $type $ids",
+                )
+            }
+        }
+        assertEquals(null, watchedBase.resolve(MdbListItemType.SHOW, MdbListIds(imdb = "tt999")).ids.tmdb, "the base is untouched")
+    }
+
+    @Test
     fun `a scrobble through the repository keeps the history projections and updates progress`() = runTest {
         val harness = MdbListSyncTestHarness(backgroundScope)
         harness.seed(harness.snapshot().copy(watched = base.watched, dropped = base.dropped, playback = emptyList()))
