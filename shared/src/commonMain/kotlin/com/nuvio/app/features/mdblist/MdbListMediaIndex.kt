@@ -1,9 +1,17 @@
 package com.nuvio.app.features.mdblist
 
-internal class MdbListMediaIndex(snapshot: MdbListSyncSnapshot) {
-    private val byAlias = mutableMapOf<Pair<Boolean, String>, MdbListMedia>()
-
-    init {
+/**
+ * Maps movie/show aliases to their merged [MdbListMedia]. Callers that build an index themselves
+ * (library projection, sorter, sync engine) fill it with [add]. Once published on a
+ * [MdbListProgressProjection] an index is treated as immutable: extend it with [withPlayback],
+ * which copies before adding, never with [add].
+ */
+internal class MdbListMediaIndex private constructor(
+    private val byAlias: MutableMap<Pair<Boolean, String>, MdbListMedia>,
+) {
+    constructor(snapshot: MdbListSyncSnapshot) : this(
+        HashMap<Pair<Boolean, String>, MdbListMedia>((snapshot.watched.size + snapshot.playback.size).coerceAtLeast(16)),
+    ) {
         snapshot.watched.forEach { add(it.type, it.media) }
         snapshot.playback.forEach { add(it.type, it.media) }
     }
@@ -19,6 +27,36 @@ internal class MdbListMediaIndex(snapshot: MdbListSyncSnapshot) {
     fun resolve(type: MdbListItemType, ids: MdbListIds): MdbListMedia =
         ids.aliases().firstNotNullOfOrNull { byAlias[(type == MdbListItemType.MOVIE) to it] }
             ?.let { it.copy(ids = it.ids.merged(ids)) } ?: MdbListMedia(ids)
+
+    /** [media] merged with everything the index already knows under any of its aliases. */
+    fun resolveMedia(type: MdbListItemType, media: MdbListMedia): MdbListMedia {
+        val movie = type == MdbListItemType.MOVIE
+        return media.ids.aliases().mapNotNull { byAlias[movie to it] }
+            .fold(media, MdbListMedia::merged)
+    }
+
+    /**
+     * This index when every session's media is already represented (the usual scrobble: the same
+     * show or movie as the session it replaces), otherwise a copy that has learned the new
+     * aliases. Matches what a rebuild over the new playback would index, so `canonicalContentId`
+     * and the dropped-show lookup keep resolving the same way.
+     */
+    fun withPlayback(playback: List<MdbListPlayback>): MdbListMediaIndex {
+        var extended: MdbListMediaIndex? = null
+        for (session in playback) {
+            val current = extended ?: this
+            if (current.represents(session.type, session.media)) continue
+            val copy = extended ?: MdbListMediaIndex(HashMap(byAlias)).also { extended = it }
+            copy.add(session.type, session.media)
+        }
+        return extended ?: this
+    }
+
+    private fun represents(type: MdbListItemType, media: MdbListMedia): Boolean {
+        val movie = type == MdbListItemType.MOVIE
+        val merged = resolveMedia(type, media)
+        return merged.ids.aliases().all { byAlias[movie to it] == merged }
+    }
 }
 
 internal fun MdbListSyncSnapshot.normalizeMedia(): MdbListSyncSnapshot {

@@ -146,9 +146,14 @@ class MdbListSyncRepository(
     private suspend fun commit(scope: MdbListAuthScope, snapshot: MdbListSyncSnapshot) {
         checkScope(scope)
         val previous = mutableState.value.snapshot
+        val currentProjection = mutableProjection.value.projection
         val projection = if (previous != null && previous.watched === snapshot.watched &&
             previous.playback === snapshot.playback && previous.dropped === snapshot.dropped) {
-            mutableProjection.value.projection
+            currentProjection
+        } else if (previous != null && previous.watched === snapshot.watched &&
+            previous.dropped === snapshot.dropped && currentProjection !== MdbListProgressProjection.Empty) {
+            // Only playback changed (a scrobble): everything derived from history is reusable.
+            currentProjection.withUpdatedPlayback(snapshot.playback)
         } else MdbListProgressProjection(snapshot)
         val payload = json.encodeToString(snapshot)
         storage.save(scope.profileId, payload) { checkScope(scope) }

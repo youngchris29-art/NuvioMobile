@@ -52,11 +52,14 @@ internal data class MdbListMutationTarget(
     }
 }
 
-internal fun MdbListSyncSnapshot.mutationTarget(reference: TrackingMediaReference): MdbListMutationTarget? {
+internal fun MdbListSyncSnapshot.mutationTarget(
+    reference: TrackingMediaReference,
+    mediaIndex: MdbListMediaIndex? = null,
+): MdbListMutationTarget? {
     val ids = reference.ids.toMdbListIds() ?: return null
     val isMovie = reference.kind == TrackingMediaKind.MOVIE || reference.catalog?.contentType in setOf("movie", "film")
     val type = if (isMovie) MdbListItemType.MOVIE else if (reference.episode != null) MdbListItemType.EPISODE else MdbListItemType.SHOW
-    val index = MdbListMediaIndex(this)
+    val index = mediaIndex ?: MdbListMediaIndex(this)
     val media = index.resolve(type, ids).merged(MdbListMedia(ids, reference.title, reference.year, reference.posterUrl))
     val episode = reference.episode.takeUnless { isMovie }
     val known = if (episode == null) null else watched.firstOrNull { record ->
