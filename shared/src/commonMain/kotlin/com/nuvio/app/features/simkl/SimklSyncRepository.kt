@@ -8,6 +8,7 @@ import com.nuvio.app.features.tracking.TrackingProviderRegistry
 import com.nuvio.app.features.tracking.TrackingRefreshIntent
 import kotlinx.atomicfu.atomic
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -17,6 +18,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -41,6 +43,13 @@ object SimklSyncRepository : TrackingProfileStore {
 
     private val _state = MutableStateFlow(SimklSyncUiState())
     val state: StateFlow<SimklSyncUiState> = _state.asStateFlow()
+
+    /**
+     * Where the commit functions run their snapshot work (reconcile, JSON-encode, file write). A
+     * commit is called from the player's scrobble completion, so without this hop that work would
+     * run on whichever thread resumed the network call. Fork-only; tests swap it to observe the hop.
+     */
+    internal var commitDispatcher: CoroutineDispatcher = Dispatchers.Default
 
     private var hasLoaded = false
     private var profileGeneration = 0L
@@ -182,14 +191,16 @@ object SimklSyncRepository : TrackingProfileStore {
     internal suspend fun commitPlaybackRemoval(sessionIds: Set<Long>) {
         if (sessionIds.isEmpty()) return
         ensureLoaded()
-        snapshotMutex.withLock {
-            val current = _state.value
-            val updatedPlayback = current.snapshot.playback.filterNot { session -> session.id in sessionIds }
-            if (updatedPlayback.size == current.snapshot.playback.size) return@withLock
-            val updatedSnapshot = current.snapshot.copy(playback = updatedPlayback)
-            SimklSyncStorage.savePayload(json.encodeToString(updatedSnapshot))
-            _state.value = current.copy(snapshot = updatedSnapshot)
-            SimklWatchDiagnostics.logSnapshot(stage = "playback-removal", snapshot = updatedSnapshot)
+        withContext(commitDispatcher) {
+            snapshotMutex.withLock {
+                val current = _state.value
+                val updatedPlayback = current.snapshot.playback.filterNot { session -> session.id in sessionIds }
+                if (updatedPlayback.size == current.snapshot.playback.size) return@withLock
+                val updatedSnapshot = current.snapshot.copy(playback = updatedPlayback)
+                SimklSyncStorage.savePayload(json.encodeToString(updatedSnapshot))
+                _state.value = current.copy(snapshot = updatedSnapshot)
+                SimklWatchDiagnostics.logSnapshot(stage = "playback-removal", snapshot = updatedSnapshot)
+            }
         }
     }
 
@@ -197,20 +208,22 @@ object SimklSyncRepository : TrackingProfileStore {
         ensureLoaded()
         val generation = profileGeneration
         val profileId = ProfileRepository.activeProfileId
-        snapshotMutex.withLock {
-            if (generation != profileGeneration || profileId != ProfileRepository.activeProfileId) {
-                return@withLock
-            }
-            val current = _state.value
-            val snapshot = current.snapshot.applyScrobbleResult(
-                result = result,
-                committedAtEpochMs = SimklPlatformClock.nowEpochMs(),
-            )
-            if (snapshot == current.snapshot) return@withLock
-            SimklSyncStorage.savePayload(json.encodeToString(snapshot))
-            if (generation == profileGeneration && profileId == ProfileRepository.activeProfileId) {
-                _state.value = current.copy(snapshot = snapshot)
-                SimklWatchDiagnostics.logSnapshot(stage = "scrobble-commit", snapshot = snapshot)
+        withContext(commitDispatcher) {
+            snapshotMutex.withLock {
+                if (generation != profileGeneration || profileId != ProfileRepository.activeProfileId) {
+                    return@withLock
+                }
+                val current = _state.value
+                val snapshot = current.snapshot.applyScrobbleResult(
+                    result = result,
+                    committedAtEpochMs = SimklPlatformClock.nowEpochMs(),
+                )
+                if (snapshot == current.snapshot) return@withLock
+                SimklSyncStorage.savePayload(json.encodeToString(snapshot))
+                if (generation == profileGeneration && profileId == ProfileRepository.activeProfileId) {
+                    _state.value = current.copy(snapshot = snapshot)
+                    SimklWatchDiagnostics.logSnapshot(stage = "scrobble-commit", snapshot = snapshot)
+                }
             }
         }
     }
@@ -219,20 +232,22 @@ object SimklSyncRepository : TrackingProfileStore {
         ensureLoaded()
         val generation = profileGeneration
         val profileId = ProfileRepository.activeProfileId
-        snapshotMutex.withLock {
-            if (generation != profileGeneration || profileId != ProfileRepository.activeProfileId) {
-                return@withLock
-            }
-            val current = _state.value
-            val snapshot = current.snapshot.applyMutationReceipt(
-                receipt = receipt,
-                committedAtEpochMs = SimklPlatformClock.nowEpochMs(),
-            )
-            if (snapshot == current.snapshot) return@withLock
-            SimklSyncStorage.savePayload(json.encodeToString(snapshot))
-            if (generation == profileGeneration && profileId == ProfileRepository.activeProfileId) {
-                _state.value = current.copy(snapshot = snapshot)
-                SimklWatchDiagnostics.logSnapshot(stage = "mutation-commit", snapshot = snapshot)
+        withContext(commitDispatcher) {
+            snapshotMutex.withLock {
+                if (generation != profileGeneration || profileId != ProfileRepository.activeProfileId) {
+                    return@withLock
+                }
+                val current = _state.value
+                val snapshot = current.snapshot.applyMutationReceipt(
+                    receipt = receipt,
+                    committedAtEpochMs = SimklPlatformClock.nowEpochMs(),
+                )
+                if (snapshot == current.snapshot) return@withLock
+                SimklSyncStorage.savePayload(json.encodeToString(snapshot))
+                if (generation == profileGeneration && profileId == ProfileRepository.activeProfileId) {
+                    _state.value = current.copy(snapshot = snapshot)
+                    SimklWatchDiagnostics.logSnapshot(stage = "mutation-commit", snapshot = snapshot)
+                }
             }
         }
     }
