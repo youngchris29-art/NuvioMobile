@@ -326,6 +326,11 @@ final class MPVTVPlayerViewController: UIViewController {
     /// `eventQueue` only: the log ring's subtitle attribution window is open for the load in flight.
     private var subtitleLoadWindowOpen = false
     private var fileLoaded = false
+    /// Main only. Live detection (`LivePlaybackPolicy`, NuvioTV b4e47d6d6/583eae818): mpv can seek a
+    /// live HLS stream inside its cache, so it reports it seekable with a duration that keeps
+    /// growing. Fed once per `refreshState` tick, readings before FILE_LOADED skipped. A live stream
+    /// saves no progress.
+    private var durationGrowth = LivePlaybackPolicy.DurationGrowth()
     /// P5 N1: main only. The audio delay's saved / stream-hint / session parts for this file.
     private var audioDelayParts = AudioDelayParts(savedMs: 0, streamMs: nil, sessionAdjustMs: 0)
     /// P5 B20: `eventQueue` only. The `af` value last handed to mpv ("" = none).
@@ -2172,7 +2177,8 @@ final class MPVTVPlayerViewController: UIViewController {
         guard mpv != nil else { return }
         let duration = state.durationSec
         let position = state.positionSec
-        guard duration > 0, position > 1 else { return }
+        let isLive = LivePlaybackPolicy.isLive(reportsLive: false, growth: durationGrowth)
+        guard LivePlaybackPolicy.shouldSaveResume(isLive: isLive, positionSec: position, durationSec: duration) else { return }
 
         let snapshot = PlayerPlaybackSnapshot(
             isLoading: false,
@@ -2213,6 +2219,8 @@ final class MPVTVPlayerViewController: UIViewController {
         // paused player would otherwise re-render the overlay and transport bar twice a second.
         let position = max(snap.position, 0)
         if state.durationSec != snap.duration { state.durationSec = snap.duration }
+        durationGrowth = LivePlaybackPolicy.nextDurationGrowth(durationGrowth, mediaKey: context.url.absoluteString,
+                                                               durationSec: snap.duration, fromRequestedMedia: fileLoaded)
         if state.positionSec != position { state.positionSec = position }
         // Paused → playing without input (the pause-card-off rule left no hide timer armed):
         // re-arm the hide so the bar does not stay up until the next press.

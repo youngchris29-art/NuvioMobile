@@ -89,10 +89,25 @@ final class PlaybackProgressRecorder {
         )
     }
 
-    /// Record playback progress. `flush` forces an immediate write (use on teardown).
-    func record(positionSec: Double, durationSec: Double, isPaused: Bool, speed: Double, flush: Bool) {
-        guard durationSec > 0, positionSec > 1 else { return }
-        let snapshot = PlayerPlaybackSnapshot(
+    /// Record playback progress. `flush` forces an immediate write (use on teardown). A live
+    /// stream (`isLive`, from `LivePlaybackPolicy`) writes nothing.
+    func record(positionSec: Double, durationSec: Double, isPaused: Bool, speed: Double, flush: Bool, isLive: Bool) {
+        guard let snapshot = Self.progressSnapshot(positionSec: positionSec, durationSec: durationSec,
+                                                   isPaused: isPaused, speed: speed, isLive: isLive) else { return }
+        if flush {
+            WatchProgressRepository.shared.flushPlaybackProgress(session: session, snapshot: snapshot, syncRemote: false)
+        } else {
+            WatchProgressRepository.shared.upsertPlaybackProgress(session: session, snapshot: snapshot, syncRemote: false)
+        }
+    }
+
+    /// Pure form of `record`'s gate and snapshot: nil when nothing may be written
+    /// (`LivePlaybackPolicy.shouldSaveResume`). Unit tested (`PlaybackProgressRecorderTests`).
+    nonisolated static func progressSnapshot(positionSec: Double, durationSec: Double, isPaused: Bool,
+                                             speed: Double, isLive: Bool) -> PlayerPlaybackSnapshot? {
+        guard LivePlaybackPolicy.shouldSaveResume(isLive: isLive, positionSec: positionSec,
+                                                  durationSec: durationSec) else { return nil }
+        return PlayerPlaybackSnapshot(
             isLoading: false,
             isPlaying: !isPaused,
             isEnded: false,
@@ -103,11 +118,6 @@ final class PlaybackProgressRecorder {
             videoWidth: 0,
             videoHeight: 0
         )
-        if flush {
-            WatchProgressRepository.shared.flushPlaybackProgress(session: session, snapshot: snapshot, syncRemote: false)
-        } else {
-            WatchProgressRepository.shared.upsertPlaybackProgress(session: session, snapshot: snapshot, syncRemote: false)
-        }
     }
 
     // MARK: - Trakt scrobbling

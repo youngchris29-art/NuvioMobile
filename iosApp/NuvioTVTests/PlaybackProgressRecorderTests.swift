@@ -107,4 +107,17 @@ final class PlaybackProgressRecorderTests: XCTestCase {
             startFromBeginning: false, entry: entry(positionMs: 600_000)),
                      "a stored position resumes by position, not by percent")
     }
+
+    // MARK: Live streams (NuvioTV b4e47d6d6)
+
+    func testRecordSkipsTheSaveForALiveStream() {
+        XCTAssertNil(PlaybackProgressRecorder.progressSnapshot(positionSec: 600, durationSec: 3_600, isPaused: false,
+                                                               speed: 1, isLive: true),
+                     "a live stream writes no resume position")
+        let vod = PlaybackProgressRecorder.progressSnapshot(positionSec: 600, durationSec: 3_600, isPaused: true,
+                                                            speed: 1, isLive: false)
+        XCTAssertEqual(vod?.positionMs, 600_000)
+        XCTAssertEqual(vod?.durationMs, 3_600_000)
+        XCTAssertEqual(vod?.isPlaying, false)
+    }
 }

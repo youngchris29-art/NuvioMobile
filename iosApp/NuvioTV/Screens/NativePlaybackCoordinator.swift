@@ -115,6 +115,12 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// screen (pause card remaining time, P4).
     @Published private(set) var durationSec: Double = 0
 
+    /// Live detection (`LivePlaybackPolicy`, NuvioTV b4e47d6d6): AVPlayer's indefinite item duration
+    /// (live HLS), or a duration that keeps growing across ticks. A live stream saves no progress.
+    private var reportsLive = false
+    private var durationGrowth = LivePlaybackPolicy.DurationGrowth()
+    private var isLiveStream: Bool { LivePlaybackPolicy.isLive(reportsLive: reportsLive, growth: durationGrowth) }
+
     /// `ProcessInfo.systemUptime` when the item FIRST became ready to play; nil until then (a
     /// signaling retry or a later item never moves it).
     private(set) var readyUptime: TimeInterval?
@@ -530,7 +536,8 @@ final class NativePlaybackCoordinator: ObservableObject {
         timeControlObserver?.invalidate(); timeControlObserver = nil
         addonSubsWatcher?.cancel(); addonSubsWatcher = nil
         if lastDurationSec > 0 {
-            recorder.record(positionSec: lastPositionSec, durationSec: lastDurationSec, isPaused: true, speed: 1, flush: true)
+            recorder.record(positionSec: lastPositionSec, durationSec: lastDurationSec, isPaused: true, speed: 1,
+                            flush: true, isLive: isLiveStream)
         }
         recorder.stopTrakt(positionSec: lastPositionSec, durationSec: lastDurationSec)
         recorder.stopTrackers(positionSec: lastPositionSec, durationSec: lastDurationSec)
@@ -1261,6 +1268,11 @@ final class NativePlaybackCoordinator: ObservableObject {
                                         at: ProcessInfo.processInfo.systemUptime)
                     var pos = CMTimeGetSeconds(player.currentTime())
                     let dur = CMTimeGetSeconds(item.duration)
+                    // Live detection, sampled once per tick of the ready item (see `isLiveStream`).
+                    if item.duration.isIndefinite { self.reportsLive = true }
+                    self.durationGrowth = LivePlaybackPolicy.nextDurationGrowth(
+                        self.durationGrowth, mediaKey: self.context.url.absoluteString, durationSec: dur,
+                        fromRequestedMedia: true)
                     // A position jump that is not the app's own seek = a user seek. Reset the stall
                     // budget so back-to-back scrubs (each costing a ~10s reposition) can't
                     // accumulate into a false mpv fallback.
@@ -1293,7 +1305,8 @@ final class NativePlaybackCoordinator: ObservableObject {
                         self.lastPositionSec = pos
                         self.lastDurationSec = dur
                         if self.didPlayToEnd, pos < dur - 2, player.timeControlStatus == .playing { self.didPlayToEnd = false }
-                        self.recorder.record(positionSec: pos, durationSec: dur, isPaused: paused, speed: 1, flush: false)
+                        self.recorder.record(positionSec: pos, durationSec: dur, isPaused: paused, speed: 1, flush: false,
+                                             isLive: self.isLiveStream)
                         self.refreshActiveAudioTrack()
                         if self.audibleGroup == nil { self.handleMediaSelectionChange(item: item, player: player) }
                         else { self.syncAudioSelection(item: item, player: player) }
