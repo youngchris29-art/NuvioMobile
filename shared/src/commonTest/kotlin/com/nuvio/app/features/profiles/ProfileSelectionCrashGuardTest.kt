@@ -18,6 +18,8 @@ class ProfileSelectionCrashGuardTest {
     @AfterTest
     fun restoreCoordinator() {
         ProfileLifecycleProvider.coordinator = originalCoordinator
+        // selectProfile moves the process-wide active profile; later test classes assume slot 1.
+        ProfileRepository.clearInMemory()
     }
 
     @Test
