@@ -326,11 +326,13 @@ final class MPVTVPlayerViewController: UIViewController {
     /// `eventQueue` only: the log ring's subtitle attribution window is open for the load in flight.
     private var subtitleLoadWindowOpen = false
     private var fileLoaded = false
-    /// Main only. Live detection (`LivePlaybackPolicy`, NuvioTV b4e47d6d6/583eae818): mpv can seek a
-    /// live HLS stream inside its cache, so it reports it seekable with a duration that keeps
-    /// growing. Fed once per `refreshState` tick, readings before FILE_LOADED skipped. A live stream
-    /// saves no progress.
+    /// Main only. Live detection (`LivePlaybackPolicy`, NuvioTV b4e47d6d6/583eae818): a "channel"
+    /// item, `seekable` false once loaded, or (a live HLS stream mpv seeks inside its cache) a
+    /// duration that keeps growing. Fed once per `refreshState` tick, readings before FILE_LOADED
+    /// skipped. A live stream saves no progress and closes its tracker sessions at 0 %.
+    private var reportsLive = false
     private var durationGrowth = LivePlaybackPolicy.DurationGrowth()
+    private var isLiveStream: Bool { LivePlaybackPolicy.isLive(reportsLive: reportsLive, growth: durationGrowth) }
     /// P5 N1: main only. The audio delay's saved / stream-hint / session parts for this file.
     private var audioDelayParts = AudioDelayParts(savedMs: 0, streamMs: nil, sessionAdjustMs: 0)
     /// P5 B20: `eventQueue` only. The `af` value last handed to mpv ("" = none).
@@ -380,6 +382,8 @@ final class MPVTVPlayerViewController: UIViewController {
         var videoH: Int64 = 0
         /// `cache-buffering-state` (0–100; −1 = not reported yet). B24's "Buffering N %".
         var cacheBufferingPct: Int64 = -1
+        /// `seekable` (nil = not reported yet). False once loaded = live (`LivePlaybackPolicy`).
+        var seekable: Bool?
     }
     private let propLock = NSLock()
     private var propSnapshot = PropSnapshot()
@@ -397,7 +401,7 @@ final class MPVTVPlayerViewController: UIViewController {
     /// Observation ids for mpv_observe_property (arrive back as `reply_userdata`).
     private enum ObservedProp: UInt64 {
         case timePos = 1, duration, pause, coreIdle, pausedForCache, eofReached, trackCount
-        case videoW, videoH, aid, cacheBuffering
+        case videoW, videoH, aid, cacheBuffering, seekable
     }
 
     private func cachedProps() -> PropSnapshot {
@@ -1043,6 +1047,7 @@ final class MPVTVPlayerViewController: UIViewController {
         mpv_observe_property(mpv, ObservedProp.videoH.rawValue, "video-params/h", MPV_FORMAT_INT64)
         mpv_observe_property(mpv, ObservedProp.aid.rawValue, "aid", MPV_FORMAT_INT64)
         mpv_observe_property(mpv, ObservedProp.cacheBuffering.rawValue, "cache-buffering-state", MPV_FORMAT_INT64)
+        mpv_observe_property(mpv, ObservedProp.seekable.rawValue, "seekable", MPV_FORMAT_FLAG)
 
         let relay = MPVWakeupRelay(queue: eventQueue) { [weak self] in self?.drainEvents() }
         wakeupRelay = relay
@@ -1680,17 +1685,18 @@ final class MPVTVPlayerViewController: UIViewController {
     private func stopTraktScrobble() {
         // The other trackers close on the same two teardown paths (viewDidDisappear + deinit);
         // idempotent, and independent of whether a Trakt item was ever built.
-        trackerScrobble.stop(positionSec: state.positionSec, durationSec: state.durationSec)
+        trackerScrobble.stop(positionSec: state.positionSec, durationSec: state.durationSec, isLive: isLiveStream)
         traktSessionClosed = true
         guard let item = traktScrobbleItem else { return }
         traktScrobbleItem = nil
-        // A session can open before a placeholder's short duration is known; close
-        // it at 0% so Trakt never marks the stub watched.
-        let short = WatchingPoliciesKt.isShortPlaceholderDuration(durationMs: Int64(state.durationSec * 1000))
+        // A session can open before a placeholder's short duration is known, or before the stream
+        // reads live: close it at 0% so Trakt never marks the stub or the live stream watched.
         TraktScrobbleRepository.shared.scrobbleStop(
             profileId: ActiveProfileProvider.shared.activeProfileId,
             item: item,
-            progressPercent: short ? 0 : currentProgressPercent()
+            progressPercent: Float(TrackerScrobblePolicy.stopPercent(positionSec: state.positionSec,
+                                                                     durationSec: state.durationSec,
+                                                                     isLive: isLiveStream))
         ) { _ in }
     }
 
@@ -2177,8 +2183,7 @@ final class MPVTVPlayerViewController: UIViewController {
         guard mpv != nil else { return }
         let duration = state.durationSec
         let position = state.positionSec
-        let isLive = LivePlaybackPolicy.isLive(reportsLive: false, growth: durationGrowth)
-        guard LivePlaybackPolicy.shouldSaveResume(isLive: isLive, positionSec: position, durationSec: duration) else { return }
+        guard LivePlaybackPolicy.shouldSaveResume(isLive: isLiveStream, positionSec: position, durationSec: duration) else { return }
 
         let snapshot = PlayerPlaybackSnapshot(
             isLoading: false,
@@ -2219,8 +2224,16 @@ final class MPVTVPlayerViewController: UIViewController {
         // paused player would otherwise re-render the overlay and transport bar twice a second.
         let position = max(snap.position, 0)
         if state.durationSec != snap.duration { state.durationSec = snap.duration }
+        let wasLive = isLiveStream
+        if LivePlaybackPolicy.reportsLive(contentType: context.contentType, seekable: fileLoaded ? snap.seekable : nil) {
+            reportsLive = true
+        }
         durationGrowth = LivePlaybackPolicy.nextDurationGrowth(durationGrowth, mediaKey: context.url.absoluteString,
-                                                               durationSec: snap.duration, fromRequestedMedia: fileLoaded)
+                                                               durationSec: snap.duration, positionSec: position,
+                                                               fromRequestedMedia: fileLoaded)
+        if !wasLive, isLiveStream {
+            print("[Live] mpv: live (reported=\(reportsLive) grew=\(durationGrowth.grew)): no resume or tracker progress")
+        }
         if state.positionSec != position { state.positionSec = position }
         // Paused → playing without input (the pause-card-off rule left no hide timer armed):
         // re-arm the hide so the bar does not stay up until the next press.
@@ -4365,6 +4378,8 @@ final class MPVTVPlayerViewController: UIViewController {
             if let v = asInt() { alangTrace("aid changed -> \(v)") }
         case .cacheBuffering:
             if let v = asInt() { updateProps { $0.cacheBufferingPct = v } }
+        case .seekable:
+            if let v = asFlag() { updateProps { $0.seekable = v } }
         }
     }
 

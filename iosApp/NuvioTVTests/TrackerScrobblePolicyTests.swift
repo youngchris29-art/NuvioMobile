@@ -42,13 +42,23 @@ final class TrackerScrobblePolicyTests: XCTestCase {
     }
 
     func testStopOfALateDetectedPlaceholderReportsZero() {
-        XCTAssertEqual(TrackerScrobblePolicy.stopPercent(positionSec: 29, durationSec: 30), 0)
+        XCTAssertEqual(TrackerScrobblePolicy.stopPercent(positionSec: 29, durationSec: 30, isLive: false), 0)
     }
 
     func testStopReportsClampedPercentage() {
-        XCTAssertEqual(TrackerScrobblePolicy.stopPercent(positionSec: 1350, durationSec: 2700), 50, accuracy: 0.001)
-        XCTAssertEqual(TrackerScrobblePolicy.stopPercent(positionSec: 3000, durationSec: 2700), 100)
+        XCTAssertEqual(TrackerScrobblePolicy.stopPercent(positionSec: 1350, durationSec: 2700, isLive: false), 50, accuracy: 0.001)
+        XCTAssertEqual(TrackerScrobblePolicy.stopPercent(positionSec: 3000, durationSec: 2700, isLive: false), 100)
         XCTAssertEqual(TrackerScrobblePolicy.percent(positionSec: -5, durationSec: 2700), 0)
         XCTAssertEqual(TrackerScrobblePolicy.percent(positionSec: 10, durationSec: 0), 0)
+    }
+
+    /// Both engines close Trakt (`PlaybackProgressRecorder.stopTrakt`, mpv's `stopTraktScrobble`)
+    /// and the Simkl / MDBList fan-out through `stopPercent`. A live stream near the live edge reads
+    /// ~100 % of what is loaded: it must close at 0 so no tracker marks it watched.
+    func testStopOfALiveStreamReportsZero() {
+        XCTAssertEqual(TrackerScrobblePolicy.stopPercent(positionSec: 3_590, durationSec: 3_600, isLive: true), 0)
+        XCTAssertEqual(TrackerScrobblePolicy.stopPercent(positionSec: 600, durationSec: 3_600, isLive: true), 0)
+        XCTAssertEqual(TrackerScrobblePolicy.stopPercent(positionSec: 3_590, durationSec: 3_600, isLive: false), 99.72,
+                       accuracy: 0.01, "the same position on a VOD still closes at its percentage")
     }
 }

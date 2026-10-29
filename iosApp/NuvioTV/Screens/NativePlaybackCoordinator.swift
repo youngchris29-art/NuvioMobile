@@ -115,8 +115,9 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// screen (pause card remaining time, P4).
     @Published private(set) var durationSec: Double = 0
 
-    /// Live detection (`LivePlaybackPolicy`, NuvioTV b4e47d6d6): AVPlayer's indefinite item duration
-    /// (live HLS), or a duration that keeps growing across ticks. A live stream saves no progress.
+    /// Live detection (`LivePlaybackPolicy`, NuvioTV b4e47d6d6): a "channel" item, AVPlayer's
+    /// indefinite item duration (live HLS), or a duration that keeps growing across ticks. A live
+    /// stream saves no progress and closes its tracker sessions at 0 %.
     private var reportsLive = false
     private var durationGrowth = LivePlaybackPolicy.DurationGrowth()
     private var isLiveStream: Bool { LivePlaybackPolicy.isLive(reportsLive: reportsLive, growth: durationGrowth) }
@@ -539,8 +540,8 @@ final class NativePlaybackCoordinator: ObservableObject {
             recorder.record(positionSec: lastPositionSec, durationSec: lastDurationSec, isPaused: true, speed: 1,
                             flush: true, isLive: isLiveStream)
         }
-        recorder.stopTrakt(positionSec: lastPositionSec, durationSec: lastDurationSec)
-        recorder.stopTrackers(positionSec: lastPositionSec, durationSec: lastDurationSec)
+        recorder.stopTrakt(positionSec: lastPositionSec, durationSec: lastDurationSec, isLive: isLiveStream)
+        recorder.stopTrackers(positionSec: lastPositionSec, durationSec: lastDurationSec, isLive: isLiveStream)
         player?.pause()
         server?.stop(); server = nil
         remux?.stop()
@@ -1269,10 +1270,17 @@ final class NativePlaybackCoordinator: ObservableObject {
                     var pos = CMTimeGetSeconds(player.currentTime())
                     let dur = CMTimeGetSeconds(item.duration)
                     // Live detection, sampled once per tick of the ready item (see `isLiveStream`).
-                    if item.duration.isIndefinite { self.reportsLive = true }
+                    let wasLive = self.isLiveStream
+                    if LivePlaybackPolicy.reportsLive(contentType: self.context.contentType,
+                                                      indefiniteDuration: item.duration.isIndefinite) {
+                        self.reportsLive = true
+                    }
                     self.durationGrowth = LivePlaybackPolicy.nextDurationGrowth(
                         self.durationGrowth, mediaKey: self.context.url.absoluteString, durationSec: dur,
-                        fromRequestedMedia: true)
+                        positionSec: pos, fromRequestedMedia: true)
+                    if !wasLive, self.isLiveStream {
+                        print("[Live] native: live (reported=\(self.reportsLive) grew=\(self.durationGrowth.grew)): no resume or tracker progress")
+                    }
                     // A position jump that is not the app's own seek = a user seek. Reset the stall
                     // budget so back-to-back scrubs (each costing a ~10s reposition) can't
                     // accumulate into a false mpv fallback.

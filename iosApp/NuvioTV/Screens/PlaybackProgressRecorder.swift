@@ -154,17 +154,17 @@ final class PlaybackProgressRecorder {
         }
     }
 
-    func stopTrakt(positionSec: Double, durationSec: Double) {
+    func stopTrakt(positionSec: Double, durationSec: Double, isLive: Bool) {
         traktClosed = true
         guard let item = traktItem else { return }
         traktItem = nil
-        // A session can open before a placeholder's short duration is known; close
-        // it at 0% so Trakt never marks the stub watched.
-        let short = WatchingPoliciesKt.isShortPlaceholderDuration(durationMs: Int64(durationSec * 1000))
+        // A session can open before a placeholder's short duration is known, or before the stream
+        // reads live: close it at 0% so Trakt never marks the stub or the live stream watched.
         TraktScrobbleRepository.shared.scrobbleStop(
             profileId: ActiveProfileProvider.shared.activeProfileId,
             item: item,
-            progressPercent: short ? 0 : Self.percent(positionSec, durationSec)
+            progressPercent: Float(TrackerScrobblePolicy.stopPercent(positionSec: positionSec, durationSec: durationSec,
+                                                                     isLive: isLive))
         ) { _ in }
     }
 
@@ -182,8 +182,8 @@ final class PlaybackProgressRecorder {
         trackerScrobble.start(positionSec: positionSec, durationSec: durationSec)
     }
 
-    func stopTrackers(positionSec: Double, durationSec: Double) {
-        trackerScrobble.stop(positionSec: positionSec, durationSec: durationSec)
+    func stopTrackers(positionSec: Double, durationSec: Double, isLive: Bool) {
+        trackerScrobble.stop(positionSec: positionSec, durationSec: durationSec, isLive: isLive)
     }
 }
 
@@ -205,10 +205,12 @@ enum TrackerScrobblePolicy {
         !WatchingPoliciesKt.isShortPlaceholderDuration(durationMs: millis(durationSec))
     }
 
-    /// Progress for the closing `stop`: 0 for a clip that turned out to be a short placeholder
-    /// (so no tracker marks the stub watched), else the clamped percentage — as the Trakt drivers.
-    static func stopPercent(positionSec: Double, durationSec: Double) -> Double {
-        if WatchingPoliciesKt.isShortPlaceholderDuration(durationMs: millis(durationSec)) { return 0 }
+    /// Progress for the closing `stop`, Trakt included: 0 for a clip that turned out to be a short
+    /// placeholder (so no tracker marks the stub watched) or a live stream (near the live edge it
+    /// reads ~100 %, which every tracker would mark watched; `LivePlaybackPolicy`), else the
+    /// clamped percentage.
+    static func stopPercent(positionSec: Double, durationSec: Double, isLive: Bool) -> Double {
+        if isLive || WatchingPoliciesKt.isShortPlaceholderDuration(durationMs: millis(durationSec)) { return 0 }
         return percent(positionSec: positionSec, durationSec: durationSec)
     }
 
@@ -314,8 +316,8 @@ final class TrackerScrobbleSession {
         }
     }
 
-    func stop(positionSec: Double, durationSec: Double) {
-        let percent = TrackerScrobblePolicy.stopPercent(positionSec: positionSec, durationSec: durationSec)
+    func stop(positionSec: Double, durationSec: Double, isLive: Bool) {
+        let percent = TrackerScrobblePolicy.stopPercent(positionSec: positionSec, durationSec: durationSec, isLive: isLive)
         guard let now = sequencer.stop(percent: percent) else { return }
         guard media != nil, !recipients.isEmpty else { return }
         dispatch(.stop, percent: now)
