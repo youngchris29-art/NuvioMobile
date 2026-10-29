@@ -67,6 +67,14 @@ object SimklSyncRepository : TrackingProfileStore {
      */
     internal val saveLock = SynchronizedObject()
 
+    /**
+     * Makes "still current, then publish" one step against a profile switch or sign-out ("bump the
+     * generation, then reset the state"). Held only for those few instructions, never across I/O,
+     * so [onProfileChanged] on Main never waits for a file write. Lock order: [saveLock] may enclose
+     * this lock ([clearLocalState]); this lock never encloses [saveLock].
+     */
+    internal val stateLock = SynchronizedObject()
+
     private var hasLoaded = false
     // Read off the main thread by the commit functions, written by profile switch and sign-out.
     private val profileGeneration = atomic(0L)
@@ -296,38 +304,46 @@ object SimklSyncRepository : TrackingProfileStore {
     }
 
     /**
-     * Publishes [transform] of the latest state unless the world moved on. The check runs inside
-     * the update, so a retry after losing a race to [onProfileChanged] / [clearLocalState] (which
-     * bump the generation before they reset the state) sees the new generation and publishes nothing.
+     * Publishes [transform] of the latest state unless the world moved on. The check and the set
+     * run under [stateLock], which [onProfileChanged] / [clearLocalState] also hold for their
+     * "bump the generation, reset the state", so a commit can neither publish into a state that
+     * was reset after its check nor be fooled by a new state that equals the old one. The update
+     * still builds on the latest state, so unlocked writers such as [invalidateProjections] are kept.
      */
     private fun publishIfCurrent(
         generation: Long,
         profileId: Int,
         transform: (SimklSyncUiState) -> SimklSyncUiState,
     ): Boolean {
-        var published = false
-        _state.update { state ->
-            published = isCurrent(generation, profileId)
-            if (published) transform(state) else state
+        return synchronized(stateLock) {
+            if (isCurrent(generation, profileId)) {
+                _state.update(transform)
+                true
+            } else {
+                false
+            }
         }
-        return published
     }
 
     override fun onProfileChanged() {
-        profileGeneration.incrementAndGet()
-        hasLoaded = false
-        _state.value = SimklSyncUiState()
+        synchronized(stateLock) {
+            profileGeneration.incrementAndGet()
+            hasLoaded = false
+            _state.value = SimklSyncUiState()
+        }
         ensureLoaded()
     }
 
     override fun clearLocalState() {
         // Bump and wipe as one step against a commit's "still current, then write".
         synchronized(saveLock) {
-            profileGeneration.incrementAndGet()
+            synchronized(stateLock) {
+                profileGeneration.incrementAndGet()
+                hasLoaded = false
+                _state.value = SimklSyncUiState()
+            }
             SimklSyncStorage.savePayload("")
         }
-        hasLoaded = false
-        _state.value = SimklSyncUiState()
     }
 
     /**

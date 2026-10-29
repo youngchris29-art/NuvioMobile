@@ -194,11 +194,13 @@ class SimklSyncRepositoryCommitDispatcherTest {
         assertEquals(before + 1, after.projectionVersion, "the concurrent projection bump survives the publish")
     }
 
-    private fun holdSaveLock(): Pair<Thread, CountDownLatch> {
+    private fun holdSaveLock() = holdLock(SimklSyncRepository.saveLock)
+
+    private fun holdLock(lock: kotlinx.atomicfu.locks.SynchronizedObject): Pair<Thread, CountDownLatch> {
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)
         val holder = thread {
-            synchronized(SimklSyncRepository.saveLock) {
+            synchronized(lock) {
                 entered.countDown()
                 release.await(10, TimeUnit.SECONDS)
             }
@@ -229,6 +231,37 @@ class SimklSyncRepositoryCommitDispatcherTest {
         assertTrue(committed.await(5, TimeUnit.SECONDS))
         assertTrue(SimklSyncStorage.loadPayload().orEmpty().contains("\"id\":13"))
         holder.join(); commit.join()
+    }
+
+    @Test
+    fun `a profile change never waits for a file write but does wait for a publish`() {
+        val (writer, endWrite) = holdSaveLock()
+        val changedDuringWrite = CountDownLatch(1)
+        val first = thread { SimklSyncRepository.onProfileChanged(); changedDuringWrite.countDown() }
+        assertTrue(changedDuringWrite.await(5, TimeUnit.SECONDS), "onProfileChanged must not wait for the save lock")
+        endWrite.countDown()
+        writer.join(); first.join()
+
+        val (publisher, endPublish) = holdLock(SimklSyncRepository.stateLock)
+        val changedDuringPublish = CountDownLatch(1)
+        val second = thread { SimklSyncRepository.onProfileChanged(); changedDuringPublish.countDown() }
+        assertFalse(changedDuringPublish.await(300, TimeUnit.MILLISECONDS), "onProfileChanged must wait for a publish in progress")
+        endPublish.countDown()
+        assertTrue(changedDuringPublish.await(5, TimeUnit.SECONDS))
+        publisher.join(); second.join()
+    }
+
+    @Test
+    fun `a publish waits for the state lock so it cannot land in a state reset after its check`() {
+        val (resetter, endReset) = holdLock(SimklSyncRepository.stateLock)
+        val committed = CountDownLatch(1)
+        val commit = thread { runBlocking { SimklSyncRepository.commitScrobble(pause(14)) }; committed.countDown() }
+        assertFalse(committed.await(300, TimeUnit.MILLISECONDS), "the publish must wait for the state lock")
+        assertTrue(SimklSyncRepository.state.value.snapshot.playback.isEmpty())
+        endReset.countDown()
+        assertTrue(committed.await(5, TimeUnit.SECONDS))
+        assertEquals(listOf(14L), SimklSyncRepository.state.value.snapshot.playback.map { it.id })
+        resetter.join(); commit.join()
     }
 
     @Test
