@@ -51,11 +51,13 @@ internal fun decodeMdbListScrobbleReceipt(
 }
 
 /**
- * Applies a scrobble to the snapshot. A START or an incomplete STOP/PAUSE only touches the playback
- * list: [watched] stays the same instance and only playback is de-duplicated, so the caller can
- * tell playback-only changes apart by identity and update the projection incrementally. A
- * completed scrobble rewrites history and keeps the full normalisation. [mediaIndex] (the
- * published projection's) saves rebuilding the lookup from the whole history; null scans instead.
+ * Applies a scrobble to the snapshot. A START, or an incomplete PAUSE/STOP whose media the index
+ * already represents, only touches the playback list: [watched] stays the same instance and only
+ * playback is de-duplicated, so the caller can tell playback-only changes apart by identity and
+ * update the projection incrementally. A completed scrobble, or a session that brings aliases the
+ * history lacks, rewrites history and keeps the full normalisation (re-resolving every record
+ * through one index, as before). [mediaIndex] is the published projection's, saving a rebuild from
+ * the whole history; null builds one.
  */
 internal fun MdbListSyncSnapshot.applyScrobble(
     receipt: MdbListScrobbleReceipt,
@@ -67,10 +69,11 @@ internal fun MdbListSyncSnapshot.applyScrobble(
         return if (remainingPlayback === playback) this else copy(playback = remainingPlayback)
     }
     if (!receipt.isWatched) {
+        val index = mediaIndex ?: MdbListMediaIndex(this)
         val newSession = MdbListPlayback(
             id = receipt.playbackId ?: this.playback.firstOrNull(target::matches)?.id,
             type = target.type,
-            media = resolveMediaForPlayback(target.type, target.media, mediaIndex),
+            media = resolveMediaForPlayback(target.type, target.media, index),
             progress = receipt.progress,
             updatedAt = receipt.timestamp,
             season = target.season,
@@ -79,6 +82,11 @@ internal fun MdbListSyncSnapshot.applyScrobble(
             episodeTmdbId = target.episodeTmdbId,
             episodeTvdbId = target.episodeTvdbId
         )
+        if (index.withPlayback(listOf(newSession)) !== index) {
+            // The session carries aliases or fields history does not know yet: re-resolve every
+            // record, otherwise one show would sit under two ids until the next sync.
+            return copy(playback = remainingPlayback + newSession).normalizeMedia()
+        }
         val normalizedPlayback = (remainingPlayback + newSession)
             .groupBy { it.id?.let { id -> "id:$id" } ?: "${it.type}:${it.media.ids.key}:${it.season}:${it.episode}" }
             .map { (_, records) -> records.maxBy { mdbListTimestamp(it.updatedAt) } }
@@ -91,20 +99,12 @@ internal fun MdbListSyncSnapshot.applyScrobble(
 private fun MdbListSyncSnapshot.resolveMediaForPlayback(
     type: MdbListItemType,
     media: MdbListMedia,
-    mediaIndex: MdbListMediaIndex?,
+    mediaIndex: MdbListMediaIndex,
 ): MdbListMedia {
-    val aliases = media.ids.aliases()
-    if (aliases.isEmpty()) return media
+    if (media.ids.aliases().isEmpty()) return media
     val isMovie = type == MdbListItemType.MOVIE
-    var merged = mediaIndex?.resolveMedia(type, media) ?: run {
-        var acc = media
-        watched.forEach { record ->
-            if ((record.type == MdbListItemType.MOVIE) == isMovie && record.media.ids.aliases().any { it in aliases }) {
-                acc = acc.merged(record.media)
-            }
-        }
-        acc
-    }
+    val aliases = media.ids.aliases()
+    var merged = mediaIndex.resolveMedia(type, media)
     playback.forEach { record ->
         if ((record.type == MdbListItemType.MOVIE) == isMovie && record.media.ids.aliases().any { it in aliases }) {
             merged = merged.merged(record.media)

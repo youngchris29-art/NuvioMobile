@@ -16,6 +16,15 @@ internal class MdbListMediaIndex private constructor(
         snapshot.playback.forEach { add(it.type, it.media) }
     }
 
+    companion object {
+        /** An index over watched history only; [withPlayback] layers a playback list on top. */
+        fun watchedOnly(watched: List<MdbListWatchedRecord>): MdbListMediaIndex {
+            val index = MdbListMediaIndex(HashMap(watched.size.coerceAtLeast(16)))
+            watched.forEach { index.add(it.type, it.media) }
+            return index
+        }
+    }
+
     fun add(type: MdbListItemType, media: MdbListMedia): MdbListMedia {
         val movie = type == MdbListItemType.MOVIE
         val merged = media.ids.aliases().mapNotNull { byAlias[movie to it] }
@@ -38,8 +47,9 @@ internal class MdbListMediaIndex private constructor(
     /**
      * This index when every session's media is already represented (the usual scrobble: the same
      * show or movie as the session it replaces), otherwise a copy that has learned the new
-     * aliases. Matches what a rebuild over the new playback would index, so `canonicalContentId`
-     * and the dropped-show lookup keep resolving the same way.
+     * aliases. Called on a [watchedOnly] base each time, never on an earlier result, so the
+     * outcome is exactly what an index built over watched + this playback would hold and aliases
+     * taught by a removed session do not linger.
      */
     fun withPlayback(playback: List<MdbListPlayback>): MdbListMediaIndex {
         var extended: MdbListMediaIndex? = null

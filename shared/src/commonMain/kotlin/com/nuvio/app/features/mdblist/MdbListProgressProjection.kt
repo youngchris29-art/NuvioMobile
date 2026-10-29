@@ -13,6 +13,7 @@ import com.nuvio.app.features.watchprogress.WatchProgressEntry
  * snapshot that carries [newPlayback]; `MdbListProgressProjectionIncrementalTest` pins that.
  */
 internal class MdbListProgressProjection private constructor(
+    private val baseIndex: MdbListMediaIndex,
     internal val mediaIndex: MdbListMediaIndex,
     private val dropped: List<MdbListDroppedRecord>,
     private val droppedById: Map<String, List<Int?>>,
@@ -27,11 +28,14 @@ internal class MdbListProgressProjection private constructor(
     val nextUpSeeds: List<WatchProgressEntry>,
 ) {
     fun withUpdatedPlayback(newPlayback: List<MdbListPlayback>): MdbListProgressProjection {
-        val newIndex = mediaIndex.withPlayback(newPlayback)
+        // Always layered on the watched-only base so aliases taught by a session that has since
+        // been removed (START, clear) do not linger in the index.
+        val newIndex = baseIndex.withPlayback(newPlayback)
         val rebuiltDropped = if (newIndex === mediaIndex || dropped.isEmpty()) droppedById else buildDroppedById(dropped, newIndex)
         val droppedChanged = rebuiltDropped != droppedById
         val newDroppedById = if (droppedChanged) rebuiltDropped else droppedById
         return MdbListProgressProjection(
+            baseIndex = baseIndex,
             mediaIndex = newIndex,
             dropped = dropped,
             droppedById = newDroppedById,
@@ -60,7 +64,8 @@ internal class MdbListProgressProjection private constructor(
         val Empty = MdbListProgressProjection(MdbListSyncSnapshot(0))
 
         operator fun invoke(snapshot: MdbListSyncSnapshot): MdbListProgressProjection {
-            val mediaIndex = MdbListMediaIndex(snapshot)
+            val baseIndex = MdbListMediaIndex.watchedOnly(snapshot.watched)
+            val mediaIndex = baseIndex.withPlayback(snapshot.playback)
             val droppedById = buildDroppedById(snapshot.dropped, mediaIndex)
             val historyByKey = snapshot.watched.associateBy(MdbListWatchedRecord::key)
             val watchedItems = snapshot.watched.filter { it.type in setOf(MdbListItemType.MOVIE, MdbListItemType.EPISODE) }
@@ -94,6 +99,7 @@ internal class MdbListProgressProjection private constructor(
                 }
             }
             return MdbListProgressProjection(
+                baseIndex = baseIndex,
                 mediaIndex = mediaIndex,
                 dropped = snapshot.dropped,
                 droppedById = droppedById,
