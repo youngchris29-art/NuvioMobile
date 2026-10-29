@@ -7,6 +7,8 @@ import com.nuvio.app.features.tracking.TrackingProviderId
 import com.nuvio.app.features.tracking.TrackingProviderRegistry
 import com.nuvio.app.features.tracking.TrackingRefreshIntent
 import kotlinx.atomicfu.atomic
+import kotlinx.atomicfu.locks.SynchronizedObject
+import kotlinx.atomicfu.locks.synchronized
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -15,6 +17,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -53,6 +56,16 @@ object SimklSyncRepository : TrackingProfileStore {
 
     /** Test seam: runs on the writing thread after a snapshot is encoded, before the final currency check. */
     internal var beforeSaveHook: () -> Unit = {}
+
+    /** Test seam: runs on the writing thread after the file is written, before the snapshot is published. */
+    internal var afterSaveHook: () -> Unit = {}
+
+    /**
+     * Makes "still current, then write" one step against sign-out ("bump the generation, then wipe
+     * the file", [clearLocalState]); otherwise a commit that passed its check could land its write
+     * after the wipe and re-create signed-out data. Never held while taking [snapshotMutex].
+     */
+    internal val saveLock = SynchronizedObject()
 
     private var hasLoaded = false
     // Read off the main thread by the commit functions, written by profile switch and sign-out.
@@ -167,8 +180,8 @@ object SimklSyncRepository : TrackingProfileStore {
             throw error
         } catch (error: Throwable) {
             log.w { "Simkl sync failed: ${error.message}" }
-            if (isCurrent(generation, profileId)) {
-                _state.value = previous.copy(
+            publishIfCurrent(generation, profileId) {
+                previous.copy(
                     isLoading = false,
                     hasLoaded = true,
                     errorMessage = error.message ?: "Unable to sync Simkl",
@@ -185,11 +198,9 @@ object SimklSyncRepository : TrackingProfileStore {
             return@withLock
         }
         if (!saveIfCurrent(generation, profileId, result)) return@withLock
-        _state.value = SimklSyncUiState(
-            snapshot = result,
-            hasLoaded = true,
-        )
-        SimklWatchDiagnostics.logSnapshot(stage = "network-commit", snapshot = result)
+        if (publishIfCurrent(generation, profileId) { SimklSyncUiState(snapshot = result, hasLoaded = true) }) {
+            SimklWatchDiagnostics.logSnapshot(stage = "network-commit", snapshot = result)
+        }
     }
 
     internal suspend fun commitPlaybackRemoval(sessionIds: Set<Long>) {
@@ -205,8 +216,9 @@ object SimklSyncRepository : TrackingProfileStore {
                 if (updatedPlayback.size == current.snapshot.playback.size) return@withLock
                 val updatedSnapshot = current.snapshot.copy(playback = updatedPlayback)
                 if (!saveIfCurrent(generation, profileId, updatedSnapshot)) return@withLock
-                _state.value = current.copy(snapshot = updatedSnapshot)
-                SimklWatchDiagnostics.logSnapshot(stage = "playback-removal", snapshot = updatedSnapshot)
+                if (publishIfCurrent(generation, profileId) { it.copy(snapshot = updatedSnapshot) }) {
+                    SimklWatchDiagnostics.logSnapshot(stage = "playback-removal", snapshot = updatedSnapshot)
+                }
             }
         }
     }
@@ -227,8 +239,9 @@ object SimklSyncRepository : TrackingProfileStore {
                 )
                 if (snapshot == current.snapshot) return@withLock
                 if (!saveIfCurrent(generation, profileId, snapshot)) return@withLock
-                _state.value = current.copy(snapshot = snapshot)
-                SimklWatchDiagnostics.logSnapshot(stage = "scrobble-commit", snapshot = snapshot)
+                if (publishIfCurrent(generation, profileId) { it.copy(snapshot = snapshot) }) {
+                    SimklWatchDiagnostics.logSnapshot(stage = "scrobble-commit", snapshot = snapshot)
+                }
             }
         }
     }
@@ -249,8 +262,9 @@ object SimklSyncRepository : TrackingProfileStore {
                 )
                 if (snapshot == current.snapshot) return@withLock
                 if (!saveIfCurrent(generation, profileId, snapshot)) return@withLock
-                _state.value = current.copy(snapshot = snapshot)
-                SimklWatchDiagnostics.logSnapshot(stage = "mutation-commit", snapshot = snapshot)
+                if (publishIfCurrent(generation, profileId) { it.copy(snapshot = snapshot) }) {
+                    SimklWatchDiagnostics.logSnapshot(stage = "mutation-commit", snapshot = snapshot)
+                }
             }
         }
     }
@@ -262,15 +276,41 @@ object SimklSyncRepository : TrackingProfileStore {
      * Encodes [snapshot] and writes it to [profileId]'s file, unless a profile switch or sign-out
      * has landed since [generation] was captured. Those run on the main thread and do not take
      * [snapshotMutex], so the check is repeated after the slow encode, right before the write,
-     * and the write names the captured profile instead of resolving the active one at write time.
-     * Returns false (nothing written) when the world moved on.
+     * under [saveLock] (shared with [clearLocalState]), and the write names the captured profile
+     * instead of resolving the active one at write time. Returns false (nothing written) when the
+     * world moved on. The caller then publishes with [publishIfCurrent].
      */
     private fun saveIfCurrent(generation: Long, profileId: Int, snapshot: SimklSyncSnapshot): Boolean {
         val payload = json.encodeToString(snapshot)
         beforeSaveHook()
-        if (!isCurrent(generation, profileId)) return false
-        SimklSyncStorage.savePayload(profileId, payload)
-        return true
+        val written = synchronized(saveLock) {
+            if (isCurrent(generation, profileId)) {
+                SimklSyncStorage.savePayload(profileId, payload)
+                true
+            } else {
+                false
+            }
+        }
+        if (written) afterSaveHook()
+        return written
+    }
+
+    /**
+     * Publishes [transform] of the latest state unless the world moved on. The check runs inside
+     * the update, so a retry after losing a race to [onProfileChanged] / [clearLocalState] (which
+     * bump the generation before they reset the state) sees the new generation and publishes nothing.
+     */
+    private fun publishIfCurrent(
+        generation: Long,
+        profileId: Int,
+        transform: (SimklSyncUiState) -> SimklSyncUiState,
+    ): Boolean {
+        var published = false
+        _state.update { state ->
+            published = isCurrent(generation, profileId)
+            if (published) transform(state) else state
+        }
+        return published
     }
 
     override fun onProfileChanged() {
@@ -281,10 +321,13 @@ object SimklSyncRepository : TrackingProfileStore {
     }
 
     override fun clearLocalState() {
-        profileGeneration.incrementAndGet()
+        // Bump and wipe as one step against a commit's "still current, then write".
+        synchronized(saveLock) {
+            profileGeneration.incrementAndGet()
+            SimklSyncStorage.savePayload("")
+        }
         hasLoaded = false
         _state.value = SimklSyncUiState()
-        SimklSyncStorage.savePayload("")
     }
 
     /**

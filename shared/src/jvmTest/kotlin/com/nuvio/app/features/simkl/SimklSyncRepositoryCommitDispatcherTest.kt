@@ -7,6 +7,7 @@ import com.nuvio.app.features.tracking.TrackingExternalIds
 import com.nuvio.app.features.tracking.TrackingMediaKind
 import com.nuvio.app.features.tracking.TrackingMediaReference
 import com.nuvio.app.features.tracking.TrackingMutationResult
+import kotlinx.atomicfu.locks.synchronized
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -16,6 +17,9 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonPrimitive
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
 import kotlin.coroutines.CoroutineContext
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
@@ -69,6 +73,7 @@ class SimklSyncRepositoryCommitDispatcherTest {
         publishScope?.cancel()
         SimklSyncRepository.commitDispatcher = original
         SimklSyncRepository.beforeSaveHook = {}
+        SimklSyncRepository.afterSaveHook = {}
         SimklSyncRepository.clearLocalState()
     }
 
@@ -159,6 +164,71 @@ class SimklSyncRepositoryCommitDispatcherTest {
         SimklSyncRepository.beforeSaveHook = { SimklSyncRepository.onProfileChanged() }
         SimklSyncRepository.commitPlaybackRemoval(setOf(9L))
         assertEquals(persisted, SimklSyncStorage.loadPayload(), "removal not written over the reloaded profile")
+    }
+
+    @Test
+    fun `a sign out landing between the write and the publish publishes nothing`() = runBlocking {
+        SimklSyncRepository.afterSaveHook = { SimklSyncRepository.clearLocalState() }
+        SimklSyncRepository.commitScrobble(pause(10))
+        assertTrue(SimklSyncRepository.state.value.snapshot.playback.isEmpty(), "old snapshot not published over the cleared state")
+        assertTrue(SimklSyncStorage.loadPayload().isNullOrBlank())
+
+        SimklSyncRepository.commitMutation(addToWatchlist())
+        assertTrue(SimklSyncRepository.state.value.snapshot.entries.isEmpty())
+
+        SimklSyncRepository.afterSaveHook = {}
+        SimklSyncRepository.commitScrobble(pause(11))
+        SimklSyncRepository.afterSaveHook = { SimklSyncRepository.clearLocalState() }
+        SimklSyncRepository.commitPlaybackRemoval(setOf(11L))
+        assertTrue(SimklSyncRepository.state.value.snapshot.playback.isEmpty())
+        assertTrue(SimklSyncStorage.loadPayload().isNullOrBlank())
+    }
+
+    @Test
+    fun `publishing keeps changes made to the state while the commit was writing`() = runBlocking {
+        SimklSyncRepository.afterSaveHook = { SimklSyncRepository.invalidateProjections() }
+        val before = SimklSyncRepository.state.value.projectionVersion
+        SimklSyncRepository.commitScrobble(pause(12))
+        val after = SimklSyncRepository.state.value
+        assertEquals(listOf(12L), after.snapshot.playback.map { it.id })
+        assertEquals(before + 1, after.projectionVersion, "the concurrent projection bump survives the publish")
+    }
+
+    private fun holdSaveLock(): Pair<Thread, CountDownLatch> {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val holder = thread {
+            synchronized(SimklSyncRepository.saveLock) {
+                entered.countDown()
+                release.await(10, TimeUnit.SECONDS)
+            }
+        }
+        assertTrue(entered.await(5, TimeUnit.SECONDS))
+        return holder to release
+    }
+
+    @Test
+    fun `sign out waits for a write that already passed its check`() {
+        val (holder, release) = holdSaveLock()
+        val cleared = CountDownLatch(1)
+        val signOut = thread { SimklSyncRepository.clearLocalState(); cleared.countDown() }
+        assertFalse(cleared.await(300, TimeUnit.MILLISECONDS), "clearLocalState must wait for the save lock")
+        release.countDown()
+        assertTrue(cleared.await(5, TimeUnit.SECONDS))
+        holder.join(); signOut.join()
+    }
+
+    @Test
+    fun `a commit write waits while sign out holds the save lock`() {
+        val (holder, release) = holdSaveLock()
+        val committed = CountDownLatch(1)
+        val commit = thread { runBlocking { SimklSyncRepository.commitScrobble(pause(13)) }; committed.countDown() }
+        assertFalse(committed.await(300, TimeUnit.MILLISECONDS), "the write must wait for the save lock")
+        assertTrue(SimklSyncStorage.loadPayload().isNullOrBlank())
+        release.countDown()
+        assertTrue(committed.await(5, TimeUnit.SECONDS))
+        assertTrue(SimklSyncStorage.loadPayload().orEmpty().contains("\"id\":13"))
+        holder.join(); commit.join()
     }
 
     @Test
