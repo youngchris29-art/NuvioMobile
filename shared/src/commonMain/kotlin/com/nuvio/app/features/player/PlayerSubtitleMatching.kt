@@ -77,6 +77,10 @@ object SubtitleLanguageMatching {
         "bul" to "bg",
         "hrv" to "hr",
         "srp" to "sr",
+        // OpenSubtitles returns Montenegrin as mne/me; ISO 639-3 is cnr (upstream NuvioTV 7eb388a83).
+        "cnr" to "sr-me",
+        "mne" to "sr-me",
+        "me" to "sr-me",
         "slk" to "sk",
         "slo" to "sk",
         "slv" to "sl",
