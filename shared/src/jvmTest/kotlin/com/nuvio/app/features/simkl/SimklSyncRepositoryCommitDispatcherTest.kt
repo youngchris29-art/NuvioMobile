@@ -1,5 +1,7 @@
 package com.nuvio.app.features.simkl
 
+import com.nuvio.app.core.profile.ActiveProfileIdProvider
+import com.nuvio.app.core.profile.ActiveProfileProvider
 import com.nuvio.app.core.storage.ProfileScopedKey
 import com.nuvio.app.core.storage.jvmSharedPreferences
 import com.nuvio.app.features.profiles.ProfileRepository
@@ -50,10 +52,17 @@ class SimklSyncRepositoryCommitDispatcherTest {
     private val saveThreads = ConcurrentLinkedQueue<Thread>()
     private val publishThreads = ConcurrentLinkedQueue<Thread>()
     private var original: CoroutineDispatcher = Dispatchers.Default
+    private var originalProfileProvider = ActiveProfileProvider.provider
     private var publishScope: CoroutineScope? = null
 
     @BeforeTest
     fun install() {
+        // The repository captures ProfileRepository.activeProfileId while the storage's active-profile
+        // key comes from ActiveProfileProvider. Production wires the second to the first (see
+        // TvOsProviderInstaller); do the same here so another test class that left the process-wide
+        // profile at a different slot cannot split them.
+        originalProfileProvider = ActiveProfileProvider.provider
+        ActiveProfileProvider.provider = ActiveProfileIdProvider { ProfileRepository.activeProfileId }
         original = SimklSyncRepository.commitDispatcher
         SimklSyncRepository.commitDispatcher = recorder
         SimklSyncRepository.beforeSaveHook = { saveThreads.add(Thread.currentThread()) }
@@ -75,6 +84,7 @@ class SimklSyncRepositoryCommitDispatcherTest {
         SimklSyncRepository.beforeSaveHook = {}
         SimklSyncRepository.afterSaveHook = {}
         SimklSyncRepository.clearLocalState()
+        ActiveProfileProvider.provider = originalProfileProvider
     }
 
     private val movie = SimklMedia(title = "Movie", year = 2020, ids = mapOf("imdb" to JsonPrimitive("tt1234567")))
