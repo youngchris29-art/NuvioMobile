@@ -307,11 +307,22 @@ internal class RemoteProgressWriteDeduplicator(
 //    for profile B drop a still-encoding older persist for profile A right after a switch, which
 //    lost A's last write on the next launch (A's snapshot stayed only in memory);
 //  - [invalidate] is fork-only: the sign-out wipe calls it so a launched-but-not-yet-written
-//    encode cannot recreate the payload after the on-disk erasure.
+//    encode cannot recreate the payload after the on-disk erasure;
+//  - the queue also owns the read side ([latest], [update]): the load path and the cross-profile
+//    helpers (a scrobble for a profile that is not loaded) start from the pending snapshot when
+//    one exists, and the cross-profile writes join the same sequence ordering. Upstream's helpers
+//    read and write the file directly, so an in-flight persist landing after them dropped their
+//    entry, and a switch back inside that window loaded the snapshot without it for good.
+//
+// The write runs inside [lock], so a main-thread persist(), pending() or latest() can wait for
+// one whole atomic file write (~191 KB on the Living Room box). That is the price of
+// [invalidate] being able to wait for an in-progress write; [update] also decodes the stored
+// file under the lock, which only cross-profile writes pay.
 internal class WatchProgressPersistQueue(
     private val scope: CoroutineScope,
     private val encode: suspend (PendingWatchProgressPayload) -> String,
     private val write: (profileId: Int, payload: String) -> Unit,
+    private val read: (profileId: Int) -> StoredWatchProgressPayload?,
 ) {
     private val lock = SynchronizedObject()
     private var persistSequence = 0L
@@ -323,12 +334,43 @@ internal class WatchProgressPersistQueue(
     fun pending(profileId: Int): PendingWatchProgressPayload? =
         synchronized(lock) { pendingPersists[profileId] }
 
+    /**
+     * What [profileId]'s storage will hold once every issued persist lands: the pending snapshot
+     * when one is in flight (it is newer than the file), else the stored payload, else null.
+     */
+    fun latest(profileId: Int): StoredWatchProgressPayload? =
+        pending(profileId)?.toStoredPayload() ?: read(profileId)
+
     fun enqueue(profileId: Int, snapshot: PendingWatchProgressPayload): Job {
+        val pending = synchronized(lock) { issue(profileId, snapshot) }
+        return launchWrite(profileId, pending)
+    }
+
+    /**
+     * Read-modify-write of a profile that is not loaded. [transform] gets [latest]'s payload
+     * (null when nothing is stored) and returns the payload to write, or null to write nothing.
+     * Base and issue happen under one lock hold, so two writers never start from the same base.
+     */
+    fun update(
+        profileId: Int,
+        transform: (StoredWatchProgressPayload?) -> StoredWatchProgressPayload?,
+    ): Job? {
         val pending = synchronized(lock) {
-            persistSequence += 1
-            snapshot.copy(sequence = persistSequence).also { pendingPersists[profileId] = it }
-        }
-        return scope.launch {
+            val base = pendingPersists[profileId]?.toStoredPayload() ?: read(profileId)
+            val next = transform(base) ?: return@synchronized null
+            issue(profileId, next.toPendingPayload())
+        } ?: return null
+        return launchWrite(profileId, pending)
+    }
+
+    // Callers hold [lock].
+    private fun issue(profileId: Int, snapshot: PendingWatchProgressPayload): PendingWatchProgressPayload {
+        persistSequence += 1
+        return snapshot.copy(sequence = persistSequence).also { pendingPersists[profileId] = it }
+    }
+
+    private fun launchWrite(profileId: Int, pending: PendingWatchProgressPayload): Job =
+        scope.launch {
             val payload = encode(pending)
             synchronized(lock) {
                 val persistedSequence = maxOf(
@@ -343,7 +385,6 @@ internal class WatchProgressPersistQueue(
                 }
             }
         }
-    }
 
     /**
      * Sign-out: forget every pending snapshot and drop every persist already issued. A write
@@ -358,9 +399,27 @@ internal class WatchProgressPersistQueue(
     }
 }
 
+private fun PendingWatchProgressPayload.toStoredPayload() = StoredWatchProgressPayload(
+    entries = entries,
+    lastSuccessfulPushEpochMs = lastSuccessfulPushEpochMs,
+    deltaCursorEventId = deltaCursorEventId,
+    deltaInitialized = deltaInitialized,
+    dirtyProgressKeys = dirtyProgressKeys,
+)
+
+private fun StoredWatchProgressPayload.toPendingPayload() = PendingWatchProgressPayload(
+    entries = entries,
+    lastSuccessfulPushEpochMs = lastSuccessfulPushEpochMs,
+    deltaCursorEventId = deltaCursorEventId,
+    deltaInitialized = deltaInitialized,
+    dirtyProgressKeys = dirtyProgressKeys,
+)
+
 // Upstream bb94cb1c1: an entry whose metadata fetch keeps failing (offline, or an id no add-on
 // knows) is retried at most [maxAttempts] times per video id instead of on every upsert. Fork:
-// a class (upstream inlines the map and its lock) for the same testability reason as above.
+// a class (upstream inlines the map and its lock) for the same testability reason as above, and
+// a fetch made before any metadata add-on was ready does not count: upstream counted those, so
+// three cold-start runs ahead of the add-ons parked the rows until the next profile load.
 internal class MetadataEnrichmentBackoff(
     private val maxAttempts: Int = WATCH_PROGRESS_METADATA_ENRICHMENT_MAX_ATTEMPTS,
 ) {
@@ -375,7 +434,8 @@ internal class MetadataEnrichmentBackoff(
     fun withoutBackedOff(entries: List<WatchProgressEntry>): List<WatchProgressEntry> =
         entries.filterNot(::isBackedOff)
 
-    fun recordFailure(entries: List<WatchProgressEntry>) {
+    fun recordFailure(entries: List<WatchProgressEntry>, providersReady: Boolean) {
+        if (!providersReady) return
         synchronized(lock) {
             entries.forEach { entry ->
                 attemptsByVideoId[entry.videoId] = (attemptsByVideoId[entry.videoId] ?: 0) + 1
@@ -436,7 +496,9 @@ object WatchProgressRepository {
     private var metadataResolutionJob: Job? = null
     private val metadataResolutionRetryCoordinator = MetadataResolutionRetryCoordinator()
     private val metadataEnrichmentBackoff = MetadataEnrichmentBackoff()
-    private val persistQueue = WatchProgressPersistQueue(
+    // Test seam (like [syncAdapter]): WatchProgressRepositoryPersistTest swaps in a queue over
+    // in-memory storage to check the load path and the sign-out invalidation.
+    internal var persistQueue = WatchProgressPersistQueue(
         scope = syncScope,
         encode = { pending ->
             WatchProgressCodec.encodePayload(
@@ -448,6 +510,13 @@ object WatchProgressRepository {
             )
         },
         write = WatchProgressStorage::savePayload,
+        read = { profileId ->
+            WatchProgressStorage.loadPayload(profileId)
+                .orEmpty()
+                .trim()
+                .takeIf(String::isNotEmpty)
+                ?.let(WatchProgressCodec::decodePayload)
+        },
     )
     private val providerMetadataOverlay = ProviderProgressMetadataOverlay()
     private val nuvioPullMutex = Mutex()
@@ -568,17 +637,9 @@ object WatchProgressRepository {
         clearLocalEntries()
         metadataEnrichmentBackoff.clear()
 
-        val pending = persistQueue.pending(profileId)
-        val payload = WatchProgressStorage.loadPayload(profileId).orEmpty().trim()
-        if (pending != null) {
-            // A persist is still in flight: its snapshot is newer than the stored file.
-            lastSuccessfulPushEpochMs = pending.lastSuccessfulPushEpochMs
-            deltaCursorEventId = pending.deltaCursorEventId
-            deltaInitialized = pending.deltaInitialized
-            replaceLocalEntries(pending.entries)
-            replaceDirtyProgressKeys(pending.dirtyProgressKeys)
-        } else if (payload.isNotEmpty()) {
-            val storedPayload = WatchProgressCodec.decodePayload(payload)
+        // A persist still in flight is newer than the stored file: latest() prefers its snapshot.
+        val storedPayload = persistQueue.latest(profileId)
+        if (storedPayload != null) {
             lastSuccessfulPushEpochMs = storedPayload.lastSuccessfulPushEpochMs
             deltaCursorEventId = storedPayload.deltaCursorEventId
             deltaInitialized = storedPayload.deltaInitialized
@@ -1274,7 +1335,10 @@ object WatchProgressRepository {
                     if (!isActiveMetadataTarget(targetProfileId, targetGeneration, targetSource)) return@launch
                     val meta = result.meta
                     if (meta == null) {
-                        metadataEnrichmentBackoff.recordFailure(result.entries)
+                        metadataEnrichmentBackoff.recordFailure(
+                            entries = result.entries,
+                            providersReady = providerReadiness.isReady,
+                        )
                         return@repeat
                     }
                     metadataEnrichmentBackoff.recordSuccess(result.entries)
@@ -1658,41 +1722,28 @@ object WatchProgressRepository {
         profileId: Int,
         entry: WatchProgressEntry,
     ): WatchProgressEntry {
-        val payload = WatchProgressStorage.loadPayload(profileId).orEmpty().trim()
-        val storedPayload = if (payload.isNotEmpty()) {
-            WatchProgressCodec.decodePayload(payload)
-        } else {
-            StoredWatchProgressPayload()
-        }
-        val resolvedEntry = storedPayload.entries.resolveIdentityForUpsert(entry)
-        val progressKey = resolvedEntry.resolvedProgressKey()
-        val updatedEntries = storedPayload.entries
-            .filterNot { it.resolvedProgressKey() == progressKey } + resolvedEntry
-        WatchProgressStorage.savePayload(
-            profileId,
-            WatchProgressCodec.encodePayload(
-                entries = updatedEntries,
-                lastSuccessfulPushEpochMs = storedPayload.lastSuccessfulPushEpochMs,
-                deltaCursorEventId = storedPayload.deltaCursorEventId,
-                deltaInitialized = storedPayload.deltaInitialized,
+        // Through the persist queue, not straight to storage: the profile's own last persist may
+        // still be in flight (it was current a moment ago), and it must neither be the stale base
+        // here nor land on top of this write (see WatchProgressPersistQueue).
+        var resolvedEntry = entry
+        persistQueue.update(profileId) { stored ->
+            val storedPayload = stored ?: StoredWatchProgressPayload()
+            resolvedEntry = storedPayload.entries.resolveIdentityForUpsert(entry)
+            val progressKey = resolvedEntry.resolvedProgressKey()
+            storedPayload.copy(
+                entries = storedPayload.entries
+                    .filterNot { it.resolvedProgressKey() == progressKey } + resolvedEntry,
                 dirtyProgressKeys = storedPayload.dirtyProgressKeys + progressKey,
-            ),
-        )
+            )
+        }
         return resolvedEntry
     }
 
     private fun resolveStoredProfileProgressIdentity(
         profileId: Int,
         entry: WatchProgressEntry,
-    ): WatchProgressEntry {
-        val payload = WatchProgressStorage.loadPayload(profileId).orEmpty().trim()
-        val storedEntries = if (payload.isEmpty()) {
-            emptyList()
-        } else {
-            WatchProgressCodec.decodePayload(payload).entries
-        }
-        return storedEntries.resolveIdentityForUpsert(entry)
-    }
+    ): WatchProgressEntry =
+        persistQueue.latest(profileId)?.entries.orEmpty().resolveIdentityForUpsert(entry)
 
     /**
      * The freshest entry to re-push for [failedEntry]'s progress key, or null to skip the retry.
@@ -1710,12 +1761,9 @@ object WatchProgressRepository {
         if (profileId == currentProfileId) {
             return localEntriesSnapshot().firstOrNull { it.resolvedProgressKey() == progressKey }
         }
-        val payload = WatchProgressStorage.loadPayload(profileId).orEmpty().trim()
-        val storedMatch = if (payload.isEmpty()) {
-            null
-        } else {
-            WatchProgressCodec.decodePayload(payload).entries.firstOrNull { it.resolvedProgressKey() == progressKey }
-        }
+        val storedMatch = persistQueue.latest(profileId)
+            ?.entries
+            ?.firstOrNull { it.resolvedProgressKey() == progressKey }
         return storedMatch?.takeIf { it.lastUpdatedEpochMs >= failedEntry.lastUpdatedEpochMs } ?: failedEntry
     }
 
@@ -1840,33 +1888,28 @@ object WatchProgressRepository {
         profileId: Int,
         pushedEntries: Collection<WatchProgressEntry>,
     ) {
-        val payload = WatchProgressStorage.loadPayload(profileId).orEmpty().trim()
-        if (payload.isEmpty()) return
-        val storedPayload = WatchProgressCodec.decodePayload(payload)
-        val storedByKey = storedPayload.entries.newestByProgressKey()
-        val acknowledgedKeys = pushedEntries.mapNotNullTo(mutableSetOf()) { pushed ->
-            val key = pushed.resolvedProgressKey()
-            val current = storedByKey[key]
-            key.takeIf { current == null || current.lastUpdatedEpochMs <= pushed.lastUpdatedEpochMs }
-        }
-        val remainingDirtyKeys = storedPayload.dirtyProgressKeys - acknowledgedKeys
-        val latestPushed = pushedEntries.maxOfOrNull(WatchProgressEntry::lastUpdatedEpochMs) ?: 0L
-        if (
-            remainingDirtyKeys == storedPayload.dirtyProgressKeys &&
-            latestPushed <= storedPayload.lastSuccessfulPushEpochMs
-        ) {
-            return
-        }
-        WatchProgressStorage.savePayload(
-            profileId,
-            WatchProgressCodec.encodePayload(
-                entries = storedPayload.entries,
+        // Through the persist queue for the same reason as upsertStoredProfileProgress.
+        persistQueue.update(profileId) { storedPayload ->
+            if (storedPayload == null) return@update null
+            val storedByKey = storedPayload.entries.newestByProgressKey()
+            val acknowledgedKeys = pushedEntries.mapNotNullTo(mutableSetOf()) { pushed ->
+                val key = pushed.resolvedProgressKey()
+                val current = storedByKey[key]
+                key.takeIf { current == null || current.lastUpdatedEpochMs <= pushed.lastUpdatedEpochMs }
+            }
+            val remainingDirtyKeys = storedPayload.dirtyProgressKeys - acknowledgedKeys
+            val latestPushed = pushedEntries.maxOfOrNull(WatchProgressEntry::lastUpdatedEpochMs) ?: 0L
+            if (
+                remainingDirtyKeys == storedPayload.dirtyProgressKeys &&
+                latestPushed <= storedPayload.lastSuccessfulPushEpochMs
+            ) {
+                return@update null
+            }
+            storedPayload.copy(
                 lastSuccessfulPushEpochMs = maxOf(storedPayload.lastSuccessfulPushEpochMs, latestPushed),
-                deltaCursorEventId = storedPayload.deltaCursorEventId,
-                deltaInitialized = storedPayload.deltaInitialized,
                 dirtyProgressKeys = remainingDirtyKeys,
-            ),
-        )
+            )
+        }
     }
 
     private fun accountScopeSnapshot(): CoroutineScope = synchronized(accountScopeLock) {

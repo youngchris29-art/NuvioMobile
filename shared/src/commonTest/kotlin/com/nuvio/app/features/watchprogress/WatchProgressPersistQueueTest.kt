@@ -14,52 +14,28 @@ import kotlin.test.assertTrue
 /**
  * Upstream bb94cb1c1: watch-progress persists are snapshotted, sequenced, and encoded + written
  * off the caller's thread. The encode here suspends on a per-sequence gate so each case decides
- * the order in which in-flight encodes finish.
+ * the order in which in-flight encodes finish; the store is an in-memory map.
  */
 class WatchProgressPersistQueueTest {
 
-    private class Harness(scope: CoroutineScope) {
-        val writes = mutableListOf<Pair<Int, String>>()
-        val encodes = mutableListOf<Long>()
-        private val gates = mutableMapOf<Long, CompletableDeferred<Unit>>()
-        var holdEncodes = true
-
-        val queue = WatchProgressPersistQueue(
-            scope = scope,
-            encode = { pending ->
-                encodes += pending.sequence
-                if (holdEncodes) gate(pending.sequence).await()
-                "position=${pending.entries.single().lastPositionMs}"
-            },
-            write = { profileId, payload -> writes += profileId to payload },
-        )
-
-        fun gate(sequence: Long): CompletableDeferred<Unit> =
-            gates.getOrPut(sequence) { CompletableDeferred() }
-
-        fun release(sequence: Long) {
-            gate(sequence).complete(Unit)
-        }
-    }
-
     @Test
     fun `encode and write run on the queue scope and not on the caller`() = runTest {
-        val harness = Harness(this)
+        val harness = PersistQueueHarness(this)
         harness.holdEncodes = false
 
-        harness.queue.enqueue(profileId = 1, snapshot = snapshot(positionMs = 10_000L))
+        harness.queue.enqueue(profileId = 1, snapshot = snapshot(entry("a", 10_000L)))
 
         assertTrue(harness.encodes.isEmpty())
         assertTrue(harness.writes.isEmpty())
         runCurrent()
-        assertEquals(listOf(1 to "position=10000"), harness.writes)
+        assertEquals(listOf(1 to "a@10000"), harness.writes)
     }
 
     @Test
     fun `an older encode that finishes last never overwrites the newer payload`() = runTest {
-        val harness = Harness(this)
-        harness.queue.enqueue(profileId = 1, snapshot = snapshot(positionMs = 10_000L))
-        harness.queue.enqueue(profileId = 1, snapshot = snapshot(positionMs = 20_000L))
+        val harness = PersistQueueHarness(this)
+        harness.queue.enqueue(profileId = 1, snapshot = snapshot(entry("a", 10_000L)))
+        harness.queue.enqueue(profileId = 1, snapshot = snapshot(entry("a", 20_000L)))
         runCurrent()
         assertEquals(listOf(1L, 2L), harness.encodes)
 
@@ -68,58 +44,70 @@ class WatchProgressPersistQueueTest {
         harness.release(1L)
         runCurrent()
 
-        assertEquals(listOf(1 to "position=20000"), harness.writes)
+        assertEquals(listOf(1 to "a@20000"), harness.writes)
         assertNull(harness.queue.pending(1))
     }
 
     @Test
     fun `an older write that lands first keeps the newer snapshot pending`() = runTest {
-        val harness = Harness(this)
-        harness.queue.enqueue(profileId = 1, snapshot = snapshot(positionMs = 10_000L))
-        harness.queue.enqueue(profileId = 1, snapshot = snapshot(positionMs = 20_000L))
+        val harness = PersistQueueHarness(this)
+        harness.queue.enqueue(profileId = 1, snapshot = snapshot(entry("a", 10_000L)))
+        harness.queue.enqueue(profileId = 1, snapshot = snapshot(entry("a", 20_000L)))
         runCurrent()
 
         harness.release(1L)
         runCurrent()
-        assertEquals(listOf(1 to "position=10000"), harness.writes)
+        assertEquals(listOf(1 to "a@10000"), harness.writes)
         assertEquals(20_000L, harness.queue.pending(1)?.entries?.single()?.lastPositionMs)
 
         harness.release(2L)
         runCurrent()
-        assertEquals(listOf(1 to "position=10000", 1 to "position=20000"), harness.writes)
+        assertEquals(listOf(1 to "a@10000", 1 to "a@20000"), harness.writes)
         assertNull(harness.queue.pending(1))
     }
 
     @Test
-    fun `a load during an in-flight persist sees the pending snapshot`() = runTest {
-        val harness = Harness(this)
-        val snapshot = snapshot(positionMs = 42_000L).copy(
+    fun `latest prefers an in-flight snapshot over the stored payload`() = runTest {
+        val harness = PersistQueueHarness(this)
+        assertNull(harness.queue.latest(2))
+        harness.stored[2] = StoredWatchProgressPayload(entries = listOf(entry("a", 1_000L)))
+        assertEquals(listOf(entry("a", 1_000L)), harness.queue.latest(2)?.entries)
+
+        val snapshot = snapshot(entry("a", 42_000L)).copy(
             lastSuccessfulPushEpochMs = 5_000L,
             deltaCursorEventId = 7L,
             deltaInitialized = true,
-            dirtyProgressKeys = setOf("tt123:1:1"),
+            dirtyProgressKeys = setOf("a"),
         )
         harness.queue.enqueue(profileId = 2, snapshot = snapshot)
         runCurrent()
 
-        val pending = assertNotNull(harness.queue.pending(2))
+        assertEquals(snapshot.copy(sequence = 1L), assertNotNull(harness.queue.pending(2)))
+        assertEquals(
+            StoredWatchProgressPayload(
+                entries = listOf(entry("a", 42_000L)),
+                lastSuccessfulPushEpochMs = 5_000L,
+                deltaCursorEventId = 7L,
+                deltaInitialized = true,
+                dirtyProgressKeys = setOf("a"),
+            ),
+            harness.queue.latest(2),
+        )
         assertTrue(harness.writes.isEmpty())
-        assertEquals(snapshot.copy(sequence = 1L), pending)
-        assertNull(harness.queue.pending(1))
 
         harness.release(1L)
         runCurrent()
         assertNull(harness.queue.pending(2))
-        assertEquals(listOf(2 to "position=42000"), harness.writes)
+        assertEquals(listOf(entry("a", 42_000L)), harness.queue.latest(2)?.entries)
     }
 
     // Fork divergence: upstream keeps one global "already landed" sequence, so a newer persist for
     // the incoming profile dropped the outgoing profile's still-encoding last persist.
     @Test
     fun `the outgoing profile's last persist still lands after a switch`() = runTest {
-        val harness = Harness(this)
-        harness.queue.enqueue(profileId = 1, snapshot = snapshot(positionMs = 10_000L))
-        harness.queue.enqueue(profileId = 2, snapshot = snapshot(positionMs = 99_000L))
+        val harness = PersistQueueHarness(this)
+        harness.queue.enqueue(profileId = 1, snapshot = snapshot(entry("a", 10_000L)))
+        harness.queue.enqueue(profileId = 2, snapshot = snapshot(entry("b", 99_000L)))
         runCurrent()
 
         harness.release(2L)
@@ -127,16 +115,61 @@ class WatchProgressPersistQueueTest {
         harness.release(1L)
         runCurrent()
 
-        assertEquals(listOf(2 to "position=99000", 1 to "position=10000"), harness.writes)
+        assertEquals(listOf(2 to "b@99000", 1 to "a@10000"), harness.writes)
         assertNull(harness.queue.pending(1))
         assertNull(harness.queue.pending(2))
     }
 
+    // Fork: a cross-profile write (a scrobble for a profile that is not loaded) while that
+    // profile's own last persist is still encoding.
+    @Test
+    fun `an upsert for a stored profile with a persist in flight is not lost`() = runTest {
+        val harness = PersistQueueHarness(this)
+        harness.stored[1] = StoredWatchProgressPayload(entries = listOf(entry("a", 1_000L)))
+        harness.queue.enqueue(profileId = 1, snapshot = snapshot(entry("a", 10_000L)))
+        runCurrent()
+
+        var base: List<WatchProgressEntry>? = null
+        harness.queue.update(profileId = 1) { stored ->
+            base = stored?.entries
+            stored?.let { it.copy(entries = it.entries + entry("b", 5_000L)) }
+        }
+        runCurrent()
+        assertEquals(listOf(entry("a", 10_000L)), base)
+        assertEquals(listOf(entry("a", 10_000L), entry("b", 5_000L)), harness.queue.latest(1)?.entries)
+
+        // The cross-profile write finishes first; the older persist must not land on top of it.
+        harness.release(2L)
+        runCurrent()
+        harness.release(1L)
+        runCurrent()
+
+        assertEquals(listOf(1 to "a@10000,b@5000"), harness.writes)
+        assertEquals(listOf(entry("a", 10_000L), entry("b", 5_000L)), harness.stored[1]?.entries)
+        assertNull(harness.queue.pending(1))
+    }
+
+    @Test
+    fun `an update that declines to write issues nothing`() = runTest {
+        val harness = PersistQueueHarness(this)
+        var base: StoredWatchProgressPayload? = StoredWatchProgressPayload()
+
+        assertNull(harness.queue.update(profileId = 4) { stored -> base = stored; null })
+        runCurrent()
+
+        assertNull(base)
+        assertNull(harness.queue.pending(4))
+        assertTrue(harness.encodes.isEmpty())
+        assertTrue(harness.writes.isEmpty())
+    }
+
     @Test
     fun `a persist launched before the sign-out wipe never writes afterwards`() = runTest {
-        val harness = Harness(this)
-        harness.queue.enqueue(profileId = 1, snapshot = snapshot(positionMs = 10_000L))
-        harness.queue.enqueue(profileId = 3, snapshot = snapshot(positionMs = 30_000L))
+        val harness = PersistQueueHarness(this)
+        harness.queue.enqueue(profileId = 1, snapshot = snapshot(entry("a", 10_000L)))
+        harness.queue.update(profileId = 3) {
+            StoredWatchProgressPayload(entries = listOf(entry("c", 30_000L)))
+        }
         runCurrent()
 
         harness.queue.invalidate()
@@ -150,19 +183,11 @@ class WatchProgressPersistQueueTest {
 
         // The next account's persists still land.
         harness.holdEncodes = false
-        harness.queue.enqueue(profileId = 1, snapshot = snapshot(positionMs = 5_000L))
+        harness.queue.enqueue(profileId = 1, snapshot = snapshot(entry("a", 5_000L)))
         runCurrent()
-        assertEquals(listOf(1 to "position=5000"), harness.writes)
+        assertEquals(listOf(1 to "a@5000"), harness.writes)
         assertNull(harness.queue.pending(1))
     }
-
-    private fun snapshot(positionMs: Long) = PendingWatchProgressPayload(
-        entries = listOf(progressEntry(videoId = "tt123:1:1", positionMs = positionMs)),
-        lastSuccessfulPushEpochMs = 0L,
-        deltaCursorEventId = 0L,
-        deltaInitialized = false,
-        dirtyProgressKeys = emptySet(),
-    )
 }
 
 /**
@@ -172,42 +197,53 @@ class WatchProgressPersistQueueTest {
  * [MetadataEnrichmentBackoff.isBackedOff], and calls `clear()` on profile load and sign-out.
  */
 class MetadataEnrichmentBackoffTest {
-    private val failing = progressEntry(videoId = "tt-missing", positionMs = 1_000L)
-    private val healthy = progressEntry(videoId = "tt-healthy", positionMs = 1_000L)
+    private val failing = entry("tt-missing", 1_000L)
+    private val healthy = entry("tt-healthy", 1_000L)
 
     @Test
     fun `three failed enrichments back an entry off`() {
         val backoff = MetadataEnrichmentBackoff()
-        repeat(2) { backoff.recordFailure(listOf(failing)) }
+        repeat(2) { backoff.recordFailure(listOf(failing), providersReady = true) }
         assertFalse(backoff.isBackedOff(failing))
         assertEquals(listOf(failing, healthy), backoff.withoutBackedOff(listOf(failing, healthy)))
 
-        backoff.recordFailure(listOf(failing))
+        backoff.recordFailure(listOf(failing), providersReady = true)
         assertTrue(backoff.isBackedOff(failing))
         assertFalse(backoff.isBackedOff(healthy))
         assertEquals(listOf(healthy), backoff.withoutBackedOff(listOf(failing, healthy)))
     }
 
+    // Fork: upstream counted these, so cold-start runs ahead of the add-ons parked the rows.
+    @Test
+    fun `a fetch before any metadata provider was ready does not count`() {
+        val backoff = MetadataEnrichmentBackoff()
+        repeat(5) { backoff.recordFailure(listOf(failing), providersReady = false) }
+        assertFalse(backoff.isBackedOff(failing))
+
+        repeat(3) { backoff.recordFailure(listOf(failing), providersReady = true) }
+        assertTrue(backoff.isBackedOff(failing))
+    }
+
     @Test
     fun `the count is per video id and not per entry instance`() {
         val backoff = MetadataEnrichmentBackoff()
-        repeat(3) { backoff.recordFailure(listOf(failing)) }
+        repeat(3) { backoff.recordFailure(listOf(failing), providersReady = true) }
         assertTrue(backoff.isBackedOff(failing.copy(lastPositionMs = 50_000L, title = "Renamed")))
     }
 
     @Test
     fun `a success clears the video id's count`() {
         val backoff = MetadataEnrichmentBackoff()
-        repeat(2) { backoff.recordFailure(listOf(failing)) }
+        repeat(2) { backoff.recordFailure(listOf(failing), providersReady = true) }
         backoff.recordSuccess(listOf(failing))
-        repeat(2) { backoff.recordFailure(listOf(failing)) }
+        repeat(2) { backoff.recordFailure(listOf(failing), providersReady = true) }
         assertFalse(backoff.isBackedOff(failing))
     }
 
     @Test
     fun `clear on profile switch or sign-out forgets every count`() {
         val backoff = MetadataEnrichmentBackoff()
-        repeat(3) { backoff.recordFailure(listOf(failing, healthy)) }
+        repeat(3) { backoff.recordFailure(listOf(failing, healthy), providersReady = true) }
         assertTrue(backoff.isBackedOff(failing))
         assertTrue(backoff.isBackedOff(healthy))
 
@@ -217,18 +253,67 @@ class MetadataEnrichmentBackoffTest {
     }
 }
 
-private fun progressEntry(
-    videoId: String,
-    positionMs: Long,
-) = WatchProgressEntry(
-    contentType = "series",
-    parentMetaId = "tt123",
-    parentMetaType = "series",
+/** A [WatchProgressPersistQueue] over an in-memory store, with one encode gate per sequence. */
+internal class PersistQueueHarness(scope: CoroutineScope) {
+    val stored = mutableMapOf<Int, StoredWatchProgressPayload>()
+    val writes = mutableListOf<Pair<Int, String>>()
+    val encodes = mutableListOf<Long>()
+    private val encoded = mutableMapOf<String, StoredWatchProgressPayload>()
+    private val gates = mutableMapOf<Long, CompletableDeferred<Unit>>()
+    var holdEncodes = true
+
+    val queue = WatchProgressPersistQueue(
+        scope = scope,
+        encode = { pending ->
+            encodes += pending.sequence
+            if (holdEncodes) gate(pending.sequence).await()
+            describe(pending.entries).also { payload ->
+                encoded[payload] = StoredWatchProgressPayload(
+                    entries = pending.entries,
+                    lastSuccessfulPushEpochMs = pending.lastSuccessfulPushEpochMs,
+                    deltaCursorEventId = pending.deltaCursorEventId,
+                    deltaInitialized = pending.deltaInitialized,
+                    dirtyProgressKeys = pending.dirtyProgressKeys,
+                )
+            }
+        },
+        write = { profileId, payload ->
+            writes += profileId to payload
+            stored[profileId] = encoded.getValue(payload)
+        },
+        read = { profileId -> stored[profileId] },
+    )
+
+    fun release(sequence: Long) {
+        gate(sequence).complete(Unit)
+    }
+
+    fun releaseAll() {
+        encodes.forEach(::release)
+    }
+
+    private fun gate(sequence: Long): CompletableDeferred<Unit> =
+        gates.getOrPut(sequence) { CompletableDeferred() }
+
+    private fun describe(entries: List<WatchProgressEntry>): String =
+        entries.joinToString(separator = ",") { "${it.videoId}@${it.lastPositionMs}" }
+}
+
+private fun snapshot(vararg entries: WatchProgressEntry) = PendingWatchProgressPayload(
+    entries = entries.toList(),
+    lastSuccessfulPushEpochMs = 0L,
+    deltaCursorEventId = 0L,
+    deltaInitialized = false,
+    dirtyProgressKeys = emptySet(),
+)
+
+private fun entry(videoId: String, positionMs: Long) = WatchProgressEntry(
+    contentType = "movie",
+    parentMetaId = videoId,
+    parentMetaType = "movie",
     videoId = videoId,
-    title = "Episode",
-    seasonNumber = 1,
-    episodeNumber = 1,
+    title = "Title $videoId",
     lastPositionMs = positionMs,
-    durationMs = 60_000L,
+    durationMs = 120_000L,
     lastUpdatedEpochMs = 1_000L,
 )
