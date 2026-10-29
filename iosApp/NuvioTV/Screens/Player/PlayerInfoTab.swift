@@ -85,6 +85,7 @@ struct PlayerInfoTab: View {
                         .foregroundStyle(Theme.Palette.textSecondary)
                         .lineLimit(1)
                 }
+                if !info.badges.isEmpty { badgeRow }
                 if let synopsis = info.header.synopsis {
                     Text(synopsis)
                         .font(Theme.Font.body)
@@ -101,6 +102,27 @@ struct PlayerInfoTab: View {
             }
             Spacer(minLength: 0)
         }
+    }
+
+    /// Badge-pack chips for what is playing (upstream 344117e73), under the title like upstream's
+    /// player: the stream picker's `StreamBadgeChipView` at its metrics, no container behind the
+    /// row. `ViewThatFits` drops chips from the end rather than wrapping or truncating one; each
+    /// candidate is fixed at its ideal width, so a chip hugs its image instead of stretching to
+    /// `StreamBadgeMetrics.maxImageWidth` across a wide header.
+    private var badgeRow: some View {
+        ViewThatFits(in: .horizontal) {
+            ForEach((1...info.badges.count).reversed(), id: \.self) { count in
+                HStack(spacing: Theme.Spacing.xs) {
+                    ForEach(Array(info.badges.prefix(count).enumerated()), id: \.offset) { _, badge in
+                        StreamBadgeChipView(badge: badge)
+                    }
+                }
+                .fixedSize(horizontal: true, vertical: false)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(info.badges.map(\.name).joined(separator: ", "))
+        .accessibilityIdentifier("player.panel.badges")
     }
 
     private var chipRow: some View {

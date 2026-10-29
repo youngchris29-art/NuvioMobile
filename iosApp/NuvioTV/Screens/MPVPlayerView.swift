@@ -71,6 +71,9 @@ final class MPVPlaybackState: ObservableObject {
     @Published var audioDelaySec: Double = 0
     @Published var showStreamInfo: Bool = false
     @Published var streamInfo: StreamInfoSnapshot?
+    /// Player badges (upstream 344117e73): the playing media's facts from the track-list walk,
+    /// refreshed when the audio track or the decoded video params change. nil until the first walk.
+    @Published var badgeFacts: PlayerBadgeFacts?
     /// Engine routing decision from `PlayerEngineRouter`, shown as the Stream Info "Engine" row.
     /// Diagnostic only in Phase 1 — playback still runs through libmpv regardless.
     @Published var routingNote: String = ""
@@ -389,6 +392,10 @@ final class MPVTVPlayerViewController: UIViewController {
     private var propSnapshot = PropSnapshot()
     /// Coalesces track-list refresh requests (many property events can arrive in a burst).
     private var trackRefreshPending = false
+    /// Player badges: the selected video entry's facts and every audio entry's facts (by mpv id)
+    /// from the last walk, so an `aid` change re-publishes without a second walk. `eventQueue` only.
+    private var badgeVideoFacts: PlayerBadgeFacts?
+    private var badgeAudioFacts: [Int: PlayerBadgeFacts] = [:]
     #if DEBUG
     /// Elapsed playback time of the last `[Mem]` line (−1 = none yet); see `logStartupStatsIfNeeded`.
     private var lastMemLogElapsed: Double = -1
@@ -1170,9 +1177,14 @@ final class MPVTVPlayerViewController: UIViewController {
         var audioInfos: [TrackInfo] = []
         var subInfos: [TrackInfo] = []
         var externalSource: String?
+        var badgeVideo: PlayerBadgeFacts?
+        var badgeAudio: [Int: PlayerBadgeFacts] = [:]
 
         for i in 0..<count {
             let type = getString("track-list/\(i)/type") ?? ""
+            if type == "video", getFlag("track-list/\(i)/selected"), !getFlag("track-list/\(i)/albumart") {
+                badgeVideo = readBadgeVideo(trackIndex: i)
+            }
             guard type == "audio" || type == "sub" else { continue }
             let id = getInt("track-list/\(i)/id")
             let selected = getFlag("track-list/\(i)/selected")
@@ -1187,6 +1199,7 @@ final class MPVTVPlayerViewController: UIViewController {
             if type == "audio" {
                 audio.append(PlayerTrack(id: id, label: label, isSelected: selected))
                 audioInfos.append(info)
+                badgeAudio[id] = readBadgeAudio(trackIndex: i, lang: info.lang, selected: selected)
             } else {
                 subs.append(PlayerTrack(id: id, label: label, isSelected: selected))
                 subInfos.append(info)
@@ -1195,6 +1208,9 @@ final class MPVTVPlayerViewController: UIViewController {
                 }
             }
         }
+        badgeVideoFacts = badgeVideo
+        badgeAudioFacts = badgeAudio
+        publishBadgeFacts(aid: audioInfos.first(where: \.selected)?.id)
 
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -1214,6 +1230,73 @@ final class MPVTVPlayerViewController: UIViewController {
             self.autoSelectPreferredTracks(audioInfos: audioInfos, subInfos: subInfos,
                                            sideLoadActive: sideLoadActive || arriving,
                                            preferredLoadsPending: preferredLoadsPending || arriving)
+        }
+    }
+
+    // MARK: - Player badges (upstream 344117e73)
+
+    /// `eventQueue`: the selected video entry of the walk. Resolution from the demuxer (known before
+    /// the first frame), HDR/bit depth from `video-params` once decoded (`refreshBadgeVideoParams`).
+    private func readBadgeVideo(trackIndex i: Int) -> PlayerBadgeFacts {
+        var facts = PlayerBadgeFacts()
+        let w = getInt("video-params/w"), h = getInt("video-params/h")
+        let demuxW = getInt("track-list/\(i)/demux-w"), demuxH = getInt("track-list/\(i)/demux-h")
+        if w > 0, h > 0 { facts.videoWidth = w; facts.videoHeight = h }
+        else if demuxW > 0, demuxH > 0 { facts.videoWidth = demuxW; facts.videoHeight = demuxH }
+        facts.videoCodec = getString("track-list/\(i)/codec")
+        let profile = getString("track-list/\(i)/codec-profile")
+        facts.hdr = PlayerBadgeMatch.mpvHDR(gamma: getString("video-params/gamma"),
+                                            dolbyVisionProfile: getInt("track-list/\(i)/dolby-vision-profile"))
+        facts.bitDepth = PlayerBadgeMatch.bitDepth(pixelFormat: getString("video-params/pixelformat"), codecProfile: profile)
+        facts.fileName = PlayerBadgeMatch.fileName(from: context.url)
+        facts.streamName = PlayerBadgeMatch.streamName(title: context.streamTitle, subtitle: context.streamSubtitle)
+        return facts
+    }
+
+    /// `eventQueue`: one audio entry of the walk (codec, FFmpeg profile such as "Dolby Digital
+    /// Plus + Dolby Atmos", channels, language). The selected one falls back to `audio-params`.
+    private func readBadgeAudio(trackIndex i: Int, lang: String, selected: Bool) -> PlayerBadgeFacts {
+        var facts = PlayerBadgeFacts()
+        facts.audioCodec = getString("track-list/\(i)/codec")
+        facts.audioProfile = getString("track-list/\(i)/codec-profile")
+        var channels = getInt("track-list/\(i)/demux-channel-count")
+        if channels <= 0, selected { channels = getInt("audio-params/channel-count") }
+        facts.audioChannels = channels > 0 ? channels : nil
+        facts.languages = PlayerBadgeMatch.languageTokens(lang)
+        return facts
+    }
+
+    /// `eventQueue`: the decoded video params arrived or changed (HDR transfer, bit depth, size).
+    private func refreshBadgeVideoParams() {
+        guard var video = badgeVideoFacts else { return }
+        let w = getInt("video-params/w"), h = getInt("video-params/h")
+        if w > 0, h > 0 { video.videoWidth = w; video.videoHeight = h }
+        let gamma = getString("video-params/gamma")
+        let dv = video.hdr.contains("DV") ? 1 : 0
+        video.hdr = PlayerBadgeMatch.mpvHDR(gamma: gamma, dolbyVisionProfile: dv)
+        if let depth = PlayerBadgeMatch.bitDepth(pixelFormat: getString("video-params/pixelformat"), codecProfile: nil) {
+            video.bitDepth = depth
+        }
+        badgeVideoFacts = video
+        publishBadgeFacts(aid: Int(getString("aid") ?? ""))
+    }
+
+    /// `eventQueue`: the selected video facts merged with the audio entry `aid`, published on main.
+    private func publishBadgeFacts(aid: Int?) {
+        guard var facts = badgeVideoFacts ?? (badgeAudioFacts.isEmpty ? nil : PlayerBadgeFacts()) else { return }
+        if facts.fileName == nil, facts.streamName == nil {
+            facts.fileName = PlayerBadgeMatch.fileName(from: context.url)
+            facts.streamName = PlayerBadgeMatch.streamName(title: context.streamTitle, subtitle: context.streamSubtitle)
+        }
+        if let aid, let audio = badgeAudioFacts[aid] {
+            facts.audioCodec = audio.audioCodec
+            facts.audioProfile = audio.audioProfile
+            facts.audioChannels = audio.audioChannels
+            facts.languages = audio.languages
+        }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.state.badgeFacts != facts else { return }
+            self.state.badgeFacts = facts
         }
     }
 
@@ -4373,9 +4456,15 @@ final class MPVTVPlayerViewController: UIViewController {
         case .videoW:
             if let v = asInt() { updateProps { $0.videoW = v } }
         case .videoH:
-            if let v = asInt() { updateProps { $0.videoH = v } }
+            if let v = asInt() {
+                updateProps { $0.videoH = v }
+                if v > 0 { refreshBadgeVideoParams() }
+            }
         case .aid:
-            if let v = asInt() { alangTrace("aid changed -> \(v)") }
+            if let v = asInt() {
+                alangTrace("aid changed -> \(v)")
+                publishBadgeFacts(aid: Int(v))
+            }
         case .cacheBuffering:
             if let v = asInt() { updateProps { $0.cacheBufferingPct = v } }
         case .seekable:

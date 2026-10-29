@@ -57,6 +57,24 @@ struct StreamBadgesSection: View {
             isOn: Binding(get: { badges.badgesOnTop }, set: { badges.setBadgesOnTop($0) }),
             descriptionID: .appearanceBadgesAboveTitle
         )
+        // Upstream 344117e73 / 83e528f00: badges for what is playing, in the player's top panel
+        // (Info tab, under the title). Off by default; the pack row appears once it is on and a
+        // pack is imported, and defaults to the stream list's pack.
+        SettingsToggleRow(
+            title: String(localized: "Show Badges in Player"),
+            subtitle: String(localized: "Shows badges for the video and audio that is playing under the title in the player's Info tab."),
+            isOn: Binding(get: { badges.showInPlayer }, set: { badges.setShowInPlayer($0) }),
+            descriptionID: .appearanceBadgesInPlayer
+        )
+        if badges.showInPlayer, !badges.imports.isEmpty {
+            SettingsPickerRow(
+                title: String(localized: "Player Badge Pack"),
+                selection: Binding(get: { badges.playerBadgeSource }, set: { badges.setPlayerBadgeSource($0) }),
+                options: [""] + badges.imports.map(\.sourceUrl),
+                descriptionID: .appearancePlayerBadgePack,
+                label: { $0.isEmpty ? String(localized: "Same as Streams") : BadgeSettingsViewModel.packLabel($0) }
+            )
+        }
 
         if badges.imports.isEmpty {
             Text("No badge packs imported yet.")

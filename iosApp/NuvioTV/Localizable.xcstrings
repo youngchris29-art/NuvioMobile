@@ -10660,6 +10660,17 @@
         }
       }
     },
+    "Chooses the badge pack the player uses. Default: Same as Streams, the pack the source list uses.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chooses the badge pack the player uses. Default: Same as Streams, the pack the source list uses."
+          }
+        }
+      }
+    },
     "Chooses the font used across the app. Default: the Apple TV system font.": {
       "localizations": {
         "de": {
@@ -32422,6 +32433,17 @@
         }
       }
     },
+    "Player Badge Pack": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Player Badge Pack"
+          }
+        }
+      }
+    },
     "Playing": {
       "localizations": {
         "de": {
@@ -37323,6 +37345,17 @@
         }
       }
     },
+    "Same as Streams": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Same as Streams"
+          }
+        }
+      }
+    },
     "Save": {
       "localizations": {
         "de": {
@@ -39806,6 +39839,17 @@
         }
       }
     },
+    "Show Badges in Player": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Badges in Player"
+          }
+        }
+      }
+    },
     "Show Catalog Details in Headings": {
       "localizations": {
         "de": {
@@ -40587,6 +40631,28 @@
           "stringUnit": {
             "state": "translated",
             "value": "Hiện mã ngắn để nhập trên điện thoại (đăng nhập bằng thiết bị)."
+          }
+        }
+      }
+    },
+    "Shows badge chips for the video and audio that is playing, such as 4K, Dolby Vision or Atmos, under the title in the player's Info tab. Needs a badge pack that matches plain text. Off by default.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Shows badge chips for the video and audio that is playing, such as 4K, Dolby Vision or Atmos, under the title in the player's Info tab. Needs a badge pack that matches plain text. Off by default."
+          }
+        }
+      }
+    },
+    "Shows badges for the video and audio that is playing under the title in the player's Info tab.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Shows badges for the video and audio that is playing under the title in the player's Info tab."
           }
         }
       }

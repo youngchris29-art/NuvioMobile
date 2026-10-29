@@ -42,6 +42,9 @@ struct PlayerPanelInfo: Equatable {
     var header: NativeInfoHeader
     var chips: [PlayerPanelChip] = []
     var rows: [NativeInfoRow] = []
+    /// Badge-pack chips for what is playing (upstream 344117e73), under the title; empty hides the
+    /// row. Fed by `PlayerTopPanelModel.setBadgeFacts` / `setBadgeSettings`.
+    var badges: [StreamBadgeInfo] = []
 }
 
 @MainActor
@@ -93,5 +96,46 @@ final class PlayerTopPanelModel: ObservableObject {
 
     init(info: PlayerPanelInfo) {
         self.info = info
+    }
+
+    // MARK: - Player badges (upstream 344117e73, 83e528f00)
+
+    /// Last media facts the engine reported; nil until it has sampled the playing media.
+    private var badgeFacts: PlayerBadgeFacts?
+    /// The badge settings (Show Badges in Player, Player Badge Pack, the imported packs).
+    private var badgeSettings: StreamBadgeSettingsUiState?
+    private var badgeWatcher: FlowWatcher?
+
+    /// Called by the engine adapter when the media is ready and when the audio track changes.
+    func setBadgeFacts(_ facts: PlayerBadgeFacts?) {
+        guard facts != badgeFacts else { return }
+        badgeFacts = facts
+        rebuildBadges()
+    }
+
+    func setBadgeSettings(_ settings: StreamBadgeSettingsUiState?) {
+        badgeSettings = settings
+        rebuildBadges()
+    }
+
+    /// Follows the shared badge settings for the life of the model (both engine adapters call it).
+    func watchBadgeSettings() {
+        guard badgeWatcher == nil else { return }
+        StreamBadgeSettingsRepository.shared.ensureLoaded()
+        // Seeded synchronously so a panel opened right away does not draw the row a frame late.
+        setBadgeSettings(StreamBadgeSettingsRepository.shared.uiState.value_ as? StreamBadgeSettingsUiState)
+        badgeWatcher = FlowWatcherKt.watch(StreamBadgeSettingsRepository.shared.uiState) { [weak self] emitted in
+            guard let self, let value = emitted as? StreamBadgeSettingsUiState else { return }
+            self.setBadgeSettings(value)
+        }
+    }
+
+    private func rebuildBadges() {
+        let badges = PlayerBadgeMatch.badges(facts: badgeFacts, settings: badgeSettings)
+        if info.badges != badges { info.badges = badges }
+    }
+
+    deinit {
+        badgeWatcher?.cancel()
     }
 }

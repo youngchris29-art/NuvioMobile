@@ -61,6 +61,17 @@ final class NativePlayerPanelAdapter {
             .sink { [weak self] _ in self?.rebuildChapters() }
             .store(in: &cancellables)
 
+        // Player badges (upstream 344117e73): `audioTracks` is published when the media is ready and
+        // again only when the active audio track changes, so the facts are sampled exactly then.
+        model.watchBadgeSettings()
+        coordinator.$audioTracks
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.model.setBadgeFacts(self.coordinator.badgeFacts())
+            }
+            .store(in: &cancellables)
+
         refreshRoute()
         routeObserver = NotificationCenter.default.addObserver(
             forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main

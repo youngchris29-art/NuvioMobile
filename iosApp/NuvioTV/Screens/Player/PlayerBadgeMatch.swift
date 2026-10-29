@@ -1,0 +1,121 @@
+import Foundation
+import SharedCore
+
+// Player badges for what is playing (upstream 344117e73; badge-pack choice 83e528f00): each engine
+// fills a `PlayerBadgeFacts` from what it knows about the playing media, and `PlayerBadgeMatch`
+// hands those facts to the shared `PlaybackMatchText.build` and matches the result against the
+// player's badge pack (`StreamBadgePresentation.playerBadges`). The top panel shows the chips under
+// the title when "Show Badges in Player" is on.
+//
+// Sources: the native engine reads the remux's HLS signaling and its selected audio track
+// (`NativePlaybackCoordinator.badgeFacts()`); mpv reads the selected video/audio entries of its
+// track-list walk plus `video-params` (`MPVTVPlayerViewController.walkAndPublishTracks`). Both sample
+// when the media is ready and again when the audio track changes, never per tick.
+
+/// What an engine knows about the playing media, as plain values. Unknowns stay nil / empty.
+nonisolated struct PlayerBadgeFacts: Equatable, Sendable {
+    var videoWidth: Int?
+    var videoHeight: Int?
+    /// Engine codec name (`hevc`, `h264`, `av1`…); nil when only `videoCodecString` is known.
+    var videoCodec: String?
+    /// RFC 6381 string or an HLS comma list (`hvc1.2.4.L153.B0,dvh1.08.06`).
+    var videoCodecString: String?
+    /// `DV`, `PQ`, `HLG`… (any spelling `PlaybackMatchText` accepts).
+    var hdr: [String] = []
+    var bitDepth: Int?
+    var audioCodec: String?
+    /// Codec profile or track title (`Dolby Digital Plus + Dolby Atmos`, `DTS-HD MA`).
+    var audioProfile: String?
+    var audioChannels: Int?
+    /// Language tokens of the playing audio track (code and names).
+    var languages: [String] = []
+    var fileName: String?
+    var streamName: String?
+}
+
+nonisolated enum PlayerBadgeMatch {
+
+    /// The match string for `facts`, built by the shared `PlaybackMatchText` (every argument passed:
+    /// Kotlin defaults do not bridge).
+    static func matchText(_ facts: PlayerBadgeFacts) -> String {
+        PlaybackMatchText.shared.build(
+            videoWidth: facts.videoWidth.map { KotlinInt(int: Int32(clamping: $0)) },
+            videoHeight: facts.videoHeight.map { KotlinInt(int: Int32(clamping: $0)) },
+            videoCodec: facts.videoCodec,
+            videoCodecString: facts.videoCodecString,
+            hdr: facts.hdr,
+            bitDepth: facts.bitDepth.map { KotlinInt(int: Int32(clamping: $0)) },
+            audioCodec: facts.audioCodec,
+            audioProfile: facts.audioProfile,
+            audioChannels: facts.audioChannels.map { KotlinInt(int: Int32(clamping: $0)) },
+            languages: facts.languages,
+            fileName: facts.fileName,
+            streamName: facts.streamName
+        )
+    }
+
+    /// The chips the panel shows: none while the setting is off, no pack is imported, the engine
+    /// has not reported yet, or the pack matches nothing. Image-less filters are already dropped by
+    /// the shared side.
+    static func badges(facts: PlayerBadgeFacts?, settings: StreamBadgeSettingsUiState?) -> [StreamBadgeInfo] {
+        guard let facts, let settings, settings.showInPlayer, settings.rules.hasImport else { return [] }
+        let text = matchText(facts)
+        guard !text.isEmpty else { return [] }
+        return StreamBadgePresentation.shared
+            .playerBadges(rules: settings.rules, playerBadgeSource: settings.playerBadgeSource, matchText: text)
+            .map(StreamBadgeInfo.init)
+    }
+
+    // MARK: - Helpers both engines use
+
+    /// Language tokens for a track tag: the tag itself, its name in the UI language and in English
+    /// (packs are usually written in English), deduplicated. `und` and blank give nothing.
+    static func languageTokens(_ tag: String?) -> [String] {
+        guard let tag = tag?.trimmingCharacters(in: .whitespaces), !tag.isEmpty,
+              tag.lowercased() != "und" else { return [] }
+        var out = [tag]
+        for locale in [Locale.current, Locale(identifier: "en")] {
+            if let name = locale.localizedString(forLanguageCode: tag), !out.contains(name) { out.append(name) }
+        }
+        return out
+    }
+
+    /// The source URL's last path component when it looks like a file name (`Movie.2160p.DV.mkv`),
+    /// percent-decoded; nil otherwise.
+    static func fileName(from url: URL) -> String? {
+        let raw = url.lastPathComponent
+        let name = raw.removingPercentEncoding ?? raw
+        guard name.contains("."), name != "/" else { return nil }
+        return name
+    }
+
+    /// The stream's display name: its title and description lines, joined.
+    static func streamName(title: String?, subtitle: String?) -> String? {
+        let parts = [title, subtitle].compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
+    }
+
+    /// Bit depth from an mpv pixel format (`yuv420p10`, `p010`) or codec profile (`Main 10`);
+    /// nil when it says nothing beyond 8-bit.
+    static func bitDepth(pixelFormat: String?, codecProfile: String?) -> Int? {
+        let format = pixelFormat?.lowercased() ?? ""
+        if format.contains("p010") || format.contains("p10") { return 10 }
+        if format.contains("p012") || format.contains("p12") { return 12 }
+        let profile = codecProfile?.lowercased() ?? ""
+        if profile.contains("main 10") || profile.contains("10-bit") || profile.contains("high 10") { return 10 }
+        if profile.contains("main 12") || profile.contains("12-bit") { return 12 }
+        return nil
+    }
+
+    /// HDR flags from mpv's `video-params/gamma` and the track's Dolby Vision profile.
+    static func mpvHDR(gamma: String?, dolbyVisionProfile: Int) -> [String] {
+        var out: [String] = []
+        if dolbyVisionProfile > 0 { out.append("DV") }
+        switch gamma?.lowercased() {
+        case "pq": out.append("PQ")
+        case "hlg": out.append("HLG")
+        default: break
+        }
+        return out
+    }
+}

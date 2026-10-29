@@ -1698,6 +1698,29 @@ final class NativePlaybackCoordinator: ObservableObject {
         return h > 0 ? String(localized: "\(h) h \(m) min") : String(localized: "\(m) min")
     }
 
+    /// Player badges (upstream 344117e73): what the remux serves — its HLS signaling (RFC 6381
+    /// codecs, Dolby Vision supplemental codecs, VIDEO-RANGE, resolution) and the source track
+    /// behind the active audio rendition. nil until the remux has inspected the streams. Read by
+    /// `NativePlayerPanelAdapter` when `audioTracks` is published (ready, then each audio switch).
+    func badgeFacts() -> PlayerBadgeFacts? {
+        guard let remux, let s = remux.videoSignaling else { return nil }
+        var facts = PlayerBadgeFacts()
+        if s.width > 0, s.height > 0 { facts.videoWidth = Int(s.width); facts.videoHeight = Int(s.height) }
+        facts.videoCodecString = [s.codecs, s.supplementalCodecs].compactMap { $0 }.filter { !$0.isEmpty }
+            .joined(separator: ",")
+        if s.supplementalCodecs != nil { facts.hdr.append("DV") }
+        if let range = s.videoRange { facts.hdr.append(range) }
+        if let audio = remux.audioTracks.first(where: \.selected) {
+            facts.audioCodec = audio.codec
+            facts.audioProfile = audio.title
+            facts.audioChannels = audio.channels > 0 ? audio.channels : nil
+            facts.languages = PlayerBadgeMatch.languageTokens(audio.language)
+        }
+        facts.fileName = PlayerBadgeMatch.fileName(from: context.url)
+        facts.streamName = PlayerBadgeMatch.streamName(title: context.streamTitle, subtitle: context.streamSubtitle)
+        return facts
+    }
+
     // MARK: - Audio track display names
 
     /// 10-foot menu label: localized language, codec + channel layout, then the container's track

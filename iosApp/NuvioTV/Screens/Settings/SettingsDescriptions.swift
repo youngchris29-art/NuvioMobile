@@ -82,6 +82,8 @@ enum SettingsDescriptionID: String, CaseIterable {
     case appearanceBadgesFileSize = "appearance.badgesFileSize"
     case appearanceBadgesAddonLogo = "appearance.badgesAddonLogo"
     case appearanceBadgesAboveTitle = "appearance.badgesAboveTitle"
+    case appearanceBadgesInPlayer = "appearance.badgesInPlayer"
+    case appearancePlayerBadgePack = "appearance.playerBadgePack"
     case appearanceBadgePack = "appearance.badgePack"
     case appearanceBadgeImport = "appearance.badgeImport"
 
@@ -294,6 +296,8 @@ enum SettingsDescriptions {
         case .appearanceBadgesFileSize: return LocalizedStringResource("Shows each stream's file size, such as 4.2 GB, at the end of its first line. On by default.")
         case .appearanceBadgesAddonLogo: return LocalizedStringResource("Shows the add-on's logo next to each source. The add-on name always shows on rows with a quality headline; this also adds it to the other rows. Off by default.")
         case .appearanceBadgesAboveTitle: return LocalizedStringResource("Places the badge chips above the quality line instead of at the bottom of the row.")
+        case .appearanceBadgesInPlayer: return LocalizedStringResource("Shows badge chips for the video and audio that is playing, such as 4K, Dolby Vision or Atmos, under the title in the player's Info tab. Needs a badge pack that matches plain text. Off by default.")
+        case .appearancePlayerBadgePack: return LocalizedStringResource("Chooses the badge pack the player uses. Default: Same as Streams, the pack the source list uses.")
         case .appearanceBadgePack: return LocalizedStringResource("Set Active makes this badge pack decide which chips appear on streams. Delete removes the pack from this Apple TV.")
         case .appearanceBadgeImport: return LocalizedStringResource("Adds a badge pack from a JSON web address. Packs you import in the Nuvio phone app sync here on their own.")
 

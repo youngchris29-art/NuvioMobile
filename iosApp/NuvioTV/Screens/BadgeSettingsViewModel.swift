@@ -38,6 +38,15 @@ final class BadgeSettingsViewModel: ObservableObject {
     var showFileSizeBadges: Bool { state?.showFileSizeBadges ?? true }
     var showAddonLogo: Bool { state?.showAddonLogo ?? false }
     var badgesOnTop: Bool { state?.badgePlacement == .top }
+    /// Player badges (upstream 344117e73): chips for what is playing in the player's top panel.
+    /// Off by default.
+    var showInPlayer: Bool { state?.showInPlayer ?? false }
+    /// Upstream 83e528f00: the pack the player matches; "" (the default) = the stream list's pack.
+    /// A source that is no longer imported reads as "" (the shared rules fall back the same way).
+    var playerBadgeSource: String {
+        let source = state?.playerBadgeSource ?? ""
+        return imports.contains { $0.sourceUrl.caseInsensitiveCompare(source) == .orderedSame } ? source : ""
+    }
     /// Stream picker A (P4.1): the picker's backdrop mode; the platform default (Cinematic on tvOS,
     /// decision D1) until the repository has emitted.
     var backgroundMode: StreamBackgroundMode {
@@ -87,6 +96,14 @@ final class BadgeSettingsViewModel: ObservableObject {
 
     func setShowAddonLogo(_ enabled: Bool) {
         StreamBadgeSettingsRepository.shared.setShowAddonLogo(enabled: enabled)
+    }
+
+    func setShowInPlayer(_ enabled: Bool) {
+        StreamBadgeSettingsRepository.shared.setShowInPlayer(enabled: enabled)
+    }
+
+    func setPlayerBadgeSource(_ sourceUrl: String) {
+        StreamBadgeSettingsRepository.shared.setPlayerBadgeSource(source: sourceUrl)
     }
 
     func setBadgesOnTop(_ top: Bool) {
