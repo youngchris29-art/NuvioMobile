@@ -98,11 +98,13 @@ final class NextEpisodeEngineTests: XCTestCase {
         XCTAssertTrue(NextEpisodeEngine.isListable(torrent, resolvesThroughDebrid: { _ in true }))
     }
 
-    private func makeEngine(trigger: NextEpisodeEngine.TriggerSettings, recorder: Recorder) -> NextEpisodeEngine {
+    private func makeEngine(trigger: NextEpisodeEngine.TriggerSettings, recorder: Recorder,
+                            network: @escaping () -> Bool = { true }) -> NextEpisodeEngine {
         let hooks = NextEpisodeEngine.Hooks(loadStreams: { type, videoId, season, episode in
             recorder.calls.append(LoadCall(type: type, videoId: videoId, season: season?.value, episode: episode?.value))
             recorder.log.append("load:\(videoId)")
         }, searchBegan: { recorder.searchBegan += 1 },
+        networkSatisfied: network,
         clearStreams: { recorder.clears += 1; recorder.log.append("clear") },
         watchStreams: { callback in
             recorder.watches += 1
@@ -230,6 +232,27 @@ final class NextEpisodeEngineTests: XCTestCase {
         XCTAssertEqual(engine.phase, .hidden)
     }
 
+    /// Upstream bb94cb1c1: offline, the preload skips without marking itself triggered, so the
+    /// first tick after connectivity returns issues it.
+    func testOfflinePreloadSkipsThenRetriesOnceTheNetworkReturns() {
+        let recorder = Recorder()
+        var online = false
+        let engine = makeEngine(trigger: trigger(percent: 99, preload: true), recorder: recorder,
+                                network: { online })
+
+        engine.onProgress(positionSec: 2346, durationSec: Self.duration)   // inside the lead window
+        engine.onProgress(positionSec: 2350, durationSec: Self.duration)
+        XCTAssertTrue(recorder.calls.isEmpty, "preload hit the network while offline")
+        XCTAssertEqual(engine.phase, .hidden)
+
+        online = true
+        engine.onProgress(positionSec: 2352, durationSec: Self.duration)
+        XCTAssertEqual(recorder.calls, [LoadCall(type: "series", videoId: "tt1:1:2", season: 1, episode: 2)])
+
+        engine.onProgress(positionSec: 2356, durationSec: Self.duration)
+        XCTAssertEqual(recorder.calls.count, 1, "preload re-issued after it succeeded")
+    }
+
     func testMinutesModePreloadFiresAtThresholdMinusLead() {
         let recorder = Recorder()
         let engine = makeEngine(trigger: trigger(percentageMode: false, minutes: 2, preload: true), recorder: recorder)
@@ -265,6 +288,21 @@ final class NextEpisodeEngineTests: XCTestCase {
         XCTAssertEqual(recorder.searchBegan, 1)
         engine.onProgress(positionSec: 2377, durationSec: Self.duration)
         XCTAssertEqual(recorder.searchBegan, 1)
+    }
+
+    /// Upstream bb94cb1c1: offline, `beginSearch()` records the attempt and returns before the
+    /// flow is touched: no clear, no load, no watcher, and the phase never leaves `.hidden`.
+    func testOfflineSearchRecordsTheAttemptButNeverTouchesTheFlow() {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(percent: 99), recorder: recorder, network: { false })
+
+        engine.onProgress(positionSec: 2376, durationSec: Self.duration)
+
+        XCTAssertEqual(recorder.searchBegan, 1)
+        XCTAssertTrue(recorder.calls.isEmpty, "the search loaded streams while offline")
+        XCTAssertEqual(recorder.clears, 0)
+        XCTAssertEqual(recorder.watches, 0)
+        XCTAssertEqual(engine.phase, .hidden)
     }
 
     func testDismissedCardRearmsOnceAtEndOfFileThenSticks() {

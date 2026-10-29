@@ -99,6 +99,10 @@ final class NextEpisodeEngine: ObservableObject {
         /// Invoked first thing in `beginSearch()`, before the `settings` guard, so tests can see
         /// that a search was attempted. No-op in `.live`.
         var searchBegan: () -> Void = {}
+        /// Upstream bb94cb1c1: connectivity gate for the preload and the auto-play search fan-out.
+        /// Live value is the shared path monitor (true until its first update, so a cold start
+        /// never blocks). Tests replace it.
+        var networkSatisfied: () -> Bool = { NetworkPathMonitor.shared.isSatisfied }
         /// BUG-129 seams: the shared flow's reset and its subscription, used by `loadSources`,
         /// `beginSearch` and `tearDownSearch`. Tests replace them with spies (a nil watcher).
         var clearStreams: () -> Void = { PlayerStreamsRepository.shared.clearEpisodeStreams() }
@@ -611,6 +615,9 @@ final class NextEpisodeEngine: ObservableObject {
     /// key matches and the later search is a no-op that replays these results.
     private func preloadNextEpisodeStreams(positionSec: Double, durationSec: Double, leadSec: Double) {
         guard let next = nextVideo else { return }
+        // Offline: skip without marking the preload as triggered, so a later tick retries once
+        // the path is satisfied again (upstream bb94cb1c1).
+        guard hooks.networkSatisfied() else { return }
         preloaded = true
         let videoId = Self.episodeVideoId(metaId: context.parentMetaId, episode: next)
         print("[UpNext] preload begin — \(videoId) lead=\(Int(leadSec))s pos=\(Int(positionSec))/\(Int(durationSec))s")
@@ -712,6 +719,15 @@ final class NextEpisodeEngine: ObservableObject {
 
     private func beginSearch() {
         hooks.searchBegan()
+        // Offline: the auto-play fan-out is a network search, so skip it entirely (upstream
+        // bb94cb1c1). Checked before the `settings` guard (both are side-effect-free early
+        // returns) so the gate is reachable in tests, where `settings` is nil. beginSearch() is
+        // synchronous on tvOS (no deferred launch), so upstream's second in-launch check has no
+        // counterpart: nothing is set before the load is issued.
+        guard hooks.networkSatisfied() else {
+            print("[UpNext] search skipped — offline")
+            return
+        }
         guard let next = nextVideo, let settings else { return }
         // The search and the source list share the repo's episodeStreamsState flow — never both.
         takeFlowFromSourceList()
