@@ -978,6 +978,8 @@ object TraktProgressRepository {
             runCatching {
                 TmdbService.tmdbToImdb(tmdbId = tmdb, mediaType = "series")
                     ?: TmdbService.tmdbToImdb(tmdbId = tmdb, mediaType = "movie")
+            }.onFailure { error ->
+                if (error is CancellationException) throw error
             }.getOrNull()?.takeIf { it.isNotBlank() }?.let { return it }
 
             val response = runCatching {
@@ -987,6 +989,8 @@ object TraktProgressRepository {
                     headers = headers,
                     body = "",
                 )
+            }.onFailure { error ->
+                if (error is CancellationException) throw error
             }.getOrNull()
             if (response != null && response.status in 200..299) {
                 val result = runCatching {
