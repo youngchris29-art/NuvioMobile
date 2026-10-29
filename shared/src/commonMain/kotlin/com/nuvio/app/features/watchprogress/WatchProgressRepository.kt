@@ -50,6 +50,7 @@ import kotlinx.coroutines.sync.withPermit
 private const val WATCH_PROGRESS_METADATA_RESOLUTION_CONCURRENCY = 4
 private const val WATCH_PROGRESS_METADATA_RESOLUTION_LIMIT = 64
 private const val WATCH_PROGRESS_METADATA_FETCH_ATTEMPTS = 3
+private const val WATCH_PROGRESS_METADATA_ENRICHMENT_MAX_ATTEMPTS = 3
 private const val WATCH_PROGRESS_METADATA_RETRY_BASE_DELAY_MS = 750L
 private const val WATCH_PROGRESS_DELTA_PAGE_SIZE = 900
 private const val WATCH_PROGRESS_DELTA_OPERATION_UPSERT = "upsert"
@@ -60,6 +61,19 @@ private data class RemoteMetadataResolutionResult(
     val key: WatchProgressMetadataKey,
     val entries: List<WatchProgressEntry>,
     val meta: MetaDetails?,
+)
+
+/**
+ * Snapshot of the state a persist will write. It is kept in memory until the background
+ * write lands so a reload never observes an older file than the state we already have.
+ */
+internal data class PendingWatchProgressPayload(
+    val sequence: Long = 0L,
+    val entries: List<WatchProgressEntry>,
+    val lastSuccessfulPushEpochMs: Long,
+    val deltaCursorEventId: Long,
+    val deltaInitialized: Boolean,
+    val dirtyProgressKeys: Set<String>,
 )
 
 private data class MetadataProviderReadiness(
@@ -281,6 +295,107 @@ internal class RemoteProgressWriteDeduplicator(
     }
 }
 
+// Upstream bb94cb1c1 moved the watch-progress persist off the caller's thread: the player
+// persists progress ticks from the main thread, and the JSON encode of a large history plus the
+// storage write do not belong there. Each persist snapshots the state, takes a monotonic
+// sequence, and encodes + writes on [scope]; a write whose sequence is not newer than what
+// already landed is dropped, so a slow older encode never overwrites a newer payload.
+//
+// Fork divergences (upstream keeps these fields inline in the repository object):
+//  - lifted into this class so the ordering rules are testable without the singleton;
+//  - the "already landed" mark is per profile. Upstream's single global mark let a newer persist
+//    for profile B drop a still-encoding older persist for profile A right after a switch, which
+//    lost A's last write on the next launch (A's snapshot stayed only in memory);
+//  - [invalidate] is fork-only: the sign-out wipe calls it so a launched-but-not-yet-written
+//    encode cannot recreate the payload after the on-disk erasure.
+internal class WatchProgressPersistQueue(
+    private val scope: CoroutineScope,
+    private val encode: suspend (PendingWatchProgressPayload) -> String,
+    private val write: (profileId: Int, payload: String) -> Unit,
+) {
+    private val lock = SynchronizedObject()
+    private var persistSequence = 0L
+    private var invalidatedThroughSequence = 0L
+    private val persistedSequenceByProfile = mutableMapOf<Int, Long>()
+    private val pendingPersists = mutableMapOf<Int, PendingWatchProgressPayload>()
+
+    /** The newest snapshot for [profileId] whose write has not landed yet, if any. */
+    fun pending(profileId: Int): PendingWatchProgressPayload? =
+        synchronized(lock) { pendingPersists[profileId] }
+
+    fun enqueue(profileId: Int, snapshot: PendingWatchProgressPayload): Job {
+        val pending = synchronized(lock) {
+            persistSequence += 1
+            snapshot.copy(sequence = persistSequence).also { pendingPersists[profileId] = it }
+        }
+        return scope.launch {
+            val payload = encode(pending)
+            synchronized(lock) {
+                val persistedSequence = maxOf(
+                    invalidatedThroughSequence,
+                    persistedSequenceByProfile[profileId] ?: 0L,
+                )
+                if (pending.sequence <= persistedSequence) return@synchronized
+                persistedSequenceByProfile[profileId] = pending.sequence
+                write(profileId, payload)
+                if (pendingPersists[profileId]?.sequence == pending.sequence) {
+                    pendingPersists.remove(profileId)
+                }
+            }
+        }
+    }
+
+    /**
+     * Sign-out: forget every pending snapshot and drop every persist already issued. A write
+     * in progress holds [lock], so this waits for it; the on-disk wipe that follows erases it.
+     */
+    fun invalidate() {
+        synchronized(lock) {
+            pendingPersists.clear()
+            persistedSequenceByProfile.clear()
+            invalidatedThroughSequence = persistSequence
+        }
+    }
+}
+
+// Upstream bb94cb1c1: an entry whose metadata fetch keeps failing (offline, or an id no add-on
+// knows) is retried at most [maxAttempts] times per video id instead of on every upsert. Fork:
+// a class (upstream inlines the map and its lock) for the same testability reason as above.
+internal class MetadataEnrichmentBackoff(
+    private val maxAttempts: Int = WATCH_PROGRESS_METADATA_ENRICHMENT_MAX_ATTEMPTS,
+) {
+    private val lock = SynchronizedObject()
+    private val attemptsByVideoId = mutableMapOf<String, Int>()
+
+    fun isBackedOff(entry: WatchProgressEntry): Boolean =
+        synchronized(lock) {
+            (attemptsByVideoId[entry.videoId] ?: 0) >= maxAttempts
+        }
+
+    fun withoutBackedOff(entries: List<WatchProgressEntry>): List<WatchProgressEntry> =
+        entries.filterNot(::isBackedOff)
+
+    fun recordFailure(entries: List<WatchProgressEntry>) {
+        synchronized(lock) {
+            entries.forEach { entry ->
+                attemptsByVideoId[entry.videoId] = (attemptsByVideoId[entry.videoId] ?: 0) + 1
+            }
+        }
+    }
+
+    fun recordSuccess(entries: List<WatchProgressEntry>) {
+        synchronized(lock) {
+            entries.forEach { entry -> attemptsByVideoId.remove(entry.videoId) }
+        }
+    }
+
+    fun clear() {
+        synchronized(lock) {
+            attemptsByVideoId.clear()
+        }
+    }
+}
+
 object WatchProgressRepository {
     private val syncScope =
         CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("WatchProgressRepository"))
@@ -320,6 +435,20 @@ object WatchProgressRepository {
     private var dirtyProgressKeys: MutableSet<String> = mutableSetOf()
     private var metadataResolutionJob: Job? = null
     private val metadataResolutionRetryCoordinator = MetadataResolutionRetryCoordinator()
+    private val metadataEnrichmentBackoff = MetadataEnrichmentBackoff()
+    private val persistQueue = WatchProgressPersistQueue(
+        scope = syncScope,
+        encode = { pending ->
+            WatchProgressCodec.encodePayload(
+                entries = pending.entries,
+                lastSuccessfulPushEpochMs = pending.lastSuccessfulPushEpochMs,
+                deltaCursorEventId = pending.deltaCursorEventId,
+                deltaInitialized = pending.deltaInitialized,
+                dirtyProgressKeys = pending.dirtyProgressKeys,
+            )
+        },
+        write = WatchProgressStorage::savePayload,
+    )
     private val providerMetadataOverlay = ProviderProgressMetadataOverlay()
     private val nuvioPullMutex = Mutex()
     private var lastSuccessfulPushEpochMs = 0L
@@ -414,6 +543,12 @@ object WatchProgressRepository {
         updateActiveSource(WatchProgressSource.NUVIO_SYNC)
         providerMetadataOverlay.clear()
         clearLocalEntries()
+        metadataEnrichmentBackoff.clear()
+        // Fork: both account wipes (TvOsAccountDataCleaner, composeApp's LocalAccountDataCleaner)
+        // call this before erasing the stored payloads, so dropping in-flight persists here means
+        // none can write the outgoing account's history back after that erasure. A plain profile
+        // switch (loadFromDisk) keeps them: the outgoing profile's last persist must still land.
+        persistQueue.invalidate()
         lastSuccessfulPushEpochMs = 0L
         deltaCursorEventId = 0L
         deltaInitialized = false
@@ -431,9 +566,18 @@ object WatchProgressRepository {
         hasLoadedNuvioRemoteProgress = false
         providerMetadataOverlay.clear()
         clearLocalEntries()
+        metadataEnrichmentBackoff.clear()
 
+        val pending = persistQueue.pending(profileId)
         val payload = WatchProgressStorage.loadPayload(profileId).orEmpty().trim()
-        if (payload.isNotEmpty()) {
+        if (pending != null) {
+            // A persist is still in flight: its snapshot is newer than the stored file.
+            lastSuccessfulPushEpochMs = pending.lastSuccessfulPushEpochMs
+            deltaCursorEventId = pending.deltaCursorEventId
+            deltaInitialized = pending.deltaInitialized
+            replaceLocalEntries(pending.entries)
+            replaceDirtyProgressKeys(pending.dirtyProgressKeys)
+        } else if (payload.isNotEmpty()) {
             val storedPayload = WatchProgressCodec.decodePayload(payload)
             lastSuccessfulPushEpochMs = storedPayload.lastSuccessfulPushEpochMs
             deltaCursorEventId = storedPayload.deltaCursorEventId
@@ -1086,6 +1230,7 @@ object WatchProgressRepository {
             .filter { entry ->
                 displayReadyProvider?.canRepresentContentId(entry.parentMetaId) != true
             }
+            .let(metadataEnrichmentBackoff::withoutBackedOff)
         val entriesToResolve = missingMetadataEntries.continueWatchingEntries(
             limit = WATCH_PROGRESS_METADATA_RESOLUTION_LIMIT,
         )
@@ -1129,8 +1274,10 @@ object WatchProgressRepository {
                     if (!isActiveMetadataTarget(targetProfileId, targetGeneration, targetSource)) return@launch
                     val meta = result.meta
                     if (meta == null) {
+                        metadataEnrichmentBackoff.recordFailure(result.entries)
                         return@repeat
                     }
+                    metadataEnrichmentBackoff.recordSuccess(result.entries)
 
                     // Rows backed by local storage keep the shipped path: enrich in place and
                     // persist. Rows that exist only inside a provider projection are read-only, so
@@ -1491,7 +1638,7 @@ object WatchProgressRepository {
         progressProvider?.applyOptimisticProgress(entry)
         publish()
         if (persist) persist()
-        if (entry.needsRemoteMetadataEnrichment()) {
+        if (entry.needsRemoteMetadataEnrichment() && !metadataEnrichmentBackoff.isBackedOff(entry)) {
             resolveRemoteMetadata()
         }
         if (syncRemote) {
@@ -1636,9 +1783,11 @@ object WatchProgressRepository {
     }
 
     private fun persist() {
-        WatchProgressStorage.savePayload(
-            currentProfileId,
-            WatchProgressCodec.encodePayload(
+        // The JSON encode and the storage write run on syncScope (see WatchProgressPersistQueue):
+        // the player persists progress ticks from the main thread.
+        persistQueue.enqueue(
+            profileId = currentProfileId,
+            snapshot = PendingWatchProgressPayload(
                 entries = localEntriesSnapshot(),
                 lastSuccessfulPushEpochMs = lastSuccessfulPushEpochMs,
                 deltaCursorEventId = deltaCursorEventId,
