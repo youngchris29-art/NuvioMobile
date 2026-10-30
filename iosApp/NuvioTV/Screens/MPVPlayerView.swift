@@ -329,13 +329,15 @@ final class MPVTVPlayerViewController: UIViewController {
     /// `eventQueue` only: the log ring's subtitle attribution window is open for the load in flight.
     private var subtitleLoadWindowOpen = false
     private var fileLoaded = false
-    /// Main only. Live detection (`LivePlaybackPolicy`, NuvioTV b4e47d6d6/583eae818): a "channel"
-    /// item, `seekable` false once loaded, or (a live HLS stream mpv seeks inside its cache) a
-    /// duration that keeps growing. Fed once per `refreshState` tick, readings before FILE_LOADED
-    /// skipped. A live stream saves no progress and closes its tracker sessions at 0 %.
+    /// Main only. Live detection (`LivePlaybackPolicy`, NuvioTV b4e47d6d6/583eae818): `seekable`
+    /// false once loaded, or (a live HLS stream mpv seeks inside its cache) a duration that keeps
+    /// growing with the clock. Fed once per `refreshState` tick, readings before FILE_LOADED
+    /// skipped. A live stream, or one whose growth is still undecided (`holdsLiveProgress`), saves
+    /// no progress and closes its tracker sessions at 0 %.
     private var reportsLive = false
     private var durationGrowth = LivePlaybackPolicy.DurationGrowth()
     private var isLiveStream: Bool { LivePlaybackPolicy.isLive(reportsLive: reportsLive, growth: durationGrowth) }
+    private var holdsLiveProgress: Bool { LivePlaybackPolicy.holdsProgress(reportsLive: reportsLive, growth: durationGrowth) }
     /// P5 N1: main only. The audio delay's saved / stream-hint / session parts for this file.
     private var audioDelayParts = AudioDelayParts(savedMs: 0, streamMs: nil, sessionAdjustMs: 0)
     /// P5 B20: `eventQueue` only. The `af` value last handed to mpv ("" = none).
@@ -1768,7 +1770,7 @@ final class MPVTVPlayerViewController: UIViewController {
     private func stopTraktScrobble() {
         // The other trackers close on the same two teardown paths (viewDidDisappear + deinit);
         // idempotent, and independent of whether a Trakt item was ever built.
-        trackerScrobble.stop(positionSec: state.positionSec, durationSec: state.durationSec, isLive: isLiveStream)
+        trackerScrobble.stop(positionSec: state.positionSec, durationSec: state.durationSec, isLive: holdsLiveProgress)
         traktSessionClosed = true
         guard let item = traktScrobbleItem else { return }
         traktScrobbleItem = nil
@@ -1779,7 +1781,7 @@ final class MPVTVPlayerViewController: UIViewController {
             item: item,
             progressPercent: Float(TrackerScrobblePolicy.stopPercent(positionSec: state.positionSec,
                                                                      durationSec: state.durationSec,
-                                                                     isLive: isLiveStream))
+                                                                     isLive: holdsLiveProgress))
         ) { _ in }
     }
 
@@ -2266,7 +2268,7 @@ final class MPVTVPlayerViewController: UIViewController {
         guard mpv != nil else { return }
         let duration = state.durationSec
         let position = state.positionSec
-        guard LivePlaybackPolicy.shouldSaveResume(isLive: isLiveStream, positionSec: position, durationSec: duration) else { return }
+        guard LivePlaybackPolicy.shouldSaveResume(isLive: holdsLiveProgress, positionSec: position, durationSec: duration) else { return }
 
         let snapshot = PlayerPlaybackSnapshot(
             isLoading: false,
@@ -2308,11 +2310,12 @@ final class MPVTVPlayerViewController: UIViewController {
         let position = max(snap.position, 0)
         if state.durationSec != snap.duration { state.durationSec = snap.duration }
         let wasLive = isLiveStream
-        if LivePlaybackPolicy.reportsLive(contentType: context.contentType, seekable: fileLoaded ? snap.seekable : nil) {
+        if LivePlaybackPolicy.reportsLive(seekable: fileLoaded ? snap.seekable : nil) {
             reportsLive = true
         }
         durationGrowth = LivePlaybackPolicy.nextDurationGrowth(durationGrowth, mediaKey: context.url.absoluteString,
-                                                               durationSec: snap.duration, positionSec: position,
+                                                               durationSec: snap.duration,
+                                                               nowSec: ProcessInfo.processInfo.systemUptime,
                                                                fromRequestedMedia: fileLoaded)
         if !wasLive, isLiveStream {
             print("[Live] mpv: live (reported=\(reportsLive) grew=\(durationGrowth.grew)): no resume or tracker progress")

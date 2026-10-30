@@ -115,12 +115,14 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// screen (pause card remaining time, P4).
     @Published private(set) var durationSec: Double = 0
 
-    /// Live detection (`LivePlaybackPolicy`, NuvioTV b4e47d6d6): a "channel" item, AVPlayer's
-    /// indefinite item duration (live HLS), or a duration that keeps growing across ticks. A live
-    /// stream saves no progress and closes its tracker sessions at 0 %.
+    /// Live detection (`LivePlaybackPolicy`, NuvioTV b4e47d6d6): AVPlayer's indefinite item
+    /// duration (live HLS), or a duration that keeps growing with the clock across ticks. A live
+    /// stream, or one whose growth is still undecided (`holdsLiveProgress`), saves no progress and
+    /// closes its tracker sessions at 0 %.
     private var reportsLive = false
     private var durationGrowth = LivePlaybackPolicy.DurationGrowth()
     private var isLiveStream: Bool { LivePlaybackPolicy.isLive(reportsLive: reportsLive, growth: durationGrowth) }
+    private var holdsLiveProgress: Bool { LivePlaybackPolicy.holdsProgress(reportsLive: reportsLive, growth: durationGrowth) }
 
     /// `ProcessInfo.systemUptime` when the item FIRST became ready to play; nil until then (a
     /// signaling retry or a later item never moves it).
@@ -538,10 +540,10 @@ final class NativePlaybackCoordinator: ObservableObject {
         addonSubsWatcher?.cancel(); addonSubsWatcher = nil
         if lastDurationSec > 0 {
             recorder.record(positionSec: lastPositionSec, durationSec: lastDurationSec, isPaused: true, speed: 1,
-                            flush: true, isLive: isLiveStream)
+                            flush: true, isLive: holdsLiveProgress)
         }
-        recorder.stopTrakt(positionSec: lastPositionSec, durationSec: lastDurationSec, isLive: isLiveStream)
-        recorder.stopTrackers(positionSec: lastPositionSec, durationSec: lastDurationSec, isLive: isLiveStream)
+        recorder.stopTrakt(positionSec: lastPositionSec, durationSec: lastDurationSec, isLive: holdsLiveProgress)
+        recorder.stopTrackers(positionSec: lastPositionSec, durationSec: lastDurationSec, isLive: holdsLiveProgress)
         player?.pause()
         server?.stop(); server = nil
         remux?.stop()
@@ -1271,13 +1273,12 @@ final class NativePlaybackCoordinator: ObservableObject {
                     let dur = CMTimeGetSeconds(item.duration)
                     // Live detection, sampled once per tick of the ready item (see `isLiveStream`).
                     let wasLive = self.isLiveStream
-                    if LivePlaybackPolicy.reportsLive(contentType: self.context.contentType,
-                                                      indefiniteDuration: item.duration.isIndefinite) {
+                    if LivePlaybackPolicy.reportsLive(indefiniteDuration: item.duration.isIndefinite) {
                         self.reportsLive = true
                     }
                     self.durationGrowth = LivePlaybackPolicy.nextDurationGrowth(
                         self.durationGrowth, mediaKey: self.context.url.absoluteString, durationSec: dur,
-                        positionSec: pos, fromRequestedMedia: true)
+                        nowSec: ProcessInfo.processInfo.systemUptime, fromRequestedMedia: true)
                     if !wasLive, self.isLiveStream {
                         print("[Live] native: live (reported=\(self.reportsLive) grew=\(self.durationGrowth.grew)): no resume or tracker progress")
                     }
@@ -1314,7 +1315,7 @@ final class NativePlaybackCoordinator: ObservableObject {
                         self.lastDurationSec = dur
                         if self.didPlayToEnd, pos < dur - 2, player.timeControlStatus == .playing { self.didPlayToEnd = false }
                         self.recorder.record(positionSec: pos, durationSec: dur, isPaused: paused, speed: 1, flush: false,
-                                             isLive: self.isLiveStream)
+                                             isLive: self.holdsLiveProgress)
                         self.refreshActiveAudioTrack()
                         if self.audibleGroup == nil { self.handleMediaSelectionChange(item: item, player: player) }
                         else { self.syncAudioSelection(item: item, player: player) }
