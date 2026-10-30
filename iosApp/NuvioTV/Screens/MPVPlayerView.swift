@@ -339,14 +339,21 @@ final class MPVTVPlayerViewController: UIViewController {
     /// false once loaded, or (a live HLS stream mpv seeks inside its cache) a duration that keeps
     /// growing with the clock. Fed once per `refreshState` tick, readings before FILE_LOADED
     /// skipped. A live stream, or one whose growth is still undecided (`holdsLiveProgress`), closes
-    /// its tracker sessions at 0 %; resume saves also wait for the stream to settle
-    /// (`holdsLiveResume`), and an entry this session saved anyway is cleared when it turns live.
+    /// its tracker sessions at 0 %; an HLS / DASH stream's resume saves also wait for it to settle
+    /// (`holdsLiveResume`), and what a save overwrote anyway is put back when it turns live
+    /// (`undoSessionResumeSaves`).
     private var reportsLive = false
     private var durationGrowth = LivePlaybackPolicy.DurationGrowth()
     private var isLiveStream: Bool { LivePlaybackPolicy.isLive(reportsLive: reportsLive, growth: durationGrowth) }
     private var holdsLiveProgress: Bool { LivePlaybackPolicy.holdsProgress(reportsLive: reportsLive, growth: durationGrowth) }
-    private var holdsLiveResume: Bool { LivePlaybackPolicy.holdsResume(reportsLive: reportsLive, growth: durationGrowth) }
+    private var holdsLiveResume: Bool {
+        LivePlaybackPolicy.holdsResume(reportsLive: reportsLive, growth: durationGrowth,
+                                       settleHold: LivePlaybackPolicy.needsSettleHold(fileFormat: cachedProps().fileFormat,
+                                                                                      url: context.url))
+    }
     private var savedResumeThisSession = false
+    /// The stored entry for this video when this session first saved (nil = there was none).
+    private var resumeEntryBeforeSession: WatchProgressEntry?
     /// P5 N1: main only. The audio delay's saved / stream-hint / session parts for this file.
     private var audioDelayParts = AudioDelayParts(savedMs: 0, streamMs: nil, sessionAdjustMs: 0)
     /// P5 B20: `eventQueue` only. The `af` value last handed to mpv ("" = none).
@@ -398,6 +405,8 @@ final class MPVTVPlayerViewController: UIViewController {
         var cacheBufferingPct: Int64 = -1
         /// `seekable` (nil = not reported yet). False once loaded = live (`LivePlaybackPolicy`).
         var seekable: Bool?
+        /// `file-format` (nil = not reported yet): HLS / DASH get the resume settle hold.
+        var fileFormat: String?
     }
     private let propLock = NSLock()
     private var propSnapshot = PropSnapshot()
@@ -421,7 +430,7 @@ final class MPVTVPlayerViewController: UIViewController {
     /// Observation ids for mpv_observe_property (arrive back as `reply_userdata`).
     private enum ObservedProp: UInt64 {
         case timePos = 1, duration, pause, coreIdle, pausedForCache, eofReached, trackCount
-        case videoW, videoH, aid, cacheBuffering, seekable
+        case videoW, videoH, aid, cacheBuffering, seekable, fileFormat
     }
 
     private func cachedProps() -> PropSnapshot {
@@ -1070,6 +1079,7 @@ final class MPVTVPlayerViewController: UIViewController {
         mpv_observe_property(mpv, ObservedProp.aid.rawValue, "aid", MPV_FORMAT_INT64)
         mpv_observe_property(mpv, ObservedProp.cacheBuffering.rawValue, "cache-buffering-state", MPV_FORMAT_INT64)
         mpv_observe_property(mpv, ObservedProp.seekable.rawValue, "seekable", MPV_FORMAT_FLAG)
+        mpv_observe_property(mpv, ObservedProp.fileFormat.rawValue, "file-format", MPV_FORMAT_STRING)
 
         let relay = MPVWakeupRelay(queue: eventQueue) { [weak self] in self?.drainEvents() }
         wakeupRelay = relay
@@ -2282,7 +2292,13 @@ final class MPVTVPlayerViewController: UIViewController {
         let duration = state.durationSec
         let position = state.positionSec
         guard LivePlaybackPolicy.shouldSaveResume(isLive: holdsLiveResume, positionSec: position, durationSec: duration) else { return }
-        savedResumeThisSession = true
+        if !savedResumeThisSession {
+            savedResumeThisSession = true
+            resumeEntryBeforeSession = WatchProgressRepository.shared.progressForVideo(
+                videoId: context.videoId, parentMetaId: context.parentMetaId,
+                seasonNumber: context.season.map { KotlinInt(int: Int32($0)) },
+                episodeNumber: context.episode.map { KotlinInt(int: Int32($0)) })
+        }
 
         let snapshot = PlayerPlaybackSnapshot(
             isLoading: false,
@@ -2300,6 +2316,23 @@ final class MPVTVPlayerViewController: UIViewController {
         } else {
             WatchProgressRepository.shared.upsertPlaybackProgress(session: session, snapshot: snapshot, syncRemote: false)
         }
+    }
+
+    /// The stream turned live after this session saved resume (a stall or pause outlasted the
+    /// settle hold): no Continue Watching row for it. Puts back the entry from before the session,
+    /// or clears the one it wrote when there was none. `parentMetaId: nil`: the save stored the
+    /// provider-normalised parent id, which need not match `context.parentMetaId`.
+    private func undoSessionResumeSaves() {
+        savedResumeThisSession = false
+        guard let prior = resumeEntryBeforeSession else {
+            WatchProgressRepository.shared.clearProgress(videoId: context.videoId, parentMetaId: nil)
+            return
+        }
+        // A percentage-only (tracker) entry cannot be written back: left as the session wrote it.
+        guard let restore = PlaybackProgressRecorder.restoration(of: prior,
+                                                                 profileId: ActiveProfileProvider.shared.activeProfileId) else { return }
+        WatchProgressRepository.shared.flushPlaybackProgress(session: restore.session, snapshot: restore.snapshot,
+                                                             syncRemote: false)
     }
 
     // MARK: - State polling
@@ -2333,11 +2366,7 @@ final class MPVTVPlayerViewController: UIViewController {
                                                                fromRequestedMedia: fileLoaded)
         if !wasLive, isLiveStream {
             print("[Live] mpv: live (reported=\(reportsLive) grew=\(durationGrowth.grew)): no resume or tracker progress")
-            if savedResumeThisSession {
-                // Saved while it still read as VOD (a stall or pause outlasted the hold): no
-                // Continue Watching row for a live stream.
-                WatchProgressRepository.shared.clearProgress(videoId: context.videoId, parentMetaId: context.parentMetaId)
-            }
+            if savedResumeThisSession { undoSessionResumeSaves() }
         }
         if state.positionSec != position { state.positionSec = position }
         // Paused → playing without input (the pause-card-off rule left no hide timer armed):
@@ -4491,6 +4520,12 @@ final class MPVTVPlayerViewController: UIViewController {
             if let v = asInt() { updateProps { $0.cacheBufferingPct = v } }
         case .seekable:
             if let v = asFlag() { updateProps { $0.seekable = v } }
+        case .fileFormat:
+            if prop.format == MPV_FORMAT_STRING, let d = prop.data,
+               let c = d.assumingMemoryBound(to: UnsafePointer<CChar>?.self).pointee {
+                let v = String(cString: c)
+                updateProps { $0.fileFormat = v }
+            }
         }
     }
 

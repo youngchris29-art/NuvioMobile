@@ -68,7 +68,7 @@ final class LivePlaybackPolicyTests: XCTestCase {
         XCTAssertEqual(state.growthReadings, 0)
         XCTAssertFalse(state.undecided)
         XCTAssertFalse(Policy.holdsProgress(reportsLive: false, growth: state))
-        XCTAssertFalse(Policy.holdsResume(reportsLive: false, growth: state))
+        XCTAssertFalse(Policy.holdsResume(reportsLive: false, growth: state, settleHold: true))
     }
 
     func testThreeQuickRefinementsDoNotLatch() {
@@ -80,7 +80,7 @@ final class LivePlaybackPolicyTests: XCTestCase {
         let later = growth(ticks(6.5, 60) { _ in 2_712 }, from: quick)
         XCTAssertFalse(later.grew, "a reading that does not grow never latches")
         XCTAssertFalse(later.undecided)
-        XCTAssertFalse(Policy.holdsResume(reportsLive: false, growth: later))
+        XCTAssertFalse(Policy.holdsResume(reportsLive: false, growth: later, settleHold: true))
     }
 
     func testAVodRefinedInJumpsIsNotLive() {
@@ -176,7 +176,7 @@ final class LivePlaybackPolicyTests: XCTestCase {
         for reading in readings where !state.grew {
             state = Policy.nextDurationGrowth(state, mediaKey: "a", durationSec: reading.0, nowSec: reading.1,
                                               fromRequestedMedia: true)
-            XCTAssertTrue(Policy.holdsResume(reportsLive: false, growth: state), "no save at \(reading.1) s")
+            XCTAssertTrue(Policy.holdsResume(reportsLive: false, growth: state, settleHold: true), "no save at \(reading.1) s")
         }
         XCTAssertTrue(state.grew)
     }
@@ -185,9 +185,60 @@ final class LivePlaybackPolicyTests: XCTestCase {
         let hold = Policy.liveUndecidedHoldSec
         let early = growth(ticks(0, hold) { _ in 2_700 })
         XCTAssertFalse(Policy.holdsProgress(reportsLive: false, growth: early), "trackers are not held")
-        XCTAssertTrue(Policy.holdsResume(reportsLive: false, growth: early))
+        XCTAssertTrue(Policy.holdsResume(reportsLive: false, growth: early, settleHold: true))
         XCTAssertFalse(Policy.holdsResume(reportsLive: false, growth: growth(ticks(hold + 0.5, hold + 0.5) { _ in 2_700 },
-                                                                             from: early)))
+                                                                             from: early), settleHold: true))
+    }
+
+    // MARK: Settle hold only where it helps (HLS / DASH on mpv)
+
+    func testOnlyHlsAndDashGetTheSettleHold() {
+        let plain = URL(string: "https://debrid.example/dl/abc123")!
+        XCTAssertTrue(Policy.needsSettleHold(fileFormat: "hls", url: plain))
+        XCTAssertTrue(Policy.needsSettleHold(fileFormat: "applehttp", url: plain))
+        XCTAssertTrue(Policy.needsSettleHold(fileFormat: "DASH", url: plain))
+        XCTAssertFalse(Policy.needsSettleHold(fileFormat: "mov,mp4,m4a,3gp,3g2,mj2", url: plain))
+        XCTAssertFalse(Policy.needsSettleHold(fileFormat: "matroska,webm", url: plain))
+        XCTAssertFalse(Policy.needsSettleHold(fileFormat: "mpegts", url: plain))
+        XCTAssertFalse(Policy.needsSettleHold(fileFormat: nil, url: plain))
+        // Before `file-format` arrives, the URL decides.
+        XCTAssertTrue(Policy.needsSettleHold(fileFormat: nil, url: URL(string: "https://cdn.example/live/index.M3U8?token=x")!))
+        XCTAssertTrue(Policy.needsSettleHold(fileFormat: nil, url: URL(string: "https://cdn.example/manifest.mpd")!))
+    }
+
+    func testANativeVodQuitAt20sSaves() {
+        // The native engine gates resume on `holdsProgress` only.
+        let vod = growth(ticks(0, 20) { _ in 2_700 })
+        let holds = Policy.holdsProgress(reportsLive: false, growth: vod)
+        XCTAssertFalse(holds)
+        XCTAssertNotNil(PlaybackProgressRecorder.progressSnapshot(positionSec: 20, durationSec: 2_700, isPaused: false,
+                                                                  speed: 1, isLive: holds))
+    }
+
+    func testAnMpvNonHlsVodQuitAt20sSaves() {
+        let vod = growth(ticks(0, 20) { _ in 2_700 })
+        let settle = Policy.needsSettleHold(fileFormat: "matroska,webm", url: URL(string: "https://debrid.example/f.mkv")!)
+        let holds = Policy.holdsResume(reportsLive: false, growth: vod, settleHold: settle)
+        XCTAssertFalse(holds)
+        XCTAssertTrue(Policy.shouldSaveResume(isLive: holds, positionSec: 20, durationSec: 2_700))
+    }
+
+    func testAnMpvHlsStreamKeepsTheHold() {
+        let early = growth(ticks(0, 20) { _ in 2_700 })
+        let settle = Policy.needsSettleHold(fileFormat: "hls", url: URL(string: "https://cdn.example/play")!)
+        XCTAssertTrue(Policy.holdsResume(reportsLive: false, growth: early, settleHold: settle))
+    }
+
+    func testAVodResumedWith20sLeftWritesTheCompletingPosition() {
+        // Resumed at 2680 of 2700 and played to the end within 20 s: the end position is written,
+        // so the shared completion rule marks it watched (as the tracker's >= 80 % stop does).
+        let vod = growth(ticks(0, 20) { _ in 2_700 })
+        let native = PlaybackProgressRecorder.progressSnapshot(
+            positionSec: 2_700, durationSec: 2_700, isPaused: true, speed: 1,
+            isLive: Policy.holdsProgress(reportsLive: false, growth: vod))
+        XCTAssertEqual(native?.positionMs, 2_700_000)
+        let mpvHolds = Policy.holdsResume(reportsLive: false, growth: vod, settleHold: false)
+        XCTAssertTrue(Policy.shouldSaveResume(isLive: mpvHolds, positionSec: 2_700, durationSec: 2_700))
     }
 
     func testEarlyExitNearTheEdgeSendsZeroAndSavesNothing() {
@@ -199,7 +250,7 @@ final class LivePlaybackPolicyTests: XCTestCase {
         XCTAssertEqual(TrackerScrobblePolicy.stopPercent(positionSec: 40, durationSec: 42, isLive: holds), 0,
                        "a 95 % stop would mark it watched")
         XCTAssertFalse(Policy.shouldSaveResume(isLive: holds, positionSec: 40, durationSec: 42))
-        XCTAssertTrue(Policy.holdsResume(reportsLive: false, growth: undecided))
+        XCTAssertTrue(Policy.holdsResume(reportsLive: false, growth: undecided, settleHold: true))
     }
 
     func testHoldsProgressFollowsLiveAndUndecided() {

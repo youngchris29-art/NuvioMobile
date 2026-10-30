@@ -120,4 +120,20 @@ final class PlaybackProgressRecorderTests: XCTestCase {
         XCTAssertEqual(vod?.durationMs, 3_600_000)
         XCTAssertEqual(vod?.isPlaying, false)
     }
+
+    func testRestorationWritesTheEntryBackAsItWas() throws {
+        // What the mpv player writes back when a stream it saved turned live: the entry's own
+        // fields and position, not the live session's.
+        let prior = entry(positionMs: 600_000, durationMs: 3_600_000)
+        let restore = try XCTUnwrap(PlaybackProgressRecorder.restoration(of: prior, profileId: 3))
+        XCTAssertEqual(restore.session.profileId, 3)
+        XCTAssertEqual(restore.session.videoId, "tt1")
+        XCTAssertEqual(restore.session.parentMetaId, "tt1")
+        XCTAssertEqual(restore.session.title, "Movie")
+        XCTAssertEqual(restore.snapshot.positionMs, 600_000)
+        XCTAssertEqual(restore.snapshot.durationMs, 3_600_000)
+        XCTAssertFalse(restore.snapshot.isPlaying)
+        XCTAssertNil(PlaybackProgressRecorder.restoration(of: entry(positionMs: 0, durationMs: 0, percent: 40), profileId: 3),
+                     "a percentage-only entry cannot be written back")
+    }
 }

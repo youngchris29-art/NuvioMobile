@@ -120,13 +120,13 @@ final class NativePlaybackCoordinator: ObservableObject {
 
     /// Live detection (`LivePlaybackPolicy`, NuvioTV b4e47d6d6): AVPlayer's indefinite item
     /// duration (live HLS), or a duration that keeps growing with the clock across ticks. A live
-    /// stream, or one whose growth is still undecided (`holdsLiveProgress`), closes its tracker
-    /// sessions at 0 %; resume saves also wait for the stream to settle (`holdsLiveResume`).
+    /// stream, or one whose growth is still undecided (`holdsLiveProgress`), saves no progress and
+    /// closes its tracker sessions at 0 %. No settle hold here: AVPlayer reports live HLS outright on
+    /// the first ready tick, before any save.
     private var reportsLive = false
     private var durationGrowth = LivePlaybackPolicy.DurationGrowth()
     private var isLiveStream: Bool { LivePlaybackPolicy.isLive(reportsLive: reportsLive, growth: durationGrowth) }
     private var holdsLiveProgress: Bool { LivePlaybackPolicy.holdsProgress(reportsLive: reportsLive, growth: durationGrowth) }
-    private var holdsLiveResume: Bool { LivePlaybackPolicy.holdsResume(reportsLive: reportsLive, growth: durationGrowth) }
 
     /// `ProcessInfo.systemUptime` when the item FIRST became ready to play; nil until then (a
     /// signaling retry or a later item never moves it).
@@ -544,7 +544,7 @@ final class NativePlaybackCoordinator: ObservableObject {
         addonSubsWatcher?.cancel(); addonSubsWatcher = nil
         if lastDurationSec > 0 {
             recorder.record(positionSec: lastPositionSec, durationSec: lastDurationSec, isPaused: true, speed: 1,
-                            flush: true, isLive: holdsLiveResume)
+                            flush: true, isLive: holdsLiveProgress)
         }
         recorder.stopTrakt(positionSec: lastPositionSec, durationSec: lastDurationSec, isLive: holdsLiveProgress)
         recorder.stopTrackers(positionSec: lastPositionSec, durationSec: lastDurationSec, isLive: holdsLiveProgress)
@@ -1321,7 +1321,7 @@ final class NativePlaybackCoordinator: ObservableObject {
                         self.lastDurationSec = dur
                         if self.didPlayToEnd, pos < dur - 2, player.timeControlStatus == .playing { self.didPlayToEnd = false }
                         self.recorder.record(positionSec: pos, durationSec: dur, isPaused: paused, speed: 1, flush: false,
-                                             isLive: self.holdsLiveResume)
+                                             isLive: self.holdsLiveProgress)
                         self.refreshActiveAudioTrack()
                         if self.audibleGroup == nil { self.handleMediaSelectionChange(item: item, player: player) }
                         else { self.syncAudioSelection(item: item, player: player) }

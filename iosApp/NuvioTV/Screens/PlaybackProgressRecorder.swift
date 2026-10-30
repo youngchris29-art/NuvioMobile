@@ -120,6 +120,48 @@ final class PlaybackProgressRecorder {
         )
     }
 
+    /// The session and snapshot that write `entry` back as it was (its own title, artwork, source
+    /// and position), for the mpv player putting back what a session overwrote before its stream
+    /// read live. nil for a percentage-only entry (a tracker's, no duration): the repository would
+    /// refuse to store it. Unit tested (`PlaybackProgressRecorderTests`).
+    nonisolated static func restoration(of entry: WatchProgressEntry, profileId: Int32)
+        -> (session: WatchProgressPlaybackSession, snapshot: PlayerPlaybackSnapshot)? {
+        guard entry.durationMs > 0 else { return nil }
+        let session = WatchProgressPlaybackSession(
+            profileId: profileId,
+            contentType: entry.contentType,
+            parentMetaId: entry.parentMetaId,
+            parentMetaType: entry.parentMetaType,
+            videoId: entry.videoId,
+            title: entry.title,
+            logo: entry.logo,
+            poster: entry.poster,
+            background: entry.background,
+            seasonNumber: entry.seasonNumber,
+            episodeNumber: entry.episodeNumber,
+            episodeTitle: entry.episodeTitle,
+            episodeThumbnail: entry.episodeThumbnail,
+            providerName: entry.providerName,
+            providerAddonId: entry.providerAddonId,
+            lastStreamTitle: entry.lastStreamTitle,
+            lastStreamSubtitle: entry.lastStreamSubtitle,
+            pauseDescription: entry.pauseDescription,
+            lastSourceUrl: entry.lastSourceUrl
+        )
+        let snapshot = PlayerPlaybackSnapshot(
+            isLoading: false,
+            isPlaying: false,
+            isEnded: false,
+            durationMs: entry.durationMs,
+            positionMs: entry.lastPositionMs,
+            bufferedPositionMs: entry.lastPositionMs,
+            playbackSpeed: 1,
+            videoWidth: 0,
+            videoHeight: 0
+        )
+        return (session, snapshot)
+    }
+
     // MARK: - Trakt scrobbling
 
     private var traktItem: TraktScrobbleItem?

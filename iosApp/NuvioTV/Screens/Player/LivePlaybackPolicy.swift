@@ -24,9 +24,17 @@ import Foundation
 /// stopPercent`), so no tracker marks it watched and history sync brings no "completed" back. While
 /// growth has started but not yet decided (`DurationGrowth.undecided`), `holdsProgress` already
 /// holds both back, so an open-and-close in the first seconds of a live stream sends no 80 % stop.
-/// Resume saves wait longer (`holdsResume`): until `liveUndecidedHoldSec` has passed since the first
-/// reading or the last growing one, since a live stream's first growth can come a playlist refresh
-/// after its first save would. A VOD's first save comes about 30 s in.
+/// On mpv, resume saves of an HLS or DASH stream wait longer (`holdsResume`, `needsSettleHold`):
+/// until `liveUndecidedHoldSec` has passed since the first reading or the last growing one, since a
+/// live stream's first growth can come a playlist refresh after its first save would. Everything
+/// else saves as before: the native engine (AVPlayer reports live HLS outright on its first tick,
+/// and its remux path serves a complete VOD playlist) and any other mpv format (a raw HTTP TS live
+/// stream has no duration, so `shouldSaveResume` already refuses it). Should an HLS stream turn
+/// live after a save got through, the mpv player puts back what the session overwrote.
+///
+/// Accepted residual: an HLS live stream paused before it latches, with mpv's cache full (a very
+/// small Streaming Buffer) so the duration stops growing, and closed after the hold, saves resume
+/// and stops its trackers at position / duration; it never latched, so nothing undoes it.
 ///
 /// Pure value types, no player: every reading is passed in, so `LivePlaybackPolicyTests` drives it.
 nonisolated enum LivePlaybackPolicy {
@@ -139,11 +147,22 @@ nonisolated enum LivePlaybackPolicy {
         isLive(reportsLive: reportsLive, growth: growth) || growth.undecided
     }
 
-    /// What resume saves gate on: `holdsProgress`, or the stream has not been quiet for
-    /// `liveUndecidedHoldSec` yet (`DurationGrowth.resumeSettled`), so no save lands before a live
-    /// stream's first growth.
-    static func holdsResume(reportsLive: Bool, growth: DurationGrowth) -> Bool {
-        holdsProgress(reportsLive: reportsLive, growth: growth) || !growth.resumeSettled
+    /// What mpv's resume saves gate on: `holdsProgress`, and with `settleHold` (an HLS or DASH
+    /// stream, `needsSettleHold`) also until the stream has been quiet for `liveUndecidedHoldSec`
+    /// (`DurationGrowth.resumeSettled`), so no save lands before a live stream's first growth.
+    static func holdsResume(reportsLive: Bool, growth: DurationGrowth, settleHold: Bool) -> Bool {
+        holdsProgress(reportsLive: reportsLive, growth: growth) || (settleHold && !growth.resumeSettled)
+    }
+
+    /// Whether mpv is playing a format that can be live while still reading seekable with a finite
+    /// duration: HLS or DASH, by mpv's `file-format` (lavf demuxer names, comma-separated aliases;
+    /// nil = not reported yet) or, before that, the URL's extension.
+    static func needsSettleHold(fileFormat: String?, url: URL) -> Bool {
+        let adaptive: Set<String> = ["hls", "applehttp", "dash"]
+        if let fileFormat, fileFormat.lowercased().split(separator: ",").contains(where: { adaptive.contains(String($0)) }) {
+            return true
+        }
+        return ["m3u8", "mpd"].contains(url.pathExtension.lowercased())
     }
 
     /// The common gate both engines' progress writes run: never for a live stream, otherwise the
