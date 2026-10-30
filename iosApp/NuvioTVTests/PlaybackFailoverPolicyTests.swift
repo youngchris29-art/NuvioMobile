@@ -69,11 +69,16 @@ final class PlaybackFailoverPolicyTests: XCTestCase {
     /// NuvioTV 830e8e83c (no retry on a permanent HTTP error): the fork never had mpv / lavf
     /// auto-retry. mpv's END_FILE error goes straight to `onPlaybackFailed` once, with the classified
     /// verdict (`MPVPlayerView.reportEndFileError` → `reportPlaybackFailure`, guarded by
-    /// `failoverReported`; not a pure seam, read rather than tested). What is pure, and pinned here
-    /// for every permanent status: the log line classifies as `.http` with its status, the failure is
-    /// remembered, and the next source the walk picks is never the failed link again: a retry of the
-    /// same link is impossible from either the failed key or the rejected memory.
-    func testPermanentHttpErrorIsRememberedAndNeverRetried() {
+    /// `failoverReported`; not a pure seam, read rather than tested). What is pinned here for every
+    /// permanent status: the log line classifies as `.http` with its status, the failure is written
+    /// to the real rejected memory (`RejectedStreamLinks`, on a throwaway defaults suite, by the same
+    /// two calls `StreamPickerView`'s failure handler makes), and the next source the walk picks from
+    /// that memory is never the failed link again: a retry of the same link is impossible from
+    /// either the failed key or the rejected memory.
+    func testPermanentHttpErrorIsRememberedAndNeverRetried() throws {
+        let suiteName = "PlaybackFailoverPolicyTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
         let list = [PlaybackFailoverPolicy.Entry(key: "a1", addonId: "A"),
                     PlaybackFailoverPolicy.Entry(key: "a2", addonId: "A"),
                     PlaybackFailoverPolicy.Entry(key: "b1", addonId: "B")]
@@ -85,7 +90,12 @@ final class PlaybackFailoverPolicyTests: XCTestCase {
             failed.kind = verdict.kind
             failed.httpStatus = verdict.httpStatus
             XCTAssertTrue(PlaybackFailoverPolicy.shouldReject(failed), "\(status)")
-            let rejected: Set<String> = PlaybackFailoverPolicy.shouldReject(failed) ? ["a2"] : []
+            let title = "tt\(status)"
+            if PlaybackFailoverPolicy.shouldReject(failed) {
+                RejectedStreamLinks.reject("a2", title: title, defaults: defaults)
+            }
+            let rejected = RejectedStreamLinks.rejected(for: title, defaults: defaults)
+            XCTAssertEqual(rejected, ["a2"], "\(status): remembered")
             // a2 failed with a permanent status: the walk moves past it, never back to it.
             XCTAssertEqual(PlaybackFailoverPolicy.nextManualIndex(entries: list, failedKey: "a2", failedAddonId: "A",
                                                                   rejected: rejected), 2, "\(status)")
