@@ -52387,7 +52387,7 @@
         }
       }
     },
-    "When the same release or group has no next episode, Up Next plays the first source it found instead. Off, it shows that no stream was found. A stream with no source group always uses the first source available. Shown while Auto-Pick Next Episode Source and Prefer Same Source are both on. On by default.": {
+    "When the same release or group has no next episode, Up Next plays the first source it found instead. Off, it only plays an exact filename match from another source; otherwise it shows that no stream was found. A stream with no source group always uses the first source available. Shown while Auto-Pick Next Episode Source and Prefer Same Source are both on. On by default.": {
       "extractionState": "manual"
     },
     "When the same source has no next episode, use the first one available.": {
