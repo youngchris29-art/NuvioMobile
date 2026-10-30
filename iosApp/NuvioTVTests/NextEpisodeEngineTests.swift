@@ -99,6 +99,36 @@ final class NextEpisodeEngineTests: XCTestCase {
         XCTAssertTrue(NextEpisodeEngine.isListable(torrent, resolvesThroughDebrid: { _ in true }))
     }
 
+    // MARK: - BUG-228: binge-group-only needs a binge group
+
+    /// The defaults (MANUAL, prefer binge group on, next-episode toggle off) restrict the pick to
+    /// the playing stream's binge group only when it has one; a plugin stream with none falls back
+    /// to the first stream instead of "no stream found".
+    func testBingeGroupOnlyWithTheDefaultsNeedsAPlayingBingeGroup() {
+        func restricted(_ group: String?) -> Bool {
+            NextEpisodeEngine.bingeGroupOnlyManualMode(
+                manualAutoSelect: true, nextEpisodeEnabled: false, fallbackEnabled: true,
+                preferBingeGroup: true, playingBingeGroup: group)
+        }
+        XCTAssertTrue(restricted("debrid|1080p"), "a stream with a binge group stays in it")
+        XCTAssertFalse(restricted(nil), "a stream with no binge group could never match")
+        XCTAssertFalse(restricted(""), "an empty binge group is no binge group")
+    }
+
+    /// The other inputs keep their upstream f2c9b9f9 meaning when a binge group is present.
+    func testBingeGroupOnlyTruthTableWithABingeGroup() {
+        func restricted(manual: Bool = true, next: Bool, fallback: Bool, prefer: Bool = true) -> Bool {
+            NextEpisodeEngine.bingeGroupOnlyManualMode(
+                manualAutoSelect: manual, nextEpisodeEnabled: next, fallbackEnabled: fallback,
+                preferBingeGroup: prefer, playingBingeGroup: "g")
+        }
+        XCTAssertFalse(restricted(next: true, fallback: true), "next-episode + fallback picks any source")
+        XCTAssertTrue(restricted(next: true, fallback: false), "fallback off keeps the binge group")
+        XCTAssertTrue(restricted(next: false, fallback: false))
+        XCTAssertFalse(restricted(next: false, fallback: true, prefer: false), "no preference, no restriction")
+        XCTAssertFalse(restricted(manual: false, next: false, fallback: true), "outside MANUAL auto-select")
+    }
+
     private func makeEngine(trigger: NextEpisodeEngine.TriggerSettings, recorder: Recorder,
                             network: @escaping () -> Bool = { true }) -> NextEpisodeEngine {
         let hooks = NextEpisodeEngine.Hooks(loadStreams: { type, videoId, season, episode in

@@ -1032,6 +1032,29 @@ final class NextEpisodeEngine: ObservableObject {
         return StreamPickerView.isYouTubeResolved(stream)
     }
 
+    /// Whether `select` restricts a MANUAL-mode auto-pick to the playing stream's binge group.
+    /// Upstream f2c9b9f9 (beta.12 port): the fallback toggle joins the condition — with
+    /// "Fallback when binge group fails" OFF, a manual-mode binge-group miss shows the stream
+    /// picker instead of auto-selecting the first stream (default ON = legacy behavior).
+    /// BUG-228 (#15, erdist's fix 1): only when the playing stream HAS a binge group, as the
+    /// phone's StreamsRepository only passes `bingeGroupOnly` with a persisted group. Plugin
+    /// results and many add-ons carry none, so "same binge group only" could never match, and with
+    /// the defaults (MANUAL + prefer binge group, next-episode toggle off) every next-episode
+    /// search ended in "no stream found" even with dozens of playable streams. With no group to
+    /// stay in, the documented default applies: the first stream.
+    nonisolated static func bingeGroupOnlyManualMode(
+        manualAutoSelect: Bool,
+        nextEpisodeEnabled: Bool,
+        fallbackEnabled: Bool,
+        preferBingeGroup: Bool,
+        playingBingeGroup: String?
+    ) -> Bool {
+        let hasBingeGroup = !(playingBingeGroup ?? "").isEmpty
+        return manualAutoSelect && hasBingeGroup &&
+            (!nextEpisodeEnabled || !fallbackEnabled) &&
+            preferBingeGroup
+    }
+
     private func attemptBingeGroupOnlySelection(groups: [AddonStreamGroup], settings: PlayerSettingsUiState) {
         guard settings.streamAutoPlayPreferBingeGroup, context.bingeGroup != nil else { return }
         // Upstream 953938c72: the same binge group AND the next episode's filename first (the most
@@ -1182,13 +1205,13 @@ final class NextEpisodeEngine: ObservableObject {
         // Mobile parity: in MANUAL mode, next-episode/binge settings force first-stream selection.
         let manualAutoSelect = settings.streamAutoPlayMode == StreamAutoPlayMode.manual &&
             (settings.streamAutoPlayNextEpisodeEnabled || settings.streamAutoPlayPreferBingeGroup)
-        // Upstream f2c9b9f9 (beta.12 port): the fallback toggle joins the condition — with
-        // "Fallback when binge group fails" OFF, a manual-mode binge-group miss shows the stream
-        // picker instead of auto-selecting the first stream (default ON = legacy behavior).
-        let bingeGroupOnlyManualMode = manualAutoSelect &&
-            (!settings.streamAutoPlayNextEpisodeEnabled ||
-                !settings.streamAutoPlayNextEpisodeFallbackEnabled) &&
-            settings.streamAutoPlayPreferBingeGroup
+        let bingeGroupOnlyManualMode = Self.bingeGroupOnlyManualMode(
+            manualAutoSelect: manualAutoSelect,
+            nextEpisodeEnabled: settings.streamAutoPlayNextEpisodeEnabled,
+            fallbackEnabled: settings.streamAutoPlayNextEpisodeFallbackEnabled,
+            preferBingeGroup: settings.streamAutoPlayPreferBingeGroup,
+            playingBingeGroup: context.bingeGroup
+        )
 
         let effectiveMode = manualAutoSelect ? StreamAutoPlayMode.firstStream : settings.streamAutoPlayMode
         let effectiveSource = effectiveAutoPlaySource(settings)
