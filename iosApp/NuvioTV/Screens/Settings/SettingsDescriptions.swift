@@ -363,9 +363,9 @@ enum SettingsDescriptions {
         case .playerStreamingBuffer: return LocalizedStringResource("Sets how much memory the player may use to store video ahead of time. A larger buffer helps on a shaky connection. Default: Default.")
         case .playerNetworkReadahead: return LocalizedStringResource("Sets how many seconds of video the player downloads ahead of what you are watching. More seconds help on a slow connection. Default: Default.")
         case .playerPreloadNextEpisode: return LocalizedStringResource("Starts looking for the next episode's sources about 30 seconds before the Up Next card appears, so playback starts sooner. Off by default.")
-        case .playerAutoPlayNextEpisode: return LocalizedStringResource("Up Next picks a source for the next episode by itself, even when Auto-Play Best Source is off. Off by default.")
+        case .playerAutoPlayNextEpisode: return LocalizedStringResource("Applies while Auto-Play Best Source is off. With Prefer Same Source on, Up Next already picks the next episode's source by itself: from the same release or group, or the first source found when the episode playing has no group. This switch matters with Prefer Same Source off, where it lets Up Next pick the first source found, and it adds Fall Back to Any Source. Off by default.")
         case .playerPreferBingeGroup: return LocalizedStringResource("Up Next picks the next episode from the same release or add-on group as the episode playing, when that stream has one. On by default.")
-        case .playerNextEpisodeFallback: return LocalizedStringResource("When the same release or group has no next episode, Up Next plays the first source it found instead. Shown while Auto-Pick Next Episode Source and Prefer Same Source are both on. On by default.")
+        case .playerNextEpisodeFallback: return LocalizedStringResource("When the same release or group has no next episode, Up Next plays the first source it found instead. Off, it shows that no stream was found. A stream with no source group always uses the first source available. Shown while Auto-Pick Next Episode Source and Prefer Same Source are both on. On by default.")
 
         // Sources
         // beta.19-rc1 verdict (A): Best is now a real ranking (shared `StreamQualityRank`, W3-A).

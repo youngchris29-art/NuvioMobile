@@ -113,6 +113,7 @@ final class NextEpisodeEngineTests: XCTestCase {
         XCTAssertTrue(restricted("debrid|1080p"), "a stream with a binge group stays in it")
         XCTAssertFalse(restricted(nil), "a stream with no binge group could never match")
         XCTAssertFalse(restricted(""), "an empty binge group is no binge group")
+        XCTAssertFalse(restricted("  \n"), "a whitespace-only binge group is no binge group (trimmed like the selector)")
     }
 
     /// The other inputs keep their upstream f2c9b9f9 meaning when a binge group is present.

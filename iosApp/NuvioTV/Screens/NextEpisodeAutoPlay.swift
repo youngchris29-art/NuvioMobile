@@ -1041,7 +1041,8 @@ final class NextEpisodeEngine: ObservableObject {
     /// results and many add-ons carry none, so "same binge group only" could never match, and with
     /// the defaults (MANUAL + prefer binge group, next-episode toggle off) every next-episode
     /// search ended in "no stream found" even with dozens of playable streams. With no group to
-    /// stay in, the documented default applies: the first stream.
+    /// stay in, the documented default applies: the first stream. Blank counts as none, trimmed
+    /// like `StreamAutoPlaySelector`'s `preferredBingeGroup`.
     nonisolated static func bingeGroupOnlyManualMode(
         manualAutoSelect: Bool,
         nextEpisodeEnabled: Bool,
@@ -1049,7 +1050,7 @@ final class NextEpisodeEngine: ObservableObject {
         preferBingeGroup: Bool,
         playingBingeGroup: String?
     ) -> Bool {
-        let hasBingeGroup = !(playingBingeGroup ?? "").isEmpty
+        let hasBingeGroup = !(playingBingeGroup ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return manualAutoSelect && hasBingeGroup &&
             (!nextEpisodeEnabled || !fallbackEnabled) &&
             preferBingeGroup

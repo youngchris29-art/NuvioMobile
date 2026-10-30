@@ -6898,6 +6898,9 @@
         }
       }
     },
+    "Applies while Auto-Play Best Source is off. With Prefer Same Source on, Up Next already picks the next episode's source by itself: from the same release or group, or the first source found when the episode playing has no group. This switch matters with Prefer Same Source off, where it lets Up Next pick the first source found, and it adds Fall Back to Any Source. Off by default.": {
+      "extractionState": "manual"
+    },
     "Apply": {
       "localizations": {
         "de": {
@@ -10358,9 +10361,6 @@
           }
         }
       }
-    },
-    "Choose a source for the next episode automatically, even when Auto-Play Best Source is off.": {
-      "extractionState": "manual"
     },
     "Choose the Home layout, which catalogs appear as rows and in what order, and where trailer previews play.": {
       "localizations": {
@@ -31842,6 +31842,9 @@
         }
       }
     },
+    "Pick the first source found when Prefer Same Source is off. With it on, Up Next already picks from the same group, and this adds a fallback.": {
+      "extractionState": "manual"
+    },
     "Pick the next episode from the same release or add-on group when it has one.": {
       "extractionState": "manual"
     },
@@ -47607,6 +47610,9 @@
         }
       }
     },
+    "These settings decide when Up Next starts looking for the next episode's sources and, while Auto-Play Best Source is off, which source it picks.": {
+      "extractionState": "manual"
+    },
     "This appears to be a private-network server, but Nuvio still cannot verify who controls it.": {
       "localizations": {
         "de": {
@@ -50607,9 +50613,6 @@
         }
       }
     },
-    "Up Next picks a source for the next episode by itself, even when Auto-Play Best Source is off. Off by default.": {
-      "extractionState": "manual"
-    },
     "Up Next picks the next episode from the same release or add-on group as the episode playing, when that stream has one. On by default.": {
       "extractionState": "manual"
     },
@@ -52384,7 +52387,7 @@
         }
       }
     },
-    "When the same release or group has no next episode, Up Next plays the first source it found instead. Shown while Auto-Pick Next Episode Source and Prefer Same Source are both on. On by default.": {
+    "When the same release or group has no next episode, Up Next plays the first source it found instead. Off, it shows that no stream was found. A stream with no source group always uses the first source available. Shown while Auto-Pick Next Episode Source and Prefer Same Source are both on. On by default.": {
       "extractionState": "manual"
     },
     "When the same source has no next episode, use the first one available.": {

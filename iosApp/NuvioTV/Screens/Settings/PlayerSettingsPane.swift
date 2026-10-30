@@ -138,7 +138,7 @@ struct PlayerSettingsPane: View {
         // FEAT-49 (upstream 22c9ab20): start the Up Next source search before the card shows.
         SettingsSection(
             String(localized: "Next Episode"),
-            footer: String(localized: "Up Next looks for the next episode's sources about 30 seconds before the card appears, so the countdown can start the moment it shows.")
+            footer: String(localized: "These settings decide when Up Next starts looking for the next episode's sources and, while Auto-Play Best Source is off, which source it picks.")
         ) {
             SettingsToggleRow(
                 title: String(localized: "Preload Next Episode Sources"),
@@ -147,11 +147,13 @@ struct PlayerSettingsPane: View {
                 descriptionID: .playerPreloadNextEpisode
             )
             // FEAT-88 (#15): how Up Next picks the next episode's source while Auto-Play Best
-            // Source is off (MANUAL mode, `NextEpisodeEngine.select`). The fallback only matters
-            // with both toggles above it on, so it shows only then.
+            // Source is off (MANUAL mode, `NextEpisodeEngine.select`). Either toggle on makes Up
+            // Next pick by itself; Prefer Same Source alone keeps it to the playing stream's
+            // binge group (the first source when that stream has none, BUG-228). The fallback only
+            // matters with both on, so it shows only then.
             SettingsToggleRow(
                 title: String(localized: "Auto-Pick Next Episode Source"),
-                subtitle: String(localized: "Choose a source for the next episode automatically, even when Auto-Play Best Source is off."),
+                subtitle: String(localized: "Pick the first source found when Prefer Same Source is off. With it on, Up Next already picks from the same group, and this adds a fallback."),
                 isOn: Binding(get: { model.autoPlayNextEpisodeEnabled }, set: { model.setAutoPlayNextEpisodeEnabled($0) }),
                 descriptionID: .playerAutoPlayNextEpisode
             )
