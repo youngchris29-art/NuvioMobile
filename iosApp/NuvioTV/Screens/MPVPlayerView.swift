@@ -1064,6 +1064,15 @@ final class MPVTVPlayerViewController: UIViewController {
             checkError(mpv_set_option_string(mpv, "cache-secs", "\(readaheadSec)"))
         }
 
+        // BUG-227 (#14, erdist): subtitles duplicating on every seek back (seen with a WebVTT track
+        // in an anime). mpv keeps decoded subtitle events across seeks and relies on each packet's
+        // unique ReadOrder to drop the copies it re-reads after a backward seek. WebVTT tracks carry
+        // no real ReadOrder, so each seek back added one more copy of every line on screen. Clearing
+        // the subtitle cache on seek removes the duplicates; the cost is that a line already showing
+        // at the seek target may appear from its next event instead. Set for every track, not only
+        // WebVTT: a late line costs less than a stacked one.
+        checkError(mpv_set_option_string(mpv, "sub-clear-on-seek", "yes"))
+
         checkError(mpv_initialize(mpv))
         // Everything the UI needs is observed with a data payload so state flows to us on the
         // event queue — the main thread never issues a synchronous property read (see PropSnapshot).
