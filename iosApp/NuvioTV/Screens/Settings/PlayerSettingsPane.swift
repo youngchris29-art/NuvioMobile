@@ -146,6 +146,29 @@ struct PlayerSettingsPane: View {
                 isOn: Binding(get: { model.preloadNextEpisodeSources }, set: { model.setPreloadNextEpisodeSources($0) }),
                 descriptionID: .playerPreloadNextEpisode
             )
+            // FEAT-88 (#15): how Up Next picks the next episode's source while Auto-Play Best
+            // Source is off (MANUAL mode, `NextEpisodeEngine.select`). The fallback only matters
+            // with both toggles above it on, so it shows only then.
+            SettingsToggleRow(
+                title: String(localized: "Auto-Pick Next Episode Source"),
+                subtitle: String(localized: "Choose a source for the next episode automatically, even when Auto-Play Best Source is off."),
+                isOn: Binding(get: { model.autoPlayNextEpisodeEnabled }, set: { model.setAutoPlayNextEpisodeEnabled($0) }),
+                descriptionID: .playerAutoPlayNextEpisode
+            )
+            SettingsToggleRow(
+                title: String(localized: "Prefer Same Source"),
+                subtitle: String(localized: "Pick the next episode from the same release or add-on group when it has one."),
+                isOn: Binding(get: { model.autoPlayPreferBingeGroup }, set: { model.setAutoPlayPreferBingeGroup($0) }),
+                descriptionID: .playerPreferBingeGroup
+            )
+            if model.autoPlayNextEpisodeEnabled && model.autoPlayPreferBingeGroup {
+                SettingsToggleRow(
+                    title: String(localized: "Fall Back to Any Source"),
+                    subtitle: String(localized: "When the same source has no next episode, use the first one available."),
+                    isOn: Binding(get: { model.autoPlayNextEpisodeFallback }, set: { model.setAutoPlayNextEpisodeFallback($0) }),
+                    descriptionID: .playerNextEpisodeFallback
+                )
+            }
         }
     }
 

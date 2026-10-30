@@ -114,6 +114,13 @@ final class SettingsViewModel: ObservableObject {
     /// search ahead of the card's display threshold (`PlayerSettingsUiState.preloadNextEpisodeSources`).
     /// Same watcher.
     @Published private(set) var preloadNextEpisodeSources = false
+    /// FEAT-88 (#15): Up Next's source choice, shared settings that had no tvOS row
+    /// (`PlayerSettingsUiState.streamAutoPlayNextEpisodeEnabled` / `streamAutoPlayPreferBingeGroup`
+    /// / `streamAutoPlayNextEpisodeFallbackEnabled`). Same watcher; initial values are the shared
+    /// defaults (off / on / on).
+    @Published private(set) var autoPlayNextEpisodeEnabled = false
+    @Published private(set) var autoPlayPreferBingeGroup = true
+    @Published private(set) var autoPlayNextEpisodeFallback = true
     /// Orivio batch (Settings → Playback → Sources): the global source ordering/filter settings,
     /// mirrored from `DebridSettings` by `debridSourcesWatcher`. Pickers bind string keys, not the
     /// bridged Kotlin enums (see `streamSortKey(_:)` and friends below).
@@ -208,6 +215,9 @@ final class SettingsViewModel: ObservableObject {
             self.assign(\.autoPlayBestSource, state.streamAutoPlayMode == StreamAutoPlayMode.firstStream)
             self.assign(\.autoPlayCachedOnly, state.streamAutoPlayCachedOnly)
             self.assign(\.preloadNextEpisodeSources, state.preloadNextEpisodeSources)
+            self.assign(\.autoPlayNextEpisodeEnabled, state.streamAutoPlayNextEpisodeEnabled)
+            self.assign(\.autoPlayPreferBingeGroup, state.streamAutoPlayPreferBingeGroup)
+            self.assign(\.autoPlayNextEpisodeFallback, state.streamAutoPlayNextEpisodeFallbackEnabled)
         }
 
         // Orivio batch: Sources sort / filter settings live in the debrid settings blob (shared
@@ -420,6 +430,18 @@ final class SettingsViewModel: ObservableObject {
 
     func setPreloadNextEpisodeSources(_ enabled: Bool) {
         PlayerSettingsRepository.shared.setPreloadNextEpisodeSources(enabled: enabled)
+    }
+
+    func setAutoPlayNextEpisodeEnabled(_ enabled: Bool) {
+        PlayerSettingsRepository.shared.setStreamAutoPlayNextEpisodeEnabled(enabled: enabled)
+    }
+
+    func setAutoPlayPreferBingeGroup(_ enabled: Bool) {
+        PlayerSettingsRepository.shared.setStreamAutoPlayPreferBingeGroup(enabled: enabled)
+    }
+
+    func setAutoPlayNextEpisodeFallback(_ enabled: Bool) {
+        PlayerSettingsRepository.shared.setStreamAutoPlayNextEpisodeFallbackEnabled(enabled: enabled)
     }
 
     /// "default" | "quality" | "sizeDesc" | "sizeAsc" → `DebridStreamSortMode`.

@@ -7442,6 +7442,9 @@
         }
       }
     },
+    "Auto-Pick Next Episode Source": {
+      "extractionState": "manual"
+    },
     "Auto-Play Best Source": {
       "localizations": {
         "de": {
@@ -10355,6 +10358,9 @@
           }
         }
       }
+    },
+    "Choose a source for the next episode automatically, even when Auto-Play Best Source is off.": {
+      "extractionState": "manual"
     },
     "Choose the Home layout, which catalogs appear as rows and in what order, and where trailer previews play.": {
       "localizations": {
@@ -18221,6 +18227,9 @@
           }
         }
       }
+    },
+    "Fall Back to Any Source": {
+      "extractionState": "manual"
     },
     "Fallback Audio Language": {
       "localizations": {
@@ -31833,6 +31842,9 @@
         }
       }
     },
+    "Pick the next episode from the same release or add-on group when it has one.": {
+      "extractionState": "manual"
+    },
     "Pick which lists show in the Library.": {
       "localizations": {
         "de": {
@@ -33308,6 +33320,9 @@
           }
         }
       }
+    },
+    "Prefer Same Source": {
+      "extractionState": "manual"
     },
     "Prefer TVDB": {
       "localizations": {
@@ -50592,6 +50607,12 @@
         }
       }
     },
+    "Up Next picks a source for the next episode by itself, even when Auto-Play Best Source is off. Off by default.": {
+      "extractionState": "manual"
+    },
+    "Up Next picks the next episode from the same release or add-on group as the episode playing, when that stream has one. On by default.": {
+      "extractionState": "manual"
+    },
     "Up Next · %@": {
       "localizations": {
         "de": {
@@ -52362,6 +52383,12 @@
           }
         }
       }
+    },
+    "When the same release or group has no next episode, Up Next plays the first source it found instead. Shown while Auto-Pick Next Episode Source and Prefer Same Source are both on. On by default.": {
+      "extractionState": "manual"
+    },
+    "When the same source has no next episode, use the first one available.": {
+      "extractionState": "manual"
     },
     "Where the rail sits on the left edge: centred, or at the top-left corner. Default: Centre.": {
       "localizations": {
