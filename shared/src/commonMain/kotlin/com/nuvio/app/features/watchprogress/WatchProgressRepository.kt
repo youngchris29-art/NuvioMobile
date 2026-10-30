@@ -316,8 +316,9 @@ internal class RemoteProgressWriteDeduplicator(
 //
 // The write runs inside [lock], so a main-thread persist(), pending() or latest() can wait for
 // one whole atomic file write (~191 KB on the Living Room box). That is the price of
-// [invalidate] being able to wait for an in-progress write; [update] also decodes the stored
-// file under the lock, which only cross-profile writes pay.
+// [invalidate] being able to wait for an in-progress write; [update] and [latest] also decode
+// the stored file under the lock when nothing is pending, which only profile loads and
+// cross-profile writes pay.
 internal class WatchProgressPersistQueue(
     private val scope: CoroutineScope,
     private val encode: suspend (PendingWatchProgressPayload) -> String,
@@ -337,9 +338,11 @@ internal class WatchProgressPersistQueue(
     /**
      * What [profileId]'s storage will hold once every issued persist lands: the pending snapshot
      * when one is in flight (it is newer than the file), else the stored payload, else null.
+     * Both reads happen under one lock hold, like [update]'s base: otherwise an [update] landing
+     * between them hands the caller the pre-update file.
      */
     fun latest(profileId: Int): StoredWatchProgressPayload? =
-        pending(profileId)?.toStoredPayload() ?: read(profileId)
+        synchronized(lock) { pendingPersists[profileId]?.toStoredPayload() ?: read(profileId) }
 
     fun enqueue(profileId: Int, snapshot: PendingWatchProgressPayload): Job {
         val pending = synchronized(lock) { issue(profileId, snapshot) }
@@ -509,6 +512,7 @@ object WatchProgressRepository {
                 dirtyProgressKeys = pending.dirtyProgressKeys,
             )
         },
+        // A failed write is silent today: savePayload drops PayloadFileStore.save's false return.
         write = WatchProgressStorage::savePayload,
         read = { profileId ->
             WatchProgressStorage.loadPayload(profileId)
@@ -1656,25 +1660,26 @@ object WatchProgressRepository {
         ).normalizedCompletion()
 
         if (targetProfileId != currentProfileId || ProfileRepository.activeProfileId != targetProfileId) {
-            val resolvedEntry = resolveStoredProfileProgressIdentity(
-                profileId = targetProfileId,
-                entry = candidateEntry,
-            )
-            if (
-                syncRemote &&
-                !remoteWriteDeduplicator.shouldSend(
-                    profileId = targetProfileId,
-                    entry = resolvedEntry,
-                    nowEpochMs = candidateEntry.lastUpdatedEpochMs,
-                )
-            ) {
-                return
+            val shouldWrite = { resolvedEntry: WatchProgressEntry ->
+                !syncRemote ||
+                    remoteWriteDeduplicator.shouldSend(
+                        profileId = targetProfileId,
+                        entry = resolvedEntry,
+                        nowEpochMs = candidateEntry.lastUpdatedEpochMs,
+                    )
             }
+            // With persist, the identity is resolved once, against update()'s base: a second
+            // resolve through latest() would decode the stored payload twice on this thread.
             val entry = if (persist) {
-                upsertStoredProfileProgress(profileId = targetProfileId, entry = resolvedEntry)
+                upsertStoredProfileProgress(
+                    profileId = targetProfileId,
+                    entry = candidateEntry,
+                    shouldWrite = shouldWrite,
+                )
             } else {
-                resolvedEntry
-            }
+                resolveStoredProfileProgressIdentity(profileId = targetProfileId, entry = candidateEntry)
+                    .takeIf(shouldWrite)
+            } ?: return
             if (syncRemote) {
                 pushScrobbleToServer(entry = entry, profileId = targetProfileId)
             }
@@ -1718,17 +1723,25 @@ object WatchProgressRepository {
         }
     }
 
+    /**
+     * Writes [entry], resolved against the stored payload's identities, into [profileId]'s
+     * storage and returns it; returns null and writes nothing when [shouldWrite] turns the
+     * resolved entry down (the remote-write dedup).
+     */
     private fun upsertStoredProfileProgress(
         profileId: Int,
         entry: WatchProgressEntry,
-    ): WatchProgressEntry {
+        shouldWrite: (WatchProgressEntry) -> Boolean,
+    ): WatchProgressEntry? {
         // Through the persist queue, not straight to storage: the profile's own last persist may
         // still be in flight (it was current a moment ago), and it must neither be the stale base
         // here nor land on top of this write (see WatchProgressPersistQueue).
-        var resolvedEntry = entry
+        var written: WatchProgressEntry? = null
         persistQueue.update(profileId) { stored ->
             val storedPayload = stored ?: StoredWatchProgressPayload()
-            resolvedEntry = storedPayload.entries.resolveIdentityForUpsert(entry)
+            val resolvedEntry = storedPayload.entries.resolveIdentityForUpsert(entry)
+            if (!shouldWrite(resolvedEntry)) return@update null
+            written = resolvedEntry
             val progressKey = resolvedEntry.resolvedProgressKey()
             storedPayload.copy(
                 entries = storedPayload.entries
@@ -1736,7 +1749,7 @@ object WatchProgressRepository {
                 dirtyProgressKeys = storedPayload.dirtyProgressKeys + progressKey,
             )
         }
-        return resolvedEntry
+        return written
     }
 
     private fun resolveStoredProfileProgressIdentity(
