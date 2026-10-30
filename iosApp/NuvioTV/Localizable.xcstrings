@@ -1537,13 +1537,13 @@
         "it": {
           "stringUnit": {
             "state": "translated",
-            "value": "%lld altri"
+            "value": "Altre %lld"
           }
         },
         "vi": {
           "stringUnit": {
             "state": "translated",
-            "value": "%lld nữa"
+            "value": "Thêm %lld"
           }
         }
       }
@@ -7161,7 +7161,7 @@
         "vi": {
           "stringUnit": {
             "state": "translated",
-            "value": "Áp dụng khi “Tự động phát nguồn tốt nhất” đang tắt. Khi “Ưu tiên cùng nguồn” bật, “Tiếp theo” đã tự chọn nguồn của tập tiếp theo: từ cùng bản phát hành hoặc nhóm, hoặc nguồn đầu tiên tìm được nếu tập đang phát không có nhóm. Công tắc này có tác dụng khi “Ưu tiên cùng nguồn” tắt: nó cho phép “Tiếp theo” chọn nguồn đầu tiên tìm được và thêm “Dùng nguồn bất kỳ khi không có”. Mặc định tắt."
+            "value": "Áp dụng khi “Tự động phát nguồn tốt nhất” đang tắt. Khi “Ưu tiên cùng nguồn” bật, “Tiếp theo” đã tự chọn nguồn của tập tiếp theo: từ cùng bản phát hành hoặc nhóm, hoặc nguồn đầu tiên tìm được nếu tập đang phát không có nhóm. Công tắc này có tác dụng khi “Ưu tiên cùng nguồn” tắt: nó cho phép “Tiếp theo” chọn nguồn đầu tiên tìm được và thêm “Dự phòng bằng nguồn bất kỳ”. Mặc định tắt."
           }
         }
       }
@@ -9184,7 +9184,7 @@
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Bisher am besten"
+            "value": "Bisher beste"
           }
         },
         "es": {
@@ -9208,7 +9208,7 @@
         "vi": {
           "stringUnit": {
             "state": "translated",
-            "value": "Tốt nhất cho đến nay"
+            "value": "Tốt nhất hiện tại"
           }
         }
       }
@@ -9254,7 +9254,7 @@
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Beste von %lld · Auflösung, dann HDR, dann aus dem Cache, dann Größe"
+            "value": "Beste aus %lld · Auflösung, dann HDR, dann aus dem Cache, dann Größe"
           }
         },
         "es": {
@@ -18841,7 +18841,7 @@
         "vi": {
           "stringUnit": {
             "state": "translated",
-            "value": "Dùng nguồn bất kỳ khi không có"
+            "value": "Dự phòng bằng nguồn bất kỳ"
           }
         }
       }
@@ -41458,7 +41458,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Mostrar los %lld"
+            "value": "Mostrar las %lld"
           }
         },
         "fr": {
@@ -41470,7 +41470,7 @@
         "it": {
           "stringUnit": {
             "state": "translated",
-            "value": "Mostra tutti i %lld"
+            "value": "Mostra tutte le %lld"
           }
         },
         "vi": {
@@ -41975,7 +41975,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Muestra chips de insignia bajo el título en la pestaña Info del reproductor, comparando los filtros del paquete con el video y el audio en reproducción (resolución, códec, HDR, formato de audio) y con el nombre del archivo. Desactivado por defecto."
+            "value": "Muestra chips de insignia bajo el título en la pestaña Info del reproductor, comparando los filtros del paquete con el vídeo y el audio en reproducción (resolución, códec, HDR, formato de audio) y con el nombre del archivo. Desactivado por defecto."
           }
         },
         "fr": {
@@ -42016,7 +42016,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Muestra bajo el título, en la pestaña Info del reproductor, las insignias del video y el audio en reproducción."
+            "value": "Muestra bajo el título, en la pestaña Info del reproductor, las insignias del vídeo y el audio en reproducción."
           }
         },
         "fr": {
@@ -42563,7 +42563,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Muestra el logo del complemento junto a cada fuente. El nombre del complemento siempre aparece en las filas con un titular de calidad."
+            "value": "Muestra el logo del complemento junto a cada fuente. El nombre del complemento siempre aparece en las filas con un encabezado de calidad."
           }
         },
         "fr": {
@@ -42598,7 +42598,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Muestra el logo del complemento junto a cada fuente. El nombre del complemento siempre aparece en las filas con un titular de calidad; esto lo añade también al resto de filas. Desactivado por defecto."
+            "value": "Muestra el logo del complemento junto a cada fuente. El nombre del complemento siempre aparece en las filas con un encabezado de calidad; esto lo añade también al resto de filas. Desactivado por defecto."
           }
         },
         "fr": {
@@ -45226,7 +45226,7 @@
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Délai de démarrage"
+            "value": "Délai de lancement"
           }
         },
         "it": {
@@ -51601,7 +51601,7 @@
         "vi": {
           "stringUnit": {
             "state": "translated",
-            "value": "Bật hoặc tắt cùng lúc mọi nhà cung cấp trong kho này. Công tắc hiện Bật khi có bất kỳ nhà cung cấp nào đang bật. Các nhà cung cấp mà kho cung cấp ở trạng thái tắt vẫn giữ nguyên tắt."
+            "value": "Bật hoặc tắt cùng lúc mọi nhà cung cấp trong kho này. Công tắc hiện Bật khi có bất kỳ nhà cung cấp nào đang bật. Các nhà cung cấp mà kho đặt sẵn ở trạng thái tắt vẫn tắt."
           }
         }
       }
