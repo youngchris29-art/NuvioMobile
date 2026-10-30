@@ -84,12 +84,14 @@ object ImdbEpisodeRatingsRepository {
             imdbKeyed = ImdbTapframeApi::getSeasonRatings,
             tmdbKeyed = SeriesGraphApi::getSeasonRatings,
             resolveTmdbId = { id -> TmdbService.ensureTmdbId(videoId = id, mediaType = "tv") },
+            canUseSeriesGraph = ImdbEpisodeRatingsConfig.IMDB_RATINGS_API_BASE_URL.isNotBlank(),
         )
 
     /**
      * The lookup order, with the three network sources injected so it can be tested: the private
      * IMDb-keyed service first (it returns nothing when it is not configured), then SeriesGraph
-     * by TMDB id.
+     * by TMDB id. With no SeriesGraph base URL ([canUseSeriesGraph] false) that request would
+     * return nothing, so the TMDB lookup is skipped too.
      */
     internal suspend fun fetchEpisodeRatings(
         imdbId: String?,
@@ -97,12 +99,15 @@ object ImdbEpisodeRatingsRepository {
         imdbKeyed: suspend (String) -> List<SeriesGraphSeasonRatingsDto>,
         tmdbKeyed: suspend (Int) -> List<SeriesGraphSeasonRatingsDto>,
         resolveTmdbId: suspend (String) -> String?,
+        canUseSeriesGraph: Boolean = true,
     ): Map<Pair<Int, Int>, Double> {
         if (!imdbId.isNullOrBlank()) {
             val primary = toRatingsMap(imdbKeyed(imdbId))
             if (primary.isNotEmpty()) return primary
             log.w { "Primary episode ratings empty for imdbId=$imdbId, trying fallback" }
         }
+
+        if (!canUseSeriesGraph) return emptyMap()
 
         // Fork: most add-ons (Cinemeta included) give IMDb ids only, so without the private
         // IMDb-keyed service there was no TMDB id for the SeriesGraph fallback and no ratings at

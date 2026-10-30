@@ -1,8 +1,10 @@
 package com.nuvio.app.features.details
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class ImdbEpisodeRatingsRepositoryTest {
@@ -83,5 +85,36 @@ class ImdbEpisodeRatingsRepositoryTest {
         assertTrue(imdbCalls.isEmpty())
         assertTrue(tmdbLookups.isEmpty())
         assertEquals(listOf(1396), seriesGraphCalls)
+    }
+
+    @Test
+    fun anUnconfiguredSeriesGraphSkipsTheTmdbLookup() = runTest {
+        val ratings = ImdbEpisodeRatingsRepository.fetchEpisodeRatings(
+            imdbId = "tt0903747",
+            tmdbId = null,
+            imdbKeyed = { id -> imdbCalls += id; emptyList() },
+            tmdbKeyed = { id -> seriesGraphCalls += id; payload(8.7) },
+            resolveTmdbId = { id -> tmdbLookups += id; "1396" },
+            canUseSeriesGraph = false,
+        )
+
+        assertTrue(ratings.isEmpty())
+        assertEquals(listOf("tt0903747"), imdbCalls)
+        assertTrue(tmdbLookups.isEmpty())
+        assertTrue(seriesGraphCalls.isEmpty())
+    }
+
+    @Test
+    fun cancellationDuringTheTmdbLookupPropagates() = runTest {
+        assertFailsWith<CancellationException> {
+            ImdbEpisodeRatingsRepository.fetchEpisodeRatings(
+                imdbId = "tt0903747",
+                tmdbId = null,
+                imdbKeyed = { emptyList() },
+                tmdbKeyed = { id -> seriesGraphCalls += id; payload(8.7) },
+                resolveTmdbId = { throw CancellationException("cancelled") },
+            )
+        }
+        assertTrue(seriesGraphCalls.isEmpty())
     }
 }
