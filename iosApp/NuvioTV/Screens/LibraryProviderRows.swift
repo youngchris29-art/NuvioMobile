@@ -19,22 +19,36 @@ final class LibraryProviderRowsModel: ObservableObject {
     /// The Continue Watching screen's custom poster pattern (blank = none), as Home reads it.
     @Published private(set) var posterPattern = ""
 
-    private var watcher: FlowWatcher?
+    private var watchers: [FlowWatcher] = []
     /// The last rows applied; the watchlist is compared through it. (`LibraryItem` is not named in
     /// this file: SwiftUI's import makes the bare name ambiguous here.)
     private var lastRows: LibraryProviderRows?
 
     func start() {
-        guard watcher == nil else { return }
-        watcher = FlowWatcherKt.watchFlow(LibraryProviderRowsRepository.shared.observeRows()) { [weak self] emitted in
+        guard watchers.isEmpty else { return }
+        watchers.append(FlowWatcherKt.watchFlow(LibraryProviderRowsRepository.shared.observeRows()) { [weak self] emitted in
             guard let self, let rows = emitted as? LibraryProviderRows else { return }
             self.apply(rows)
-        }
+        })
+        // Review r1: the badge and the poster pattern change without the rows changing (a shuffle
+        // toggle on a pushed Detail page, a pattern edit in Settings), so they follow their own
+        // repositories, as Home's do (`HomeViewModel`'s shuffle and poster-pattern watchers).
+        EpisodeShuffleRepository.shared.ensureLoaded()
+        watchers.append(FlowWatcherKt.watch(EpisodeShuffleRepository.shared.uiState) { [weak self] _ in
+            self?.refreshShuffleParentIds()
+        })
+        CustomPosterUrlRepository.shared.ensureLoaded()
+        watchers.append(FlowWatcherKt.watch(CustomPosterUrlRepository.shared.pattern) { [weak self] _ in
+            self?.refreshPosterPattern()
+        })
+        watchers.append(FlowWatcherKt.watch(CustomPosterUrlRepository.shared.enabledScreens) { [weak self] _ in
+            self?.refreshPosterPattern()
+        })
     }
 
     func stop() {
-        watcher?.cancel()
-        watcher = nil
+        watchers.forEach { $0.cancel() }
+        watchers.removeAll()
     }
 
     /// Assigned only on change: Kotlin data classes bridge `==` as a structural compare, and an
@@ -48,15 +62,25 @@ final class LibraryProviderRowsModel: ObservableObject {
             )
         }
         lastRows = rows
+        refreshShuffleParentIds()
+    }
+
+    private func refreshShuffleParentIds() {
         let shuffled = Set(resumeWatching.compactMap { entry -> String? in
             ShuffleNextEpisode.shared.isEnabled(contentId: entry.parentMetaId, contentType: entry.parentMetaType)
                 && entry.parentMetaType != "movie" ? entry.parentMetaId : nil
         })
         if shuffled != shuffleParentIds { shuffleParentIds = shuffled }
+    }
+
+    private func refreshPosterPattern() {
         let repo = CustomPosterUrlRepository.shared
         let pattern = repo.isScreenEnabled(screen: .continueWatching)
             ? repo.patternForScreen(screen: .continueWatching) : ""
-        if pattern != posterPattern { posterPattern = pattern }
+        guard pattern != posterPattern else { return }
+        posterPattern = pattern
+        // As Home: a new pattern makes earlier "this custom URL failed" verdicts meaningless.
+        ArtworkStore.clearFailedURLs()
     }
 }
 

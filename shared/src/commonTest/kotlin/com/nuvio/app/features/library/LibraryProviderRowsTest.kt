@@ -9,6 +9,9 @@ import com.nuvio.app.features.watchprogress.WatchProgressSourceNextUp
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -147,15 +150,67 @@ class LibraryProviderRowsTest {
                     simkl,
                     item("tt100", addedAt = 300, provider = simkl),
                     item("tmdb:77", type = "series", addedAt = 100, imdbId = "tt200", provider = simkl),
-                    // Same id, different kind: a different title.
+                    // Same id as Trakt's movie, other kind: the row keys cards by id, so the
+                    // older copy (Trakt's) leaves the row (review r1).
                     item("tt300", type = "series", addedAt = 20, provider = simkl),
                 ),
             ),
         )
         assertEquals(
-            listOf("tt200" to "trakt", "tt100" to "simkl", "tt300" to "simkl", "tt300" to "trakt"),
+            listOf("tt200" to "trakt", "tt100" to "simkl", "tt300" to "simkl"),
             rows.watchlist.map { it.id to it.trackingProviderId },
         )
+    }
+
+    @Test
+    fun aTmdbIdNamingAMovieAndAShowKeepsOnlyTheNewer() {
+        val merged = mergeLibraryWatchlists(
+            listOf(
+                watchlist(trakt, item("tmdb:603", type = "movie", addedAt = 10)),
+                watchlist(simkl, item("tmdb:603", type = "series", addedAt = 20)),
+            ),
+        )
+        assertEquals(listOf("tmdb:603" to "series"), merged.map { it.id to it.type })
+    }
+
+    @Test
+    fun sharedTmdbNumbersOfDifferentKindsWithDistinctIdsBothStay() {
+        val merged = mergeLibraryWatchlists(
+            listOf(
+                watchlist(trakt, item("tt1", type = "movie", addedAt = 10, tmdbId = 5)),
+                watchlist(simkl, item("tt2", type = "series", addedAt = 20, tmdbId = 5)),
+            ),
+        )
+        assertEquals(listOf("tt2", "tt1"), merged.map { it.id })
+    }
+
+    @Test
+    fun theSameTitleAddedAtTheSameMomentKeepsTheTraktCopy() {
+        val merged = mergeLibraryWatchlists(
+            listOf(
+                watchlist(simkl, item("tt7", addedAt = 100, provider = simkl)),
+                watchlist(trakt, item("tt7", addedAt = 100, provider = trakt)),
+            ),
+        )
+        assertEquals(listOf("trakt"), merged.map { it.trackingProviderId })
+    }
+
+    @Test
+    fun typeSpellingsAreNormalisedBeforeMatching() {
+        val shows = mergeLibraryWatchlists(
+            listOf(
+                watchlist(trakt, item("tt8", type = "show", addedAt = 30, imdbId = "tt8")),
+                watchlist(simkl, item("tmdb:80", type = "tv", addedAt = 20, imdbId = "tt8")),
+            ),
+        )
+        assertEquals(listOf("tt8"), shows.map { it.id })
+        val movies = mergeLibraryWatchlists(
+            listOf(
+                watchlist(trakt, item("tt9", type = "film", addedAt = 30, tmdbId = 90)),
+                watchlist(simkl, item("tmdb:90", type = "movie", addedAt = 20)),
+            ),
+        )
+        assertEquals(listOf("tt9"), movies.map { it.id })
     }
 
     @Test
@@ -181,6 +236,21 @@ class LibraryProviderRowsTest {
             ),
         )
         assertEquals(listOf("s-new", "t-mid", "t-tie", "s-tie", "s-old"), rows.watchlist.map { it.id })
+    }
+
+    @Test
+    fun theCapCountsTitlesAfterCrossProviderDedupe() {
+        val rows = buildLibraryProviderRows(
+            connectedProviderIds = setOf(trakt, simkl),
+            inProgress = emptyList(),
+            nextUp = emptyList(),
+            watchlists = listOf(
+                watchlist(trakt, item("tt1", addedAt = 50), item("tt2", addedAt = 40), item("tt3", addedAt = 30)),
+                watchlist(simkl, item("tt1", addedAt = 49), item("tt2", addedAt = 39), item("tt4", addedAt = 20)),
+            ),
+            watchlistLimit = 3,
+        )
+        assertEquals(listOf("tt1", "tt2", "tt3"), rows.watchlist.map { it.id })
     }
 
     @Test
@@ -282,5 +352,57 @@ class LibraryProviderRowsTest {
         assertEquals(listOf("tt1"), rows.resumeWatching.map { it.videoId })
         assertEquals(listOf("tt2"), rows.watchlist.map { it.id })
         assertEquals(listOf(setOf(trakt)), watchlistRequests)
+    }
+
+    @Test
+    fun theFlowGoesBackToNoRowsOnDisconnect() = runTest {
+        val connected = MutableStateFlow<Set<TrackingProviderId>>(setOf(simkl))
+        val emissions = mutableListOf<LibraryProviderRows>()
+        val job = launch(UnconfinedTestDispatcher(testScheduler)) {
+            libraryProviderRowsFlow(
+                connectedProviderIds = connected,
+                resumeInputs = { flowOf(listOf(movieProgress("tt1", at = 10)) to emptyList()) },
+                watchlists = { flowOf(listOf(watchlist(simkl, item("tt2", addedAt = 1)))) },
+            ).toList(emissions)
+        }
+        connected.value = emptySet()
+        job.cancel()
+        assertEquals(2, emissions.size)
+        assertTrue(!emissions[0].isEmpty)
+        assertEquals(LibraryProviderRows(), emissions[1])
+    }
+
+    @Test
+    fun aSubscriptionNeverRefreshesTheActiveLibrarySource() {
+        val throttle = LibraryRowsRefreshThrottle(intervalMs = 1_000L)
+        assertEquals(
+            listOf(simkl),
+            throttle.refreshTargets(listOf(trakt, simkl), activeSource = trakt, profileId = 1, nowEpochMs = 0L),
+        )
+        // Trakt stays the source: still never refreshed by the rows, however much time passes.
+        assertEquals(
+            listOf(simkl),
+            throttle.refreshTargets(listOf(trakt, simkl), activeSource = trakt, profileId = 1, nowEpochMs = 5_000L),
+        )
+    }
+
+    @Test
+    fun aSecondSubscriptionWithinTheWindowDoesNotRefreshAgain() {
+        val throttle = LibraryRowsRefreshThrottle(intervalMs = 1_000L)
+        assertEquals(listOf(simkl), throttle.refreshTargets(listOf(simkl), null, profileId = 1, nowEpochMs = 100L))
+        assertEquals(emptyList(), throttle.refreshTargets(listOf(simkl), null, profileId = 1, nowEpochMs = 900L))
+        // Another profile has its own clock.
+        assertEquals(listOf(simkl), throttle.refreshTargets(listOf(simkl), null, profileId = 2, nowEpochMs = 900L))
+        // Once the window has passed, the next subscription refreshes again.
+        assertEquals(listOf(simkl), throttle.refreshTargets(listOf(simkl), null, profileId = 1, nowEpochMs = 1_100L))
+    }
+
+    @Test
+    fun aLocalOrMdbListSourceLeavesBothProvidersToTheRows() {
+        val throttle = LibraryRowsRefreshThrottle()
+        assertEquals(
+            listOf(trakt, simkl),
+            throttle.refreshTargets(listOf(trakt, simkl), activeSource = TrackingProviderId.MDBLIST, profileId = 1, nowEpochMs = 0L),
+        )
     }
 }

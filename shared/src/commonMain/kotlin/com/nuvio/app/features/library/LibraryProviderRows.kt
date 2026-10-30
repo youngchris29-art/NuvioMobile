@@ -8,12 +8,14 @@ import com.nuvio.app.core.poster.withCustomPosterUrls
 import com.nuvio.app.core.tracking.ensureTrackingProvidersRegistered
 import com.nuvio.app.features.catalog.CatalogTarget
 import com.nuvio.app.features.home.HomeCatalogSection
+import com.nuvio.app.features.profiles.ProfileRepository
 import com.nuvio.app.features.tracking.TrackingLibraryProvider
 import com.nuvio.app.features.tracking.TrackingLibrarySnapshot
 import com.nuvio.app.features.tracking.TrackingLibraryTabKind
 import com.nuvio.app.features.tracking.TrackingProviderId
 import com.nuvio.app.features.tracking.TrackingProviderRegistry
 import com.nuvio.app.features.tracking.TrackingRefreshIntent
+import com.nuvio.app.features.tracking.providerId
 import com.nuvio.app.features.trakt.TraktSettingsRepository
 import com.nuvio.app.features.watched.WatchedRepository
 import com.nuvio.app.features.watchprogress.ContinueWatchingNextUp
@@ -22,12 +24,15 @@ import com.nuvio.app.features.watchprogress.ContinueWatchingPreferencesRepositor
 import com.nuvio.app.features.watchprogress.WatchProgressEntry
 import com.nuvio.app.features.watchprogress.WatchProgressRepository
 import com.nuvio.app.features.watchprogress.mergeContinueWatchingWithNextUp
+import kotlinx.atomicfu.locks.SynchronizedObject
+import kotlinx.atomicfu.locks.synchronized
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
@@ -36,6 +41,7 @@ import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.merge
@@ -113,9 +119,11 @@ fun buildLibraryProviderRows(
  * Pure (unit-tested): the providers' watchlists as one list, most recently added first
  * ([LibraryItem.savedAtEpochMs]: Trakt's `listed_at`, Simkl's `added_to_watchlist_at`), a tie
  * going to the provider listed first in [TrackingProviderId] (Trakt, then Simkl). A title on both
- * keeps its most recently added copy: two items are the same title when their kinds match and they
- * share any id (content id, IMDb id or TMDB id), since the providers do not always resolve a title
- * to the same canonical content id.
+ * keeps its most recently added copy: two items are the same title when they share a content id,
+ * or when their kinds match and they share an IMDb or TMDB id, since the providers do not always
+ * resolve a title to the same canonical content id. A content id is matched whatever the kind
+ * (review r1): `CatalogRowView` keys its cards by id alone, and `tmdb:N` can name a movie and a
+ * show (TMDB's two id spaces overlap), so the older of the two leaves the row.
  */
 fun mergeLibraryWatchlists(watchlists: List<LibraryProviderWatchlist>): List<LibraryItem> {
     val seen = mutableSetOf<String>()
@@ -136,7 +144,7 @@ fun mergeLibraryWatchlists(watchlists: List<LibraryProviderWatchlist>): List<Lib
         }
 }
 
-/** Every key a title answers to: `kind:id:…`, plus `kind:imdb:…` / `kind:tmdb:…` when known. */
+/** Every key a title answers to: `id:…`, plus `kind:imdb:…` / `kind:tmdb:…` when known. */
 internal fun LibraryItem.watchlistIdentityKeys(): Set<String> {
     val kind = when (type.trim().lowercase()) {
         "movie", "film" -> "movie"
@@ -145,7 +153,7 @@ internal fun LibraryItem.watchlistIdentityKeys(): Set<String> {
     }
     val normalizedId = id.trim().lowercase()
     return buildSet {
-        add("$kind:id:$normalizedId")
+        add("id:$normalizedId")
         val imdb = imdbId?.trim()?.lowercase()?.takeIf(String::isNotEmpty)
             ?: normalizedId.takeIf { it.startsWith("tt") }
         imdb?.let { add("$kind:imdb:$it") }
@@ -178,6 +186,45 @@ fun libraryWatchlistRowSection(title: String, items: List<LibraryItem>): HomeCat
     )
 
 const val LIBRARY_WATCHLIST_ROW_KEY = "library.providerRows.watchlist"
+
+/**
+ * How often the rows ask a provider that is NOT the Library source to refresh its library (review
+ * r1). The active source is refreshed by [LibraryRepository] and never by the rows. Trakt's own
+ * AUTOMATIC window is 60 s and a pull refetches every list, so a per-visit refresh would refetch
+ * the whole Trakt library on ordinary tab visits; Simkl's own window is the same 15 minutes.
+ */
+internal const val LibraryRowsProviderRefreshIntervalMs = 15L * 60L * 1_000L
+
+/**
+ * The rows' refresh bookkeeping (unit-tested): one timestamp per profile and provider, owned by the
+ * rows, not by a subscription. In memory only, so a new app session refreshes on its first visit.
+ */
+internal class LibraryRowsRefreshThrottle(
+    private val intervalMs: Long = LibraryRowsProviderRefreshIntervalMs,
+) {
+    private val lock = SynchronizedObject()
+    private val lastRefreshAt = mutableMapOf<Pair<Int, TrackingProviderId>, Long>()
+
+    /**
+     * The providers one subscription should refresh, recording them as refreshed: every connected
+     * provider but [activeSource], each at most once per [intervalMs] for [profileId].
+     */
+    fun refreshTargets(
+        connected: Collection<TrackingProviderId>,
+        activeSource: TrackingProviderId?,
+        profileId: Int,
+        nowEpochMs: Long,
+    ): List<TrackingProviderId> = synchronized(lock) {
+        connected.filter { providerId ->
+            if (providerId == activeSource) return@filter false
+            val key = profileId to providerId
+            val last = lastRefreshAt[key]
+            val due = last == null || nowEpochMs < last || nowEpochMs - last >= intervalMs
+            if (due) lastRefreshAt[key] = nowEpochMs
+            due
+        }
+    }
+}
 
 /** How long the Up Next resolution waits for progress saves to settle (Home's pacing). */
 internal const val LibraryRowsNextUpDebounceMs = 1_500L
@@ -216,15 +263,17 @@ object LibraryProviderRowsRepository {
     private val refreshScope = CoroutineScope(
         SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("LibraryProviderRows"),
     )
+    private val refreshThrottle = LibraryRowsRefreshThrottle()
 
     /**
      * Both rows for the active profile. A plain `Flow` (Swift: `watchFlow`, collected on the main
      * thread). Call it from the main thread: it loads every repository the rows read up front,
      * so nothing below runs a first load off main. The row is built on the collector's thread, as
      * Home builds its Continue Watching row; the Up Next resolution moves itself to
-     * `Dispatchers.Default`. Each subscription asks the connected Trakt / Simkl libraries for an
-     * AUTOMATIC refresh, which both gate on their own cache window, so a provider that is not the
-     * Library source still fills its watchlist in.
+     * `Dispatchers.Default`, as does the watchlist merge. A connected Trakt / Simkl library that
+     * is not the Library source is asked for an AUTOMATIC refresh at most once per
+     * [LibraryRowsProviderRefreshIntervalMs] ([LibraryRowsRefreshThrottle]), so it still fills its
+     * watchlist in; the Library source is left to [LibraryRepository].
      */
     fun observeRows(): Flow<LibraryProviderRows> {
         ensureTrackingProvidersRegistered()
@@ -264,7 +313,12 @@ object LibraryProviderRowsRepository {
         val nextUp = merge(triggers.take(1), triggers.drop(1).debounce(LibraryRowsNextUpDebounceMs))
             .mapLatest {
                 try {
-                    ContinueWatchingNextUp.resolveEntries(limit = ContinueWatchingNextUpResolveLimit)
+                    // Review r1: run in the rows' own scope, so a newer trigger (or leaving the tab)
+                    // cancels only this wait, never the engine's run, which keeps its fetches and
+                    // leaves its results cached for the next call.
+                    refreshScope.async {
+                        ContinueWatchingNextUp.resolveEntries(limit = ContinueWatchingNextUpResolveLimit)
+                    }.await()
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: Throwable) {
@@ -291,7 +345,15 @@ object LibraryProviderRowsRepository {
         ) { _, _ -> Unit }
         return merge(posterPattern, *providers.map(TrackingLibraryProvider::changes).toTypedArray())
             .onStart {
-                providers.forEach { provider -> refreshScope.launch { refresh(provider) } }
+                val due = refreshThrottle.refreshTargets(
+                    connected = providers.map(TrackingLibraryProvider::providerId),
+                    activeSource = LibraryRepository.uiState.value.sourceMode.providerId,
+                    profileId = ProfileRepository.activeProfileId,
+                    nowEpochMs = LibraryClock.nowEpochMs(),
+                )
+                providers
+                    .filter { provider -> provider.providerId in due }
+                    .forEach { provider -> refreshScope.launch { refresh(provider) } }
                 emit(Unit)
             }
             .map {
@@ -304,6 +366,8 @@ object LibraryProviderRowsRepository {
                 }
             }
             .distinctUntilChanged()
+            // Review r1: StateFlow reads and pure work, so off the main thread.
+            .flowOn(Dispatchers.Default)
     }
 
     private suspend fun refresh(provider: TrackingLibraryProvider) {
