@@ -175,6 +175,38 @@ class PlaybackMatchTextTest {
     }
 
     @Test
+    fun skipsDtsXMpegHAndPcmEntriesBeforeTheVideoEntry() {
+        val dtsxFirst = text(videoCodecString = "dtsx,hvc1.2.4.L150.B0").split(" ")
+        assertTrue("HEVC" in dtsxFirst && "x265" in dtsxFirst, "video token from the hvc1 entry: $dtsxFirst")
+        assertTrue("10bit" in dtsxFirst)
+        assertTrue("DTSX" !in dtsxFirst, "no junk DTSX token: $dtsxFirst")
+
+        val mpegHFirst = text(videoCodecString = "mhm1.0x0D,dvh1.08.06").split(" ")
+        assertTrue("HEVC" in mpegHFirst && "DV" in mpegHFirst, "video token from the dvh1 entry: $mpegHFirst")
+        assertTrue(mpegHFirst.none { it.startsWith("MHM1") }, "no junk MHM1 token: $mpegHFirst")
+
+        for (audio in listOf("dtsx", "mha1.0x0D", "mhm1.0x0D", "ipcm", "lpcm")) {
+            assertEquals("", text(videoCodecString = audio), "$audio alone adds no video token")
+            val first = text(videoCodecString = "$audio,avc1.640028").split(" ")
+            assertTrue("AVC" in first && "x264" in first, "$audio before avc1: $first")
+        }
+    }
+
+    @Test
+    fun readsDolbyVisionOverAvc() {
+        for (codecs in listOf("dvav.04.06", "dva1.04.06")) {
+            val tokens = text(videoCodecString = codecs).split(" ")
+            assertTrue("AVC" in tokens && "H.264" in tokens && "x264" in tokens, "$codecs maps to AVC: $tokens")
+            assertTrue("DV" in tokens && "DoVi" in tokens, "$codecs is Dolby Vision: $tokens")
+            assertTrue(tokens.none { it.startsWith("DVA") }, "no junk DVAV/DVA1 token: $tokens")
+            assertTrue("HEVC" !in tokens)
+        }
+        val labelled = text(videoCodec = "dva1").split(" ")
+        assertTrue("AVC" in labelled && "DV" in labelled && "DVA1" !in labelled, "engine label dva1: $labelled")
+        assertTrue("Vision" in names(text(videoCodecString = "ec-3,dvav.04.06")))
+    }
+
+    @Test
     fun readsDtsAndAc4Variants() {
         val ma = text(audioCodec = "DTS", audioProfile = "DTS-HD MA")
         assertEquals("DTS DTS-HD DTS-HD MA", ma)

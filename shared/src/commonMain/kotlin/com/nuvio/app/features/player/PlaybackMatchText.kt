@@ -75,7 +75,8 @@ object PlaybackMatchText {
 
     private data class HdrFlags(val dolbyVision: Boolean, val hdr10: Boolean, val hlg: Boolean)
 
-    private val dolbyVisionCodecPrefixes = listOf("dvhe", "dvh1", "dav1", "dva1")
+    /** HEVC (`dvhe`/`dvh1`), AV1 (`dav1`) and AVC (`dvav`/`dva1`) Dolby Vision sample entries. */
+    private val dolbyVisionCodecPrefixes = listOf("dvhe", "dvh1", "dav1", "dvav", "dva1")
 
     private fun hdrFlags(hdr: List<String>, codecString: String, videoCodec: String?): HdrFlags {
         val flags = hdr.map { it.trim().lowercase() }
@@ -117,7 +118,8 @@ object PlaybackMatchText {
                 key.startsWith("hvc1") || key.startsWith("hev1") ||
                 key.startsWith("dvh1") || key.startsWith("dvhe") -> hevcTokens
             key == "avc" || key == "h264" || key == "h.264" ||
-                key.startsWith("avc1") || key.startsWith("avc3") -> avcTokens
+                key.startsWith("avc1") || key.startsWith("avc3") ||
+                key.startsWith("dvav") || key.startsWith("dva1") -> avcTokens
             key == "av1" || key.startsWith("av01") || key.startsWith("dav1") -> listOf("AV1")
             key == "vp9" || key.startsWith("vp09") -> listOf("VP9")
             else -> listOf(label ?: key.uppercase())
@@ -139,8 +141,14 @@ object PlaybackMatchText {
             }
         }
 
+    /**
+     * Sample-entry prefixes of audio codecs, so an audio-first codecs list never yields a video token:
+     * Dolby (`ec-3`, `ac-3`, `ac-4`), AAC (`mp4a`), DTS (`dtsc`/`dtse`/`dtsh`/`dtsl`, DTS:X / DTS-UHD
+     * `dtsx`), MPEG-H (`mha1`, `mhm1`), PCM (`ipcm`, `lpcm`) and the open codecs.
+     */
     private val audioCodecPrefixes = listOf(
-        "ec-3", "ac-3", "ac-4", "mp4a", "dtsc", "dtse", "dtsh", "dtsl", "opus", "flac", "alac", "mp3", "vorbis",
+        "ec-3", "ac-3", "ac-4", "mp4a", "dtsc", "dtse", "dtsh", "dtsl", "dtsx", "mha1", "mhm1", "ipcm", "lpcm",
+        "opus", "flac", "alac", "mp3", "vorbis",
     )
 
     /** The first non-audio entry of the codecs list, or null when it only names audio. */
