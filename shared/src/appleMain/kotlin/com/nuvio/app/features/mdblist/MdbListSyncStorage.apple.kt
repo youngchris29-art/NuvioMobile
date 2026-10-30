@@ -11,7 +11,7 @@ import com.nuvio.app.core.storage.ProfileScopedKey
  * set in one string — the same unbounded-payload class as the Simkl snapshot, so it goes to a
  * file ([PayloadFileStore], see `SimklSyncStorage.apple.kt`), never to a defaults plist where a
  * large history can cross the CFPreferences oversized-write cap. Filenames are
- * `mdblist_sync_snapshot_<profileId>.json` under Application Support/`MdbListSync`, which the
+ * `mdblist_sync_snapshot_<profileId>.json` under the payload root/`MdbListSync`, which the
  * sign-out wipe erases via the `AppleKeySpec.FileStore("MdbListSync")` entry in
  * `core.account.AccountDataStores` (`AppleFilePayloadStores.deleteAll`).
  *

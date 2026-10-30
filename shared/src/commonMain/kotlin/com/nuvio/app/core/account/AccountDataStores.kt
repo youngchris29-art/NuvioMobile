@@ -64,7 +64,7 @@ sealed interface AppleKeySpec {
      */
     data class DynamicPrefix(val prefix: String) : AppleKeySpec
 
-    /** A `core.storage.PayloadFileStore` subdirectory of Application Support. */
+    /** A `core.storage.PayloadFileStore` subdirectory (Application Support on iOS, Library/Caches/PayloadStores on tvOS). */
     data class FileStore(val subdirectory: String) : AppleKeySpec
 
     /**
