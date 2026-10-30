@@ -28,7 +28,6 @@ import kotlinx.atomicfu.locks.SynchronizedObject
 import kotlinx.atomicfu.locks.synchronized
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
@@ -202,18 +201,24 @@ internal const val LibraryRowsProviderRefreshIntervalMs = 15L * 60L * 1_000L
  * Review r2: an entry only stands for a pull that worked. A failed pull is [forget]-ten, so the
  * next visit tries again (as Trakt's own error path does), and a provider that leaves the connected
  * set is dropped ([retainConnected]), so reconnecting refreshes its watchlist at once.
+ *
+ * Review r3: only [throttled] providers (Trakt) are timed here. Simkl's AUTOMATIC refresh already
+ * has the same 15-minute gate on a persisted `lastCheckedAt` that always runs after a wipe, so a
+ * Simkl refresh goes straight to that gate (its `ensureLoaded` reports loaded even when empty, so
+ * the [refreshTargets] `unloaded` rule could not catch a Simkl sign-out).
  */
 internal class LibraryRowsRefreshThrottle(
     private val intervalMs: Long = LibraryRowsProviderRefreshIntervalMs,
+    private val throttled: Set<TrackingProviderId> = setOf(TrackingProviderId.TRAKT),
 ) {
     private val lock = SynchronizedObject()
     private val lastRefreshAt = mutableMapOf<Pair<Int, TrackingProviderId>, Long>()
 
     /**
-     * The providers one subscription should refresh, recording them as refreshed: every connected
-     * provider but [activeSource], each at most once per [intervalMs] for [profileId], and any in
-     * [unloaded] (no library snapshot yet, e.g. after a sign-out cleared it while the rows were not
-     * watching) whatever the window.
+     * The providers one subscription should refresh: every connected provider but [activeSource].
+     * A [throttled] one is recorded and refreshed at most once per [intervalMs] for [profileId],
+     * unless it is in [unloaded] (no library snapshot yet, e.g. after a sign-out cleared it while
+     * the rows were not watching); any other is always passed on to its own gate.
      */
     fun refreshTargets(
         connected: Collection<TrackingProviderId>,
@@ -224,6 +229,7 @@ internal class LibraryRowsRefreshThrottle(
     ): List<TrackingProviderId> = synchronized(lock) {
         connected.filter { providerId ->
             if (providerId == activeSource) return@filter false
+            if (providerId !in throttled) return@filter true
             val key = profileId to providerId
             val last = lastRefreshAt[key]
             val due = last == null || nowEpochMs < last || nowEpochMs - last >= intervalMs ||
@@ -293,9 +299,10 @@ object LibraryProviderRowsRepository {
      * so nothing below runs a first load off main. The row is built on the collector's thread, as
      * Home builds its Continue Watching row; the Up Next resolution moves itself to
      * `Dispatchers.Default`, as does the watchlist merge. A connected Trakt / Simkl library that
-     * is not the Library source is asked for an AUTOMATIC refresh at most once per
-     * [LibraryRowsProviderRefreshIntervalMs] ([LibraryRowsRefreshThrottle]), so it still fills its
-     * watchlist in; the Library source is left to [LibraryRepository].
+     * is not the Library source is asked for an AUTOMATIC refresh (Trakt at most once per
+     * [LibraryRowsProviderRefreshIntervalMs], [LibraryRowsRefreshThrottle]; Simkl through its own
+     * 15-minute gate), so it still fills its watchlist in; the Library source is left to
+     * [LibraryRepository].
      */
     fun observeRows(): Flow<LibraryProviderRows> {
         ensureTrackingProvidersRegistered()
@@ -339,10 +346,12 @@ object LibraryProviderRowsRepository {
                     // Review r1: run in the rows' own scope, so a newer trigger (or leaving the tab)
                     // cancels only this wait, never the engine's run, which keeps its fetches and
                     // leaves its results cached for the next call.
-                    // Review r2: UNDISPATCHED, so `resolveEntries`' synchronous prefix (its
-                    // `ensureInputsLoaded`) runs on the collector's main thread, as Home calls it;
-                    // the engine moves its own work to `Dispatchers.Default`.
-                    refreshScope.async(start = CoroutineStart.UNDISPATCHED) {
+                    // Review r3: on `Dispatchers.Main`, so `resolveEntries`' `ensureInputsLoaded`
+                    // runs on the main thread as Home calls it, and its `withContext(Default)`
+                    // really hops (from a Default context it would not, and the engine's seed work
+                    // would then stay on main). Still a child of the rows' scope, not of this
+                    // collector, so a cancel stops only the wait.
+                    refreshScope.async(Dispatchers.Main) {
                         ContinueWatchingNextUp.resolveEntries(limit = ContinueWatchingNextUpResolveLimit)
                     }.await()
                 } catch (error: CancellationException) {

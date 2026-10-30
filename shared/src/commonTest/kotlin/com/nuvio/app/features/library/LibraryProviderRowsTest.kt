@@ -387,14 +387,23 @@ class LibraryProviderRowsTest {
     }
 
     @Test
-    fun aSecondSubscriptionWithinTheWindowDoesNotRefreshAgain() {
+    fun aSecondSubscriptionWithinTheWindowDoesNotRefreshTraktAgain() {
+        val throttle = LibraryRowsRefreshThrottle(intervalMs = 1_000L)
+        assertEquals(listOf(trakt), throttle.refreshTargets(listOf(trakt), null, profileId = 1, nowEpochMs = 100L))
+        assertEquals(emptyList(), throttle.refreshTargets(listOf(trakt), null, profileId = 1, nowEpochMs = 900L))
+        // Another profile has its own clock.
+        assertEquals(listOf(trakt), throttle.refreshTargets(listOf(trakt), null, profileId = 2, nowEpochMs = 900L))
+        // Once the window has passed, the next subscription refreshes again.
+        assertEquals(listOf(trakt), throttle.refreshTargets(listOf(trakt), null, profileId = 1, nowEpochMs = 1_100L))
+    }
+
+    @Test
+    fun simklIsPassedToItsOwnGateOnEverySubscription() {
         val throttle = LibraryRowsRefreshThrottle(intervalMs = 1_000L)
         assertEquals(listOf(simkl), throttle.refreshTargets(listOf(simkl), null, profileId = 1, nowEpochMs = 100L))
-        assertEquals(emptyList(), throttle.refreshTargets(listOf(simkl), null, profileId = 1, nowEpochMs = 900L))
-        // Another profile has its own clock.
-        assertEquals(listOf(simkl), throttle.refreshTargets(listOf(simkl), null, profileId = 2, nowEpochMs = 900L))
-        // Once the window has passed, the next subscription refreshes again.
-        assertEquals(listOf(simkl), throttle.refreshTargets(listOf(simkl), null, profileId = 1, nowEpochMs = 1_100L))
+        assertEquals(listOf(simkl), throttle.refreshTargets(listOf(simkl), null, profileId = 1, nowEpochMs = 200L))
+        // Except as the Library source, which LibraryRepository refreshes.
+        assertEquals(emptyList(), throttle.refreshTargets(listOf(simkl), simkl, profileId = 1, nowEpochMs = 300L))
     }
 
     @Test
@@ -409,28 +418,23 @@ class LibraryProviderRowsTest {
     }
 
     @Test
-    fun disconnectAndReconnectInsideTheWindowRefreshesAgain() {
+    fun disconnectAndReconnectInsideTheWindowRefreshesTraktAgain() {
         val throttle = LibraryRowsRefreshThrottle(intervalMs = 1_000L)
-        assertEquals(
-            listOf(trakt, simkl),
-            throttle.refreshTargets(listOf(trakt, simkl), null, profileId = 1, nowEpochMs = 100L),
-        )
-        // Simkl signs out and back in; Trakt stays connected.
-        throttle.retainConnected(setOf(trakt))
+        assertEquals(listOf(trakt), throttle.refreshTargets(listOf(trakt, simkl), simkl, profileId = 1, nowEpochMs = 100L))
+        assertEquals(emptyList(), throttle.refreshTargets(listOf(trakt, simkl), simkl, profileId = 1, nowEpochMs = 150L))
+        // Trakt signs out and back in; Simkl (the Library source) stays connected.
+        throttle.retainConnected(setOf(simkl))
         throttle.retainConnected(setOf(trakt, simkl))
-        assertEquals(
-            listOf(simkl),
-            throttle.refreshTargets(listOf(trakt, simkl), null, profileId = 1, nowEpochMs = 200L),
-        )
+        assertEquals(listOf(trakt), throttle.refreshTargets(listOf(trakt, simkl), simkl, profileId = 1, nowEpochMs = 200L))
     }
 
     @Test
-    fun aProviderWithNoSnapshotIsRefreshedInsideTheWindow() {
+    fun traktWithNoSnapshotIsRefreshedInsideTheWindow() {
         val throttle = LibraryRowsRefreshThrottle(intervalMs = 1_000L)
-        assertEquals(listOf(simkl), throttle.refreshTargets(listOf(simkl), null, profileId = 1, nowEpochMs = 100L))
+        assertEquals(listOf(trakt), throttle.refreshTargets(listOf(trakt), null, profileId = 1, nowEpochMs = 100L))
         assertEquals(
-            listOf(simkl),
-            throttle.refreshTargets(listOf(simkl), null, profileId = 1, nowEpochMs = 200L, unloaded = listOf(simkl)),
+            listOf(trakt),
+            throttle.refreshTargets(listOf(trakt), null, profileId = 1, nowEpochMs = 200L, unloaded = listOf(trakt)),
         )
     }
 
