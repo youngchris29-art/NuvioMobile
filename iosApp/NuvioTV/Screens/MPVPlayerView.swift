@@ -1282,12 +1282,19 @@ final class MPVTVPlayerViewController: UIViewController {
         else if demuxW > 0, demuxH > 0 { facts.videoWidth = demuxW; facts.videoHeight = demuxH }
         facts.videoCodec = getString("track-list/\(i)/codec")
         let profile = getString("track-list/\(i)/codec-profile")
-        facts.hdr = PlayerBadgeMatch.mpvHDR(gamma: getString("video-params/gamma"),
-                                            dolbyVisionProfile: getInt("track-list/\(i)/dolby-vision-profile"))
-        facts.bitDepth = PlayerBadgeMatch.bitDepth(pixelFormat: getString("video-params/pixelformat"), codecProfile: profile)
+        let dvProfile = getInt("track-list/\(i)/dolby-vision-profile")
+        facts.videoCodecString = PlayerBadgeMatch.mpvCodecString(codec: facts.videoCodec, dolbyVisionProfile: dvProfile)
+        facts.hdr = PlayerBadgeMatch.mpvHDR(gamma: getString("video-params/gamma"), dolbyVisionProfile: dvProfile)
+        facts.bitDepth = PlayerBadgeMatch.bitDepth(pixelFormat: badgePixelFormat(), codecProfile: profile)
         facts.fileName = PlayerBadgeMatch.fileName(from: context.url)
         facts.streamName = PlayerBadgeMatch.streamName(title: context.streamTitle, subtitle: context.streamSubtitle)
         return facts
+    }
+
+    /// `eventQueue`: the decoded pixel format. Under hardware decoding `pixelformat` names the hardware
+    /// surface (`videotoolbox`); `hw-pixelformat` holds the real one (`nv12`, `p010`).
+    private func badgePixelFormat() -> String? {
+        getString("video-params/hw-pixelformat") ?? getString("video-params/pixelformat")
     }
 
     /// `eventQueue`: one audio entry of the walk (codec, FFmpeg profile such as "Dolby Digital
@@ -1308,7 +1315,7 @@ final class MPVTVPlayerViewController: UIViewController {
         guard badgesInPlayer, let video = badgeVideoFacts else { return }
         badgeVideoFacts = PlayerBadgeMatch.mpvVideoParams(
             video, width: getInt("video-params/w"), height: getInt("video-params/h"),
-            gamma: getString("video-params/gamma"), pixelFormat: getString("video-params/pixelformat"))
+            gamma: getString("video-params/gamma"), pixelFormat: badgePixelFormat())
         publishBadgeFacts(aid: Int(getString("aid") ?? ""))
     }
 

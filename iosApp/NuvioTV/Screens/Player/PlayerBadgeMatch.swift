@@ -95,16 +95,37 @@ nonisolated enum PlayerBadgeMatch {
         return parts.isEmpty ? nil : parts.joined(separator: " ")
     }
 
-    /// Bit depth from an mpv pixel format (`yuv420p10`, `p010`) or codec profile (`Main 10`);
-    /// nil when it says nothing beyond 8-bit.
+    /// mpv/FFmpeg pixel formats that are 8 bits per component.
+    private static let eightBitPixelFormats: Set<String> = [
+        "yuv420p", "yuvj420p", "yuv422p", "yuvj422p", "yuv444p", "yuvj444p", "yuv410p", "yuv411p",
+        "nv12", "nv21", "nv16", "nv24", "uyvy422", "yuyv422", "gray", "rgb24", "bgr24", "rgba", "bgra",
+        "argb", "abgr", "rgb0", "bgr0", "0rgb", "0bgr",
+    ]
+    /// Codec profiles that are 8-bit only (H.264 Baseline/Main/High, HEVC Main).
+    private static let eightBitProfiles: Set<String> = ["baseline", "constrained baseline", "main", "high"]
+
+    /// Bit depth from an mpv pixel format (`yuv420p10le`, `p010`, `nv12`) or codec profile
+    /// (`Main 10`, `High`); nil when neither says. The decoded format wins over the profile. An explicit
+    /// 8 matters: without it the shared match text assumes 10-bit for any HDR or Dolby Vision media,
+    /// which is wrong for Dolby Vision profile 9 (AVC, 8-bit).
     static func bitDepth(pixelFormat: String?, codecProfile: String?) -> Int? {
         let format = pixelFormat?.lowercased() ?? ""
         if format.contains("p010") || format.contains("p10") { return 10 }
         if format.contains("p012") || format.contains("p12") { return 12 }
-        let profile = codecProfile?.lowercased() ?? ""
+        if eightBitPixelFormats.contains(format) { return 8 }
+        let profile = codecProfile?.lowercased().trimmingCharacters(in: .whitespaces) ?? ""
         if profile.contains("main 10") || profile.contains("10-bit") || profile.contains("high 10") { return 10 }
         if profile.contains("main 12") || profile.contains("12-bit") { return 12 }
+        if eightBitProfiles.contains(profile) { return 8 }
         return nil
+    }
+
+    /// mpv: a codecs hint for the shared match text. Dolby Vision over AVC (profile 9) is passed as
+    /// `dvav`, the AVC Dolby Vision sample entry, so the shared AVC rules see it; nil otherwise.
+    static func mpvCodecString(codec: String?, dolbyVisionProfile: Int) -> String? {
+        guard dolbyVisionProfile > 0, let codec = codec?.lowercased(),
+              codec == "h264" || codec.hasPrefix("avc") else { return nil }
+        return "dvav"
     }
 
     // MARK: - mpv merge (pure, so the tests can drive it)
