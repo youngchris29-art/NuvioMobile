@@ -3,6 +3,8 @@ package com.nuvio.app.features.details
 import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import co.touchlab.kermit.Logger
 import com.nuvio.app.features.library.LibraryClock
+import com.nuvio.app.features.tmdb.TmdbService
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -75,15 +77,45 @@ object ImdbEpisodeRatingsRepository {
     private suspend fun fetchEpisodeRatings(
         imdbId: String?,
         tmdbId: Int?,
+    ): Map<Pair<Int, Int>, Double> =
+        fetchEpisodeRatings(
+            imdbId = imdbId,
+            tmdbId = tmdbId,
+            imdbKeyed = ImdbTapframeApi::getSeasonRatings,
+            tmdbKeyed = SeriesGraphApi::getSeasonRatings,
+            resolveTmdbId = { id -> TmdbService.ensureTmdbId(videoId = id, mediaType = "tv") },
+        )
+
+    /**
+     * The lookup order, with the three network sources injected so it can be tested: the private
+     * IMDb-keyed service first (it returns nothing when it is not configured), then SeriesGraph
+     * by TMDB id.
+     */
+    internal suspend fun fetchEpisodeRatings(
+        imdbId: String?,
+        tmdbId: Int?,
+        imdbKeyed: suspend (String) -> List<SeriesGraphSeasonRatingsDto>,
+        tmdbKeyed: suspend (Int) -> List<SeriesGraphSeasonRatingsDto>,
+        resolveTmdbId: suspend (String) -> String?,
     ): Map<Pair<Int, Int>, Double> {
         if (!imdbId.isNullOrBlank()) {
-            val primary = toRatingsMap(ImdbTapframeApi.getSeasonRatings(imdbId))
+            val primary = toRatingsMap(imdbKeyed(imdbId))
             if (primary.isNotEmpty()) return primary
             log.w { "Primary episode ratings empty for imdbId=$imdbId, trying fallback" }
         }
 
-        if (tmdbId != null) {
-            return toRatingsMap(SeriesGraphApi.getSeasonRatings(tmdbId))
+        // Fork: most add-ons (Cinemeta included) give IMDb ids only, so without the private
+        // IMDb-keyed service there was no TMDB id for the SeriesGraph fallback and no ratings at
+        // all. Resolve one through TMDB's find-by-IMDb lookup (cached in TmdbService).
+        val resolvedTmdbId = tmdbId ?: imdbId?.takeIf { it.isNotBlank() }?.let { id ->
+            runCatching { resolveTmdbId(id) }
+                .onFailure { error -> if (error is CancellationException) throw error }
+                .getOrNull()
+                ?.toIntOrNull()
+                ?.takeIf { it > 0 }
+        }
+        if (resolvedTmdbId != null) {
+            return toRatingsMap(tmdbKeyed(resolvedTmdbId))
         }
 
         return emptyMap()
