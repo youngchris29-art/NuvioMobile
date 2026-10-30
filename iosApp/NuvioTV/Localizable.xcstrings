@@ -3117,6 +3117,9 @@
         }
       }
     },
+    "10 s": {
+      "extractionState": "manual"
+    },
     "100": {
       "localizations": {
         "fr": {
@@ -3218,6 +3221,9 @@
           }
         }
       }
+    },
+    "15 s": {
+      "extractionState": "manual"
     },
     "150 MB": {
       "localizations": {
@@ -3864,6 +3870,9 @@
           }
         }
       }
+    },
+    "5 s": {
+      "extractionState": "manual"
     },
     "512 MB": {
       "localizations": {
@@ -21678,6 +21687,9 @@
         }
       }
     },
+    "How long a title page waits before a trailer starts": {
+      "extractionState": "manual"
+    },
     "IN %lld DAYS": {
       "localizations": {
         "de": {
@@ -39158,6 +39170,9 @@
         }
       }
     },
+    "Sets how long a title page waits before the background trailer starts and before the auto-play trailer goes full screen. Pressing any direction still cancels the full-screen trailer, and coming back to a title page does not wait again. Default: the background trailer starts as soon as it loads, and auto-play waits about 4 seconds.": {
+      "extractionState": "manual"
+    },
     "Sets how long a trailer preview waits before it starts. Automatic waits until the row stops moving, then one second. Default: Automatic.": {
       "localizations": {
         "de": {
@@ -43732,6 +43747,9 @@
           }
         }
       }
+    },
+    "Start Delay": {
+      "extractionState": "manual"
     },
     "Start Over": {
       "localizations": {

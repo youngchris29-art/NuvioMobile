@@ -5,7 +5,7 @@ import XCTest
 /// cover included (GitHub #8: it kept playing, with sound, under the series picker and the player).
 final class DetailTrailerGateTests: XCTestCase {
     private var open: DetailTrailerGate.Inputs {
-        .init(enabled: true, hasTrailer: true, stopped: false, filmPickerShown: false,
+        .init(enabled: true, hasTrailer: true, stopped: false, startDelayHeld: false, filmPickerShown: false,
               seriesPlayShown: false, fullScreenTrailerShown: false, synopsisSheetShown: false,
               shuffleSheetShown: false)
     }
@@ -37,8 +37,10 @@ final class DetailTrailerGateTests: XCTestCase {
         var a = open; a.enabled = false
         var b = open; b.hasTrailer = false
         var c = open; c.stopped = true
+        var d = open; d.startDelayHeld = true
         XCTAssertFalse(DetailTrailerGate.isActive(a))
         XCTAssertFalse(DetailTrailerGate.isActive(b))
         XCTAssertFalse(DetailTrailerGate.isActive(c))
+        XCTAssertFalse(DetailTrailerGate.isActive(d), "FEAT-87 Start Delay")
     }
 }

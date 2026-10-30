@@ -18,6 +18,8 @@ struct DetailPageSettingsPane: View {
     @AppStorage("detail_trailer_background") private var trailerBackground = true
     /// 0 = play forever.
     @AppStorage("detail_trailer_duration") private var trailerDuration = 0
+    /// FEAT-87: `DetailTrailerStartDelay.rawValue` (device-local, `DetailSettingsKeys`).
+    @AppStorage(DetailSettingsKeys.trailerStartDelay) private var trailerStartDelayRaw = DetailTrailerStartDelay.standard.rawValue
     /// FEAT-11: whether a full-screen trailer starts with sound. DetailView reads this key to seed
     /// `HeroTrailerAudioState` at launch and after a full-screen trailer dismisses; the row also
     /// flips the shared state at once. (Moved here from the Playback pane; same key.)
@@ -99,6 +101,21 @@ struct DetailPageSettingsPane: View {
                     isOn: $trailerBackground,
                     descriptionID: .detailTrailerBackground
                 )
+                // FEAT-87: gates both trailers above, so it shows while either is on. "Start Delay",
+                // not Home's "Trailer Start Delay" (different options and clock, own key).
+                if trailerAutoplay || trailerBackground {
+                    SettingsPickerRow(
+                        title: String(localized: "Start Delay"),
+                        subtitle: String(localized: "How long a title page waits before a trailer starts"),
+                        selection: Binding(
+                            get: { DetailTrailerStartDelay.resolve(trailerStartDelayRaw) },
+                            set: { trailerStartDelayRaw = $0.rawValue }
+                        ),
+                        options: DetailTrailerStartDelay.allCases,
+                        descriptionID: .detailTrailerStartDelay,
+                        label: { $0.label }
+                    )
+                }
                 // FEAT-8: only meaningful while the background trailer itself is on.
                 if trailerBackground {
                     SettingsPickerRow(

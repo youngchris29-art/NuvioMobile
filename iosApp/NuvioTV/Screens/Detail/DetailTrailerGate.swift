@@ -12,6 +12,9 @@ nonisolated enum DetailTrailerGate {
         var hasTrailer: Bool
         /// FEAT-8: the duration timer (or a stop) has faded the trailer back to the still backdrop.
         var stopped: Bool
+        /// FEAT-87: Start Delay has not elapsed yet on this page's first appearance
+        /// (`DetailTrailerStartDelay.holdsBackground`).
+        var startDelayHeld: Bool
         /// The film stream picker cover (`showStreams`).
         var filmPickerShown: Bool
         /// The series Play cover: the series source picker and the player (`seriesPlay != nil`).
@@ -25,7 +28,7 @@ nonisolated enum DetailTrailerGate {
     }
 
     static func isActive(_ i: Inputs) -> Bool {
-        i.enabled && i.hasTrailer && !i.stopped
+        i.enabled && i.hasTrailer && !i.stopped && !i.startDelayHeld
             && !i.filmPickerShown && !i.seriesPlayShown && !i.fullScreenTrailerShown
             && !i.synopsisSheetShown && !i.shuffleSheetShown
     }

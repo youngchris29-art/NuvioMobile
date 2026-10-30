@@ -478,6 +478,10 @@ struct DetailView: View {
     /// backdrop. 0 = play forever (previous, still-default behavior). Mirrors
     /// AppearanceSettingsPane's "Trailer Duration" chip row (same @AppStorage key).
     @AppStorage("detail_trailer_duration") private var trailerDurationSeconds: Int = 0
+    /// FEAT-87: Settings › Detail Page › Trailers › Start Delay (`DetailTrailerStartDelay`).
+    /// Default keeps the old timing: the background trailer starts when it resolves, auto-play
+    /// goes full screen 4 s after that.
+    @AppStorage(DetailSettingsKeys.trailerStartDelay) private var trailerStartDelayRaw = DetailTrailerStartDelay.standard.rawValue
     /// FEAT-9: render the five detail action buttons (Play, Watch Trailer, Mark Watched, Add to
     /// Library) as icon-only pills. Mirrors AppearanceSettingsPane's "Icon-Only Detail Buttons"
     /// toggle (same @AppStorage key).
@@ -527,6 +531,14 @@ struct DetailView: View {
     /// `model.trailerVideoURL` (that still gates the "Watch Trailer" button). Reset per detail visit.
     @State private var backgroundTrailerStopped = false
     @State private var trailerDurationTask: Task<Void, Never>?
+    /// FEAT-87: the Start Delay timer fired on this page. Page lifetime, like the two flags below.
+    @State private var trailerStartDelayElapsed = false
+    /// FEAT-87: the page has disappeared once (a push, a cover) since it opened. A return never
+    /// waits again: no background hold, and auto-play is back on Default's 4 s.
+    @State private var trailerStartDelayReturned = false
+    /// FEAT-87: whether this page's first appearance armed the timer (once per page).
+    @State private var trailerStartDelayArmed = false
+    @State private var trailerStartDelayTask: Task<Void, Never>?
 
     /// UX-6: 0...0.85 darkening applied over the whole backdrop/poster/trailer stack as the user
     /// scrolls the description down, computed once inside `.onScrollGeometryChange`'s `of:` so it
@@ -1195,7 +1207,8 @@ struct DetailView: View {
         // FEAT-8: combined into one Bool so the fade also triggers when the trailer-duration timer
         // stops the background player (a `withAnimation(.easeInOut(duration: 1.5))` at the call site
         // overrides this ambient 0.8s for that specific change — see `stopBackgroundTrailer()`).
-        .animation(.easeInOut(duration: 0.8), value: model.trailerVideoURL != nil && !backgroundTrailerStopped)
+        // FEAT-87: and when Start Delay lets the trailer in.
+        .animation(.easeInOut(duration: 0.8), value: model.trailerVideoURL != nil && !backgroundTrailerStopped && !trailerStartDelayHolds)
         // UX-12 removed the on-screen speaker indicator (FEAT-11's default-audio setting makes it
         // redundant); the Siri Remote's play/pause button remains the mute/unmute control.
         .onPlayPauseCommand {
@@ -1213,6 +1226,7 @@ struct DetailView: View {
             // FEAT-8: one-shot per screen visit — a prior visit's expiry must not carry over.
             backgroundTrailerStopped = false
             cancelTrailerDurationTask()
+            armTrailerStartDelayIfNeeded()
             // BUG-41 item 6: no-op unless `DetailScrollProbe.enabled` (checked inside `start()`).
             hitchCounter.start()
             // BUG-187: back from a push off a Cast / Studios / Collection / More Like This card.
@@ -1224,6 +1238,10 @@ struct DetailView: View {
             model.stop()
             cancelAutoPlayTrailer()
             cancelTrailerDurationTask()
+            // FEAT-87: leaving ends the first-appearance delay; the return does not wait again.
+            trailerStartDelayTask?.cancel()
+            trailerStartDelayTask = nil
+            trailerStartDelayReturned = true
             // BUG-41 item 6: logs the visit's `[BUG41] hitches=… frames=… maxGap=…` summary; no-op
             // if `start()` never armed the display link.
             hitchCounter.stopAndLog()
@@ -1234,7 +1252,9 @@ struct DetailView: View {
         .onChange(of: model.trailerVideoURL) { _, newValue in
             if newValue != nil {
                 scheduleAutoPlayTrailerIfNeeded()
-                scheduleTrailerDurationTimerIfNeeded()
+                // FEAT-87: while Start Delay holds the trailer, Trailer Duration counts from when
+                // it appears (the delay timer schedules it then).
+                if !trailerStartDelayHolds { scheduleTrailerDurationTimerIfNeeded() }
             }
         }
         .onChange(of: showStreams) { _, isShowing in
@@ -1559,6 +1579,7 @@ struct DetailView: View {
             enabled: backgroundTrailerEnabled,
             hasTrailer: model.trailerVideoURL != nil,
             stopped: backgroundTrailerStopped,
+            startDelayHeld: trailerStartDelayHolds,
             filmPickerShown: showStreams,
             seriesPlayShown: seriesPlay != nil,
             fullScreenTrailerShown: model.trailerPlayback != nil,
@@ -3271,14 +3292,16 @@ struct DetailView: View {
 
     // MARK: - Auto-play hero trailer
 
-    /// (Re)starts the ~4s countdown once `model.trailerVideoURL` resolves. Every cancellation
+    /// (Re)starts the countdown (4 s, or FEAT-87's Start Delay) once `model.trailerVideoURL` resolves. Every cancellation
     /// condition is re-checked once the timer actually fires, since a lot can change in 4 seconds.
     private func scheduleAutoPlayTrailerIfNeeded() {
         guard trailerAutoplayEnabled, !didAutoPlayTrailer, !userInteracted,
               !showStreams, seriesPlay == nil, model.trailerPlayback == nil else { return }
         autoPlayTrailerTask?.cancel()
+        // FEAT-87: Start Delay on the first appearance, else Default's 4 s.
+        let seconds = trailerStartDelay.autoPlaySeconds(returned: trailerStartDelayReturned)
         autoPlayTrailerTask = Task {
-            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             guard !Task.isCancelled else { return }
             await MainActor.run { fireAutoPlayTrailer() }
         }
@@ -3305,6 +3328,34 @@ struct DetailView: View {
             id: "hero-trailer", url: trailer, title: title, zoomKey: model.trailerZoomKey,
             videoId: model.trailerVideoId
         )
+    }
+
+    // MARK: - FEAT-87: Start Delay
+
+    private var trailerStartDelay: DetailTrailerStartDelay { DetailTrailerStartDelay.resolve(trailerStartDelayRaw) }
+
+    /// Whether Start Delay still holds the background trailer (`DetailTrailerGate.startDelayHeld`).
+    private var trailerStartDelayHolds: Bool {
+        trailerStartDelay.holdsBackground(elapsed: trailerStartDelayElapsed, returned: trailerStartDelayReturned)
+    }
+
+    /// First appearance only: counts the delay from the page opening (the URL may resolve before or
+    /// after it ends), then starts the FEAT-8 duration countdown if a trailer is already waiting.
+    /// Default arms nothing. The fade-in rides the ambient 0.8 s crossfade (its value includes
+    /// `trailerStartDelayHolds`).
+    private func armTrailerStartDelayIfNeeded() {
+        guard !trailerStartDelayArmed else { return }
+        trailerStartDelayArmed = true
+        guard let seconds = trailerStartDelay.seconds else { return }
+        trailerStartDelayTask = Task {
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                trailerStartDelayTask = nil
+                trailerStartDelayElapsed = true
+                if model.trailerVideoURL != nil { scheduleTrailerDurationTimerIfNeeded() }
+            }
+        }
     }
 
     private func cancelAutoPlayTrailer() {

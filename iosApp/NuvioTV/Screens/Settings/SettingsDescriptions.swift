@@ -116,6 +116,7 @@ enum SettingsDescriptionID: String, CaseIterable {
     case detailTrailerAutoplay = "detail.trailerAutoplay"
     case detailTrailerBackground = "detail.trailerBackground"
     case detailTrailerDuration = "detail.trailerDuration"
+    case detailTrailerStartDelay = "detail.trailerStartDelay"
     case detailTrailerSound = "detail.trailerSound"
     case detailEpisodeRatings = "detail.episodeRatings"
     case detailHideEpisodeSpoilers = "detail.hideEpisodeSpoilers"
@@ -332,6 +333,7 @@ enum SettingsDescriptions {
         case .detailPosterBackdrop: return LocalizedStringResource("Shows the title's poster on the right side of the page's background. On by default.")
         case .detailTrailerAutoplay: return LocalizedStringResource("Plays the trailer full screen shortly after you open a title. On by default.")
         case .detailTrailerBackground: return LocalizedStringResource("Plays a muted trailer behind the description on title pages. On by default.")
+        case .detailTrailerStartDelay: return LocalizedStringResource("Sets how long a title page waits before the background trailer starts and before the auto-play trailer goes full screen. Pressing any direction still cancels the full-screen trailer, and coming back to a title page does not wait again. Default: the background trailer starts as soon as it loads, and auto-play waits about 4 seconds.")
         case .detailTrailerDuration: return LocalizedStringResource("Sets how long the background trailer plays before it stops. Default: Always, which plays until you leave.")
         case .detailTrailerSound: return LocalizedStringResource("Starts trailers with sound on. Press play/pause on the remote to mute. Off by default, so trailers start muted.")
         case .detailEpisodeRatings: return LocalizedStringResource("Chooses which episode cards show a rating badge: all of them, only watched ones, or none. Default: Show.")
