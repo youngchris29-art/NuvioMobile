@@ -105,6 +105,10 @@ final class PlayerTopPanelModel: ObservableObject {
     /// The badge settings (Show Badges in Player, Player Badge Pack, the imported packs).
     private var badgeSettings: StreamBadgeSettingsUiState?
     private var badgeWatcher: FlowWatcher?
+    /// "Show Badges in Player" as last emitted. The mpv adapter hands changes to its controller, so
+    /// the track-list walk skips the badge reads while it is off.
+    private(set) var badgesShowInPlayer = false
+    var onBadgesShowInPlayerChange: ((Bool) -> Void)?
 
     /// Called by the engine adapter when the media is ready and when the audio track changes.
     func setBadgeFacts(_ facts: PlayerBadgeFacts?) {
@@ -115,6 +119,11 @@ final class PlayerTopPanelModel: ObservableObject {
 
     func setBadgeSettings(_ settings: StreamBadgeSettingsUiState?) {
         badgeSettings = settings
+        let on = settings?.showInPlayer == true
+        if on != badgesShowInPlayer {
+            badgesShowInPlayer = on
+            onBadgesShowInPlayerChange?(on)
+        }
         rebuildBadges()
     }
 

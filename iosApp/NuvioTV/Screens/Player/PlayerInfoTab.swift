@@ -106,18 +106,13 @@ struct PlayerInfoTab: View {
 
     /// Badge-pack chips for what is playing (upstream 344117e73), under the title like upstream's
     /// player: the stream picker's `StreamBadgeChipView` at its metrics, no container behind the
-    /// row. `ViewThatFits` drops chips from the end rather than wrapping or truncating one; each
-    /// candidate is fixed at its ideal width, so a chip hugs its image instead of stretching to
+    /// row. `BadgeChipRowLayout` drops chips from the end rather than wrapping or truncating one,
+    /// and sizes each chip at its ideal width, so it hugs its image instead of stretching to
     /// `StreamBadgeMetrics.maxImageWidth` across a wide header.
     private var badgeRow: some View {
-        ViewThatFits(in: .horizontal) {
-            ForEach((1...info.badges.count).reversed(), id: \.self) { count in
-                HStack(spacing: Theme.Spacing.xs) {
-                    ForEach(Array(info.badges.prefix(count).enumerated()), id: \.offset) { _, badge in
-                        StreamBadgeChipView(badge: badge)
-                    }
-                }
-                .fixedSize(horizontal: true, vertical: false)
+        BadgeChipRowLayout(spacing: Theme.Spacing.xs) {
+            ForEach(Array(info.badges.enumerated()), id: \.offset) { _, badge in
+                StreamBadgeChipView(badge: badge)
             }
         }
         .accessibilityElement(children: .ignore)
@@ -182,5 +177,46 @@ struct PlayerInfoTab: View {
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// One row of chips at their ideal sizes, left to right, keeping only the leading chips that fit
+/// the offered width (one view per chip, unlike a `ViewThatFits` ladder of every prefix). A Layout
+/// must place every subview, so the chips that do not fit are parked far above the row at zero
+/// size; the row's accessibility label names them all anyway.
+private struct BadgeChipRowLayout: Layout {
+    var spacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let sizes = fitted(subviews, maxWidth: proposal.width)
+        let width = sizes.reduce(0) { $0 + $1.width } + spacing * CGFloat(max(sizes.count - 1, 0))
+        return CGSize(width: width, height: sizes.map(\.height).max() ?? 0)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let sizes = fitted(subviews, maxWidth: bounds.width)
+        var x = bounds.minX
+        for (i, subview) in subviews.enumerated() {
+            if i < sizes.count {
+                subview.place(at: CGPoint(x: x, y: bounds.midY), anchor: .leading, proposal: ProposedViewSize(sizes[i]))
+                x += sizes[i].width + spacing
+            } else {
+                subview.place(at: CGPoint(x: bounds.minX, y: bounds.minY - 10_000), anchor: .topLeading, proposal: .zero)
+            }
+        }
+    }
+
+    /// Ideal sizes of the leading subviews that fit in `maxWidth` (all of them when unbounded).
+    private func fitted(_ subviews: Subviews, maxWidth: CGFloat?) -> [CGSize] {
+        var sizes: [CGSize] = []
+        var used: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            let next = used + (sizes.isEmpty ? 0 : spacing) + size.width
+            if let maxWidth, next > maxWidth + 0.5 { break }
+            sizes.append(size)
+            used = next
+        }
+        return sizes
     }
 }

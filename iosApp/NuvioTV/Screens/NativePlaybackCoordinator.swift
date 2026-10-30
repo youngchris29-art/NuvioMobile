@@ -66,6 +66,9 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// `selected` flag follows the track the remux is producing (the system Audio tab drives
     /// switching — info-panel W3 — through the master's audio renditions).
     @Published private(set) var audioTracks: [NativeAudioTrack] = []
+    /// The signaling the master playlist actually carries: the remux's, minus SUPPLEMENTAL-CODECS
+    /// after the signaling retry. Player badges read it, so a dropped DV layer drops the DV chip.
+    @Published private(set) var servedSignaling: VideoSignaling?
     /// Caption under the preparing spinner. beta.19-rc1 verdict (P, BUG-139): "Preparing
     /// playback…" until the remux reports a Dolby Vision stream; it used to say "Preparing Dolby
     /// Vision…" for every native-engine file, SDR and HDR10 included.
@@ -1013,6 +1016,7 @@ final class NativePlaybackCoordinator: ObservableObject {
                                     producingInfo: { remux.producingInfo },
                                     requestReposition: { remux.reposition(toSegment: $0) })
         self.server = server
+        servedSignaling = signaling
         // Subtitle delay (B3): publish each addon rendition under N interchangeable slots so a delay
         // change can be forced past AVPlayer's per-item playlist cache, and bake the restored delay
         // into generation 0 — the first body AVPlayer ever fetches is already re-timed.
@@ -1113,6 +1117,7 @@ final class NativePlaybackCoordinator: ObservableObject {
         var reduced = remux?.videoSignaling ?? VideoSignaling(codecs: "hvc1")
         reduced.supplementalCodecs = nil
         server?.setSignaling(reduced)
+        servedSignaling = reduced
         print("[NativePlayer] retrying without SUPPLEMENTAL-CODECS (CODECS=\(reduced.codecs) RANGE=\(reduced.videoRange ?? "-"))")
         observeTask?.cancel()
         // Cache-bust so AVPlayer refetches the master (the server ignores query strings).
@@ -1699,12 +1704,13 @@ final class NativePlaybackCoordinator: ObservableObject {
         return h > 0 ? String(localized: "\(h) h \(m) min") : String(localized: "\(m) min")
     }
 
-    /// Player badges (upstream 344117e73): what the remux serves — its HLS signaling (RFC 6381
+    /// Player badges (upstream 344117e73): what the remux serves — the served HLS signaling (RFC 6381
     /// codecs, Dolby Vision supplemental codecs, VIDEO-RANGE, resolution) and the source track
     /// behind the active audio rendition. nil until the remux has inspected the streams. Read by
-    /// `NativePlayerPanelAdapter` when `audioTracks` is published (ready, then each audio switch).
+    /// `NativePlayerPanelAdapter` when `audioTracks` is published (ready, then each audio switch)
+    /// and when `servedSignaling` changes (the signaling retry).
     func badgeFacts() -> PlayerBadgeFacts? {
-        guard let remux, let s = remux.videoSignaling else { return nil }
+        guard let remux, let s = servedSignaling ?? remux.videoSignaling else { return nil }
         var facts = PlayerBadgeFacts()
         if s.width > 0, s.height > 0 { facts.videoWidth = Int(s.width); facts.videoHeight = Int(s.height) }
         facts.videoCodecString = [s.codecs, s.supplementalCodecs].compactMap { $0 }.filter { !$0.isEmpty }

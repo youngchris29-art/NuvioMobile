@@ -62,15 +62,19 @@ final class NativePlayerPanelAdapter {
             .store(in: &cancellables)
 
         // Player badges (upstream 344117e73): `audioTracks` is published when the media is ready and
-        // again only when the active audio track changes, so the facts are sampled exactly then.
+        // again only when the active audio track changes, so the facts are sampled exactly then; the
+        // signaling retry (DV supplemental codecs dropped) re-samples too.
         model.watchBadgeSettings()
-        coordinator.$audioTracks
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
-                guard let self else { return }
-                self.model.setBadgeFacts(self.coordinator.badgeFacts())
-            }
-            .store(in: &cancellables)
+        Publishers.Merge(
+            coordinator.$audioTracks.map { _ in () }.eraseToAnyPublisher(),
+            coordinator.$servedSignaling.dropFirst().map { _ in () }.eraseToAnyPublisher()
+        )
+        .receive(on: RunLoop.main)
+        .sink { [weak self] in
+            guard let self else { return }
+            self.model.setBadgeFacts(self.coordinator.badgeFacts())
+        }
+        .store(in: &cancellables)
 
         refreshRoute()
         routeObserver = NotificationCenter.default.addObserver(

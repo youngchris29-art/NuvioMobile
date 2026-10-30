@@ -74,6 +74,12 @@ final class MPVPlaybackState: ObservableObject {
     /// Player badges (upstream 344117e73): the playing media's facts from the track-list walk,
     /// refreshed when the audio track or the decoded video params change. nil until the first walk.
     @Published var badgeFacts: PlayerBadgeFacts?
+    /// "Show Badges in Player", fed by the panel adapter's settings watcher. The controller does the
+    /// badge reads only while it is on (`onBadgesInPlayerChange`).
+    var badgesInPlayer = false {
+        didSet { if badgesInPlayer != oldValue { onBadgesInPlayerChange?(badgesInPlayer) } }
+    }
+    var onBadgesInPlayerChange: ((Bool) -> Void)?
     /// Engine routing decision from `PlayerEngineRouter`, shown as the Stream Info "Engine" row.
     /// Diagnostic only in Phase 1 — playback still runs through libmpv regardless.
     @Published var routingNote: String = ""
@@ -398,6 +404,8 @@ final class MPVTVPlayerViewController: UIViewController {
     /// from the last walk, so an `aid` change re-publishes without a second walk. `eventQueue` only.
     private var badgeVideoFacts: PlayerBadgeFacts?
     private var badgeAudioFacts: [Int: PlayerBadgeFacts] = [:]
+    /// `eventQueue` copy of `MPVPlaybackState.badgesInPlayer`: off (the default) skips every badge read.
+    private var badgesInPlayer = false
     #if DEBUG
     /// Elapsed playback time of the last `[Mem]` line (−1 = none yet); see `logStartupStatsIfNeeded`.
     private var lastMemLogElapsed: Double = -1
@@ -651,6 +659,8 @@ final class MPVTVPlayerViewController: UIViewController {
         // Chapters (P2-C): the Chapters tab seeks through here; one click on Left/Right follows
         // Settings › Playback › Left/Right Click.
         state.seekToChapter = { [weak self] sec in self?.seekToChapter(sec) }
+        state.onBadgesInPlayerChange = { [weak self] on in self?.setBadgesInPlayer(on) }
+        setBadgesInPlayer(state.badgesInPlayer)
         edgeClickMode = EdgeClickMode(
             rawValue: UserDefaults.standard.string(forKey: PlayerTuning.edgeClickModeKey) ?? "skip10") ?? .skip10
 
@@ -1184,7 +1194,7 @@ final class MPVTVPlayerViewController: UIViewController {
 
         for i in 0..<count {
             let type = getString("track-list/\(i)/type") ?? ""
-            if type == "video", getFlag("track-list/\(i)/selected"), !getFlag("track-list/\(i)/albumart") {
+            if badgesInPlayer, type == "video", getFlag("track-list/\(i)/selected"), !getFlag("track-list/\(i)/albumart") {
                 badgeVideo = readBadgeVideo(trackIndex: i)
             }
             guard type == "audio" || type == "sub" else { continue }
@@ -1201,7 +1211,7 @@ final class MPVTVPlayerViewController: UIViewController {
             if type == "audio" {
                 audio.append(PlayerTrack(id: id, label: label, isSelected: selected))
                 audioInfos.append(info)
-                badgeAudio[id] = readBadgeAudio(trackIndex: i, lang: info.lang, selected: selected)
+                if badgesInPlayer { badgeAudio[id] = readBadgeAudio(trackIndex: i, lang: info.lang, selected: selected) }
             } else {
                 subs.append(PlayerTrack(id: id, label: label, isSelected: selected))
                 subInfos.append(info)
@@ -1210,9 +1220,11 @@ final class MPVTVPlayerViewController: UIViewController {
                 }
             }
         }
-        badgeVideoFacts = badgeVideo
-        badgeAudioFacts = badgeAudio
-        publishBadgeFacts(aid: audioInfos.first(where: \.selected)?.id)
+        if badgesInPlayer {
+            badgeVideoFacts = badgeVideo
+            badgeAudioFacts = badgeAudio
+            publishBadgeFacts(aid: audioInfos.first(where: \.selected)?.id)
+        }
 
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -1236,6 +1248,16 @@ final class MPVTVPlayerViewController: UIViewController {
     }
 
     // MARK: - Player badges (upstream 344117e73)
+
+    /// "Show Badges in Player" changed. Turning it on walks once, so the facts arrive without
+    /// waiting for the next track event.
+    private func setBadgesInPlayer(_ on: Bool) {
+        eventQueue.async { [weak self] in
+            guard let self, self.badgesInPlayer != on else { return }
+            self.badgesInPlayer = on
+            if on { self.refreshTracksAsync() }
+        }
+    }
 
     /// `eventQueue`: the selected video entry of the walk. Resolution from the demuxer (known before
     /// the first frame), HDR/bit depth from `video-params` once decoded (`refreshBadgeVideoParams`).
@@ -1270,32 +1292,20 @@ final class MPVTVPlayerViewController: UIViewController {
 
     /// `eventQueue`: the decoded video params arrived or changed (HDR transfer, bit depth, size).
     private func refreshBadgeVideoParams() {
-        guard var video = badgeVideoFacts else { return }
-        let w = getInt("video-params/w"), h = getInt("video-params/h")
-        if w > 0, h > 0 { video.videoWidth = w; video.videoHeight = h }
-        let gamma = getString("video-params/gamma")
-        let dv = video.hdr.contains("DV") ? 1 : 0
-        video.hdr = PlayerBadgeMatch.mpvHDR(gamma: gamma, dolbyVisionProfile: dv)
-        if let depth = PlayerBadgeMatch.bitDepth(pixelFormat: getString("video-params/pixelformat"), codecProfile: nil) {
-            video.bitDepth = depth
-        }
-        badgeVideoFacts = video
+        guard badgesInPlayer, let video = badgeVideoFacts else { return }
+        badgeVideoFacts = PlayerBadgeMatch.mpvVideoParams(
+            video, width: getInt("video-params/w"), height: getInt("video-params/h"),
+            gamma: getString("video-params/gamma"), pixelFormat: getString("video-params/pixelformat"))
         publishBadgeFacts(aid: Int(getString("aid") ?? ""))
     }
 
     /// `eventQueue`: the selected video facts merged with the audio entry `aid`, published on main.
     private func publishBadgeFacts(aid: Int?) {
-        guard var facts = badgeVideoFacts ?? (badgeAudioFacts.isEmpty ? nil : PlayerBadgeFacts()) else { return }
-        if facts.fileName == nil, facts.streamName == nil {
-            facts.fileName = PlayerBadgeMatch.fileName(from: context.url)
-            facts.streamName = PlayerBadgeMatch.streamName(title: context.streamTitle, subtitle: context.streamSubtitle)
-        }
-        if let aid, let audio = badgeAudioFacts[aid] {
-            facts.audioCodec = audio.audioCodec
-            facts.audioProfile = audio.audioProfile
-            facts.audioChannels = audio.audioChannels
-            facts.languages = audio.languages
-        }
+        guard badgesInPlayer, let facts = PlayerBadgeMatch.mpvMerged(
+            video: badgeVideoFacts, audio: badgeAudioFacts, aid: aid,
+            fileName: PlayerBadgeMatch.fileName(from: context.url),
+            streamName: PlayerBadgeMatch.streamName(title: context.streamTitle, subtitle: context.streamSubtitle))
+        else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self, self.state.badgeFacts != facts else { return }
             self.state.badgeFacts = facts

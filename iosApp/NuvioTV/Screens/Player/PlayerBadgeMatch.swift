@@ -107,6 +107,37 @@ nonisolated enum PlayerBadgeMatch {
         return nil
     }
 
+    // MARK: - mpv merge (pure, so the tests can drive it)
+
+    /// mpv: the selected video entry merged with the audio entry `aid` of the last walk. nil while
+    /// the walk has found neither; the file and stream names fill in when the video entry is missing.
+    static func mpvMerged(video: PlayerBadgeFacts?, audio: [Int: PlayerBadgeFacts], aid: Int?,
+                          fileName: String?, streamName: String?) -> PlayerBadgeFacts? {
+        guard var facts = video ?? (audio.isEmpty ? nil : PlayerBadgeFacts()) else { return nil }
+        if facts.fileName == nil, facts.streamName == nil {
+            facts.fileName = fileName
+            facts.streamName = streamName
+        }
+        if let aid, let track = audio[aid] {
+            facts.audioCodec = track.audioCodec
+            facts.audioProfile = track.audioProfile
+            facts.audioChannels = track.audioChannels
+            facts.languages = track.languages
+        }
+        return facts
+    }
+
+    /// mpv: the video entry after the decoded `video-params` arrive. Size, HDR transfer and bit
+    /// depth come from the params; the Dolby Vision flag (a track-list fact) is kept.
+    static func mpvVideoParams(_ video: PlayerBadgeFacts, width: Int, height: Int,
+                               gamma: String?, pixelFormat: String?) -> PlayerBadgeFacts {
+        var out = video
+        if width > 0, height > 0 { out.videoWidth = width; out.videoHeight = height }
+        out.hdr = mpvHDR(gamma: gamma, dolbyVisionProfile: video.hdr.contains("DV") ? 1 : 0)
+        if let depth = bitDepth(pixelFormat: pixelFormat, codecProfile: nil) { out.bitDepth = depth }
+        return out
+    }
+
     /// HDR flags from mpv's `video-params/gamma` and the track's Dolby Vision profile.
     static func mpvHDR(gamma: String?, dolbyVisionProfile: Int) -> [String] {
         var out: [String] = []

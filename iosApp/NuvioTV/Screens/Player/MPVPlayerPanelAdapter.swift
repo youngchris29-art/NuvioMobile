@@ -100,8 +100,11 @@ final class MPVPlayerPanelAdapter {
         model.onAudioModeChange = { [weak state] mode in state?.setAudioMode?(mode) }
 
         // Player badges (upstream 344117e73): the controller publishes the facts from its track-list
-        // walk and again on an audio-track or video-params change, never per tick.
+        // walk and again on an audio-track or video-params change, never per tick. It reads them only
+        // while "Show Badges in Player" is on.
+        model.onBadgesShowInPlayerChange = { [weak state] on in state?.badgesInPlayer = on }
         model.watchBadgeSettings()
+        state.badgesInPlayer = model.badgesShowInPlayer
         state.$badgeFacts
             .receive(on: RunLoop.main)
             .sink { [weak model] facts in model?.setBadgeFacts(facts) }

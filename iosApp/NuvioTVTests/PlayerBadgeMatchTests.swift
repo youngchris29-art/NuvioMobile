@@ -60,6 +60,48 @@ final class PlayerBadgeMatchTests: XCTestCase {
         XCTAssertNil(PlayerBadgeMatch.streamName(title: nil, subtitle: ""))
     }
 
+    // MARK: - mpv merge
+
+    func testMPVAudioSwitchPicksTheNewTracksFacts() {
+        let video = PlayerBadgeFacts(videoWidth: 3840, videoHeight: 2160, videoCodec: "hevc", hdr: ["DV", "PQ"])
+        let audio: [Int: PlayerBadgeFacts] = [
+            1: PlayerBadgeFacts(audioCodec: "truehd", audioProfile: "Dolby TrueHD + Dolby Atmos", audioChannels: 8,
+                                languages: ["eng", "English"]),
+            2: PlayerBadgeFacts(audioCodec: "ac3", audioChannels: 6, languages: ["fra", "French"]),
+        ]
+        let first = PlayerBadgeMatch.mpvMerged(video: video, audio: audio, aid: 1, fileName: "Film.mkv", streamName: nil)
+        XCTAssertEqual(first?.audioCodec, "truehd")
+        XCTAssertEqual(first?.audioChannels, 8)
+        let switched = PlayerBadgeMatch.mpvMerged(video: video, audio: audio, aid: 2, fileName: "Film.mkv", streamName: nil)
+        XCTAssertEqual(switched?.audioCodec, "ac3")
+        XCTAssertNil(switched?.audioProfile)
+        XCTAssertEqual(switched?.audioChannels, 6)
+        XCTAssertEqual(switched?.languages, ["fra", "French"])
+        XCTAssertEqual(switched?.hdr, ["DV", "PQ"])
+        XCTAssertEqual(switched?.fileName, "Film.mkv")
+        // An unknown aid keeps the video facts and adds no audio; nothing walked yet gives nil.
+        XCTAssertNil(PlayerBadgeMatch.mpvMerged(video: video, audio: audio, aid: 9, fileName: nil, streamName: nil)?.audioCodec)
+        XCTAssertNil(PlayerBadgeMatch.mpvMerged(video: nil, audio: [:], aid: 1, fileName: "Film.mkv", streamName: nil))
+    }
+
+    func testMPVVideoParamsRefreshKeepsDolbyVision() {
+        // The walk ran before the first frame: DV from the track entry, size from the demuxer.
+        let video = PlayerBadgeFacts(videoWidth: 3840, videoHeight: 2160, videoCodec: "hevc",
+                                     hdr: PlayerBadgeMatch.mpvHDR(gamma: nil, dolbyVisionProfile: 8))
+        let refreshed = PlayerBadgeMatch.mpvVideoParams(video, width: 3840, height: 1600, gamma: "pq",
+                                                        pixelFormat: "p010")
+        XCTAssertEqual(refreshed.hdr, ["DV", "PQ"])
+        XCTAssertEqual(refreshed.bitDepth, 10)
+        XCTAssertEqual(refreshed.videoHeight, 1600)
+        XCTAssertEqual(refreshed.videoCodec, "hevc")
+        // A non-DV track gains only the transfer; zero params keep the demuxer size.
+        let plain = PlayerBadgeMatch.mpvVideoParams(PlayerBadgeFacts(videoWidth: 1920, videoHeight: 1080),
+                                                    width: 0, height: 0, gamma: "hlg", pixelFormat: "nv12")
+        XCTAssertEqual(plain.hdr, ["HLG"])
+        XCTAssertEqual(plain.videoWidth, 1920)
+        XCTAssertNil(plain.bitDepth)
+    }
+
     // MARK: - Panel model gate
 
     private let atmosFacts = PlayerBadgeFacts(
