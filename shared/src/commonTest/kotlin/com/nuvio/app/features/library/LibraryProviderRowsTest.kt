@@ -398,6 +398,61 @@ class LibraryProviderRowsTest {
     }
 
     @Test
+    fun aFailedPullIsRetriedOnTheNextSubscription() {
+        val throttle = LibraryRowsRefreshThrottle(intervalMs = 1_000L)
+        assertEquals(listOf(trakt), throttle.refreshTargets(listOf(trakt), null, profileId = 1, nowEpochMs = 100L))
+        // The pull failed (offline, a Trakt 5xx): the entry goes, so the next visit tries again.
+        throttle.forget(profileId = 1, providerId = trakt)
+        assertEquals(listOf(trakt), throttle.refreshTargets(listOf(trakt), null, profileId = 1, nowEpochMs = 200L))
+        // That one worked: back inside the window.
+        assertEquals(emptyList(), throttle.refreshTargets(listOf(trakt), null, profileId = 1, nowEpochMs = 300L))
+    }
+
+    @Test
+    fun disconnectAndReconnectInsideTheWindowRefreshesAgain() {
+        val throttle = LibraryRowsRefreshThrottle(intervalMs = 1_000L)
+        assertEquals(
+            listOf(trakt, simkl),
+            throttle.refreshTargets(listOf(trakt, simkl), null, profileId = 1, nowEpochMs = 100L),
+        )
+        // Simkl signs out and back in; Trakt stays connected.
+        throttle.retainConnected(setOf(trakt))
+        throttle.retainConnected(setOf(trakt, simkl))
+        assertEquals(
+            listOf(simkl),
+            throttle.refreshTargets(listOf(trakt, simkl), null, profileId = 1, nowEpochMs = 200L),
+        )
+    }
+
+    @Test
+    fun aProviderWithNoSnapshotIsRefreshedInsideTheWindow() {
+        val throttle = LibraryRowsRefreshThrottle(intervalMs = 1_000L)
+        assertEquals(listOf(simkl), throttle.refreshTargets(listOf(simkl), null, profileId = 1, nowEpochMs = 100L))
+        assertEquals(
+            listOf(simkl),
+            throttle.refreshTargets(listOf(simkl), null, profileId = 1, nowEpochMs = 200L, unloaded = listOf(simkl)),
+        )
+    }
+
+    @Test
+    fun theFlowReportsEachConnectedSet() = runTest {
+        val connected = MutableStateFlow<Set<TrackingProviderId>>(setOf(trakt, simkl))
+        val reported = mutableListOf<Set<TrackingProviderId>>()
+        val job = launch(UnconfinedTestDispatcher(testScheduler)) {
+            libraryProviderRowsFlow(
+                connectedProviderIds = connected,
+                resumeInputs = { flowOf(emptyList<WatchProgressEntry>() to emptyList()) },
+                watchlists = { flowOf(emptyList()) },
+                onConnectedChanged = { reported += it },
+            ).collect {}
+        }
+        connected.value = setOf(trakt, TrackingProviderId.MDBLIST)
+        connected.value = emptySet()
+        job.cancel()
+        assertEquals(listOf(setOf(trakt, simkl), setOf(trakt), emptySet()), reported)
+    }
+
+    @Test
     fun aLocalOrMdbListSourceLeavesBothProvidersToTheRows() {
         val throttle = LibraryRowsRefreshThrottle()
         assertEquals(

@@ -28,6 +28,7 @@ import kotlinx.atomicfu.locks.SynchronizedObject
 import kotlinx.atomicfu.locks.synchronized
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
@@ -198,6 +199,9 @@ internal const val LibraryRowsProviderRefreshIntervalMs = 15L * 60L * 1_000L
 /**
  * The rows' refresh bookkeeping (unit-tested): one timestamp per profile and provider, owned by the
  * rows, not by a subscription. In memory only, so a new app session refreshes on its first visit.
+ * Review r2: an entry only stands for a pull that worked. A failed pull is [forget]-ten, so the
+ * next visit tries again (as Trakt's own error path does), and a provider that leaves the connected
+ * set is dropped ([retainConnected]), so reconnecting refreshes its watchlist at once.
  */
 internal class LibraryRowsRefreshThrottle(
     private val intervalMs: Long = LibraryRowsProviderRefreshIntervalMs,
@@ -207,22 +211,38 @@ internal class LibraryRowsRefreshThrottle(
 
     /**
      * The providers one subscription should refresh, recording them as refreshed: every connected
-     * provider but [activeSource], each at most once per [intervalMs] for [profileId].
+     * provider but [activeSource], each at most once per [intervalMs] for [profileId], and any in
+     * [unloaded] (no library snapshot yet, e.g. after a sign-out cleared it while the rows were not
+     * watching) whatever the window.
      */
     fun refreshTargets(
         connected: Collection<TrackingProviderId>,
         activeSource: TrackingProviderId?,
         profileId: Int,
         nowEpochMs: Long,
+        unloaded: Collection<TrackingProviderId> = emptyList(),
     ): List<TrackingProviderId> = synchronized(lock) {
         connected.filter { providerId ->
             if (providerId == activeSource) return@filter false
             val key = profileId to providerId
             val last = lastRefreshAt[key]
-            val due = last == null || nowEpochMs < last || nowEpochMs - last >= intervalMs
+            val due = last == null || nowEpochMs < last || nowEpochMs - last >= intervalMs ||
+                providerId in unloaded
             if (due) lastRefreshAt[key] = nowEpochMs
             due
         }
+    }
+
+    /** A pull for [providerId] under [profileId] failed: the next subscription refreshes it again. */
+    fun forget(profileId: Int, providerId: TrackingProviderId) = synchronized(lock) {
+        lastRefreshAt.remove(profileId to providerId)
+        Unit
+    }
+
+    /** Drops every profile's entry for a provider that is no longer connected. */
+    fun retainConnected(connected: Set<TrackingProviderId>) = synchronized(lock) {
+        lastRefreshAt.keys.removeAll { (_, providerId) -> providerId !in connected }
+        Unit
     }
 }
 
@@ -238,10 +258,12 @@ internal fun libraryProviderRowsFlow(
     connectedProviderIds: Flow<Set<TrackingProviderId>>,
     resumeInputs: () -> Flow<Pair<List<WatchProgressEntry>, List<WatchProgressEntry>>>,
     watchlists: (Set<TrackingProviderId>) -> Flow<List<LibraryProviderWatchlist>>,
+    onConnectedChanged: (Set<TrackingProviderId>) -> Unit = {},
 ): Flow<LibraryProviderRows> = connectedProviderIds
     .map { ids -> ids.filterTo(linkedSetOf()) { it in LibraryRowProviderIds } }
     .distinctUntilChanged()
     .flatMapLatest { connected ->
+        onConnectedChanged(connected)
         if (connected.isEmpty()) {
             flowOf(LibraryProviderRows())
         } else {
@@ -290,6 +312,7 @@ object LibraryProviderRowsRepository {
             connectedProviderIds = TrackingProviderRegistry.connectedProviderIds,
             resumeInputs = ::resumeInputs,
             watchlists = ::watchlists,
+            onConnectedChanged = refreshThrottle::retainConnected,
         )
     }
 
@@ -316,7 +339,10 @@ object LibraryProviderRowsRepository {
                     // Review r1: run in the rows' own scope, so a newer trigger (or leaving the tab)
                     // cancels only this wait, never the engine's run, which keeps its fetches and
                     // leaves its results cached for the next call.
-                    refreshScope.async {
+                    // Review r2: UNDISPATCHED, so `resolveEntries`' synchronous prefix (its
+                    // `ensureInputsLoaded`) runs on the collector's main thread, as Home calls it;
+                    // the engine moves its own work to `Dispatchers.Default`.
+                    refreshScope.async(start = CoroutineStart.UNDISPATCHED) {
                         ContinueWatchingNextUp.resolveEntries(limit = ContinueWatchingNextUpResolveLimit)
                     }.await()
                 } catch (error: CancellationException) {
@@ -345,15 +371,19 @@ object LibraryProviderRowsRepository {
         ) { _, _ -> Unit }
         return merge(posterPattern, *providers.map(TrackingLibraryProvider::changes).toTypedArray())
             .onStart {
+                val profileId = ProfileRepository.activeProfileId
                 val due = refreshThrottle.refreshTargets(
                     connected = providers.map(TrackingLibraryProvider::providerId),
                     activeSource = LibraryRepository.uiState.value.sourceMode.providerId,
-                    profileId = ProfileRepository.activeProfileId,
+                    profileId = profileId,
                     nowEpochMs = LibraryClock.nowEpochMs(),
+                    unloaded = providers
+                        .filterNot { provider -> provider.snapshot().hasLoaded }
+                        .map(TrackingLibraryProvider::providerId),
                 )
                 providers
                     .filter { provider -> provider.providerId in due }
-                    .forEach { provider -> refreshScope.launch { refresh(provider) } }
+                    .forEach { provider -> refreshScope.launch { refresh(provider, profileId) } }
                 emit(Unit)
             }
             .map {
@@ -370,13 +400,21 @@ object LibraryProviderRowsRepository {
             .flowOn(Dispatchers.Default)
     }
 
-    private suspend fun refresh(provider: TrackingLibraryProvider) {
-        try {
+    /**
+     * A failed pull leaves no throttle entry, so the next visit retries. Neither provider throws on
+     * a failed pull: both report it in the snapshot's `errorMessage` (Trakt's `refresh`, Simkl's
+     * sync state).
+     */
+    private suspend fun refresh(provider: TrackingLibraryProvider, profileId: Int) {
+        val failed = try {
             provider.refresh(TrackingRefreshIntent.AUTOMATIC)
+            provider.snapshot().errorMessage != null
         } catch (error: CancellationException) {
             throw error
         } catch (error: Throwable) {
             log.w(error) { "Watchlist refresh failed for ${provider.providerId.storageId}" }
+            true
         }
+        if (failed) refreshThrottle.forget(profileId, provider.providerId)
     }
 }
