@@ -173,6 +173,8 @@ enum SettingsDescriptionID: String, CaseIterable {
     case sourcesSearchRowsMode = "sources.searchRowsMode"
     case sourcesSearchCatalog = "sources.searchCatalog"
     case sourcesPluginsEnabled = "sources.pluginsEnabled"
+    case sourcesPluginsGroupByRepository = "sources.pluginsGroupByRepository"
+    case sourcesPluginRepoAll = "sources.pluginRepoAll"
     case sourcesPluginRepoAdd = "sources.pluginRepoAdd"
     case sourcesPluginRepoHeader = "sources.pluginRepoHeader"
     case sourcesPluginRepo = "sources.pluginRepo"
@@ -383,6 +385,8 @@ enum SettingsDescriptions {
         case .sourcesSearchRowsMode: return LocalizedStringResource("Groups results into Top result, Movies, Series and People, merged across your add-ons. One row per add-on shows each catalog separately. Default: Grouped by type.")
         case .sourcesSearchCatalog: return LocalizedStringResource("Turns this catalog on or off for Search. Fewer catalogs gives faster results. This applies to this Apple TV only.")
         case .sourcesPluginsEnabled: return LocalizedStringResource("Runs your enabled plugin providers when streams load. Plugins add extra sources.")
+        case .sourcesPluginRepoAll: return LocalizedStringResource("Turns every provider in this repository on or off at once. It reads On while any provider is on. Providers the repository ships turned off stay off.")
+        case .sourcesPluginsGroupByRepository: return LocalizedStringResource("When a title's streams load, plugin results are listed under one group per repository instead of one group per provider, so a repository with many providers takes one row. Off by default.")
         case .sourcesPluginRepoAdd: return LocalizedStringResource("Installs a plugin repository from its manifest web address. The repository then syncs to your other Nuvio devices.")
         case .sourcesPluginRepoHeader: return LocalizedStringResource("Select shows or hides this repository's providers. Each provider has its own switch.")
         case .sourcesPluginRepo: return LocalizedStringResource("Removes this plugin repository and its providers from this Apple TV.")

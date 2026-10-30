@@ -48,6 +48,10 @@ object PluginRepository {
     private val _uiState = MutableStateFlow(PluginsUiState())
     val uiState: StateFlow<PluginsUiState> = _uiState.asStateFlow()
 
+    /** Writes of the plugin state so far; lets a test assert that one action saved once. */
+    internal var persistCount = 0
+        private set
+
     private var initialized = false
     private var pulledFromServer = false
     private var currentProfileId = 1
@@ -287,6 +291,27 @@ object PluginRepository {
         persist()
     }
 
+    /**
+     * Fork (tvOS Settings › Plugins): turns every provider of one repository on or off in a
+     * single update and a single save. Providers the repository's manifest ships disabled stay
+     * off, the same rule as [toggleScraper].
+     */
+    fun setRepositoryScrapersEnabled(manifestUrl: String, enabled: Boolean) {
+        initialize()
+        _uiState.update { state ->
+            state.copy(
+                scrapers = state.scrapers.map { scraper ->
+                    if (scraper.repositoryUrl == manifestUrl) {
+                        scraper.copy(enabled = if (scraper.manifestEnabled) enabled else false)
+                    } else {
+                        scraper
+                    }
+                },
+            )
+        }
+        persist()
+    }
+
     fun setPluginsEnabled(enabled: Boolean) {
         initialize()
         _uiState.update { it.copy(pluginsEnabled = enabled) }
@@ -480,6 +505,7 @@ object PluginRepository {
     }
 
     private fun persist() {
+        persistCount += 1
         val state = _uiState.value
         val payload = StoredPluginsState(
             pluginsEnabled = state.pluginsEnabled,

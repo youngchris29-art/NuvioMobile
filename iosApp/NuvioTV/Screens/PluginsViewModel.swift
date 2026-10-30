@@ -9,6 +9,9 @@ import SharedCore
 @MainActor
 final class PluginsViewModel: ObservableObject {
     @Published private(set) var pluginsEnabled = true
+    /// Streams list: one group per plugin repository instead of one per provider (shared setting,
+    /// same as mobile's "Group plugin providers by repository").
+    @Published private(set) var groupStreamsByRepository = false
     @Published private(set) var repositories: [PluginRepositoryItem] = []
     @Published private(set) var scrapers: [PluginScraper] = []
 
@@ -19,6 +22,7 @@ final class PluginsViewModel: ObservableObject {
         watcher = FlowWatcherKt.watch(PluginRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? PluginsUiState else { return }
             self.pluginsEnabled = state.pluginsEnabled
+            self.groupStreamsByRepository = state.groupStreamsByRepository
             self.repositories = state.repositories
             self.scrapers = state.scrapers
         }
@@ -32,6 +36,21 @@ final class PluginsViewModel: ObservableObject {
 
     func setPluginsEnabled(_ enabled: Bool) {
         PluginRepository.shared.setPluginsEnabled(enabled: enabled)
+    }
+
+    func setGroupStreamsByRepository(_ enabled: Bool) {
+        PluginRepository.shared.setGroupStreamsByRepository(enabled: enabled)
+    }
+
+    /// Every provider of `repo` on or off at once (Settings › Plugins "All Providers").
+    func setRepositoryEnabled(_ repo: PluginRepositoryItem, _ enabled: Bool) {
+        PluginRepository.shared.setRepositoryScrapersEnabled(manifestUrl: repo.manifestUrl, enabled: enabled)
+    }
+
+    /// The "All Providers" switch reads on while any provider of the repository can run, so
+    /// turning it off is always one press and turning it back on restores every provider.
+    static func isRepositoryOn(_ scrapers: [PluginScraper]) -> Bool {
+        scrapers.contains { $0.enabled }
     }
 
     func toggleScraper(_ scraper: PluginScraper, _ enabled: Bool) {

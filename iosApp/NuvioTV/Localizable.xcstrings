@@ -5534,6 +5534,9 @@
         }
       }
     },
+    "All Providers": {
+      "extractionState": "manual"
+    },
     "All search sources are off": {
       "localizations": {
         "de": {
@@ -20029,6 +20032,9 @@
     "Group Sources By": {
       "extractionState": "manual"
     },
+    "Group by Repository": {
+      "extractionState": "manual"
+    },
     "Grouped by type": {
       "localizations": {
         "de": {
@@ -22070,6 +22076,9 @@
           }
         }
       }
+    },
+    "In the streams list, show one group per repository instead of one per provider.": {
+      "extractionState": "manual"
     },
     "Include": {
       "localizations": {
@@ -49692,6 +49701,9 @@
         }
       }
     },
+    "Turn every provider in %@ on or off.": {
+      "extractionState": "manual"
+    },
     "Turn on before walking Home down and back up, or running Detail push/pop cycles": {
       "localizations": {
         "de": {
@@ -49963,6 +49975,9 @@
           }
         }
       }
+    },
+    "Turns every provider in this repository on or off at once. It reads On while any provider is on. Providers the repository ships turned off stay off.": {
+      "extractionState": "manual"
     },
     "Turns the depth effect on or off for this kind of card. Each kind is on by default.": {
       "localizations": {
@@ -52208,6 +52223,9 @@
           }
         }
       }
+    },
+    "When a title's streams load, plugin results are listed under one group per repository instead of one group per provider, so a repository with many providers takes one row. Off by default.": {
+      "extractionState": "manual"
     },
     "When playback starts, auto-select the audio and subtitle tracks in your preferred language (when a matching track exists).": {
       "localizations": {

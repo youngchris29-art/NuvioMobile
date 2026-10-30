@@ -457,6 +457,16 @@ struct SourcesSettingsPane: View {
             descriptionID: .sourcesPluginsEnabled
         )
 
+        SettingsToggleRow(
+            title: String(localized: "Group by Repository"),
+            subtitle: String(localized: "In the streams list, show one group per repository instead of one per provider."),
+            isOn: Binding(
+                get: { plugins.groupStreamsByRepository },
+                set: { plugins.setGroupStreamsByRepository($0) }
+            ),
+            descriptionID: .sourcesPluginsGroupByRepository
+        )
+
         PluginRepoEntryRow(isInstalling: plugins.isInstalling, fieldFocused: $manifestFieldFocused) { plugins.addRepository($0) }
             // The repositories observer lives on the entry row because it is ALWAYS present: inside
             // the list's `else` branch it was torn down in the same update that removed the LAST
@@ -519,6 +529,18 @@ struct SourcesSettingsPane: View {
                         .foregroundStyle(.red)
                 }
                 if isExpanded {
+                    // One switch for the whole repository, above its providers.
+                    if repoScrapers.count > 1 {
+                        SettingsToggleRow(
+                            title: String(localized: "All Providers"),
+                            subtitle: String(localized: "Turn every provider in \(repo.name) on or off."),
+                            isOn: Binding(
+                                get: { PluginsViewModel.isRepositoryOn(repoScrapers) },
+                                set: { plugins.setRepositoryEnabled(repo, $0) }
+                            ),
+                            descriptionID: .sourcesPluginRepoAll
+                        )
+                    }
                     ForEach(repoScrapers, id: \.id) { scraper in
                         SettingsToggleRow(
                             title: scraper.name,
