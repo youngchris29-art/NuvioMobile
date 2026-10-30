@@ -200,7 +200,9 @@ class PlaybackMatchTextTest {
             assertTrue("DV" in tokens && "DoVi" in tokens, "$codecs is Dolby Vision: $tokens")
             assertTrue(tokens.none { it.startsWith("DVA") }, "no junk DVAV/DVA1 token: $tokens")
             assertTrue("HEVC" !in tokens)
+            assertTrue(tokens.none { it == "10bit" }, "$codecs is 8-bit, no 10bit token: $tokens")
         }
+        assertTrue("10bit" in text(videoCodecString = "hvc1.2.4.L150.B0").split(" "), "hvc1.2 Main 10 stays 10bit")
         val labelled = text(videoCodec = "dva1").split(" ")
         assertTrue("AVC" in labelled && "DV" in labelled && "DVA1" !in labelled, "engine label dva1: $labelled")
         assertTrue("Vision" in names(text(videoCodecString = "ec-3,dvav.04.06")))

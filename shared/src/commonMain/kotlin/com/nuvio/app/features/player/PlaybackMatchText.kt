@@ -59,7 +59,7 @@ object PlaybackMatchText {
             if (hdrFlags.hdr10) addAll(listOf("HDR", "HDR10"))
             if (hdrFlags.hlg) addAll(listOf("HDR", "HLG"))
             val hasHdr = hdrFlags.dolbyVision || hdrFlags.hdr10 || hdrFlags.hlg
-            (bitDepth?.takeIf { it > 0 } ?: bitDepthFromCodecString(codecString) ?: 10.takeIf { hasHdr })
+            (bitDepth?.takeIf { it > 0 } ?: bitDepthFromCodecString(codecString) ?: 10.takeIf { hasHdr && !hdrFlags.dolbyVisionOverAvcOnly })
                 ?.let { add("${it}bit") }
             addAll(audioTokens(normalizedAudioCodec(audioCodec), audioProfile))
             channelsToken(audioChannels)?.let(::add)
@@ -73,25 +73,43 @@ object PlaybackMatchText {
         }.joinToString(" ")
     }
 
-    private data class HdrFlags(val dolbyVision: Boolean, val hdr10: Boolean, val hlg: Boolean)
+    /**
+     * [dolbyVisionOverAvcOnly] is true when the only HDR signal is a `dvav`/`dva1` entry (Dolby Vision
+     * over AVC, profile 9, 8-bit): no hdr list entry, no HEVC/AV1 Dolby Vision entry, no HDR10/HLG.
+     */
+    private data class HdrFlags(
+        val dolbyVision: Boolean,
+        val hdr10: Boolean,
+        val hlg: Boolean,
+        val dolbyVisionOverAvcOnly: Boolean,
+    )
 
     /** HEVC (`dvhe`/`dvh1`), AV1 (`dav1`) and AVC (`dvav`/`dva1`) Dolby Vision sample entries. */
     private val dolbyVisionCodecPrefixes = listOf("dvhe", "dvh1", "dav1", "dvav", "dva1")
 
+    /** The AVC Dolby Vision sample entries, whose base layer is 8-bit. */
+    private val dolbyVisionAvcPrefixes = listOf("dvav", "dva1")
+
     private fun hdrFlags(hdr: List<String>, codecString: String, videoCodec: String?): HdrFlags {
         val flags = hdr.map { it.trim().lowercase() }
+        val label = videoCodec?.trim()?.lowercase()
         // Dual-layer Dolby Vision carries an HEVC/AV1 mime type, so the codecs string is the tell
         // (NuvioTV 13683564d).
-        val dvFromCodec = codecEntries(codecString).any { entry -> dolbyVisionCodecPrefixes.any(entry::startsWith) } ||
-            videoCodec?.trim()?.lowercase()?.let { codec ->
-                codec == "dolby vision" || dolbyVisionCodecPrefixes.any(codec::startsWith)
-            } == true
+        val dvEntries = (codecEntries(codecString) + listOfNotNull(label))
+            .filter { entry -> dolbyVisionCodecPrefixes.any(entry::startsWith) }
+        val dvFromLabel = label == "dolby vision"
+        val dvFromHdrList = flags.any { it == "dv" || it == "dovi" || it.contains("dolby vision") }
+        val hdr10 = flags.any {
+            it.startsWith("hdr10") || it == "hdr" || it == "pq" || it.contains("2084")
+        }
+        val hlg = flags.any { it == "hlg" || it.contains("b67") }
         return HdrFlags(
-            dolbyVision = dvFromCodec || flags.any { it == "dv" || it == "dovi" || it.contains("dolby vision") },
-            hdr10 = flags.any {
-                it.startsWith("hdr10") || it == "hdr" || it == "pq" || it.contains("2084")
-            },
-            hlg = flags.any { it == "hlg" || it.contains("b67") },
+            dolbyVision = dvEntries.isNotEmpty() || dvFromLabel || dvFromHdrList,
+            hdr10 = hdr10,
+            hlg = hlg,
+            dolbyVisionOverAvcOnly = dvEntries.isNotEmpty() &&
+                dvEntries.all { entry -> dolbyVisionAvcPrefixes.any(entry::startsWith) } &&
+                !dvFromLabel && !dvFromHdrList && !hdr10 && !hlg,
         )
     }
 
