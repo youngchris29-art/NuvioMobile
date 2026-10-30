@@ -69,8 +69,9 @@ nonisolated enum PlayerEngineRouter {
                 // remuxed to fMP4 failed AVPlayer twice with CoreMediaErrorDomain -12927, and P5 in an
                 // MP4/MOV container was routed to mpv from Batch B until the cause was found. The P5
                 // spike (2026-10-20) traced it to the master playlist carrying no VIDEO-RANGE (the P5
-                // VUI is unspecified); `RemuxSession.videoSignaling` now takes the range from the DOVI
-                // record, so P5 routes native in every container. A native failure still falls over
+                // VUI is unspecified); `MediaProbe.resolveColour` (shared with the remux's
+                // `videoSignaling`) takes the range from the DOVI record, so P5 routes native in every
+                // container. A native failure still falls over
                 // to mpv on gpu-next (`mpvNeedsGpuNext`).
                 break
             case 8: break

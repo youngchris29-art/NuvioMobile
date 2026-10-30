@@ -40,6 +40,16 @@ nonisolated struct VideoSignaling: Sendable {
     var width: Int32 = 0               // RESOLUTION=WxH when known (part of the validated master shape)
     var height: Int32 = 0
     var frameRate: Double = 0          // FRAME-RATE when known
+
+    /// `VIDEO-RANGE` token for an H.273 transfer code: PQ (16) and HLG (18) are declared; SDR and the
+    /// BT.2020 10/12-bit transfers (no HLS token) are not.
+    static func videoRange(forTransfer transfer: Int) -> String? {
+        switch transfer {
+        case ColourTags.transferPQ: return "PQ"
+        case ColourTags.transferHLG: return "HLG"
+        default: return nil
+        }
+    }
 }
 
 /// One audio stream of the source, as the remux worker inspected it (D4 audio track switching).
@@ -340,6 +350,10 @@ nonisolated final class RemuxSession: @unchecked Sendable {
             return fail("avformat_open_input", code: openResult == 0 ? nil : openResult, atOpen: true)
         }
         defer { var p: UnsafeMutablePointer<AVFormatContext>? = input; avformat_close_input(&p) }
+        // Container colour tags before inspection: find_stream_info restores the container's
+        // primaries/transfer/matrix as a block when any one is set, so a Matroska Colour element with
+        // MatrixCoefficients alone hides the SPS's PQ (see MediaProbe.probe). Resolved below.
+        let containerColour = MediaProbe.containerColourTags(input)
         let infoResult = avformat_find_stream_info(input, nil)
         guard infoResult >= 0 else { return fail("find_stream_info", code: infoResult, atOpen: true) }
 
@@ -467,7 +481,23 @@ nonisolated final class RemuxSession: @unchecked Sendable {
             print("[Remux] DV P7 → 8.1 conversion engaged (EL drop + RPU rewrite)")
         }
 
-        var signaling = Self.videoSignaling(videoPar)
+        // Colour: container → SPS → inspected codecpar per field, then the DOVI record / HDR10 static
+        // metadata for the transfer alone. The explicit tags go back onto the input codecpar so every
+        // run's `avcodec_parameters_copy` hands movenc a `colr` box that says what the master's
+        // VIDEO-RANGE says — a PQ SPS behind a matrix-only Colour element otherwise shipped with no
+        // colr and no VIDEO-RANGE, and tvOS rejected the PQ media at admission (-12927; T8 fixture,
+        // 2026-10-29). Runs after the P7 → 8.1 retag so the record the resolver reads is the served one.
+        let colour = MediaProbe.resolveColour(videoPar, container: containerColour[videoIn] ?? .unspecified)
+        let inspectedColour = MediaProbe.colourTags(videoPar)
+        if colour.tags != inspectedColour {
+            MediaProbe.applyColourTags(colour.tags, to: videoPar)
+            print("[Remux] colour tags \(inspectedColour.primaries)/\(inspectedColour.transfer)/\(inspectedColour.matrix)"
+                  + " → \(colour.tags.primaries)/\(colour.tags.transfer)/\(colour.tags.matrix)"
+                  + " (transfer from \(colour.transferSource.rawValue); written to the colr box)")
+        } else if colour.transferSource != .none {
+            print("[Remux] colour transfer \(colour.transfer) from \(colour.transferSource.rawValue)")
+        }
+        var signaling = Self.videoSignaling(videoPar, transfer: colour.transfer)
         signaling.width = videoPar.pointee.width
         signaling.height = videoPar.pointee.height
         if let vs = input.pointee.streams[videoIn] {
@@ -1447,33 +1477,17 @@ nonisolated final class RemuxSession: @unchecked Sendable {
     /// was drawn in the confounded EVENT-playlist era and is backwards: device A/B on the fixed VOD
     /// pipeline shows PQ media is REJECTED at media admission (-12927) when the master does NOT
     /// declare it, and ACCEPTED when declared alongside full CODECS + SUPPLEMENTAL-CODECS.)
-    private static func videoSignaling(_ par: UnsafeMutablePointer<AVCodecParameters>) -> VideoSignaling {
+    ///
+    /// `transfer` is the resolved H.273 transfer code (`MediaProbe.resolveColour`): container, SPS
+    /// or inspected tags per field, else the Dolby Vision record (P5 spike, 2026-10-20, BUG-166 /
+    /// P3-F7: a DV stream usually carries an UNSPECIFIED transfer in its VUI and container colour
+    /// metadata — profile 5 is IPT-PQ-C2 and has no VUI code at all, and single-layer profile 8
+    /// WEB-DLs often omit the `colr` box; P5 and P7 are PQ by definition, P8 follows its base-layer
+    /// compatibility id), else HDR10 static metadata. Undeclared PQ went out as `RANGE=-` and tvOS
+    /// rejected the media at admission with -12927 in every one of those shapes.
+    private static func videoSignaling(_ par: UnsafeMutablePointer<AVCodecParameters>, transfer: Int) -> VideoSignaling {
         let dovi = doviRecord(par)
-        var range: String?
-        switch par.pointee.color_trc {
-        case AVCOL_TRC_SMPTE2084: range = "PQ"
-        case AVCOL_TRC_ARIB_STD_B67: range = "HLG"
-        default: range = nil
-        }
-        // P5 spike (2026-10-20, BUG-166 / finding P3-F7): a Dolby Vision stream usually carries an
-        // UNSPECIFIED transfer in its VUI and container colour metadata — profile 5 is IPT-PQ-C2 and
-        // has no VUI code at all, and single-layer profile 8 WEB-DLs often omit the `colr` box. The
-        // master then went out with no VIDEO-RANGE (rig-b log: `RANGE=-`) and tvOS rejected the PQ
-        // media at admission with -12927 (the same failure SegmentMap documents for undeclared PQ).
-        // The DOVI record fixes the range when the VUI does not: P5 and P7 are PQ by definition, and
-        // P8 follows its base-layer compatibility id (1 = HDR10/PQ, 4 = HLG, 2 = SDR → none).
-        if range == nil, let dovi {
-            switch Int(dovi.dv_profile) {
-            case 5, 7: range = "PQ"
-            case 8:
-                switch Int(dovi.dv_bl_signal_compatibility_id) {
-                case 1: range = "PQ"
-                case 4: range = "HLG"
-                default: break
-                }
-            default: break
-            }
-        }
+        let range = VideoSignaling.videoRange(forTransfer: transfer)
 
         switch par.pointee.codec_id {
         case AV_CODEC_ID_HEVC:

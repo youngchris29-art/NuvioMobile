@@ -44,6 +44,7 @@ nonisolated enum RemuxSmokeTest {
                     "P\($0.profile) elKind=\($0.elKind?.rawValue ?? "-") el=\($0.elPresent) compat=\($0.compatId)"
                 } ?? "none"
                 print("[RemuxSmoke] probe: DV=\(dv) videoStreams=\(probe?.videoStreamCount ?? -1)"
+                      + " hdr=\(probe?.hdr.rawValue ?? "-")/\(probe?.hdrSource.rawValue ?? "-")"
                       + " → router: \(decision.engine.rawValue) (\(decision.reason))")
             }
             // Unique videoId per launch so a stored watch position from a previous smoke run can't

@@ -163,7 +163,8 @@ struct PlayerScreen: View {
         }.value
         // P5 spike S2 (BUG-167): the probe is the first startup stage; a nil probe at the cap means a
         // timeout, which routes to mpv without `prefersGpuNext`.
-        print("[PlayerRouter] probe took \(probeMs)ms cap=\(Int(probeTimeoutSec * 1000))ms result=\(probeResult == nil ? "nil" : "ok")")
+        print("[PlayerRouter] probe took \(probeMs)ms cap=\(Int(probeTimeoutSec * 1000))ms result=\(probeResult == nil ? "nil" : "ok")"
+              + (probeResult.map { " hdr=\($0.hdr.rawValue)" + ($0.hdrSource == .none ? "" : "/\($0.hdrSource.rawValue)") } ?? ""))
         if probeResult == nil {
             // W3-19 (BUG-166 / BUG-167, 2026-10-21): on a debrid link the 4 s cap is a coin flip, and a
             // timeout sends the film to mpv with no visible sign. One dedicated line tells a cap hit
