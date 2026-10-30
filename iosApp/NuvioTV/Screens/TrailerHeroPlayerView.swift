@@ -139,6 +139,15 @@ struct TrailerFailureReport {
     let urlString: String?
 }
 
+/// BUG-226 (GitHub #13): the hero/inline trailer's mute rule. Unit-tested as a table
+/// (`TrailerAudioGateTests`).
+nonisolated enum TrailerAudioGate {
+    /// No sound before the letterbox probe reveals the surface, whatever the viewer chose.
+    static func isMuted(preferredMuted: Bool, surfaceRevealed: Bool) -> Bool {
+        preferredMuted || !surfaceRevealed
+    }
+}
+
 struct TrailerHeroPlayer: UIViewRepresentable {
     let urlString: String
     var onFailure: (TrailerFailureReport) -> Void = { _ in }
@@ -252,6 +261,13 @@ struct TrailerHeroPlayer: UIViewRepresentable {
         private var endObserver: NSObjectProtocol?
         private var watchdog: Timer?
         private var audioWatcher: FlowWatcher?
+        /// BUG-226 (GitHub #13): the viewer's mute choice (`HeroTrailerAudioState`), kept apart
+        /// from what the player is set to. While the letterbox probe keeps the surface concealed
+        /// (the BUG-59 reveal gate) the player stays muted too, so the trailer is never heard over
+        /// the still artwork it has not replaced yet (`TrailerAudioGate`). A probe that never
+        /// reveals keeps it silent; the probe's 12 s bail reveals any surface still playing.
+        private var preferredMuted = true
+        private var surfaceRevealed = false
         private var started = false
         private var failed = false
         private var ended = false
@@ -302,13 +318,18 @@ struct TrailerHeroPlayer: UIViewRepresentable {
                 }
             }
 
-            // Seed with the shared preference's current value (rather than always hardcoding muted)
-            // so re-attaching (e.g. returning to a title after unmuting) doesn't flash muted first.
+            // Seed with the shared preference's current value so re-attaching (e.g. returning to a
+            // title after unmuting) doesn't flash muted first: a remembered crop never conceals,
+            // and the mute is applied right after `letterboxProbe?.start()` below. Until then the
+            // player is muted (BUG-226: whether the surface starts concealed is not known yet).
             let audioState = HeroTrailerAudioState.shared
-            queue.isMuted = (audioState.muted.value_ as? KotlinBoolean)?.boolValue ?? true
+            preferredMuted = (audioState.muted.value_ as? KotlinBoolean)?.boolValue ?? true
+            surfaceRevealed = false
+            queue.isMuted = true
             audioWatcher = FlowWatcherKt.watch(audioState.muted) { [weak self] emitted in
                 guard let self, let boxed = emitted as? KotlinBoolean else { return }
-                self.player?.isMuted = boxed.boolValue
+                self.preferredMuted = boxed.boolValue
+                self.applyMute()
             }
 
             if loops {
@@ -371,7 +392,16 @@ struct TrailerHeroPlayer: UIViewRepresentable {
             // (`inline`, `InlineTrailerCard`'s only caller) — the two share this one representable,
             // so the surface name has to come from which mode the caller asked for.
             letterboxProbe = TrailerLetterboxProbe(view: view, player: queue, urlString: urlString, zoomKey: zoomKey, videoId: videoId, surface: loops ? "hero" : "inline")
+            // BUG-226: the reveal only flips the mute; it never touches playback or the fade.
+            letterboxProbe?.onReveal = { [weak self] in
+                guard let self else { return }
+                self.surfaceRevealed = true
+                self.applyMute()
+            }
             letterboxProbe?.start()
+            // A remembered measurement (and the probe-off knob) never conceals: visible from the start.
+            surfaceRevealed = letterboxProbe?.isRevealed ?? true
+            applyMute()
 
             #if DEBUG
             // UX-4c verification: log the resolved stream's actual resolution. Anchored to
@@ -396,6 +426,12 @@ struct TrailerHeroPlayer: UIViewRepresentable {
             }
             RunLoop.main.add(timer, forMode: .common)
             watchdog = timer
+        }
+
+        /// BUG-226: audible only when the viewer wants sound AND the video is on screen. Main
+        /// thread: the audio watcher, `attach()` and the probe's reveal all run there.
+        private func applyMute() {
+            player?.isMuted = TrailerAudioGate.isMuted(preferredMuted: preferredMuted, surfaceRevealed: surfaceRevealed)
         }
 
         /// Phase 0 classified the failure so the log line reads as a diagnosis; B2 now also *reports*
@@ -1213,6 +1249,12 @@ final class TrailerLetterboxProbe {
     /// persisted-hit path (the zoom is already right, or near enough); flips false only when
     /// `start()` conceals a cold surface, and back only through `reveal(reason:)`.
     private var revealed = true
+    /// BUG-226: whether the surface is visible right now (the hero coordinator's mute gate reads
+    /// it right after `start()`).
+    var isRevealed: Bool { revealed }
+    /// BUG-226: called once, from `reveal(reason:)`, when a concealed surface is revealed (the hero
+    /// coordinator applies the viewer's mute choice then). Main thread.
+    var onReveal: (() -> Void)?
     /// C1 (2026-08-30 investigation): true for the remainder of this probe's lifetime once `start()`
     /// took the token-MATCH branch. A token match still applies the cached zoom immediately and
     /// un-concealed (unchanged UX for a good entry — `revealed` never flips false on this path), but
@@ -1816,6 +1858,7 @@ final class TrailerLetterboxProbe {
     private func reveal(reason: String) {
         guard !revealed else { return }
         revealed = true
+        onReveal?()
         TrailerZoomProbe.log(String(format: "reveal reason=%@ ticks=%d frameTicks=%d surface=%@ key=%@", reason, ticks, frameTicks, surface, zoomKey))
         guard let view else { return }
         UIView.animate(withDuration: 0.25) { view.alpha = 1 }
