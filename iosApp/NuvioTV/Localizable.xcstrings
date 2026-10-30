@@ -39170,7 +39170,7 @@
         }
       }
     },
-    "Sets how long a title page waits before the background trailer starts and before the auto-play trailer goes full screen. Pressing any direction still cancels the full-screen trailer, and coming back to a title page does not wait again. Default: the background trailer starts as soon as it loads, and auto-play waits about 4 seconds.": {
+    "Sets how long a title page waits before a trailer starts. The background trailer waits this long, and the full-screen auto-play follows about 4 seconds after it (with the background trailer off, auto-play waits this long on its own). Pressing any direction still cancels the full-screen trailer, and coming back from another page does not wait again. Default: the background trailer starts as soon as it loads, and auto-play waits about 4 seconds.": {
       "extractionState": "manual"
     },
     "Sets how long a trailer preview waits before it starts. Automatic waits until the row stops moving, then one second. Default: Automatic.": {

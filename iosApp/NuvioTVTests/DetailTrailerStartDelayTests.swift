@@ -40,14 +40,43 @@ final class DetailTrailerStartDelayTests: XCTestCase {
         XCTAssertFalse(delay.holdsBackground(elapsed: true, returned: true))
     }
 
-    func testAutoPlayWait() {
+    func testAutoPlayWaitWithTheBackgroundTrailerOff() {
         XCTAssertEqual(DetailTrailerStartDelay.defaultAutoPlaySeconds, 4)
-        XCTAssertEqual(DetailTrailerStartDelay.standard.autoPlaySeconds(returned: false), 4)
-        XCTAssertEqual(DetailTrailerStartDelay.threeSeconds.autoPlaySeconds(returned: false), 3)
-        XCTAssertEqual(DetailTrailerStartDelay.thirtySeconds.autoPlaySeconds(returned: false), 30)
-        // A return uses Default's timing, whatever the setting.
+        // Counted from the URL resolving, whenever that is.
+        for sinceOpen: TimeInterval in [0, 2, 40] {
+            XCTAssertEqual(DetailTrailerStartDelay.standard.autoPlaySeconds(returned: false, backgroundEnabled: false, sinceOpen: sinceOpen), 4)
+            XCTAssertEqual(DetailTrailerStartDelay.threeSeconds.autoPlaySeconds(returned: false, backgroundEnabled: false, sinceOpen: sinceOpen), 3)
+            XCTAssertEqual(DetailTrailerStartDelay.thirtySeconds.autoPlaySeconds(returned: false, backgroundEnabled: false, sinceOpen: sinceOpen), 30)
+        }
+    }
+
+    /// Review r1 #2: with the background trailer on, auto-play is 4 s after the background trailer
+    /// could first appear, from the same origin (page open): `max(delay, sinceOpen) + 4`. A cached
+    /// URL (sinceOpen ≈ 0) no longer lands both trailers on the same deadline.
+    func testAutoPlayDeadlineComposesWithTheBackgroundClock() {
+        let cases: [(DetailTrailerStartDelay, TimeInterval, TimeInterval)] = [
+            // (delay, URL resolved at, auto-play deadline from page open)
+            (.standard, 0, 4),
+            (.standard, 2, 6),
+            (.threeSeconds, 0, 7),
+            (.tenSeconds, 0, 14),
+            (.tenSeconds, 2.5, 14),
+            (.tenSeconds, 12, 16),  // resolved after the hold ended: 4 s after it appears
+            (.thirtySeconds, 1, 34),
+        ]
+        for (delay, resolvedAt, deadline) in cases {
+            let wait = delay.autoPlaySeconds(returned: false, backgroundEnabled: true, sinceOpen: resolvedAt)
+            XCTAssertEqual(resolvedAt + wait, deadline, accuracy: 0.0001, "\(delay.rawValue) resolved at \(resolvedAt)")
+            // Never on the background release: at least Default's 4 s after it.
+            XCTAssertGreaterThanOrEqual(resolvedAt + wait, max(delay.seconds ?? 0, resolvedAt) + 4 - 0.0001)
+        }
+    }
+
+    func testAReturnUsesDefaultTiming() {
         for delay in DetailTrailerStartDelay.allCases {
-            XCTAssertEqual(delay.autoPlaySeconds(returned: true), 4, delay.rawValue)
+            for background in [false, true] {
+                XCTAssertEqual(delay.autoPlaySeconds(returned: true, backgroundEnabled: background, sinceOpen: 0), 4, delay.rawValue)
+            }
         }
     }
 

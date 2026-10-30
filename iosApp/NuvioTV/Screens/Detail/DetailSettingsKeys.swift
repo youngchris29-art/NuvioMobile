@@ -28,11 +28,12 @@ nonisolated enum DetailSettingsKeys {
 /// other `detail_trailer_*` keys; `-detail_trailer_start_delay 10` works as a launch argument.
 /// Not Home's `TrailerStartDelay` (FEAT-52): different options, and that one counts from focus.
 ///
-/// Two clocks, both only on the page's first appearance (a return from a pushed page uses
-/// Default timing, so it never waits again):
+/// Both clocks apply only to the page's first appearance (after a pushed page returns, Detail
+/// uses Default timing, so it never waits again), and the page latches the value when it opens:
 /// - the background trailer is held until this long after the page opens;
-/// - the full-screen auto-play fires this long after the trailer URL resolves (Default: 4 s, the
-///   fixed wait Detail always had).
+/// - the full-screen auto-play fires Default's 4 s after the background trailer could first
+///   appear (the hold's end, or the URL resolving if later), so the two never land together;
+///   with the background trailer off it fires this long after the URL resolves.
 nonisolated enum DetailTrailerStartDelay: String, CaseIterable, Sendable {
     case standard = "default"
     case threeSeconds = "3"
@@ -61,15 +62,18 @@ nonisolated enum DetailTrailerStartDelay: String, CaseIterable, Sendable {
     }
 
     /// Whether the background trailer is still held. `elapsed`: the delay timer fired on this
-    /// page. `returned`: the page has disappeared once (a push, a cover) and is back.
+    /// page. `returned`: a pushed page has returned to this one.
     func holdsBackground(elapsed: Bool, returned: Bool) -> Bool {
         seconds != nil && !elapsed && !returned
     }
 
-    /// Seconds from the trailer URL resolving to the full-screen auto-play.
-    func autoPlaySeconds(returned: Bool) -> TimeInterval {
-        if returned { return Self.defaultAutoPlaySeconds }
-        return seconds ?? Self.defaultAutoPlaySeconds
+    /// Seconds from the trailer URL resolving to the full-screen auto-play. `sinceOpen`: how long
+    /// the page had been open when the URL resolved. With the background trailer on, the deadline
+    /// from page open is `max(delay, sinceOpen) + 4`: one origin with the background clock.
+    func autoPlaySeconds(returned: Bool, backgroundEnabled: Bool, sinceOpen: TimeInterval) -> TimeInterval {
+        guard !returned, let seconds else { return Self.defaultAutoPlaySeconds }
+        guard backgroundEnabled else { return seconds }
+        return max(0, seconds - sinceOpen) + Self.defaultAutoPlaySeconds
     }
 
     /// Picker label. Same "N s" spelling as Home's Trailer Start Delay ("3 s").

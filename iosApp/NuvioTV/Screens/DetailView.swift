@@ -533,11 +533,14 @@ struct DetailView: View {
     @State private var trailerDurationTask: Task<Void, Never>?
     /// FEAT-87: the Start Delay timer fired on this page. Page lifetime, like the two flags below.
     @State private var trailerStartDelayElapsed = false
-    /// FEAT-87: the page has disappeared once (a push, a cover) since it opened. A return never
-    /// waits again: no background hold, and auto-play is back on Default's 4 s.
+    /// FEAT-87: a pushed page has returned to this one (set by `onDisappear`; sheets keep the
+    /// page on screen, so they don't set it). A return never waits again: no background hold, and
+    /// auto-play is back on Default's 4 s.
     @State private var trailerStartDelayReturned = false
-    /// FEAT-87: whether this page's first appearance armed the timer (once per page).
-    @State private var trailerStartDelayArmed = false
+    /// FEAT-87: the delay this page latched on its first appearance, and when. Nil until then.
+    /// Never the live key: changing the setting on another tab must not reshape an open page.
+    @State private var trailerStartDelayLatched: DetailTrailerStartDelay?
+    @State private var trailerStartDelayOpenedAt: Date?
     @State private var trailerStartDelayTask: Task<Void, Never>?
 
     /// UX-6: 0...0.85 darkening applied over the whole backdrop/poster/trailer stack as the user
@@ -1238,7 +1241,7 @@ struct DetailView: View {
             model.stop()
             cancelAutoPlayTrailer()
             cancelTrailerDurationTask()
-            // FEAT-87: leaving ends the first-appearance delay; the return does not wait again.
+            // FEAT-87: a push ends the first-appearance delay; the return does not wait again.
             trailerStartDelayTask?.cancel()
             trailerStartDelayTask = nil
             trailerStartDelayReturned = true
@@ -3298,8 +3301,12 @@ struct DetailView: View {
         guard trailerAutoplayEnabled, !didAutoPlayTrailer, !userInteracted,
               !showStreams, seriesPlay == nil, model.trailerPlayback == nil else { return }
         autoPlayTrailerTask?.cancel()
-        // FEAT-87: Start Delay on the first appearance, else Default's 4 s.
-        let seconds = trailerStartDelay.autoPlaySeconds(returned: trailerStartDelayReturned)
+        // FEAT-87: Start Delay on the first appearance, composed with the background clock when
+        // the background trailer is on; else Default's 4 s.
+        let seconds = (trailerStartDelayLatched ?? .standard).autoPlaySeconds(
+            returned: trailerStartDelayReturned,
+            backgroundEnabled: backgroundTrailerEnabled,
+            sinceOpen: trailerStartDelayOpenedAt.map { Date().timeIntervalSince($0) } ?? 0)
         autoPlayTrailerTask = Task {
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             guard !Task.isCancelled else { return }
@@ -3332,11 +3339,10 @@ struct DetailView: View {
 
     // MARK: - FEAT-87: Start Delay
 
-    private var trailerStartDelay: DetailTrailerStartDelay { DetailTrailerStartDelay.resolve(trailerStartDelayRaw) }
-
     /// Whether Start Delay still holds the background trailer (`DetailTrailerGate.startDelayHeld`).
+    /// Reads the latched value only (nil before the first appearance: nothing to hold yet).
     private var trailerStartDelayHolds: Bool {
-        trailerStartDelay.holdsBackground(elapsed: trailerStartDelayElapsed, returned: trailerStartDelayReturned)
+        trailerStartDelayLatched?.holdsBackground(elapsed: trailerStartDelayElapsed, returned: trailerStartDelayReturned) ?? false
     }
 
     /// First appearance only: counts the delay from the page opening (the URL may resolve before or
@@ -3344,9 +3350,11 @@ struct DetailView: View {
     /// Default arms nothing. The fade-in rides the ambient 0.8 s crossfade (its value includes
     /// `trailerStartDelayHolds`).
     private func armTrailerStartDelayIfNeeded() {
-        guard !trailerStartDelayArmed else { return }
-        trailerStartDelayArmed = true
-        guard let seconds = trailerStartDelay.seconds else { return }
+        guard trailerStartDelayLatched == nil else { return }
+        let delay = DetailTrailerStartDelay.resolve(trailerStartDelayRaw)
+        trailerStartDelayLatched = delay
+        trailerStartDelayOpenedAt = Date()
+        guard let seconds = delay.seconds else { return }
         trailerStartDelayTask = Task {
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             guard !Task.isCancelled else { return }
