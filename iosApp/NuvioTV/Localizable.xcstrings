@@ -144,7 +144,39 @@
       }
     },
     "%@ Instant": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ Instant"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ Instant"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ Instantané"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ Istantaneo"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ Tức thì"
+          }
+        }
+      }
     },
     "%@ MB used": {
       "localizations": {
@@ -1482,7 +1514,39 @@
       }
     },
     "%lld more": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld weitere"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld más"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld de plus"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld altri"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld nữa"
+          }
+        }
+      }
     },
     "%lld movies": {
       "localizations": {
@@ -3118,7 +3182,39 @@
       }
     },
     "10 s": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "10 s"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "10 s"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "10 s"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "10 s"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "10 giây"
+          }
+        }
+      }
     },
     "100": {
       "localizations": {
@@ -3223,7 +3319,39 @@
       }
     },
     "15 s": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "15 s"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "15 s"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "15 s"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "15 s"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "15 giây"
+          }
+        }
+      }
     },
     "150 MB": {
       "localizations": {
@@ -3872,7 +4000,39 @@
       }
     },
     "5 s": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "5 s"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "5 s"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "5 s"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "5 s"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "5 giây"
+          }
+        }
+      }
     },
     "512 MB": {
       "localizations": {
@@ -5031,7 +5191,39 @@
       }
     },
     "Add-on": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add-on"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Complemento"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Addon"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add-on"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Addon"
+          }
+        }
+      }
     },
     "Add-ons": {
       "localizations": {
@@ -5544,7 +5736,39 @@
       }
     },
     "All Providers": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alle Anbieter"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Todos los proveedores"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tous les fournisseurs"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tutti i provider"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tất cả nhà cung cấp"
+          }
+        }
+      }
     },
     "All search sources are off": {
       "localizations": {
@@ -6908,7 +7132,39 @@
       }
     },
     "Applies while Auto-Play Best Source is off. With Prefer Same Source on, Up Next already picks the next episode's source by itself: from the same release or group, or the first source found when the episode playing has no group. This switch matters with Prefer Same Source off, where it lets Up Next pick the first source found, and it adds Fall Back to Any Source. Off by default.": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gilt, solange „Beste Quelle automatisch wiedergeben“ aus ist. Bei eingeschaltetem „Gleiche Quelle bevorzugen“ wählt „Als Nächstes“ die Quelle der nächsten Folge bereits selbst: aus demselben Release oder derselben Gruppe oder, wenn die laufende Folge keine Gruppe hat, die erste gefundene Quelle. Dieser Schalter ist bei ausgeschaltetem „Gleiche Quelle bevorzugen“ relevant: Dann wählt „Als Nächstes“ die erste gefundene Quelle, und „Auf beliebige Quelle zurückgreifen“ wird ergänzt. Standardmäßig aus."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Se aplica mientras «Reproducir automáticamente la mejor fuente» está desactivado. Con «Preferir la misma fuente» activado, «Siguiente» ya elige por sí solo la fuente del siguiente episodio: del mismo lanzamiento o grupo o, si el episodio en reproducción no tiene grupo, la primera fuente encontrada. Este ajuste importa con «Preferir la misma fuente» desactivado: permite que «Siguiente» elija la primera fuente encontrada y añade «Recurrir a cualquier fuente». Desactivado por defecto."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "S’applique tant que « Lecture auto de la meilleure source » est désactivée. Avec « Privilégier la même source » activé, Suivant choisit déjà seul la source de l’épisode suivant : dans la même version ou le même groupe ou, si l’épisode en cours n’a pas de groupe, la première source trouvée. Ce réglage compte quand « Privilégier la même source » est désactivé : il permet à Suivant de choisir la première source trouvée et ajoute « Se rabattre sur n’importe quelle source ». Désactivé par défaut."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vale mentre «Riproduci automaticamente la fonte migliore» è disattivato. Con «Preferisci la stessa fonte» attivo, «Prossimo» sceglie già da solo la fonte del prossimo episodio: dalla stessa release o dallo stesso gruppo oppure, se l’episodio in riproduzione non ha un gruppo, la prima fonte trovata. Questa opzione conta con «Preferisci la stessa fonte» disattivato: permette a «Prossimo» di scegliere la prima fonte trovata e aggiunge «Ripiega su qualsiasi fonte». Disattivato per impostazione predefinita."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Áp dụng khi “Tự động phát nguồn tốt nhất” đang tắt. Khi “Ưu tiên cùng nguồn” bật, “Tiếp theo” đã tự chọn nguồn của tập tiếp theo: từ cùng bản phát hành hoặc nhóm, hoặc nguồn đầu tiên tìm được nếu tập đang phát không có nhóm. Công tắc này có tác dụng khi “Ưu tiên cùng nguồn” tắt: nó cho phép “Tiếp theo” chọn nguồn đầu tiên tìm được và thêm “Dùng nguồn bất kỳ khi không có”. Mặc định tắt."
+          }
+        }
+      }
     },
     "Apply": {
       "localizations": {
@@ -7455,7 +7711,39 @@
       }
     },
     "Auto-Pick Next Episode Source": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quelle für nächste Folge automatisch wählen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Elegir automáticamente la fuente del siguiente episodio"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choix auto de la source de l’épisode suivant"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scegli automaticamente la fonte del prossimo episodio"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tự động chọn nguồn cho tập tiếp theo"
+          }
+        }
+      }
     },
     "Auto-Play Best Source": {
       "localizations": {
@@ -8546,10 +8834,74 @@
       }
     },
     "Badge chips render above the quality line.": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Die Badge-Chips erscheinen über der Qualitätszeile."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Los chips de insignia se muestran encima de la línea de calidad."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Les pastilles de badge s’affichent au-dessus de la ligne de qualité."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "I chip dei badge compaiono sopra la riga della qualità."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chip huy hiệu hiển thị phía trên dòng chất lượng."
+          }
+        }
+      }
     },
     "Badge chips render at the bottom of the row.": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Die Badge-Chips erscheinen unten in der Zeile."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Los chips de insignia se muestran en la parte inferior de la fila."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Les pastilles de badge s’affichent en bas de la rangée."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "I chip dei badge compaiono in fondo alla riga."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chip huy hiệu hiển thị ở cuối hàng."
+          }
+        }
+      }
     },
     "Badge import failed.": {
       "localizations": {
@@ -8722,22 +9074,214 @@
       }
     },
     "Best 1080p": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bestes 1080p"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mejor 1080p"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Meilleur 1080p"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Miglior 1080p"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1080p tốt nhất"
+          }
+        }
+      }
     },
     "Best Pick": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Beste Wahl"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mejor opción"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Meilleur choix"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scelta migliore"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lựa chọn tốt nhất"
+          }
+        }
+      }
     },
     "Best Pick opens the source list on the best source for this title, by the same order as Auto-Play Best Source, with quick picks for the best 1080p and the best direct link and each group folded to its first two sources. Full List opens every source under its heading. Default: Best Pick.": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "„Beste Wahl“ öffnet die Quellenliste bei der besten Quelle für diesen Titel, in derselben Reihenfolge wie „Beste Quelle automatisch wiedergeben“, mit Schnellauswahl für das beste 1080p und den besten direkten Link, wobei jede Gruppe auf ihre ersten beiden Quellen eingeklappt ist. „Vollständige Liste“ öffnet alle Quellen unter ihrer Überschrift. Standard: Beste Wahl."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "«Mejor opción» abre la lista de fuentes en la mejor fuente para este título, con el mismo orden que «Reproducir automáticamente la mejor fuente», con accesos rápidos al mejor 1080p y al mejor enlace directo, y cada grupo reducido a sus dos primeras fuentes. «Lista completa» abre todas las fuentes bajo su encabezado. Por defecto: Mejor opción."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "« Meilleur choix » ouvre la liste des sources sur la meilleure source pour ce titre, dans le même ordre que « Lecture auto de la meilleure source », avec des raccourcis vers le meilleur 1080p et le meilleur lien direct, et chaque groupe réduit à ses deux premières sources. « Liste complète » ouvre toutes les sources sous leur titre. Par défaut : Meilleur choix."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "«Scelta migliore» apre la lista delle fonti sulla fonte migliore per questo titolo, con lo stesso ordine di «Riproduci automaticamente la fonte migliore», con scelte rapide per il miglior 1080p e il miglior link diretto e ogni gruppo ridotto alle prime due fonti. «Lista completa» apre tutte le fonti sotto la loro intestazione. Predefinito: Scelta migliore."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "“Lựa chọn tốt nhất” mở danh sách nguồn ở nguồn tốt nhất cho tiêu đề này, theo cùng thứ tự với “Tự động phát nguồn tốt nhất”, kèm lối tắt đến 1080p tốt nhất và liên kết trực tiếp tốt nhất, mỗi nhóm thu gọn còn hai nguồn đầu. “Danh sách đầy đủ” mở mọi nguồn dưới tiêu đề của chúng. Mặc định: Lựa chọn tốt nhất."
+          }
+        }
+      }
     },
     "Best So Far": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bisher am besten"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mejor hasta ahora"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Meilleur jusqu’ici"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Migliore finora"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tốt nhất cho đến nay"
+          }
+        }
+      }
     },
     "Best direct link": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bester direkter Link"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mejor enlace directo"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Meilleur lien direct"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Miglior link diretto"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Liên kết trực tiếp tốt nhất"
+          }
+        }
+      }
     },
     "Best of %lld · resolution, then HDR, then cached, then size": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Beste von %lld · Auflösung, dann HDR, dann aus dem Cache, dann Größe"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mejor de %lld · resolución, luego HDR, luego en caché, luego tamaño"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Meilleur choix sur %lld · résolution, puis HDR, puis en cache, puis taille"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Migliore su %lld · risoluzione, poi HDR, poi in cache, poi dimensione"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tốt nhất trong %lld · độ phân giải, rồi HDR, rồi đã lưu đệm, rồi dung lượng"
+          }
+        }
+      }
     },
     "Biography": {
       "localizations": {
@@ -10685,6 +11229,36 @@
           "stringUnit": {
             "state": "translated",
             "value": "Chooses the badge pack the player uses. Default: Same as Streams, the pack the source list uses."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Legt das Badge-Paket fest, das der Player verwendet. Standard: Wie Streams, das Paket der Quellenliste."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Elige el paquete de insignias que usa el reproductor. Por defecto: Igual que Fuentes, el paquete que usa la lista de fuentes."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choisit le pack de badges utilisé par le lecteur. Par défaut : Comme Streams, le pack de la liste des sources."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sceglie il pacchetto di badge usato dal player. Predefinito: Come Flussi, il pacchetto usato dalla lista delle fonti."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chọn gói huy hiệu mà trình phát dùng. Mặc định: Giống Nguồn phát, gói mà danh sách nguồn dùng."
           }
         }
       }
@@ -18238,7 +18812,39 @@
       }
     },
     "Fall Back to Any Source": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Auf beliebige Quelle zurückgreifen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recurrir a cualquier fuente"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Se rabattre sur n’importe quelle source"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ripiega su qualsiasi fonte"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dùng nguồn bất kỳ khi không có"
+          }
+        }
+      }
     },
     "Fallback Audio Language": {
       "localizations": {
@@ -19671,7 +20277,39 @@
       }
     },
     "Full List": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vollständige Liste"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lista completa"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Liste complète"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lista completa"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Danh sách đầy đủ"
+          }
+        }
+      }
     },
     "Full sync guide: api.simkl.org/guides/sync": {
       "localizations": {
@@ -20048,10 +20686,74 @@
       }
     },
     "Group Sources By": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quellen gruppieren nach"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agrupar fuentes por"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Grouper les sources par"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Raggruppa le fonti per"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nhóm nguồn theo"
+          }
+        }
+      }
     },
     "Group by Repository": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nach Repository gruppieren"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agrupar por repositorio"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Grouper par dépôt"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Raggruppa per repository"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nhóm theo kho"
+          }
+        }
+      }
     },
     "Grouped by type": {
       "localizations": {
@@ -21688,7 +22390,39 @@
       }
     },
     "How long a title page waits before a trailer starts": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wie lange die Detailseite wartet, bevor ein Trailer startet"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cuánto espera la página de detalles antes de iniciar un tráiler"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Durée d’attente de la page de détail avant le lancement d’une bande-annonce"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quanto attende la pagina dei dettagli prima di avviare un trailer"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thời gian trang chi tiết chờ trước khi phát trailer"
+          }
+        }
+      }
     },
     "IN %lld DAYS": {
       "localizations": {
@@ -22099,7 +22833,39 @@
       }
     },
     "In the streams list, show one group per repository instead of one per provider.": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zeigt in der Quellenliste eine Gruppe pro Repository statt eine pro Anbieter."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "En la lista de fuentes, muestra un grupo por repositorio en lugar de uno por proveedor."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dans la liste des sources, affiche un groupe par dépôt au lieu d’un par fournisseur."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nella lista delle fonti mostra un gruppo per repository invece di uno per provider."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trong danh sách nguồn, hiện một nhóm cho mỗi kho thay vì mỗi nhà cung cấp."
+          }
+        }
+      }
     },
     "Include": {
       "localizations": {
@@ -22612,7 +23378,39 @@
       }
     },
     "Instant": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Instant"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Instant"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Instantané"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Istantaneo"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tức thì"
+          }
+        }
+      }
     },
     "It is on and will answer the next search for streams.": {
       "localizations": {
@@ -23397,7 +24195,39 @@
       }
     },
     "Latino": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lateinamerikanisch"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Latino"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Latino"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Latino"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mỹ Latinh"
+          }
+        }
+      }
     },
     "Layout": {
       "localizations": {
@@ -26018,7 +26848,39 @@
       }
     },
     "Multi": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Multi"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Multi"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Multi"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Multi"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đa ngữ"
+          }
+        }
+      }
     },
     "Music": {
       "localizations": {
@@ -27963,7 +28825,39 @@
       }
     },
     "Not cached": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nicht im Cache"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No en caché"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pas en cache"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Non in cache"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chưa lưu đệm"
+          }
+        }
+      }
     },
     "Not cached on your debrid service.": {
       "localizations": {
@@ -31308,7 +32202,39 @@
       }
     },
     "Other": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Andere"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Otras"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Autres"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altre"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Khác"
+          }
+        }
+      }
     },
     "Outline": {
       "localizations": {
@@ -31855,10 +32781,74 @@
       }
     },
     "Pick the first source found when Prefer Same Source is off. With it on, Up Next already picks from the same group, and this adds a fallback.": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wählt die erste gefundene Quelle, wenn „Gleiche Quelle bevorzugen“ aus ist. Ist es an, wählt „Als Nächstes“ bereits aus derselben Gruppe, und dies ergänzt eine Ausweichlösung."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Elige la primera fuente encontrada cuando «Preferir la misma fuente» está desactivado. Con él activado, «Siguiente» ya elige del mismo grupo, y esto añade una alternativa."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choisit la première source trouvée quand « Privilégier la même source » est désactivé. Activé, Suivant choisit déjà dans le même groupe, et ceci ajoute un repli."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sceglie la prima fonte trovata quando «Preferisci la stessa fonte» è disattivato. Se è attivo, «Prossimo» sceglie già dallo stesso gruppo e questa opzione aggiunge un ripiego."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chọn nguồn đầu tiên tìm được khi “Ưu tiên cùng nguồn” tắt. Khi bật, “Tiếp theo” đã chọn từ cùng nhóm, và mục này thêm phương án dự phòng."
+          }
+        }
+      }
     },
     "Pick the next episode from the same release or add-on group when it has one.": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wählt die nächste Folge aus demselben Release oder derselben Add-on-Gruppe, falls vorhanden."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Elige el siguiente episodio del mismo lanzamiento o grupo de complementos, si lo tiene."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choisit l’épisode suivant dans la même version ou le même groupe d’addons, s’il en a un."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sceglie il prossimo episodio dalla stessa release o dallo stesso gruppo di add-on, se ne ha uno."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chọn tập tiếp theo từ cùng bản phát hành hoặc nhóm addon, nếu có."
+          }
+        }
+      }
     },
     "Pick which lists show in the Library.": {
       "localizations": {
@@ -31963,7 +32953,39 @@
       }
     },
     "Places the badge chips above the quality line instead of at the bottom of the row.": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Platziert die Badge-Chips über der Qualitätszeile statt unten in der Zeile."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Coloca los chips de insignia encima de la línea de calidad en lugar de en la parte inferior de la fila."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Place les pastilles de badge au-dessus de la ligne de qualité plutôt qu’en bas de la rangée."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mette i chip dei badge sopra la riga della qualità invece che in fondo alla riga."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đặt chip huy hiệu phía trên dòng chất lượng thay vì ở cuối hàng."
+          }
+        }
+      }
     },
     "Plain background": {
       "localizations": {
@@ -32516,6 +33538,36 @@
           "stringUnit": {
             "state": "translated",
             "value": "Player Badge Pack"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Badge-Paket im Player"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Paquete de insignias del reproductor"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pack de badges du lecteur"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pacchetto badge del player"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gói huy hiệu trình phát"
           }
         }
       }
@@ -33337,7 +34389,39 @@
       }
     },
     "Prefer Same Source": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gleiche Quelle bevorzugen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preferir la misma fuente"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Privilégier la même source"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preferisci la stessa fonte"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ưu tiên cùng nguồn"
+          }
+        }
+      }
     },
     "Prefer TVDB": {
       "localizations": {
@@ -34156,7 +35240,39 @@
       }
     },
     "Quality lists sources under 4K, 1440p, 1080p, 720p, SD and Other headings, keeping each add-on's order inside them. Add-on lists each add-on's sources under its own name. Default: Quality.": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "„Qualität“ listet Quellen unter den Überschriften 4K, 1440p, 1080p, 720p, SD und Andere und behält darin die Reihenfolge jedes Add-ons bei. „Add-on“ listet die Quellen jedes Add-ons unter seinem eigenen Namen. Standard: Qualität."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "«Calidad» lista las fuentes bajo los encabezados 4K, 1440p, 1080p, 720p, SD y Otras, conservando dentro de ellos el orden de cada complemento. «Complemento» lista las fuentes de cada complemento bajo su propio nombre. Por defecto: Calidad."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "« Qualité » liste les sources sous les titres 4K, 1440p, 1080p, 720p, SD et Autres, en conservant à l’intérieur l’ordre de chaque addon. « Addon » liste les sources de chaque addon sous son propre nom. Par défaut : Qualité."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "«Qualità» elenca le fonti sotto le intestazioni 4K, 1440p, 1080p, 720p, SD e Altre, mantenendo al loro interno l’ordine di ogni add-on. «Add-on» elenca le fonti di ogni add-on sotto il suo nome. Predefinito: Qualità."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "“Chất lượng” liệt kê nguồn dưới các tiêu đề 4K, 1440p, 1080p, 720p, SD và Khác, giữ nguyên thứ tự của từng addon bên trong. “Addon” liệt kê nguồn của từng addon dưới tên riêng của nó. Mặc định: Chất lượng."
+          }
+        }
+      }
     },
     "Quick install (from DebugConfig)": {
       "localizations": {
@@ -37432,6 +38548,36 @@
             "state": "translated",
             "value": "Same as Streams"
           }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wie Streams"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Igual que Fuentes"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Comme Streams"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Come Flussi"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Giống Nguồn phát"
+          }
         }
       }
     },
@@ -39171,7 +40317,39 @@
       }
     },
     "Sets how long a title page waits before a trailer starts. The background trailer waits this long, and the full-screen auto-play follows about 4 seconds after it (with the background trailer off, auto-play waits this long on its own). Pressing any direction still cancels the full-screen trailer, and coming back from another page does not wait again. Default: the background trailer starts as soon as it loads, and auto-play waits about 4 seconds.": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Legt fest, wie lange die Detailseite wartet, bevor ein Trailer startet. Der Hintergrund-Trailer wartet so lange, und die automatische Vollbild-Wiedergabe folgt etwa 4 Sekunden danach (bei ausgeschaltetem Hintergrund-Trailer wartet die automatische Wiedergabe allein so lange). Das Drücken einer beliebigen Richtung bricht den Vollbild-Trailer weiterhin ab, und bei der Rückkehr von einer anderen Seite wird nicht erneut gewartet. Standard: Der Hintergrund-Trailer startet, sobald er geladen ist, und die automatische Wiedergabe wartet etwa 4 Sekunden."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Define cuánto espera la página de detalles antes de iniciar un tráiler. El tráiler de fondo espera ese tiempo y la reproducción automática a pantalla completa le sigue unos 4 segundos después (con el tráiler de fondo desactivado, la reproducción automática espera ese tiempo por sí sola). Pulsar cualquier dirección sigue cancelando el tráiler a pantalla completa, y al volver desde otra página no se espera de nuevo. Por defecto: el tráiler de fondo empieza en cuanto se carga y la reproducción automática espera unos 4 segundos."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Définit combien de temps la page de détail attend avant de lancer une bande-annonce. La bande-annonce en fond attend ce délai, et la lecture automatique en plein écran suit environ 4 secondes plus tard (avec la bande-annonce en fond désactivée, la lecture automatique attend ce délai seule). Appuyer sur une direction annule toujours la bande-annonce en plein écran, et le retour depuis une autre page n’attend pas de nouveau. Par défaut : la bande-annonce en fond démarre dès qu’elle est chargée, et la lecture automatique attend environ 4 secondes."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Imposta quanto attende la pagina dei dettagli prima di avviare un trailer. Il trailer di sottofondo attende questo tempo e la riproduzione automatica a schermo intero segue circa 4 secondi dopo (con il trailer di sottofondo disattivato, la riproduzione automatica attende da sola questo tempo). Premere una qualsiasi direzione annulla comunque il trailer a schermo intero e tornando da un’altra pagina non si attende di nuovo. Predefinito: il trailer di sottofondo parte non appena è caricato e la riproduzione automatica attende circa 4 secondi."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đặt thời gian trang chi tiết chờ trước khi phát trailer. Trailer nền chờ khoảng thời gian này, còn tự phát toàn màn hình theo sau khoảng 4 giây (khi tắt trailer nền, tự phát tự chờ khoảng thời gian này). Nhấn bất kỳ hướng nào vẫn hủy trailer toàn màn hình, và khi quay lại từ trang khác sẽ không chờ lại. Mặc định: trailer nền phát ngay khi tải xong, còn tự phát chờ khoảng 4 giây."
+          }
+        }
+      }
     },
     "Sets how long a trailer preview waits before it starts. Automatic waits until the row stops moving, then one second. Default: Automatic.": {
       "localizations": {
@@ -39929,6 +41107,36 @@
             "state": "translated",
             "value": "Show Badges in Player"
           }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Badges im Player anzeigen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostrar insignias en el reproductor"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Afficher les badges dans le lecteur"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostra badge nel player"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hiện huy hiệu trong trình phát"
+          }
         }
       }
     },
@@ -40239,7 +41447,39 @@
       }
     },
     "Show all %lld": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alle %lld anzeigen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostrar los %lld"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Afficher les %lld"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostra tutti i %lld"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hiển thị tất cả %lld"
+          }
+        }
+      }
     },
     "Show posters without a title label": {
       "localizations": {
@@ -40725,6 +41965,36 @@
             "state": "translated",
             "value": "Shows badge chips under the title in the player's Info tab, matching the pack's filters against the playing video and audio (resolution, codec, HDR, audio format) and the file name. Off by default."
           }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zeigt Badge-Chips unter dem Titel im Info-Tab des Players an und gleicht die Filter des Pakets mit dem laufenden Video und Audio (Auflösung, Codec, HDR, Audioformat) sowie dem Dateinamen ab. Standardmäßig aus."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Muestra chips de insignia bajo el título en la pestaña Info del reproductor, comparando los filtros del paquete con el video y el audio en reproducción (resolución, códec, HDR, formato de audio) y con el nombre del archivo. Desactivado por defecto."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Affiche des pastilles de badge sous le titre dans l’onglet Infos du lecteur, en comparant les filtres du pack à la vidéo et à l’audio en cours (résolution, codec, HDR, format audio) ainsi qu’au nom du fichier. Désactivé par défaut."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostra i chip dei badge sotto il titolo nella scheda Info del player, confrontando i filtri del pacchetto con il video e l’audio in riproduzione (risoluzione, codec, HDR, formato audio) e con il nome del file. Disattivato per impostazione predefinita."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hiện chip huy hiệu dưới tiêu đề trong tab Thông tin của trình phát, đối chiếu bộ lọc của gói với video và âm thanh đang phát (độ phân giải, codec, HDR, định dạng âm thanh) và tên tệp. Mặc định tắt."
+          }
         }
       }
     },
@@ -40736,14 +42006,108 @@
             "state": "translated",
             "value": "Shows badges for the video and audio that is playing under the title in the player's Info tab."
           }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zeigt Badges für das laufende Video und Audio unter dem Titel im Info-Tab des Players an."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Muestra bajo el título, en la pestaña Info del reproductor, las insignias del video y el audio en reproducción."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Affiche sous le titre, dans l’onglet Infos du lecteur, les badges de la vidéo et de l’audio en cours de lecture."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostra sotto il titolo, nella scheda Info del player, i badge del video e dell’audio in riproduzione."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hiện huy hiệu của video và âm thanh đang phát dưới tiêu đề trong tab Thông tin của trình phát."
+          }
         }
       }
     },
     "Shows each stream's file size, such as 4.2 GB, at the end of its first line.": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zeigt die Dateigröße jedes Streams, etwa 4,2 GB, am Ende der ersten Zeile an."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Muestra el tamaño de archivo de cada fuente, como 4,2 GB, al final de su primera línea."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Affiche la taille de fichier de chaque stream, par exemple 4,2 Go, à la fin de sa première ligne."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostra la dimensione del file di ogni stream, ad esempio 4,2 GB, alla fine della prima riga."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hiện dung lượng tệp của mỗi luồng, chẳng hạn 4,2 GB, ở cuối dòng đầu tiên."
+          }
+        }
+      }
     },
     "Shows each stream's file size, such as 4.2 GB, at the end of its first line. On by default.": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zeigt die Dateigröße jedes Streams, etwa 4,2 GB, am Ende der ersten Zeile an. Standardmäßig ein."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Muestra el tamaño de archivo de cada fuente, como 4,2 GB, al final de su primera línea. Activado por defecto."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Affiche la taille de fichier de chaque stream, par exemple 4,2 Go, à la fin de sa première ligne. Activé par défaut."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostra la dimensione del file di ogni stream, ad esempio 4,2 GB, alla fine della prima riga. Attivato per impostazione predefinita."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hiện dung lượng tệp của mỗi luồng, chẳng hạn 4,2 GB, ở cuối dòng đầu tiên. Mặc định bật."
+          }
+        }
+      }
     },
     "Shows or hides the About section with the title's details. On by default.": {
       "localizations": {
@@ -41188,10 +42552,74 @@
       }
     },
     "Shows the add-on's logo next to each source. The add-on name always shows on rows with a quality headline.": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zeigt das Logo des Add-ons neben jeder Quelle an. Der Add-on-Name erscheint bei Zeilen mit einer Qualitätsüberschrift immer."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Muestra el logo del complemento junto a cada fuente. El nombre del complemento siempre aparece en las filas con un titular de calidad."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Affiche le logo de l’addon à côté de chaque source. Le nom de l’addon s’affiche toujours sur les rangées avec un titre de qualité."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostra il logo dell’add-on accanto a ogni fonte. Il nome dell’add-on compare sempre nelle righe con un titolo di qualità."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hiện logo của addon bên cạnh mỗi nguồn. Tên addon luôn hiện ở các hàng có tiêu đề chất lượng."
+          }
+        }
+      }
     },
     "Shows the add-on's logo next to each source. The add-on name always shows on rows with a quality headline; this also adds it to the other rows. Off by default.": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zeigt das Logo des Add-ons neben jeder Quelle an. Der Add-on-Name erscheint bei Zeilen mit einer Qualitätsüberschrift immer; dies fügt ihn auch den übrigen Zeilen hinzu. Standardmäßig aus."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Muestra el logo del complemento junto a cada fuente. El nombre del complemento siempre aparece en las filas con un titular de calidad; esto lo añade también al resto de filas. Desactivado por defecto."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Affiche le logo de l’addon à côté de chaque source. Le nom de l’addon s’affiche toujours sur les rangées avec un titre de qualité ; ce réglage l’ajoute aussi aux autres rangées. Désactivé par défaut."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostra il logo dell’add-on accanto a ogni fonte. Il nome dell’add-on compare sempre nelle righe con un titolo di qualità; questa opzione lo aggiunge anche alle altre righe. Disattivato per impostazione predefinita."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hiện logo của addon bên cạnh mỗi nguồn. Tên addon luôn hiện ở các hàng có tiêu đề chất lượng; mục này thêm tên vào cả các hàng còn lại. Mặc định tắt."
+          }
+        }
+      }
     },
     "Shows the full biography": {
       "localizations": {
@@ -43338,7 +44766,39 @@
       }
     },
     "Source List Opens With": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quellenliste öffnet mit"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La lista de fuentes se abre con"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La liste des sources s’ouvre sur"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La lista delle fonti si apre con"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Danh sách nguồn mở với"
+          }
+        }
+      }
     },
     "Sources": {
       "localizations": {
@@ -43749,7 +45209,39 @@
       }
     },
     "Start Delay": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Startverzögerung"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retraso de inicio"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Délai de démarrage"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ritardo di avvio"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Độ trễ bắt đầu"
+          }
+        }
+      }
     },
     "Start Over": {
       "localizations": {
@@ -47629,7 +49121,39 @@
       }
     },
     "These settings decide when Up Next starts looking for the next episode's sources and, while Auto-Play Best Source is off, which source it picks.": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diese Einstellungen legen fest, wann „Als Nächstes“ mit der Suche nach den Quellen der nächsten Folge beginnt und, solange „Beste Quelle automatisch wiedergeben“ aus ist, welche Quelle gewählt wird."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Estos ajustes deciden cuándo «Siguiente» empieza a buscar las fuentes del siguiente episodio y, mientras «Reproducir automáticamente la mejor fuente» está desactivado, qué fuente elige."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ces réglages décident quand Suivant commence à chercher les sources de l’épisode suivant et, tant que « Lecture auto de la meilleure source » est désactivée, quelle source il choisit."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Queste impostazioni decidono quando «Prossimo» inizia a cercare le fonti del prossimo episodio e, mentre «Riproduci automaticamente la fonte migliore» è disattivato, quale fonte sceglie."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Các cài đặt này quyết định khi nào “Tiếp theo” bắt đầu tìm nguồn của tập tiếp theo và, khi “Tự động phát nguồn tốt nhất” tắt, nó chọn nguồn nào."
+          }
+        }
+      }
     },
     "This appears to be a private-network server, but Nuvio still cannot verify who controls it.": {
       "localizations": {
@@ -49741,7 +51265,39 @@
       }
     },
     "Turn every provider in %@ on or off.": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Schaltet alle Anbieter in %@ ein oder aus."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activa o desactiva todos los proveedores de %@."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Active ou désactive tous les fournisseurs de %@."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Attiva o disattiva tutti i provider in %@."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bật hoặc tắt mọi nhà cung cấp trong %@."
+          }
+        }
+      }
     },
     "Turn on before walking Home down and back up, or running Detail push/pop cycles": {
       "localizations": {
@@ -50016,7 +51572,39 @@
       }
     },
     "Turns every provider in this repository on or off at once. It reads On while any provider is on. Providers the repository ships turned off stay off.": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Schaltet alle Anbieter dieses Repositorys auf einmal ein oder aus. Der Schalter steht auf „Ein“, solange ein Anbieter an ist. Anbieter, die das Repository ausgeschaltet mitliefert, bleiben aus."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activa o desactiva de una vez todos los proveedores de este repositorio. Aparece como Activado mientras algún proveedor esté activado. Los proveedores que el repositorio incluye desactivados siguen desactivados."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Active ou désactive d’un coup tous les fournisseurs de ce dépôt. Il indique Activé tant qu’un fournisseur est activé. Les fournisseurs que le dépôt livre désactivés restent désactivés."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Attiva o disattiva in una volta tutti i provider di questo repository. Risulta Attivato finché almeno un provider è attivo. I provider che il repository include disattivati restano disattivati."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bật hoặc tắt cùng lúc mọi nhà cung cấp trong kho này. Công tắc hiện Bật khi có bất kỳ nhà cung cấp nào đang bật. Các nhà cung cấp mà kho cung cấp ở trạng thái tắt vẫn giữ nguyên tắt."
+          }
+        }
+      }
     },
     "Turns the depth effect on or off for this kind of card. Each kind is on by default.": {
       "localizations": {
@@ -50632,7 +52220,39 @@
       }
     },
     "Up Next picks the next episode from the same release or add-on group as the episode playing, when that stream has one. On by default.": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "„Als Nächstes“ wählt die nächste Folge aus demselben Release oder derselben Add-on-Gruppe wie die laufende Folge, sofern dieser Stream eine hat. Standardmäßig ein."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "«Siguiente» elige el siguiente episodio del mismo lanzamiento o grupo de complementos que el episodio en reproducción, si esa fuente tiene uno. Activado por defecto."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Suivant choisit l’épisode suivant dans la même version ou le même groupe d’addons que l’épisode en cours, si ce stream en a un. Activé par défaut."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "«Prossimo» sceglie il prossimo episodio dalla stessa release o dallo stesso gruppo di add-on dell’episodio in riproduzione, se quello stream ne ha uno. Attivato per impostazione predefinita."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "“Tiếp theo” chọn tập tiếp theo từ cùng bản phát hành hoặc nhóm addon với tập đang phát, nếu luồng đó có. Mặc định bật."
+          }
+        }
+      }
     },
     "Up Next · %@": {
       "localizations": {
@@ -52267,7 +53887,39 @@
       }
     },
     "When a title's streams load, plugin results are listed under one group per repository instead of one group per provider, so a repository with many providers takes one row. Off by default.": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wenn die Streams eines Titels laden, werden Plugin-Ergebnisse unter einer Gruppe pro Repository statt einer Gruppe pro Anbieter aufgelistet, sodass ein Repository mit vielen Anbietern nur eine Zeile belegt. Standardmäßig aus."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cuando se cargan las fuentes de un título, los resultados de plugins se listan en un grupo por repositorio en lugar de un grupo por proveedor, así que un repositorio con muchos proveedores ocupa una sola fila. Desactivado por defecto."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quand les streams d’un titre se chargent, les résultats des plugins sont listés sous un groupe par dépôt au lieu d’un groupe par fournisseur, si bien qu’un dépôt comptant de nombreux fournisseurs ne prend qu’une rangée. Désactivé par défaut."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quando si caricano gli stream di un titolo, i risultati dei plugin sono elencati sotto un gruppo per repository invece di un gruppo per provider, così un repository con molti provider occupa una sola riga. Disattivato per impostazione predefinita."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Khi các luồng của một tiêu đề được tải, kết quả plugin được liệt kê trong một nhóm cho mỗi kho thay vì một nhóm cho mỗi nhà cung cấp, nên một kho có nhiều nhà cung cấp chỉ chiếm một hàng. Mặc định tắt."
+          }
+        }
+      }
     },
     "When playback starts, auto-select the audio and subtitle tracks in your preferred language (when a matching track exists).": {
       "localizations": {
@@ -52406,10 +54058,74 @@
       }
     },
     "When the same release or group has no next episode, Up Next plays the first source it found instead. Off, it only plays an exact filename match from another source; otherwise it shows that no stream was found. A stream with no source group always uses the first source available. Shown while Auto-Pick Next Episode Source and Prefer Same Source are both on. On by default.": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hat dasselbe Release oder dieselbe Gruppe keine nächste Folge, spielt „Als Nächstes“ stattdessen die erste gefundene Quelle ab. Ist die Option aus, wird nur ein exakter Dateinamen-Treffer aus einer anderen Quelle abgespielt; andernfalls wird angezeigt, dass kein Stream gefunden wurde. Ein Stream ohne Quellengruppe verwendet immer die erste verfügbare Quelle. Wird angezeigt, solange „Quelle für nächste Folge automatisch wählen“ und „Gleiche Quelle bevorzugen“ beide an sind. Standardmäßig ein."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cuando el mismo lanzamiento o grupo no tiene siguiente episodio, «Siguiente» reproduce en su lugar la primera fuente que encontró. Desactivado, solo reproduce una coincidencia exacta de nombre de archivo de otra fuente; de lo contrario, muestra que no se encontró ninguna fuente. Una fuente sin grupo siempre usa la primera fuente disponible. Se muestra mientras «Elegir automáticamente la fuente del siguiente episodio» y «Preferir la misma fuente» están ambos activados. Activado por defecto."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quand la même version ou le même groupe n’a pas d’épisode suivant, Suivant lit à la place la première source trouvée. Désactivé, il ne lit qu’une correspondance exacte de nom de fichier issue d’une autre source ; sinon, il indique qu’aucun stream n’a été trouvé. Un stream sans groupe de sources utilise toujours la première source disponible. Affiché tant que « Choix auto de la source de l’épisode suivant » et « Privilégier la même source » sont tous deux activés. Activé par défaut."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quando la stessa release o lo stesso gruppo non ha un prossimo episodio, «Prossimo» riproduce invece la prima fonte trovata. Se disattivato, riproduce solo una corrispondenza esatta del nome file da un’altra fonte; altrimenti mostra che non è stato trovato nessuno stream. Uno stream senza gruppo di fonti usa sempre la prima fonte disponibile. Compare finché «Scegli automaticamente la fonte del prossimo episodio» e «Preferisci la stessa fonte» sono entrambi attivi. Attivato per impostazione predefinita."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Khi cùng bản phát hành hoặc nhóm không có tập tiếp theo, “Tiếp theo” sẽ phát nguồn đầu tiên tìm được. Khi tắt, nó chỉ phát nguồn khác có tên tệp khớp chính xác; nếu không, nó báo không tìm thấy luồng nào. Một luồng không có nhóm nguồn luôn dùng nguồn đầu tiên có sẵn. Hiện khi cả “Tự động chọn nguồn cho tập tiếp theo” và “Ưu tiên cùng nguồn” đều bật. Mặc định bật."
+          }
+        }
+      }
     },
     "When the same source has no next episode, use the first one available.": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hat dieselbe Quelle keine nächste Folge, wird die erste verfügbare verwendet."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cuando la misma fuente no tiene siguiente episodio, usa la primera disponible."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quand la même source n’a pas d’épisode suivant, utilise la première disponible."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quando la stessa fonte non ha un prossimo episodio, usa la prima disponibile."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Khi cùng nguồn không có tập tiếp theo, dùng nguồn đầu tiên có sẵn."
+          }
+        }
+      }
     },
     "Where the rail sits on the left edge: centred, or at the top-left corner. Default: Centre.": {
       "localizations": {
@@ -53500,10 +55216,74 @@
       }
     },
     "cached": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "im Cache"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "en caché"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "en cache"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "in cache"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "đã lưu đệm"
+          }
+        }
+      }
     },
     "cached on %@": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "im Cache bei %@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "en caché en %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "en cache sur %@"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "in cache su %@"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "đã lưu đệm trên %@"
+          }
+        }
+      }
     },
     "debug_bridge trace=%@": {
       "localizations": {
@@ -54117,7 +55897,40 @@
         }
       }
     },
-    "debug_ux6 dark=%lld trailer=%lld glass=%lld ab=%lld scrolling=%lld anchor=%@ geo=%@ compactLogo=%@ logoBand=%@": {},
+    "debug_ux6 dark=%lld trailer=%lld glass=%lld ab=%lld scrolling=%lld anchor=%@ geo=%@ compactLogo=%@ logoBand=%@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "debug_ux6 dark=%lld trailer=%lld glass=%lld ab=%lld scrolling=%lld anchor=%@ geo=%@ compactLogo=%@ logoBand=%@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "debug_ux6 dark=%lld trailer=%lld glass=%lld ab=%lld scrolling=%lld anchor=%@ geo=%@ compactLogo=%@ logoBand=%@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "debug_ux6 dark=%lld trailer=%lld glass=%lld ab=%lld scrolling=%lld anchor=%@ geo=%@ compactLogo=%@ logoBand=%@"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "debug_ux6 dark=%lld trailer=%lld glass=%lld ab=%lld scrolling=%lld anchor=%@ geo=%@ compactLogo=%@ logoBand=%@"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "debug_ux6 dark=%lld trailer=%lld glass=%lld ab=%lld scrolling=%lld anchor=%@ geo=%@ compactLogo=%@ logoBand=%@"
+          }
+        }
+      }
+    },
     "declared %@ Mb/s": {
       "localizations": {
         "de": {
@@ -55439,6 +57252,36 @@
           "stringUnit": {
             "state": "translated",
             "value": "not cached"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "nicht im Cache"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "no en caché"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "pas en cache"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "non in cache"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "chưa lưu đệm"
           }
         }
       }
