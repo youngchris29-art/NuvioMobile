@@ -101,14 +101,16 @@ nonisolated enum PlayerBadgeMatch {
         "nv12", "nv21", "nv16", "nv24", "uyvy422", "yuyv422", "gray", "rgb24", "bgr24", "rgba", "bgra",
         "argb", "abgr", "rgb0", "bgr0", "0rgb", "0bgr",
     ]
-    /// Codec profiles that are 8-bit only (H.264 Baseline/Main/High, HEVC Main).
+    /// Profile names that are 8-bit in H.264 (Baseline/Main/High) and MPEG-2.
     private static let eightBitProfiles: Set<String> = ["baseline", "constrained baseline", "main", "high"]
 
     /// Bit depth from an mpv pixel format (`yuv420p10le`, `p010`, `nv12`) or codec profile
     /// (`Main 10`, `High`); nil when neither says. The decoded format wins over the profile. An explicit
     /// 8 matters: without it the shared match text assumes 10-bit for any HDR or Dolby Vision media,
-    /// which is wrong for Dolby Vision profile 9 (AVC, 8-bit).
-    static func bitDepth(pixelFormat: String?, codecProfile: String?) -> Int? {
+    /// which is wrong for Dolby Vision profile 9 (AVC, 8-bit). A bare profile name implies 8 bits only
+    /// for codecs whose profiles are 8-bit (see `profileImpliesEightBit`); AV1 Main is 8 or 10 bit, so
+    /// its profile name alone never sets a depth.
+    static func bitDepth(pixelFormat: String?, codecProfile: String?, codec: String?) -> Int? {
         let format = pixelFormat?.lowercased() ?? ""
         if format.contains("p010") || format.contains("p10") { return 10 }
         if format.contains("p012") || format.contains("p12") { return 12 }
@@ -116,8 +118,21 @@ nonisolated enum PlayerBadgeMatch {
         let profile = codecProfile?.lowercased().trimmingCharacters(in: .whitespaces) ?? ""
         if profile.contains("main 10") || profile.contains("10-bit") || profile.contains("high 10") { return 10 }
         if profile.contains("main 12") || profile.contains("12-bit") { return 12 }
-        if eightBitProfiles.contains(profile) { return 8 }
+        if profileImpliesEightBit(codec: codec, profile: profile) { return 8 }
         return nil
+    }
+
+    /// Whether a bare profile name means 8 bits for this codec: H.264 and MPEG-2 (Baseline/Main/High),
+    /// HEVC Main only (Main 10 is handled before this). Any other codec, AV1 included, returns false.
+    private static func profileImpliesEightBit(codec: String?, profile: String) -> Bool {
+        let codec = codec?.lowercased().trimmingCharacters(in: .whitespaces) ?? ""
+        if codec == "h264" || codec.hasPrefix("avc") || codec.hasPrefix("mpeg2") {
+            return eightBitProfiles.contains(profile)
+        }
+        if codec == "hevc" || codec == "h265" || codec.hasPrefix("hev") {
+            return profile == "main"
+        }
+        return false
     }
 
     /// mpv: a codecs hint for the shared match text. Dolby Vision over AVC (profile 9) is passed as
@@ -155,7 +170,7 @@ nonisolated enum PlayerBadgeMatch {
         var out = video
         if width > 0, height > 0 { out.videoWidth = width; out.videoHeight = height }
         out.hdr = mpvHDR(gamma: gamma, dolbyVisionProfile: video.hdr.contains("DV") ? 1 : 0)
-        if let depth = bitDepth(pixelFormat: pixelFormat, codecProfile: nil) { out.bitDepth = depth }
+        if let depth = bitDepth(pixelFormat: pixelFormat, codecProfile: nil, codec: video.videoCodec) { out.bitDepth = depth }
         return out
     }
 

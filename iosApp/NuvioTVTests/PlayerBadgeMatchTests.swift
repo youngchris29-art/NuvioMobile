@@ -48,7 +48,7 @@ final class PlayerBadgeMatchTests: XCTestCase {
             videoWidth: 1920, videoHeight: 1080, videoCodec: "h264",
             videoCodecString: PlayerBadgeMatch.mpvCodecString(codec: "h264", dolbyVisionProfile: 9),
             hdr: PlayerBadgeMatch.mpvHDR(gamma: "bt.1886", dolbyVisionProfile: 9),
-            bitDepth: PlayerBadgeMatch.bitDepth(pixelFormat: "yuv420p", codecProfile: "High"))
+            bitDepth: PlayerBadgeMatch.bitDepth(pixelFormat: "yuv420p", codecProfile: "High", codec: "h264"))
         let tokens = PlayerBadgeMatch.matchText(facts).split(separator: " ").map(String.init)
         XCTAssertTrue(tokens.contains("DV"))
         XCTAssertTrue(tokens.contains("AVC"))
@@ -62,23 +62,42 @@ final class PlayerBadgeMatchTests: XCTestCase {
             videoWidth: 3840, videoHeight: 2160, videoCodec: "hevc",
             videoCodecString: PlayerBadgeMatch.mpvCodecString(codec: "hevc", dolbyVisionProfile: 8),
             hdr: PlayerBadgeMatch.mpvHDR(gamma: "pq", dolbyVisionProfile: 8),
-            bitDepth: PlayerBadgeMatch.bitDepth(pixelFormat: "yuv420p10le", codecProfile: "Main 10"))
+            bitDepth: PlayerBadgeMatch.bitDepth(pixelFormat: "yuv420p10le", codecProfile: "Main 10", codec: "hevc"))
         let tokens = PlayerBadgeMatch.matchText(facts).split(separator: " ").map(String.init)
         XCTAssertTrue(tokens.contains("DV"))
         XCTAssertTrue(tokens.contains("HDR10"))
         XCTAssertTrue(tokens.contains("10bit"))
     }
 
+    /// AV1 Main is 8 or 10 bit: with no pixel format the profile name sets no depth, so the shared
+    /// default (10-bit for HDR10) stays in the match text.
+    func testAV1MainProfileDoesNotImplyEightBit() {
+        XCTAssertNil(PlayerBadgeMatch.bitDepth(pixelFormat: nil, codecProfile: "Main", codec: "av1"))
+        let facts = PlayerBadgeFacts(
+            videoWidth: 3840, videoHeight: 2160, videoCodec: "av1",
+            hdr: ["HDR10"], bitDepth: PlayerBadgeMatch.bitDepth(pixelFormat: nil, codecProfile: "Main", codec: "av1"))
+        let tokens = PlayerBadgeMatch.matchText(facts).split(separator: " ").map(String.init)
+        XCTAssertTrue(tokens.contains("10bit"))
+    }
+
+    /// H.264 Main is 8-bit: the profile name alone is enough.
+    func testH264MainProfileIsEightBit() {
+        XCTAssertEqual(PlayerBadgeMatch.bitDepth(pixelFormat: nil, codecProfile: "Main", codec: "h264"), 8)
+    }
+
     // MARK: - Helpers
 
     func testHelpers() {
-        XCTAssertEqual(PlayerBadgeMatch.bitDepth(pixelFormat: "yuv420p10", codecProfile: nil), 10)
-        XCTAssertEqual(PlayerBadgeMatch.bitDepth(pixelFormat: "p010", codecProfile: nil), 10)
-        XCTAssertEqual(PlayerBadgeMatch.bitDepth(pixelFormat: nil, codecProfile: "Main 10"), 10)
-        XCTAssertEqual(PlayerBadgeMatch.bitDepth(pixelFormat: "nv12", codecProfile: "Main 10"), 8, "decoded format wins")
-        XCTAssertEqual(PlayerBadgeMatch.bitDepth(pixelFormat: "yuvj420p", codecProfile: nil), 8)
-        XCTAssertEqual(PlayerBadgeMatch.bitDepth(pixelFormat: "videotoolbox", codecProfile: "High"), 8)
-        XCTAssertNil(PlayerBadgeMatch.bitDepth(pixelFormat: "videotoolbox", codecProfile: nil))
+        XCTAssertEqual(PlayerBadgeMatch.bitDepth(pixelFormat: "yuv420p10", codecProfile: nil, codec: "hevc"), 10)
+        XCTAssertEqual(PlayerBadgeMatch.bitDepth(pixelFormat: "p010", codecProfile: nil, codec: "hevc"), 10)
+        XCTAssertEqual(PlayerBadgeMatch.bitDepth(pixelFormat: nil, codecProfile: "Main 10", codec: "hevc"), 10)
+        XCTAssertEqual(PlayerBadgeMatch.bitDepth(pixelFormat: "nv12", codecProfile: "Main 10", codec: "hevc"), 8,
+                       "decoded format wins")
+        XCTAssertEqual(PlayerBadgeMatch.bitDepth(pixelFormat: "yuvj420p", codecProfile: nil, codec: nil), 8)
+        XCTAssertEqual(PlayerBadgeMatch.bitDepth(pixelFormat: "videotoolbox", codecProfile: "High", codec: "h264"), 8)
+        XCTAssertNil(PlayerBadgeMatch.bitDepth(pixelFormat: "videotoolbox", codecProfile: nil, codec: "h264"))
+        XCTAssertNil(PlayerBadgeMatch.bitDepth(pixelFormat: "videotoolbox", codecProfile: "High", codec: nil))
+        XCTAssertEqual(PlayerBadgeMatch.bitDepth(pixelFormat: nil, codecProfile: "Main", codec: "hevc"), 8)
         XCTAssertEqual(PlayerBadgeMatch.mpvCodecString(codec: "h264", dolbyVisionProfile: 9), "dvav")
         XCTAssertNil(PlayerBadgeMatch.mpvCodecString(codec: "hevc", dolbyVisionProfile: 8))
         XCTAssertNil(PlayerBadgeMatch.mpvCodecString(codec: "h264", dolbyVisionProfile: 0))

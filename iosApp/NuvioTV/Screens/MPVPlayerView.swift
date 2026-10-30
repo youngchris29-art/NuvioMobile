@@ -1285,7 +1285,8 @@ final class MPVTVPlayerViewController: UIViewController {
         let dvProfile = getInt("track-list/\(i)/dolby-vision-profile")
         facts.videoCodecString = PlayerBadgeMatch.mpvCodecString(codec: facts.videoCodec, dolbyVisionProfile: dvProfile)
         facts.hdr = PlayerBadgeMatch.mpvHDR(gamma: getString("video-params/gamma"), dolbyVisionProfile: dvProfile)
-        facts.bitDepth = PlayerBadgeMatch.bitDepth(pixelFormat: badgePixelFormat(), codecProfile: profile)
+        facts.bitDepth = PlayerBadgeMatch.bitDepth(pixelFormat: badgePixelFormat(), codecProfile: profile,
+                                                   codec: facts.videoCodec)
         facts.fileName = PlayerBadgeMatch.fileName(from: context.url)
         facts.streamName = PlayerBadgeMatch.streamName(title: context.streamTitle, subtitle: context.streamSubtitle)
         return facts

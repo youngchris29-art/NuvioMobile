@@ -1567,8 +1567,9 @@ object WatchProgressRepository {
      * Puts [videoId]'s local entries back to [entries] (from [localEntriesForVideo]): each written
      * as it was, own timestamp kept, no watched cascade and no scrobble; any other local entry for
      * the video is dropped (a server delete only without a tracker source). Restored keys are
-     * re-dirtied so the next sync replaces the server copy. A tracker's own remote progress is never
-     * touched. For the tvOS mpv player undoing the resume saves of a stream that turned live.
+     * re-dirtied: the dirty mark keeps the restored entry until the next pull reconciles it (the
+     * server copy is not pushed from tvOS). A tracker's own remote progress is never touched.
+     * For the tvOS mpv player undoing the resume saves of a stream that turned live.
      */
     fun restoreLocalEntriesForVideo(videoId: String, entries: List<WatchProgressEntry>) {
         ensureLoaded()
