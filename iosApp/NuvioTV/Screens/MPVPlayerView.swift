@@ -352,8 +352,8 @@ final class MPVTVPlayerViewController: UIViewController {
                                                                                       url: context.url))
     }
     private var savedResumeThisSession = false
-    /// The stored entry for this video when this session first saved (nil = there was none).
-    private var resumeEntryBeforeSession: WatchProgressEntry?
+    /// The local entries for this video (every parent id) when this session first saved.
+    private var resumeEntriesBeforeSession: [WatchProgressEntry] = []
     /// P5 N1: main only. The audio delay's saved / stream-hint / session parts for this file.
     private var audioDelayParts = AudioDelayParts(savedMs: 0, streamMs: nil, sessionAdjustMs: 0)
     /// P5 B20: `eventQueue` only. The `af` value last handed to mpv ("" = none).
@@ -2301,10 +2301,7 @@ final class MPVTVPlayerViewController: UIViewController {
         guard LivePlaybackPolicy.shouldSaveResume(isLive: holdsLiveResume, positionSec: position, durationSec: duration) else { return }
         if !savedResumeThisSession {
             savedResumeThisSession = true
-            resumeEntryBeforeSession = WatchProgressRepository.shared.progressForVideo(
-                videoId: context.videoId, parentMetaId: context.parentMetaId,
-                seasonNumber: context.season.map { KotlinInt(int: Int32($0)) },
-                episodeNumber: context.episode.map { KotlinInt(int: Int32($0)) })
+            resumeEntriesBeforeSession = WatchProgressRepository.shared.localEntriesForVideo(videoId: context.videoId)
         }
 
         let snapshot = PlayerPlaybackSnapshot(
@@ -2326,20 +2323,13 @@ final class MPVTVPlayerViewController: UIViewController {
     }
 
     /// The stream turned live after this session saved resume (a stall or pause outlasted the
-    /// settle hold): no Continue Watching row for it. Puts back the entry from before the session,
-    /// or clears the one it wrote when there was none. `parentMetaId: nil`: the save stored the
-    /// provider-normalised parent id, which need not match `context.parentMetaId`.
+    /// settle hold): no Continue Watching row for it. Puts this video's local entries back as they
+    /// were before the session (by videoId alone: the save stored the provider-normalised parent id),
+    /// own timestamps kept, no watched cascade, and never a tracker's remote progress.
     private func undoSessionResumeSaves() {
         savedResumeThisSession = false
-        guard let prior = resumeEntryBeforeSession else {
-            WatchProgressRepository.shared.clearProgress(videoId: context.videoId, parentMetaId: nil)
-            return
-        }
-        // A percentage-only (tracker) entry cannot be written back: left as the session wrote it.
-        guard let restore = PlaybackProgressRecorder.restoration(of: prior,
-                                                                 profileId: ActiveProfileProvider.shared.activeProfileId) else { return }
-        WatchProgressRepository.shared.flushPlaybackProgress(session: restore.session, snapshot: restore.snapshot,
-                                                             syncRemote: false)
+        WatchProgressRepository.shared.restoreLocalEntriesForVideo(videoId: context.videoId,
+                                                                   entries: resumeEntriesBeforeSession)
     }
 
     // MARK: - State polling

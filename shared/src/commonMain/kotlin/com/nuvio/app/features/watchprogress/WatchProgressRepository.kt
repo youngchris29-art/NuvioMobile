@@ -1554,6 +1554,41 @@ object WatchProgressRepository {
         )
     }
 
+    /**
+     * The local entries for [videoId] as stored now, under every parent id. Read before a playback
+     * session's first save so [restoreLocalEntriesForVideo] can put them back.
+     */
+    fun localEntriesForVideo(videoId: String): List<WatchProgressEntry> {
+        ensureLoaded()
+        return localEntriesSnapshot().filter { it.videoId == videoId }
+    }
+
+    /**
+     * Puts [videoId]'s local entries back to [entries] (from [localEntriesForVideo]): each written
+     * as it was, own timestamp kept, no watched cascade and no scrobble; any other local entry for
+     * the video is dropped (a server delete only without a tracker source). Restored keys are
+     * re-dirtied so the next sync replaces the server copy. A tracker's own remote progress is never
+     * touched. For the tvOS mpv player undoing the resume saves of a stream that turned live.
+     */
+    fun restoreLocalEntriesForVideo(videoId: String, entries: List<WatchProgressEntry>) {
+        ensureLoaded()
+        val plan = planLocalProgressRestore(current = localEntriesSnapshot(), videoId = videoId, captured = entries)
+        if (plan.upserts.isEmpty() && plan.removals.isEmpty()) return
+        val provider = activeProgressProvider()
+        if (plan.removals.isNotEmpty()) {
+            plan.removals.forEach { removeLocalEntry(it.resolvedProgressKey()) }
+            provider?.applyOptimisticRemoval(plan.removals)
+            pushDeleteToServer(plan.removals)
+        }
+        plan.upserts.forEach { entry ->
+            upsertLocalEntry(entry)
+            markProgressDirty(entry)
+            provider?.applyOptimisticProgress(entry)
+        }
+        publish()
+        persist()
+    }
+
     fun resumeEntryForSeries(metaId: String): WatchProgressEntry? {
         ensureLoaded()
         return currentEntries().resumeEntryForSeries(metaId)
