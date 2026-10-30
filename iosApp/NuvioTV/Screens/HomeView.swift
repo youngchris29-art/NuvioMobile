@@ -5531,6 +5531,8 @@ struct ContinueWatchingRow: View {
     /// Defaulted — nil is a plain no-op. Gating and backdrop prefetch live in the callback
     /// (HomeView.reportRowFocus), not here.
     var onItemFocusChange: ((WatchProgressEntry?) -> Void)? = nil
+    /// The shelf heading. FEAT-89: the Library tab shows the same row as "Resume Watching".
+    var title: LocalizedStringKey = "Continue Watching"
     /// Focus inside the shelf disables the reorder snap-back (mirrors upstream's
     /// hasUserScrolledContinueWatching guard in their CW scroll stabilization).
     @FocusState private var focusedVideoId: String?
@@ -5608,7 +5610,7 @@ struct ContinueWatchingRow: View {
             // CatalogRowView's structural comment — out-of-bounds frames froze the focus
             // engine; all paddings must stay positive).
             if cardTopReach == 0 {
-                Text("Continue Watching")
+                Text(title)
                     .font(Theme.Font.sectionTitle)
                     .foregroundStyle(Theme.Palette.textPrimary)
             }
@@ -5695,7 +5697,7 @@ struct ContinueWatchingRow: View {
                 // mask never changes layout), so `pinnedRowTitleTracking` sees the same geometry.
                 .overlay(alignment: .topLeading) {
                     if cardTopReach > 0 {
-                        Text("Continue Watching")
+                        Text(title)
                             .font(Theme.Font.sectionTitle)
                             .foregroundStyle(Theme.Palette.textPrimary)
                             .shadow(color: .black.opacity(0.7), radius: 8, y: 2)

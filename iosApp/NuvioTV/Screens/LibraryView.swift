@@ -15,9 +15,22 @@ import SharedCore
 /// - cards with a watched tick or a progress bar (`PosterCard.watchBadge`);
 /// - a hold menu with Mark as Watched / Unwatched and a list-aware Remove;
 /// - real loading, failed (with Retry), empty and no-match states.
+///
+/// FEAT-89 (2026-10-30): with a Trakt or Simkl account connected, "Resume Watching" and a merged
+/// "Watchlist" row sit above the controls in the Saved view (`LibraryProviderRowsView`).
 struct LibraryView: View {
     @StateObject private var model = LibraryViewModel()
     @StateObject private var cloud = CloudLibraryViewModel()
+    @StateObject private var providerRows = LibraryProviderRowsModel()
+    /// FEAT-89: the Resume Watching card's stream picker, as Home's `resume`.
+    @State private var resume: ResumeTarget?
+    /// A title picked on the player's end screen, pushed once the picker cover is gone (Home's
+    /// `homePostPlayPending`).
+    @State private var postPlayPending: MetaPreview?
+    /// Path-bound so Resume Watching › Go to Details can push; the grid's links append to it.
+    @State private var path = NavigationPath()
+    /// Home's Continue Watching Remove / Mark Episode Watched (they touch no Home state).
+    @State private var cardActions = HomeRowActions()
     @Environment(\.posterStyle) private var posterStyle
     @State private var showingCloud = false
     @State private var filePicker: CloudFilePickerRoute?
@@ -30,7 +43,7 @@ struct LibraryView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             ZStack {
                 Theme.Palette.background.ignoresSafeArea()
 
@@ -103,10 +116,12 @@ struct LibraryView: View {
         .onAppear {
             model.start()
             cloud.start()
+            providerRows.start()
         }
         .onDisappear {
             model.stop()
             cloud.stop()
+            providerRows.stop()
         }
         .fullScreenCover(item: $filePicker) { route in
             CloudFilePickerView(item: route.item) { file in
@@ -118,6 +133,31 @@ struct LibraryView: View {
             PlayerScreen(context: ctx)
                 .ignoresSafeArea()
                 .id(ctx.id)
+        }
+        // FEAT-89: a Resume Watching card opens the stream picker exactly as Home's Continue
+        // Watching card does (same arguments as `HomeView`'s `resume` cover).
+        .fullScreenCover(item: $resume, onDismiss: {
+            guard let pick = postPlayPending else { return }
+            postPlayPending = nil
+            path.append(TitleRoute(preview: pick))
+        }) { target in
+            StreamPickerView(
+                type: target.entry.parentMetaType,
+                videoId: target.entry.videoId,
+                title: target.entry.title,
+                parentMetaId: target.entry.parentMetaId,
+                season: target.entry.seasonNumber?.value,
+                episode: target.entry.episodeNumber?.value,
+                poster: target.entry.poster,
+                background: { let b: String? = target.entry.background; return (b ?? "").isEmpty ? nil : b }(),
+                episodeStill: { let still: String? = target.entry.episodeThumbnail; return (still ?? "").isEmpty ? nil : still }(),
+                synopsis: { let d: String? = target.entry.pauseDescription; return (d ?? "").isEmpty ? nil : d }(),
+                forceManual: target.forceManual,
+                startFromBeginning: target.startFromBeginning,
+                resumePositionMs: target.entry.lastPositionMs > 0 ? target.entry.lastPositionMs : nil,
+                resumeFraction: Double(target.entry.progressFraction),
+                onOpenTitle: { postPlayPending = $0 }
+            )
         }
     }
 
@@ -147,6 +187,15 @@ struct LibraryView: View {
 
     @ViewBuilder
     private var savedContent: some View {
+        // FEAT-89: independent of the grid's state (a Trakt library still loading, a failed
+        // MDBList source, an empty local library): drawn whenever they have cards.
+        LibraryProviderRowsView(
+            model: providerRows,
+            onResume: { resume = $0 },
+            onGoToDetails: { path.append(TitleRoute(preview: HomeRowPreviews.entry($0))) },
+            cardActions: cardActions
+        )
+
         switch model.content {
         case .loading:
             loadingState
