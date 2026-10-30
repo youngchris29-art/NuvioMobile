@@ -338,12 +338,15 @@ final class MPVTVPlayerViewController: UIViewController {
     /// Main only. Live detection (`LivePlaybackPolicy`, NuvioTV b4e47d6d6/583eae818): `seekable`
     /// false once loaded, or (a live HLS stream mpv seeks inside its cache) a duration that keeps
     /// growing with the clock. Fed once per `refreshState` tick, readings before FILE_LOADED
-    /// skipped. A live stream, or one whose growth is still undecided (`holdsLiveProgress`), saves
-    /// no progress and closes its tracker sessions at 0 %.
+    /// skipped. A live stream, or one whose growth is still undecided (`holdsLiveProgress`), closes
+    /// its tracker sessions at 0 %; resume saves also wait for the stream to settle
+    /// (`holdsLiveResume`), and an entry this session saved anyway is cleared when it turns live.
     private var reportsLive = false
     private var durationGrowth = LivePlaybackPolicy.DurationGrowth()
     private var isLiveStream: Bool { LivePlaybackPolicy.isLive(reportsLive: reportsLive, growth: durationGrowth) }
     private var holdsLiveProgress: Bool { LivePlaybackPolicy.holdsProgress(reportsLive: reportsLive, growth: durationGrowth) }
+    private var holdsLiveResume: Bool { LivePlaybackPolicy.holdsResume(reportsLive: reportsLive, growth: durationGrowth) }
+    private var savedResumeThisSession = false
     /// P5 N1: main only. The audio delay's saved / stream-hint / session parts for this file.
     private var audioDelayParts = AudioDelayParts(savedMs: 0, streamMs: nil, sessionAdjustMs: 0)
     /// P5 B20: `eventQueue` only. The `af` value last handed to mpv ("" = none).
@@ -2278,7 +2281,8 @@ final class MPVTVPlayerViewController: UIViewController {
         guard mpv != nil else { return }
         let duration = state.durationSec
         let position = state.positionSec
-        guard LivePlaybackPolicy.shouldSaveResume(isLive: holdsLiveProgress, positionSec: position, durationSec: duration) else { return }
+        guard LivePlaybackPolicy.shouldSaveResume(isLive: holdsLiveResume, positionSec: position, durationSec: duration) else { return }
+        savedResumeThisSession = true
 
         let snapshot = PlayerPlaybackSnapshot(
             isLoading: false,
@@ -2329,6 +2333,11 @@ final class MPVTVPlayerViewController: UIViewController {
                                                                fromRequestedMedia: fileLoaded)
         if !wasLive, isLiveStream {
             print("[Live] mpv: live (reported=\(reportsLive) grew=\(durationGrowth.grew)): no resume or tracker progress")
+            if savedResumeThisSession {
+                // Saved while it still read as VOD (a stall or pause outlasted the hold): no
+                // Continue Watching row for a live stream.
+                WatchProgressRepository.shared.clearProgress(videoId: context.videoId, parentMetaId: context.parentMetaId)
+            }
         }
         if state.positionSec != position { state.positionSec = position }
         // Paused → playing without input (the pause-card-off rule left no hide timer armed):

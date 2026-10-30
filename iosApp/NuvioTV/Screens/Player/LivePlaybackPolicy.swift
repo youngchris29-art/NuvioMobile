@@ -24,6 +24,9 @@ import Foundation
 /// stopPercent`), so no tracker marks it watched and history sync brings no "completed" back. While
 /// growth has started but not yet decided (`DurationGrowth.undecided`), `holdsProgress` already
 /// holds both back, so an open-and-close in the first seconds of a live stream sends no 80 % stop.
+/// Resume saves wait longer (`holdsResume`): until `liveUndecidedHoldSec` has passed since the first
+/// reading or the last growing one, since a live stream's first growth can come a playlist refresh
+/// after its first save would. A VOD's first save comes about 30 s in.
 ///
 /// Pure value types, no player: every reading is passed in, so `LivePlaybackPolicyTests` drives it.
 nonisolated enum LivePlaybackPolicy {
@@ -43,24 +46,36 @@ nonisolated enum LivePlaybackPolicy {
     /// rewound far behind the edge latches all the same.
     static let liveGrowthSlackSec: Double = 15
     /// How long a started but undecided growth holds resume saves and tracker progress back after
-    /// its last growing reading. A live stream grows every segment, well inside it; a VOD whose
-    /// duration settled once is released again after it.
+    /// its last growing reading (and resume saves after the first reading). A live stream grows
+    /// every segment, well inside it; a VOD whose duration settled once is released again after it.
     static let liveUndecidedHoldSec: Double = 30
+    /// The least rise over the last counted step (or the anchor) that counts as growth: a live
+    /// stream grows in segment-sized steps, or smoothly adds up past it, while a VOD's duration can
+    /// jitter by a fraction of a second.
+    static let liveMinGrowthStepSec: Double = 1
+    /// The least clock time since the anchor before growth can latch: a 6 s-segment live stream
+    /// needs about 18 s anyway, while a VOD's refinements can come a few seconds apart.
+    static let liveMinElapsedSec: Double = 12
 
     /// The anchor duration and clock time growth is measured from (anchor duration 0 = no reading
-    /// yet), the last duration seen, the growing readings since the anchor and when the last one
-    /// was, and whether that made it live. `grew` latches: once live, a later reading (a smaller one
-    /// included) never clears it for that media. `undecided`: not live yet, but a growing reading
-    /// came within `liveUndecidedHoldSec`.
+    /// yet), the last duration seen, the duration at the last counted step, the growing readings
+    /// since the anchor and when the last one was, the first reading's clock time, and whether that
+    /// made it live. `grew` latches: once
+    /// live, a later reading (a smaller one included) never clears it for that media. `undecided`:
+    /// not live yet, but a growing reading came within `liveUndecidedHoldSec`. `resumeSettled`: not
+    /// live, and `liveUndecidedHoldSec` has passed since the first reading or the last growing one.
     struct DurationGrowth: Equatable, Sendable {
         var mediaKey: String?
         var anchorDurationSec: Double = 0
         var anchorAtSec: Double = 0
         var lastDurationSec: Double = 0
+        var stepDurationSec: Double = 0
         var growthReadings = 0
         var lastGrowthAtSec: Double?
+        var firstReadingAtSec: Double?
         var grew = false
         var undecided = false
+        var resumeSettled = false
 
         init(mediaKey: String? = nil) {
             self.mediaKey = mediaKey
@@ -71,9 +86,10 @@ nonisolated enum LivePlaybackPolicy {
     /// `ProcessInfo.systemUptime`), into `previous`. A new `mediaKey` starts over. Readings taken
     /// before the engine reports the requested media (`fromRequestedMedia` false) are skipped: they
     /// can still be the previous file's, or the property cache's zero default. Live once
-    /// `liveGrowthReadings` readings grew since the anchor with the duration keeping within
-    /// `liveGrowthSlackSec` of the clock, and the duration is more than `liveDurationGrowthSec` past
-    /// the anchor.
+    /// `liveGrowthReadings` readings grew (each by at least `liveMinGrowthStepSec`) since the anchor
+    /// with the duration keeping within `liveGrowthSlackSec` of the clock, and, at a growing reading,
+    /// the duration is more than `liveDurationGrowthSec` past the anchor and at least
+    /// `liveMinElapsedSec` passed since it.
     static func nextDurationGrowth(_ previous: DurationGrowth, mediaKey: String?, durationSec: Double,
                                    nowSec: Double, fromRequestedMedia: Bool) -> DurationGrowth {
         let current = previous.mediaKey == mediaKey ? previous : DurationGrowth(mediaKey: mediaKey)
@@ -81,21 +97,27 @@ nonisolated enum LivePlaybackPolicy {
             return current
         }
         var next = current
+        if next.firstReadingAtSec == nil { next.firstReadingAtSec = nowSec }
         if next.anchorDurationSec == 0
             || abs((durationSec - next.anchorDurationSec) - (nowSec - next.anchorAtSec)) > liveGrowthSlackSec {
             next.anchorDurationSec = durationSec
             next.anchorAtSec = nowSec
+            next.stepDurationSec = durationSec
             next.growthReadings = 0
-        } else if durationSec > next.lastDurationSec {
+        } else if durationSec >= next.stepDurationSec + liveMinGrowthStepSec {
+            next.stepDurationSec = durationSec
             next.growthReadings += 1
             next.lastGrowthAtSec = nowSec
+            if next.growthReadings >= liveGrowthReadings,
+               durationSec > next.anchorDurationSec + liveDurationGrowthSec,
+               nowSec - next.anchorAtSec >= liveMinElapsedSec {
+                next.grew = true
+            }
         }
         next.lastDurationSec = durationSec
-        if next.growthReadings >= liveGrowthReadings,
-           durationSec > next.anchorDurationSec + liveDurationGrowthSec {
-            next.grew = true
-        }
         next.undecided = !next.grew && next.lastGrowthAtSec.map { nowSec - $0 <= liveUndecidedHoldSec } == true
+        let quietSince = next.lastGrowthAtSec ?? next.firstReadingAtSec ?? nowSec
+        next.resumeSettled = !next.grew && nowSec - quietSince > liveUndecidedHoldSec
         return next
     }
 
@@ -115,6 +137,13 @@ nonisolated enum LivePlaybackPolicy {
     /// gate on, so nothing is saved or sent while a stream may still turn out live.
     static func holdsProgress(reportsLive: Bool, growth: DurationGrowth) -> Bool {
         isLive(reportsLive: reportsLive, growth: growth) || growth.undecided
+    }
+
+    /// What resume saves gate on: `holdsProgress`, or the stream has not been quiet for
+    /// `liveUndecidedHoldSec` yet (`DurationGrowth.resumeSettled`), so no save lands before a live
+    /// stream's first growth.
+    static func holdsResume(reportsLive: Bool, growth: DurationGrowth) -> Bool {
+        holdsProgress(reportsLive: reportsLive, growth: growth) || !growth.resumeSettled
     }
 
     /// The common gate both engines' progress writes run: never for a live stream, otherwise the

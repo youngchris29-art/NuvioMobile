@@ -55,9 +55,32 @@ final class LivePlaybackPolicyTests: XCTestCase {
     }
 
     func testGrowthOfExactlyTheThresholdIsNotLive() {
-        // Three growing readings, but only `liveDurationGrowthSec` past the anchor.
+        // Three growing readings over 18 s, but only `liveDurationGrowthSec` past the anchor.
         let edge = Policy.liveDurationGrowthSec
-        XCTAssertFalse(growth([(100, 0, true), (103, 3, true), (106, 6, true), (100 + edge, 10, true)]).grew)
+        XCTAssertFalse(growth([(100, 0, true), (103, 6, true), (106, 12, true), (100 + edge, 18, true)]).grew)
+    }
+
+    func testSubSecondJitterNeverCounts() {
+        // A VOD whose duration flips between 2700 and 2700.2 every tick for ten minutes: no growth,
+        // so nothing is held back.
+        let state = growth(ticks(0, 600) { Int($0 * 2) % 2 == 0 ? 2_700 : 2_700.2 })
+        XCTAssertFalse(state.grew)
+        XCTAssertEqual(state.growthReadings, 0)
+        XCTAssertFalse(state.undecided)
+        XCTAssertFalse(Policy.holdsProgress(reportsLive: false, growth: state))
+        XCTAssertFalse(Policy.holdsResume(reportsLive: false, growth: state))
+    }
+
+    func testThreeQuickRefinementsDoNotLatch() {
+        // Three small refinements 2 s apart: clock-paced, but too soon after the anchor to latch.
+        let quick = growth([(2_700, 0, true), (2_704, 2, true), (2_708, 4, true), (2_712, 6, true)])
+        XCTAssertEqual(quick.growthReadings, 3)
+        XCTAssertFalse(quick.grew)
+        XCTAssertTrue(quick.undecided)
+        let later = growth(ticks(6.5, 60) { _ in 2_712 }, from: quick)
+        XCTAssertFalse(later.grew, "a reading that does not grow never latches")
+        XCTAssertFalse(later.undecided)
+        XCTAssertFalse(Policy.holdsResume(reportsLive: false, growth: later))
     }
 
     func testAVodRefinedInJumpsIsNotLive() {
@@ -144,6 +167,29 @@ final class LivePlaybackPolicyTests: XCTestCase {
 
     // MARK: Undecided hold
 
+    func testNoResumeSaveBeforeALiveStreamLatches() {
+        // mpv's first save would run within 5 s of playing, before the first playlist refresh. A
+        // first reading of one segment, the initial burst to 30 s (it re-anchors), then 6 s
+        // segments: every tick until the latch holds resume saves back, so no entry is ever written.
+        let readings = [(6.0, 0.0, true)] + ticks(0.5, 40) { self.liveDuration($0 - 0.5) }
+        var state = Policy.DurationGrowth()
+        for reading in readings where !state.grew {
+            state = Policy.nextDurationGrowth(state, mediaKey: "a", durationSec: reading.0, nowSec: reading.1,
+                                              fromRequestedMedia: true)
+            XCTAssertTrue(Policy.holdsResume(reportsLive: false, growth: state), "no save at \(reading.1) s")
+        }
+        XCTAssertTrue(state.grew)
+    }
+
+    func testAVodsFirstResumeSaveComesAfterTheHold() {
+        let hold = Policy.liveUndecidedHoldSec
+        let early = growth(ticks(0, hold) { _ in 2_700 })
+        XCTAssertFalse(Policy.holdsProgress(reportsLive: false, growth: early), "trackers are not held")
+        XCTAssertTrue(Policy.holdsResume(reportsLive: false, growth: early))
+        XCTAssertFalse(Policy.holdsResume(reportsLive: false, growth: growth(ticks(hold + 0.5, hold + 0.5) { _ in 2_700 },
+                                                                             from: early)))
+    }
+
     func testEarlyExitNearTheEdgeSendsZeroAndSavesNothing() {
         // Opened and closed 12 s into a live stream, 2 s behind the edge: not decided yet, but held.
         let undecided = growth(Array(liveReadings.prefix(3)))
@@ -153,6 +199,7 @@ final class LivePlaybackPolicyTests: XCTestCase {
         XCTAssertEqual(TrackerScrobblePolicy.stopPercent(positionSec: 40, durationSec: 42, isLive: holds), 0,
                        "a 95 % stop would mark it watched")
         XCTAssertFalse(Policy.shouldSaveResume(isLive: holds, positionSec: 40, durationSec: 42))
+        XCTAssertTrue(Policy.holdsResume(reportsLive: false, growth: undecided))
     }
 
     func testHoldsProgressFollowsLiveAndUndecided() {
