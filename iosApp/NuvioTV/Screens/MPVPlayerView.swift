@@ -4718,14 +4718,9 @@ struct MPVPlayerScreen: View {
     /// P4 B24: Settings › Playback › Loading Screen, read in `init` (critique C17).
     @State private var loadingOverlayOn: Bool
 
-    /// Up-next chip label (mirrors the native screen's `UpNextAction` titles); nil = no chip.
-    private var upNextChipAction: String? {
-        switch upNext.phase {
-        case .counting: return UpNextAction.playNext.title
-        case .stillWatching: return UpNextAction.continueWatching.title
-        default: return nil
-        }
-    }
+    /// Up-next chip label (the native screen's `UpNextAction` for the same phase); nil = no chip.
+    /// The offline card offers Play Next too: D-pad Down starts the deferred search (`playNow`).
+    private var upNextChipAction: String? { UpNextAction(phase: upNext.phase)?.title }
 
     init(context: PlaybackContext, onPlayNext: ((PlaybackContext) -> Void)? = nil, routingNote: String? = nil,
          onPlaybackFailed: ((PlaybackFailure) -> Void)? = nil,
@@ -4950,6 +4945,11 @@ struct MPVPlayerScreen: View {
         .onChange(of: state.positionSec) { _, position in
             upNext.skipIntervals = state.skipIntervals
             upNext.onProgress(positionSec: position, durationSec: state.durationSec)
+        }
+        // An offline Up Next card drops to `.hidden` at EOF, so the post-play cover (gated on
+        // `.hidden`) can come up even when no tick landed inside the end-of-file slack.
+        .onChange(of: state.isEnded) { _, ended in
+            if ended { upNext.playbackEnded() }
         }
         .onChange(of: state.isPaused) { _, paused in
             // Paused → let the idle timer run again (a long-paused frame should be allowed to

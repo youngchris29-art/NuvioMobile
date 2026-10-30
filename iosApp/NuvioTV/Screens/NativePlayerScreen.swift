@@ -248,6 +248,11 @@ struct NativePlayerScreen: View {
             pauseChanged(paused)
         }
         .onChange(of: coordinator.isRebuildingItem) { _, _ in evaluatePauseCard() }
+        // An offline Up Next card drops to `.hidden` at the end, so the post-play cover below
+        // (gated on `.hidden`) can come up even when no tick landed inside the end-of-file slack.
+        .onChange(of: coordinator.didPlayToEnd) { _, ended in
+            if ended { upNext.playbackEnded() }
+        }
         .onChange(of: panelOpen) { _, open in
             if open { hidePauseCard(reason: "panel") } else { evaluatePauseCard() }
         }
@@ -367,15 +372,8 @@ struct NativePlayerScreen: View {
         loadingOverlayOn && !coordinator.loadingStage.isStarted
     }
 
-    /// Which up-next contextual action to offer: "Play Next Episode" during the countdown,
-    /// "Continue Watching" once the still-watching guard has paused autoplay, none otherwise.
-    private var upNextAction: UpNextAction? {
-        switch upNext.phase {
-        case .counting: return .playNext
-        case .stillWatching: return .continueWatching
-        default: return nil
-        }
-    }
+    /// Which up-next contextual action to offer (`UpNextAction(phase:)`, shared with mpv's chip).
+    private var upNextAction: UpNextAction? { UpNextAction(phase: upNext.phase) }
 
     // MARK: - Skip intro/outro segments (shared repository, same rules as the mpv screen)
 
@@ -514,6 +512,18 @@ private struct NativeProbeLabel: View {
 /// Up-next contextual action variants (static titles — see the caption note in `NativePlayerScreen`).
 enum UpNextAction: String {
     case playNext, continueWatching
+
+    /// The action each up-next phase offers, on both engines (the native contextual action, the
+    /// mpv Down-press chip): "Play Next Episode" during the countdown and on the offline card
+    /// (selecting it starts the deferred search, `NextEpisodeEngine.playNow`), "Continue Watching"
+    /// once the still-watching guard has paused autoplay, none otherwise.
+    init?(phase: NextEpisodeEngine.Phase) {
+        switch phase {
+        case .counting, .offlineDeferred: self = .playNext
+        case .stillWatching: self = .continueWatching
+        case .hidden, .searching, .noStream: return nil
+        }
+    }
 
     var title: String {
         switch self {

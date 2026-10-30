@@ -18,11 +18,25 @@ import SharedCore
 /// skipped (not functional on tvOS) and outro-segment timing is simplified to the settings
 /// threshold, except that a post-credits scene after the last outro holds the trigger until the
 /// scene ends (shared `nextEpisodeHoldUntilMs`, upstream 77ce8a73).
+///
+/// Offline (upstream bb94cb1c1, reworked in review): only the AUTOMATIC search starts (the
+/// threshold and the #2150 re-arm) are gated on the network path. Offline, the threshold puts the
+/// card up in its own phase, `.offlineDeferred` ("Offline — press to find the next episode", no
+/// spinner, mapped to the Play Next action on both engines), instead of a `.searching` spinner
+/// with no search behind it. The deferred search starts by itself on the first progress tick
+/// that sees the path satisfied again, or at once on a press (which is tried even while the path
+/// says offline). A pressed or reconnect-started search that ends with no stream while still
+/// offline goes back to the offline card, so a later press can retry. At end of file, still
+/// offline, the card drops to `.hidden` so the post-play screen (gated on `.hidden`) takes over;
+/// Menu dismisses it like any live card, and an offline #2150 re-arm at end of file shows no card.
 @MainActor
 final class NextEpisodeEngine: ObservableObject {
     enum Phase: Equatable {
         case hidden
         case searching
+        /// The threshold fired offline: no search is running. A press starts it, as does the
+        /// first tick that sees the path back (see `resumeOrEndOfflineDeferral`).
+        case offlineDeferred
         case counting(Int)
         case stillWatching
         case noStream
@@ -97,7 +111,8 @@ final class NextEpisodeEngine: ObservableObject {
     struct Hooks {
         var loadStreams: (_ type: String, _ videoId: String, _ season: KotlinInt?, _ episode: KotlinInt?) -> Void
         /// Invoked first thing in `beginSearch()`, before the `settings` guard, so tests can see
-        /// that a search was attempted. No-op in `.live`.
+        /// that a search was attempted (the offline gate sits before it, in `beginAutoSearch()`,
+        /// so the offline card itself never fires it). No-op in `.live`.
         var searchBegan: () -> Void = {}
         /// Upstream bb94cb1c1: connectivity gate for the preload and the auto-play search fan-out.
         /// Live value is the shared path monitor (true until its first update, so a cold start
@@ -168,11 +183,15 @@ final class NextEpisodeEngine: ObservableObject {
     /// (no countdown, no Still Watching gate: a jump IS user interaction).
     private var immediatePlay = false
 
-    /// Upstream bb94cb1c1: the threshold (or the #2150 re-arm) fired while offline, so the
-    /// auto-play search was skipped but the card is up. A press after the path returns (`playNow`)
-    /// starts the search with `immediatePlay`, the way upstream's visible Next button starts the
-    /// episode. Cleared by `tearDownSearch()` (cancel, jump, stop) and by that press.
-    private(set) var searchDeferredOffline = false
+    /// Upstream bb94cb1c1: the threshold fired while offline, so the auto-play search was skipped
+    /// but the card is up (`.offlineDeferred`). The phase IS the deferral: a press (`playNow`) or
+    /// the first tick that sees the path back (`onProgress`) starts the search; `tearDownSearch()`
+    /// (cancel, Menu, jump, stop) and the end of file while still offline drop it to `.hidden`.
+    var searchDeferredOffline: Bool { phase == .offlineDeferred }
+    /// The running search was started from the offline card (a press or the reconnect tick). If
+    /// it ends with no stream while the path is still down, the card goes back to
+    /// `.offlineDeferred` instead of the no-stream toast, so a later press can retry.
+    private var searchFromOfflineCard = false
 
     private var settings: PlayerSettingsUiState?
     /// Built from `settings` in the same watcher callback; `onProgress` reads only this.
@@ -539,7 +558,8 @@ final class NextEpisodeEngine: ObservableObject {
     }
 
     private func tearDownSearch() {
-        searchDeferredOffline = false
+        searchFromOfflineCard = false
+        if phase == .offlineDeferred { phase = .hidden }
         searchGeneration += 1
         streamsWatcher?.cancel()
         streamsWatcher = nil
@@ -571,6 +591,12 @@ final class NextEpisodeEngine: ObservableObject {
         guard nextVideo != nil, durationSec > 0, let trigger else { return }
         if cancelled {
             rearmIfEndedAfterDismiss(positionSec: positionSec, durationSec: durationSec)
+            return
+        }
+        // The fork's engine has no network observer of its own: the position ticks are the
+        // reactive signal for the offline card (the path monitor is read on each one).
+        if phase == .offlineDeferred {
+            resumeOrEndOfflineDeferral(atEnd: isAtEndOfFile)
             return
         }
         guard !triggered else { return }
@@ -662,6 +688,46 @@ final class NextEpisodeEngine: ObservableObject {
         beginAutoSearch()
     }
 
+    // MARK: - Offline card (upstream bb94cb1c1)
+
+    /// Path back: start the deferred search (an automatic start, so the countdown and the
+    /// Still Watching gate apply). Still offline at end of file: drop the card to `.hidden`, so
+    /// the post-play screen, gated on `.hidden` on both engines, takes over instead of the player
+    /// sitting on the last frame under a card. Dropping (rather than letting the cover gate treat
+    /// `.offlineDeferred` as hidden) leaves no live deferral under the cover: a Replay from it
+    /// would otherwise carry one whose reconnect tick starts a search mid-replay, and a search
+    /// that starts pulls the cover away. Otherwise the card stays up.
+    private func resumeOrEndOfflineDeferral(atEnd: Bool) {
+        guard phase == .offlineDeferred, !cancelled else { return }
+        if hooks.networkSatisfied() {
+            print("[UpNext] path is back — starting the deferred search")
+            startSearchFromOfflineCard(pressed: false)
+        } else if atEnd {
+            print("[UpNext] still offline at end of file — offline card dropped for post-play")
+            phase = .hidden
+        }
+    }
+
+    /// Both players call this when the item plays to its end (mpv `isEnded`, native
+    /// `didPlayToEnd`), so the offline card resolves even when no tick landed inside
+    /// `endOfFileSlack`. A no-op unless the offline card is up.
+    func playbackEnded() {
+        resumeOrEndOfflineDeferral(atEnd: true)
+    }
+
+    /// `pressed`: the viewer's go (play as soon as a stream resolves, as a jump does) versus the
+    /// reconnect tick (an automatic start: countdown, Still Watching gate). The phase moves to
+    /// `.searching` here, before `beginSearch()`, so a second press is not read as another
+    /// offline-card press.
+    private func startSearchFromOfflineCard(pressed: Bool) {
+        searchFromOfflineCard = true
+        immediatePlay = pressed
+        if pressed { Self.consecutiveAutoPlays = 0 }
+        sourceName = nil
+        phase = .searching
+        beginSearch()
+    }
+
     /// True when the last tick sat within `endOfFileSlack` of the end.
     private var isAtEndOfFile: Bool {
         guard let last = lastProgress, last.durationSec > 0 else { return false }
@@ -677,15 +743,13 @@ final class NextEpisodeEngine: ObservableObject {
     /// the "Still watching?" prompt. Returns true when consumed (so the skip pill doesn't fire).
     func playNow() -> Bool {
         // Offline card (upstream bb94cb1c1): no stream was ever searched for. The press is the
-        // user's go, so start the search now and play as soon as a stream resolves, as a jump
-        // does. Deliberately not gated on the path: a press offline just ends in the no-stream
-        // toast instead of doing nothing.
-        if searchDeferredOffline, selectedStream == nil, nextVideo != nil, !cancelled {
-            searchDeferredOffline = false
-            Self.consecutiveAutoPlays = 0
-            immediatePlay = true
+        // viewer's go, so start the search now and play as soon as a stream resolves, as a jump
+        // does. Deliberately not gated on the path (the monitor can lag a reconnect): a press
+        // that is really offline ends with no stream and goes back to the offline card
+        // (`finishWithoutStream`), so a press after reconnect can still retry.
+        if phase == .offlineDeferred, selectedStream == nil, nextVideo != nil, !cancelled {
             print("[UpNext] offline card pressed — starting the search")
-            beginSearch()
+            startSearchFromOfflineCard(pressed: true)
             return true
         }
         guard let stream = selectedStream, let next = nextVideo else { return false }
@@ -710,7 +774,7 @@ final class NextEpisodeEngine: ObservableObject {
     }
 
     /// Menu/back while the up-next chip is up (any non-hidden phase: "Finding source…", the
-    /// countdown, "Still watching?", or the no-stream toast): dismiss it for the rest of this
+    /// offline card, the countdown, "Still watching?", or the no-stream toast): dismiss it for the rest of this
     /// playback session — the sticky `cancelled` flag keeps the threshold from re-firing, which is
     /// the state half of upstream 4026ec92 (#858) tvOS already had; this is the gesture half it
     /// lacked (Menu used to exit the whole player straight through the chip). Returns true when
@@ -725,9 +789,11 @@ final class NextEpisodeEngine: ObservableObject {
         // #2150 rider: only a card dismissed BEFORE the end re-arms at end of file (upstream's
         // effect is keyed on isEnded changing, so a dismissal at EOF stays dismissed), and never
         // "Still watching?" — Menu there means stop, and a re-arm would skip the gate.
-        // Only the live card counts: dismissing the no-stream toast must not arm a re-arm.
+        // Only the live card counts: dismissing the no-stream toast must not arm a re-arm. The
+        // offline card is a live card (online by the end, the re-arm searches; still offline,
+        // `beginAutoSearch()` shows no card at end of file, so no spinner comes back).
         switch phase {
-        case .searching, .counting: dismissedByUser = !isAtEndOfFile
+        case .searching, .offlineDeferred, .counting: dismissedByUser = !isAtEndOfFile
         default: dismissedByUser = false
         }
         cancel()
@@ -738,17 +804,24 @@ final class NextEpisodeEngine: ObservableObject {
 
     /// The two AUTOMATIC search starts (the threshold and the #2150 re-arm). Upstream bb94cb1c1
     /// gates only these (`launchPlayerNextEpisodeAutoPlay`) and the preload; a manual episode
-    /// jump and a card press are user actions and call `beginSearch()` directly, ungated.
+    /// jump and a card press are user actions and reach `beginSearch()` ungated.
     /// Offline, the fan-out is skipped but the card still shows (upstream keeps
-    /// `showNextEpisodeCard = true`): `.searching` is the engine's visible state, and `playNow()`
-    /// starts the search after reconnect. beginSearch() is synchronous on tvOS (no deferred
+    /// `showNextEpisodeCard = true`) in its own phase, `.offlineDeferred`: no spinner, since no
+    /// search is running, and a caption that says a press does something. The search starts on a
+    /// press or on the first tick that sees the path back (`resumeOrEndOfflineDeferral`).
+    /// Offline AT end of file (an offline re-arm, or a threshold held to the end) shows no card:
+    /// the post-play screen takes over. beginSearch() is synchronous on tvOS (no deferred
     /// launch), so upstream's second in-launch check has no counterpart.
     private func beginAutoSearch() {
         guard hooks.networkSatisfied() else {
-            print("[UpNext] auto-play search skipped — offline; card stays up for a press")
-            searchDeferredOffline = true
             sourceName = nil
-            phase = .searching
+            if isAtEndOfFile {
+                print("[UpNext] auto-play search skipped — offline at end of file; no card")
+                phase = .hidden
+            } else {
+                print("[UpNext] auto-play search skipped — offline; offline card up")
+                phase = .offlineDeferred
+            }
             return
         }
         beginSearch()
@@ -1198,11 +1271,25 @@ final class NextEpisodeEngine: ObservableObject {
 
     private func finishWithoutStream() {
         guard selectedStream == nil, !cancelled else { return }
-        print("[UpNext] no stream found")
         timeoutTask?.cancel()
         streamsWatcher?.cancel()
         streamsWatcher = nil
         searchOwnsFlow = false        // r2 P3: before `searchEnded()`, so its reload is not deferred
+        // A search started from the offline card that found nothing while the path is still down
+        // (a press offline, or a path that flapped) goes back to the offline card instead of
+        // spending the threshold on a no-stream toast: a later press, or the reconnect tick, retries.
+        // Not at end of file, where the post-play screen takes over after the toast.
+        let backToOfflineCard = searchFromOfflineCard && !hooks.networkSatisfied() && !isAtEndOfFile
+        searchFromOfflineCard = false
+        if backToOfflineCard {
+            print("[UpNext] no stream found while still offline — back to the offline card")
+            immediatePlay = false
+            sourceName = nil
+            phase = .offlineDeferred
+            searchEnded()
+            return
+        }
+        print("[UpNext] no stream found")
         phase = .noStream
         searchEnded()
         hideTask = Task { [weak self] in

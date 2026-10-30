@@ -81,6 +81,9 @@ extension NextEpisodeEngine.Phase {
         switch self {
         case .hidden: return nil
         case .searching: return (String(localized: "Finding next episode…"), nil, true)
+        // No spinner: no search is running until a press, or the path coming back, starts it.
+        case .offlineDeferred:
+            return (String(localized: "Offline — press to find the next episode"), "wifi.slash", false)
         case .counting(let seconds):
             let title = nextTitle.count > 40 ? String(nextTitle.prefix(38)) + "…" : nextTitle
             return (String(localized: "Up next · \(title) · playing in \(seconds)s"), "forward.end", false)

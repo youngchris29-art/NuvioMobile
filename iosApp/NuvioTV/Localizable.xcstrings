@@ -29467,6 +29467,46 @@
         }
       }
     },
+    "Offline — press to find the next episode": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Offline — press to find the next episode"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Offline – drücken, um die nächste Folge zu suchen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sin conexión: pulsa para buscar el siguiente episodio"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hors ligne — appuyez pour trouver l’épisode suivant"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Offline — premi per cercare il prossimo episodio"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ngoại tuyến — nhấn để tìm tập tiếp theo"
+          }
+        }
+      }
+    },
     "Oldest First": {
       "localizations": {
         "de": {
