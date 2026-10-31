@@ -286,8 +286,11 @@ final class DetailCinematicLayoutTests: XCTestCase {
 
     func testDimRampDistance() {
         XCTAssertEqual(DetailDim.rampDistance(layout: .classic, heroHeight: 900), 400)
-        XCTAssertEqual(DetailDim.rampDistance(layout: .cinematic, heroHeight: 627), 627)
+        // BUG-217: the Cinematic ramp is the hero's height less the chip row's 72 pt lower rest.
+        XCTAssertEqual(DetailDim.rampDistance(layout: .cinematic, heroHeight: 627), 555)
         XCTAssertEqual(DetailDim.rampDistance(layout: .cinematic, heroHeight: 300), 400)
+        XCTAssertEqual(DetailDim.chipRowRestDrop,
+                       DetailRowAnchor.screenRest(for: .logos) - DetailRowAnchor.screenRest)
     }
 
     /// W2-A: Classic keeps `offset − inset` (today's formula); Cinematic measures from the real top
@@ -296,16 +299,23 @@ final class DetailCinematicLayoutTests: XCTestCase {
         XCTAssertEqual(DetailDim.scrolledDistance(layout: .classic, contentOffset: 600, contentInsetTop: 157), 443)
         XCTAssertEqual(DetailDim.scrolledDistance(layout: .cinematic, contentOffset: -157, contentInsetTop: 157), 0)
         XCTAssertEqual(DetailDim.scrolledDistance(layout: .cinematic, contentOffset: 600, contentInsetTop: 157), 757)
-        // Hero 687 on the fixture: the hero-exit rest (first row at screenRest 108) is past the
-        // ramp, so the dim saturates and the 0.80 trailer latch closes.
+        // Hero 687 on the fixture: the hero-exit rest (the chip row, first under the hero, at its
+        // 180 rest since BUG-217; 72 pt less scroll than the old 108 rest, so the ramp is shortened
+        // by the same 72 and the rest stays past it) saturates the dim and closes the 0.80 trailer
+        // latch.
         let heroHeight: CGFloat = 687
         let firstRowTop = 60 + heroHeight + 36
-        let exitOffset = DetailRowAnchorMirror.expectedOffset(rowTop: firstRowTop, inset: 157)
-        let dim = DetailDim.value(scrolled: DetailDim.scrolledDistance(layout: .cinematic, contentOffset: exitOffset,
-                                                                       contentInsetTop: 157),
-                                  rampDistance: DetailDim.rampDistance(layout: .cinematic, heroHeight: heroHeight))
-        XCTAssertEqual(dim, DetailDim.ceiling, accuracy: 1e-9)
-        XCTAssertGreaterThanOrEqual(dim, 0.80)
+        // Both content insets seen: 157 on the fixture, 60 on the tvOS 27 simulator (BUG-217's run,
+        // where the old ramp left the chip row's hero-exit rest at dim 0.7997, under the latch).
+        for inset: CGFloat in [157, 60] {
+            let exitOffset = DetailRowAnchorMirror.expectedOffset(rowTop: firstRowTop, inset: inset,
+                                                                  rest: DetailRowAnchor.screenRest(for: .logos))
+            let dim = DetailDim.value(scrolled: DetailDim.scrolledDistance(layout: .cinematic, contentOffset: exitOffset,
+                                                                           contentInsetTop: inset),
+                                      rampDistance: DetailDim.rampDistance(layout: .cinematic, heroHeight: heroHeight))
+            XCTAssertEqual(dim, DetailDim.ceiling, accuracy: 1e-9, "inset \(inset)")
+            XCTAssertGreaterThanOrEqual(dim, 0.80)
+        }
         // At the top: no dim.
         XCTAssertEqual(DetailDim.value(scrolled: DetailDim.scrolledDistance(layout: .cinematic, contentOffset: -157,
                                                                             contentInsetTop: 157),
@@ -322,10 +332,11 @@ final class DetailCinematicLayoutTests: XCTestCase {
     }
 }
 
-/// `DetailRowAnchor.scrollTarget`/`expectedOffset` restated for `testDimScrolledDistance` (rest at
-/// `screenRest` 108): offset = rowTop + inset − 108 − inset = rowTop − 108.
+/// `DetailRowAnchor.scrollTarget`/`expectedOffset` restated for `testDimScrolledDistance` (a row
+/// resting at `screenRest` 108; the chip row rests at 180 since BUG-217, 72 lower):
+/// offset = rowTop + inset − 108 − inset = rowTop − 108.
 private enum DetailRowAnchorMirror {
-    static func expectedOffset(rowTop: CGFloat, inset: CGFloat) -> CGFloat {
-        (rowTop + inset - 108) - inset
+    static func expectedOffset(rowTop: CGFloat, inset: CGFloat, rest: CGFloat = 108) -> CGFloat {
+        (rowTop + inset - rest) - inset
     }
 }
