@@ -59,6 +59,20 @@ final class DetailRowAnchorTests: XCTestCase {
         return app
     }
 
+    /// BUG-217: where the probe's `anchor=<row>` row rests on screen (`DetailRowAnchor.screenRest(for:)`):
+    /// 108, except the rows whose first item the focus engine would otherwise pull down on the first
+    /// Right press: the chip row (`logos`, 180) and Cast / Collection / Trailers (180 less the lead of
+    /// their first item under the heading block: 61 / 69 / 69 with the system font).
+    private func restForAnchoredRow(_ probeLabel: String) -> Double {
+        guard let range = probeLabel.range(of: "anchor=") else { return 108 }
+        switch probeLabel[range.upperBound...].prefix(while: { $0 != " " }) {
+        case "logos": return 180
+        case "cast": return 119
+        case "collection", "trailers": return 111
+        default: return 108
+        }
+    }
+
     /// `key=<number>` out of the probe label (first occurrence).
     private func probeNumber(_ label: String, key: String) -> Double? {
         guard let range = label.range(of: key) else { return nil }
@@ -132,7 +146,7 @@ final class DetailRowAnchorTests: XCTestCase {
         // BUG-96 rc5 regression fix: `moves=` is `DetailScrollMotion.segments` over this focus
         // visit's raw offset samples — `1` means the engine's reveal and the anchor pass blended
         // into one motion, `2`+ means the old land-then-nudge two-step move is back. Kept alongside
-        // the `(top − off) − 108` residual per step so both survive in the failure message and in
+        // the `(top − off) − rest(row)` residual per step so both survive in the failure message and in
         // an attachment even when the run passes. BUG-99: both are now tagged by `direction` since
         // the Down walk and the Up leg below are measured with the same arrays.
         var movesByStep: [(step: Int, direction: String, moves: Int)] = []
@@ -168,7 +182,7 @@ final class DetailRowAnchorTests: XCTestCase {
             let probeLabel = app.staticTexts["debug_ux6"].exists ? app.staticTexts["debug_ux6"].label : ""
             if let top = probeNumber(probeLabel, key: "top="), let off = probeNumber(probeLabel, key: "off=") {
                 anchorSamples += 1
-                let residual = (top - off) - 108
+                let residual = (top - off) - restForAnchoredRow(probeLabel)
                 residualByStep.append((step, "down", residual))
                 // Codex BUG-96 r3 (P3): a stuck focus would repeat one good sample on every press —
                 // the walk must reach DISTINCT rows, not the same one six times.
@@ -211,7 +225,7 @@ final class DetailRowAnchorTests: XCTestCase {
         let downResiduals = residualByStep.filter { $0.direction == "down" }
         let aboveRestSteps = downResiduals.filter { $0.residual < -16 }
         XCTAssertTrue(aboveRestSteps.isEmpty,
-                      "BUG-99: a Down step rested the row ABOVE DetailRowAnchor.screenRest (108) — " +
+                      "BUG-99: a Down step rested the row ABOVE its DetailRowAnchor rest (108, or the BUG-217 row rest) — " +
                       "\(aboveRestSteps.map { "step\($0.step)=\(String(format: "%.0f", $0.residual))" })")
         XCTAssertGreaterThanOrEqual(downFreeSteps, 2,
                                     "BUG-99: at least two of the six Down presses must leave the engine's own minimal reveal alone (anchor=… free) — saw \(downFreeSteps)")
@@ -229,7 +243,7 @@ final class DetailRowAnchorTests: XCTestCase {
             }
             let probeLabel = app.staticTexts["debug_ux6"].exists ? app.staticTexts["debug_ux6"].label : ""
             if let top = probeNumber(probeLabel, key: "top="), let off = probeNumber(probeLabel, key: "off=") {
-                let residual = (top - off) - 108
+                let residual = (top - off) - restForAnchoredRow(probeLabel)
                 residualByStep.append((step, "up", residual))
                 // End-of-content clamp: when the page is already scrolled to its end (the geometry
                 // sample's offset + visible height reaches the content height), a row near the bottom
@@ -262,7 +276,7 @@ final class DetailRowAnchorTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(upResiduals.count, 2, "BUG-99: the Up leg never reported a probe sample — is -debug.detailScrollProbe on?")
         for entry in upResiduals where !upClampedSteps.contains(entry.step) {
             XCTAssertLessThanOrEqual(abs(entry.residual), 16,
-                                     "BUG-99: Up step \(entry.step) must anchor to DetailRowAnchor.screenRest (108) — residual \(String(format: "%.0f", entry.residual))")
+                                     "BUG-99: Up step \(entry.step) must anchor to its DetailRowAnchor rest (108, or the BUG-217 row rest) — residual \(String(format: "%.0f", entry.residual))")
         }
 
         XCTAssertTrue(straddles.isEmpty, "BUG-96: a section header straddled the top edge at rest — \(straddles)")
