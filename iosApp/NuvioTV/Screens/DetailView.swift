@@ -1034,7 +1034,8 @@ struct DetailView: View {
             // UX-6: final darkening value computed here (not in `action:`) so saturated scrolling
             // stops firing state updates once fully dark.
             .onScrollGeometryChange(for: Double.self, of: { [dimLayout = detailLayout,
-                                                              dimRamp = DetailDim.rampDistance(layout: detailLayout, heroHeight: cinematicHeroHeight)] geo in
+                                                              dimRamp = DetailDim.rampDistance(layout: detailLayout, heroHeight: cinematicHeroHeight,
+                                                                                     hasChipRow: sectionStudioLogos && !companyLogos.isEmpty)] geo in
                 // P-2b (BUG-41 attribution knob): leg 1/3 disables the dim outright by pinning
                 // this closure's result to a constant, so `action:` fires once with 0 and never
                 // again — see `DetailScrollAB`'s doc comment.
@@ -2552,7 +2553,7 @@ struct DetailView: View {
                 // The row's on-screen top is `rowTop − contentOffset` on this runtime: the
                 // anchor's own `scrollTo(y: rowTop + inset − rest)` lands at `y − inset`,
                 // i.e. `contentOffset == rowTop − rest` at rest, which is also the
-                // `(top − off) − 108` residual the UI test reads. No inset term here — with
+                // `(top − off) − screenRest(for: row, layout:)` residual the UI test reads. No inset term here — with
                 // it the check would overshoot by the inset (157 pt on the fixture) and a
                 // header sitting under the scrim would read as free.
                 let screenTop = rowTop - dimModel.lastContentOffset
@@ -2575,7 +2576,7 @@ struct DetailView: View {
                     // `.onChange(of: detailRowOffsets)` below).
                     if DetailScrollProbe.enabled {
                         // `top=` stays in CONTENT space like `anchorPass`'s note: the UI test derives the
-                        // on-screen rest as `(top − off) − 108`. `screen=` is the settled on-screen top.
+                        // on-screen rest as `(top − off) − screenRest(for: row, layout:)`. `screen=` is the settled on-screen top.
                         dimModel.anchorNote = String(format: "%@ top=%.0f screen=%.0f free", String(describing: row), rowTop, screenTop)
                     }
                 }

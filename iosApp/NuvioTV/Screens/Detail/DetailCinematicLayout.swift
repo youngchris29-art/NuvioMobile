@@ -278,19 +278,22 @@ nonisolated enum DetailDim {
     static let classicRampDistance: CGFloat = 400
     static let ceiling: Double = 0.85
 
-    /// BUG-217: how much lower the chip row (the usual first row under the hero) rests since its
-    /// anchor follows the focus engine's reveal margin (`DetailRowAnchor.screenRest(for: .logos, layout: .cinematic)`
-    /// minus `DetailRowAnchor.screenRest`; a unit test pins the two together). The hero-exit rest
-    /// is that much shorter a scroll, so the Cinematic ramp is shortened by the same amount and
-    /// the rest stays past it (dim at the ceiling, the 0.80 trailer latch closed) as before.
+    /// BUG-217: how much lower the chip row (the first row under the hero when the page has one)
+    /// rests since its anchor follows the focus engine's reveal margin
+    /// (`DetailRowAnchor.screenRest(for: .logos, layout: .cinematic)` minus
+    /// `DetailRowAnchor.screenRest`; a unit test pins the two together). The hero-exit rest is
+    /// that much shorter a scroll, so the Cinematic ramp is shortened by the same amount on a page
+    /// that has the chip row, and the rest stays past it (dim at the ceiling, the 0.80 trailer
+    /// latch closed) as before. A page without chips (TMDB off, the default) keeps the original
+    /// ramp exactly: its first row (Cast, Collection, ...) rests within 11 pt of the old 108.
     static let chipRowRestDrop: CGFloat = 72
 
     /// Classic keeps today's 400 pt ramp; Cinematic saturates as the hero fully leaves (the
-    /// chip row's hero-exit rest included, see `chipRowRestDrop`).
-    static func rampDistance(layout: DetailLayout, heroHeight: CGFloat) -> CGFloat {
+    /// chip row's hero-exit rest included when `hasChipRow`, see `chipRowRestDrop`).
+    static func rampDistance(layout: DetailLayout, heroHeight: CGFloat, hasChipRow: Bool) -> CGFloat {
         switch layout {
         case .classic: return classicRampDistance
-        case .cinematic: return max(classicRampDistance, heroHeight - chipRowRestDrop)
+        case .cinematic: return max(classicRampDistance, heroHeight - (hasChipRow ? chipRowRestDrop : 0))
         }
     }
 

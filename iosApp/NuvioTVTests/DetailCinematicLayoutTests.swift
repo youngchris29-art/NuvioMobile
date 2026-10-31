@@ -285,10 +285,14 @@ final class DetailCinematicLayoutTests: XCTestCase {
     // MARK: - Dim ramp
 
     func testDimRampDistance() {
-        XCTAssertEqual(DetailDim.rampDistance(layout: .classic, heroHeight: 900), 400)
-        // BUG-217: the Cinematic ramp is the hero's height less the chip row's 72 pt lower rest.
-        XCTAssertEqual(DetailDim.rampDistance(layout: .cinematic, heroHeight: 627), 555)
-        XCTAssertEqual(DetailDim.rampDistance(layout: .cinematic, heroHeight: 300), 400)
+        XCTAssertEqual(DetailDim.rampDistance(layout: .classic, heroHeight: 900, hasChipRow: true), 400)
+        XCTAssertEqual(DetailDim.rampDistance(layout: .classic, heroHeight: 900, hasChipRow: false), 400)
+        // BUG-217: a Cinematic page with the chip row ramps over the hero's height less the chip
+        // row's 72 pt lower rest; a page without chips keeps the hero-height ramp exactly.
+        XCTAssertEqual(DetailDim.rampDistance(layout: .cinematic, heroHeight: 627, hasChipRow: true), 555)
+        XCTAssertEqual(DetailDim.rampDistance(layout: .cinematic, heroHeight: 627, hasChipRow: false), 627)
+        XCTAssertEqual(DetailDim.rampDistance(layout: .cinematic, heroHeight: 300, hasChipRow: true), 400)
+        XCTAssertEqual(DetailDim.rampDistance(layout: .cinematic, heroHeight: 300, hasChipRow: false), 400)
         XCTAssertEqual(DetailDim.chipRowRestDrop,
                        DetailRowAnchor.screenRest(for: .logos, layout: .cinematic) - DetailRowAnchor.screenRest)
     }
@@ -312,9 +316,24 @@ final class DetailCinematicLayoutTests: XCTestCase {
                                                                   rest: DetailRowAnchor.screenRest(for: .logos, layout: .cinematic))
             let dim = DetailDim.value(scrolled: DetailDim.scrolledDistance(layout: .cinematic, contentOffset: exitOffset,
                                                                            contentInsetTop: inset),
-                                      rampDistance: DetailDim.rampDistance(layout: .cinematic, heroHeight: heroHeight))
+                                      rampDistance: DetailDim.rampDistance(layout: .cinematic, heroHeight: heroHeight,
+                                                                           hasChipRow: true))
             XCTAssertEqual(dim, DetailDim.ceiling, accuracy: 1e-9, "inset \(inset)")
             XCTAssertGreaterThanOrEqual(dim, 0.80)
+        }
+        // A chip-less page (TMDB off) keeps the original ramp; its first row rests at the 108
+        // floor or, for Cast/Collection/Trailers, within 11 pt of it, and the hero-exit still
+        // saturates the dim and closes the latch at both insets.
+        for row in [DetailRowID.cast, .collection, .trailers, .moreLikeThis] {
+            for inset: CGFloat in [157, 60] {
+                let exitOffset = DetailRowAnchorMirror.expectedOffset(rowTop: firstRowTop, inset: inset,
+                                                                      rest: DetailRowAnchor.screenRest(for: row, layout: .cinematic))
+                let dim = DetailDim.value(scrolled: DetailDim.scrolledDistance(layout: .cinematic, contentOffset: exitOffset,
+                                                                               contentInsetTop: inset),
+                                          rampDistance: DetailDim.rampDistance(layout: .cinematic, heroHeight: heroHeight,
+                                                                               hasChipRow: false))
+                XCTAssertEqual(dim, DetailDim.ceiling, accuracy: 1e-9, "\(row) inset \(inset)")
+            }
         }
         // At the top: no dim.
         XCTAssertEqual(DetailDim.value(scrolled: DetailDim.scrolledDistance(layout: .cinematic, contentOffset: -157,
