@@ -112,4 +112,35 @@ class MergeSkipIntervalsTest {
         assertEquals("chapters", merged.find { it.type == "outro" }!!.provider)
         assertEquals("introdb", merged.find { it.type == "post-credits" }!!.provider)
     }
+
+    // --- Fork deviation: every chapter interval of a category survives the merge ---
+
+    @Test
+    fun twoChapterOpeningsSurviveWhenApiDataArrives() {
+        val api = listOf(interval("recap", 0.0, 60.0, "introdb"), interval("intro", 85.0, 175.0, "introdb"))
+        val chapters = listOf(
+            interval("intro", 90.0, 180.0, "chapters"),
+            interval("intro", 600.0, 690.0, "chapters"),
+        )
+        val merged = mergeSkipIntervals(api, chapters)
+        assertEquals(
+            listOf("intro@90.0 chapters", "intro@600.0 chapters", "recap@0.0 introdb"),
+            merged.map { "${it.type}@${it.startTime} ${it.provider}" },
+        )
+    }
+
+    @Test
+    fun apiKeepsOneIntervalPerMissingCategory() {
+        val api = listOf(
+            interval("op", 85.0, 175.0, "animeskip"),
+            interval("mixed-op", 300.0, 360.0, "animeskip"),
+            interval("ed", 1300.0, 1390.0, "animeskip"),
+        )
+        val chapters = listOf(interval("recap", 0.0, 45.0, "chapters"))
+        val merged = mergeSkipIntervals(api, chapters)
+        assertEquals(
+            listOf("recap@0.0 chapters", "op@85.0 animeskip", "ed@1300.0 animeskip"),
+            merged.map { "${it.type}@${it.startTime} ${it.provider}" },
+        )
+    }
 }

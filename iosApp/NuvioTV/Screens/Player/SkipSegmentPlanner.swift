@@ -133,10 +133,14 @@ struct SkipSegmentPlanner {
 
     /// Replaces the list (a fetch or a chapter re-merge). Consumed intervals, the chip timer and the
     /// chip's hidden / suppressed state carry over by `SegmentKey`; deliberate entries are re-applied.
+    /// The interval behind the last prompt is followed by key too, so a chip press before the next
+    /// `evaluate` consumes the replacement. The engine re-evaluates at once when a chip is showing
+    /// (its target may have moved).
     mutating func setIntervals(_ newIntervals: [SkipInterval]) {
+        let promptKey = promptIndex.map { keys[$0] }
         intervals = newIntervals
         keys = Self.segmentKeys(newIntervals)
-        promptIndex = nil
+        promptIndex = promptKey.flatMap { keys.firstIndex(of: $0) }
         for seek in deliberateSeeks { markDeliberate(fromMs: seek.fromMs, toMs: seek.toMs) }
     }
 

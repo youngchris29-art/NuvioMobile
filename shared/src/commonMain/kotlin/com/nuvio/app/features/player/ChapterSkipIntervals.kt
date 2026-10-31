@@ -113,6 +113,10 @@ object ChapterSkipIntervals {
  * For movies, API results take full priority when they have any data, because
  * IntroDB provides movie-credits + post-credits with proper trimming.
  *
+ * Fork deviation from upstream (whose map kept one interval per category): EVERY chapter
+ * interval of a category is kept (a file with two openings keeps both once any API data
+ * arrives), and only the API intervals of categories the chapters lack are added.
+ *
  * Public for tvOS (`ChapterSkipIntervalsKt.mergeSkipIntervals`); Swift passes [isMovie] explicitly.
  */
 fun mergeSkipIntervals(
@@ -123,16 +127,13 @@ fun mergeSkipIntervals(
     if (chapterIntervals.isEmpty()) return apiIntervals
     if (apiIntervals.isEmpty()) return chapterIntervals
     if (isMovie && apiIntervals.isNotEmpty()) return apiIntervals
-    val chosen = LinkedHashMap<String, SkipInterval>()
-    for (interval in chapterIntervals) {
-        val category = segmentCategory(interval.type) ?: continue
-        chosen.getOrPut(category) { interval }
-    }
-    for (interval in apiIntervals) {
-        val category = segmentCategory(interval.type) ?: continue
-        chosen.getOrPut(category) { interval }
-    }
+    val chapterCategorized = chapterIntervals.filter { segmentCategory(it.type) != null }
+    val chapterCategories = chapterCategorized.mapNotNull { segmentCategory(it.type) }.toSet()
+    // As upstream on the API side: the first API interval of each category the chapters lack.
+    val apiFill = apiIntervals
+        .filter { interval -> segmentCategory(interval.type)?.let { it !in chapterCategories } ?: false }
+        .distinctBy { segmentCategory(it.type) }
     val uncategorized = (chapterIntervals + apiIntervals)
         .filter { segmentCategory(it.type) == null }
-    return chosen.values.toList() + uncategorized
+    return chapterCategorized + apiFill + uncategorized
 }

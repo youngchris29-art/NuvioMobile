@@ -694,4 +694,39 @@ final class SkipSegmentPlannerTests: XCTestCase {
         p.seekCompleted(atSec: 0, now: 5.5)
         XCTAssertEqual(tick(&p, 91, at: 100, types: [.intro]).autoSkipTargetSec, 180)
     }
+
+    // Review r1 P2 #2: a re-merge while the chip is showing.
+
+    func testReplaceMidPromptThenReevaluatePublishesTheNewTarget() {
+        var p = planner([interval(85, 175, "op")])
+        p.autoHidesChip = true
+        XCTAssertEqual(tick(&p, 100, at: 0).prompt?.targetSec, 175)
+        p.setIntervals([chapterInterval(90, 180, "intro")])
+        // The engine's immediate re-evaluation (same position): new target, same timer.
+        XCTAssertEqual(tick(&p, 100, at: 0.2).prompt?.targetSec, 180)
+        XCTAssertNil(tick(&p, 101, at: 10).prompt)
+    }
+
+    func testReplaceMidPromptThenPressBeforeAnyTickConsumesTheReplacement() {
+        // The stale chip (target 175) is pressed before the next evaluation: the press still
+        // consumes the replacement interval, so landing inside it neither auto-skips nor shows a chip.
+        var p = planner([interval(85, 175, "op")])
+        XCTAssertEqual(tick(&p, 100, at: 0).prompt?.targetSec, 175)
+        p.setIntervals([chapterInterval(90, 180, "intro")])
+        p.beginSeek(kind: .chip, targetSec: 175, now: 0.3)
+        p.seekCompleted(atSec: 175, now: 0.6)
+        XCTAssertEqual(tick(&p, 175, at: 1, types: [.intro]), SkipSegmentPlanner.Decision())
+        XCTAssertEqual(tick(&p, 177, at: 3, types: [.intro]), SkipSegmentPlanner.Decision())
+    }
+
+    func testReplaceMidPromptThatRemovesTheIntervalLeavesNoPromptToPress() {
+        var p = planner([interval(85, 175, "op")])
+        XCTAssertNotNil(tick(&p, 100, at: 0).prompt)
+        p.setIntervals([interval(1300, 1380, "ed")])
+        XCTAssertNil(tick(&p, 100, at: 0.2).prompt)
+        // A press racing the removal consumes nothing: the outro still auto-skips later.
+        p.beginSeek(kind: .chip, targetSec: 175, now: 0.3)
+        p.seekCompleted(atSec: 175, now: 0.6)
+        XCTAssertEqual(tick(&p, 1301, at: 5, types: [.outro]).autoSkipTargetSec, 1380)
+    }
 }

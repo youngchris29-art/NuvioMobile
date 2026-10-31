@@ -435,6 +435,11 @@ struct NativePlayerScreen: View {
         let merged = skipSources.merged(isMovie: SkipIntervalSources.isMovie(contentType: context.contentType))
         skipPlanner.setIntervals(merged)
         upNext.skipIntervals = merged
+        // A visible chip may point at an interval the re-merge moved or removed: re-evaluate now
+        // (keyed timer kept) instead of leaving a stale target up until the next ~3 s tick.
+        if skipPrompt != nil {
+            updateSkipPrompt(position: coordinator.lastPositionSec, duration: coordinator.durationSec)
+        }
     }
 
     /// Offer the skip while inside a segment (the last second is excluded so the action
@@ -450,6 +455,11 @@ struct NativePlayerScreen: View {
         }
         // Synchronous read (ticks are ~3 s apart); auto-skip also requires Skip Intro.
         let settings = PlayerSettingsRepository.shared.uiState.value_ as? PlayerSettingsUiState
+        // Skip Intro toggled during playback (profile sync): the chapter intervals follow. A Bool
+        // compare per tick; the feed recomputes only on the change.
+        if let enabled = chapterSkipFeed.skipIntroEnabled, enabled != (settings?.skipIntroEnabled ?? false) {
+            updateChapterSkipIntervals()
+        }
         let autoSkipTypes: [AutoSkipSegmentType]? = settings.flatMap { $0.skipIntroEnabled ? Array($0.autoSkipSegmentTypes) : nil }
         let decision = skipPlanner.evaluate(positionSec: position, durationSec: duration,
                                             isPlaying: !coordinator.isPaused, autoSkipTypes: autoSkipTypes,

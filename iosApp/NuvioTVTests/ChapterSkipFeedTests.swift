@@ -83,6 +83,16 @@ final class ChapterSkipFeedTests: XCTestCase {
         XCTAssertEqual(feed.update(chapters: namedChapters, durationSec: namedDuration, skipIntroEnabled: true)?.count, 3)
     }
 
+    func testFeedRemembersTheSettingItLastSaw() {
+        // Engines compare it with the live setting to recompute on a mid-playback toggle.
+        var feed = ChapterSkipFeed()
+        XCTAssertNil(feed.skipIntroEnabled)
+        _ = feed.update(chapters: namedChapters, durationSec: 0, skipIntroEnabled: true)
+        XCTAssertEqual(feed.skipIntroEnabled, true)
+        _ = feed.update(chapters: namedChapters, durationSec: namedDuration, skipIntroEnabled: false)
+        XCTAssertEqual(feed.skipIntroEnabled, false)
+    }
+
     func testDurationChangeThatKeepsTheIntervalsDoesNotReport() {
         var feed = ChapterSkipFeed()
         _ = feed.update(chapters: namedChapters, durationSec: namedDuration, skipIntroEnabled: true)

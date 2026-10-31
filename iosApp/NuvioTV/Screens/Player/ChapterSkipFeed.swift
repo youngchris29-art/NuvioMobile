@@ -10,11 +10,15 @@ import SharedCore
 struct ChapterSkipFeed {
     /// The current chapter-derived intervals (empty with Skip Intro off).
     private(set) var intervals: [SkipInterval] = []
+    /// The Skip Intro setting at the last `update` (nil before the first one): an engine compares
+    /// it with the live setting to recompute when the setting is toggled during playback.
+    private(set) var skipIntroEnabled: Bool?
     private var lastChapters: [TransportChapter]?
     private var lastDurationMs: Int64?
 
     /// The new interval list when it changed, nil when there is nothing new to merge.
     mutating func update(chapters: [TransportChapter], durationSec: Double, skipIntroEnabled: Bool) -> [SkipInterval]? {
+        self.skipIntroEnabled = skipIntroEnabled
         guard skipIntroEnabled else {
             lastChapters = nil
             lastDurationMs = nil

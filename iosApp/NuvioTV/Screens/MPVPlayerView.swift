@@ -819,6 +819,10 @@ final class MPVTVPlayerViewController: UIViewController {
             playerSettingsWatcher = FlowWatcherKt.watch(PlayerSettingsRepository.shared.uiState) { [weak self] emitted in
                 guard let self, let settings = emitted as? PlayerSettingsUiState else { return }
                 self.playerSettings = settings
+                // Skip Intro toggled during playback (profile sync): the chapter intervals follow.
+                if let enabled = self.chapterSkipFeed.skipIntroEnabled, enabled != settings.skipIntroEnabled {
+                    self.updateChapterSkipIntervals(durationSec: self.cachedProps().duration)
+                }
                 // The profile's stored resize mode (our own write echoing back, or the phone's):
                 // the baseline the Aspect pill's write-back compares against.
                 self.aspectWriteback.watcherReported(.initial(syncedName: settings.resizeMode.name))
@@ -1972,6 +1976,12 @@ final class MPVTVPlayerViewController: UIViewController {
         if smokeSkipActive, !isSmoke { return }
         #endif
         skipPlanner.setIntervals(intervals)
+        // A visible chip may point at an interval the re-merge moved or removed: re-evaluate now
+        // (keyed timer kept) instead of leaving a stale target up until the next tick.
+        if state.skipPrompt != nil {
+            let snap = cachedProps()
+            updateSkipPrompt(position: snap.position, duration: snap.duration, paused: snap.paused)
+        }
         state.skipIntervals = intervals
         state.transport.skipSpans = intervals.compactMap { interval in
             // Post-credits intervals are skip targets only, never drawn on the bar.
