@@ -1709,7 +1709,8 @@ struct DetailView: View {
         // refuse to run once cancelled (disappear, bridge leaving idle, a newer focus change).
         guard !Task.isCancelled, focusedRow == row, bridgePhase == .idle, let rowTop = detailRowOffsets[row] else { return false }
         let inset = dimModel.contentInsetTop
-        let target = DetailRowAnchor.scrollTarget(rowTop: rowTop, contentInsetTop: inset)
+        let target = DetailRowAnchor.scrollTarget(rowTop: rowTop, contentInsetTop: inset,
+                                                   screenRest: DetailRowAnchor.screenRest(for: row))
         let expected = DetailRowAnchor.expectedOffset(scrollTarget: target, contentInsetTop: inset)
         if onlyIfDrifted, abs(dimModel.lastContentOffset - expected) <= DetailRowAnchor.verifyTolerance { return true }
         // W3-15 (BUG-153): distance-scaled glide; see `heroTopPass`.
@@ -2556,7 +2557,8 @@ struct DetailView: View {
                 // D-3 (review P3-a): resolved — release the mark before deciding so the anchor
                 // glide's own latch edge (below) is free to settle the compact logo's band.
                 if dimModel.downSettlePending == settleToken { dimModel.downSettlePending = nil }
-                let decision = DetailRowAnchor.decision(direction: .down, screenTop: screenTop)
+                let decision = DetailRowAnchor.decision(direction: .down, screenTop: screenTop,
+                                                        screenRest: DetailRowAnchor.screenRest(for: row))
                 switch decision {
                 case .anchor:
                     _ = anchorPass(row, note: "down-straddle")

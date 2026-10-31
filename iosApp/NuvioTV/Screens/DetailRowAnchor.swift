@@ -67,6 +67,22 @@ enum DetailRowAnchor {
     /// chrome's reservation), and nothing covers it, so the rest is set in screen terms.
     static let screenRest: CGFloat = 108
 
+    /// BUG-217: the extra rest the heading-less chip row (`.logos`, the studio/network `CompanyChip`s
+    /// with no title above them) needs. Every other row hangs its cards under a title, so at
+    /// `screenRest` its cards sit about this far lower than the row's top; the chips ARE the row's
+    /// top. The focus engine will not leave a focused card above about `screenRest + 72` on screen
+    /// (sim 2026-10-31: the chips anchored at 108 were pulled to 180 by the engine on the FIRST
+    /// Right press inside the row, with no anchor pass involved — row top 108 → 180, offset 712 →
+    /// 640 — and stayed there), so the chip row rests there from the start and a move inside the
+    /// row finds nothing left to reveal. Measured, not derived: the 72 is the engine's margin, and
+    /// it happens to equal `topInset`.
+    static let headinglessRowLead: CGFloat = 72
+
+    /// Where `row`'s top rests on SCREEN: `screenRest`, plus `headinglessRowLead` for the chip row.
+    static func screenRest(for row: DetailRowID) -> CGFloat {
+        row == .logos ? screenRest + headinglessRowLead : screenRest
+    }
+
     /// The strip above the rest shows the previous row's tail (its chips, captions, or the bottom
     /// of a header — fixture step 3: the "Parental Guide" header half under the edge). A fixed top
     /// scrim fades that strip to black once the page has scrolled, the same way the dim ramp
