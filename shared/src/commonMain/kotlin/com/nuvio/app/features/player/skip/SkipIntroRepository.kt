@@ -264,13 +264,6 @@ object SkipIntroRepository {
         return chosen.values.toList()
     }
 
-    private fun segmentCategory(type: String): String? = when (type.lowercase()) {
-        "intro", "op", "mixed-op" -> "opening"
-        "outro", "ed", "mixed-ed", "credits", "ending" -> "ending"
-        "recap" -> "recap"
-        else -> null
-    }
-
     private suspend fun fetchFromIntroDb(imdbId: String, season: Int, episode: Int): List<SkipInterval> {
         return try {
             val data = SkipIntroApi.getIntroDbSegments(imdbId, season, episode)
@@ -283,14 +276,6 @@ object SkipIntroRepository {
         } catch (_: Exception) {
             emptyList()
         }
-    }
-
-    private fun IntroDbSegment?.toSkipIntervalOrNull(type: String): SkipInterval? {
-        if (this == null) return null
-        val start = startSec ?: startMs?.let { it / 1000.0 }
-        val end = endSec ?: endMs?.let { it / 1000.0 }
-        if (start == null || end == null || end <= start) return null
-        return SkipInterval(startTime = start, endTime = end, type = type, provider = "introdb")
     }
 
     private suspend fun fetchFromAniSkip(malId: String, episode: Int): List<SkipInterval> {
@@ -334,12 +319,7 @@ object SkipIntroRepository {
                 val sorted = (targetEpisode.timestamps ?: continue).sortedBy { it.at }
                 val result = sorted.mapIndexedNotNull { i, ts ->
                     val endTime = sorted.getOrNull(i + 1)?.at ?: Double.MAX_VALUE
-                    val type = when (ts.type.name.lowercase()) {
-                        "intro", "new intro" -> "op"
-                        "credits" -> "ed"
-                        "recap" -> "recap"
-                        else -> return@mapIndexedNotNull null
-                    }
+                    val type = animeSkipSegmentType(ts.type.name) ?: return@mapIndexedNotNull null
                     SkipInterval(startTime = ts.at, endTime = endTime, type = type, provider = "animeskip")
                 }
                 if (result.isNotEmpty()) return result
@@ -421,4 +401,35 @@ internal suspend fun resolveMovieSkipImdbId(
             else -> null
         }?.trim()?.takeIf { imdbPattern.matches(it) }
     }
+}
+
+/**
+ * The skip category (opening / ending / recap) of a provider segment type, or null for types
+ * that are not skippable. Public so the player can key chip state on the category, which stays
+ * the same when a chapter-derived interval replaces a provider one (`op` -> `intro`).
+ */
+fun segmentCategory(type: String): String? = when (type.lowercase()) {
+    "intro", "op", "mixed-op" -> "opening"
+    "outro", "ed", "mixed-ed", "credits", "ending" -> "ending"
+    "recap" -> "recap"
+    else -> null
+}
+
+/** IntroDB episode segment to interval; rejects missing, non-finite, negative or empty ranges. */
+internal fun IntroDbSegment?.toSkipIntervalOrNull(type: String): SkipInterval? {
+    if (this == null) return null
+    val start = startSec ?: startMs?.let { it / 1000.0 }
+    val end = endSec ?: endMs?.let { it / 1000.0 }
+    if (start == null || end == null || !start.isFinite() || !end.isFinite() || start < 0 || end <= start) return null
+    return SkipInterval(startTime = start, endTime = end, type = type, provider = "introdb")
+}
+
+/** Anime-Skip timestamp type name to segment type, or null for types the player does not skip. */
+internal fun animeSkipSegmentType(name: String): String? = when (name.lowercase()) {
+    "intro", "new intro" -> "op"
+    "credits", "new credits" -> "ed"
+    "mixed intro" -> "mixed-op"
+    "mixed credits" -> "mixed-ed"
+    "recap" -> "recap"
+    else -> null
 }
