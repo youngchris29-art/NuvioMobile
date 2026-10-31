@@ -63,10 +63,10 @@ final class DetailRowAnchorTests: XCTestCase {
     /// 108, except the rows whose first item the focus engine would otherwise pull down on the first
     /// Right press: the chip row (`logos`, 180) and Cast / Collection / Trailers (180 less the lead of
     /// their first item under the heading block: 61 / 69 / 69 with the system font).
-    private func restForAnchoredRow(_ probeLabel: String) -> Double {
+    private func restForAnchoredRow(_ probeLabel: String, cinematic: Bool) -> Double {
         guard let range = probeLabel.range(of: "anchor=") else { return 108 }
         switch probeLabel[range.upperBound...].prefix(while: { $0 != " " }) {
-        case "logos": return 180
+        case "logos": return cinematic ? 180 : 108
         case "cast": return 119
         case "collection", "trailers": return 111
         default: return 108
@@ -114,6 +114,8 @@ final class DetailRowAnchorTests: XCTestCase {
         guard app.staticTexts["debug_ux6"].waitForExistence(timeout: 6) else {
             throw XCTSkip("no detail page opened (debug_ux6 probe absent) — nothing to measure")
         }
+        // BUG-217: the Cinematic hero (`detail_hero`) marks the layout; the chip row's rest differs.
+        let cinematic = app.descendants(matching: .any)["detail_hero"].exists
         // FEAT-32: the page used to auto-enter the full-screen trailer cover a few seconds in, and
         // this walk pressed Menu once "regardless" to back out of it. That Menu now POPS the page:
         // the Back-hint caption stays mounted on the page with no cover up, and in the Cinematic
@@ -182,7 +184,7 @@ final class DetailRowAnchorTests: XCTestCase {
             let probeLabel = app.staticTexts["debug_ux6"].exists ? app.staticTexts["debug_ux6"].label : ""
             if let top = probeNumber(probeLabel, key: "top="), let off = probeNumber(probeLabel, key: "off=") {
                 anchorSamples += 1
-                let residual = (top - off) - restForAnchoredRow(probeLabel)
+                let residual = (top - off) - restForAnchoredRow(probeLabel, cinematic: cinematic)
                 residualByStep.append((step, "down", residual))
                 // Codex BUG-96 r3 (P3): a stuck focus would repeat one good sample on every press —
                 // the walk must reach DISTINCT rows, not the same one six times.
@@ -243,7 +245,7 @@ final class DetailRowAnchorTests: XCTestCase {
             }
             let probeLabel = app.staticTexts["debug_ux6"].exists ? app.staticTexts["debug_ux6"].label : ""
             if let top = probeNumber(probeLabel, key: "top="), let off = probeNumber(probeLabel, key: "off=") {
-                let residual = (top - off) - restForAnchoredRow(probeLabel)
+                let residual = (top - off) - restForAnchoredRow(probeLabel, cinematic: cinematic)
                 residualByStep.append((step, "up", residual))
                 // End-of-content clamp: when the page is already scrolled to its end (the geometry
                 // sample's offset + visible height reaches the content height), a row near the bottom

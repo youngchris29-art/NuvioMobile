@@ -26,9 +26,11 @@ final class DetailChipRowScrollUITests: XCTestCase {
         continueAfterFailure = true
     }
 
-    /// Where the chip row's first chip rests on screen when the row is anchored (`DetailRowAnchor
-    /// .screenRest(for: .logos)`), and the tolerance on it.
-    private static let chipRestMinY: CGFloat = 180
+    /// Where the chip row's first chip rests on screen when the row is anchored
+    /// (`DetailRowAnchor.screenRest(for: .logos, layout:)`): 180 in Cinematic, 108 in Classic (whose
+    /// chips did not move on Right at 108); and where the Cast avatar rests (the engine's margin).
+    private static func chipRestMinY(_ layout: String) -> CGFloat { layout == "cinematic" ? 180 : 108 }
+    private static let engineMarginMinY: CGFloat = 180
     private static let restTolerance: CGFloat = 8
     /// A Right press inside a row may not move the page by more than this.
     private static let driftTolerance: CGFloat = 4
@@ -205,7 +207,7 @@ final class DetailChipRowScrollUITests: XCTestCase {
         XCTAssertTrue(note.hasPrefix("logos") && note.contains("hero-exit"),
                       "the hero exit must have anchored the chip row (anchor=\(note))")
         let rest = boxes(app, "company_artwork").first?.minY ?? -1
-        XCTAssertEqual(rest, Self.chipRestMinY, accuracy: Self.restTolerance, "the anchored chip row's rest")
+        XCTAssertEqual(rest, Self.chipRestMinY("cinematic"), accuracy: Self.restTolerance, "the anchored chip row's rest")
         snap("cinematic_hero_exit_rest")
         assertRightNeverScrolls(app, identifier: "company_artwork", row: "logos", tag: "cinematic_hero_exit")
     }
@@ -230,7 +232,7 @@ final class DetailChipRowScrollUITests: XCTestCase {
         attach("\(layout) up into chips: \(note)", "\(layout)_up_anchor")
         XCTAssertTrue(note.hasPrefix("logos") && note.contains("y="), "Up must have anchored the chip row (anchor=\(note))")
         let rest = boxes(app, "company_artwork").first?.minY ?? -1
-        XCTAssertEqual(rest, Self.chipRestMinY, accuracy: Self.restTolerance, "the anchored chip row's rest (\(layout))")
+        XCTAssertEqual(rest, Self.chipRestMinY(layout), accuracy: Self.restTolerance, "the anchored chip row's rest (\(layout))")
         snap("\(layout)_up_rest")
         assertRightNeverScrolls(app, identifier: "company_artwork", row: "logos", tag: "\(layout)_up")
     }
@@ -254,7 +256,7 @@ final class DetailChipRowScrollUITests: XCTestCase {
         XCTAssertTrue(note.hasPrefix("cast") && note.contains("y="), "Up must have anchored the Cast row (anchor=\(note))")
         if let first = boxes(app, "cast_artwork").first {
             attach(String(format: "cast first card at the anchored rest: minY=%.1f midY=%.1f", first.minY, first.midY), "cast_rest")
-            XCTAssertEqual(first.minY, Self.chipRestMinY, accuracy: Self.restTolerance, "the Cast avatar rests at the engine's margin")
+            XCTAssertEqual(first.minY, Self.engineMarginMinY, accuracy: Self.restTolerance, "the Cast avatar rests at the engine's margin")
         }
         assertRightNeverScrolls(app, identifier: "cast_artwork", row: "cast", tag: "cast_up")
     }
@@ -287,12 +289,13 @@ final class DetailChipRowScrollUITests: XCTestCase {
 
     /// Every anchored row, reached by Up (so at its anchored rest), then one Right: the page must
     /// not move. Rows the title lacks are simply not visited; each reading is attached.
-    func testEveryAnchoredRowRightNeverScrolls() throws { try everyAnchoredRow(title: 0) }
+    func testEveryAnchoredRowRightNeverScrolls() throws { try everyAnchoredRow(title: 0, layout: "cinematic") }
+    func testEveryAnchoredRowRightNeverScrollsInClassic() throws { try everyAnchoredRow(title: 0, layout: "classic") }
     /// The series (Breaking Bad): the Episodes and Parental Guide rows the movie lacks.
-    func testEveryAnchoredRowOfASeriesRightNeverScrolls() throws { try everyAnchoredRow(title: 1) }
+    func testEveryAnchoredRowOfASeriesRightNeverScrolls() throws { try everyAnchoredRow(title: 1, layout: "cinematic") }
 
-    private func everyAnchoredRow(title: Int) throws {
-        guard let app = openWithChips(layout: "cinematic", only: title) else {
+    private func everyAnchoredRow(title: Int, layout: String) throws {
+        guard let app = openWithChips(layout: layout, only: title) else {
             throw XCTSkip("no title with two or more studio chips opened (TMDB off or offline) — nothing to measure")
         }
         var visited: [String] = []
