@@ -370,4 +370,44 @@ final class DetailRowAnchorDurationTests: XCTestCase {
                        DetailRowAnchor.anchorSecondsOverrideMax, "clamped to the ceiling")
         XCTAssertEqual(DetailRowAnchor.anchorSecondsOverrideMax, 2)
     }
+
+    // MARK: - BUG-217: the heading-less chip row rests where the engine would put it
+
+    /// Sim reading (2026-10-31, The Dark Knight): the chip row anchored at screen 108 (offset 712,
+    /// row top 820) was pulled to screen 180 (offset 640) by the focus engine on the first Right
+    /// press inside it, with no anchor pass. A move that stays in a row must not scroll, so the row
+    /// rests at 180 from the start.
+    func testTheChipRowRestsWhereTheEngineSettledIt() {
+        XCTAssertEqual(DetailRowAnchor.screenRest(for: .logos), 180)
+        let rowTop: CGFloat = 820, inset: CGFloat = 60
+        let y = DetailRowAnchor.scrollTarget(rowTop: rowTop, contentInsetTop: inset,
+                                             screenRest: DetailRowAnchor.screenRest(for: .logos))
+        XCTAssertEqual(DetailRowAnchor.expectedOffset(scrollTarget: y, contentInsetTop: inset), 640,
+                       "the anchored offset is the offset the engine settled on, so nothing is left to reveal")
+        XCTAssertEqual(rowTop - 640, DetailRowAnchor.screenRest(for: .logos), "row top on screen")
+    }
+
+    func testEveryRowWithAHeadingKeepsTheOriginalRest() {
+        for row: DetailRowID in [.parental, .episodes, .cast, .collection, .trailers, .moreLikeThis, .comments, .about] {
+            XCTAssertEqual(DetailRowAnchor.screenRest(for: row), DetailRowAnchor.screenRest, "\(row)")
+        }
+        XCTAssertEqual(DetailRowAnchor.screenRest, 108, "the pinned rest the tester photos were tuned on")
+    }
+
+    func testTheChipRowLeadIsTheHeadingBlockItLacks() {
+        XCTAssertEqual(DetailRowAnchor.headinglessRowLead, DetailRowAnchor.topInset)
+        XCTAssertEqual(DetailRowAnchor.screenRest(for: .logos) - DetailRowAnchor.screenRest,
+                       DetailRowAnchor.headinglessRowLead)
+    }
+
+    /// The Down straddle check reads the row's own rest: a chip row left at 150 by the engine's
+    /// reveal sits in the zone where the first Right would nudge it, so it anchors; 180 is free.
+    func testTheDownStraddleCheckUsesTheChipRowsOwnRest() {
+        let rest = DetailRowAnchor.screenRest(for: .logos)
+        XCTAssertEqual(DetailRowAnchor.decision(direction: .down, screenTop: 150, screenRest: rest), .anchor)
+        XCTAssertEqual(DetailRowAnchor.decision(direction: .down, screenTop: rest, screenRest: rest), .free)
+        XCTAssertEqual(DetailRowAnchor.decision(direction: .down, screenTop: 300, screenRest: rest), .free)
+        // The same 150 under the default rest is free: the headed rows are unchanged.
+        XCTAssertEqual(DetailRowAnchor.decision(direction: .down, screenTop: 150), .free)
+    }
 }
