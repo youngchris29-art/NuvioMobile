@@ -213,8 +213,10 @@ private struct DetailTopScrim: View {
 private struct DetailCompactLogo: View {
     static let slotHeight: CGFloat = DetailCompactLogoBand.slotHeight
     /// How far past the hero-exit rest the page must scroll (that rest sits at about
-    /// `heroHeight − 12 + inset` from the top, `DetailDim.scrolledDistance`, and leaves the dimmed
-    /// action row on screen), so the logo waits for the next row down.
+    /// `heroHeight − 12 + inset` from the top, `DetailDim.scrolledDistance`, for a row resting at
+    /// `screenRest`; the chip row, the usual first row, rests 72 pt lower since BUG-217, at about
+    /// `heroHeight − 84 + inset`. Either way it leaves the dimmed action row on screen), so the logo
+    /// waits for the next row down.
     static let heroClearance: CGFloat = 120
     let title: String
     let logoUrl: String?
@@ -2506,7 +2508,7 @@ struct DetailView: View {
             return
         }
         // FEAT-35 (P1 §F + correction 9): Down out of the Cinematic hero anchors the first
-        // row at `screenRest` in ONE blended motion, replacing the BUG-99 Down settle for
+        // row at its rest (`DetailRowAnchor.screenRest(for:)`) in ONE blended motion, replacing the BUG-99 Down settle for
         // this transition only. Only when the page is at its top: focus restored to a deep
         // row after a push or cover also reads nil → row and must take the ordinary path.
         if detailLayout == .cinematic,

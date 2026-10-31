@@ -67,20 +67,38 @@ enum DetailRowAnchor {
     /// chrome's reservation), and nothing covers it, so the rest is set in screen terms.
     static let screenRest: CGFloat = 108
 
-    /// BUG-217: the extra rest the heading-less chip row (`.logos`, the studio/network `CompanyChip`s
-    /// with no title above them) needs. Every other row hangs its cards under a title, so at
-    /// `screenRest` its cards sit about this far lower than the row's top; the chips ARE the row's
-    /// top. The focus engine will not leave a focused card above about `screenRest + 72` on screen
-    /// (sim 2026-10-31: the chips anchored at 108 were pulled to 180 by the engine on the FIRST
-    /// Right press inside the row, with no anchor pass involved — row top 108 → 180, offset 712 →
-    /// 640 — and stayed there), so the chip row rests there from the start and a move inside the
-    /// row finds nothing left to reveal. Measured, not derived: the 72 is the engine's margin, and
-    /// it happens to equal `topInset`.
-    static let headinglessRowLead: CGFloat = 72
+    /// BUG-217: where the focus engine will not let a focused row's FIRST focusable item sit above,
+    /// in points from the top edge. A move inside an anchored row (a Right press) makes the engine
+    /// reveal the newly focused item, and an item above this is pulled down to it: the studio chips
+    /// anchored at 108 went to 180 on the first Right (offset 712 to 640, no anchor pass involved),
+    /// the Cast avatars from 169 to 180. Measured on the tvOS 27 simulator, 2026-10-31; the same 180
+    /// for a chip and an avatar, and `contentInsetTop` read 60 there, so it is not derived from it.
+    static let engineRevealTop: CGFloat = 180
 
-    /// Where `row`'s top rests on SCREEN: `screenRest`, plus `headinglessRowLead` for the chip row.
+    /// How far below the row's top the row's first focusable item sits, for the rows measured at
+    /// their anchored rest (Up into the row, then one Right, the page's shift read off the section
+    /// titles): the chip row's chips ARE the row's top (0, shift 72); Cast's avatars sit under the
+    /// heading block plus their 8 pt (shift 11); Collection's and Trailers' tiles under the heading
+    /// block plus 16 (shift 3). More Like This was already clear (shift 0). The heading block is the
+    /// section title's line plus `Spacing.md`, read from the tokens so a font change moves it.
+    /// `nil` = not measured: the row keeps `screenRest` (Episodes and Parental Guide, whose Down and
+    /// Right moves stay inside their own focus regions, and the rows already clear).
+    static func firstItemLead(for row: DetailRowID) -> CGFloat? {
+        let headingBlock = Theme.Font.sectionTitleLineHeight + Theme.Spacing.md
+        switch row {
+        case .logos: return 0
+        case .cast: return headingBlock + 8
+        case .collection, .trailers: return headingBlock + 16
+        default: return nil
+        }
+    }
+
+    /// Where `row`'s top rests on SCREEN: `screenRest`, or lower when the row's first item would
+    /// otherwise sit above `engineRevealTop` (then the item rests exactly there, so a move inside
+    /// the row has nothing left to reveal).
     static func screenRest(for row: DetailRowID) -> CGFloat {
-        row == .logos ? screenRest + headinglessRowLead : screenRest
+        guard let lead = firstItemLead(for: row) else { return screenRest }
+        return max(screenRest, engineRevealTop - lead)
     }
 
     /// The strip above the rest shows the previous row's tail (its chips, captions, or the bottom
@@ -91,9 +109,10 @@ enum DetailRowAnchor {
 
     /// `ScrollPosition.scrollTo(y:)` takes CONTENT coordinates and lands the content offset at
     /// `y − contentInsets.top` (fixture probe: `y=890` → `off=733` with `inset=157`). The row's
-    /// screen top is then `rowTop − offset`, so for a rest at `screenRest`:
+    /// screen top is then `rowTop − offset`, so for a rest at `screenRest` (the row's own,
+    /// `screenRest(for:)`, which has no default here so no caller can silently get 108):
     /// `y = rowTop + contentInsetTop − screenRest`, never negative.
-    static func scrollTarget(rowTop: CGFloat, contentInsetTop: CGFloat, screenRest: CGFloat = screenRest) -> CGFloat {
+    static func scrollTarget(rowTop: CGFloat, contentInsetTop: CGFloat, screenRest: CGFloat) -> CGFloat {
         max(rowTop + contentInsetTop - screenRest, 0)
     }
 
@@ -241,8 +260,8 @@ enum DetailRowAnchor {
     /// What a focus change means for the Cinematic hero. `focusedRow == nil` only inside the hero
     /// (Comments and About are tracked rows), so nil ↔ row is a hero boundary crossing.
     enum HeroTransition: Equatable {
-        /// Down out of the hero into the first row below it: that row anchors at `screenRest` in
-        /// one blended motion (replaces the BUG-99 Down settle for this one transition).
+        /// Down out of the hero into the first row below it: that row anchors at its rest
+        /// (`screenRest(for:)`) in one blended motion (replaces the BUG-99 Down settle for this one transition).
         case exit
         /// Any row → hero (BUG-117: Up from a far-right season poster can jump straight in past
         /// rows with nothing directly above, so this is not first-row-only): scroll to y = 0.
@@ -287,7 +306,7 @@ enum DetailRowAnchor {
     /// straddle case BUG-96 exists to fix. `.free` otherwise (at or below `screenRest`, screenRest
     /// itself included — a row already resting at or past its own target rest needs no rescuing),
     /// leaving the engine's own minimal reveal in place (BUG-99).
-    static func decision(direction: Direction, screenTop: CGFloat, screenRest: CGFloat = screenRest) -> Decision {
+    static func decision(direction: Direction, screenTop: CGFloat, screenRest: CGFloat) -> Decision {
         switch direction {
         case .up:
             return .anchor

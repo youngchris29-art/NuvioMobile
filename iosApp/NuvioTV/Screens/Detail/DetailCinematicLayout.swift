@@ -278,11 +278,19 @@ nonisolated enum DetailDim {
     static let classicRampDistance: CGFloat = 400
     static let ceiling: Double = 0.85
 
-    /// Classic keeps today's 400 pt ramp; Cinematic saturates as the hero fully leaves.
+    /// BUG-217: how much lower the chip row (the usual first row under the hero) rests since its
+    /// anchor follows the focus engine's reveal margin (`DetailRowAnchor.screenRest(for: .logos)`
+    /// minus `DetailRowAnchor.screenRest`; a unit test pins the two together). The hero-exit rest
+    /// is that much shorter a scroll, so the Cinematic ramp is shortened by the same amount and
+    /// the rest stays past it (dim at the ceiling, the 0.80 trailer latch closed) as before.
+    static let chipRowRestDrop: CGFloat = 72
+
+    /// Classic keeps today's 400 pt ramp; Cinematic saturates as the hero fully leaves (the
+    /// chip row's hero-exit rest included, see `chipRowRestDrop`).
     static func rampDistance(layout: DetailLayout, heroHeight: CGFloat) -> CGFloat {
         switch layout {
         case .classic: return classicRampDistance
-        case .cinematic: return max(classicRampDistance, heroHeight)
+        case .cinematic: return max(classicRampDistance, heroHeight - chipRowRestDrop)
         }
     }
 
@@ -291,8 +299,10 @@ nonisolated enum DetailDim {
     /// once the page has moved `2 × inset` from the top, because the top rests at
     /// `contentOffset == −inset`: `scrollTo(y: 0)` lands at `0 − inset`). Cinematic measures the
     /// real distance from the top (`contentOffset + inset`), so a ramp equal to the hero height
-    /// saturates as the hero leaves: the hero-exit rest (`≈ heroHeight − 12 + inset` from the top)
-    /// is past the ramp, which puts the dim at the ceiling and the trailer latch (0.80) over it.
+    /// saturates as the hero leaves: the hero-exit rest (`≈ heroHeight − 12 + inset` from the top
+    /// for a row resting at `screenRest`, 72 pt less for the chip row, BUG-217) is past the ramp
+    /// (which `rampDistance` shortens by that much), which puts the dim at the ceiling and the
+    /// trailer latch (0.80) over it.
     static func scrolledDistance(layout: DetailLayout, contentOffset: CGFloat, contentInsetTop: CGFloat) -> CGFloat {
         switch layout {
         case .classic: return contentOffset - contentInsetTop
