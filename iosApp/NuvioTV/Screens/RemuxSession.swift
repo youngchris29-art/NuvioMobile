@@ -836,15 +836,20 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         /// dropped and `everRepositioned` is left alone, so the linear completeness gate still
         /// holds. If the re-open's own seek fails, the session fails as the read error always did
         /// (see `reopening`). Shares the consecutive-failure count with the error parks.
-        func reopenAfterIdle(at seg: Int) -> Bool {
-            guard RemuxReadAhead.idleReopenApplies(lastLongParkSegment: lastLongParkSeg, failedAtSegment: seg),
-                  consecutiveErrorParks < 3, seg >= 1, seg <= map.count else { return false }
+        /// `RemuxReadAhead.afterFailure` makes the call; `reopenAfterIdle` carries out a `.reopen`.
+        func runFailureStep(at seg: Int, canReopen: Bool) -> RemuxReadAhead.FailureStep {
+            let idle = seg >= 1 && seg <= map.count
+                && RemuxReadAhead.idleReopenApplies(lastLongParkSegment: lastLongParkSeg, failedAtSegment: seg)
+            return RemuxReadAhead.afterFailure(seekFailed: false, reopening: reopening,
+                                               everRepositioned: everRepositioned, canReopen: canReopen,
+                                               idleReopenApplies: idle, consecutiveErrorParks: consecutiveErrorParks)
+        }
+        func reopenAfterIdle(at seg: Int) {
             consecutiveErrorParks += 1
             pacingReopens += 1
             reopening = true
             startSeg = seg
             print("[Remux] read-ahead: source read ended after an idle park — re-opening at segment \(seg) (reopens=\(pacingReopens))")
-            return true
         }
         /// Consume a pending audio switch: becomes the active track; returns the segment to restart at.
         func applyAudioSwitch(currentSeg: Int) -> Int? {
@@ -930,15 +935,20 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                     if isCancelled() { break runLoop }
                     if let newer = takeReposition(), newer != startSeg {
                         startSeg = newer                     // a newer target interrupted the scan
+                        // A jump like any mailbox reposition: holes below are legal from here on.
+                        // `reopening` stays set so the next finalize still clears the read's code.
+                        everRepositioned = true
                         continue runLoop
                     }
                     if takeAudioSwitch() != nil { continue runLoop }   // a switch interrupted the scan
-                    // A failed re-open (source gone, expired link, no Range) must fail like the read
-                    // error that triggered it: a linear session has no reposition to wake an error
-                    // park, so it would sit there until the coordinator's stall watchdog.
-                    // `_lastErrorCode` still holds that read's code for the classifier.
-                    if reopening, !everRepositioned {
-                        return fail("read error at segment \(startSeg) (re-open failed)")
+                    // A failed re-open (source gone, expired link, no Range) fails like the read
+                    // that triggered it. `_lastErrorCode` still holds that read's code (if it was a
+                    // read error) for the classifier.
+                    if RemuxReadAhead.afterFailure(seekFailed: true, reopening: reopening,
+                                                   everRepositioned: everRepositioned, canReopen: false,
+                                                   idleReopenApplies: false,
+                                                   consecutiveErrorParks: consecutiveErrorParks) == .fail {
+                        return fail("source lost at segment \(startSeg) (re-open failed)")
                     }
                     consecutiveErrorParks += 1
                     guard consecutiveErrorParks < 4 else { return fail("reposition failed repeatedly") }
@@ -1278,8 +1288,11 @@ nonisolated final class RemuxSession: @unchecked Sendable {
             case .error:
                 destroyRun(run)
                 if let seg = gridCapSegment { return fail("grid net cap at segment \(seg)") }
-                if readFailed, reopenAfterIdle(at: currentSeg) { continue runLoop }
-                if !everRepositioned { return fail("read/write error at segment \(currentSeg)") }
+                switch runFailureStep(at: currentSeg, canReopen: readFailed) {
+                case .reopen: reopenAfterIdle(at: currentSeg); continue runLoop
+                case .fail: return fail("read/write error at segment \(currentSeg)")
+                case .park: break
+                }
                 // Repositioned sessions self-heal: park; the JIT re-request repositions us again.
                 consecutiveErrorParks += 1
                 guard consecutiveErrorParks < 4 else { return fail("repeated run errors") }
@@ -1299,15 +1312,16 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                     if let tx = audioTx { tailOK = tx.drain(write: writeTranscodedAudio) }
                     tailOK = tailOK && finalizeSegmentFiles(isFinal: true)
                 }
-                let shortLinear = currentSeg != map.count && !everRepositioned
                 destroyRun(run)
                 if !tailOK { return fail("final segment flush") }
                 // A short EOF right after a long idle park is as likely a dropped connection as a
                 // truncated source: re-open at the segment before believing it.
-                if currentSeg != map.count, reopenAfterIdle(at: currentSeg) { continue runLoop }
-                if shortLinear { return fail("truncated remux (\(currentSeg)/\(map.count) segments)") }
                 if currentSeg != map.count {
-                    print("[Remux] repositioned run EOF at \(currentSeg)/\(map.count) — partial dropped")
+                    switch runFailureStep(at: currentSeg, canReopen: true) {
+                    case .reopen: reopenAfterIdle(at: currentSeg); continue runLoop
+                    case .fail: return fail("truncated remux (\(currentSeg)/\(map.count) segments)")
+                    case .park: print("[Remux] repositioned run EOF at \(currentSeg)/\(map.count) — partial dropped")
+                    }
                 }
                 if state != .ready { setState(.ready) }
                 consecutiveErrorParks = 0

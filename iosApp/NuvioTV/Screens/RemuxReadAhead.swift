@@ -73,6 +73,28 @@ nonisolated final class RemuxReadAhead: @unchecked Sendable {
         return since >= 0 && since <= idleReopenWindowSegments
     }
 
+    enum FailureStep: Equatable { case reopen, fail, park }
+
+    /// The remux worker's next step after a failure, pure so its branches are testable.
+    /// `seekFailed`: a run's repositioning seek or boundary scan failed (a newer target or audio
+    /// switch interrupting it is not a failure). Otherwise a run's read failed or ended short of
+    /// the map; `canReopen` is false for a write error, which a fresh connection can't fix.
+    /// `.park` is the error park after a seek or read failure and the EOF park after a short EOF;
+    /// the consecutive-failure caps on parks stay with the caller.
+    static func afterFailure(seekFailed: Bool, reopening: Bool, everRepositioned: Bool,
+                             canReopen: Bool, idleReopenApplies: Bool,
+                             consecutiveErrorParks: Int) -> FailureStep {
+        if seekFailed {
+            // A failed re-open of a linear session fails like the read that triggered it: no
+            // reposition will come to wake its error park, only the coordinator's stall watchdog.
+            return reopening && !everRepositioned ? .fail : .park
+        }
+        if canReopen, idleReopenApplies, consecutiveErrorParks < 3 { return .reopen }
+        // Never repositioned = linear: a failure or short EOF fails to mpv (the completeness gate).
+        // Repositioned sessions self-heal: the JIT re-request repositions them.
+        return everRepositioned ? .park : .fail
+    }
+
     let boundSec: Double
     /// Lost-wakeup insurance period of the park (requests, kicks and stop() all signal).
     private let pollInterval: TimeInterval

@@ -122,6 +122,40 @@ final class RemuxReadAheadTests: XCTestCase {
         XCTAssertFalse(RemuxReadAhead.idleReopenApplies(lastLongParkSegment: 40, failedAtSegment: 12))
     }
 
+    private func step(seekFailed: Bool = false, reopening: Bool = false, repositioned: Bool,
+                      canReopen: Bool = true, idle: Bool = false, parks: Int = 0) -> RemuxReadAhead.FailureStep {
+        RemuxReadAhead.afterFailure(seekFailed: seekFailed, reopening: reopening, everRepositioned: repositioned,
+                                    canReopen: canReopen, idleReopenApplies: idle, consecutiveErrorParks: parks)
+    }
+
+    func testFailedReopenOfALinearSessionFailsInsteadOfParking() {
+        // The re-open's seek or scan failed and nothing ever repositioned: nothing would wake the park.
+        XCTAssertEqual(step(seekFailed: true, reopening: true, repositioned: false), .fail)
+        // A seek that is not a re-open, or a session that has repositioned: the error park as before.
+        XCTAssertEqual(step(seekFailed: true, reopening: false, repositioned: true), .park)
+        XCTAssertEqual(step(seekFailed: true, reopening: false, repositioned: false), .park)
+    }
+
+    func testRepositionDuringAReopenScanTakesTheErrorPark() {
+        // A newer target interrupted the re-open's scan: the worker marks the session repositioned
+        // (`reopening` stays set until a segment finalizes). A failed scan for that target, and a
+        // later read error or short EOF away from the park, take the self-healing path.
+        XCTAssertEqual(step(seekFailed: true, reopening: true, repositioned: true), .park)
+        XCTAssertEqual(step(reopening: true, repositioned: true), .park)
+    }
+
+    func testRunFailureReopensOnlyNearALongParkAndUnderTheCap() {
+        XCTAssertEqual(step(repositioned: false, idle: true), .reopen)
+        XCTAssertEqual(step(repositioned: true, idle: true, parks: 2), .reopen)
+        // Third consecutive failure, or a write error: the old path.
+        XCTAssertEqual(step(repositioned: false, idle: true, parks: 3), .fail)
+        XCTAssertEqual(step(repositioned: true, idle: true, parks: 3), .park)
+        XCTAssertEqual(step(repositioned: false, canReopen: false, idle: true), .fail)
+        // Away from a long park: linear fails to mpv, repositioned self-heals.
+        XCTAssertEqual(step(repositioned: false), .fail)
+        XCTAssertEqual(step(repositioned: true), .park)
+    }
+
     func testUnboundedOrUnknownDurationBuildsNoGate() throws {
         XCTAssertNil(RemuxReadAhead(segmentDurationsSec: [4, 4], totalDurationSec: 8, boundSec: 0),
                      "knob 0: no gate, the worker runs as before")
