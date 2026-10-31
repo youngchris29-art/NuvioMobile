@@ -8,9 +8,11 @@ import XCTest
 final class RemuxReadAheadTests: XCTestCase {
 
     /// 100 segments of 4 s (400 s of media) behind a 90 s bound.
-    private func gate(bound: Double = 90, segments: Int = 100) -> RemuxReadAhead {
+    /// `pollInterval` defaults to 30 s so the timed lost-wakeup insurance cannot stand in for a
+    /// missing signal: a wake test that returns within a second proves the signal path.
+    private func gate(bound: Double = 90, segments: Int = 100, pollInterval: TimeInterval = 30) -> RemuxReadAhead {
         RemuxReadAhead(segmentDurationsSec: Array(repeating: 4, count: segments),
-                       totalDurationSec: Double(segments) * 4, boundSec: bound)!
+                       totalDurationSec: Double(segments) * 4, boundSec: bound, pollInterval: pollInterval)!
     }
 
     /// Thread-safe flag for the `interrupted` check (the session's mailbox / cancel state).
@@ -91,6 +93,33 @@ final class RemuxReadAheadTests: XCTestCase {
         XCTAssertEqual(RemuxReadAhead.resolveBound(from: defaults), 90, "negative = default")
         defaults.set("fast", forKey: key)
         XCTAssertEqual(RemuxReadAhead.resolveBound(from: defaults), 90, "non-numeric = default")
+        // NSString's doubleValue reads "0x10" as 0 (= unbounded); Swift's parse reads the hex as 16,
+        // floored to 24. Never unbounded by accident.
+        defaults.set("0x10", forKey: key)
+        XCTAssertEqual(RemuxReadAhead.resolveBound(from: defaults), RemuxReadAhead.minimumBoundSec)
+        // Non-finite or empty strings.
+        for text in ["nan", "inf", "-inf", ""] {
+            defaults.set(text, forKey: key)
+            XCTAssertEqual(RemuxReadAhead.resolveBound(from: defaults), 90, "\"\(text)\" = default")
+        }
+        defaults.set(" 45 ", forKey: key)
+        XCTAssertEqual(RemuxReadAhead.resolveBound(from: defaults), 45, "whitespace trimmed")
+    }
+
+    // MARK: - Idle re-open rule
+
+    func testIdleReopenOnlyShortlyAfterALongPark() {
+        XCTAssertEqual(RemuxReadAhead.idleParkSec, 20)
+        XCTAssertEqual(RemuxReadAhead.idleReopenWindowSegments, 3)
+        // No long park in the session: a read error keeps the old path (fail to mpv).
+        XCTAssertFalse(RemuxReadAhead.idleReopenApplies(lastLongParkSegment: nil, failedAtSegment: 40))
+        // Within the window after a long park ended at segment 40.
+        for seg in 40...43 {
+            XCTAssertTrue(RemuxReadAhead.idleReopenApplies(lastLongParkSegment: 40, failedAtSegment: seg), "\(seg)")
+        }
+        // Long after it, or behind it (a reposition moved production back): ordinary error.
+        XCTAssertFalse(RemuxReadAhead.idleReopenApplies(lastLongParkSegment: 40, failedAtSegment: 44))
+        XCTAssertFalse(RemuxReadAhead.idleReopenApplies(lastLongParkSegment: 40, failedAtSegment: 12))
     }
 
     func testUnboundedOrUnknownDurationBuildsNoGate() throws {
@@ -168,7 +197,7 @@ final class RemuxReadAheadTests: XCTestCase {
         XCTAssertEqual(parked(), -1, "a request that keeps the lead at the bound must not wake it for good")
         // Segment 18 starts at 68 s: the lead drops to 88 s < 90 s.
         g.noteRequest(segment: 18)
-        wait(for: [returned], timeout: 2)
+        wait(for: [returned], timeout: 1)
         XCTAssertGreaterThan(parked(), 0)
     }
 
@@ -180,13 +209,13 @@ final class RemuxReadAheadTests: XCTestCase {
         Thread.sleep(forTimeInterval: 0.2)
         interrupted.value = true          // RemuxSession.reposition / selectAudio publish, then kick
         g.kick()
-        wait(for: [returned], timeout: 2)
+        wait(for: [returned], timeout: 1)
         XCTAssertGreaterThan(parked(), 0)
     }
 
     func testCancellationWithoutAKickStillReturns() {
         // Lost-wakeup insurance: stop() always kicks, but the timed wait must not depend on it.
-        let g = gate()
+        let g = gate(pollInterval: 0.25)
         let interrupted = Flag()
         let returned = expectation(description: "cancel ends the park")
         _ = parkInBackground(g, producing: 40, interrupted: interrupted, returned: returned)
@@ -212,7 +241,52 @@ final class RemuxReadAheadTests: XCTestCase {
         _ = parkInBackground(g, producing: 100, interrupted: Flag(), returned: returned)
         Thread.sleep(forTimeInterval: 0.1)
         g.noteRequest(segment: 90)
-        wait(for: [returned], timeout: 2)
+        wait(for: [returned], timeout: 1)
+    }
+
+    // MARK: - Session side
+
+    private func session() -> RemuxSession {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("readahead-session-\(UUID().uuidString)")
+        return RemuxSession(config: .init(url: URL(string: "http://127.0.0.1:9/never.mkv")!), outputDir: dir)
+    }
+
+    /// stop() while the worker is parked on the bound wakes it at once (not on the poll).
+    func testSessionStopWakesAParkedWorker() {
+        let s = session()
+        defer { s.scheduleCleanup() }
+        let g = gate()
+        s.installReadAhead(g)
+        let returned = expectation(description: "stop wakes the park")
+        Thread.detachNewThread {
+            _ = g.waitWhileAhead(producing: 40, interrupted: { s.readAheadInterrupted() })
+            returned.fulfill()
+        }
+        Thread.sleep(forTimeInterval: 0.2)
+        s.stop()
+        wait(for: [returned], timeout: 1)
+    }
+
+    /// reposition() publishes the mailbox, then kicks the parked worker; noteSegmentRequest()
+    /// reaches the gate.
+    func testSessionRepositionKicksAndRequestsReachTheGate() {
+        let s = session()
+        defer { s.stop(); s.scheduleCleanup() }
+        let g = gate()
+        s.installReadAhead(g)
+        s.noteSegmentRequest(7)
+        XCTAssertEqual(g.latestRequested, 7)
+        s.noteSegmentRequest(1)
+        let returned = expectation(description: "reposition wakes the park")
+        Thread.detachNewThread {
+            _ = g.waitWhileAhead(producing: 40, interrupted: { s.readAheadInterrupted() })
+            returned.fulfill()
+        }
+        Thread.sleep(forTimeInterval: 0.2)
+        XCTAssertFalse(s.readAheadInterrupted())
+        s.reposition(toSegment: 80)
+        wait(for: [returned], timeout: 1)
+        XCTAssertTrue(s.readAheadInterrupted(), "the target waits in the mailbox for the worker")
     }
 
     // MARK: - Server wiring

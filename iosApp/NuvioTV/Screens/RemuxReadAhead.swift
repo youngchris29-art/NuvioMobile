@@ -17,10 +17,11 @@ import Foundation
 nonisolated final class RemuxReadAhead: @unchecked Sendable {
     /// How far ahead of AVPlayer's latest segment request production may run, in seconds of media.
     /// 90 s: AVPlayer's own forward buffer is capped at 24 s (`NativePlaybackCoordinator.decorate`)
-    /// and the JIT poll window is 6 segments (~24 s), so the lead sits well clear of both; it rides
-    /// out a ~90 s source stall without AVPlayer noticing; a forward seek of up to ~90 s lands on
-    /// produced segments (no reposition); and in steady playback the source read pauses for about
-    /// one segment (~4 s) between resumes, short enough that a CDN keeps the connection.
+    /// and the JIT poll window is 6 segments (~36 s at the coordinator's 6 s segments), so the lead
+    /// sits well clear of both; it rides out a ~90 s source stall without AVPlayer noticing; a
+    /// forward seek of up to ~90 s past AVPlayer's buffer lands on produced segments (no
+    /// reposition); and in steady playback the source read pauses for about one segment (~6 s)
+    /// between resumes, short enough that a CDN keeps the connection.
     static let defaultBoundSec: Double = 90
 
     /// Device A/B knob, launch-latched and Release-readable (the rig walks Release):
@@ -34,12 +35,17 @@ nonisolated final class RemuxReadAhead: @unchecked Sendable {
     /// The knob's parse, pure over its `UserDefaults` so the test can drive a scratch suite. A
     /// launch argument arrives as a string (`UserDefaults.double(forKey:)` converts it).
     static func resolveBound(from defaults: UserDefaults) -> Double {
-        guard let raw = defaults.object(forKey: boundKey) else { return defaultBoundSec }
-        if let text = raw as? String, Double(text.trimmingCharacters(in: .whitespaces)) == nil {
-            return defaultBoundSec
+        let raw = defaults.object(forKey: boundKey)
+        // One parse per shape: Swift's `Double(String)` for a launch argument (it reads "0x10" as
+        // 16 where NSString's `doubleValue` reads 0 = unbounded, and rejects junk), NSNumber for
+        // `defaults write`.
+        let parsed: Double?
+        if let text = raw as? String {
+            parsed = Double(text.trimmingCharacters(in: .whitespaces))
+        } else {
+            parsed = (raw as? NSNumber)?.doubleValue
         }
-        let seconds = defaults.double(forKey: boundKey)
-        guard seconds.isFinite, seconds >= 0 else { return defaultBoundSec }
+        guard let seconds = parsed, seconds.isFinite, seconds >= 0 else { return defaultBoundSec }
         return seconds == 0 ? 0 : max(seconds, minimumBoundSec)
     }
 
@@ -50,7 +56,26 @@ nonisolated final class RemuxReadAhead: @unchecked Sendable {
         return producedSec - requestedSec >= boundSec
     }
 
+    /// A park at least this long counts as idle for the source connection: steady-state parks last
+    /// about one segment (~6 s), a paused player holds the worker for as long as the pause.
+    static let idleParkSec: TimeInterval = 20
+    /// How many segments after a long park a read failure is still blamed on it: after the wake,
+    /// the demuxer drains what the socket buffered during the park before it hits the dead
+    /// connection, and the worker keeps taking short parks meanwhile.
+    static let idleReopenWindowSegments = 3
+
+    /// Whether a read failure at `failedAtSegment` should re-open the source instead of taking the
+    /// old error path: only shortly after a long (idle-length) park, so ordinary mid-stream errors
+    /// keep failing to mpv as before.
+    static func idleReopenApplies(lastLongParkSegment: Int?, failedAtSegment: Int) -> Bool {
+        guard let parkedAt = lastLongParkSegment else { return false }
+        let since = failedAtSegment - parkedAt
+        return since >= 0 && since <= idleReopenWindowSegments
+    }
+
     let boundSec: Double
+    /// Lost-wakeup insurance period of the park (requests, kicks and stop() all signal).
+    private let pollInterval: TimeInterval
     /// Start of each segment on the playlist timeline; index 0 = segment 1.
     private let startsSec: [Double]
     private let cond = NSCondition()
@@ -60,7 +85,8 @@ nonisolated final class RemuxReadAhead: @unchecked Sendable {
 
     /// nil = unbounded: a bound of 0, or a map without a usable duration (live / unknown length
     /// input; the remux cannot build a map for those today, so this is a guard, not a path).
-    init?(segmentDurationsSec: [Double], totalDurationSec: Double, boundSec: Double) {
+    init?(segmentDurationsSec: [Double], totalDurationSec: Double, boundSec: Double,
+          pollInterval: TimeInterval = 0.25) {
         guard boundSec > 0, totalDurationSec > 0, !segmentDurationsSec.isEmpty else { return nil }
         var starts: [Double] = []
         starts.reserveCapacity(segmentDurationsSec.count)
@@ -68,6 +94,7 @@ nonisolated final class RemuxReadAhead: @unchecked Sendable {
         for d in segmentDurationsSec { starts.append(t); t += d }
         self.startsSec = starts
         self.boundSec = boundSec
+        self.pollInterval = pollInterval
     }
 
     convenience init?(map: SegmentMap, boundSec: Double = RemuxReadAhead.launchBoundSec) {
@@ -116,7 +143,7 @@ nonisolated final class RemuxReadAhead: @unchecked Sendable {
         guard isAheadLocked(producing: producing), !interrupted() else { return 0 }
         let start = Date()
         while isAheadLocked(producing: producing), !interrupted() {
-            cond.wait(until: Date().addingTimeInterval(0.25))
+            cond.wait(until: Date().addingTimeInterval(pollInterval))
         }
         return max(Date().timeIntervalSince(start), .leastNonzeroMagnitude)
     }
