@@ -171,8 +171,8 @@ final class NextEpisodeEngine: ObservableObject {
 
     /// Panel accessors (the playback-settings panel renders episode/source sections from these).
     /// BUG-229: the launch's list, or the one fetched after launch when it arrived empty (see
-    /// `fetchEpisodesIfMissing`). Both players' Episodes entry and the next episode's context read
-    /// this too, never `context.episodes`.
+    /// `fetchEpisodesIfMissing`). Both players' Episodes entry and the next-episode and
+    /// source-switch contexts read this rather than `context.episodes`.
     var episodes: [MetaVideo] { context.episodes.isEmpty ? lateEpisodes : context.episodes }
     /// Exposed for the player's episode jump list (watched-badge lookups).
     var parentMetaId: String { context.parentMetaId }
@@ -227,9 +227,14 @@ final class NextEpisodeEngine: ObservableObject {
     /// card never armed for that episode. Published: the Episodes column and pill appear on arrival.
     @Published private(set) var lateEpisodes: [MetaVideo] = []
     private var lateEpisodesTask: Task<Void, Never>?
-    /// The fetch was skipped offline at start, or failed while the path was down: the first tick
-    /// that sees the path back starts it once more. A fetch that fails online is not retried.
+    /// The fetch was skipped offline at start, or failed (or came back empty) while the path was
+    /// down: the first tick that sees the path back starts it once more. A fetch that fails or
+    /// comes back empty online is not retried.
     private var lateEpisodesRetryOnReconnect = false
+    /// The list landed inside the end-of-file slack: no next episode is resolved there (an
+    /// automatic search would start over the post-play screen). The first tick back out of the
+    /// slack (a Replay, a seek back) resolves it.
+    private var lateResolveDeferredAtEnd = false
     private var triggered = false
     private var cancelled = false
     /// FEAT-49 Tier 1 (upstream 22c9ab20): the next episode's streams were requested silently
@@ -326,7 +331,13 @@ final class NextEpisodeEngine: ObservableObject {
     }
 
     /// Resolves the next episode from the launch's episode list (the late one once it arrived).
+    /// No list, no pick: the shuffle pick is not run over `[]` (it would record the playing episode
+    /// as current with nothing to mark played, and re-offer it early once the late list arrives).
     private func resolveNextVideo() {
+        guard !episodes.isEmpty else {
+            nextVideo = nil
+            return
+        }
         nextVideo = hooks.resolveNextEpisode(context, episodes)
         if let next = nextVideo {
             nextEpisodeTitle = Self.episodeTitle(next)
@@ -340,6 +351,8 @@ final class NextEpisodeEngine: ObservableObject {
     /// (playback never waits on it), then resolves the next episode. The trigger simply finds
     /// `nextVideo` set on a later tick, so a list that lands past the threshold still arms the card
     /// on the next tick. Offline at start, the fetch waits for the first tick that sees the path.
+    /// In exactly this race the stream picker is fetching the same meta: the repository checks its
+    /// cache but shares no in-flight request, so the meta is fetched twice (one extra request).
     private func fetchEpisodesIfMissing() {
         guard context.episodes.isEmpty, lateEpisodes.isEmpty, lateEpisodesTask == nil,
               context.season != nil, context.episode != nil,
@@ -377,10 +390,24 @@ final class NextEpisodeEngine: ObservableObject {
             videos = fetched
         }
         guard !videos.isEmpty else {
+            // The live fetch swallows network errors (each manifest attempt and the TMDB fallback
+            // are timed out and caught in shared code) and returns no meta, so a path lost
+            // mid-fetch reads as an empty success: retry it like a failure. Online, an empty list
+            // is final (a slow add-on past its limit); no per-tick refetch.
             print("[UpNext] episode list fetch returned no episodes")
+            if !hooks.networkSatisfied() { lateEpisodesRetryOnReconnect = true }
             return
         }
         lateEpisodes = videos
+        if isAtEndOfFile {
+            lateResolveDeferredAtEnd = true
+            print("[UpNext] episode list fetched at end of file — next episode deferred")
+            return
+        }
+        resolveLateNextVideo()
+    }
+
+    private func resolveLateNextVideo() {
         // An episode jump (from the list just published) already chose `nextVideo`: keep it.
         guard nextVideo == nil, !triggered else { return }
         resolveNextVideo()
@@ -416,6 +443,7 @@ final class NextEpisodeEngine: ObservableObject {
         lateEpisodesTask?.cancel()
         lateEpisodesTask = nil
         lateEpisodesRetryOnReconnect = false
+        lateResolveDeferredAtEnd = false
         sourceColumnVisible = false
         supersedeSourceSwitch()
         settingsWatcher?.cancel()
@@ -687,6 +715,10 @@ final class NextEpisodeEngine: ObservableObject {
         lastProgress = (positionSec, durationSec)
         // BUG-229: the start-time episode fetch was deferred offline; the path is back.
         if lateEpisodesRetryOnReconnect, hooks.networkSatisfied() { fetchEpisodesIfMissing() }
+        if lateResolveDeferredAtEnd, !isAtEndOfFile {
+            lateResolveDeferredAtEnd = false
+            resolveLateNextVideo()
+        }
         guard nextVideo != nil, durationSec > 0, let trigger else { return }
         if cancelled {
             rearmIfEndedAfterDismiss(positionSec: positionSec, durationSec: durationSec)

@@ -947,7 +947,7 @@ final class NextEpisodeEngineTests: XCTestCase {
         gate.deliver(.success(seasonOne))
         await fetch1?.value
         XCTAssertEqual(gate.requests, ["series/tt1"])
-        XCTAssertEqual(resolved, [0, 3], "the pick (shuffle-aware live) runs again over the fetched list")
+        XCTAssertEqual(resolved, [3], "the pick (shuffle-aware live) runs once, over the fetched list, never over []")
         XCTAssertEqual(engine.nextVideoForTesting?.id, "tt1:1:2")
         XCTAssertEqual(engine.nextEpisodeTitle, NextEpisodeEngine.episodeTitle(episode(season: 1, episode: 2)))
 
@@ -1071,6 +1071,66 @@ final class NextEpisodeEngineTests: XCTestCase {
         gate.deliver(.success([]))
         await retry?.value
         XCTAssertEqual(gate.requests.count, 3)
+    }
+
+    /// r1 P2: the live fetch swallows network errors and returns no meta, so a path lost mid-fetch
+    /// comes back as an EMPTY success. Offline then, it is retried like a failure on the path's
+    /// return; online, an empty list is final.
+    func testEmptyFetchDuringAnOutageRetriesOnReconnect() async {
+        let recorder = Recorder()
+        let gate = EpisodeFetchGate()
+        let network = NetworkBox()
+        let engine = makePrimedEngine(episodes: [], recorder: recorder, gate: gate, network: network)
+        network.satisfied = false
+        let fetch1 = engine.lateEpisodesTaskForTesting
+        gate.deliver(.success([]))
+        await fetch1?.value
+        engine.onProgress(positionSec: 100, durationSec: Self.duration)
+        XCTAssertNil(engine.lateEpisodesTaskForTesting, "still offline: waiting")
+
+        network.satisfied = true
+        engine.onProgress(positionSec: 101, durationSec: Self.duration)
+        let retry = engine.lateEpisodesTaskForTesting
+        XCTAssertNotNil(retry, "the reconnect tick refetches")
+        gate.deliver(.success(seasonOne))
+        await retry?.value
+        XCTAssertEqual(gate.requests.count, 2)
+        engine.onProgress(positionSec: 2376, durationSec: Self.duration)
+        XCTAssertEqual(recorder.searchBegan, 1)
+
+        let online = makePrimedEngine(episodes: [], recorder: recorder, gate: gate, network: network)
+        let fetch2 = online.lateEpisodesTaskForTesting
+        gate.deliver(.success([]))
+        await fetch2?.value
+        online.onProgress(positionSec: 100, durationSec: Self.duration)
+        online.onProgress(positionSec: 101, durationSec: Self.duration)
+        XCTAssertNil(online.lateEpisodesTaskForTesting)
+        XCTAssertEqual(gate.requests.count, 3, "an empty list online is final")
+    }
+
+    /// r1 P3: a list that lands inside the end-of-file slack resolves no next episode there (an
+    /// automatic search would start over the post-play screen). A tick back out of the slack (a
+    /// Replay) resolves it, and the card arms at that playthrough's threshold.
+    func testListLandingAtEndOfFileDefersTheNextEpisode() async {
+        let recorder = Recorder()
+        let gate = EpisodeFetchGate()
+        let engine = makePrimedEngine(episodes: [], recorder: recorder, gate: gate)
+        engine.onProgress(positionSec: 2399, durationSec: Self.duration)
+        let fetch1 = engine.lateEpisodesTaskForTesting
+        gate.deliver(.success(seasonOne))
+        await fetch1?.value
+
+        XCTAssertEqual(engine.episodes.count, 3, "the Episodes panel still gets the list")
+        XCTAssertNil(engine.nextVideoForTesting)
+        engine.onProgress(positionSec: 2399.5, durationSec: Self.duration)
+        XCTAssertEqual(recorder.searchBegan, 0, "no automatic search over the post-play screen")
+        XCTAssertEqual(engine.phase, .hidden)
+
+        engine.onProgress(positionSec: 10, durationSec: Self.duration)
+        XCTAssertEqual(engine.nextVideoForTesting?.id, "tt1:1:2", "a Replay resolves the deferred pick")
+        XCTAssertEqual(recorder.searchBegan, 0)
+        engine.onProgress(positionSec: 2376, durationSec: Self.duration)
+        XCTAssertEqual(recorder.searchBegan, 1)
     }
 
     /// An episode jump made before the list lands keeps its episode: the late list never replaces it.
