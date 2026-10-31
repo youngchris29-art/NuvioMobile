@@ -367,6 +367,11 @@ final class MPVTVPlayerViewController: UIViewController {
     private var traktSessionClosed = false
     /// Simkl/MDBList (every connected tracker except Trakt) — same start-once/stop-once lifecycle.
     private let trackerScrobble: TrackerScrobbleSession
+    /// Main: the provider fetch and the chapter-derived intervals, re-merged into `skipPlanner`,
+    /// the bar spans and the up-next hold whenever either changes (`applyMergedSkipIntervals`).
+    private var skipSources = SkipIntervalSources()
+    /// Main: chapters + duration → chapter-derived skip intervals (`ChapterSkipFeed`).
+    private var chapterSkipFeed = ChapterSkipFeed()
     /// Skip chip + auto-skip policy shared with the native engine (`SkipSegmentPlanner`).
     private var skipPlanner: SkipSegmentPlanner = {
         var planner = SkipSegmentPlanner()
@@ -1912,7 +1917,7 @@ final class MPVTVPlayerViewController: UIViewController {
                 requireSkipIntroEnabled: true
             ) { [weak self] intervals, _ in
                 guard let intervals else { return }
-                DispatchQueue.main.async { self?.applySkipIntervals(intervals) }
+                DispatchQueue.main.async { self?.applyApiSkipIntervals(intervals) }
             }
         } else if context.contentType.lowercased() == "movie" {
             SkipIntroRepository.shared.getMovieSkipIntervals(
@@ -1921,9 +1926,29 @@ final class MPVTVPlayerViewController: UIViewController {
                 requireSkipIntroEnabled: true
             ) { [weak self] intervals, _ in
                 guard let intervals else { return }
-                DispatchQueue.main.async { self?.applySkipIntervals(intervals) }
+                DispatchQueue.main.async { self?.applyApiSkipIntervals(intervals) }
             }
         }
+    }
+
+    /// Main: the provider fetch answered.
+    private func applyApiSkipIntervals(_ intervals: [SkipInterval]) {
+        skipSources.api = intervals
+        applyMergedSkipIntervals()
+    }
+
+    /// Main: the chapter list or the duration was published. Recomputes the chapter-derived
+    /// intervals only when the pair changed (`ChapterSkipFeed`), and re-merges only when they did.
+    private func updateChapterSkipIntervals(durationSec: Double) {
+        let settings = playerSettings ?? PlayerSettingsRepository.shared.uiState.value_ as? PlayerSettingsUiState
+        guard let next = chapterSkipFeed.update(chapters: state.transport.chapters, durationSec: durationSec,
+                                                skipIntroEnabled: settings?.skipIntroEnabled ?? false) else { return }
+        skipSources.chapters = next
+        applyMergedSkipIntervals()
+    }
+
+    private func applyMergedSkipIntervals() {
+        applySkipIntervals(skipSources.merged(isMovie: SkipIntervalSources.isMovie(contentType: context.contentType)))
     }
 
     #if DEBUG
@@ -1939,9 +1964,11 @@ final class MPVTVPlayerViewController: UIViewController {
     }
     #endif
 
+    /// The one sink for the merged list: planner, up-next hold (`state.skipIntervals`) and bar spans.
     private func applySkipIntervals(_ intervals: [SkipInterval], isSmoke: Bool = false) {
         #if DEBUG
-        // The smoke interval stands: the real fetch's (empty) answer must not replace it.
+        // The smoke interval stands: neither the real fetch's (empty) answer nor a chapter
+        // re-merge may replace it.
         if smokeSkipActive, !isSmoke { return }
         #endif
         skipPlanner.setIntervals(intervals)
@@ -2423,6 +2450,8 @@ final class MPVTVPlayerViewController: UIViewController {
                                                      durationSec: snap.duration) {
                 state.transport.chapters = next
             }
+            // The last chapter runs to the duration: chapter skip intervals follow it.
+            updateChapterSkipIntervals(durationSec: snap.duration)
         }
         if state.transport.positionSec != position { state.transport.positionSec = position }
         if state.transport.isPaused != snap.paused { state.transport.isPaused = snap.paused }
@@ -3335,6 +3364,7 @@ final class MPVTVPlayerViewController: UIViewController {
             self.rawChapters = rawList
             self.chaptersTrimDuration = duration
             self.state.transport.chapters = chapters
+            self.updateChapterSkipIntervals(durationSec: duration)
         }
     }
 

@@ -556,4 +556,142 @@ final class SkipSegmentPlannerTests: XCTestCase {
         XCTAssertNotNil(tick(&p, 10, at: 12).prompt) // re-entered: fresh 10 s
         XCTAssertNotNil(tick(&p, 15, at: 21.9).prompt)
     }
+
+    // MARK: - Re-merge continuity (chapter skip intervals; NuvioTV 13fa3ad5, fork version)
+
+    private func chapterInterval(_ start: Double, _ end: Double, _ type: String) -> SkipInterval {
+        SkipInterval(startTime: start, endTime: end, type: type, provider: "chapters")
+    }
+
+    func testRemergeMidIntervalKeepsTheChipTimer() {
+        // API first, chapters later with the same span: the timer started at 0 still ends at 10.
+        var p = planner([interval(85, 175, "op")])
+        p.autoHidesChip = true
+        XCTAssertNotNil(tick(&p, 90, at: 0).prompt)
+        p.setIntervals([chapterInterval(85, 175, "intro")])
+        XCTAssertNotNil(tick(&p, 95, at: 9.9).prompt)
+        XCTAssertNil(tick(&p, 96, at: 10).prompt)
+        // Hidden stays hidden across another re-merge: no flash.
+        p.setIntervals([chapterInterval(85, 175, "intro"), interval(1300, 1390, "ed")])
+        XCTAssertNil(tick(&p, 97, at: 11).prompt)
+        XCTAssertTrue(p.noteInput(now: 12))
+        XCTAssertNotNil(tick(&p, 98, at: 12).prompt)
+    }
+
+    func testOpToIntroSwapUnderThePlayheadKeepsTheChipAndItsTimer() {
+        // AniSkip's opening 85–175 is showing at 88.5 when the chapter opening 90–180 arrives: the
+        // playhead is now 1.5 s before the new start; within the 2 s bridge the chip stays,
+        // pointing at the new end, and its timer is the original one.
+        var p = planner([interval(85, 175, "op")])
+        p.autoHidesChip = true
+        XCTAssertEqual(tick(&p, 88.5, at: 0).prompt?.targetSec, 175)
+        p.setIntervals([chapterInterval(90, 180, "intro")])
+        XCTAssertEqual(tick(&p, 88.5, at: 0.5).prompt, SkipPrompt(label: String(localized: "Skip Intro"), targetSec: 180))
+        XCTAssertNotNil(tick(&p, 90.5, at: 2.5).prompt)
+        XCTAssertNotNil(tick(&p, 99, at: 9.9).prompt)
+        XCTAssertNil(tick(&p, 99.1, at: 10).prompt)
+    }
+
+    func testBridgeNeedsAShownChipAndEndsTwoSecondsOut() {
+        var p = planner([chapterInterval(90, 180, "intro")])
+        XCTAssertNil(tick(&p, 89, at: 0).prompt)   // no chip tracked: nothing before the start
+        var q = planner([interval(85, 175, "op")])
+        XCTAssertNotNil(tick(&q, 86, at: 0).prompt)
+        q.setIntervals([chapterInterval(90, 180, "intro")])
+        XCTAssertNil(tick(&q, 87.5, at: 0.5).prompt)   // 2.5 s out: the chip goes
+        XCTAssertNil(tick(&q, 88.5, at: 1).prompt)     // and the bridge is gone with it
+        XCTAssertNotNil(tick(&q, 90, at: 2).prompt)
+    }
+
+    func testBridgeNeverAutoSkipsBeforeThePlayheadEnters() {
+        // Auto-skip off for the API interval's chip (deliberate entry), then a later chapter
+        // opening: the bridge shows the chip only; entering it does not auto-skip either (consumed).
+        var p = planner([interval(85, 175, "op")])
+        p.beginSeek(kind: .resume, targetSec: 86, now: 0)
+        p.seekCompleted(atSec: 86, now: 0.1)
+        XCTAssertNotNil(tick(&p, 86, at: 0.5, types: [.intro]).prompt)
+        p.setIntervals([chapterInterval(87, 180, "intro")])
+        let bridged = tick(&p, 86.2, at: 0.7, types: [.intro])
+        XCTAssertNil(bridged.autoSkipTargetSec)
+        XCTAssertNotNil(bridged.prompt)
+        XCTAssertNil(tick(&p, 88, at: 2, types: [.intro]).autoSkipTargetSec)
+    }
+
+    func testAlreadyAutoSkippedIntroIsNotSkippedTwiceWhenChaptersArriveLater() {
+        // API first: the opening auto-skips to 175; the chapter opening 90–180 then contains 175.
+        var p = planner([interval(85, 175, "op")])
+        XCTAssertEqual(tick(&p, 86, at: 0, types: [.intro]).autoSkipTargetSec, 175)
+        p.beginSeek(kind: .auto, targetSec: 175, now: 0)
+        p.seekCompleted(atSec: 175, now: 0.5)
+        p.setIntervals([chapterInterval(90, 180, "intro")])
+        XCTAssertEqual(tick(&p, 175, at: 1, types: [.intro]), SkipSegmentPlanner.Decision())
+        XCTAssertEqual(tick(&p, 176, at: 2, types: [.intro]), SkipSegmentPlanner.Decision())
+    }
+
+    func testAlreadyAutoSkippedIntroIsNotSkippedTwiceWhenTheApiArrivesLater() {
+        // Chapters first: the chapter opening auto-skips; the API answer then adds a recap ahead of
+        // it (the opening's index moves) and its own later outro. The opening stays consumed.
+        var p = planner([chapterInterval(90, 180, "intro")])
+        XCTAssertEqual(tick(&p, 91, at: 0, types: [.intro, .recap]).autoSkipTargetSec, 180)
+        p.beginSeek(kind: .auto, targetSec: 180, now: 0)
+        p.seekCompleted(atSec: 180, now: 0.5)
+        XCTAssertEqual(tick(&p, 180, at: 1, types: [.intro, .recap]), SkipSegmentPlanner.Decision())
+        p.setIntervals([interval(0, 60, "recap"), chapterInterval(90, 180, "intro"), interval(1300, 1390, "ed")])
+        // Going back into the opening by hand: chip, no second auto-skip.
+        p.beginSeek(kind: .user, targetSec: 100, fromSec: 180, now: 2)
+        p.seekCompleted(atSec: 100, now: 2.2)
+        let back = tick(&p, 100, at: 2.5, types: [.intro, .recap])
+        XCTAssertNil(back.autoSkipTargetSec)
+        XCTAssertNotNil(back.prompt)
+    }
+
+    func testIndexShiftOnRemergeKeepsTheChipTimer() {
+        // Chapters first (opening at index 0), the API adds a recap ahead (opening moves to 1).
+        var p = planner([chapterInterval(90, 180, "intro")])
+        p.autoHidesChip = true
+        XCTAssertNotNil(tick(&p, 100, at: 0).prompt)
+        p.setIntervals([interval(0, 60, "recap"), chapterInterval(90, 180, "intro")])
+        XCTAssertNotNil(tick(&p, 105, at: 9.9).prompt)
+        XCTAssertNil(tick(&p, 106, at: 10).prompt)
+    }
+
+    func testChipPressedIntervalStaysConsumedAcrossARemerge() {
+        var p = planner([interval(85, 175, "op")])
+        XCTAssertNotNil(tick(&p, 90, at: 0).prompt)
+        p.beginSeek(kind: .chip, targetSec: 175, now: 0.5)
+        p.setIntervals([chapterInterval(85, 178, "intro")])
+        p.seekCompleted(atSec: 175, now: 1)
+        XCTAssertEqual(tick(&p, 175, at: 1.5, types: [.intro]), SkipSegmentPlanner.Decision())
+    }
+
+    func testTwoOpeningsInOneListStayDistinct() {
+        var p = planner([chapterInterval(0, 90, "intro"), chapterInterval(600, 690, "intro")])
+        XCTAssertEqual(tick(&p, 1, at: 0, types: [.intro]).autoSkipTargetSec, 90)
+        p.beginSeek(kind: .auto, targetSec: 90, now: 0)
+        p.seekCompleted(atSec: 90, now: 0.5)
+        XCTAssertEqual(tick(&p, 601, at: 10, types: [.intro]).autoSkipTargetSec, 690)
+    }
+
+    func testSegmentKeysUseTheCategoryAndRankByStart() {
+        let keys = SkipSegmentPlanner.segmentKeys([
+            interval(600, 690, "op"), interval(0, 90, "intro"), interval(100, 150, "recap"),
+            interval(6000, 6300, "movie-credits"), interval(6400, 6500, " Post-Credits"),
+        ])
+        XCTAssertEqual(keys, [
+            .init(category: "opening", ordinal: 1), .init(category: "opening", ordinal: 0),
+            .init(category: "recap", ordinal: 0), .init(category: "movie-credits", ordinal: 0),
+            .init(category: "post-credits", ordinal: 0),
+        ])
+    }
+
+    func testReplayRearmsAnIntervalConsumedBeforeARemerge() {
+        var p = planner([interval(85, 175, "op")])
+        XCTAssertEqual(tick(&p, 86, at: 0, types: [.intro]).autoSkipTargetSec, 175)
+        p.beginSeek(kind: .auto, targetSec: 175, now: 0)
+        p.seekCompleted(atSec: 175, now: 0.5)
+        p.setIntervals([chapterInterval(90, 180, "intro")])
+        p.beginSeek(kind: .replay, targetSec: 0, now: 5)
+        p.seekCompleted(atSec: 0, now: 5.5)
+        XCTAssertEqual(tick(&p, 91, at: 100, types: [.intro]).autoSkipTargetSec, 180)
+    }
 }

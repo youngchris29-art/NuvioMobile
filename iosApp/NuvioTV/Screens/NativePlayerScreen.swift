@@ -45,6 +45,10 @@ struct NativePlayerScreen: View {
     @State private var panelAdapter: NativePlayerPanelAdapter?
     /// Skip chip + auto-skip policy shared with the mpv screen.
     @State private var skipPlanner = SkipSegmentPlanner()
+    /// The provider fetch and the chapter-derived intervals, re-merged into the planner and the
+    /// up-next hold whenever either changes (same rules as the mpv screen).
+    @State private var skipSources = SkipIntervalSources()
+    @State private var chapterSkipFeed = ChapterSkipFeed()
     @State private var skipPrompt: SkipPrompt?
     /// "Swipe down for info" hint (start + after a pause); hidden while the panel is open.
     @State private var showSwipeHint = false
@@ -253,6 +257,10 @@ struct NativePlayerScreen: View {
         .onChange(of: coordinator.didPlayToEnd) { _, ended in
             if ended { upNext.playbackEnded() }
         }
+        // Chapter skip intervals: the remux publishes the chapters once, the duration on the tick
+        // (assigned only on change); the feed recomputes only when the pair changed.
+        .onChange(of: coordinator.chapters) { _, _ in updateChapterSkipIntervals() }
+        .onChange(of: coordinator.durationSec) { _, _ in updateChapterSkipIntervals() }
         .onChange(of: panelOpen) { _, open in
             if open { hidePauseCard(reason: "panel") } else { evaluatePauseCard() }
         }
@@ -390,7 +398,7 @@ struct NativePlayerScreen: View {
                 requireSkipIntroEnabled: true
             ) { intervals, _ in
                 let list = intervals ?? []
-                DispatchQueue.main.async { applySkipIntervals(list) }
+                DispatchQueue.main.async { applyApiSkipIntervals(list) }
             }
         } else if context.contentType.lowercased() == "movie" {
             SkipIntroRepository.shared.getMovieSkipIntervals(
@@ -399,17 +407,34 @@ struct NativePlayerScreen: View {
                 requireSkipIntroEnabled: true
             ) { intervals, _ in
                 let list = intervals ?? []
-                DispatchQueue.main.async { applySkipIntervals(list) }
+                DispatchQueue.main.async { applyApiSkipIntervals(list) }
             }
         }
     }
 
-    private func applySkipIntervals(_ intervals: [SkipInterval]) {
+    private func applyApiSkipIntervals(_ intervals: [SkipInterval]) {
         print("[NativePlayer] skip segments: \(intervals.count)"
               + (intervals.isEmpty ? " (none in intro DB for this title)" : ""))
-        guard !intervals.isEmpty else { return }
-        skipPlanner.setIntervals(intervals)
-        upNext.skipIntervals = intervals
+        skipSources.api = intervals
+        applyMergedSkipIntervals()
+    }
+
+    /// The chapter list or the duration changed (see `ChapterSkipFeed`).
+    private func updateChapterSkipIntervals() {
+        let settings = PlayerSettingsRepository.shared.uiState.value_ as? PlayerSettingsUiState
+        guard let next = chapterSkipFeed.update(chapters: coordinator.chapters, durationSec: coordinator.durationSec,
+                                                skipIntroEnabled: settings?.skipIntroEnabled ?? false) else { return }
+        print("[NativePlayer] chapter skip segments: \(next.count)")
+        skipSources.chapters = next
+        applyMergedSkipIntervals()
+    }
+
+    /// The merged list feeds the planner and the up-next post-credits hold. An empty list is
+    /// applied too: chapters can arrive before an empty fetch answer, or after it.
+    private func applyMergedSkipIntervals() {
+        let merged = skipSources.merged(isMovie: SkipIntervalSources.isMovie(contentType: context.contentType))
+        skipPlanner.setIntervals(merged)
+        upNext.skipIntervals = merged
     }
 
     /// Offer the skip while inside a segment (the last second is excluded so the action

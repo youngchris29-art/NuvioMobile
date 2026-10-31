@@ -23,6 +23,13 @@ import SharedCore
 /// `MPV_EVENT_PLAYBACK_RESTART`; AVPlayer: the seek's completion), with the real position. While
 /// seeking, the reported position is not trusted: no chip, no auto-skip. Nothing is inferred from
 /// reported positions except the post-timeout stale guard and the AVPlayer scrub detector.
+///
+/// Per-interval state (consumed, chip timer, chip hidden / suppressed) is keyed on the interval's
+/// `SegmentKey` — its segment category, not its index — and survives `setIntervals`. The list is
+/// re-merged whenever container chapters or the provider fetch arrive (either order), and a
+/// chapter interval replacing a provider one of the same category (`op` → `intro`) must neither
+/// restart the chip's 10 s timer nor re-arm an interval already auto-skipped (the fork's version
+/// of NuvioTV 13fa3ad5).
 struct SkipSegmentPlanner {
     /// What the engine should do on this tick.
     struct Decision: Equatable {
@@ -54,6 +61,15 @@ struct SkipSegmentPlanner {
         let startedAt: TimeInterval
     }
 
+    /// Identity of an interval across re-merges: its shared `segmentCategory` (opening / ending /
+    /// recap), or its normalised type when it has none (`movie-credits`, `post-credits`), plus its
+    /// rank by start time among the list's intervals with that category, so two openings in one
+    /// list stay distinct.
+    struct SegmentKey: Hashable {
+        let category: String
+        let ordinal: Int
+    }
+
     enum SeekState: Equatable {
         case idle
         case seeking(Seek)
@@ -69,17 +85,24 @@ struct SkipSegmentPlanner {
     /// AVPlayer: a position jump larger than this between ticks, with no app seek involved, is a
     /// user scrub (the system transport's scrubs are otherwise invisible). Same rule as the stall budget.
     static let userJumpThresholdSec: Double = 10
+    /// Same-category bridge (upstream 06f08dd8): outside every interval, the chip being shown stays
+    /// up for an interval of the same key starting within this distance ahead (a re-merge moved
+    /// the start a little later, e.g. a chapter opening replacing the API one under the playhead).
+    static let sameCategoryBridgeSec: Double = 2
 
     /// The full fetched list, `post-credits` intervals included.
     private(set) var intervals: [SkipInterval] = []
+    /// `keys[i]` is the `SegmentKey` of `intervals[i]`.
+    private var keys: [SegmentKey] = []
     private(set) var seekState: SeekState = .idle
-    /// Indices into `intervals` that must not auto-skip (already skipped, or entered deliberately).
-    private var consumed = Set<Int>()
+    /// Intervals that must not auto-skip (already skipped, or entered deliberately). Kept across
+    /// `setIntervals`.
+    private var consumed = Set<SegmentKey>()
     /// Every deliberate entry so far (ms). Re-applied when the intervals arrive after the seek.
     private var deliberateSeeks: [(fromMs: Int64, toMs: Int64)] = []
     /// The interval just skipped (auto or chip): no chip for it until the playhead has left it
     /// once, so a pre-seek position doesn't flash the chip (upstream dismisses it after a skip).
-    private var chipSuppressedIndex: Int?
+    private var chipSuppressedKey: SegmentKey?
     /// Interval behind the chip returned by the last `evaluate` (what a chip press skips).
     private var promptIndex: Int?
     /// Position reported by the previous tick.
@@ -97,8 +120,8 @@ struct SkipSegmentPlanner {
     static let chipAutoHideSec: TimeInterval = 10
     /// mpv sets this true (it can bring the chip back on a press); the native engine keeps it false.
     var autoHidesChip = false
-    private var chipShown: (index: Int, since: TimeInterval)?
-    private var chipHiddenIndex: Int?
+    private var chipShown: (key: SegmentKey, since: TimeInterval)?
+    private var chipHiddenKey: SegmentKey?
 
     /// The seek currently in flight, if any.
     var seekInFlight: Seek? {
@@ -108,9 +131,11 @@ struct SkipSegmentPlanner {
 
     // MARK: - Inputs
 
+    /// Replaces the list (a fetch or a chapter re-merge). Consumed intervals, the chip timer and the
+    /// chip's hidden / suppressed state carry over by `SegmentKey`; deliberate entries are re-applied.
     mutating func setIntervals(_ newIntervals: [SkipInterval]) {
         intervals = newIntervals
-        consumed = []
+        keys = Self.segmentKeys(newIntervals)
         promptIndex = nil
         for seek in deliberateSeeks { markDeliberate(fromMs: seek.fromMs, toMs: seek.toMs) }
     }
@@ -135,11 +160,11 @@ struct SkipSegmentPlanner {
             // The playhead returns to 0: everything is armed again for the second viewing.
             consumed = []
             deliberateSeeks = []
-            chipSuppressedIndex = nil
+            chipSuppressedKey = nil
         case .chip:
             if let index = promptIndex {
-                consumed.insert(index)
-                chipSuppressedIndex = index
+                consumed.insert(keys[index])
+                chipSuppressedKey = keys[index]
             }
         case .resume, .auto, .user:
             break
@@ -152,7 +177,7 @@ struct SkipSegmentPlanner {
 
     /// The second stage of ONE user gesture (keyframes landing, then the exact seek). Replaces a
     /// `.user` seek still in flight (keeping its `fromSec`), or starts one when idle. Unlike
-    /// `beginSeek` it leaves `promptIndex`, `consumed`, `chipSuppressedIndex` and `abandonedSeek`
+    /// `beginSeek` it leaves `promptIndex`, `consumed`, `chipSuppressedKey` and `abandonedSeek`
     /// alone: the gesture's completion records the same span, and intervals it touched stay consumed.
     mutating func refineSeek(targetSec: Double, fromSec: Double, now: TimeInterval) {
         if let inFlight = seekInFlight, inFlight.kind == .user {
@@ -226,9 +251,9 @@ struct SkipSegmentPlanner {
 
     /// Any remote press: a chip hidden by the auto-hide comes back for another 10 s. True when it did.
     mutating func noteInput(now: TimeInterval) -> Bool {
-        guard let index = chipHiddenIndex else { return false }
-        chipShown = (index, now)
-        chipHiddenIndex = nil
+        guard let key = chipHiddenKey else { return false }
+        chipShown = (key, now)
+        chipHiddenKey = nil
         return true
     }
 
@@ -255,29 +280,33 @@ struct SkipSegmentPlanner {
         }
 
         let durationMs = durationSec > 0 ? Self.ms(durationSec) : 0
-        guard let index = intervals.firstIndex(where: { interval in
-            positionSec >= interval.startTime && positionSec < interval.endTime &&
-                interval.internalSkipAction(intervals: intervals, durationMs: durationMs) != nil
-        }), let action = intervals[index].internalSkipAction(intervals: intervals, durationMs: durationMs)
+        let containing = intervals.indices.first { i in
+            positionSec >= intervals[i].startTime && positionSec < intervals[i].endTime &&
+                intervals[i].internalSkipAction(intervals: intervals, durationMs: durationMs) != nil
+        }
+        guard let index = containing ?? bridgedIndex(positionSec: positionSec, durationMs: durationMs),
+              let action = intervals[index].internalSkipAction(intervals: intervals, durationMs: durationMs)
         else {
-            chipSuppressedIndex = nil
+            chipSuppressedKey = nil
             chipShown = nil
-            chipHiddenIndex = nil
+            chipHiddenKey = nil
             return Decision()
         }
-        if chipSuppressedIndex != index { chipSuppressedIndex = nil }
+        let key = keys[index]
+        if chipSuppressedKey != key { chipSuppressedKey = nil }
 
         let interval = intervals[index]
         let target = Self.clamp(Double(action.targetMs) / 1000.0, durationSec: durationSec)
 
-        if let types = autoSkipTypes, !types.isEmpty, isPlaying,
-           !consumed.contains(index), interval.shouldAutoSkipForTypes(selectedTypes: types) {
-            consumed.insert(index)
-            chipSuppressedIndex = index
+        // Bridged (not yet inside): chip only, the auto-skip waits for the playhead to enter.
+        if containing != nil, let types = autoSkipTypes, !types.isEmpty, isPlaying,
+           !consumed.contains(key), interval.shouldAutoSkipForTypes(selectedTypes: types) {
+            consumed.insert(key)
+            chipSuppressedKey = key
             return Decision(prompt: nil, autoSkipTargetSec: target)
         }
 
-        guard chipSuppressedIndex != index,
+        guard chipSuppressedKey != key,
               positionSec < interval.endTime - PlayerChipStyle.lastSecondExclusion else { return Decision() }
         // Fork deviation from upstream's label rule: upstream says "Skip to Post-Credits" whenever
         // `skipsToPostCredits` is set, which the shared heuristic also raises for any >5 s tail after
@@ -293,9 +322,9 @@ struct SkipSegmentPlanner {
                 (durationSec <= 0 || $0.startTime < durationSec)
         }
         let label = Self.label(for: interval.type, skipsToPostCredits: explicitPostCredits)
-        if chipShown?.index != index { chipShown = (index, now) }
+        if chipShown?.key != key { chipShown = (key, now) }
         if autoHidesChip, let shown = chipShown, now - shown.since >= Self.chipAutoHideSec {
-            chipHiddenIndex = index
+            chipHiddenKey = key
             return Decision()
         }
         promptIndex = index
@@ -318,6 +347,34 @@ struct SkipSegmentPlanner {
 
     // MARK: - Helpers
 
+    /// `SegmentKey`s of `intervals`, index for index.
+    static func segmentKeys(_ intervals: [SkipInterval]) -> [SegmentKey] {
+        let categories = intervals.map { interval in
+            SkipIntroRepositoryKt.segmentCategory(type: interval.type)
+                ?? interval.type.trimmingCharacters(in: .whitespaces).lowercased()
+        }
+        var keys = [SegmentKey?](repeating: nil, count: intervals.count)
+        var nextOrdinal: [String: Int] = [:]
+        let byStart = intervals.indices.sorted { (intervals[$0].startTime, $0) < (intervals[$1].startTime, $1) }
+        for i in byStart {
+            let ordinal = nextOrdinal[categories[i], default: 0]
+            nextOrdinal[categories[i]] = ordinal + 1
+            keys[i] = SegmentKey(category: categories[i], ordinal: ordinal)
+        }
+        return keys.map { $0! }
+    }
+
+    /// The interval the chip is being shown for, when the playhead sits just before it (see
+    /// `sameCategoryBridgeSec`). Nil when no chip is tracked.
+    private func bridgedIndex(positionSec: Double, durationMs: Int64) -> Int? {
+        guard let key = chipShown?.key else { return nil }
+        return intervals.indices.first { i in
+            keys[i] == key && intervals[i].startTime > positionSec &&
+                intervals[i].startTime - positionSec <= Self.sameCategoryBridgeSec &&
+                intervals[i].internalSkipAction(intervals: intervals, durationMs: durationMs) != nil
+        }
+    }
+
     private mutating func recordDeliberate(fromSec: Double, toSec: Double) {
         let seek = (fromMs: Self.ms(fromSec), toMs: Self.ms(toSec))
         deliberateSeeks.append(seek)
@@ -328,7 +385,7 @@ struct SkipSegmentPlanner {
         guard !intervals.isEmpty else { return }
         let hit = AutoSkipSegmentTypeKt.intervalsAtSeekPositions(intervals, fromMs: fromMs, toMs: toMs)
         for (index, interval) in intervals.enumerated() where hit.contains(interval) {
-            consumed.insert(index)
+            consumed.insert(keys[index])
         }
     }
 
