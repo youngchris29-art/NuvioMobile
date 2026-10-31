@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import NuvioTV
 import SharedCore
@@ -859,45 +860,229 @@ final class NextEpisodeEngineTests: XCTestCase {
 
     // MARK: - BUG-229: a launch that carried no episode list
 
+    /// Stands in for `Hooks.fetchEpisodes`: records each request and holds it until the test
+    /// delivers (a delivery made before the request is handed over as soon as it arrives).
+    private final class EpisodeFetchGate {
+        var requests: [String] = []
+        private var continuation: CheckedContinuation<[MetaVideo], Error>?
+        private var pending: Result<[MetaVideo], Error>?
+
+        func fetch(_ type: String, _ id: String) async throws -> [MetaVideo] {
+            requests.append("\(type)/\(id)")
+            if let pending {
+                self.pending = nil
+                return try pending.get()
+            }
+            return try await withCheckedThrowingContinuation { continuation = $0 }
+        }
+
+        func deliver(_ result: Result<[MetaVideo], Error>) {
+            if let continuation {
+                self.continuation = nil
+                continuation.resume(with: result)
+            } else {
+                pending = result
+            }
+        }
+    }
+
+    private final class NetworkBox { var satisfied = true }
+
     /// An engine started through `prime()`'s episode half (`primeEpisodesForTesting`) for the
-    /// context's own list, with the plain aired-order pick in place of the shuffle singleton.
-    private func makePrimedEngine(episodes: [MetaVideo], recorder: Recorder) -> NextEpisodeEngine {
+    /// context's own list, with the plain aired-order pick in place of the shuffle singleton
+    /// (`resolvedLists` records the list each pick saw) and `gate` in place of the meta fetch.
+    private func makePrimedEngine(episodes: [MetaVideo], recorder: Recorder, gate: EpisodeFetchGate,
+                                  network: NetworkBox = NetworkBox(),
+                                  resolvedLists: ((Int) -> Void)? = nil) -> NextEpisodeEngine {
         var hooks = NextEpisodeEngine.Hooks(loadStreams: { type, videoId, season, episode in
             recorder.calls.append(LoadCall(type: type, videoId: videoId, season: season?.value, episode: episode?.value))
         }, searchBegan: { recorder.searchBegan += 1 },
-        networkSatisfied: { true },
+        networkSatisfied: { network.satisfied },
         clearStreams: { recorder.clears += 1 },
         watchStreams: { _ in nil })
         hooks.resolveNextEpisode = { context, list in
-            NextEpisodeEngine.resolveNextAiredEpisode(
+            resolvedLists?(list.count)
+            return NextEpisodeEngine.resolveNextAiredEpisode(
                 episodes: list, currentSeason: context.season, currentEpisode: context.episode)
         }
+        hooks.fetchEpisodes = { type, id in try await gate.fetch(type, id) }
         let engine = NextEpisodeEngine(context: makeContext(episodes: episodes), onPlayNext: { _ in }, hooks: hooks)
         engine.configureForTesting(nextVideo: nil, trigger: trigger(percent: 99))
         engine.primeEpisodesForTesting()
         return engine
     }
 
-    /// Control: a launch that carried the list arms the card at the threshold.
-    func testLaunchWithEpisodesArmsAtTheThreshold() {
+    private var seasonOne: [MetaVideo] {
+        [episode(season: 1, episode: 1), episode(season: 1, episode: 2), episode(season: 1, episode: 3)]
+    }
+
+    /// Control: a launch that carried the list arms the card at the threshold and fetches nothing.
+    func testLaunchWithEpisodesArmsAtTheThresholdAndFetchesNothing() {
         let recorder = Recorder()
-        let engine = makePrimedEngine(episodes: [episode(season: 1, episode: 1), episode(season: 1, episode: 2)],
-                                      recorder: recorder)
+        let gate = EpisodeFetchGate()
+        let engine = makePrimedEngine(episodes: seasonOne, recorder: recorder, gate: gate)
+        XCTAssertNil(engine.lateEpisodesTaskForTesting)
+        engine.onProgress(positionSec: 2376, durationSec: Self.duration)
+        XCTAssertEqual(recorder.searchBegan, 1)
+        XCTAssertTrue(gate.requests.isEmpty)
+    }
+
+    /// BUG-229 repro, now fixed: a play started before the stream picker's own episode fetch
+    /// finished hands the player an EMPTY list. Before the fix `nextVideo` was resolved once at
+    /// start and the card never armed. The engine now fetches the list itself, off the start path,
+    /// and resolves the next episode when it lands; a threshold already passed arms on the next tick.
+    func testEmptyLaunchListArmsOnceTheFetchedListLands() async {
+        let recorder = Recorder()
+        let gate = EpisodeFetchGate()
+        var resolved: [Int] = []
+        let engine = makePrimedEngine(episodes: [], recorder: recorder, gate: gate,
+                                      resolvedLists: { resolved.append($0) })
+        XCTAssertNotNil(engine.lateEpisodesTaskForTesting, "the fetch starts with the engine")
+        XCTAssertTrue(engine.episodes.isEmpty)
+
+        engine.onProgress(positionSec: 2376, durationSec: Self.duration)
+        XCTAssertEqual(recorder.searchBegan, 0, "no next episode until the list lands")
+
+        let fetch1 = engine.lateEpisodesTaskForTesting
+        gate.deliver(.success(seasonOne))
+        await fetch1?.value
+        XCTAssertEqual(gate.requests, ["series/tt1"])
+        XCTAssertEqual(resolved, [0, 3], "the pick (shuffle-aware live) runs again over the fetched list")
+        XCTAssertEqual(engine.nextVideoForTesting?.id, "tt1:1:2")
+        XCTAssertEqual(engine.nextEpisodeTitle, NextEpisodeEngine.episodeTitle(episode(season: 1, episode: 2)))
+
+        engine.onProgress(positionSec: 2377, durationSec: Self.duration)
+        XCTAssertEqual(recorder.searchBegan, 1, "the late list arms the card on the next tick")
+        XCTAssertEqual(gate.requests.count, 1)
+    }
+
+    /// The player is dismissed (`stop()`) before the fetch returns: the list is dropped, the engine
+    /// adopts nothing and never arms.
+    func testDismissBeforeTheFetchLandsDropsTheList() async {
+        let recorder = Recorder()
+        let gate = EpisodeFetchGate()
+        let engine = makePrimedEngine(episodes: [], recorder: recorder, gate: gate)
+        let task = engine.lateEpisodesTaskForTesting
+        XCTAssertNotNil(task)
+
+        engine.stop()
+        XCTAssertNil(engine.lateEpisodesTaskForTesting)
+        gate.deliver(.success(seasonOne))
+        await task?.value
+
+        XCTAssertTrue(engine.episodes.isEmpty, "a cancelled fetch is never adopted")
+        XCTAssertNil(engine.nextVideoForTesting)
+        engine.onProgress(positionSec: 2390, durationSec: Self.duration)
+        XCTAssertEqual(recorder.searchBegan, 0)
+    }
+
+    /// The fetched list has no episode after the playing one (the last aired episode): the Episodes
+    /// panel still gets the list, the card never arms.
+    func testFetchedListWithNoNextEpisodeNeverArms() async {
+        let recorder = Recorder()
+        let gate = EpisodeFetchGate()
+        let engine = makePrimedEngine(episodes: [], recorder: recorder, gate: gate)
+        let fetch2 = engine.lateEpisodesTaskForTesting
+        gate.deliver(.success([episode(season: 1, episode: 1)]))
+        await fetch2?.value
+
+        XCTAssertEqual(engine.episodes.count, 1)
+        XCTAssertNil(engine.nextVideoForTesting)
+        for position in [2376.0, 2390, 2399] {
+            engine.onProgress(positionSec: position, durationSec: Self.duration)
+        }
+        XCTAssertEqual(recorder.searchBegan, 0)
+        XCTAssertEqual(engine.phase, .hidden)
+    }
+
+    /// The fetched list feeds the Episodes column (published, so both players redraw their Episodes
+    /// entry) and the next episode's `PlaybackContext`, so that launch starts with a list.
+    func testFetchedListFeedsTheEpisodesPanelAndTheNextContext() async {
+        let recorder = Recorder()
+        let gate = EpisodeFetchGate()
+        let engine = makePrimedEngine(episodes: [], recorder: recorder, gate: gate)
+        XCTAssertTrue(PlayerEpisodesColumn.sortedEpisodes(engine).isEmpty)
+        var changes = 0
+        let watch = engine.objectWillChange.sink { changes += 1 }
+        defer { watch.cancel() }
+
+        let fetch3 = engine.lateEpisodesTaskForTesting
+        gate.deliver(.success(Array(seasonOne.reversed())))
+        await fetch3?.value
+
+        XCTAssertGreaterThan(changes, 0, "the panel and the players' Episodes entry observe the engine")
+        XCTAssertEqual(PlayerEpisodesColumn.sortedEpisodes(engine).map(\.id), ["tt1:1:1", "tt1:1:2", "tt1:1:3"])
+        let next = engine.nextContextForTesting(stream: stream(url: "https://cdn.example.com/s1e2.mkv"),
+                                                url: URL(string: "https://cdn.example.com/s1e2.mkv")!)
+        XCTAssertEqual(next?.videoId, "tt1:1:2")
+        XCTAssertEqual(next?.episodes.count, 3, "the next episode's context carries the fetched list")
+    }
+
+    /// Offline at start: no fetch (it could only fail). The first tick that sees the path back
+    /// starts it, once.
+    func testOfflineStartDefersTheFetchUntilThePathIsBack() async {
+        let recorder = Recorder()
+        let gate = EpisodeFetchGate()
+        let network = NetworkBox()
+        network.satisfied = false
+        let engine = makePrimedEngine(episodes: [], recorder: recorder, gate: gate, network: network)
+        XCTAssertNil(engine.lateEpisodesTaskForTesting)
+
+        engine.onProgress(positionSec: 100, durationSec: Self.duration)
+        XCTAssertNil(engine.lateEpisodesTaskForTesting, "still offline: still waiting")
+
+        network.satisfied = true
+        engine.onProgress(positionSec: 101, durationSec: Self.duration)
+        XCTAssertNotNil(engine.lateEpisodesTaskForTesting)
+        engine.onProgress(positionSec: 102, durationSec: Self.duration)
+        let fetch4 = engine.lateEpisodesTaskForTesting
+        gate.deliver(.success(seasonOne))
+        await fetch4?.value
+        XCTAssertEqual(gate.requests, ["series/tt1"], "one fetch for the reconnect")
+
         engine.onProgress(positionSec: 2376, durationSec: Self.duration)
         XCTAssertEqual(recorder.searchBegan, 1)
     }
 
-    /// BUG-229 repro: a play started before the stream picker's own episode fetch finished hands the
-    /// player an EMPTY list. `nextVideo` is resolved once at start, so the card never arms for the
-    /// whole episode. DOCUMENTS THE BUG: the fix inverts these expectations.
-    func testEmptyLaunchListNeverArms() {
+    /// A fetch that fails while online is not retried (no request per tick); one that fails while
+    /// the path is down is retried once it is back.
+    func testFailedFetchRetriesOnlyAfterAnOutage() async {
         let recorder = Recorder()
-        let engine = makePrimedEngine(episodes: [], recorder: recorder)
-        XCTAssertTrue(engine.episodes.isEmpty)
-        for position in [2376.0, 2390, 2399] {
-            engine.onProgress(positionSec: position, durationSec: Self.duration)
-        }
-        XCTAssertEqual(recorder.searchBegan, 0, "BUG-229: no next episode, so no search ever starts")
-        XCTAssertEqual(engine.phase, .hidden)
+        let gate = EpisodeFetchGate()
+        let network = NetworkBox()
+        let engine = makePrimedEngine(episodes: [], recorder: recorder, gate: gate, network: network)
+        let fetch5 = engine.lateEpisodesTaskForTesting
+        gate.deliver(.failure(URLError(.badServerResponse)))
+        await fetch5?.value
+        engine.onProgress(positionSec: 100, durationSec: Self.duration)
+        engine.onProgress(positionSec: 101, durationSec: Self.duration)
+        XCTAssertEqual(gate.requests.count, 1, "an online failure is final")
+
+        let offline = makePrimedEngine(episodes: [], recorder: recorder, gate: gate, network: network)
+        network.satisfied = false
+        let fetch6 = offline.lateEpisodesTaskForTesting
+        gate.deliver(.failure(URLError(.notConnectedToInternet)))
+        await fetch6?.value
+        XCTAssertEqual(gate.requests.count, 2)
+        network.satisfied = true
+        offline.onProgress(positionSec: 100, durationSec: Self.duration)
+        let retry = offline.lateEpisodesTaskForTesting
+        XCTAssertNotNil(retry, "a failure during an outage retries on the path's return")
+        gate.deliver(.success([]))
+        await retry?.value
+        XCTAssertEqual(gate.requests.count, 3)
+    }
+
+    /// An episode jump made before the list lands keeps its episode: the late list never replaces it.
+    func testJumpBeforeTheFetchLandsKeepsTheJumpedEpisode() async {
+        let recorder = Recorder()
+        let gate = EpisodeFetchGate()
+        let engine = makePrimedEngine(episodes: [], recorder: recorder, gate: gate)
+        engine.jumpForTesting(to: episode(season: 1, episode: 3))
+        let fetch7 = engine.lateEpisodesTaskForTesting
+        gate.deliver(.success(seasonOne))
+        await fetch7?.value
+        XCTAssertEqual(engine.episodes.count, 3)
+        XCTAssertEqual(engine.nextVideoForTesting?.id, "tt1:1:3")
     }
 }

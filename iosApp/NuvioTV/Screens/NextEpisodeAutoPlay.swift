@@ -133,6 +133,13 @@ final class NextEpisodeEngine: ObservableObject {
         var resolveNextEpisode: @MainActor (_ context: PlaybackContext, _ episodes: [MetaVideo]) -> MetaVideo? = {
             context, episodes in NextEpisodeEngine.liveNextEpisode(context: context, episodes: episodes)
         }
+        /// BUG-229 seam: the series' episode list, fetched when the launch carried none. `.live`
+        /// is the `@Throws` twin (`fetchChecked`): a Kotlin exception out of the plain suspend
+        /// export would abort the process. Same call and cache flag as the stream picker's fetch.
+        var fetchEpisodes: @MainActor (_ type: String, _ id: String) async throws -> [MetaVideo] = { type, id in
+            let details = try await MetaDetailsRepository.shared.fetchChecked(type: type, id: id, cacheResult: true)
+            return details?.videos ?? []
+        }
 
         /// `nonisolated` so the init's default argument can be read off the main actor without a warning.
         nonisolated static var live: Hooks {
@@ -163,7 +170,10 @@ final class NextEpisodeEngine: ObservableObject {
     private let hooks: Hooks
 
     /// Panel accessors (the playback-settings panel renders episode/source sections from these).
-    var episodes: [MetaVideo] { context.episodes }
+    /// BUG-229: the launch's list, or the one fetched after launch when it arrived empty (see
+    /// `fetchEpisodesIfMissing`). Both players' Episodes entry and the next episode's context read
+    /// this too, never `context.episodes`.
+    var episodes: [MetaVideo] { context.episodes.isEmpty ? lateEpisodes : context.episodes }
     /// Exposed for the player's episode jump list (watched-badge lookups).
     var parentMetaId: String { context.parentMetaId }
     var contentType: String { context.contentType }
@@ -211,6 +221,15 @@ final class NextEpisodeEngine: ObservableObject {
     private var hideTask: Task<Void, Never>?
 
     private var nextVideo: MetaVideo?
+    /// BUG-229: the episode list fetched after launch. A play started before the stream picker's own
+    /// episode fetch finished (a quick auto-picked source from Continue Watching with Auto-Play Best
+    /// Source, or Detail's Play) hands the player an EMPTY list, so `nextVideo` stayed nil and the
+    /// card never armed for that episode. Published: the Episodes column and pill appear on arrival.
+    @Published private(set) var lateEpisodes: [MetaVideo] = []
+    private var lateEpisodesTask: Task<Void, Never>?
+    /// The fetch was skipped offline at start, or failed while the path was down: the first tick
+    /// that sees the path back starts it once more. A fetch that fails online is not retried.
+    private var lateEpisodesRetryOnReconnect = false
     private var triggered = false
     private var cancelled = false
     /// FEAT-49 Tier 1 (upstream 22c9ab20): the next episode's streams were requested silently
@@ -232,7 +251,7 @@ final class NextEpisodeEngine: ObservableObject {
     var skipIntervals: [SkipInterval] = []
 
     init(context: PlaybackContext, onPlayNext: @escaping (PlaybackContext) -> Void, hooks: Hooks = .live) {
-        self.context = context
+        self.context = UpNextEmptyEpisodesDebugKnob.apply(to: context)
         self.onPlayNext = onPlayNext
         self.hooks = hooks
     }
@@ -303,13 +322,72 @@ final class NextEpisodeEngine: ObservableObject {
         }
 
         resolveNextVideo()
+        fetchEpisodesIfMissing()
     }
 
-    /// Resolves the next episode from the launch's episode list.
+    /// Resolves the next episode from the launch's episode list (the late one once it arrived).
     private func resolveNextVideo() {
-        nextVideo = hooks.resolveNextEpisode(context, context.episodes)
+        nextVideo = hooks.resolveNextEpisode(context, episodes)
         if let next = nextVideo {
             nextEpisodeTitle = Self.episodeTitle(next)
+        }
+    }
+
+    /// The content types the stream picker fetches an episode list for (`fetchEpisodesIfNeeded`).
+    private static let seriesTypes: Set<String> = ["series", "tv", "show", "tvshow"]
+
+    /// BUG-229: a series launch that carried no episode list fetches it here, off the start path
+    /// (playback never waits on it), then resolves the next episode. The trigger simply finds
+    /// `nextVideo` set on a later tick, so a list that lands past the threshold still arms the card
+    /// on the next tick. Offline at start, the fetch waits for the first tick that sees the path.
+    private func fetchEpisodesIfMissing() {
+        guard context.episodes.isEmpty, lateEpisodes.isEmpty, lateEpisodesTask == nil,
+              context.season != nil, context.episode != nil,
+              Self.seriesTypes.contains(context.contentType.lowercased()) else { return }
+        guard hooks.networkSatisfied() else {
+            if !lateEpisodesRetryOnReconnect {
+                print("[UpNext] no episode list at start, offline — fetch waits for the path")
+            }
+            lateEpisodesRetryOnReconnect = true
+            return
+        }
+        lateEpisodesRetryOnReconnect = false
+        let type = context.contentType
+        let id = context.parentMetaId
+        let fetch = hooks.fetchEpisodes
+        print("[UpNext] no episode list at start — fetching \(id)")
+        lateEpisodesTask = Task { [weak self] in
+            let result: Result<[MetaVideo], Error>
+            do { result = .success(try await fetch(type, id)) } catch { result = .failure(error) }
+            // `stop()` (player dismissed) cancels the task; the list is dropped, not adopted.
+            guard let self, !Task.isCancelled else { return }
+            self.lateEpisodesTask = nil
+            self.lateEpisodesArrived(result)
+        }
+    }
+
+    private func lateEpisodesArrived(_ result: Result<[MetaVideo], Error>) {
+        let videos: [MetaVideo]
+        switch result {
+        case .failure(let error):
+            print("[UpNext] episode list fetch failed: \(error)")
+            if !hooks.networkSatisfied() { lateEpisodesRetryOnReconnect = true }
+            return
+        case .success(let fetched):
+            videos = fetched
+        }
+        guard !videos.isEmpty else {
+            print("[UpNext] episode list fetch returned no episodes")
+            return
+        }
+        lateEpisodes = videos
+        // An episode jump (from the list just published) already chose `nextVideo`: keep it.
+        guard nextVideo == nil, !triggered else { return }
+        resolveNextVideo()
+        if let next = nextVideo {
+            print("[UpNext] next episode resolved late — \(Self.episodeVideoId(metaId: context.parentMetaId, episode: next))")
+        } else {
+            print("[UpNext] episode list fetched — no next episode to offer")
         }
     }
 
@@ -335,6 +413,9 @@ final class NextEpisodeEngine: ObservableObject {
     }
 
     func stop() {
+        lateEpisodesTask?.cancel()
+        lateEpisodesTask = nil
+        lateEpisodesRetryOnReconnect = false
         sourceColumnVisible = false
         supersedeSourceSwitch()
         settingsWatcher?.cancel()
@@ -555,7 +636,7 @@ final class NextEpisodeEngine: ObservableObject {
                 SubtitleFile(url: sub.url, language: sub.language, name: { let n: String? = sub.name; return n }())
             },
             bingeGroup: { let bg: String? = stream.behaviorHints.bingeGroup; return bg }(),
-            episodes: context.episodes,
+            episodes: episodes,
             synopsis: context.synopsis,
             episodeStill: context.episodeStill,
             logo: context.logo,
@@ -604,6 +685,8 @@ final class NextEpisodeEngine: ObservableObject {
     /// The threshold math lives in `NextEpisodeTriggerPolicy` (unchanged from the inline version).
     func onProgress(positionSec: Double, durationSec: Double) {
         lastProgress = (positionSec, durationSec)
+        // BUG-229: the start-time episode fetch was deferred offline; the path is back.
+        if lateEpisodesRetryOnReconnect, hooks.networkSatisfied() { fetchEpisodesIfMissing() }
         guard nextVideo != nil, durationSec > 0, let trigger else { return }
         if cancelled {
             rearmIfEndedAfterDismiss(positionSec: positionSec, durationSec: durationSec)
@@ -967,7 +1050,22 @@ final class NextEpisodeEngine: ObservableObject {
     func jumpForTesting(to episode: MetaVideo) { performJump(to: episode) }
 
     /// Tests only (BUG-229): `prime()`'s episode half, without the settings watcher.
-    func primeEpisodesForTesting() { resolveNextVideo() }
+    func primeEpisodesForTesting() {
+        resolveNextVideo()
+        fetchEpisodesIfMissing()
+    }
+
+    /// Tests only (BUG-229): the late episode fetch in flight, so a test can await its landing.
+    var lateEpisodesTaskForTesting: Task<Void, Never>? { lateEpisodesTask }
+
+    /// Tests only (BUG-229): the next-episode context `play` would hand over for `stream`.
+    func nextContextForTesting(stream: StreamItem, url: URL) -> PlaybackContext? {
+        guard let next = nextVideo else { return nil }
+        return makeNextContext(stream: stream, url: url, next: next, listed: stream)
+    }
+
+    /// Tests only (BUG-229): the episode the card would offer.
+    var nextVideoForTesting: MetaVideo? { nextVideo }
     #endif
 
     private func handleStreams(_ state: StreamsUiState, settings: PlayerSettingsUiState) {
@@ -1413,7 +1511,7 @@ final class NextEpisodeEngine: ObservableObject {
                 SubtitleFile(url: sub.url, language: sub.language, name: { let n: String? = sub.name; return n }())
             },
             bingeGroup: { let bg: String? = stream.behaviorHints.bingeGroup; return bg }(),
-            episodes: context.episodes,
+            episodes: episodes,
             // The next episode's own still/overview only — never the previous episode's.
             synopsis: Self.nonEmpty(next.overview),
             episodeStill: Self.nonEmpty(next.thumbnail),

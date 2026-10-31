@@ -4786,6 +4786,13 @@ struct MPVPlayerScreen: View {
     /// The offline card offers Play Next too: D-pad Down starts the deferred search (`playNow`).
     private var upNextChipAction: String? { UpNextAction(phase: upNext.phase)?.title }
 
+    /// The transport pill row. Episodes reads the engine's list (BUG-229: it may arrive after start).
+    private func updateTransportPills() {
+        state.transport.pills = PillKind.visible(
+            isSeries: context.contentType == "series", canSwitchStreams: onPlayNext != nil,
+            hasEpisodes: !upNext.episodes.isEmpty)
+    }
+
     init(context: PlaybackContext, onPlayNext: ((PlaybackContext) -> Void)? = nil, routingNote: String? = nil,
          onPlaybackFailed: ((PlaybackFailure) -> Void)? = nil,
          onPlaybackHealthy: ((Double) -> Void)? = nil,
@@ -4966,6 +4973,11 @@ struct MPVPlayerScreen: View {
                 onOpenTitle: onOpenTitle
             )
         }
+        .onChange(of: upNext.episodes.isEmpty) { _, _ in
+            // BUG-229: a launch with no episode list gains the Episodes pill once the engine's
+            // own fetch lands.
+            updateTransportPills()
+        }
         .onChange(of: state.playbackStarted) { _, started in
             // P5 B22 review r1 (P3-2): load once playback runs, not while the stream opens.
             if started, onOpenTitle != nil {
@@ -4979,9 +4991,7 @@ struct MPVPlayerScreen: View {
             state.transport.title = context.title
             state.transport.metaLine = [header.subtitle, context.providerName]
                 .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
-            state.transport.pills = PillKind.visible(
-                isSeries: context.contentType == "series", canSwitchStreams: onPlayNext != nil,
-                hasEpisodes: !context.episodes.isEmpty)
+            updateTransportPills()
             state.transport.showsClock = UserDefaults.standard.bool(forKey: PlayerTuning.showClockKey)
             pauseCardEnabled = (PlayerSettingsRepository.shared.uiState.value_ as? PlayerSettingsUiState)?
                 .pauseOverlayEnabled != false

@@ -118,7 +118,7 @@ struct NativePlayerScreen: View {
                         onPanelOpenChanged: { open in panelOpen = open },
                         engine: upNext,
                         canSwitchStreams: onPlayNext != nil,
-                        hasEpisodes: !context.episodes.isEmpty && context.season != nil,
+                        hasEpisodes: !upNext.episodes.isEmpty && context.season != nil,
                         rememberSpeedShowId: (context.season != nil || context.episode != nil) ? context.parentMetaId : nil,
                         onBarVisibility: { visible in barVisibilityChanged(visible) },
                         onAnyPress: { hidePauseCard(reason: "press") }
@@ -605,21 +605,7 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
             }
         }
 
-        // D5: Episodes (series with episodes) and Sources, each opening the panel on Playback with
-        // that column focused. Installed once: their meaning never changes in a session.
-        var menu: [UIMenuElement] = []
-        if canSwitchStreams, hasEpisodes {
-            menu.append(UIAction(title: String(localized: "Episodes"), image: UIImage(systemName: "list.number")) { [weak host] _ in
-                host?.openPanel(tab: .playback, column: .episodes)
-            })
-        }
-        if canSwitchStreams {
-            menu.append(UIAction(title: String(localized: "Sources"),
-                                 image: UIImage(systemName: "arrow.triangle.2.circlepath")) { [weak host] _ in
-                host?.openPanel(tab: .playback, column: .sources)
-            })
-        }
-        host.playerVC.transportBarCustomMenuItems = menu
+        installTransportMenu(on: host, coordinator: context.coordinator)
 
         host.onOpenPanel = { [weak host] tab, column in
             guard let host else { return }
@@ -648,7 +634,7 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
         host.onTransportBarVisibilityChange = onBarVisibility
         host.onAnyPress = onAnyPress
         let speedList = PlayerPlaybackColumns.speeds.map { String(format: "%g", $0) }.joined(separator: ",")
-        let menuTitles = menu.compactMap { ($0 as? UIAction)?.title }.joined(separator: ",")
+        let menuTitles = host.playerVC.transportBarCustomMenuItems.compactMap { ($0 as? UIAction)?.title }.joined(separator: ",")
         print("[NativePlayer] avpvc speeds=\(speedList) menu=\(menuTitles.isEmpty ? "-" : menuTitles) delegate=\(host.playerVC.delegate === host ? 1 : 0)")
         // Set once, like `onOpenPanel`: the closure captures the screen's stable `@StateObject`.
         host.onMenuPress = onDismissUpNext
@@ -667,9 +653,32 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
         host.closePanel(animated: false)
     }
 
+    /// D5: Episodes (series with episodes) and Sources, each opening the panel on Playback with
+    /// that column focused. Installed at creation, and once more if the episode list arrives after
+    /// start (BUG-229: the engine fetched it); otherwise its meaning never changes in a session.
+    private func installTransportMenu(on host: NativePlayerHostController, coordinator: Coordinator) {
+        coordinator.menuHasEpisodes = hasEpisodes
+        var menu: [UIMenuElement] = []
+        if canSwitchStreams, hasEpisodes {
+            menu.append(UIAction(title: String(localized: "Episodes"), image: UIImage(systemName: "list.number")) { [weak host] _ in
+                host?.openPanel(tab: .playback, column: .episodes)
+            })
+        }
+        if canSwitchStreams {
+            menu.append(UIAction(title: String(localized: "Sources"),
+                                 image: UIImage(systemName: "arrow.triangle.2.circlepath")) { [weak host] _ in
+                host?.openPanel(tab: .playback, column: .sources)
+            })
+        }
+        host.playerVC.transportBarCustomMenuItems = menu
+    }
+
     func updateUIViewController(_ host: NativePlayerHostController, context: Context) {
         let controller = host.playerVC
         if controller.player !== player { controller.player = player }
+        if context.coordinator.menuHasEpisodes != hasEpisodes {
+            installTransportMenu(on: host, coordinator: context.coordinator)
+        }
         // Only assign on change — it's a panel-content property, not part of the transport-bar
         // signature below, and reassigning identical arrays each SwiftUI tick is pointless work.
         if context.coordinator.allowedSubtitleLanguages != allowedSubtitleLanguages {
@@ -708,6 +717,8 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
     final class Coordinator {
         var actionsSignature = ""
         var allowedSubtitleLanguages: [String]?
+        /// `hasEpisodes` as the installed transport menu saw it.
+        var menuHasEpisodes = false
         /// The Playback tab's speed model, alive as long as the container.
         let speedModel = NativeSpeedModel()
     }
