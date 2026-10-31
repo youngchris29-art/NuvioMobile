@@ -127,6 +127,12 @@ final class NextEpisodeEngine: ObservableObject {
                 callback(state)
             }
         }
+        /// BUG-229 seam: the next-episode pick over an episode list (shuffle-aware in `.live`, see
+        /// `liveNextEpisode`). Tests replace it with the plain aired-order pick so no shuffle
+        /// singleton is read.
+        var resolveNextEpisode: @MainActor (_ context: PlaybackContext, _ episodes: [MetaVideo]) -> MetaVideo? = {
+            context, episodes in NextEpisodeEngine.liveNextEpisode(context: context, episodes: episodes)
+        }
 
         /// `nonisolated` so the init's default argument can be read off the main actor without a warning.
         nonisolated static var live: Hooks {
@@ -296,26 +302,36 @@ final class NextEpisodeEngine: ObservableObject {
             self.trigger = TriggerSettings(settings: value)
         }
 
-        if ShuffleNextEpisode.shared.isEnabled(contentId: context.parentMetaId, contentType: context.contentType) {
-            // Shuffle is on for this show: a nil pick means nothing is left, NOT "play the next
-            // one in order" (upstream keeps no sequential fallback), so up-next stays hidden.
-            nextVideo = ShuffleNextEpisode.shared.nextPlaybackEpisode(
-                contentId: context.parentMetaId,
-                contentType: context.contentType,
-                videos: context.episodes,
-                currentSeason: context.season.map { KotlinInt(int: Int32($0)) },
-                currentEpisode: context.episode.map { KotlinInt(int: Int32($0)) }
-            )
-        } else {
-            nextVideo = Self.resolveNextAiredEpisode(
-                episodes: context.episodes,
-                currentSeason: context.season,
-                currentEpisode: context.episode
-            )
-        }
+        resolveNextVideo()
+    }
+
+    /// Resolves the next episode from the launch's episode list.
+    private func resolveNextVideo() {
+        nextVideo = hooks.resolveNextEpisode(context, context.episodes)
         if let next = nextVideo {
             nextEpisodeTitle = Self.episodeTitle(next)
         }
+    }
+
+    /// The live `Hooks.resolveNextEpisode`: the shuffle pick when shuffle is on for this show,
+    /// else the next aired episode in order.
+    static func liveNextEpisode(context: PlaybackContext, episodes: [MetaVideo]) -> MetaVideo? {
+        if ShuffleNextEpisode.shared.isEnabled(contentId: context.parentMetaId, contentType: context.contentType) {
+            // Shuffle is on for this show: a nil pick means nothing is left, NOT "play the next
+            // one in order" (upstream keeps no sequential fallback), so up-next stays hidden.
+            return ShuffleNextEpisode.shared.nextPlaybackEpisode(
+                contentId: context.parentMetaId,
+                contentType: context.contentType,
+                videos: episodes,
+                currentSeason: context.season.map { KotlinInt(int: Int32($0)) },
+                currentEpisode: context.episode.map { KotlinInt(int: Int32($0)) }
+            )
+        }
+        return resolveNextAiredEpisode(
+            episodes: episodes,
+            currentSeason: context.season,
+            currentEpisode: context.episode
+        )
     }
 
     func stop() {
@@ -949,6 +965,9 @@ final class NextEpisodeEngine: ObservableObject {
     /// Tests only (r2 P3): `jumpToEpisode` without its `settings` guard. `beginSearch()` still
     /// returns early (nil settings), so the search itself is not started.
     func jumpForTesting(to episode: MetaVideo) { performJump(to: episode) }
+
+    /// Tests only (BUG-229): `prime()`'s episode half, without the settings watcher.
+    func primeEpisodesForTesting() { resolveNextVideo() }
     #endif
 
     private func handleStreams(_ state: StreamsUiState, settings: PlayerSettingsUiState) {

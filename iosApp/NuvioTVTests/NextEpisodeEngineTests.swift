@@ -36,13 +36,15 @@ final class NextEpisodeEngineTests: XCTestCase {
         var log: [String] = []
     }
 
-    private func makeContext() -> PlaybackContext {
-        PlaybackContext(
+    private func makeContext(episodes: [MetaVideo] = []) -> PlaybackContext {
+        var context = PlaybackContext(
             url: URL(string: "https://cdn.example.com/s1e1.mkv")!, title: "S1E1", contentType: "series",
             parentMetaId: "tt1", videoId: "tt1:1:1",
             season: 1, episode: 1, poster: nil, background: nil, providerName: nil, providerAddonId: nil,
             streamTitle: nil, streamSubtitle: nil, externalSubtitles: []
         )
+        context.episodes = episodes
+        return context
     }
 
     private func episode(season: Int32, episode: Int32) -> MetaVideo {
@@ -852,6 +854,50 @@ final class NextEpisodeEngineTests: XCTestCase {
 
         engine.onProgress(positionSec: 2350, durationSec: Self.duration)
         XCTAssertEqual(recorder.calls.filter { $0 == next }.count, 2, "the next tick must re-issue the preload")
+        XCTAssertEqual(engine.phase, .hidden)
+    }
+
+    // MARK: - BUG-229: a launch that carried no episode list
+
+    /// An engine started through `prime()`'s episode half (`primeEpisodesForTesting`) for the
+    /// context's own list, with the plain aired-order pick in place of the shuffle singleton.
+    private func makePrimedEngine(episodes: [MetaVideo], recorder: Recorder) -> NextEpisodeEngine {
+        var hooks = NextEpisodeEngine.Hooks(loadStreams: { type, videoId, season, episode in
+            recorder.calls.append(LoadCall(type: type, videoId: videoId, season: season?.value, episode: episode?.value))
+        }, searchBegan: { recorder.searchBegan += 1 },
+        networkSatisfied: { true },
+        clearStreams: { recorder.clears += 1 },
+        watchStreams: { _ in nil })
+        hooks.resolveNextEpisode = { context, list in
+            NextEpisodeEngine.resolveNextAiredEpisode(
+                episodes: list, currentSeason: context.season, currentEpisode: context.episode)
+        }
+        let engine = NextEpisodeEngine(context: makeContext(episodes: episodes), onPlayNext: { _ in }, hooks: hooks)
+        engine.configureForTesting(nextVideo: nil, trigger: trigger(percent: 99))
+        engine.primeEpisodesForTesting()
+        return engine
+    }
+
+    /// Control: a launch that carried the list arms the card at the threshold.
+    func testLaunchWithEpisodesArmsAtTheThreshold() {
+        let recorder = Recorder()
+        let engine = makePrimedEngine(episodes: [episode(season: 1, episode: 1), episode(season: 1, episode: 2)],
+                                      recorder: recorder)
+        engine.onProgress(positionSec: 2376, durationSec: Self.duration)
+        XCTAssertEqual(recorder.searchBegan, 1)
+    }
+
+    /// BUG-229 repro: a play started before the stream picker's own episode fetch finished hands the
+    /// player an EMPTY list. `nextVideo` is resolved once at start, so the card never arms for the
+    /// whole episode. DOCUMENTS THE BUG: the fix inverts these expectations.
+    func testEmptyLaunchListNeverArms() {
+        let recorder = Recorder()
+        let engine = makePrimedEngine(episodes: [], recorder: recorder)
+        XCTAssertTrue(engine.episodes.isEmpty)
+        for position in [2376.0, 2390, 2399] {
+            engine.onProgress(positionSec: position, durationSec: Self.duration)
+        }
+        XCTAssertEqual(recorder.searchBegan, 0, "BUG-229: no next episode, so no search ever starts")
         XCTAssertEqual(engine.phase, .hidden)
     }
 }
