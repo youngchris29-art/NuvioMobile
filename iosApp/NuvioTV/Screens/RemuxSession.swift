@@ -27,6 +27,11 @@ import Libavutil
 // every fragment lands at its published playlist time regardless of which run produced it). Unproduced
 // holes are legal — a request into one triggers another reposition — and the worker parks at EOF
 // instead of exiting so late back-seeks still work.
+//
+// READ-AHEAD BOUND (BUG-224): a run also parks at a segment boundary once it is `RemuxReadAhead`'s
+// bound (90 s of media) past the segment AVPlayer requested most recently, and resumes on the next
+// request, reposition, audio switch or stop(). Remuxing the whole file at download speed was a
+// ~90 % CPU burst (software TLS decrypt) that tvOS filed as `cpu_resource`.
 
 /// HLS master-playlist signaling for the remuxed video, per Apple's HLS authoring spec: a full
 /// RFC 6381 CODECS token (bare "hvc1" is non-compliant and stricter tvOS builds reject it), plus
@@ -176,6 +181,8 @@ nonisolated final class RemuxSession: @unchecked Sendable {
     private var _activeAudio = -1             // stream index whose audio the worker is producing
     /// Interrupt flags shared with FFmpeg's blocking I/O (see `RemuxInterrupts`); set at input open.
     private var _interrupts: RemuxInterrupts?
+    /// BUG-224 read-ahead bound (guarded by `lock`), set with the segment map; nil = unbounded.
+    private var _readAhead: RemuxReadAhead?
 
     /// How far past the current production point a request is still worth waiting for instead of
     /// repositioning (mirrors LocalHLSServer.blockMargin — production reaches it within the JIT budget).
@@ -190,6 +197,20 @@ nonisolated final class RemuxSession: @unchecked Sendable {
 
     /// The audio track (avformat stream index) whose rendition segments are being produced right now.
     var activeAudioStream: Int { control.lock(); defer { control.unlock() }; return _activeAudio }
+
+    /// The JIT server saw a media request (`seg-` / `aud-` / `esub-`, from disk or not) for
+    /// `segment`: the read-ahead bound measures from the latest one (BUG-224). Safe from any thread.
+    func noteSegmentRequest(_ segment: Int) {
+        lock.lock(); let readAhead = _readAhead; lock.unlock()
+        readAhead?.noteRequest(segment: segment)
+    }
+
+    /// Wake a worker parked on the read-ahead bound so it re-reads the mailbox. Called after the
+    /// mailbox's critical section, never inside it (the gate's lock nests outside `control`).
+    private func kickReadAhead() {
+        lock.lock(); let readAhead = _readAhead; lock.unlock()
+        readAhead?.kick()
+    }
 
     /// Ask the worker to switch the produced audio rendition to `streamIndex`, restarting production
     /// at `segment` (the segment AVPlayer asked for; nil = the current producing segment). Non-blocking,
@@ -210,6 +231,7 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         interrupts?.repositionPending = true     // same read-kick as a reposition
         control.signal()
         control.unlock()
+        kickReadAhead()
         print("[Remux] audio switch requested → stream \(streamIndex)" + (segment.map { " at segment \($0)" } ?? ""))
     }
 
@@ -235,6 +257,7 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         interrupts?.repositionPending = true
         control.signal()
         control.unlock()
+        kickReadAhead()
         print("[Remux] reposition requested → segment \(target)")
     }
 
@@ -296,9 +319,11 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         _cancelled = true
         onStateChange = nil
         let interrupts = _interrupts
+        let readAhead = _readAhead
         lock.unlock()
         interrupts?.cancelled = true
         control.lock(); control.signal(); control.unlock()
+        readAhead?.kick()
     }
 
     /// Remove the emitted directory once the worker has fully exited: enqueued on the worker's own
@@ -568,8 +593,12 @@ nonisolated final class RemuxSession: @unchecked Sendable {
             }
             return out
         }()
-        lock.lock(); _segmentMap = map; _chapters = foundChapters; lock.unlock()
+        // Published with the map, before the server that feeds it requests exists (BUG-224).
+        let readAhead = RemuxReadAhead(map: map)
+        lock.lock(); _segmentMap = map; _chapters = foundChapters; _readAhead = readAhead; lock.unlock()
         print("[Remux] segment map: \(map.count) segments, \(String(format: "%.1f", map.totalDurationSec))s, target=\(map.targetDurationSec)s")
+        print("[Remux] read-ahead bound: " + (readAhead.map { "\(Int($0.boundSec))s" } ?? "unbounded")
+              + (RemuxReadAhead.launchBoundSec == RemuxReadAhead.defaultBoundSec ? "" : " (\(RemuxReadAhead.boundKey))"))
 
         // --- Multi-run production with seek-anywhere ------------------------------------------------
         // Segments are produced in RUNS: one mp4 muxer context copying linearly from a start segment
@@ -647,6 +676,8 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         /// ftyp+moov, which is parsed and discarded like the video init.
         var audioInitWritten = Set<Int>()
         var videoInitWritten = false
+        var pacingParks = 0             // read-ahead parks this session (log throttle)
+        var pacingReopens = 0           // source re-opens after an idle-connection failure
 
         // One muxer per representation per run (info-panel W3): the VIDEO-ONLY variant and the ACTIVE
         // audio track's audio-only rendition, each with its own mp4 context, AVIO sink and file names,
@@ -780,6 +811,27 @@ nonisolated final class RemuxSession: @unchecked Sendable {
             }
             control.unlock()
             return !isCancelled()
+        }
+        /// The read-ahead park's wake condition besides a new request: anything in the mailbox, or stop().
+        func pacingInterrupted() -> Bool {
+            control.lock()
+            let pending = _pendingTarget != nil || _pendingAudio != nil
+            control.unlock()
+            return pending || isCancelled()
+        }
+        /// BUG-224: a run that parked on the read-ahead bound left the source connection idle, and a
+        /// CDN may have closed it (a long pause holds the worker for minutes); the next read then
+        /// fails. Restart at `seg` instead (its seek is a fresh Range request) rather than failing
+        /// the session: the partial segment is dropped and `everRepositioned` is left alone, so the
+        /// linear completeness gate still holds. Shares the consecutive-failure count with the
+        /// error parks, so a source that keeps failing still ends the session.
+        func reopenAfterIdle(at seg: Int) -> Bool {
+            guard consecutiveErrorParks < 3, seg >= 1, seg <= map.count else { return false }
+            consecutiveErrorParks += 1
+            pacingReopens += 1
+            startSeg = seg
+            print("[Remux] read-ahead: source read ended after an idle park — re-opening at segment \(seg) (reopens=\(pacingReopens))")
+            return true
         }
         /// Consume a pending audio switch: becomes the active track; returns the segment to restart at.
         func applyAudioSwitch(currentSeg: Int) -> Int? {
@@ -968,9 +1020,28 @@ nonisolated final class RemuxSession: @unchecked Sendable {
 
             enum RunEnd { case eof, error, repositioned(Int), audioSwitch, cancelled }
             var runEnd: RunEnd?
+            // Read-ahead bound (BUG-224): checked once per segment, at the top of the loop, so a
+            // wake falls straight into the mailbox checks below. `pacedInRun` = this run's source
+            // read sat idle at least once, so a dropped connection is a likely cause of a read error.
+            var pacingCheckedSeg = 0
+            var pacedInRun = false
+            var readFailed = false
 
             while runEnd == nil {
                 if isCancelled() { runEnd = .cancelled; break }
+                if let readAhead, currentSeg != pacingCheckedSeg {
+                    pacingCheckedSeg = currentSeg
+                    let parked = readAhead.waitWhileAhead(producing: currentSeg, interrupted: pacingInterrupted)
+                    if parked > 0 {
+                        pacedInRun = true
+                        pacingParks += 1
+                        if pacingParks == 1 || parked >= 30 {
+                            print("[Remux] read-ahead: parked \(String(format: "%.1f", parked))s at segment \(currentSeg) "
+                                  + "(latest request \(readAhead.latestRequested), bound \(Int(readAhead.boundSec))s, parks=\(pacingParks))")
+                        }
+                    }
+                    if isCancelled() { runEnd = .cancelled; break }
+                }
                 if takeAudioSwitch() != nil {
                     // Consumed at the top of runLoop (becomes the next run's track/start).
                     av_packet_unref(pkt)
@@ -1014,6 +1085,7 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                         else {
                             print("[Remux] read error \(r) at segment \(currentSeg)")
                             lock.lock(); _lastErrorCode = r; _lastErrorAtOpen = false; lock.unlock()
+                            readFailed = true
                             runEnd = .error
                         }
                         break
@@ -1183,6 +1255,7 @@ nonisolated final class RemuxSession: @unchecked Sendable {
             case .error:
                 destroyRun(run)
                 if let seg = gridCapSegment { return fail("grid net cap at segment \(seg)") }
+                if readFailed, pacedInRun, reopenAfterIdle(at: currentSeg) { continue runLoop }
                 if !everRepositioned { return fail("read/write error at segment \(currentSeg)") }
                 // Repositioned sessions self-heal: park; the JIT re-request repositions us again.
                 consecutiveErrorParks += 1
@@ -1206,6 +1279,9 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                 let shortLinear = currentSeg != map.count && !everRepositioned
                 destroyRun(run)
                 if !tailOK { return fail("final segment flush") }
+                // A short EOF right after an idle park is as likely a dropped connection as a
+                // truncated source: re-open once at the segment before believing it.
+                if currentSeg != map.count, pacedInRun, reopenAfterIdle(at: currentSeg) { continue runLoop }
                 if shortLinear { return fail("truncated remux (\(currentSeg)/\(map.count) segments)") }
                 if currentSeg != map.count {
                     print("[Remux] repositioned run EOF at \(currentSeg)/\(map.count) — partial dropped")

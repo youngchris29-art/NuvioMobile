@@ -119,6 +119,10 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
     private let producingInfo: @Sendable () -> (producing: Int, pending: Int?)
     /// Ask the remux to jump production to a segment (seek-anywhere).
     private let requestReposition: @Sendable (Int) -> Void
+    /// Tell the remux which segment AVPlayer asked for last (BUG-224 read-ahead bound): every
+    /// `seg-` / `aud-` / `esub-` request, served from disk or not. Never an I-frame request (those
+    /// must not move the frontier) and never a playlist or init segment.
+    private let noteSegmentRequest: @Sendable (Int) -> Void
 
     var port: UInt16? { lock.lock(); defer { lock.unlock() }; return _port }
 
@@ -133,7 +137,8 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
          stripSdh: Bool = false,
          iFrames: Bool = false,
          producingInfo: @escaping @Sendable () -> (producing: Int, pending: Int?),
-         requestReposition: @escaping @Sendable (Int) -> Void) {
+         requestReposition: @escaping @Sendable (Int) -> Void,
+         noteSegmentRequest: @escaping @Sendable (Int) -> Void = { _ in }) {
         self.rootDir = rootDir
         self.map = map
         self._signaling = signaling
@@ -162,6 +167,7 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
         self.iFrameServeMode = serveMode
         self.producingInfo = producingInfo
         self.requestReposition = requestReposition
+        self.noteSegmentRequest = noteSegmentRequest
         self.token = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
     }
 
@@ -556,6 +562,10 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
                         deadline: Date().addingTimeInterval(blockTimeout), live: live)
             return
         }
+
+        // Noted before the audio-switch / JIT decisions below, so a request that repositions the
+        // remux has already moved the read-ahead reference to its own segment.
+        if let idx = Self.segmentIndex(name) { noteSegmentRequest(idx) }
 
         // init.mp4 / seg-NNNNN.m4s / esub-K-NNNNN.vtt / aud-T-init.mp4 / aud-T-NNNNN.m4s — produced
         // just-in-time by the remux; block until present. A file of a NON-active audio track makes

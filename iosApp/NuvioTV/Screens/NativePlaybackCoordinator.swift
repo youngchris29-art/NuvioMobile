@@ -1015,7 +1015,8 @@ final class NativePlaybackCoordinator: ObservableObject {
                                     // an I-frame on tvOS 27 and shows an empty box instead.
                                     iFrames: SeekPreviewMode.currentAllowsNativeIFrames(),
                                     producingInfo: { remux.producingInfo },
-                                    requestReposition: { remux.reposition(toSegment: $0) })
+                                    requestReposition: { remux.reposition(toSegment: $0) },
+                                    noteSegmentRequest: { remux.noteSegmentRequest($0) })
         self.server = server
         servedSignaling = signaling
         // Subtitle delay (B3): publish each addon rendition under N interchangeable slots so a delay
