@@ -3547,7 +3547,7 @@ private struct DetailTrailersRow: View {
 /// own default treatment under the same `.borderless` button), and which `CardCaptionFocusDrop`
 /// answers by dropping the name and role 20 pt with it. Ring mode stays `.manualScale` and both
 /// No Zoom cells stay `.still(ringed:)`, byte-identical to before. `PlainLabelRing.lift` itself
-/// is untouched: `FolderTile` still resolves through it.
+/// is untouched; `FolderTile` stopped resolving through it with BUG-216 (`FolderLabelLift`).
 ///
 /// Measured on the tvOS 27 simulator (a one-off Wave 3b UI measurement leg, 2026-10-21, since
 /// removed from the tree; the readings are kept here): the system

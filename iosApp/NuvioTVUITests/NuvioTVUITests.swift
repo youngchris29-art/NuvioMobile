@@ -7939,6 +7939,103 @@ final class NuvioTVUITests: XCTestCase {
         shot(app, "56b_folder_ring_zoom_on_second_tile")
     }
 
+    /// One pinned collection of three folders (poster, landscape, square), each with a stable
+    /// `heroBackdropUrl` so a focused tile reaches the `debug_hero` probe's `fitem=nuvio-folder://…`
+    /// (the `folderProbeSeedJson` rule). Test56b's fixture.
+    private static let folderShapesSeedJson = """
+    [{"id":"zzshapes-collection","title":"ZZShapes","pinToTop":true,"showAllTab":true,"folders":[\
+    {"id":"zzshapes-f0","title":"ZZShapesPoster","tileShape":"poster","hideTitle":false,"heroBackdropUrl":"https://images.metahub.space/background/medium/tt0111161/img","sources":[{"provider":"addon","addonId":"com.linvo.cinemeta","type":"movie","catalogId":"top"}]},\
+    {"id":"zzshapes-f1","title":"ZZShapesLandscape","tileShape":"landscape","hideTitle":false,"heroBackdropUrl":"https://images.metahub.space/background/medium/tt0068646/img","sources":[{"provider":"addon","addonId":"com.linvo.cinemeta","type":"movie","catalogId":"top"}]},\
+    {"id":"zzshapes-f2","title":"ZZShapesSquare","tileShape":"square","hideTitle":false,"heroBackdropUrl":"https://images.metahub.space/background/medium/tt0071562/img","sources":[{"provider":"addon","addonId":"com.linvo.cinemeta","type":"movie","catalogId":"top"}]}]}]
+    """
+
+    /// BUG-216 (GitHub #9 item 1, Home collection half): the DEFAULT cell (Accent Focus Ring OFF,
+    /// zoom on) of test56. The tile used to lift only its cover under `.borderless`;
+    /// `FolderLabelLift` gives it ring mode's own manual lift there, so a focused folder tile of
+    /// every shape rises exactly the pinned row's 20 pt clip allowance, grows uniformly, and its
+    /// neighbours stay put. The system lift would fail this (sim, 2026-10-31: poster 23.5 pt,
+    /// square 22.3 pt, landscape 13.5 pt). Seeded, because the FA87 fixture has no folder row of
+    /// its own (test56 skips there). `folder_card` is outside the lift (the tile's layout box) and
+    /// `folder_artwork` inside it, so each tile is its own rest reference: no sibling needed.
+    /// The `defer` re-seeds `"[]"`.
+    func test56bCollectionFolderDefaultCellRise() throws {
+        let app = launchToHomeWithSeededCollections(
+            Self.folderShapesSeedJson,
+            extraArguments: ["-no_zoom_on_focus", "NO", "-accent_focus_ring", "NO", "-debug.cardGeometryProbe", "YES"])
+        defer {
+            let restored = launchToHomeWithSeededCollections("[]")
+            XCTAssertTrue(restored.state == .runningForeground)
+        }
+        pause(1.5)
+
+        func liveHeroProbe() -> String {
+            let probe = app.staticTexts["debug_hero"]
+            return probe.exists ? probe.label : ""
+        }
+        /// Every frame carrying `identifier`, left to right, one per distinct minX (1 pt).
+        func namedFrames(_ identifier: String) -> [CGRect] {
+            guard let root = try? app.snapshot() else { return [] }
+            var out: [CGRect] = []
+            func walk(_ node: XCUIElementSnapshot) {
+                if node.identifier == identifier { out.append(node.frame) }
+                node.children.forEach(walk)
+            }
+            walk(root)
+            var distinct: [CGRect] = []
+            for frame in out.sorted(by: { $0.minX < $1.minX })
+            where !distinct.contains(where: { abs($0.minX - frame.minX) < 1 }) {
+                distinct.append(frame)
+            }
+            return distinct
+        }
+
+        // A row that never renders is a fixture gap (the app refuses the seed on a signed-in cloud
+        // account, `[CollectionsSeed] imported=false refused=signedIn`): skip. A row that renders
+        // but never takes focus is a regression: fail. The Home hero sits above the row, so it is
+        // only realized after a few Down presses.
+        var rendered = false
+        var reached = false
+        for _ in 1...12 {
+            rendered = rendered || namedFrames("folder_card").count >= 3
+            if (probeField(liveHeroProbe(), "fitem") ?? "").contains("nuvio-folder://") { reached = true; break }
+            press(.down, times: 1)
+            pause(0.5)
+        }
+        rendered = rendered || namedFrames("folder_card").count >= 3
+        guard rendered || reached else {
+            throw XCTSkip("the seeded folder row never rendered (seed refused, or the probe is not armed)")
+        }
+        guard reached else {
+            XCTFail("the seeded folder row rendered but never took focus within 12 Down presses")
+            return
+        }
+
+        let shapes = ["poster", "landscape", "square"]
+        for index in 0..<3 {
+            if index > 0 {
+                press(.right, times: 1, gap: 0.5)
+            }
+            pause(1.5)
+            let cards = namedFrames("folder_card")
+            let arts = namedFrames("folder_artwork")
+            guard cards.count >= 3, arts.count >= 3 else {
+                XCTFail("`-debug.cardGeometryProbe YES` published \(cards.count) folder_card / \(arts.count) folder_artwork rects for the three seeded tiles")
+                return
+            }
+            shot(app, "56b_default_cell_\(shapes[index])")
+            let card = cards[index], art = arts[index]
+            let rise = card.minY - art.minY
+            XCTAssertEqual(rise, 20, accuracy: 2.5, "\(shapes[index]) tile rose \(rise)pt; card=\(card) art=\(art)")
+            XCTAssertEqual(art.maxY - card.maxY, rise, accuracy: 2.5, "\(shapes[index]): the bottom edge must drop by the rise")
+            XCTAssertEqual((art.width - card.width) / 2, rise * (card.width / card.height), accuracy: 3.0,
+                           "\(shapes[index]): width growth must be the same uniform scale as the height growth")
+            for other in 0..<3 where other != index {
+                XCTAssertEqual(arts[other].height, cards[other].height, accuracy: 1.5,
+                               "\(shapes[other]) tile moved while \(shapes[index]) is focused")
+            }
+        }
+    }
+
     /// BUG-109 (rc9, u/mrStevenx3): entering a collection folder page and pressing Menu must put
     /// Home focus back on the folder tile the user left from, not on the catalog row above it.
     /// Evidence + gate: the hero probe's `fitem` names the focused item; the same

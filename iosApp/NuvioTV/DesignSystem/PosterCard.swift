@@ -150,14 +150,13 @@ private struct RingCardButtonStyle: ButtonStyle {
 ///
 /// - `.card` - the label goes through `CardArtworkFocusLift`, so in ring mode it draws its own
 ///   scale and shadow and must NOT also wear `.borderless`'s treatment: `PosterCard`,
-///   `LandscapeCard`, `SagaCard`, and — since BUG-108 — `FolderTile` (CollectionsUI) and `CastCard`
-///   (DetailView). Those last two draw their ring INSIDE their own artwork frame
-///   (`PlainLabelRing`), and rc9 device photos showed the native `.borderless` lift raising the
-///   artwork while the ring stayed at base geometry — the FEAT-14 graveyard's third entry verbatim,
-///   on the two labels that had been left on that lift. They now own the lift too (`FolderTile`
-///   through `PlainLabelRing.lift`; `CastCard`, since BUG-200, through `DetailLabelLift`, which
-///   answers the same in ring and No Zoom and `.systemLift` in the default cell), so ring and
-///   picture are one SwiftUI layer on every card class.
+///   `LandscapeCard`, `SagaCard`, and — since BUG-108 — `CastCard` (DetailView). The cast avatar
+///   draws its ring INSIDE its own artwork frame (`PlainLabelRing`), and rc9 device photos showed
+///   the native `.borderless` lift raising the artwork while the ring stayed at base geometry —
+///   the FEAT-14 graveyard's third entry verbatim, on a label that had been left on that lift. It
+///   owns the lift too (since BUG-200 through `DetailLabelLift`, which answers the same in ring and
+///   No Zoom and `.systemLift` in the default cell), so ring and picture are one SwiftUI layer on
+///   every card class. (`FolderTile` was the other one until BUG-216: see `.manual`.)
 /// - `.plain` - the label owns no manual treatment: the four `TileFocusLift` tiles
 ///   (`TrailerThumbCard`, `SeeAllCard`, `SeasonPosterCard`, `EpisodeThumbCard`). Their zoom-on
 ///   branch is a system hover effect, and an overlay under one of those is known to render beneath
@@ -167,7 +166,8 @@ private struct RingCardButtonStyle: ButtonStyle {
 /// - `.manual` - BUG-200: the label draws its own `.manualScale` lift in BOTH zoom-on cells, the
 ///   default cell (ring off, zoom on) included, so the button wears no system treatment with zoom
 ///   on: `RingCardButtonStyle` in both, `StillCardButtonStyle` with No Zoom. `CompanyChip`
-///   (DetailView) only. On tvOS `.borderless` lifts only the image content of a label (device
+///   (DetailView) and, since BUG-216, `FolderTile` (CollectionsUI, through `FolderLabelLift`). On
+///   tvOS `.borderless` lifts only the image content of a label (device
 ///   finding 2026-10-17), so in the default cell it lifted the studio logo out of its white
 ///   capsule and gave a name-only chip no cue at all; and the system lift itself measured ×1.19
 ///   on the 52 pt capsule (sim, 2026-10-21), 20 pt per side against the row's 16 pt gap. The chip
@@ -206,9 +206,9 @@ enum CardButtonLift {
 /// label carries that treatment now gets `RingCardButtonStyle` - see that type for why the bare
 /// `.borderless` was both bordering the titles and compounding with the manual scale. Default mode
 /// (both settings off) is still exactly the bare `.borderless` it always was, and so is every
-/// `lift: .plain` call site in every zoom-on state. The one exception is a `lift: .manual` label
-/// (`CompanyChip`, BUG-200), which draws its own lift in the default cell too and so gets
-/// `RingCardButtonStyle` in both zoom-on cells.
+/// `lift: .plain` call site in every zoom-on state. The exception is a `lift: .manual` label
+/// (`CompanyChip`, BUG-200; `FolderTile`, BUG-216), which draws its own lift in the default cell
+/// too and so gets `RingCardButtonStyle` in both zoom-on cells.
 /// BUG-108: the three-way branch `CardFocusButtonStyle.body` installs, as a pure value function.
 ///
 /// Extracted for one reason: the invariant that broke in rc9 is a RELATION between two files —
@@ -286,7 +286,7 @@ extension View {
     /// BUG-93: `lift` defaults to `.card`, so the sites whose label IS a `PosterCard`/
     /// `LandscapeCard` stay untouched. Pass `.plain` at the six sites whose label draws no
     /// treatment of its own, and `.manual` where the label lifts itself in the default cell too
-    /// (`CompanyChip`, BUG-200) — see `CardButtonLift`.
+    /// (`CompanyChip`, BUG-200; `FolderTile`, BUG-216) — see `CardButtonLift`.
     func cardFocusButtonStyle(lift: CardButtonLift = .card) -> some View {
         modifier(CardFocusButtonStyle(lift: lift))
     }
@@ -395,9 +395,10 @@ enum PlainLabelRing: Equatable {
     }
 
     /// BUG-108: which lift a plain-label card draws for ITSELF, now that ring mode takes the native
-    /// `.borderless` lift away from it (`CardButtonLift.card`). Shared by `FolderTile` and the
-    /// Detail tiles' ring branch (`DetailTileFocusLift`) so they cannot drift, and sited next to
-    /// `resolve` because it must branch on the same two settings in the same precedence.
+    /// `.borderless` lift away from it (`CardButtonLift.card`). Used by the Detail tiles' ring
+    /// branch (`DetailTileFocusLift`), and sited next to `resolve` because it must branch on the
+    /// same two settings in the same precedence. `FolderTile` stopped resolving here with BUG-216
+    /// (`FolderLabelLift` in CollectionsUI answers its default cell too).
     ///
     /// `.manualScale` in ring mode ONLY. Both other modes map to `.still`, which is
     /// `CardArtworkFocusLift`'s NO-OP branch. The "plain label owns its lift" rule is about the
@@ -407,10 +408,12 @@ enum PlainLabelRing: Equatable {
     /// that lifts only the IMAGE content of a label, not the whole label (device finding
     /// 2026-10-17, `SwatchFocusLift` in `ProfileSelectionView.swift`): the picture grows inside
     /// its static frame and the caption stays put. This resolver still never answers
-    /// `.systemLift`, because `FolderTile`'s default cell is unmeasured (BUG-216); the labels that
-    /// needed a whole-label default-cell lift resolve elsewhere — `CastCard` through
-    /// `DetailLabelLift` (the system lift on the avatar), `CompanyChip` through `smallLabelLift`
-    /// below (`CardButtonLift.manual`, BUG-200). `.still(ringed:)` carries the accent flag only so
+    /// `.systemLift`; the labels that needed a whole-label default-cell lift resolve elsewhere —
+    /// `CastCard` through `DetailLabelLift` (the system lift on the avatar), `CompanyChip` through
+    /// `smallLabelLift` below (`CardButtonLift.manual`, BUG-200), `FolderTile` through
+    /// `FolderLabelLift` (CollectionsUI, the same `.manual` route at ring mode's 20 pt rise,
+    /// BUG-216: the system lift measured past the pinned row's clip allowance on posters and
+    /// squares). `.still(ringed:)` carries the accent flag only so
     /// the value reads truthfully in a log or a test; `CardArtworkFocusLift` and
     /// `CardCaptionFocusDrop` both ignore the payload.
     static func lift(accentFocusRing: Bool, noZoomOnFocus: Bool) -> CardFocusMode {
@@ -456,6 +459,15 @@ enum PlainLabelRing: Equatable {
     /// this answers `.manualScale` (`CardButtonStyleKind.resolve`): under `.borderless` the
     /// label's manual scale would compound with the system treatment.
     static func smallLabelLift(accentFocusRing: Bool, noZoomOnFocus: Bool) -> CardFocusMode {
+        manualLabelLift(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus)
+    }
+
+    /// BUG-200 / BUG-216: the one rule for a `CardButtonLift.manual` label's lift — `.manualScale`
+    /// in both zoom-on cells, `.still(ringed:)` with No Zoom. `smallLabelLift` (`CompanyChip`) and
+    /// `FolderLabelLift` (`FolderTile`) both forward here so the two cannot drift; they differ only
+    /// in the rise the label feeds `CardArtworkFocusLift` (a height-proportional one for the chip,
+    /// the flat `cardFocusLiftRise` for the tile).
+    static func manualLabelLift(accentFocusRing: Bool, noZoomOnFocus: Bool) -> CardFocusMode {
         noZoomOnFocus ? .still(ringed: accentFocusRing) : .manualScale
     }
 
@@ -529,7 +541,7 @@ private let cardFocusLiftRise: CGFloat = Theme.Size.heroPinnedRowFocusLiftAllowa
 /// (poster/landscape/saga cards, `FolderTile`, `CastCard`) is unaffected, so `CompanyChip` can
 /// pass `PlainLabelRing.smallLabelRise(height:)` instead — see that function for why a 52pt
 /// capsule cannot share the flat rise every taller card class uses.
-private func cardLiftScale(artworkHeight: CGFloat, rise: CGFloat = cardFocusLiftRise) -> CGFloat {
+func cardLiftScale(artworkHeight: CGFloat, rise: CGFloat = cardFocusLiftRise) -> CGFloat {
     guard artworkHeight > 0 else { return 1 }
     return 1 + 2 * rise / artworkHeight
 }

@@ -106,9 +106,10 @@ struct CollectionRowView: View {
     /// mixed-shape row holds a landscape folder at all (square tiles grow 20/side → 8 clear,
     /// posters ≈13.3/side → ≈14.7 clear, so they keep `rowGap`).
     ///
-    /// NOT gated on the ring setting, for two reasons: the native `.borderless` lift grows the tile
-    /// by a comparable amount in the default mode, and a row gap that changed with an Appearance
-    /// toggle would move this row's scroll geometry under the focus engine. Nothing in the pinned
+    /// NOT gated on the ring setting, for two reasons: the default cell draws the very same manual
+    /// scale (BUG-216, `FolderLabelLift`; before it, the native `.borderless` lift grew the tile by
+    /// a comparable amount), and a row gap that changed with an Appearance toggle would move this
+    /// row's scroll geometry under the focus engine. Nothing in the pinned
     /// math reads the gap (`shortestTileHeight`, `shelfMinHeight` and `focusedTileLockupExtent` are
     /// all vertical).
     private var rowGap: CGFloat {
@@ -124,8 +125,8 @@ struct CollectionRowView: View {
     /// the difference is WHERE: this one has to sit on the `LazyHStack`'s own child — a zIndex
     /// inside the `NavigationLink` label has no siblings to order against.
     private func liftedTileZIndex(_ folder: CollectionFolder) -> Double {
-        let raises = CardFocusMode.resolve(accentFocusRing: accentFocusRing,
-                                           noZoomOnFocus: noZoomOnFocus).raisesFocusedCard
+        let raises = FolderLabelLift.lift(accentFocusRing: accentFocusRing,
+                                          noZoomOnFocus: noZoomOnFocus).raisesFocusedCard
         return raises && focusedFolderId == folder.id ? 1 : 0
     }
 
@@ -324,10 +325,13 @@ struct CollectionRowView: View {
                                        alignment: .top)
                         }
                         // BUG-108: this label draws its own ring AND (since rc10) its own ring-mode
-                        // lift, so ring mode must take the native `.borderless` lift away from it —
-                        // `CardButtonLift.card`, the default. On the native lift the ring stayed at
-                        // base geometry while the artwork rose (rc9 device photos).
-                        .cardFocusButtonStyle()
+                        // lift, so ring mode must take the native `.borderless` lift away from it.
+                        // On the native lift the ring stayed at base geometry while the artwork rose
+                        // (rc9 device photos).
+                        // BUG-216: and in the default cell too — `FolderTile.buttonLift` (`.manual`), the case
+                        // that drops `.borderless` in both zoom-on cells (`FolderLabelLift`). Under
+                        // `.borderless` only the cover lifted and the caption stood still.
+                        .cardFocusButtonStyle(lift: FolderTile.buttonLift)
                         .posterButtonShape()   // BUG-32/BUG-25: without this the system radius overrides Corners
                         .focused($focusedFolderId, equals: folder.id)
                         // BUG-109: a stable identity for native focus restoration after the folder page
@@ -500,7 +504,48 @@ private struct FolderLayoutHoldMenu: ViewModifier {
     }
 }
 
+/// BUG-216 (GitHub #9 item 1, the Home collection half): which lift a folder tile draws for itself.
+/// In the default cell (Accent Focus Ring off, zoom on) the tile used to resolve through
+/// `PlainLabelRing.lift`, which answers the no-op `.still` there and leaves the `.borderless`
+/// button's own treatment, and on tvOS that lifts only the IMAGE content of a label: the cover
+/// grew inside its frozen tile and the caption stayed put.
+///
+/// The tile now draws its own lift in BOTH zoom-on cells, the `CompanyChip` route (BUG-200):
+/// `PlainLabelRing.manualLabelLift`, `.manualScale` unless No Zoom is on, which stays
+/// `.still(ringed:)`. Ring and No Zoom cells are therefore exactly `PlainLabelRing.lift`'s; only
+/// the default cell differs. Must be read with `cardFocusButtonStyle(lift: FolderTile.buttonLift)`,
+/// which installs a custom style in exactly the cells this answers `.manualScale`
+/// (`CardButtonStyleKind.resolve`): under `.borderless` the manual scale would compound with the
+/// system treatment.
+///
+/// Why not `DetailLabelLift`'s `.systemLift` (the cast avatar's route): measured on the tvOS 26.5
+/// simulator (a one-off UI measurement leg, 2026-10-31, since removed from the tree; the readings
+/// are kept here), the system highlight does NOT hold the pinned row's 20 pt clip allowance
+/// (`PinnedRowTitle.focusLiftAllowance`) on a folder tile at Medium size. Its rise is
+/// shape-dependent, not constant: poster 220 x 330 rose 23.5 pt (x1.1425), square 220 x 220 22.3 pt
+/// (x1.2025), landscape 391 x 220 13.5 pt (x1.1225), identically on Stage and Classic. The manual
+/// scale is `1 + 2 x 20 / artworkHeight` (`cardLiftScale`), so every shape rises exactly the
+/// allowance (19.8 to 20.2 pt measured), as in ring mode, and `CardCaptionFocusDrop` pays the
+/// caption the same 20 pt. The widest overrun sideways is a landscape tile's ~35.5 pt per side,
+/// which `CollectionRowView.rowGap` already covers with the 40 pt `landscapeLiftRowGap`.
+/// `test56bCollectionFolderDefaultCellRise` keeps the 20 pt rise gated.
+///
+/// Intended differences from the system lift, for the device look: the default cell wears ring
+/// mode's black platter and 22 pt shadow (`focusShadow`; `CompanyChip` turns it off because its
+/// fill is translucent white, a folder cover is opaque), has no Siri-Remote-tracking parallax or
+/// specular highlight, and eases with ring mode's 0.15 s easeOut rather than the system curve.
+enum FolderLabelLift {
+    static func lift(accentFocusRing: Bool, noZoomOnFocus: Bool) -> CardFocusMode {
+        PlainLabelRing.manualLabelLift(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus)
+    }
+}
+
 struct FolderTile: View {
+    /// BUG-216: the `cardFocusButtonStyle(lift:)` the row's link must wear so the button installs
+    /// a custom style exactly where `FolderLabelLift` answers `.manualScale`. One constant, read
+    /// by the call site and the unit test, so the pair cannot drift apart unseen.
+    static let buttonLift: CardButtonLift = .manual
+
     let folder: CollectionFolder
     /// BUG-38 (2026-08-10 re-specification): the parent collection's user-configured
     /// `backdropImageUrl` — configurable in mobile's collection editor and synced for as long as
@@ -570,10 +615,10 @@ struct FolderTile: View {
     }
 
     /// BUG-108: in ring mode this tile owns its lift, so the ring it draws on its own artwork rides
-    /// that lift instead of standing still under the native one. `.still` (a no-op) in both other
-    /// modes — see `PlainLabelRing.lift` for why it must never be `.systemLift` here.
+    /// that lift instead of standing still under the native one. BUG-216: the default cell owns it
+    /// too (`FolderLabelLift`); `.still` (a no-op) only with No Zoom.
     private var artworkLift: CardFocusMode {
-        PlainLabelRing.lift(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus)
+        FolderLabelLift.lift(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus)
     }
 
     /// BUG-38 display-time fallback: genre folders are TMDB DISCOVER sources, which
@@ -979,11 +1024,12 @@ struct FolderTile: View {
                     .truncationMode(.tail)
                     .padding(.horizontal, Theme.Spacing.xs)
                     .frame(width: tileWidth, alignment: .leading)
-                    // BUG-108: in ring mode the artwork grows DOWNWARD by the same 20pt it rises,
-                    // so the caption follows its bottom edge exactly as every other card's does.
-                    // 0 in both other modes: the native lift moves the whole label itself, and
-                    // still mode moves nothing. Render-only `.offset`, so the lockup's measured
-                    // height is unchanged and `shortestTileHeight`/`shelfMinHeight` do not move.
+                    // BUG-108: the artwork grows DOWNWARD by the same 20pt it rises, so the caption
+                    // follows its bottom edge exactly as every other card's does.
+                    // BUG-216: that holds in BOTH zoom-on cells now (`FolderLabelLift`), the
+                    // default one included: 20pt. No Zoom: 0, still mode moves nothing.
+                    // Render-only `.offset`, so the lockup's measured height is unchanged and
+                    // `shortestTileHeight`/`shelfMinHeight` do not move.
                     .modifier(CardCaptionFocusDrop(
                         mode: artworkLift, isFocused: stillFocused, artworkHeight: tileHeight
                     ))

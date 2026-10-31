@@ -4,9 +4,10 @@ import SwiftUI
 
 /// BUG-102 (rc9, 2026-09-10): the ring verdict for labels that draw their own ring inside the
 /// artwork frame (`FolderTile`, `CastCard`). The tester's report was the zoom-on + accent-ring-on
-/// cell drawing nothing; every other cell must keep what it did before. `PlainLabelRing.lift` is
-/// `FolderTile`'s lift; `CastCard`'s is `DetailLabelLift` since BUG-200 (`DetailLabelLiftTests`),
-/// which equals it everywhere but the default cell.
+/// cell drawing nothing; every other cell must keep what it did before. `PlainLabelRing.lift` was
+/// `FolderTile`'s lift until BUG-216 (`FolderLabelLiftTests`: equal everywhere but the default
+/// cell); its remaining caller is `DetailTileFocusLift`. `CastCard`'s is `DetailLabelLift` since
+/// BUG-200 (`DetailLabelLiftTests`), which equals it everywhere but the default cell.
 final class PlainLabelRingTests: XCTestCase {
     func testUnfocusedDrawsNothingInEveryMode() {
         for accent in [false, true] {
@@ -64,11 +65,11 @@ final class PlainLabelRingTests: XCTestCase {
         }
     }
 
-    /// `FolderTile` (this resolver's default-cell caller) never asks for the system hover effect:
+    /// This resolver (now called by `DetailTileFocusLift`) never asks for the system hover effect:
     /// in the default cell it keeps the `.borderless` button's own treatment, which on tvOS lifts
-    /// only the image content of the label, not the whole label (device finding 2026-10-17), until
-    /// BUG-216 measures a whole-tile lift for it. The labels that needed one resolve elsewhere
-    /// (`DetailLabelLift` for `CastCard`, `PlainLabelRing.smallLabelLift` for `CompanyChip`).
+    /// only the image content of the label, not the whole label (device finding 2026-10-17). The
+    /// labels that needed a whole-label lift resolve elsewhere (`DetailLabelLift` for `CastCard`,
+    /// `PlainLabelRing.smallLabelLift` for `CompanyChip`, `FolderLabelLift` for `FolderTile`).
     func testPlainLabelNeverAsksForTheSystemHoverEffect() {
         for accent in [false, true] {
             for noZoom in [false, true] {
@@ -118,14 +119,12 @@ final class PlainLabelRingTests: XCTestCase {
     /// `CompanyChip`'s own capsule (52pt, `CompanyChipMetrics.capsuleHeight`) is the reason
     /// `smallLabelRise`/`smallLabelScaleCeiling` exist — the flat 20pt every other card class
     /// rises by would almost double it (`1 + 2×20/52 ≈ 1.77`). Asserts the actual rise this chip
-    /// gets AND that plugging it back into the derived-scale formula (`cardLiftScale`'s formula —
-    /// that function is `private` to `PosterCard.swift`, so the formula is reproduced here rather
-    /// than called) reproduces the named ceiling.
+    /// gets AND that feeding it back through `cardLiftScale` reproduces the named ceiling.
     func testSmallLabelRiseHoldsTheScaleCeilingOnTheStudioChip() {
         let height = CompanyChipMetrics.capsuleHeight
         let rise = PlainLabelRing.smallLabelRise(height: height)
         XCTAssertEqual(rise, 3.12, accuracy: 0.01)
-        let derivedScale = 1 + 2 * rise / height
+        let derivedScale = cardLiftScale(artworkHeight: height, rise: rise)
         XCTAssertEqual(derivedScale, PlainLabelRing.smallLabelScaleCeiling, accuracy: 0.001)
     }
 

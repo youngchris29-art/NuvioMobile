@@ -347,17 +347,20 @@ enum PinnedRowTitle {
 
     /// Which focus treatment a ROW's cards actually wear. Since BUG-108 every pinned row's cards
     /// resolve through `CardFocusMode` — the collection folder row's `FolderTile` now carries
-    /// `CardArtworkFocusLift` too (`PlainLabelRing.lift`) — so there is only the one case left; kept
+    /// `CardArtworkFocusLift` too (`FolderLabelLift`) — so there is only the one case left; kept
     /// as an enum rather than collapsed away because `focusLiftAllowance`'s and
     /// `pinnedRowTitleTracking`'s signatures still take a `treatment:` and a future row shape may
     /// need a second case again.
     // `nonisolated`: same @Sendable-transform requirement as `Reading` below.
     nonisolated enum RowCardTreatment: Equatable, Sendable {
         /// Cards that go through `CardFocusTreatment` (or, for `FolderTile`/`CastCard`,
-        /// `CardArtworkFocusLift` directly via `PlainLabelRing.lift`), so their lift follows
-        /// `CardFocusMode.resolve` in all three modes: `PosterCard` (catalog rows, PosterCard.swift
-        /// ~L604), `LandscapeCard` (Continue Watching, Upcoming — PosterCard.swift ~L766), and the
-        /// collection folder-tile row (`CollectionsUI.swift`) since BUG-108.
+        /// `CardArtworkFocusLift` directly via `FolderLabelLift`/`DetailLabelLift`), so their lift
+        /// follows `CardFocusMode.resolve` in all three modes: `PosterCard` (catalog rows,
+        /// PosterCard.swift ~L604), `LandscapeCard` (Continue Watching, Upcoming — PosterCard.swift
+        /// ~L766), and the collection folder-tile row (`CollectionsUI.swift`) since BUG-108.
+        /// BUG-216 scopes one clause to that last row: its default cell is `.manualScale` at the
+        /// same 20 pt rise rather than `CardFocusMode.resolve`'s `.systemLift` (the system lift
+        /// measured past the clip allowance on posters and squares), so the charge is unchanged.
         case cardTreatment
     }
 
@@ -901,7 +904,7 @@ extension View {
     /// BUG-108, is) the only case — `PosterCard`/`LandscapeCard`, and now the collection folder-tile
     /// row too, all of which genuinely follow `CardFocusMode.resolve`. Before BUG-108 the folder row
     /// passed a since-removed `.plainBorderless` because `FolderTile` kept the native `.borderless`
-    /// lift in ring mode; giving it `CardArtworkFocusLift` (`PlainLabelRing.lift`) put it on the same
+    /// lift in ring mode; giving it `CardArtworkFocusLift` (now `FolderLabelLift`) put it on the same
     /// footing as every other pinned row's cards, so the one-case enum in
     /// `PinnedRowTitle.RowCardTreatment` covers it too (Codex r9 P2 named the split this closes).
     func pinnedRowTitleTracking(rowKey: String,

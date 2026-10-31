@@ -179,7 +179,8 @@ struct RowLeadingEdgeClip: Shape {
     /// Zoom-on: Codex beta.18 r4 (P2): the widest thing the first card can be is the EXPANDED inline
     /// trailer tile (`artworkHeight × 16/9`), and the lift scales that whole label, so the bleed is
     /// sized off the maximum, not the resting width. The scale is `PosterCard.swift`'s
-    /// `cardLiftScale(artworkHeight:)` (private there) recomputed from the same constant.
+    /// `cardLiftScale(artworkHeight:)` formula, inlined here from the same constant so this stays a
+    /// pure, parameter-driven function (`liftRise` is passed in, not read from a global).
     static func rowAllowance(noZoomOnFocus: Bool, accentFocusRing: Bool, restingWidth: CGFloat,
                              artworkHeight: CGFloat, liftRise: CGFloat) -> CGFloat {
         if noZoomOnFocus { return shadowReach() }

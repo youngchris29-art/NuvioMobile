@@ -116,11 +116,10 @@ final class CompanyChipLiftTests: XCTestCase {
 
     /// The default cell uses ring mode's small-label rise: ×1.12 on the 52 pt capsule, inside the
     /// sim measurement window (×1.08 … ×1.13), and the widest 212 pt chip grows 12.7 pt per side
-    /// inside the 16 pt row gap. (`cardLiftScale` is private to `PosterCard.swift`; its formula is
-    /// reproduced here.)
+    /// inside the 16 pt row gap.
     func testDefaultCellScaleStaysInsideTheRowGap() {
         let height = CompanyChipMetrics.capsuleHeight
-        let scale = 1 + 2 * CompanyChipMetrics.focusRise / height
+        let scale = cardLiftScale(artworkHeight: height, rise: CompanyChipMetrics.focusRise)
         XCTAssertEqual(scale, PlainLabelRing.smallLabelScaleCeiling, accuracy: 0.001)
         XCTAssertGreaterThanOrEqual(scale, 1.08)
         XCTAssertLessThanOrEqual(scale, 1.13)
