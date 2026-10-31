@@ -1296,8 +1296,7 @@ final class MPVTVPlayerViewController: UIViewController {
         facts.hdr = PlayerBadgeMatch.mpvHDR(gamma: getString("video-params/gamma"), dolbyVisionProfile: dvProfile)
         facts.bitDepth = PlayerBadgeMatch.bitDepth(pixelFormat: badgePixelFormat(), codecProfile: profile,
                                                    codec: facts.videoCodec)
-        facts.fileName = PlayerBadgeMatch.fileName(from: context.url)
-        facts.streamName = PlayerBadgeMatch.streamName(title: context.streamTitle, subtitle: context.streamSubtitle)
+        facts.metaCandidates = PlayerBadgeMatch.metaCandidates(context)
         return facts
     }
 
@@ -1308,11 +1307,13 @@ final class MPVTVPlayerViewController: UIViewController {
     }
 
     /// `eventQueue`: one audio entry of the walk (codec, FFmpeg profile such as "Dolby Digital
-    /// Plus + Dolby Atmos", channels, language). The selected one falls back to `audio-params`.
+    /// Plus + Dolby Atmos" and the track title, channels, language). The selected one falls back to
+    /// `audio-params`.
     private func readBadgeAudio(trackIndex i: Int, lang: String, selected: Bool) -> PlayerBadgeFacts {
         var facts = PlayerBadgeFacts()
         facts.audioCodec = getString("track-list/\(i)/codec")
-        facts.audioProfile = getString("track-list/\(i)/codec-profile")
+        facts.audioProfiles = [getString("track-list/\(i)/codec-profile"), getString("track-list/\(i)/title")]
+            .compactMap { $0 }
         var channels = getInt("track-list/\(i)/demux-channel-count")
         if channels <= 0, selected { channels = getInt("audio-params/channel-count") }
         facts.audioChannels = channels > 0 ? channels : nil
@@ -1333,8 +1334,7 @@ final class MPVTVPlayerViewController: UIViewController {
     private func publishBadgeFacts(aid: Int?) {
         guard badgesInPlayer, let facts = PlayerBadgeMatch.mpvMerged(
             video: badgeVideoFacts, audio: badgeAudioFacts, aid: aid,
-            fileName: PlayerBadgeMatch.fileName(from: context.url),
-            streamName: PlayerBadgeMatch.streamName(title: context.streamTitle, subtitle: context.streamSubtitle))
+            metaCandidates: PlayerBadgeMatch.metaCandidates(context))
         else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self, self.state.badgeFacts != facts else { return }

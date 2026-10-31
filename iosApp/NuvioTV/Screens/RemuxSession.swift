@@ -68,6 +68,9 @@ nonisolated struct RemuxAudioTrack: Equatable, Sendable {
     let channels: Int
     let language: String?    // ISO 639 tag from container metadata, when tagged
     let title: String?       // container track title ("Commentary", "Surround 5.1", ...), when tagged
+    /// FFmpeg's profile name for the stream ("DTS-HD MA", "DTS-HD MA + DTS:X", "Dolby TrueHD +
+    /// Dolby Atmos"), when the codec has profiles; read by the player badges.
+    let profile: String?
     let playable: Bool
     /// RFC 6381 token of what the rendition CARRIES: the source codec when stream-copied, "mp4a.40.2"
     /// when transcoded (TrueHD/DTS → AAC). nil for unplayable tracks.
@@ -413,6 +416,7 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                     channels: Int(par.pointee.ch_layout.nb_channels),
                     language: Self.metadataValue(s.pointee.metadata, "language"),
                     title: Self.metadataValue(s.pointee.metadata, "title"),
+                    profile: avcodec_profile_name(par.pointee.codec_id, par.pointee.profile).map { String(cString: $0) },
                     playable: copyable || transcodable,
                     codecToken: copyable ? Self.audioCodecString(par) : (transcodable ? "mp4a.40.2" : nil),
                     transcodes: !copyable && transcodable,
@@ -976,7 +980,7 @@ nonisolated final class RemuxSession: @unchecked Sendable {
             if audioIn >= 0 {
                 let track = foundAudio.first(where: { $0.streamIndex == audioIn })
                     ?? RemuxAudioTrack(streamIndex: audioIn, codec: "", channels: 0, language: nil, title: nil,
-                                       playable: true, codecToken: nil, transcodes: false, selected: true)
+                                       profile: nil, playable: true, codecToken: nil, transcodes: false, selected: true)
                 guard let a = makeMux(inIdx: audioIn, tag: 0, transcoder: audioTx,
                                       initName: track.initName, discardInit: audioInitWritten.contains(audioIn)) else {
                     destroyMux(videoMux); return fail("audio output context")

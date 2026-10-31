@@ -1721,12 +1721,12 @@ final class NativePlaybackCoordinator: ObservableObject {
         if let range = s.videoRange { facts.hdr.append(range) }
         if let audio = remux.audioTracks.first(where: \.selected) {
             facts.audioCodec = audio.codec
-            facts.audioProfile = audio.title
+            // FFmpeg's profile name (`DTS-HD MA + DTS:X`, `Dolby TrueHD + Dolby Atmos`), then the title.
+            facts.audioProfiles = [audio.profile, audio.title].compactMap { $0 }
             facts.audioChannels = audio.channels > 0 ? audio.channels : nil
             facts.languages = PlayerBadgeMatch.languageTokens(audio.language)
         }
-        facts.fileName = PlayerBadgeMatch.fileName(from: context.url)
-        facts.streamName = PlayerBadgeMatch.streamName(title: context.streamTitle, subtitle: context.streamSubtitle)
+        facts.metaCandidates = PlayerBadgeMatch.metaCandidates(context)
         return facts
     }
 

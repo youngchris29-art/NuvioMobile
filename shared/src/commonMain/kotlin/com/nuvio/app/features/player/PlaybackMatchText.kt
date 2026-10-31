@@ -3,13 +3,16 @@ package com.nuvio.app.features.player
 /**
  * Builds the text the player's badge filters are matched against, from what the player reports
  * about the media that is playing (upstream `344117e73` "show badges for what is playing"; codec
- * detection and file-name fallback from NuvioTV `13683564d`).
+ * detection from NuvioTV `13683564d`; every audio profile checked and the decoder text refined from
+ * the file name, upstream `a744911a`).
  *
  * Pure and platform-free: it takes plain values, so an AVPlayer, an mpv or an ExoPlayer front end
  * can all call it. The result is one string of space-separated tokens, for example
  * `"2160p 4K UHD HEVC H.265 H265 x265 DV DoVi Dolby Vision HDR HDR10 10bit DD+ DDP EAC3 Atmos 5.1 eng"`,
- * to be passed as a single candidate to `StreamBadgeMatcher.matchedBadges(listOf(text), filters)`
- * (or `StreamBadgePresentation.playerBadges`).
+ * to be passed as the playback candidate to `StreamBadgePresentation.playerBadges`, which refines it
+ * ([refinePlaybackText]) and matches it in two phases against the file name and stream title
+ * (`StreamBadgeMatcher.matchedPlayerBadges`). The file name is never part of this text, so the
+ * refine step only ever reads it on the meta side.
  *
  * Swift: `PlaybackMatchText.shared.build(...)`. Kotlin default arguments do not bridge, so a Swift
  * caller passes every argument (`nil` for the unknown ones).
@@ -29,12 +32,10 @@ object PlaybackMatchText {
      * @param bitDepth luma bit depth when known; 10 is assumed for HDR/DV media when null.
      * @param audioCodec audio codec as reported: `E-AC-3`, `eac3`, `AC-3`, `DTS`, `TrueHD`, `AAC`...
      *   `E-AC-3-JOC` is read as Dolby Atmos.
-     * @param audioProfile audio profile/label if any (`Dolby TrueHD + Dolby Atmos`, `DTS-HD MA`, `DTS:X`).
+     * @param audioProfiles audio profiles and labels of the playing track, every one checked: the
+     *   engine's codec profile (`Dolby TrueHD + Dolby Atmos`, `DTS-HD MA + DTS:X`) and the track title.
      * @param audioChannels channel count of the playing audio track.
      * @param languages language tokens for the playing audio track (code and/or name).
-     * @param fileName the stream's file name, appended as a fallback so badges the engine cannot
-     *   detect still come from the release name (NuvioTV `13683564d`).
-     * @param streamName the stream's display name, appended like [fileName].
      */
     fun build(
         videoWidth: Int?,
@@ -44,11 +45,9 @@ object PlaybackMatchText {
         hdr: List<String>,
         bitDepth: Int?,
         audioCodec: String?,
-        audioProfile: String?,
+        audioProfiles: List<String>,
         audioChannels: Int?,
         languages: List<String>,
-        fileName: String?,
-        streamName: String?,
     ): String {
         val codecString = videoCodecString?.trim()?.lowercase().orEmpty()
         val hdrFlags = hdrFlags(hdr, codecString, videoCodec)
@@ -61,16 +60,75 @@ object PlaybackMatchText {
             val hasHdr = hdrFlags.dolbyVision || hdrFlags.hdr10 || hdrFlags.hlg
             (bitDepth?.takeIf { it > 0 } ?: bitDepthFromCodecString(codecString) ?: 10.takeIf { hasHdr && !hdrFlags.dolbyVisionOverAvcOnly })
                 ?.let { add("${it}bit") }
-            addAll(audioTokens(normalizedAudioCodec(audioCodec), audioProfile))
+            addAll(audioTokens(normalizedAudioCodec(audioCodec), audioProfiles))
             channelsToken(audioChannels)?.let(::add)
             languages.mapNotNull { it.trim().takeIf(String::isNotEmpty) }.let(::addAll)
         }.distinct()
+        return tokens.joinToString(" ")
+    }
 
-        return buildList {
-            if (tokens.isNotEmpty()) add(tokens.joinToString(" "))
-            fileName?.trim()?.takeIf { it.isNotEmpty() }?.let(::add)
-            streamName?.trim()?.takeIf { it.isNotEmpty() }?.let(::add)
-        }.joinToString(" ")
+    // Every refine token is delimited: `Atmosphere` is not Atmos, `Remaster Audio` is not Master Audio.
+    private val refineAtmos = Regex("""\batmos\b""", RegexOption.IGNORE_CASE)
+    private val refineDtsHdMa = Regex("""dts-?hd[ ._-]?ma\b|\bmaster[ ._-]?audio\b""", RegexOption.IGNORE_CASE)
+    private val refineDtsX = Regex("""\bdts[ ._:-]?x\b""", RegexOption.IGNORE_CASE)
+    private val refineHdr10Plus = Regex("""\bhdr10\+""", RegexOption.IGNORE_CASE)
+
+    /** FFmpeg's DTS profile names, whole (`avcodec_profile_name`, mpv's `codec-profile`). */
+    private val ffmpegDtsProfile = Regex("""^DTS(-ES| 96/24|-HD HRA|-HD MA( \+ DTS:X( IMAX)?)?| EXPRESS)?$""")
+
+    /** A DTS variant named inside a longer label, such as a track title (`German DTS-HD HRA 7.1`). */
+    private val namedDtsVariant = Regex("""\bHRA\b|\bDTS-ES\b|\b96/24\b|\bEXPRESS\b""")
+
+    /**
+     * Whether [audioProfiles] name the exact DTS variant: an FFmpeg profile name, or a title naming a
+     * variant that is neither MA nor DTS:X. Then the decoder text already says everything it has,
+     * and a release name's MA or DTS:X belongs to another track of the file.
+     */
+    private fun knowsDtsVariant(audioProfiles: List<String>): Boolean = audioProfiles.any { profile ->
+        val label = profile.trim().uppercase()
+        ffmpegDtsProfile.matches(label) || namedDtsVariant.containsMatchIn(label)
+    }
+
+    /**
+     * [decoderText] (from [build]) with the details a decoder cannot report but the file name or
+     * stream title ([metadata]) confirms: Atmos, DTS-HD MA, DTS:X, HDR10+ (upstream `a744911a`). Each
+     * one is added only when the decoder already confirms its base format, so a file named Atmos
+     * playing AAC stays AAC: Atmos needs E-AC-3 or TrueHD, DTS-HD MA needs DTS-HD, DTS:X needs DTS,
+     * HDR10+ needs HDR10. Runs before the two-phase match so these tokens count as playback hits.
+     *
+     * [audioProfiles] are the ones passed to [build]. When they name the exact DTS variant (FFmpeg's
+     * `DTS-HD HRA`, `DTS-HD MA`, `DTS`, `DTS-ES`…), the DTS-HD MA and DTS:X refines are skipped: the
+     * decoder has spoken, and a release name listing `DTS-HD.MA` describes another track (a German
+     * HRA dub in a file whose English track is MA). Atmos has no such check: FFmpeg names a profile
+     * for E-AC-3 and TrueHD only when it detects Atmos, so a profile never says "no Atmos".
+     */
+    fun refinePlaybackText(decoderText: String, audioProfiles: List<String>, metadata: List<String>): String {
+        if (decoderText.isBlank() || metadata.isEmpty()) return decoderText
+        val dtsVariantKnown = knowsDtsVariant(audioProfiles)
+        val joined = metadata.joinToString(" ")
+        val extra = mutableListOf<String>()
+        val hasEac3OrTrueHd = decoderText.contains("DD+") || decoderText.contains("DDP") ||
+            decoderText.contains("EAC3") || decoderText.contains("TrueHD")
+        if (hasEac3OrTrueHd && !decoderText.contains("Atmos") && refineAtmos.containsMatchIn(joined)) {
+            extra += "Atmos"
+        }
+        if (decoderText.contains("DTS-HD") && !decoderText.contains("DTS-HD MA") && !dtsVariantKnown &&
+            refineDtsHdMa.containsMatchIn(joined)
+        ) {
+            extra += "DTS-HD MA"
+        }
+        if (decoderText.contains("DTS") && !decoderText.contains("DTS:X") && !dtsVariantKnown &&
+            refineDtsX.containsMatchIn(joined)
+        ) {
+            extra += "DTS:X"
+        }
+        if (decoderText.contains("HDR10") && !decoderText.contains("HDR10+") &&
+            refineHdr10Plus.containsMatchIn(joined)
+        ) {
+            extra += "HDR10+"
+        }
+        if (extra.isEmpty()) return decoderText
+        return "$decoderText ${extra.joinToString(" ")}"
     }
 
     /**
@@ -190,35 +248,47 @@ object PlaybackMatchText {
             "mp3" -> "MP3"
             "flac" -> "FLAC"
             "alac" -> "ALAC"
-            "pcm" -> "PCM"
             "opus" -> "Opus"
             "vorbis" -> "Vorbis"
-            else -> trimmed
+            else -> when {
+                // FFmpeg names every PCM layout (`pcm_s24le`, `pcm_f32be`, `pcm_bluray`).
+                trimmed.lowercase().startsWith("pcm") -> "PCM"
+                else -> trimmed
+            }
         }
     }
 
-    private val dtsMasterAudio = Regex("\\bMA\\b")
+    // Profiles include the track title (mpv, native), so every token is matched as a word: a track
+    // titled `German` is not `MA` (fork review r2/r3; upstream's `contains("MA")` has that bug), one
+    // titled `DTS 5.1 (Remastered)` is not Master Audio, one titled `Atmosphere` is not Atmos.
+    private val dtsMasterAudio = Regex("\\bMA\\b|\\bMASTER[ ._-]?AUDIO\\b")
+    private val dtsX = Regex("\\bDTS:?X\\b")
+    private val atmosProfile = Regex("\\bATMOS\\b|\\bJOC\\b")
 
-    private fun audioTokens(codec: String?, profile: String?): List<String> {
+    private fun audioTokens(codec: String?, profiles: List<String>): List<String> {
         val label = codec?.uppercase() ?: return emptyList()
-        val profileLabel = profile.orEmpty().uppercase()
+        val profileLabels = profiles.map { it.uppercase() }
+        fun anyProfile(test: (String) -> Boolean) = profileLabels.any(test)
         return buildList {
             when {
                 label.startsWith("E-AC-3") -> addAll(listOf("DD+", "DDP", "EAC3"))
                 label == "AC-3" -> addAll(listOf("DD", "AC3"))
                 label == "AC-4" -> addAll(listOf("AC-4", "AC4"))
                 label.startsWith("DTS") -> {
-                    val master = dtsMasterAudio.containsMatchIn(profileLabel) || profileLabel.contains("MASTER")
+                    val master = anyProfile { dtsMasterAudio.containsMatchIn(it) }
                     add("DTS")
-                    if (label.contains("HD") || profileLabel.contains("DTS-HD") || profileLabel.contains("DTSHD") || master) {
+                    if (label.contains("HD") || master || anyProfile { it.contains("DTS-HD") || it.contains("DTSHD") }) {
                         add("DTS-HD")
                     }
                     if (master) add("DTS-HD MA")
-                    if (profileLabel.contains("DTS:X") || profileLabel.contains("DTSX")) add("DTS:X")
+                    if (anyProfile { dtsX.containsMatchIn(it) }) add("DTS:X")
                 }
                 else -> add(codec)
             }
-            if (label.endsWith("JOC") || profileLabel.contains("ATMOS") || profileLabel.contains("JOC")) add("Atmos")
+            // Only the Dolby codecs that carry Atmos read it from a profile: an AAC or AC-3 track
+            // titled `AAC 2.0 Atmos downmix` is not Atmos.
+            val carriesAtmos = label.startsWith("E-AC-3") || label == "TRUEHD" || label == "AC-4"
+            if (label.endsWith("JOC") || carriesAtmos && anyProfile { atmosProfile.containsMatchIn(it) }) add("Atmos")
         }
     }
 

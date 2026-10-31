@@ -1,11 +1,12 @@
 import Foundation
 import SharedCore
 
-// Player badges for what is playing (upstream 344117e73; badge-pack choice 83e528f00): each engine
-// fills a `PlayerBadgeFacts` from what it knows about the playing media, and `PlayerBadgeMatch`
-// hands those facts to the shared `PlaybackMatchText.build` and matches the result against the
-// player's badge pack (`StreamBadgePresentation.playerBadges`). The top panel shows the chips under
-// the title when "Show Badges in Player" is on.
+// Player badges for what is playing (upstream 344117e73; badge-pack choice 83e528f00; two-phase
+// match a744911a): each engine fills a `PlayerBadgeFacts` from what it knows about the playing
+// media, and `PlayerBadgeMatch` hands those facts to the shared `PlaybackMatchText.build` and
+// matches the result, with the stream's file name and title as separate meta candidates, against
+// the player's badge pack (`StreamBadgePresentation.playerBadges`). The top panel shows the chips
+// under the title when "Show Badges in Player" is on.
 //
 // Sources: the native engine reads the remux's HLS signaling and its selected audio track
 // (`NativePlaybackCoordinator.badgeFacts()`); mpv reads the selected video/audio entries of its
@@ -24,13 +25,16 @@ nonisolated struct PlayerBadgeFacts: Equatable, Sendable {
     var hdr: [String] = []
     var bitDepth: Int?
     var audioCodec: String?
-    /// Codec profile or track title (`Dolby Digital Plus + Dolby Atmos`, `DTS-HD MA`).
-    var audioProfile: String?
+    /// Codec profile and track title, every one checked (`Dolby Digital Plus + Dolby Atmos`,
+    /// `DTS-HD MA + DTS:X`, a title such as `English DTS-HD MA 7.1`).
+    var audioProfiles: [String] = []
     var audioChannels: Int?
     /// Language tokens of the playing audio track (code and names).
     var languages: [String] = []
-    var fileName: String?
-    var streamName: String?
+    /// The stream's file name, then its title and subtitle lines, each its own candidate
+    /// (`PlayerBadgeMatch.metaCandidates`): they fill in what the engine cannot detect, except in a
+    /// pack group the engine's own facts already matched.
+    var metaCandidates: [String] = []
 }
 
 nonisolated enum PlayerBadgeMatch {
@@ -46,23 +50,21 @@ nonisolated enum PlayerBadgeMatch {
             hdr: facts.hdr,
             bitDepth: facts.bitDepth.map { KotlinInt(int: Int32(clamping: $0)) },
             audioCodec: facts.audioCodec,
-            audioProfile: facts.audioProfile,
+            audioProfiles: facts.audioProfiles,
             audioChannels: facts.audioChannels.map { KotlinInt(int: Int32(clamping: $0)) },
-            languages: facts.languages,
-            fileName: facts.fileName,
-            streamName: facts.streamName
+            languages: facts.languages
         )
     }
 
     /// The chips the panel shows: none while the setting is off, no pack is imported, the engine
-    /// has not reported yet, or the pack matches nothing. Image-less filters are already dropped by
-    /// the shared side.
+    /// has not reported yet, or the pack matches nothing. The shared side refines the match text
+    /// from the meta candidates, matches in two phases, and drops image-less filters.
     static func badges(facts: PlayerBadgeFacts?, settings: StreamBadgeSettingsUiState?) -> [StreamBadgeInfo] {
         guard let facts, let settings, settings.showInPlayer, settings.rules.hasImport else { return [] }
-        let text = matchText(facts)
-        guard !text.isEmpty else { return [] }
         return StreamBadgePresentation.shared
-            .playerBadges(rules: settings.rules, playerBadgeSource: settings.playerBadgeSource, matchText: text)
+            .playerBadges(rules: settings.rules, playerBadgeSource: settings.playerBadgeSource,
+                          playbackText: matchText(facts), audioProfiles: facts.audioProfiles,
+                          metaCandidates: facts.metaCandidates)
             .map(StreamBadgeInfo.init)
     }
 
@@ -89,10 +91,21 @@ nonisolated enum PlayerBadgeMatch {
         return name
     }
 
-    /// The stream's display name: its title and description lines, joined.
-    static func streamName(title: String?, subtitle: String?) -> String? {
-        let parts = [title, subtitle].compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
-        return parts.isEmpty ? nil : parts.joined(separator: " ")
+    /// The meta candidates for a stream, each kept apart so a pack regex never spans two of them:
+    /// the add-on's `behaviorHints.filename` (else the URL's file name), then the stream title, then
+    /// its subtitle line. Blank ones are dropped.
+    static func metaCandidates(addonFileName: String?, url: URL, title: String?, subtitle: String?) -> [String] {
+        let addon = addonFileName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let file = (addon?.isEmpty == false ? addon : nil) ?? fileName(from: url)
+        return [file, title, subtitle].compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    /// `metaCandidates` for a playback: the listed stream's add-on file name, the URL, the stream
+    /// title and subtitle.
+    static func metaCandidates(_ context: PlaybackContext) -> [String] {
+        metaCandidates(addonFileName: context.listedStream?.behaviorHints.filename, url: context.url,
+                       title: context.streamTitle, subtitle: context.streamSubtitle)
     }
 
     /// mpv/FFmpeg pixel formats that are 8 bits per component.
@@ -146,17 +159,14 @@ nonisolated enum PlayerBadgeMatch {
     // MARK: - mpv merge (pure, so the tests can drive it)
 
     /// mpv: the selected video entry merged with the audio entry `aid` of the last walk. nil while
-    /// the walk has found neither; the file and stream names fill in when the video entry is missing.
+    /// the walk has found neither; the meta candidates fill in when the video entry has none.
     static func mpvMerged(video: PlayerBadgeFacts?, audio: [Int: PlayerBadgeFacts], aid: Int?,
-                          fileName: String?, streamName: String?) -> PlayerBadgeFacts? {
+                          metaCandidates: [String]) -> PlayerBadgeFacts? {
         guard var facts = video ?? (audio.isEmpty ? nil : PlayerBadgeFacts()) else { return nil }
-        if facts.fileName == nil, facts.streamName == nil {
-            facts.fileName = fileName
-            facts.streamName = streamName
-        }
+        if facts.metaCandidates.isEmpty { facts.metaCandidates = metaCandidates }
         if let aid, let track = audio[aid] {
             facts.audioCodec = track.audioCodec
-            facts.audioProfile = track.audioProfile
+            facts.audioProfiles = track.audioProfiles
             facts.audioChannels = track.audioChannels
             facts.languages = track.languages
         }

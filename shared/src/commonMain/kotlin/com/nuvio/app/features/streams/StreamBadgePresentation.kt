@@ -1,5 +1,6 @@
 package com.nuvio.app.features.streams
 
+import com.nuvio.app.features.player.PlaybackMatchText
 import kotlinx.atomicfu.locks.SynchronizedObject
 import kotlinx.atomicfu.locks.synchronized
 
@@ -27,19 +28,36 @@ object StreamBadgePresentation {
     }
 
     /**
-     * Badges for what is playing: [matchText] (see `PlaybackMatchText`) matched against the pack
-     * chosen for the player ([playerBadgeSource], blank = the stream list's pack). The player pack
-     * has its own compiled-filter slot, so the stream list and the player never evict each other.
+     * Badges for what is playing, matched against the pack chosen for the player
+     * ([playerBadgeSource], blank = the stream list's pack). [playbackText] is what the decoder
+     * reports (see `PlaybackMatchText.build`) and [audioProfiles] the profiles passed to it, so the
+     * refine never contradicts a DTS variant the decoder named; [metaCandidates] are the stream's
+     * file name and title lines, each kept apart so one candidate's lookaheads never see another's
+     * text. The playback
+     * text is refined from them first (`PlaybackMatchText.refinePlaybackText`), then matched in two
+     * phases (`StreamBadgeMatcher.matchedPlayerBadges`, upstream a744911a): a filter in a group the
+     * decoder already covered never matches from the file name. The player pack has its own
+     * compiled-filter slot, so the stream list and the player never evict each other.
      */
-    fun playerBadges(rules: StreamBadgeRules, playerBadgeSource: String, matchText: String): List<StreamBadge> {
-        if (matchText.isBlank()) return emptyList()
+    fun playerBadges(
+        rules: StreamBadgeRules,
+        playerBadgeSource: String,
+        playbackText: String,
+        audioProfiles: List<String>,
+        metaCandidates: List<String>,
+    ): List<StreamBadge> {
+        val meta = metaCandidates.map { it.replace(whitespace, " ").trim() }.filter { it.isNotEmpty() }
+        if (playbackText.isBlank() && meta.isEmpty()) return emptyList()
         val filters = playerFilters.filtersFor(rules, playerBadgeSource)
         if (filters.isEmpty()) return emptyList()
+        val playback = PlaybackMatchText.refinePlaybackText(playbackText, audioProfiles, meta).takeIf { it.isNotBlank() }
         // A pack filter with a name but no image would render as an empty chip in the player
         // (upstream 344117e73 / 83e528f00 / NuvioTV 13683564d drop them).
-        return StreamBadgeMatcher.matchedBadges(listOf(matchText), filters)
+        return StreamBadgeMatcher.matchedPlayerBadges(playback, meta, filters)
             .filter { it.imageURL.isNotBlank() }
     }
+
+    private val whitespace = Regex("\\s+")
 
     private class CompiledFilterCache {
         private val lock = SynchronizedObject()
