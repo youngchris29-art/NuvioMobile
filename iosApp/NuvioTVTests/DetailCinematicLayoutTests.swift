@@ -290,7 +290,7 @@ final class DetailCinematicLayoutTests: XCTestCase {
         XCTAssertEqual(DetailDim.rampDistance(layout: .cinematic, heroHeight: 627), 555)
         XCTAssertEqual(DetailDim.rampDistance(layout: .cinematic, heroHeight: 300), 400)
         XCTAssertEqual(DetailDim.chipRowRestDrop,
-                       DetailRowAnchor.screenRest(for: .logos) - DetailRowAnchor.screenRest)
+                       DetailRowAnchor.screenRest(for: .logos, layout: .cinematic) - DetailRowAnchor.screenRest)
     }
 
     /// W2-A: Classic keeps `offset − inset` (today's formula); Cinematic measures from the real top
@@ -309,7 +309,7 @@ final class DetailCinematicLayoutTests: XCTestCase {
         // where the old ramp left the chip row's hero-exit rest at dim 0.7997, under the latch).
         for inset: CGFloat in [157, 60] {
             let exitOffset = DetailRowAnchorMirror.expectedOffset(rowTop: firstRowTop, inset: inset,
-                                                                  rest: DetailRowAnchor.screenRest(for: .logos))
+                                                                  rest: DetailRowAnchor.screenRest(for: .logos, layout: .cinematic))
             let dim = DetailDim.value(scrolled: DetailDim.scrolledDistance(layout: .cinematic, contentOffset: exitOffset,
                                                                            contentInsetTop: inset),
                                       rampDistance: DetailDim.rampDistance(layout: .cinematic, heroHeight: heroHeight))
