@@ -990,6 +990,13 @@ final class StripAtTopModel: ObservableObject {
     func set(_ value: Bool) {
         if atTop != value { atTop = value }
     }
+
+    /// The Menu handler for the strip's state: at row 0 the host's `atTopExit` (nil in Tabs mode, so
+    /// Menu leaves the app; the rail opener in Rail mode), below it a page to row 0.
+    static func exitHandler(atTop: Bool, atTopExit: (() -> Void)?,
+                            pageToTop: @escaping () -> Void) -> (() -> Void)? {
+        atTop ? atTopExit : pageToTop
+    }
 }
 
 /// Menu (§6, S4): `installed` is the host's constant (`menuPagesToTop`), so the branch never flips
@@ -1003,7 +1010,8 @@ private struct StripExitCommandModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         if installed {
-            content.onExitCommand(perform: model.atTop ? atTopExit : pageToTop)
+            content.onExitCommand(perform: StripAtTopModel.exitHandler(atTop: model.atTop, atTopExit: atTopExit,
+                                                                       pageToTop: pageToTop))
         } else {
             content
         }

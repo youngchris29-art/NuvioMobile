@@ -141,11 +141,10 @@ final class StripPagerTests: XCTestCase {
     }
 
     /// BUG-153: the row 0 / row 1 flag publishes only when it changes, so a same-row hop (the pager
-    /// writes it on every focus move) re-renders nothing, and the box owns the one instance the
-    /// pager and the Menu modifier share.
+    /// writes it on every focus move) re-renders nothing. That the pager body no longer observes it
+    /// is covered by `StageBodyCountUITests` (the body-count leg), not here.
     func testAtTopModelPublishesOnlyOnAChange() {
-        let (box, _) = box(rows: 3)
-        let model = box.atTopModel
+        let model = StripAtTopModel()
         XCTAssertTrue(model.atTop, "a strip starts on row 0")
         var published: [Bool] = []
         let token = model.$atTop.dropFirst().sink { published.append($0) }
@@ -154,7 +153,23 @@ final class StripPagerTests: XCTestCase {
         model.set(false)
         model.set(true)
         XCTAssertEqual(published, [false, true])
-        XCTAssertTrue(box.atTopModel === model)
         token.cancel()
+    }
+
+    /// BUG-153: the Menu handler rule the modifier applies. At row 0 with no host exit (Tabs mode)
+    /// there is no handler, so Menu leaves the app; at row 0 with one (Rail) it is the host's;
+    /// below row 0 it pages to the top.
+    func testExitHandlerFollowsTheRowZeroRule() {
+        var calls: [String] = []
+        let pageToTop = { calls.append("page") }
+        let railExit = { calls.append("rail") }
+
+        XCTAssertNil(StripAtTopModel.exitHandler(atTop: true, atTopExit: nil, pageToTop: pageToTop),
+                     "Tabs mode at row 0: no handler, Menu leaves the app")
+        StripAtTopModel.exitHandler(atTop: true, atTopExit: railExit, pageToTop: pageToTop)?()
+        XCTAssertEqual(calls, ["rail"], "Rail mode at row 0: the host's exit")
+        StripAtTopModel.exitHandler(atTop: false, atTopExit: railExit, pageToTop: pageToTop)?()
+        StripAtTopModel.exitHandler(atTop: false, atTopExit: nil, pageToTop: pageToTop)?()
+        XCTAssertEqual(calls, ["rail", "page", "page"], "below row 0 it pages to the top, whatever the host exit")
     }
 }

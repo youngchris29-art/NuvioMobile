@@ -413,15 +413,17 @@ nonisolated enum StageStripTuning {
     /// The strip's page animation length.
     ///
     /// BUG-153 (Home half), measured on FA87 (Debug, sim; `[StageStrip] seg` lines, 2026-10-31): the
-    /// duration is one fixed `easeOut` for every page, and the travel is the row's own page height
-    /// (Fit Rows on, the shipped default). Press 1 (row 0 to row 1) crosses Continue Watching and
-    /// travels 372 pt; every later press travels 498.5 pt. With Fit Rows off every page is 498.5 pt.
-    /// So press 1 is already the GENTLER move (about 744 against 997 pt/s on average): a duration
-    /// proportional to travel would make it faster, the opposite of the "first Down is too abrupt"
-    /// report, and a floor at this value changes nothing (no page is longer than 498.5 pt at the
-    /// default Poster Size). Classic has no app glide at all (the focus engine's reveal: hero exit
-    /// 419 pt, row steps 512 pt, the same ~1.1 s span). What was press-1-specific was the re-render at
-    /// the row 0 / 1 crossing (`StripAtTopModel`), now removed.
+    /// duration is one fixed `easeOut` for every page, and the travel of a press is the page height
+    /// of the row being left (Fit Rows on, the shipped default). Continue Watching and Upcoming are
+    /// short landscape rows (372 pt measured on Continue Watching); poster catalogs fill the page
+    /// (498.5 pt); the measuring fixture has no Upcoming row. With Fit Rows off every page is 498.5 pt.
+    /// So the first press (off row 0, a short row) is never longer than a later one and is already the
+    /// GENTLER move (about 744 against 997 pt/s on the fixture): a duration proportional to travel
+    /// would make it faster, the opposite of the "first Down is too abrupt" report, and a floor at
+    /// this value changes nothing (no page is longer than 498.5 pt at the default Poster Size).
+    /// Classic has no app glide at all (the focus engine's reveal: hero exit 419 pt, row steps 512 pt,
+    /// the same ~1.1 s span). What was press-1-specific was the re-render at the row 0 / 1 crossing
+    /// (`StripAtTopModel`), now removed.
     static let pageSeconds: TimeInterval =
         knob("debug.stripPageSeconds", in: 0.3...1.0) ?? defaultPageSeconds
 
