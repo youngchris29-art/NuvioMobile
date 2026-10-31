@@ -139,4 +139,22 @@ final class StripPagerTests: XCTestCase {
         XCTAssertEqual(mounts.map(\.isMounted), [true, true, true, true, false, false],
                        "r0…r3 (now 2…5) are inside 1…5; r4 and r5 (now 6, 7) leave it")
     }
+
+    /// BUG-153: the row 0 / row 1 flag publishes only when it changes, so a same-row hop (the pager
+    /// writes it on every focus move) re-renders nothing, and the box owns the one instance the
+    /// pager and the Menu modifier share.
+    func testAtTopModelPublishesOnlyOnAChange() {
+        let (box, _) = box(rows: 3)
+        let model = box.atTopModel
+        XCTAssertTrue(model.atTop, "a strip starts on row 0")
+        var published: [Bool] = []
+        let token = model.$atTop.dropFirst().sink { published.append($0) }
+        model.set(true)
+        model.set(false)
+        model.set(false)
+        model.set(true)
+        XCTAssertEqual(published, [false, true])
+        XCTAssertTrue(box.atTopModel === model)
+        token.cancel()
+    }
 }

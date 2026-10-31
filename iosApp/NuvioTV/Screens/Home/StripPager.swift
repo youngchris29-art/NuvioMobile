@@ -99,6 +99,8 @@ final class StripPagerHandle {
 final class StripPagerBox {
     var rowKeys: [String] = []
     var rowIndex = 0
+    /// Row 0 vs below, observed only by the Menu modifier (see `StripAtTopModel`).
+    let atTopModel = StripAtTopModel()
     /// The row that owns focus, or nil while focus is outside the strip.
     var focusedRowKey: String?
     /// W2-5 (a): the pager's one ownership value (`StripPager.ownership`), made on its first body.
@@ -349,8 +351,6 @@ struct StripPager<Row: View>: View {
     /// every mounted row (fresh closures). Reads and writes go through `positionId`.
     @State private var position = StripScrollPosition()
     @State private var focusRequest = PinnedRowFocusRequest.none
-    /// Flips only between row 0 and row 1, so the host is not re-rendered per hop.
-    @State private var atTop = true
     /// BUG-156 (B13): the only row that may take focus while a landed pop restore's window is open
     /// (the device focus engine's late restoration otherwise lands on a neighbour and the scroll
     /// view reveals it: 294 pt of visible detour on the Living Room ATV, 10-18).
@@ -419,7 +419,6 @@ struct StripPager<Row: View>: View {
         let page = geometry.pageHeight
         let leading = geometry.contentLeading
         let trailing = geometry.trailingMargin
-        let exitHandler: (() -> Void)? = atTop ? atTopExit : { pageToTop() }
         // W2-5 (a): the scroll position lives in `StripScroller`, which alone observes it, so a
         // page's position write re-runs that leaf and not this body. The pages below are built
         // once per pager update and handed over as a stored value: a position write re-emits the
@@ -474,7 +473,8 @@ struct StripPager<Row: View>: View {
         .modifier(StripEdgeMaskModifier())
         .rowsMotionStamp(.vertical)
         .modifier(StripTabBarReportModifier(tab: reportsTab))
-        .modifier(StripExitCommandModifier(installed: menuPagesToTop, handler: exitHandler))
+        .modifier(StripExitCommandModifier(installed: menuPagesToTop, model: box.atTopModel,
+                                           atTopExit: atTopExit, pageToTop: { pageToTop() }))
         .environment(\.pinnedRowFocusRequest, focusRequest)
         // W2-5 (a): one ownership value per pager, made on the first body and kept in the box, so
         // the environment value is bit-identical on every later pager update and no row's
@@ -668,7 +668,7 @@ struct StripPager<Row: View>: View {
         // A held page keeps `atTop` on the row the strip shows, so a Menu press inside the
         // re-grab window still pages to the top instead of leaving (review r1 P3-2).
         let top = index == 0
-        if !held, atTop != top { atTop = top }
+        if !held { box.atTopModel.set(top) }
         if ownsProbe, previous != index {
             StageStripProbe.shared.noteRowChange(from: previous, to: index, key: key)
         }
@@ -689,7 +689,7 @@ struct StripPager<Row: View>: View {
         StageStripProbe.shared.log("page sync key=\(key) reason=\(reason)")
         page(to: key, index: index, from: previous)
         let top = index == 0
-        if atTop != top { atTop = top }
+        box.atTopModel.set(top)
     }
 
     /// `alongside` (W2-A, #16) runs inside the page's own transaction: Menu's first focus rung, so
@@ -787,7 +787,7 @@ struct StripPager<Row: View>: View {
         box.refreshMounts()
         box.moveWindow(to: index)
         let top = index == 0
-        if atTop != top { atTop = top }
+        box.atTopModel.set(top)
         #if DEBUG
         controller.swap.debug.setRow(index, key: key)
         controller.swap.debug.setAtTop(top)
@@ -814,7 +814,7 @@ struct StripPager<Row: View>: View {
         box.refreshMounts()
         box.moveWindow(to: index)
         let top = index == 0
-        if atTop != top { atTop = top }
+        box.atTopModel.set(top)
         #if DEBUG
         controller.swap.debug.setRow(index, key: shown)
         controller.swap.debug.setAtTop(top)
@@ -977,15 +977,33 @@ private struct StripTabBarReportModifier: ViewModifier {
     }
 }
 
+/// Whether the strip rests on row 0. Flips only between row 0 and row 1. BUG-153: it used to be the
+/// pager's own `@State`, read in the pager `body` to pick the Menu handler, so the first Down (and
+/// the Up back to row 0) re-ran the pager body and, through it, every page slot and row at frame 0
+/// of the glide. Held in the box and observed only by `StripExitCommandModifier`, the flip re-runs
+/// that one modifier.
+@MainActor
+final class StripAtTopModel: ObservableObject {
+    @Published private(set) var atTop = true
+
+    /// Write-on-change (`@Published` does not dedupe).
+    func set(_ value: Bool) {
+        if atTop != value { atTop = value }
+    }
+}
+
 /// Menu (§6, S4): `installed` is the host's constant (`menuPagesToTop`), so the branch never flips
-/// mid-session; the handler itself switches between page-to-top and the host's at-top exit.
+/// mid-session; the handler itself switches between page-to-top and the host's at-top exit (which
+/// stays nil in Tabs mode, so Menu at row 0 leaves the app). The modifier alone observes `model`.
 private struct StripExitCommandModifier: ViewModifier {
     let installed: Bool
-    let handler: (() -> Void)?
+    @ObservedObject var model: StripAtTopModel
+    let atTopExit: (() -> Void)?
+    let pageToTop: () -> Void
 
     func body(content: Content) -> some View {
         if installed {
-            content.onExitCommand(perform: handler)
+            content.onExitCommand(perform: model.atTop ? atTopExit : pageToTop)
         } else {
             content
         }
