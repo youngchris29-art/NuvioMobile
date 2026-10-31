@@ -313,7 +313,10 @@ struct HomeHeroDebugLabel: View {
     /// "carousel" / "focus" / "none".
     let mode: String
     let heroFocusTrailerMode: Bool
-    let scrolledDown: Bool
+    /// A Binding, read here and not in `HomeView.body`: Home's `isScrolledDown` flips at Stage's row 0/1
+    /// crossing, and a plain `Bool` argument made Home's body (and the whole strip under it) re-run in
+    /// DEBUG only, which skewed the body counts. The label observes the state itself.
+    @Binding var scrolledDown: Bool
 
     /// Short code for the hero trailer model's live phase, for the `hph=` field — the harness reads
     /// fixed-width-ish tokens, not Swift's synthesized descriptions (`playing(_:)` would otherwise

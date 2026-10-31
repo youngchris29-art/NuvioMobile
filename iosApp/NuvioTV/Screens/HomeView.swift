@@ -876,7 +876,7 @@ struct HomeView: View {
                                    count: heroItems.count, nuvioStyle: heroNuvioStyle,
                                    mode: heroCarouselActive ? "carousel" : (focusHeroActive ? "focus" : "none"),
                                    heroFocusTrailerMode: heroFocusTrailerMode,
-                                   scrolledDown: isScrolledDown)
+                                   scrolledDown: $isScrolledDown)
                 // 2026-08-30 settle re-reveal (invisible, harness-readable): the last settled
                 // pinned rest, as the corrector itself measured it — `margin`/`net` are the exact
                 // quantities the `[HomeScrollProbe] title` line reports, so test47 asserts on the
