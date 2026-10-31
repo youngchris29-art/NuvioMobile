@@ -1108,8 +1108,37 @@ final class NextEpisodeEngineTests: XCTestCase {
         XCTAssertEqual(gate.requests.count, 3, "an empty list online is final")
     }
 
-    /// r1 P3: a list that lands inside the end-of-file slack resolves no next episode there (an
-    /// automatic search would start over the post-play screen). A tick back out of the slack (a
+    /// r2 P3: a drop shorter than the fetch. A tick sees the path down mid-flight, the path is back
+    /// before the (empty, timed-out) result lands: still an outage, so the next tick refetches once.
+    func testOutageSeenMidFetchRetriesEvenWithThePathBackOnArrival() async {
+        let recorder = Recorder()
+        let gate = EpisodeFetchGate()
+        let network = NetworkBox()
+        let engine = makePrimedEngine(episodes: [], recorder: recorder, gate: gate, network: network)
+        let fetch1 = engine.lateEpisodesTaskForTesting
+        XCTAssertNotNil(fetch1)
+        network.satisfied = false
+        engine.onProgress(positionSec: 100, durationSec: Self.duration)
+        network.satisfied = true
+        engine.onProgress(positionSec: 101, durationSec: Self.duration)
+        XCTAssertNotNil(engine.lateEpisodesTaskForTesting, "still the first fetch")
+        gate.deliver(.success([]))
+        await fetch1?.value
+        XCTAssertNil(engine.lateEpisodesTaskForTesting)
+
+        engine.onProgress(positionSec: 102, durationSec: Self.duration)
+        let retry = engine.lateEpisodesTaskForTesting
+        XCTAssertNotNil(retry, "the outage seen mid-fetch makes the empty result retryable")
+        gate.deliver(.success(seasonOne))
+        await retry?.value
+        engine.onProgress(positionSec: 103, durationSec: Self.duration)
+        XCTAssertEqual(gate.requests.count, 2, "one refetch for the outage, no per-tick loop")
+        engine.onProgress(positionSec: 2376, durationSec: Self.duration)
+        XCTAssertEqual(recorder.searchBegan, 1)
+    }
+
+    /// r1 P3: a list that lands inside the end-of-file slack resolves no next episode there: no Up
+    /// Next is offered over the end screen for a list this late. A tick back out of the slack (a
     /// Replay) resolves it, and the card arms at that playthrough's threshold.
     func testListLandingAtEndOfFileDefersTheNextEpisode() async {
         let recorder = Recorder()
@@ -1123,7 +1152,7 @@ final class NextEpisodeEngineTests: XCTestCase {
         XCTAssertEqual(engine.episodes.count, 3, "the Episodes panel still gets the list")
         XCTAssertNil(engine.nextVideoForTesting)
         engine.onProgress(positionSec: 2399.5, durationSec: Self.duration)
-        XCTAssertEqual(recorder.searchBegan, 0, "no automatic search over the post-play screen")
+        XCTAssertEqual(recorder.searchBegan, 0, "no Up Next over the end screen for a list this late")
         XCTAssertEqual(engine.phase, .hidden)
 
         engine.onProgress(positionSec: 10, durationSec: Self.duration)

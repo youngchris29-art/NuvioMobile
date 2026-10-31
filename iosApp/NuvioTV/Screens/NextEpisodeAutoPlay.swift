@@ -227,13 +227,19 @@ final class NextEpisodeEngine: ObservableObject {
     /// card never armed for that episode. Published: the Episodes column and pill appear on arrival.
     @Published private(set) var lateEpisodes: [MetaVideo] = []
     private var lateEpisodesTask: Task<Void, Never>?
-    /// The fetch was skipped offline at start, or failed (or came back empty) while the path was
-    /// down: the first tick that sees the path back starts it once more. A fetch that fails or
-    /// comes back empty online is not retried.
+    /// The fetch was skipped offline at start, or failed (or came back empty) with an outage during
+    /// it: the first tick that sees the path back starts it once more. A fetch that fails or comes
+    /// back empty with no outage seen is not retried.
     private var lateEpisodesRetryOnReconnect = false
-    /// The list landed inside the end-of-file slack: no next episode is resolved there (an
-    /// automatic search would start over the post-play screen). The first tick back out of the
-    /// slack (a Replay, a seek back) resolves it.
+    /// A tick saw the path down while the fetch was in flight. The shared fetch times out each
+    /// attempt, so a short drop can empty the result even though the path is back by the time it
+    /// lands; reading the path only on arrival would make that result final.
+    private var lateFetchSawOutage = false
+    /// The list landed inside the end-of-file slack: no next episode is resolved there, so no Up
+    /// Next is offered over the end screen for a list that arrives this late (the viewer gets the
+    /// post-play screen, which has no next-episode action; the #2150 re-arm is for a card the
+    /// viewer saw and dismissed). The first tick back out of the slack (a Replay, a seek back)
+    /// resolves it; otherwise the next launch resolves the next episode normally.
     private var lateResolveDeferredAtEnd = false
     private var triggered = false
     private var cancelled = false
@@ -365,6 +371,7 @@ final class NextEpisodeEngine: ObservableObject {
             return
         }
         lateEpisodesRetryOnReconnect = false
+        lateFetchSawOutage = false
         let type = context.contentType
         let id = context.parentMetaId
         let fetch = hooks.fetchEpisodes
@@ -384,7 +391,7 @@ final class NextEpisodeEngine: ObservableObject {
         switch result {
         case .failure(let error):
             print("[UpNext] episode list fetch failed: \(error)")
-            if !hooks.networkSatisfied() { lateEpisodesRetryOnReconnect = true }
+            if lateFetchHitOutage { lateEpisodesRetryOnReconnect = true }
             return
         case .success(let fetched):
             videos = fetched
@@ -392,13 +399,14 @@ final class NextEpisodeEngine: ObservableObject {
         guard !videos.isEmpty else {
             // The live fetch swallows network errors (each manifest attempt and the TMDB fallback
             // are timed out and caught in shared code) and returns no meta, so a path lost
-            // mid-fetch reads as an empty success: retry it like a failure. Online, an empty list
-            // is final (a slow add-on past its limit); no per-tick refetch.
+            // mid-fetch reads as an empty success: retry it like a failure. With no outage seen,
+            // an empty list is final (a slow add-on past its limit); no per-tick refetch.
             print("[UpNext] episode list fetch returned no episodes")
-            if !hooks.networkSatisfied() { lateEpisodesRetryOnReconnect = true }
+            if lateFetchHitOutage { lateEpisodesRetryOnReconnect = true }
             return
         }
         lateEpisodes = videos
+        // No Up Next over the end screen for a list this late (see `lateResolveDeferredAtEnd`).
         if isAtEndOfFile {
             lateResolveDeferredAtEnd = true
             print("[UpNext] episode list fetched at end of file — next episode deferred")
@@ -406,6 +414,9 @@ final class NextEpisodeEngine: ObservableObject {
         }
         resolveLateNextVideo()
     }
+
+    /// The fetch overlapped an outage: the path is down now, or a tick saw it down mid-flight.
+    private var lateFetchHitOutage: Bool { !hooks.networkSatisfied() || lateFetchSawOutage }
 
     private func resolveLateNextVideo() {
         // An episode jump (from the list just published) already chose `nextVideo`: keep it.
@@ -443,6 +454,7 @@ final class NextEpisodeEngine: ObservableObject {
         lateEpisodesTask?.cancel()
         lateEpisodesTask = nil
         lateEpisodesRetryOnReconnect = false
+        lateFetchSawOutage = false
         lateResolveDeferredAtEnd = false
         sourceColumnVisible = false
         supersedeSourceSwitch()
@@ -715,6 +727,7 @@ final class NextEpisodeEngine: ObservableObject {
         lastProgress = (positionSec, durationSec)
         // BUG-229: the start-time episode fetch was deferred offline; the path is back.
         if lateEpisodesRetryOnReconnect, hooks.networkSatisfied() { fetchEpisodesIfMissing() }
+        if lateEpisodesTask != nil, !hooks.networkSatisfied() { lateFetchSawOutage = true }
         if lateResolveDeferredAtEnd, !isAtEndOfFile {
             lateResolveDeferredAtEnd = false
             resolveLateNextVideo()
