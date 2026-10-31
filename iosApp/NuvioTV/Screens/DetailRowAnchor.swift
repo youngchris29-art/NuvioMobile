@@ -69,35 +69,38 @@ enum DetailRowAnchor {
 
     /// BUG-217: where the focus engine will not let a focused row's FIRST focusable item sit above,
     /// in points from the top edge. A move inside an anchored row (a Right press) makes the engine
-    /// reveal the newly focused item, and an item above this is pulled down to it: the studio chips
-    /// anchored at 108 went to 180 on the first Right (offset 712 to 640, no anchor pass involved),
-    /// the Cast avatars from 169 to 180. Measured on the tvOS 27 simulator, 2026-10-31; the same 180
-    /// for a chip and an avatar, and `contentInsetTop` read 60 there, so it is not derived from it.
+    /// reveal the newly focused item, and an item above this is pulled down to it: the Cinematic
+    /// studio chips anchored at 108 went to 180 on the first Right (offset 712 to 640, no anchor
+    /// pass involved), the Cast avatars from 169 to 180. Measured on the tvOS 27 simulator,
+    /// 2026-10-31; the same 180 for a chip and an avatar, and `contentInsetTop` read 60 there, so
+    /// it is not derived from it.
     static let engineRevealTop: CGFloat = 180
 
     /// How far below the row's top the row's first focusable item sits, for the rows measured at
     /// their anchored rest (Up into the row, then one Right, the page's shift read off the section
-    /// titles): the chip row's chips ARE the row's top (0, shift 72); Cast's avatars sit under the
-    /// heading block plus their 8 pt (shift 11); Collection's and Trailers' tiles under the heading
-    /// block plus 16 (shift 3). More Like This was already clear (shift 0). The heading block is the
-    /// section title's line plus `Spacing.md`, read from the tokens so a font change moves it.
-    /// `nil` = not measured: the row keeps `screenRest` (Episodes and Parental Guide, whose Down and
-    /// Right moves stay inside their own focus regions, and the rows already clear).
-    static func firstItemLead(for row: DetailRowID) -> CGFloat? {
+    /// titles), in `layout`. Cast's avatars sit under the heading block plus their 8 pt (shift 11
+    /// in both layouts); Collection's and Trailers' tiles under the heading block plus 16 (shift 3,
+    /// both layouts). The chip row's chips ARE the row's top (lead 0, shift 72), but only in
+    /// Cinematic: Classic's chips at 108 stayed put on Right (shift 0, same run), so Classic keeps
+    /// them there. More Like This was already clear (shift 0). The heading block is the section
+    /// title's line plus `Spacing.md`, read from the tokens so a font change moves it. `nil` = not
+    /// measured or not needed: the row keeps `screenRest` (Episodes and Parental Guide, whose Down
+    /// and Right moves stay inside their own focus regions, and the rows already clear).
+    static func firstItemLead(for row: DetailRowID, layout: DetailLayout) -> CGFloat? {
         let headingBlock = Theme.Font.sectionTitleLineHeight + Theme.Spacing.md
         switch row {
-        case .logos: return 0
+        case .logos: return layout == .cinematic ? 0 : nil
         case .cast: return headingBlock + 8
         case .collection, .trailers: return headingBlock + 16
         default: return nil
         }
     }
 
-    /// Where `row`'s top rests on SCREEN: `screenRest`, or lower when the row's first item would
-    /// otherwise sit above `engineRevealTop` (then the item rests exactly there, so a move inside
-    /// the row has nothing left to reveal).
-    static func screenRest(for row: DetailRowID) -> CGFloat {
-        guard let lead = firstItemLead(for: row) else { return screenRest }
+    /// Where `row`'s top rests on SCREEN in `layout`: `screenRest`, or lower when the row's first
+    /// item would otherwise sit above `engineRevealTop` (then the item rests exactly there, so a
+    /// move inside the row has nothing left to reveal).
+    static func screenRest(for row: DetailRowID, layout: DetailLayout) -> CGFloat {
+        guard let lead = firstItemLead(for: row, layout: layout) else { return screenRest }
         return max(screenRest, engineRevealTop - lead)
     }
 

@@ -279,7 +279,7 @@ nonisolated enum DetailDim {
     static let ceiling: Double = 0.85
 
     /// BUG-217: how much lower the chip row (the usual first row under the hero) rests since its
-    /// anchor follows the focus engine's reveal margin (`DetailRowAnchor.screenRest(for: .logos)`
+    /// anchor follows the focus engine's reveal margin (`DetailRowAnchor.screenRest(for: .logos, layout: .cinematic)`
     /// minus `DetailRowAnchor.screenRest`; a unit test pins the two together). The hero-exit rest
     /// is that much shorter a scroll, so the Cinematic ramp is shortened by the same amount and
     /// the rest stays past it (dim at the ceiling, the 0.80 trailer latch closed) as before.

@@ -214,7 +214,7 @@ private struct DetailCompactLogo: View {
     static let slotHeight: CGFloat = DetailCompactLogoBand.slotHeight
     /// How far past the hero-exit rest the page must scroll (that rest sits at about
     /// `heroHeight − 12 + inset` from the top, `DetailDim.scrolledDistance`, for a row resting at
-    /// `screenRest`; the chip row, the usual first row, rests 72 pt lower since BUG-217, at about
+    /// `screenRest`; Cinematic's chip row, the usual first row, rests 72 pt lower since BUG-217, at about
     /// `heroHeight − 84 + inset`. Either way it leaves the dimmed action row on screen), so the logo
     /// waits for the next row down.
     static let heroClearance: CGFloat = 120
@@ -1712,7 +1712,7 @@ struct DetailView: View {
         guard !Task.isCancelled, focusedRow == row, bridgePhase == .idle, let rowTop = detailRowOffsets[row] else { return false }
         let inset = dimModel.contentInsetTop
         let target = DetailRowAnchor.scrollTarget(rowTop: rowTop, contentInsetTop: inset,
-                                                   screenRest: DetailRowAnchor.screenRest(for: row))
+                                                   screenRest: DetailRowAnchor.screenRest(for: row, layout: detailLayout))
         let expected = DetailRowAnchor.expectedOffset(scrollTarget: target, contentInsetTop: inset)
         if onlyIfDrifted, abs(dimModel.lastContentOffset - expected) <= DetailRowAnchor.verifyTolerance { return true }
         // W3-15 (BUG-153): distance-scaled glide; see `heroTopPass`.
@@ -2508,7 +2508,7 @@ struct DetailView: View {
             return
         }
         // FEAT-35 (P1 §F + correction 9): Down out of the Cinematic hero anchors the first
-        // row at its rest (`DetailRowAnchor.screenRest(for:)`) in ONE blended motion, replacing the BUG-99 Down settle for
+        // row at its rest (`DetailRowAnchor.screenRest(for:layout:)`) in ONE blended motion, replacing the BUG-99 Down settle for
         // this transition only. Only when the page is at its top: focus restored to a deep
         // row after a push or cover also reads nil → row and must take the ordinary path.
         if detailLayout == .cinematic,
@@ -2560,7 +2560,7 @@ struct DetailView: View {
                 // glide's own latch edge (below) is free to settle the compact logo's band.
                 if dimModel.downSettlePending == settleToken { dimModel.downSettlePending = nil }
                 let decision = DetailRowAnchor.decision(direction: .down, screenTop: screenTop,
-                                                        screenRest: DetailRowAnchor.screenRest(for: row))
+                                                        screenRest: DetailRowAnchor.screenRest(for: row, layout: detailLayout))
                 switch decision {
                 case .anchor:
                     _ = anchorPass(row, note: "down-straddle")
