@@ -253,7 +253,7 @@ struct DetailCinematicHero<Actions: View>: View {
             if showImdbStar, let rating = meta.imdbRating {
                 HStack(spacing: Theme.Spacing.xs) {
                     Image(systemName: "star.fill").foregroundStyle(Theme.Palette.star)
-                    Text(rating)
+                    Text(RatingFormat.oneDecimal(rating))
                 }
             }
         }

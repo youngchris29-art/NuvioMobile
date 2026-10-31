@@ -2085,7 +2085,7 @@ struct DetailView: View {
                 metaChip {
                     HStack(spacing: Theme.Spacing.xs - 2) {
                         Image(systemName: "star.fill").foregroundStyle(Theme.Palette.star)
-                        Text(rating)
+                        Text(RatingFormat.oneDecimal(rating))
                     }
                 }
             }

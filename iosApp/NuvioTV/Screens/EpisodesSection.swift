@@ -696,6 +696,11 @@ private struct EpisodeThumbCard: View {
             .overlay(alignment: .bottomTrailing) {
                 if let rating { ratingBadge(rating).padding(10) }
             }
+            // Port 2f0185ce: unreleased / flagged-unavailable episode. Top corner like the watched
+            // check (moves to the leading corner when that check is showing).
+            .overlay(alignment: isWatched ? .topLeading : .topTrailing) {
+                if EpisodeAvailability.isUnavailable(episode) { UnavailableEpisodeBadge().padding(10) }
+            }
             // Whole-card system lift — see PosterCard: still, scrim, and badges move as one.
             // BUG-31/BUG-25: highlight geometry pinned to the card's own corner radius; goes
             // still under "No Zoom on Focus" (which this tile used to ignore).
@@ -759,6 +764,24 @@ private struct EpisodeThumbCard: View {
             return String(localized: "E\(e) \u{00B7} \(episode.title)")
         }
         return episode.title
+    }
+}
+
+/// "UNAVAILABLE" pill on an episode card (upstream `EpisodeAvailabilityBadge`: brown 80% fill,
+/// white semibold caption). Drawn inside the lifted card, so focus and press are unchanged.
+struct UnavailableEpisodeBadge: View {
+    var body: some View {
+        Text("Unavailable")
+            .textCase(.uppercase)
+            .font(Theme.Font.meta.weight(.semibold))
+            .foregroundStyle(.white)
+            .lineLimit(1)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(Color(red: 0x5D / 255, green: 0x40 / 255, blue: 0x37 / 255).opacity(0.8),
+                        in: RoundedRectangle(cornerRadius: 6))
+            .shadow(color: .black.opacity(0.35), radius: 3, y: 1)
+            .accessibilityIdentifier("episode_unavailable_badge")
     }
 }
 

@@ -237,7 +237,7 @@ final class NativePlayerPanelAdapter {
     private var staticLeadingChips: [PlayerPanelChip] {
         var chips: [PlayerPanelChip] = []
         if let year = context.meta?.year { chips.append(PlayerPanelChip(text: year)) }
-        if let rating = context.meta?.imdbRating { chips.append(PlayerPanelChip(text: rating, symbol: "star.fill")) }
+        if let rating = context.meta?.imdbRating { chips.append(PlayerPanelChip(text: RatingFormat.oneDecimal(rating), symbol: "star.fill")) }
         if let age = context.meta?.ageRating { chips.append(PlayerPanelChip(text: age)) }
         return chips
     }
