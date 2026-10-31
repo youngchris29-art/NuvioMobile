@@ -579,6 +579,19 @@ final class PlayerTransportUITests: XCTestCase {
         return url!
     }
 
+    /// Chapter-derived skip intervals (test plan D7, simulator half): `chapters-named.mkv` has Recap
+    /// 0–45, Opening 45–135, Episode, Ending 1260–1350 and Preview; the titles alone give three bar
+    /// spans and the Skip Recap chip at the start (the smoke context has no provider data). Skips
+    /// when `PLAYER_SMOKE_CHAPTERS_NAMED_URL` is unset.
+    func testNamedChaptersProduceSkipChipAndSpans() throws {
+        let url = ProcessInfo.processInfo.environment["PLAYER_SMOKE_CHAPTERS_NAMED_URL"]
+        try XCTSkipIf(url == nil, "PLAYER_SMOKE_CHAPTERS_NAMED_URL not set: run with TEST_RUNNER_PLAYER_SMOKE_CHAPTERS_NAMED_URL=http://127.0.0.1:8000/chapters-named.mkv")
+        let app = try launch(url: url!)
+        XCTAssertTrue(waitBar(app, timeout: 10) { $0["spans"] == "3" }, "three skip spans never drawn: \(barProbeText(app))")
+        XCTAssertTrue(waitFor(app, timeout: 5) { $0["chip"] == "1" }, "no skip chip over the Recap chapter: \(probeText(app))")
+        print("[ChapterSkipLeg] \(probeText(app)) | \(barProbeText(app))")
+    }
+
     /// The bar draws one tick per chapter; the probe counts what it was given.
     func testChapterTicksProbe() throws {
         let app = try launch(url: try chaptersURL())

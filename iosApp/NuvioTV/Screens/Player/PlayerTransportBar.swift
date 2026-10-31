@@ -461,7 +461,7 @@ struct PlayerTransportBar: View {
             + "x0=\(String(format: "%.0f", trackGlobal.minX)) x1=\(String(format: "%.0f", trackGlobal.maxX)) "
             + "vis=\(visible ? 1 : 0) ends=\(model.showsEndTime ? 1 : 0) pills=\(model.pills.count)"
             + " scrub=\(scrub) curve=\(model.scrubCurveCode) frame=\(model.previewFrame != nil ? 1 : 0) arb=\(model.debugArbiter)"
-            + " chapters=\(model.chapters.count) aspect=\(model.aspectMode.rawValue)"
+            + " chapters=\(model.chapters.count) spans=\(model.skipSpans.count) aspect=\(model.aspectMode.rawValue)"
             + " thumbs=\(model.previewFrames) stored=\(model.debugAspectStored.rawValue) aw=\(model.debugAspectWrites)"
             + " decoded=\(model.decodedFrames) fsec=\(model.previewFrameSec.map { String(format: "%.1f", $0) } ?? "nil")"
         return Text(verbatim: text)
