@@ -47,9 +47,117 @@ struct PlayerPanelInfo: Equatable {
     var badges: [StreamBadgeInfo] = []
 }
 
+// MARK: - Insights contracts (2026-11-01)
+
+/// The text pills under the timeline (Rivulet / AVKit tvOS 26 layout), in display order. Native
+/// hosts them as `customInfoViewControllers`; mpv draws its own row and content shelf. Both show
+/// the same content views (`PlayerInfoTab`, `PlayerCastContent`, `PlayerChaptersTab`,
+/// `PlayerUpNextContent`).
+enum PlayerInfoPill: String, CaseIterable, Identifiable {
+    case info, cast, chapters, upNext
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .info: return String(localized: "Info")
+        case .cast: return String(localized: "Cast")
+        case .chapters: return String(localized: "Chapters")
+        case .upNext: return String(localized: "Up Next")
+        }
+    }
+
+    /// Info always; Cast when the setting is on and someone is known; Chapters when the file has
+    /// any; Up Next when there is a next episode.
+    @MainActor
+    static func visible(for model: PlayerTopPanelModel) -> [PlayerInfoPill] {
+        var out: [PlayerInfoPill] = [.info]
+        if model.castEnabled, !model.people.isEmpty { out.append(.cast) }
+        if !model.chapters.isEmpty { out.append(.chapters) }
+        if model.upNext != nil { out.append(.upNext) }
+        return out
+    }
+}
+
+/// One card in the Cast pill. `id` is the TMDB person id.
+struct PlayerPanelPerson: Identifiable, Equatable {
+    let id: Int
+    let name: String
+    /// Character (cast) or job(s) (crew); nil = unknown.
+    let role: String?
+    let photo: URL?
+    let isCrew: Bool
+    var isGuest = false
+}
+
+/// One display-only poster in the compact actor view.
+struct PlayerPanelKnownFor: Identifiable, Equatable {
+    let id: String
+    let title: String
+    let poster: URL?
+}
+
+/// The compact actor view's content (`PlayerPanelPerson` + the TMDB person summary).
+struct PlayerPanelPersonDetail: Equatable {
+    let id: Int
+    let name: String
+    let photo: URL?
+    let knownForDepartment: String?
+    /// "1956 – 2024" / "Born 1974"; nil when unknown.
+    let lifeDates: String?
+    let biography: String?
+    let knownFor: [PlayerPanelKnownFor]
+}
+
+/// The Up Next pill's card.
+struct PlayerPanelUpNext: Equatable {
+    let title: String
+    /// "S1 · E5"
+    let subtitle: String?
+    let still: URL?
+}
+
 @MainActor
 final class PlayerTopPanelModel: ObservableObject {
     @Published var info: PlayerPanelInfo
+
+    // MARK: Insights (Cast pill)
+
+    /// Cast first, then key crew. Empty hides the Cast pill. Filled by `PlayerInsightsLoader`.
+    @Published var people: [PlayerPanelPerson] = []
+    /// "Show cast in player" (`PlayerTuning.showCastInPlayer`), read when the model is built.
+    @Published var castEnabled: Bool = PlayerTuning.showCastInPlayer
+    /// The person whose compact actor view is open; nil = the card row.
+    @Published var actorView: PlayerPanelPerson?
+    /// The open actor view's detail; nil while it loads (the view draws from `actorView` meanwhile).
+    @Published var actorDetail: PlayerPanelPersonDetail?
+    /// The card last opened, so focus returns to it when the actor view closes.
+    @Published var lastOpenedPersonId: Int?
+    /// Asked to load the actor view's detail (set by the loader).
+    var onOpenPerson: ((PlayerPanelPerson) -> Void)?
+
+    /// Opens the compact actor view for a card.
+    func openPerson(_ person: PlayerPanelPerson) {
+        lastOpenedPersonId = person.id
+        actorDetail = nil
+        actorView = person
+        onOpenPerson?(person)
+    }
+
+    /// Menu, one level at a time: closes the actor view and returns true (press consumed), or
+    /// returns false when there is nothing inside the pill to back out of.
+    @discardableResult
+    func menuBack() -> Bool {
+        guard actorView != nil else { return false }
+        actorView = nil
+        actorDetail = nil
+        return true
+    }
+
+    // MARK: Up Next pill
+
+    /// nil hides the Up Next pill. Filled by each engine from its `NextEpisodeEngine`.
+    @Published var upNext: PlayerPanelUpNext?
+    var onPlayUpNext: (() -> Void)?
     /// Subtitles tab rows in display order: Off first (like the system panel), then the file's own
     /// tracks, then addon-fetched ones. Empty while nothing is known yet.
     @Published var subtitles: [PlayerPanelOption] = []
