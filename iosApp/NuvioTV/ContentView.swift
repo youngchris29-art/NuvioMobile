@@ -347,6 +347,8 @@ struct ContentView: View {
         // `debug.mpvSmokeURL`: present the real player over the root for sim validation of the
         // libmpv path (see MPVSmokeTest.swift).
         .modifier(MPVSmokeModifier())
+        // `debug.aetherSmokeURL`: Aether feasibility spike (AetherSmokeTest.swift).
+        .modifier(AetherSmokeModifier())
         #endif
     }
 

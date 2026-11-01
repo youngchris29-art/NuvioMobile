@@ -10,6 +10,7 @@
 		0A1B2C3D4E5F60718293A4BD /* DownloadsWidgetExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F60718293A4B5 /* DownloadsWidgetExtension.appex */; };
 		7397CF462F80FE3A00AC0F84 /* MPVKit in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4E5F6A7B8C9D0E1F2 /* MPVKit */; };
 		941331072FF49A2B003DA3AA /* MPVKit in Frameworks */ = {isa = PBXBuildFile; productRef = 941331062FF49A2B003DA3AA /* MPVKit */; };
+		AE7E0001000000000000AE01 /* NuvioAether in Frameworks */ = {isa = PBXBuildFile; productRef = AE7E0002000000000000AE02 /* NuvioAether */; };
 		947233692FF8500F001B4F7C /* TVServices.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 947233682FF8500F001B4F7C /* TVServices.framework */; };
 		947233702FF8500F001B4F7C /* NuvioTopShelf.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 947233672FF8500F001B4F7C /* NuvioTopShelf.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
@@ -181,6 +182,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AE7E0001000000000000AE01 /* NuvioAether in Frameworks */,
 				941331072FF49A2B003DA3AA /* MPVKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -314,6 +316,7 @@
 			);
 			name = NuvioTV;
 			packageProductDependencies = (
+				AE7E0002000000000000AE02 /* NuvioAether */,
 				941331062FF49A2B003DA3AA /* MPVKit */,
 			);
 			productName = NuvioTV;
@@ -431,6 +434,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				F1E2D3C4B5A6F7E8D9C0B1A2 /* XCLocalSwiftPackageReference "../MPVKit" */,
+				AE7E0003000000000000AE03 /* XCLocalSwiftPackageReference "NuvioAether" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = AD93033A33973C81BB77B73A /* Products */;
@@ -1141,9 +1145,19 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ../MPVKit;
 		};
+		AE7E0003000000000000AE03 /* XCLocalSwiftPackageReference "NuvioAether" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = NuvioAether;
+		};
 /* End XCLocalSwiftPackageReference section */
 
+
 /* Begin XCSwiftPackageProductDependency section */
+		AE7E0002000000000000AE02 /* NuvioAether */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AE7E0003000000000000AE03 /* XCLocalSwiftPackageReference "NuvioAether" */;
+			productName = NuvioAether;
+		};
 		941331062FF49A2B003DA3AA /* MPVKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = F1E2D3C4B5A6F7E8D9C0B1A2 /* XCLocalSwiftPackageReference "../MPVKit" */;
