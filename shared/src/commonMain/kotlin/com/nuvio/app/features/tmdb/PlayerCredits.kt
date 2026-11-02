@@ -378,12 +378,6 @@ private data class PersonCombinedCreditsDto(
 // ─── Service ───
 
 /**
- * The key the Cast pill calls TMDB with: the personal key, else the bundled one (same rule as
- * [TmdbSettingsRepository.effectiveApiKey]); null when neither exists.
- * Independent of the TMDB Enrichment toggles by design: "Show cast in player" fetches credits even
- * when [TmdbSettings.enabled] or [TmdbSettings.useCredits] is off.
- */
-/**
  * Review r7: whether a credits result may be cached for the session under its identity key. An
  * episode whose own credits request failed (null: network or HTTP failure) is served the show's
  * aggregate credits uncached, so one timeout does not pin show-level cast (no guests) until
@@ -392,6 +386,12 @@ private data class PersonCombinedCreditsDto(
 internal fun playerCreditsCacheable(isEpisode: Boolean, episodeResponseDecoded: Boolean): Boolean =
     !isEpisode || episodeResponseDecoded
 
+/**
+ * The key the Cast pill calls TMDB with: the personal key, else the bundled one (same rule as
+ * [TmdbSettingsRepository.effectiveApiKey]); null when neither exists.
+ * Independent of the TMDB Enrichment toggles by design: "Show cast in player" fetches credits even
+ * when [TmdbSettings.enabled] or [TmdbSettings.useCredits] is off.
+ */
 internal fun playerCreditsApiKey(settings: TmdbSettings): String? =
     settings.apiKey.ifBlank { TmdbConfig.API_KEY }.takeIf { it.isNotBlank() }
 

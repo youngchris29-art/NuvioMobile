@@ -253,7 +253,7 @@ final class NativePlayerPanelAdapter {
         let s = video.season?.value, e = video.episode?.value
         let subtitle: String? = switch (s, e) {
         case let (s?, e?): String(localized: "S\(Int(s)) · E\(Int(e))")   // catalog "S%lld · E%lld"
-        case let (nil, e?): "E\(e)"
+        case let (nil, e?): String(localized: "E\(Int(e))")   // catalog "E%lld"
         default: nil
         }
         let still = video.thumbnail.flatMap { $0.isEmpty ? nil : URL(string: $0) }
