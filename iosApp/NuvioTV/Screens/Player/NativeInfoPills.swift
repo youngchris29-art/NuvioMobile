@@ -149,14 +149,34 @@ struct NativeStreamInfoContent: View {
     }
 }
 
+/// C1 (device re-pass 2026-11-01): which other gesture recognisers must wait for the Cast pill's
+/// actor-view Menu tap to fail — every one that handles Menu (by its `allowedPressTypes`).
+enum NativePillMenuRecognizer {
+    static func takesMenu(_ allowedPressTypes: [Int]) -> Bool {
+        allowedPressTypes.contains(UIPress.PressType.menu.rawValue)
+    }
+}
+
 /// One pill. The Cast pill takes Menu while its actor view is open (`NativePillMenuRouter`).
-final class NativeInfoPillController: UIHostingController<NativePillRoot> {
+final class NativeInfoPillController: UIHostingController<NativePillRoot>, UIGestureRecognizerDelegate {
     let pill: PlayerInfoPill
     private let visibility: NativePillVisibility
     private weak var model: PlayerTopPanelModel?
     private var menuRouter = NativePillMenuRouter()
     /// The pill opened (`true`) or closed (`false`).
     var onVisibleChange: ((PlayerInfoPill, Bool) -> Void)?
+    /// Device re-pass 2026-11-01 (C1): overriding `pressesBegan/Ended` is not enough. The press
+    /// reached this controller (`Menu down actor=1`) but its release never did: AVKit's own Menu
+    /// recogniser recognised on the release, cancelled the press to the views and closed the whole
+    /// panel. This recogniser sits on the pill's own view, begins only while the actor view is open,
+    /// and every other Menu recogniser that sees the press must wait for it to fail
+    /// (`shouldBeRequiredToFailBy`), so AVKit's close never fires on that press.
+    private lazy var actorMenuTap: UITapGestureRecognizer = {
+        let tap = UITapGestureRecognizer(target: self, action: #selector(actorMenuTapped))
+        tap.allowedPressTypes = [NSNumber(value: UIPress.PressType.menu.rawValue)]
+        tap.delegate = self
+        return tap
+    }()
 
     init(pill: PlayerInfoPill, model: PlayerTopPanelModel) {
         let visibility = NativePillVisibility()
@@ -179,6 +199,7 @@ final class NativeInfoPillController: UIHostingController<NativePillRoot> {
         super.viewDidLoad()
         view.backgroundColor = .clear
         view.accessibilityIdentifier = "player.pill.\(pill.rawValue)"
+        if pill == .cast { view.addGestureRecognizer(actorMenuTap) }
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -189,6 +210,9 @@ final class NativeInfoPillController: UIHostingController<NativePillRoot> {
 
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
+        if pill == .cast, model?.actorView != nil {
+            print("[NativePlayer] cast pill: panel closed with the actor view open (reopens on the cards)")
+        }
         visibility.isVisible = false
         // Reopening Cast starts on the card row, not on the actor view it was closed from.
         if pill == .cast { model?.menuBack() }
@@ -196,12 +220,48 @@ final class NativeInfoPillController: UIHostingController<NativePillRoot> {
         onVisibleChange?(pill, false)
     }
 
+    private var actorViewOpen: Bool { model?.actorView != nil }
+
+    // MARK: Menu recogniser (C1)
+
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard gestureRecognizer === actorMenuTap else { return true }
+        let begins = NativePillMenuRouter.intercepts(pill: pill, actorViewOpen: actorViewOpen)
+        print("[NativePlayer] cast pill: Menu tap shouldBegin=\(begins ? 1 : 0) actor=\(actorViewOpen ? 1 : 0)")
+        return begins
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard gestureRecognizer === actorMenuTap else { return false }
+        let othersMenu = NativePillMenuRecognizer.takesMenu(
+            otherGestureRecognizer.allowedPressTypes.map(\.intValue))
+        if othersMenu {
+            print("[NativePlayer] cast pill: \(type(of: otherGestureRecognizer)) waits for the actor Menu tap")
+        }
+        return othersMenu
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        false
+    }
+
+    @objc private func actorMenuTapped() {
+        // The recogniser owns this press now; the view's own release path must not back out again.
+        menuRouter.menuCancelled()
+        print("[NativePlayer] cast pill: Menu tap → card row (actor=\(actorViewOpen ? 1 : 0))")
+        DispatchQueue.main.async { [weak model] in _ = model?.menuBack() }
+    }
+
+    // MARK: Press phases
+
     // Menu with the actor view open: both phases are consumed here and the actor view closes on
-    // the release, so the press never reaches AVKit (which would close the whole pill). Any other
-    // Menu goes to `super` untouched.
+    // the release (when the release reaches this controller; see `actorMenuTap` for when it
+    // does not). Any other Menu goes to `super` untouched. Every phase is logged for the device.
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         if presses.contains(where: { $0.type == .menu }) {
-            let actorOpen = model?.actorView != nil
+            let actorOpen = actorViewOpen
             // Device-pass oracle: this line missing on a Cast-pill Menu means the press never
             // reached the pill's controller (an AVKit recogniser took it first).
             if pill == .cast { print("[NativePlayer] cast pill: Menu down actor=\(actorOpen ? 1 : 0)") }
@@ -211,17 +271,34 @@ final class NativeInfoPillController: UIHostingController<NativePillRoot> {
     }
 
     override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        if presses.contains(where: { $0.type == .menu }), menuRouter.menuEnded() == .consumeAndBack {
-            print("[NativePlayer] cast pill: Menu → card row")
-            // After the release has been delivered, so the focused view is not swapped mid-press.
-            DispatchQueue.main.async { [weak model] in _ = model?.menuBack() }
-            return
+        if presses.contains(where: { $0.type == .menu }) {
+            let release = menuRouter.menuEnded()
+            if pill == .cast { print("[NativePlayer] cast pill: Menu up release=\(release) actor=\(actorViewOpen ? 1 : 0)") }
+            if release == .consumeAndBack {
+                print("[NativePlayer] cast pill: Menu → card row")
+                // After the release has been delivered, so the focused view is not swapped mid-press.
+                DispatchQueue.main.async { [weak model] in _ = model?.menuBack() }
+                return
+            }
         }
         super.pressesEnded(presses, with: event)
     }
 
     override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        if presses.contains(where: { $0.type == .menu }) { menuRouter.menuCancelled() }
+        if presses.contains(where: { $0.type == .menu }) {
+            let wasPending = menuRouter.menuCancelled()
+            if pill == .cast { print("[NativePlayer] cast pill: Menu cancelled pending=\(wasPending ? 1 : 0) actor=\(actorViewOpen ? 1 : 0)") }
+            // Fallback: a consumed Menu cancelled while the panel stays on screen with the actor
+            // view still open means some recogniser took the release without closing the panel;
+            // the press was still a Back, so back out (one level).
+            if wasPending {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                    guard let self, self.view.window != nil, self.actorViewOpen else { return }
+                    print("[NativePlayer] cast pill: Menu cancelled → card row (panel still open)")
+                    _ = self.model?.menuBack()
+                }
+            }
+        }
         super.pressesCancelled(presses, with: event)
     }
 }

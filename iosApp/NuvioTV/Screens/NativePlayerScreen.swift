@@ -606,7 +606,10 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
         let pills = NativeInfoPillsInstaller(playerVC: host.playerVC, model: model)
         coordinator.pills = pills
         coordinator.pillsOpen = false
-        pills.onOpenChanged = { open in
+        // Review r3: the coordinator owns the installers, so their callbacks hold it weakly (a
+        // strong capture leaked one player per episode in a binge).
+        pills.onOpenChanged = { [weak coordinator] open in
+            guard let coordinator else { return }
             coordinator.pillsOpen = open
             openChanged(open || coordinator.sheetOpen)
         }
@@ -615,13 +618,13 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
             playerVC: host.playerVC, engine: engine, model: model, speedModel: speedModel,
             canSwitchStreams: canSwitchStreams, isSeries: isSeries)
         coordinator.tools = tools
-        tools.onSyncLine = { [weak host] in
+        tools.onSyncLine = { [weak host, weak coordinator] in
             guard let host else { return }
             // The position is captured at the press, while the line is still being spoken.
             let captured = model.syncLineCapturePositionMs?() ?? 0
             let delayAtCapture = model.subtitleDelayMs
             // Let the transport bar finish dismissing its popover before presenting over it.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak host] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak host, weak coordinator] in
                 guard let host else { return }
                 let box = WeakPanelBox()
                 let panel = PlayerPanelHostController(rootView: NativeSyncLineSheet(
@@ -630,12 +633,13 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
                 box.panel = panel
                 host.present(panel: panel)
                 guard host.panelHost === panel else { return }
-                coordinator.sheetOpen = true
+                coordinator?.sheetOpen = true
                 openChanged(true)
             }
         }
 
-        host.onPanelClosed = {
+        host.onPanelClosed = { [weak coordinator] in
+            guard let coordinator else { return }
             coordinator.sheetOpen = false
             openChanged(coordinator.pillsOpen)
         }
@@ -671,6 +675,14 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
             }
         }
         host.closePanel(animated: false)
+        // Review r3: drop the installers and their callbacks with the player.
+        MainActor.assumeIsolated {
+            coordinator.pills?.onOpenChanged = nil
+            coordinator.tools?.onSyncLine = {}
+            coordinator.pills = nil
+            coordinator.tools = nil
+            host.onPanelClosed = nil
+        }
     }
 
     func updateUIViewController(_ host: NativePlayerHostController, context: Context) {

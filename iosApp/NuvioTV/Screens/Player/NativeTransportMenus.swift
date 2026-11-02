@@ -72,37 +72,70 @@ enum NativeTransportMenus {
     }
 
     /// Accessibility / test identifiers of the round buttons.
-    enum Item: String {
+    enum Item: String, CaseIterable {
         case episodes, sources, timing, syncLine, rememberSpeed
+
+        /// The button's localized name: its menu title and its VoiceOver label (review r3: the
+        /// round buttons draw image-only, and AVKit read them as "" without an explicit label).
+        var title: String {
+            switch self {
+            case .episodes: return String(localized: "Episodes")
+            case .sources: return String(localized: "Sources")
+            case .timing: return String(localized: "Subtitle Timing")
+            case .syncLine: return String(localized: "Sync Line")
+            case .rememberSpeed: return String(localized: "Remember Speed for This Show")
+            }
+        }
+    }
+
+    /// Sets the round button's VoiceOver label to its name (`UIMenuElement.accessibilityLabel`).
+    private static func labelled<Element: UIMenuElement>(_ element: Element, _ item: Item) -> Element {
+        element.accessibilityLabel = item.title
+        return element
     }
 
     /// The eager menu tree for `inputs`. Pure: nothing deferred, nothing read later.
     static func build(_ inputs: Inputs, actions: Actions) -> [UIMenuElement] {
         var items: [UIMenuElement] = []
         if inputs.canSwitchStreams, !inputs.episodes.isEmpty {
-            items.append(UIMenu(title: String(localized: "Episodes"), image: UIImage(systemName: "list.number"),
-                                identifier: identifier(.episodes),
-                                children: episodeItems(inputs.episodes, onEpisode: actions.onEpisode)))
+            items.append(labelled(UIMenu(title: Item.episodes.title, image: UIImage(systemName: "list.number"),
+                                         identifier: identifier(.episodes),
+                                         children: episodeItems(inputs.episodes, onEpisode: actions.onEpisode)),
+                                  .episodes))
         }
         if inputs.canSwitchStreams {
-            items.append(UIMenu(title: String(localized: "Sources"),
-                                image: UIImage(systemName: "arrow.triangle.2.circlepath"),
-                                identifier: identifier(.sources),
-                                children: sourceItems(inputs.sources, onSource: actions.onSource)))
+            items.append(labelled(UIMenu(title: Item.sources.title,
+                                         image: UIImage(systemName: "arrow.triangle.2.circlepath"),
+                                         identifier: identifier(.sources),
+                                         children: sourceItems(inputs.sources, onSource: actions.onSource)),
+                                  .sources))
         }
         if inputs.timing {
             items.append(timingMenu(delayMs: inputs.delayMs, onStep: actions.onDelayStep))
         }
         if inputs.syncLine {
             let syncLine = actions.onSyncLine
-            items.append(UIAction(title: String(localized: "Sync Line"),
-                                  image: UIImage(systemName: "text.line.first.and.arrowtriangle.forward"),
-                                  identifier: UIAction.Identifier(identifier(.syncLine).rawValue)) { _ in syncLine() })
+            items.append(labelled(UIAction(title: Item.syncLine.title,
+                                           image: UIImage(systemName: "text.line.first.and.arrowtriangle.forward"),
+                                           identifier: UIAction.Identifier(identifier(.syncLine).rawValue)) { _ in syncLine() },
+                                  .syncLine))
         }
         if inputs.rememberAvailable {
             items.append(rememberMenu(on: inputs.remember, onRemember: actions.onRemember))
         }
         return items
+    }
+
+    /// Which round buttons `build` draws for `inputs`, in order (C2: a change here moves the
+    /// system pills right of them, so the installer puts the focus back by name).
+    static func itemKinds(_ inputs: Inputs) -> [Item] {
+        var kinds: [Item] = []
+        if inputs.canSwitchStreams, !inputs.episodes.isEmpty { kinds.append(.episodes) }
+        if inputs.canSwitchStreams { kinds.append(.sources) }
+        if inputs.timing { kinds.append(.timing) }
+        if inputs.syncLine { kinds.append(.syncLine) }
+        if inputs.rememberAvailable { kinds.append(.rememberSpeed) }
+        return kinds
     }
 
     static func identifier(_ item: Item) -> UIMenu.Identifier {
@@ -187,7 +220,7 @@ enum NativeTransportMenus {
             // popover closes and the rebuilt menu shows the new delay when reopened.
             UIAction(title: title, attributes: .keepsMenuPresented) { _ in onStep(delta) }
         }
-        let menu = UIMenu(title: String(localized: "Subtitle Timing"), image: UIImage(systemName: "timer"),
+        let menu = UIMenu(title: Item.timing.title, image: UIImage(systemName: "timer"),
                           identifier: identifier(.timing), children: [
             note(current),
             step("\u{2212}0.5 s", -NativeSubtitleTiming.stepMs),
@@ -195,7 +228,7 @@ enum NativeTransportMenus {
             step(String(localized: "Reset"), nil),
         ])
         menu.subtitle = NativeSubtitleTiming.label(delayMs)
-        return menu
+        return labelled(menu, .timing)
     }
 
     // MARK: Remember Speed
@@ -203,12 +236,12 @@ enum NativeTransportMenus {
     /// A top-level `UIAction`'s `state` is not drawn on a round transport-bar button, so Remember
     /// is a menu with an On / Off pair (the checkmark shows the state) and a filled gauge while on.
     static func rememberMenu(on: Bool, onRemember: @escaping (Bool) -> Void) -> UIMenu {
-        UIMenu(title: String(localized: "Remember Speed for This Show"),
-               image: UIImage(systemName: on ? "gauge.with.needle.fill" : "gauge.with.needle"),
-               identifier: identifier(.rememberSpeed), children: [
+        labelled(UIMenu(title: Item.rememberSpeed.title,
+                        image: UIImage(systemName: on ? "gauge.with.needle.fill" : "gauge.with.needle"),
+                        identifier: identifier(.rememberSpeed), children: [
             UIAction(title: String(localized: "On"), state: on ? .on : .off) { _ in if !on { onRemember(true) } },
             UIAction(title: String(localized: "Off"), state: on ? .off : .on) { _ in if on { onRemember(false) } },
-        ])
+        ]), .rememberSpeed)
     }
 }
 
@@ -283,14 +316,70 @@ final class NativeTransportMenusInstaller {
             remember: speedModel.remember)
     }
 
-    /// Rebuilds and reassigns the buttons when what they show changed.
+    /// Rebuilds and reassigns the buttons when what they show changed (never when nothing did).
+    ///
+    /// Device re-pass 2026-11-01 (C2): AVKit keeps the focus at the same position in the bar's row
+    /// across a reassignment, not on the same button, and the system pills (Speed, Subtitles,
+    /// Audio) sit right of the custom ones. Turning subtitles on adds Timing + Sync Line and the
+    /// focus landed on Remember Speed instead of Subtitles. When the set of buttons changes, the
+    /// focused button's name is read first and the focus is asked back onto the button with that
+    /// name once AVKit has redrawn the row. A content-only change keeps the count, so the position
+    /// AVKit keeps is the right button. (A Timing step still closes its popover: a `UIMenu`'s
+    /// children cannot be changed in place, only a new menu assigned.)
     func refresh() {
         guard let playerVC else { return }
         let inputs = currentInputs()
         guard inputs != installed else { return }
+        let setChanged = installed.map(NativeTransportMenus.itemKinds) != NativeTransportMenus.itemKinds(inputs)
+        let focusedName = (installed != nil && setChanged) ? focusedBarItemName(in: playerVC) : nil
         installed = inputs
         playerVC.transportBarCustomMenuItems = NativeTransportMenus.build(inputs, actions: actions())
-        print("[NativePlayer] tools=\(Self.summary(inputs))")
+        print("[NativePlayer] tools=\(Self.summary(inputs))\(focusedName.map { " refocus=\($0)" } ?? "")")
+        if let focusedName { restoreFocus(to: focusedName, attempt: 0) }
+    }
+
+    /// The accessibility name of the focused item, when it is inside the player's view.
+    private func focusedBarItemName(in playerVC: AVPlayerViewController) -> String? {
+        guard let view = UIFocusSystem.focusSystem(for: playerVC.view)?.focusedItem as? UIView,
+              view.isDescendant(of: playerVC.view) else { return nil }
+        var candidate: UIView? = view
+        while let v = candidate, v !== playerVC.view {
+            if let label = v.accessibilityLabel, !label.isEmpty { return label }
+            candidate = v.superview
+        }
+        return nil
+    }
+
+    private func restoreFocus(to name: String, attempt: Int) {
+        let delays: [TimeInterval] = [0.05, 0.2, 0.45]
+        guard attempt < delays.count else {
+            print("[NativePlayer] tools: refocus \(name) gave up")
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delays[attempt]) { [weak self] in
+            guard let self, let playerVC = self.playerVC else { return }
+            if self.focusedBarItemName(in: playerVC) == name {
+                print("[NativePlayer] tools: refocus \(name) ok (attempt \(attempt))")
+                return
+            }
+            guard let target = Self.focusableView(named: name, in: playerVC.view) else {
+                self.restoreFocus(to: name, attempt: attempt + 1)
+                return
+            }
+            UIFocusSystem.focusSystem(for: playerVC.view)?.requestFocusUpdate(to: target)
+            self.restoreFocus(to: name, attempt: attempt + 1)
+        }
+    }
+
+    /// The first focusable view whose accessibility name (its own, or its nearest labelled
+    /// ancestor's below the player's view) is `name`.
+    private static func focusableView(named name: String, in root: UIView) -> UIView? {
+        var stack: [UIView] = [root]
+        while let v = stack.popLast() {
+            if v.canBecomeFocused, v.accessibilityLabel == name { return v }
+            stack.append(contentsOf: v.subviews)
+        }
+        return nil
     }
 
     /// The transport bar came up. The Sources button is on screen from now on, so the list is

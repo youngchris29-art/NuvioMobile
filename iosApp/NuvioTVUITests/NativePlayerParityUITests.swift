@@ -169,13 +169,24 @@ class NativePlayerParityUITests: XCTestCase {
         remote.press(.select)                       // raise the bar
         XCTAssertTrue(waitNative(app, timeout: 4) { $0["bar"] == "1" }, "bar did not show: \(nativeProbeText(app))")
         // tvOS 26 draws the custom menu items as cells in the bar's top-right row, left of the
-        // speed pill and the Subtitles / Audio cells. The round buttons carry no accessibility label
-        // on the sim (the cells read "" while the system pills read "Playback Speed", "Subtitles",
-        // "Audio"; recorded as a VoiceOver finding in the wave 2a hand-over), so they are counted by
-        // their empty label: Sources and Subtitle Timing here, plus Episodes / Sync Line / Remember
-        // Speed when the context has them.
+        // speed pill and the Subtitles / Audio cells. Review r3: each round button now carries its
+        // name as `accessibilityLabel` (Sources, Episodes, Subtitle Timing, Sync Line, Remember
+        // Speed for This Show), so they are found by name. If this simulator's AVKit still exposes
+        // the cells with an empty label (the wave 2a reading), the leg falls back to counting the
+        // empty-label cells and logs it; the device pass confirms VoiceOver reads the names.
         XCTAssertTrue(app.cells["Playback Speed"].waitForExistence(timeout: 5), "no system speed pill (playerVC.speeds)")
-        let custom = app.cells.matching(NSPredicate(format: "label == ''"))
+        let names = ["Sources", "Episodes", "Subtitle Timing", "Sync Line", "Remember Speed for This Show"]
+        let named = app.cells.matching(NSPredicate(format: "label IN %@", names))
+        let custom: XCUIElementQuery
+        if named.count > 0 {
+            custom = named
+            let labels = named.allElementsBoundByIndex.map(\.label)
+            XCTAssertTrue(labels.contains("Sources"), "no Sources button by name: \(labels)")
+            print("[ParityLeg] native custom items by name: \(labels)")
+        } else {
+            custom = app.cells.matching(NSPredicate(format: "label == ''"))
+            print("[ParityLeg] native custom items expose no label on this sim; counted by empty label")
+        }
         XCTAssertGreaterThanOrEqual(custom.count, 1, "no custom transport items beside the system pills")
         let first = custom.element(boundBy: 0)
         for _ in 0..<4 where !first.hasFocus {

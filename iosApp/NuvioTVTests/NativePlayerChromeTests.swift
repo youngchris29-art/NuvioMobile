@@ -191,6 +191,62 @@ final class NativePlayerChromeTests: XCTestCase {
             .children.first?.title, String(localized: "Loading sources…"))
     }
 
+    /// Review r3: every round button carries its localized name as its VoiceOver label (they draw
+    /// image-only on the transport bar).
+    func testEveryToolButtonHasAnAccessibilityLabel() {
+        let all = inputs(episodes: rows, sources: .empty, timing: true, syncLine: true,
+                         rememberAvailable: true)
+        let items = NativeTransportMenus.build(all, actions: .init())
+        XCTAssertEqual(items.count, 5, "Episodes, Sources, Timing, Sync Line, Remember")
+        for item in items {
+            let label = item.accessibilityLabel ?? ""
+            XCTAssertFalse(label.isEmpty, "no accessibilityLabel on \(item.title)")
+            XCTAssertEqual(label, item.title, "label and title differ on \(item.title)")
+        }
+        XCTAssertEqual(menu(items, .sources)?.accessibilityLabel, NativeTransportMenus.Item.sources.title)
+        XCTAssertEqual(menu(items, .timing)?.accessibilityLabel, String(localized: "Subtitle Timing"))
+        XCTAssertEqual(items.compactMap { $0 as? UIAction }.first?.accessibilityLabel, String(localized: "Sync Line"))
+        for item in NativeTransportMenus.Item.allCases {
+            XCTAssertFalse(item.title.isEmpty, item.rawValue)
+        }
+    }
+
+    /// C2: the button set (what AVKit counts positions by) changes only with the kinds drawn;
+    /// a content change (more sources, a new delay) keeps it.
+    func testItemKindsFollowTheDrawnButtons() {
+        let base = inputs(episodes: rows, sources: .loading, rememberAvailable: true)
+        XCTAssertEqual(NativeTransportMenus.itemKinds(base), [.episodes, .sources, .rememberSpeed])
+        var subsOn = base
+        subsOn.timing = true
+        subsOn.syncLine = true
+        XCTAssertEqual(NativeTransportMenus.itemKinds(subsOn), [.episodes, .sources, .timing, .syncLine, .rememberSpeed])
+        var moreRows = base
+        moreRows.sources = .rows([.init(key: "0|a", title: "A", subtitle: nil, isCurrent: false)])
+        moreRows.delayMs = 500
+        XCTAssertEqual(NativeTransportMenus.itemKinds(moreRows), NativeTransportMenus.itemKinds(base))
+        for kinds in [base, subsOn, moreRows] {
+            let built = NativeTransportMenus.build(kinds, actions: .init())
+            XCTAssertEqual(built.map(\.title), NativeTransportMenus.itemKinds(kinds).map(\.title))
+        }
+    }
+
+    /// C1: every other Menu recogniser waits for the Cast pill's actor-view Menu tap.
+    func testOnlyMenuRecognizersWaitForTheActorMenuTap() {
+        XCTAssertTrue(NativePillMenuRecognizer.takesMenu([UIPress.PressType.menu.rawValue]))
+        XCTAssertTrue(NativePillMenuRecognizer.takesMenu([UIPress.PressType.select.rawValue, UIPress.PressType.menu.rawValue]))
+        XCTAssertFalse(NativePillMenuRecognizer.takesMenu([UIPress.PressType.select.rawValue]))
+        XCTAssertFalse(NativePillMenuRecognizer.takesMenu([]))
+    }
+
+    func testCancelReportsAPendingConsumedPress() {
+        var router = NativePillMenuRouter()
+        XCTAssertFalse(router.menuCancelled())
+        XCTAssertTrue(router.menuBegan(pill: .cast, actorViewOpen: true))
+        XCTAssertTrue(router.menuCancelled(), "a consumed press was pending")
+        XCTAssertFalse(router.menuCancelled(), "forgotten after one cancel")
+        XCTAssertEqual(router.menuEnded(), .passOn)
+    }
+
     func testNoEpisodesOrSourcesWithoutAStreamSwitcher() {
         let items = NativeTransportMenus.build(inputs(episodes: rows, sources: .empty, canSwitch: false), actions: .init())
         XCTAssertNil(menu(items, .episodes))

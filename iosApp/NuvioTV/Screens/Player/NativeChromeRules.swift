@@ -97,6 +97,11 @@ struct NativePillMenuRouter {
         return pending ? .consumeAndBack : .passOn
     }
 
-    /// The press was cancelled (focus moved mid-press): forget it, change nothing.
-    mutating func menuCancelled() { pending = false }
+    /// The press was cancelled (focus moved mid-press, or a recogniser took it): forget it.
+    /// Returns whether a consumed press was pending.
+    @discardableResult
+    mutating func menuCancelled() -> Bool {
+        defer { pending = false }
+        return pending
+    }
 }
