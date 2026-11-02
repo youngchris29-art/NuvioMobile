@@ -220,7 +220,10 @@ final class NextEpisodeEngine: ObservableObject {
     private var timeoutTask: Task<Void, Never>?
     private var hideTask: Task<Void, Never>?
 
-    private var nextVideo: MetaVideo?
+    private var nextVideo: MetaVideo? {
+        didSet { upNextEpisode = nextVideo }
+    }
+    @Published private(set) var upNextEpisode: MetaVideo?
     /// BUG-229: the episode list fetched after launch. A play started before the stream picker's own
     /// episode fetch finished (a quick auto-picked source from Continue Watching with Auto-Play Best
     /// Source, or Detail's Play) hands the player an EMPTY list, so `nextVideo` stayed nil and the

@@ -3,7 +3,7 @@ import Combine
 import SharedCore
 import SwiftUI
 
-/// Feeds the swipe-down top panel from the native AVPlayer path: media-selection groups →
+/// Feeds the panel model (the text pills' content) from the native AVPlayer path: media-selection groups →
 /// Subtitles/Audio rows, playback ticks → Info rows/chips, AVAudioSession → output route name.
 /// Panel picks go straight back to `NativePlaybackCoordinator.select(...)`, which uses the same
 /// `AVPlayerItem.select(_:in:)` path as the native transport-bar popovers, so both UIs stay in step.
@@ -16,8 +16,10 @@ final class NativePlayerPanelAdapter {
     private var cancellables: Set<AnyCancellable> = []
     private var routeObserver: NSObjectProtocol?
 
+    /// `upNext` is the screen's `NextEpisodeEngine` when a presenter can swap contexts (series
+    /// autoplay); nil keeps the Up Next pill hidden.
     init(coordinator: NativePlaybackCoordinator, model: PlayerTopPanelModel,
-         context: PlaybackContext, routingNote: String?) {
+         context: PlaybackContext, routingNote: String?, upNext: NextEpisodeEngine? = nil) {
         self.coordinator = coordinator
         self.model = model
         self.context = context
@@ -75,6 +77,22 @@ final class NativePlayerPanelAdapter {
             self.model.setBadgeFacts(self.coordinator.badgeFacts())
         }
         .store(in: &cancellables)
+
+        // Up Next pill (Insights): the engine's next episode; Play goes through the card when one is
+        // armed, otherwise it jumps to the episode, which finds a stream and switches.
+        if let upNext {
+            model.onPlayUpNext = { [weak upNext] in
+                guard let upNext, let next = upNext.upNextEpisode else { return }
+                if !upNext.playNow() { upNext.jumpToEpisode(next) }
+            }
+            upNext.$upNextEpisode
+                .receive(on: RunLoop.main)
+                .sink { [weak model] next in
+                    let card = next.map(Self.upNextCard)
+                    if model?.upNext != card { model?.upNext = card }
+                }
+                .store(in: &cancellables)
+        }
 
         refreshRoute()
         routeObserver = NotificationCenter.default.addObserver(
@@ -222,6 +240,20 @@ final class NativePlayerPanelAdapter {
               let target = group.options.first(where: { NativePlaybackCoordinator.renditionName(of: $0) == option.id })
         else { return }
         coordinator.select(audio: target)
+    }
+
+    // MARK: - Up Next
+
+    /// The Up Next pill's card for an episode: its title, "S1 · E5", its still.
+    static func upNextCard(_ video: MetaVideo) -> PlayerPanelUpNext {
+        let s = video.season?.value, e = video.episode?.value
+        let subtitle: String? = switch (s, e) {
+        case let (s?, e?): "S\(s) · E\(e)"
+        case let (nil, e?): "E\(e)"
+        default: nil
+        }
+        let still = video.thumbnail.flatMap { $0.isEmpty ? nil : URL(string: $0) }
+        return PlayerPanelUpNext(title: video.title, subtitle: subtitle, still: still)
     }
 
     // MARK: - Route
