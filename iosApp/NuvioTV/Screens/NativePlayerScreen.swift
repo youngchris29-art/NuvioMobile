@@ -123,7 +123,7 @@ struct NativePlayerScreen: View {
                         onPanelOpenChanged: { open in panelOpen = open },
                         engine: upNext,
                         canSwitchStreams: onPlayNext != nil,
-                        hasEpisodes: !upNext.episodes.isEmpty && context.season != nil,
+                        isSeries: context.season != nil,
                         rememberSpeedShowId: (context.season != nil || context.episode != nil) ? context.parentMetaId : nil,
                         onBarVisibility: { visible in barVisibilityChanged(visible) },
                         onAnyPress: { hidePauseCard(reason: "press") }
@@ -594,8 +594,8 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
     let engine: NextEpisodeEngine
     /// The presenter can swap playback contexts (episode jump / source switching).
     let canSwitchStreams: Bool
-    /// A series with an episode list: the transport bar offers "Episodes".
-    let hasEpisodes: Bool
+    /// A series: the transport bar offers "Episodes" once the engine knows the episode list.
+    let isSeries: Bool
     /// P5 B23: the show id that "Remember Speed for This Show" saves under; nil (movies) hides the row.
     let rememberSpeedShowId: String?
     /// System transport bar about to show / hide (host delegate, P4 B16).
@@ -647,26 +647,45 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
             coordinator.pillsOpen = open
             openChanged(open || coordinator.sheetOpen)
         }
-        installTransportMenu(on: host, coordinator: coordinator)
+        // The round tool buttons, rebuilt whenever what they show changes.
+        let tools = NativeTransportMenusInstaller(
+            playerVC: host.playerVC, engine: engine, model: model, speedModel: speedModel,
+            canSwitchStreams: canSwitchStreams, isSeries: isSeries)
+        coordinator.tools = tools
+        tools.onSyncLine = { [weak host] in
+            guard let host else { return }
+            // The position is captured at the press, while the line is still being spoken.
+            let captured = model.syncLineCapturePositionMs?() ?? 0
+            let delayAtCapture = model.subtitleDelayMs
+            // Let the transport bar finish dismissing its popover before presenting over it.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak host] in
+                guard let host else { return }
+                let box = WeakPanelBox()
+                let panel = PlayerPanelHostController(rootView: NativeSyncLineSheet(
+                    model: model, capturedMs: captured, delayAtCaptureMs: delayAtCapture,
+                    onDone: { box.panel?.close(animated: true) }))
+                box.panel = panel
+                host.present(panel: panel)
+                guard host.panelHost === panel else { return }
+                coordinator.sheetOpen = true
+                openChanged(true)
+            }
+        }
 
         host.onPanelClosed = {
             coordinator.sheetOpen = false
             openChanged(coordinator.pillsOpen)
         }
         let barVisibility = onBarVisibility
-        host.onTransportBarVisibilityChange = { [weak host] visible in
+        host.onTransportBarVisibilityChange = { [weak host, weak tools] visible in
             barVisibility(visible)
+            if visible { tools?.transportBarShown() } else { tools?.transportBarHidden() }
             guard !visible, let host else { return }
             // Catches a change made with the system speed pill, which bypasses the model. Only
             // when the player reports a selection: a nil one must not overwrite the saved speed.
             if let selected = host.playerVC.selectedSpeed {
                 speedModel.rate = Double(selected.rate)
                 speedModel.saveIfRemembered(rate: speedModel.rate)
-            }
-            // FEAT-49 layer 2 on native: an opened Sources popover may have clobbered a preload.
-            if coordinator.sourcesMenuOpened {
-                coordinator.sourcesMenuOpened = false
-                engine.noteSourceListClosed()
             }
         }
         host.onAnyPress = onAnyPress
@@ -691,60 +710,11 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
         host.closePanel(animated: false)
     }
 
-    /// The round tool buttons (`NativeTransportMenus`). Installed at creation and again only when
-    /// what they offer changes (the episode list arriving late, BUG-229; an add-on subtitle
-    /// starting or stopping, which shows or hides Timing and Sync Line; Remember toggled).
-    private func installTransportMenu(on host: NativePlayerHostController, coordinator: Coordinator) {
-        let inputs = transportMenuInputs(coordinator: coordinator)
-        coordinator.menuInputs = inputs
-        let model = panelModel
-        let speedModel = coordinator.speedModel
-        let openChanged = onPanelOpenChanged
-        let actions = NativeTransportMenus.Actions(
-            onSourcesOpened: { coordinator.sourcesMenuOpened = true },
-            onSyncLine: { [weak host] in
-                guard let host else { return }
-                // The position is captured at the press, while the line is still being spoken.
-                let captured = model.syncLineCapturePositionMs?() ?? 0
-                let delayAtCapture = model.subtitleDelayMs
-                // Let the transport bar finish dismissing its popover before presenting over it.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak host] in
-                    guard let host else { return }
-                    let box = WeakPanelBox()
-                    let panel = PlayerPanelHostController(rootView: NativeSyncLineSheet(
-                        model: model, capturedMs: captured, delayAtCaptureMs: delayAtCapture,
-                        onDone: { box.panel?.close(animated: true) }))
-                    box.panel = panel
-                    host.present(panel: panel)
-                    guard host.panelHost === panel else { return }
-                    coordinator.sheetOpen = true
-                    openChanged(true)
-                }
-            },
-            onRememberToggle: { [weak host] in
-                speedModel.onRememberChange?(!speedModel.remember)
-                if let host { installTransportMenu(on: host, coordinator: coordinator) }
-            })
-        host.playerVC.transportBarCustomMenuItems = NativeTransportMenus.build(
-            inputs: inputs, engine: engine, model: model, actions: actions)
-    }
-
-    private func transportMenuInputs(coordinator: Coordinator) -> NativeTransportMenus.Inputs {
-        NativeTransportMenus.Inputs(
-            canSwitchStreams: canSwitchStreams,
-            hasEpisodes: hasEpisodes,
-            timing: panelModel.supportsSubtitleDelay,
-            syncLine: panelModel.syncLineAvailable,
-            rememberAvailable: coordinator.speedModel.rememberAvailable,
-            remember: coordinator.speedModel.remember)
-    }
-
     func updateUIViewController(_ host: NativePlayerHostController, context: Context) {
         let controller = host.playerVC
         if controller.player !== player { controller.player = player }
-        if context.coordinator.menuInputs != transportMenuInputs(coordinator: context.coordinator) {
-            installTransportMenu(on: host, coordinator: context.coordinator)
-        }
+        // The tool buttons follow their own publishers; this only catches anything they miss.
+        context.coordinator.tools?.refresh()
         // Only assign on change — it's a panel-content property, not part of the transport-bar
         // signature below, and reassigning identical arrays each SwiftUI tick is pointless work.
         if context.coordinator.allowedSubtitleLanguages != allowedSubtitleLanguages {
@@ -783,15 +753,13 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
     final class Coordinator {
         var actionsSignature = ""
         var allowedSubtitleLanguages: [String]?
-        /// What the installed tool buttons offer; a change reinstalls them.
-        var menuInputs: NativeTransportMenus.Inputs?
+        /// The round tool buttons' installer, alive as long as the container.
+        var tools: NativeTransportMenusInstaller?
         /// The speed model (Remember Speed for This Show), alive as long as the container.
         let speedModel = NativeSpeedModel()
         /// The text pills' installer, alive as long as the container.
         var pills: NativeInfoPillsInstaller?
         var pillsOpen = false
         var sheetOpen = false
-        /// The Sources popover opened since the transport bar last hid.
-        var sourcesMenuOpened = false
     }
 }
