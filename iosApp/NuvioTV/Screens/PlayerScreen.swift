@@ -260,10 +260,19 @@ struct PlayerScreen: View {
         let settings = PlayerSettingsRepository.shared.uiState.value_ as? PlayerSettingsUiState
         let primary = settings?.preferredSubtitleLanguage ?? ""
         let off = settings != nil && SubtitleFallbackGuard.isOff(primary: primary)
+        let device = DeviceLanguagePreferences.shared.preferredLanguageCodes()
         let targets = settings.map {
             AetherSubtitleRouting.preferredTargets(primary: $0.preferredSubtitleLanguage,
                                                    secondary: $0.secondaryPreferredSubtitleLanguage,
-                                                   deviceLanguages: DeviceLanguagePreferences.shared.preferredLanguageCodes())
+                                                   deviceLanguages: device)
+        } ?? []
+        // The same audio targets the Aether load request carries (`makeLoadRequest`).
+        let audioTargets = settings.map {
+            PlayerLanguagePreferencesKt.resolvePreferredAudioLanguageTargets(
+                preferredAudioLanguage: $0.preferredAudioLanguage,
+                secondaryPreferredAudioLanguage: $0.secondaryPreferredAudioLanguage,
+                deviceLanguages: device,
+                contentOriginalLanguage: PlayerAudioLanguagePlan.originalLanguage(for: context))
         } ?? []
         return AetherRoutingOptions(
             enabled: true,
@@ -272,7 +281,8 @@ struct PlayerScreen: View {
             sourceURL: context.url,
             preferredSubtitleTargets: targets,
             subtitlesOff: off,
-            useForcedSubtitles: settings?.subtitleStyle.useForcedSubtitles ?? false)
+            useForcedSubtitles: settings?.subtitleStyle.useForcedSubtitles ?? false,
+            preferredAudioTargets: audioTargets)
     }
 }
 

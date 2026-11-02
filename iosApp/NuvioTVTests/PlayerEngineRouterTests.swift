@@ -435,6 +435,46 @@ final class AetherSubtitleRoutingTests: XCTestCase {
                                                                     useForcedSubtitles: true))
     }
 
+    // Review r1 F2: forced subtitles are matched against the audio playback selects (the preferred
+    // one), not the probe's first audio track.
+    private func dualAudioProbe(_ subs: [SubtitleStreamInfo], fonts: Int) -> ProbeResult {
+        ProbeResult(
+            container: "matroska,webm", videoCodec: "hevc", videoProfile: 0, hdr: .sdr, dolbyVision: nil,
+            audio: [AudioStreamInfo(index: 1, codec: "eac3", channels: 6, language: "jpn"),
+                    AudioStreamInfo(index: 2, codec: "eac3", channels: 6, language: "eng")],
+            subtitles: subs, durationSec: 3600, seekable: true, videoStreamCount: 1, fontAttachmentCount: fonts
+        )
+    }
+
+    func testForcedPlanFollowsThePreferredNonFirstAudioTrack() {
+        let p = dualAudioProbe([sub(3, "ass", "eng", isForced: true)], fonts: 2)
+        XCTAssertEqual(AetherSubtitleRouting.effectiveAudioTrack(probe: p, preferredAudioTargets: ["eng"])?.index, 2)
+        XCTAssertTrue(AetherSubtitleRouting.initialTrackIsStyledASS(probe: p, preferredLanguages: ["eng"], subtitlesOff: false,
+                                                                    useForcedSubtitles: true, preferredAudioTargets: ["eng"]),
+                      "English audio is selected, so the forced English ASS track plays")
+        XCTAssertFalse(AetherSubtitleRouting.initialTrackIsStyledASS(probe: p, preferredLanguages: ["eng"], subtitlesOff: false,
+                                                                     useForcedSubtitles: true, preferredAudioTargets: ["jpn"]),
+                       "Japanese audio: no forced English pick")
+    }
+
+    func testRouterSendsThePreferredAudioForcedAssToMpv() {
+        let p = dualAudioProbe([sub(3, "ass", "eng", isForced: true)], fonts: 2)
+        var options = AetherRoutingOptions(enabled: true)
+        options.preferredSubtitleTargets = ["eng"]
+        options.useForcedSubtitles = true
+        options.preferredAudioTargets = ["eng"]
+        XCTAssertEqual(PlayerEngineRouter.route(probe: p, nativeDVEnabled: false, aether: options).reason, "styled ASS")
+    }
+
+    func testSubtitlesOffStillRoutesTheForcedPickOnTheAudioLanguage() {
+        // Off + "Use forced subtitles": the shared plan picks forced tracks in the selected audio's language.
+        let p = dualAudioProbe([sub(3, "ass", "eng", isForced: true)], fonts: 2)
+        XCTAssertTrue(AetherSubtitleRouting.initialTrackIsStyledASS(probe: p, preferredLanguages: [], subtitlesOff: true,
+                                                                    useForcedSubtitles: true, preferredAudioTargets: ["eng"]))
+        XCTAssertFalse(AetherSubtitleRouting.initialTrackIsStyledASS(probe: p, preferredLanguages: [], subtitlesOff: true,
+                                                                     useForcedSubtitles: false, preferredAudioTargets: ["eng"]))
+    }
+
     func testNoSubtitleTracksIsNotStyled() {
         XCTAssertFalse(AetherSubtitleRouting.initialTrackIsStyledASS(probe: probe([], fonts: 5), preferredLanguages: ["eng"], subtitlesOff: false))
     }

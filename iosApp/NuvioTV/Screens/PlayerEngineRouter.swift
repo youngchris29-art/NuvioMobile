@@ -54,6 +54,9 @@ nonisolated struct AetherRoutingOptions: Equatable, Sendable {
     var subtitlesOff: Bool = false
     /// "Use forced subtitles" (the shared auto-select plan then picks forced tracks only).
     var useForcedSubtitles: Bool = false
+    /// Resolved audio language targets (`resolvePreferredAudioLanguageTargets`, as the load request), so
+    /// the forced plan matches against the audio track playback selects, not the first one.
+    var preferredAudioTargets: [String] = []
 }
 
 nonisolated enum PlayerEngineRouter {
@@ -187,7 +190,8 @@ nonisolated enum PlayerEngineRouter {
         if options.styledSubsToMpv,
            AetherSubtitleRouting.initialTrackIsStyledASS(
                probe: p, preferredLanguages: options.preferredSubtitleTargets,
-               subtitlesOff: options.subtitlesOff, useForcedSubtitles: options.useForcedSubtitles) {
+               subtitlesOff: options.subtitlesOff, useForcedSubtitles: options.useForcedSubtitles,
+               preferredAudioTargets: options.preferredAudioTargets) {
             return mpv("styled ASS")
         }
         // Row 11
