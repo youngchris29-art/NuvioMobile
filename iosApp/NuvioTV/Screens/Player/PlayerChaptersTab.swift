@@ -6,6 +6,8 @@ import SwiftUI
 struct PlayerChaptersTab: View {
     @ObservedObject var model: PlayerTopPanelModel
     @FocusState private var focusedChapter: Int?
+    /// The focus has entered the list since it appeared (only that first entry is redirected).
+    @State private var focusEntered = false
 
     private var currentID: Int? { model.chapters.first(where: \.isCurrent)?.id }
 
@@ -34,9 +36,31 @@ struct PlayerChaptersTab: View {
             .focusSection()
             .defaultFocus($focusedChapter, currentID, priority: .userInitiated)
             .onAppear {
+                focusEntered = false
                 if let id = currentID { proxy.scrollTo(id, anchor: .center) }
+            }
+            // Review r3 (B4): the mpv overlay now pulls the focus in as the shelf appears
+            // (`UIFocusSystem.requestFocusUpdate`), and UIKit's pick from nothing is the first row,
+            // not the list's default focus. The first entry is moved onto the current chapter;
+            // every later move is the viewer's own.
+            .onChange(of: focusedChapter) { _, new in
+                guard let new, !focusEntered else { return }
+                focusEntered = true
+                if let target = PlayerChapterFocus.entryRedirect(entered: new, current: currentID) {
+                    focusedChapter = target
+                    proxy.scrollTo(target, anchor: .center)
+                }
             }
         }
         .frame(maxHeight: 520, alignment: .top)
+    }
+}
+
+/// Where the focus goes when it first enters the Chapters list: the current chapter, if it entered
+/// anywhere else; nil = stay (already there, or nothing is current).
+enum PlayerChapterFocus {
+    static func entryRedirect(entered: Int, current: Int?) -> Int? {
+        guard let current, current != entered else { return nil }
+        return current
     }
 }

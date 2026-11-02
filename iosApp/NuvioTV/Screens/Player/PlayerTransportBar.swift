@@ -220,6 +220,21 @@ enum TransportHideRule {
     }
 }
 
+/// Where the focus goes when an mpv popover or shelf closes (review r3).
+enum OverlayCloseFocus {
+    enum Reason: Equatable {
+        /// Menu, or Select on the open text pill: one level back, to the pill row.
+        case back
+        /// A pick inside closed it (chapter seek, episode jump, source switch, Play Now), or its
+        /// pill left the row: the interaction is over.
+        case selection
+    }
+
+    /// True: the overlay's pill keeps the focus (and so holds the bar, `TransportHideRule.holdsBar`).
+    /// False: back to the track, and the bar hides on its timer.
+    static func pillKeepsFocus(_ reason: Reason) -> Bool { reason == .back }
+}
+
 // MARK: - Fonts
 
 /// The bar's literal sizes, in one place (the HIG contract bans fixed sizes at call sites, and no

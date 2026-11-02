@@ -295,4 +295,38 @@ final class PlayerInsightsMPVChromeTests: XCTestCase {
         XCTAssertEqual(down(skip: true, upNextPlays: false, asked: &asked), .skip)
         XCTAssertTrue(asked)
     }
+
+    // MARK: - Review r3
+
+    /// Sources / Episodes rows that arrive after the open-time focus retries ask again, once, on
+    /// the first rows only.
+    func testOverlayRefocusesOnlyWhenTheFirstRowsArrive() {
+        XCTAssertTrue(PlayerOverlayRowFocus.shouldRefocus(oldRowCount: 0, newRowCount: 1))
+        XCTAssertTrue(PlayerOverlayRowFocus.shouldRefocus(oldRowCount: 0, newRowCount: 12))
+        XCTAssertFalse(PlayerOverlayRowFocus.shouldRefocus(oldRowCount: 3, newRowCount: 7), "more rows: focus may be in")
+        XCTAssertFalse(PlayerOverlayRowFocus.shouldRefocus(oldRowCount: 2, newRowCount: 0))
+        XCTAssertFalse(PlayerOverlayRowFocus.shouldRefocus(oldRowCount: 0, newRowCount: 0))
+    }
+
+    /// A pick inside a shelf (a chapter seek) returns to the track so the bar can hide; backing out
+    /// keeps the pill focused, which holds the bar (the pill-row level).
+    func testOverlayCloseFocusAndTheBarHold() {
+        XCTAssertTrue(OverlayCloseFocus.pillKeepsFocus(.back))
+        XCTAssertFalse(OverlayCloseFocus.pillKeepsFocus(.selection))
+        let afterPick = OverlayCloseFocus.pillKeepsFocus(.selection)
+        XCTAssertTrue(TransportHideRule.mayHide(
+            pillFocused: TransportHideRule.holdsBar(discFocused: false, infoPillFocused: afterPick, overlayOpen: false),
+            modeActive: false), "after a chapter pick the bar hides on its timer")
+        let afterBack = OverlayCloseFocus.pillKeepsFocus(.back)
+        XCTAssertFalse(TransportHideRule.mayHide(
+            pillFocused: TransportHideRule.holdsBar(discFocused: false, infoPillFocused: afterBack, overlayOpen: false),
+            modeActive: false), "Menu out of a shelf leaves the pill focused and the bar up")
+    }
+
+    /// B4: the first focus entry into the Chapters list lands on the current chapter.
+    func testChapterListFirstEntryGoesToTheCurrentChapter() {
+        XCTAssertEqual(PlayerChapterFocus.entryRedirect(entered: 0, current: 2), 2)
+        XCTAssertNil(PlayerChapterFocus.entryRedirect(entered: 2, current: 2))
+        XCTAssertNil(PlayerChapterFocus.entryRedirect(entered: 1, current: nil))
+    }
 }

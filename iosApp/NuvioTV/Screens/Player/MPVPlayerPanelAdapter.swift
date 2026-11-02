@@ -82,13 +82,21 @@ final class MPVPlayerPanelAdapter {
             state?.seekToChapter?(chapter.sec)
             model?.onClose?()
         }
-        Publishers.Merge(
-            state.transport.$chapters.map { _ in () }.eraseToAnyPublisher(),
-            state.$panelOpen.removeDuplicates().filter { $0 }.map { _ in () }.eraseToAnyPublisher()
-        )
-        .receive(on: RunLoop.main)
-        .sink { [weak self] in self?.rebuildChapters() }
-        .store(in: &cancellables)
+        state.transport.$chapters
+            .map { _ in () }
+            .receive(on: RunLoop.main)
+            .sink { [weak self] in self?.rebuildChapters() }
+            .store(in: &cancellables)
+        // Review r3 (B4): on open, synchronously, before SwiftUI draws the shelf. The shelf asks for
+        // focus as it appears and its default focus is the ticked row; a rebuild one runloop turn
+        // later ticked the current chapter only after the focus had landed on the stale tick (the
+        // chapter playing when the shelf last opened). The rebuild reads the chapters and the
+        // position, never `panelOpen`, so the will-set emission is safe to act on here.
+        state.$panelOpen
+            .removeDuplicates()
+            .filter { $0 }
+            .sink { [weak self] _ in self?.rebuildChapters() }
+            .store(in: &cancellables)
 
         // mpv audio effects (P5 B20): the native adapter never sets `audioEffects`, so its Audio
         // tab hides the rows.

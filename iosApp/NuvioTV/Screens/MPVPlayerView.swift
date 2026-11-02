@@ -666,7 +666,9 @@ final class MPVTVPlayerViewController: UIViewController {
             self?.becomeFirstResponder()
         }
         state.overlayMenu = { [weak self] in self?.handleOverlayMenu() }
-        state.closeOverlay = { [weak self] in self?.closeOverlay() }
+        // Every `state.closeOverlay` caller closes because of a pick inside the overlay (or its
+        // pill leaving the row): back to the track.
+        state.closeOverlay = { [weak self] in self?.closeOverlay(.selection) }
         state.requestOverlayFocus = { [weak self] in self?.requestOverlayFocus() }
         state.togglePause = { [weak self] in self?.togglePause(); self?.flashControls() }
         view.accessibilityIdentifier = "player.mpv"
@@ -4307,13 +4309,18 @@ final class MPVTVPlayerViewController: UIViewController {
         }
     }
 
-    /// Closes the open popover or shelf; its pill keeps the focus, and this controller takes the
-    /// remote back (libmpv's controller must be first responder again).
-    private func closeOverlay() {
+    /// Closes the open popover or shelf, and this controller takes the remote back (libmpv's
+    /// controller must be first responder again). Backing out (Menu, Select on the open pill) leaves
+    /// the focus on its pill; a close that a pick inside caused (a chapter seek, an episode jump, a
+    /// source switch, Play Now) returns to the track, so the bar hides on its timer
+    /// (`OverlayCloseFocus`, review r3: a focused text pill holds the bar, and keeping it focused
+    /// after a chapter pick held the bar up for good).
+    private func closeOverlay(_ reason: OverlayCloseFocus.Reason = .back) {
         let t = state.transport
         guard t.overlayOpen else { return }
-        if let pill = t.openPopover { t.focusedPill = pill }
-        if let pill = t.openInfoPill { t.focusedInfoPill = pill }
+        let keep = OverlayCloseFocus.pillKeepsFocus(reason)
+        if let pill = t.openPopover { t.focusedPill = keep ? pill : nil }
+        if let pill = t.openInfoPill { t.focusedInfoPill = keep ? pill : nil }
         _ = state.panelModel?.menuBack()
         t.openPopover = nil
         t.openInfoPill = nil

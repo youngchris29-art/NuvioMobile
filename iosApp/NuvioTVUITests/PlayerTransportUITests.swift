@@ -644,10 +644,19 @@ final class PlayerTransportUITests: XCTestCase {
         XCTAssertTrue(row.waitForExistence(timeout: 3), "no chapter row 2 on re-open")
         XCTAssertEqual(row.value as? String, "selected", "the current chapter (Act Two) is not ticked")
         let first = app.descendants(matching: .any)["player.panel.chapter.0"]
-        // On the simulator nothing is focused right after the shelf opens (device-pass item: the
-        // controller asks the focus engine on open); the first press that reaches the controller
-        // repeats the request, and the list's default focus is the current chapter.
-        remote.press(.down)
+        // Since the Insights device fixes the controller pulls the focus into the shelf as it
+        // opens (`UIFocusSystem.requestFocusUpdate`) and the list's first entry lands on the
+        // current chapter, with no press. (Until then nothing was focused after the open on the
+        // simulator and this leg pressed Down to make the controller ask; that press now moves
+        // the focus one row on.) A press is sent only if nothing in the shelf is focused yet.
+        let anyRowFocused = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "hasFocus == true AND identifier BEGINSWITH 'player.panel.chapter.'"))
+        let entry = Date()
+        while anyRowFocused.count == 0 && Date().timeIntervalSince(entry) < 2 { Thread.sleep(forTimeInterval: 0.2) }
+        if anyRowFocused.count == 0 {
+            print("[ChapterLeg] nothing focused 2 s after the open; pressing Down")
+            remote.press(.down)
+        }
         let landed = Date()
         while !row.hasFocus && Date().timeIntervalSince(landed) < 4 { Thread.sleep(forTimeInterval: 0.2) }
         if !row.hasFocus {

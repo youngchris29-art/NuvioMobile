@@ -109,9 +109,11 @@ struct MPVPlayerOverlay: View {
             MPVPlaybackTab(state: state, engine: engine, canSwitchStreams: canSwitchStreams, settingsOnly: true,
                            onClose: { state.closeOverlay?() })
         case .sources:
-            PlayerSourcesColumn(engine: engine, onClose: { state.closeOverlay?() })
+            PlayerSourcesColumn(engine: engine, onClose: { state.closeOverlay?() },
+                                onFirstRowsAppear: { focusIntoOverlay() })
         case .episodes:
-            PlayerEpisodesColumn(engine: engine, onClose: { state.closeOverlay?() })
+            PlayerEpisodesColumn(engine: engine, onClose: { state.closeOverlay?() },
+                                 onFirstRowsAppear: { focusIntoOverlay() })
         case .aspect, .more:
             EmptyView()
         }
