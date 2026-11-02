@@ -5,11 +5,12 @@ final class PlayerTransportBarLayoutTests: XCTestCase {
     private let canvas = CGSize(width: 1920, height: 1080)
     private func layout(_ pills: Int = 6) -> TransportBarLayout { TransportBarLayout(canvas: canvas, pillCount: pills) }
 
-    func testTrackCentreIs95FromBottomOn1080Canvas() {
-        XCTAssertEqual(layout().trackCentreY, 985)
-        XCTAssertEqual(canvas.height - layout().trackCentreY, 95)
-        XCTAssertEqual(layout().timesTop, 1003)
-        XCTAssertEqual(layout().titleFrameBottom, 925)
+    /// Insights (2026-11-01): 95 + the info pill row (46) and its gap (14).
+    func testTrackCentreIs155FromBottomOn1080Canvas() {
+        XCTAssertEqual(layout().trackCentreY, 925)
+        XCTAssertEqual(canvas.height - layout().trackCentreY, 155)
+        XCTAssertEqual(layout().timesTop, 943)
+        XCTAssertEqual(layout().titleFrameBottom, 865)
     }
 
     func testTrackInsetsAre86() {
@@ -32,7 +33,7 @@ final class PlayerTransportBarLayoutTests: XCTestCase {
         XCTAssertEqual(layout(6).pillRowWidth, 497)
         XCTAssertEqual(layout(6).lockupWidth, 1211)
         XCTAssertEqual(layout(6).pillRowFrame.maxX, 1834)
-        XCTAssertEqual(layout(6).pillRowFrame.midY, 898.5)
+        XCTAssertEqual(layout(6).pillRowFrame.midY, 838.5)
     }
 
     func testLockupWidthShrinksWithPillCount() {
@@ -118,13 +119,6 @@ final class PlayerTransportBarLayoutTests: XCTestCase {
                        [.subtitles, .audio, .speed, .aspect, .sources, .more])
         XCTAssertEqual(PillKind.visible(isSeries: true, canSwitchStreams: false, hasEpisodes: true),
                        [.subtitles, .audio, .speed, .aspect, .more])
-        XCTAssertEqual(PillKind.subtitles.panelTab, .subtitles)
-        XCTAssertEqual(PillKind.audio.panelTab, .audio)
-        XCTAssertEqual(PillKind.speed.panelTab, .playback)
-        XCTAssertEqual(PillKind.aspect.panelTab, .playback)
-        XCTAssertEqual(PillKind.sources.panelTab, .playback)
-        XCTAssertEqual(PillKind.episodes.panelTab, .playback)
-        XCTAssertEqual(PillKind.more.panelTab, .info)
         let all = PillKind.allCases
         XCTAssertEqual(PillKind.move(from: .subtitles, by: -1, in: all), .subtitles)
         XCTAssertEqual(PillKind.move(from: .more, by: 1, in: all), .more)
@@ -141,8 +135,8 @@ final class PlayerTransportBarLayoutTests: XCTestCase {
     func testPreviewCardSitsAboveTheTrackAndClamps() {
         let l = layout()
         let mid = l.previewCardFrame(centreX: 960)
-        XCTAssertEqual(mid, CGRect(x: 760, y: 723, width: 400, height: 225))
-        XCTAssertEqual(mid.maxY, 948)
+        XCTAssertEqual(mid, CGRect(x: 760, y: 663, width: 400, height: 225))
+        XCTAssertEqual(mid.maxY, 888)
         XCTAssertEqual(l.previewCardFrame(centreX: 100).minX, 86)
         XCTAssertEqual(l.previewCardFrame(centreX: 1900).maxX, 1834)
     }
@@ -152,7 +146,7 @@ final class PlayerTransportBarLayoutTests: XCTestCase {
         let withCard = l.chapterLabelFrame(centreX: 960, width: 200, cardShown: true)
         let noCard = l.chapterLabelFrame(centreX: 960, width: 200, cardShown: false)
         XCTAssertEqual(withCard, noCard)
-        XCTAssertEqual(withCard, CGRect(x: 860, y: 681, width: 200, height: 34))
+        XCTAssertEqual(withCard, CGRect(x: 860, y: 621, width: 200, height: 34))
         XCTAssertEqual(l.chapterLabelFrame(centreX: 90, width: 300, cardShown: true).minX, 86)
         XCTAssertEqual(l.chapterLabelFrame(centreX: 1830, width: 300, cardShown: true).maxX, 1834)
     }

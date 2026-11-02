@@ -110,8 +110,26 @@ final class MPVPlayerPanelAdapter {
             .sink { [weak model] facts in model?.setBadgeFacts(facts) }
             .store(in: &cancellables)
 
+        // Insights (2026-11-01): the popovers and shelves read this model; "close" means close the
+        // open popover or shelf (a chapter seek, an episode jump, Play Now).
+        state.panelModel = model
+        model.onClose = { [weak state] in state?.closeOverlay?() }
+        // The text pill row follows the model (Cast once someone is known, Chapters once the list
+        // lands, Up Next while there is a next episode). On the next main turn: `@Published`
+        // emits before the value is stored.
+        Publishers.Merge4(
+            model.$people.map { _ in () }.eraseToAnyPublisher(),
+            model.$castEnabled.map { _ in () }.eraseToAnyPublisher(),
+            model.$chapters.map { _ in () }.eraseToAnyPublisher(),
+            model.$upNext.map { _ in () }.eraseToAnyPublisher()
+        )
+        .receive(on: RunLoop.main)
+        .sink { [weak self] in self?.rebuildInfoPills() }
+        .store(in: &cancellables)
+
         rebuildSelections()
         rebuildInfo()
+        rebuildInfoPills()
         refreshRoute()
         routeObserver = NotificationCenter.default.addObserver(
             forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main
@@ -122,6 +140,48 @@ final class MPVPlayerPanelAdapter {
 
     deinit {
         if let routeObserver { NotificationCenter.default.removeObserver(routeObserver) }
+    }
+
+    /// The Up Next pill from the screen's `NextEpisodeEngine`: the next episode's title, S/E and
+    /// still; Play plays the ready stream when the countdown card has one, else jumps to it (search,
+    /// then play, as the Episodes list does).
+    func attachUpNext(engine: NextEpisodeEngine) {
+        engine.$upNextEpisode
+            .receive(on: RunLoop.main)
+            .sink { [weak model] episode in
+                guard let model else { return }
+                let card = episode.map(Self.upNextCard(_:))
+                if model.upNext != card { model.upNext = card }
+            }
+            .store(in: &cancellables)
+        model.onPlayUpNext = { [weak engine, weak model] in
+            guard let engine, let next = engine.upNextEpisode else { return }
+            if !engine.playNow() { engine.jumpToEpisode(next) }
+            model?.onClose?()
+        }
+    }
+
+    static func upNextCard(_ episode: MetaVideo) -> PlayerPanelUpNext {
+        let subtitle: String?
+        if let s = episode.season?.intValue, let e = episode.episode?.intValue {
+            subtitle = "S\(s) · E\(e)"
+        } else {
+            subtitle = nil
+        }
+        return PlayerPanelUpNext(title: episode.title, subtitle: subtitle,
+                                 still: episode.thumbnail.flatMap { URL(string: $0) })
+    }
+
+    private func rebuildInfoPills() {
+        let t = state.transport
+        let pills = PlayerInfoPill.visible(for: model)
+        guard pills != t.infoPills else { return }
+        let fixed = PlayerInfoPill.reconcile(focused: t.focusedInfoPill, open: t.openInfoPill,
+                                             old: t.infoPills, new: pills)
+        t.infoPills = pills
+        // Close first: closing hands the focus back to the open pill, which may be the one gone.
+        if t.openInfoPill != nil, fixed.open == nil { state.closeOverlay?() }
+        if t.focusedInfoPill != fixed.focused { t.focusedInfoPill = fixed.focused }
     }
 
     private func rebuildSelections() {
