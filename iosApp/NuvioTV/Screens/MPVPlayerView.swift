@@ -467,6 +467,8 @@ final class MPVTVPlayerViewController: UIViewController {
     private var swallowMenuRelease = false
     /// A consumed Menu's action, performed when the press ends (never while it is down).
     private var pendingMenuAction: MenuPrecedence.Action?
+    /// Bumped by every overlay focus request; a retry chain from an older request stops.
+    private var overlayFocusGeneration = 0
     /// BUG-165: when the exit Menu was decided (`systemUptime`), for the `[MenuProbe]` timing lines
     /// that say where the press's later phases and the cover's teardown land relative to it.
     private var exitDecidedAt: TimeInterval?
@@ -518,6 +520,11 @@ final class MPVTVPlayerViewController: UIViewController {
         case .hidePill, .hideBar:
             // Menu hides the bar (hideControlsNow clears the pill focus); the next Menu exits.
             hideControlsNow()
+        case .unfocusInfoPill:
+            // Insights device pass (2026-11-01): a focused text pill only lets go of the focus;
+            // the bar stays (back on the track), the next Menu hides it, the one after exits.
+            state.transport.focusedInfoPill = nil
+            flashControls()
         case .actorBack:
             // Insights: the Cast actor view backs out to the card row; the shelf stays.
             _ = state.panelModel?.menuBack()
@@ -3330,7 +3337,7 @@ final class MPVTVPlayerViewController: UIViewController {
                     #endif
                     closeFailover()
                     onExit?()
-                case .actorBack, .closeOverlay, .cancelMode, .dismissUpNext, .hidePill, .hideBar:
+                case .actorBack, .closeOverlay, .cancelMode, .dismissUpNext, .hidePill, .unfocusInfoPill, .hideBar:
                     // Consumed, but PERFORMED ON RELEASE (`pressesEnded`). Acting here changed the
                     // view tree while the press was still down (the bar leaving, the chip leaving),
                     // and the system then treated the half-finished Menu as unhandled and dismissed
@@ -4174,10 +4181,13 @@ final class MPVTVPlayerViewController: UIViewController {
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             let t = self.state.transport
-            // A focused text pill alone does not hold the bar (every Down lands there now); a
-            // focused disc or an open popover or shelf does.
+            // A focused disc or text pill, or an open popover or shelf, holds the bar (Insights
+            // device pass 2026-11-01: a text pill that let the bar hide under it left the next
+            // Menu to exit the player). Menu lets go of the pill, then hides the bar.
             guard TransportHideRule.mayHide(
-                pillFocused: t.focusedPill != nil || t.overlayOpen,
+                pillFocused: TransportHideRule.holdsBar(discFocused: t.focusedPill != nil,
+                                                        infoPillFocused: t.focusedInfoPill != nil,
+                                                        overlayOpen: t.overlayOpen),
                 modeActive: self.transport.mode.isActive) else { return }
             guard let due = self.currentHideDelay() else { return }
             if due > elapsed {
@@ -4265,13 +4275,35 @@ final class MPVTVPlayerViewController: UIViewController {
     /// the player is focusable, so a popover or shelf with focusable rows takes the focus (a shelf
     /// with none, Info, leaves the remote with this controller). The request goes to the top of
     /// this controller's container chain, the SwiftUI host that draws the overlay.
+    ///
+    /// Device pass 2026-11-01: `setNeedsFocusUpdate` alone is ignored while nothing is focused (the
+    /// environment must contain the focused item), so the focus stayed off the overlay until the
+    /// next press. `UIFocusSystem.requestFocusUpdate(to:)` moves it in from nothing; it is retried a
+    /// few runloop turns later while the overlay is open and still holds no focus (SwiftUI may not
+    /// have laid the rows out yet; Sources and Episodes rows load late). The overlay itself also
+    /// resets its focus scope on appear, which picks the preferred row (`PlayerOverlayDefaultFocus`).
+    private static let overlayFocusRetryDelays: [TimeInterval] = [0, 0.08, 0.2, 0.45]
+
     private func requestOverlayFocus() {
-        DispatchQueue.main.async { [weak self] in
-            guard let self, self.state.transport.overlayOpen else { return }
+        overlayFocusGeneration &+= 1
+        requestOverlayFocus(attempt: 0, generation: overlayFocusGeneration)
+    }
+
+    private func requestOverlayFocus(attempt: Int, generation: Int) {
+        let delays = Self.overlayFocusRetryDelays
+        guard attempt < delays.count else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delays[attempt]) { [weak self] in
+            guard let self, generation == self.overlayFocusGeneration,
+                  self.state.transport.overlayOpen else { return }
             var host: UIViewController = self
             while let parent = host.parent { host = parent }
+            let system = UIFocusSystem.focusSystem(for: host)
+            // Nothing else in the player is focusable: any focused item is inside the overlay.
+            if system?.focusedItem != nil { return }
+            system?.requestFocusUpdate(to: host)
             host.setNeedsFocusUpdate()
             host.updateFocusIfNeeded()
+            self.requestOverlayFocus(attempt: attempt + 1, generation: generation)
         }
     }
 

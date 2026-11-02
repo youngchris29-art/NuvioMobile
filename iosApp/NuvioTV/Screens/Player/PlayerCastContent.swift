@@ -13,6 +13,7 @@ struct PlayerCastContent: View {
         Group {
             if let person = model.actorView {
                 PlayerActorView(person: person, detail: model.actorDetail, isFocused: $actorFocused)
+                    .playerOverlayDefaultFocus(true)
                     .onAppear { actorFocused = true }
             } else {
                 cardRow
@@ -26,6 +27,12 @@ struct PlayerCastContent: View {
         }
     }
 
+    /// Where the focus lands when the mpv Cast shelf opens: the card last opened, else the first.
+    private var preferredCardKey: String? {
+        if let key = model.lastOpenedCardKey, model.people.contains(where: { $0.cardKey == key }) { return key }
+        return model.people.first?.cardKey
+    }
+
     private var cardRow: some View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
@@ -36,6 +43,7 @@ struct PlayerCastContent: View {
                         }
                         .buttonStyle(.card)
                         .focused($focusedCard, equals: person.cardKey)
+                        .playerOverlayDefaultFocus(person.cardKey == preferredCardKey)
                         .id(person.cardKey)
                         .accessibilityIdentifier("player.cast.card.\(person.cardKey)")
                     }
@@ -193,6 +201,7 @@ struct PlayerUpNextContent: View {
                         Label(String(localized: "Play Now"), systemImage: "play.fill")
                     }
                     .padding(.top, Theme.Spacing.sm)
+                    .playerOverlayDefaultFocus(true)
                     .accessibilityIdentifier("player.upnext.play")
                 }
                 Spacer(minLength: 0)

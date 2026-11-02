@@ -34,6 +34,8 @@ struct PlayerPanelOptionRow: View {
             }
             .contentShape(Rectangle())
         }
+        // The selected row is where the focus lands when an mpv popover opens.
+        .playerOverlayDefaultFocus(option.isSelected)
         .accessibilityIdentifier("\(identifierPrefix).\(option.id)")
         .accessibilityValue(Text(verbatim: option.isSelected ? "selected" : ""))
     }
@@ -48,5 +50,42 @@ struct PlayerPanelSectionCaption: View {
             .font(Theme.Font.caption.weight(.semibold))
             .foregroundStyle(Theme.Palette.textSecondary)
             .padding(.bottom, Theme.Spacing.xxs)
+    }
+}
+
+// MARK: - Overlay default focus (Insights device pass, 2026-11-01)
+
+private struct PlayerOverlayFocusScopeKey: EnvironmentKey {
+    static let defaultValue: Namespace.ID? = nil
+}
+
+extension EnvironmentValues {
+    /// The focus scope of the mpv player's open popover or shelf (`MPVPlayerOverlay`); nil
+    /// everywhere else (the native player's AVKit info panels place their own focus).
+    var playerOverlayFocusScope: Namespace.ID? {
+        get { self[PlayerOverlayFocusScopeKey.self] }
+        set { self[PlayerOverlayFocusScopeKey.self] = newValue }
+    }
+}
+
+/// Marks the view the focus should land on when an mpv popover or shelf opens (the selected row,
+/// the first Cast card). Outside the mpv overlay's scope it does nothing.
+private struct PlayerOverlayDefaultFocus: ViewModifier {
+    @Environment(\.playerOverlayFocusScope) private var scope
+    let preferred: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let scope {
+            content.prefersDefaultFocus(preferred, in: scope)
+        } else {
+            content
+        }
+    }
+}
+
+extension View {
+    func playerOverlayDefaultFocus(_ preferred: Bool) -> some View {
+        modifier(PlayerOverlayDefaultFocus(preferred: preferred))
     }
 }

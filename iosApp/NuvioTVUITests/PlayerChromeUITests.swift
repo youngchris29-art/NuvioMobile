@@ -102,8 +102,9 @@ final class PlayerChromeUITests: XCTestCase {
 
     // MARK: Legs
 
-    /// Down from a hidden bar → the bar comes up with the Info pill focused; Select opens its shelf;
-    /// Menu closes the shelf and leaves the bar and the pill row; the next Menu unfocuses the pills.
+    /// Down from a hidden bar → the bar comes up with the Info pill focused (and stays up while it
+    /// is); Select opens its shelf; Menu closes the shelf and leaves the bar and the pill row; the
+    /// next Menu unfocuses the pills with the bar still up; the next hides the bar.
     func testDownFocusesInfoPillAndShelfOpensAndCloses() throws {
         let app = try launchWithBarHidden()
         let info = element(app, "player.infoPill.info")
@@ -111,6 +112,10 @@ final class PlayerChromeUITests: XCTestCase {
         XCTAssertTrue(info.waitForExistence(timeout: 6), "no Info pill after Down")
         XCTAssertTrue(waitValue(info, "focused"), "Info pill not focused after Down: value=\(String(describing: info.value))")
         XCTAssertTrue(waitBar(app) { $0["vis"] == "1" }, "bar not up after Down: \(barText(app))")
+        // Device pass 2026-11-01: a focused text pill holds the bar (the hide delay is 4 s playing).
+        Thread.sleep(forTimeInterval: 6)
+        XCTAssertEqual(probe(app, "debug_transportProbe")["vis"], "1", "bar hid under a focused text pill: \(barText(app))")
+        XCTAssertEqual(info.value as? String, "focused", "Info pill lost focus while the bar was held")
 
         remote.press(.select)
         let shelf = element(app, "player.shelf.info")
@@ -126,6 +131,11 @@ final class PlayerChromeUITests: XCTestCase {
         remote.press(.menu)
         try requirePlayerStillPresented(app, "Menu on the pill row must not exit the player")
         XCTAssertTrue(waitValue(info, ""), "Menu did not unfocus the pill row: value=\(String(describing: info.value))")
+        // The approved levels: unfocusing the pills keeps the bar; the next Menu hides it.
+        XCTAssertTrue(waitBar(app) { $0["vis"] == "1" }, "bar hid with the pill row's unfocus: \(barText(app))")
+        remote.press(.menu)
+        try requirePlayerStillPresented(app, "Menu on the bar must hide it, not exit the player")
+        XCTAssertTrue(waitBar(app) { $0["vis"] == "0" }, "Menu did not hide the bar: \(barText(app))")
     }
 
     /// Up from the track → the disc row; Select on Subtitles → its popover; Menu closes it and the

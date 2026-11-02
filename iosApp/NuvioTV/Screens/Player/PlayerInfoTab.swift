@@ -46,9 +46,15 @@ struct NativeInfoHeader: Equatable {
     }
 }
 
-/// Info tab: what's-playing header (art · title · S/E · synopsis), a metadata chip row (Infuse-style:
-/// runtime · year · size · codec · resolution class · audio · bitrate · fps · genres · rating), then
-/// the live stream rows in two columns. Nothing here is focusable — it's a read-only tab.
+/// Info content (mpv Info shelf, native Info pill): what's-playing header (art · title · S/E ·
+/// badges · synopsis) on the left; the metadata chip row (Infuse-style: runtime · year · size ·
+/// codec · resolution class · audio · bitrate · fps · genres · rating) and the live stream rows in
+/// two columns on the right. Nothing here is focusable — it's read-only.
+///
+/// Device pass 2026-11-01: both hosts give it a fixed height (the mpv shelf, about 370 pt inside its
+/// padding; the native pill, 400 pt), and the old stacked layout (header, chips, divider, rows)
+/// ran past it and drew over the bar. It is now top-pinned and fills the offered height: the rows
+/// show only the whole rows that fit (`PlayerInfoFitGridLayout`), and the rest is clipped.
 struct PlayerInfoTab: View {
     let info: PlayerPanelInfo
 
@@ -56,13 +62,19 @@ struct PlayerInfoTab: View {
     private static let artHeight: CGFloat = 150
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+        HStack(alignment: .top, spacing: Theme.Spacing.xl) {
             headerView
-            if !info.chips.isEmpty { chipRow }
-            Divider().overlay(Theme.Palette.outline)
-            rowsView
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+            VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+                // Its ideal height only: a horizontal ScrollView would otherwise share the
+                // column's height with the rows.
+                if !info.chips.isEmpty { chipRow.fixedSize(horizontal: false, vertical: true) }
+                rowsView
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .clipped()
     }
 
     private var headerView: some View {
@@ -88,10 +100,9 @@ struct PlayerInfoTab: View {
                 if !info.badges.isEmpty { badgeRow }
                 if let synopsis = info.header.synopsis {
                     Text(synopsis)
-                        .font(Theme.Font.body)
+                        .font(Theme.Font.detail)
                         .foregroundStyle(Theme.Palette.textSecondary)
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
+                        .lineLimit(3)
                 }
                 if let label = info.header.streamLabel {
                     Text(label)
@@ -140,43 +151,108 @@ struct PlayerInfoTab: View {
         .accessibilityLabel(info.chips.map(\.text).joined(separator: ", "))
     }
 
-    /// Two columns of label/value pairs (a dozen live diagnostics don't fit one column under the
-    /// header). Non-lazy `Grid` so the panel measures its full height up front.
+    /// Two columns of label/value pairs, reading order left to right; only the whole rows that fit
+    /// the height left under the chips are shown.
+    @ViewBuilder
     private var rowsView: some View {
-        let rows = info.rows
-        let half = (rows.count + 1) / 2
-        return Grid(alignment: .topLeading, horizontalSpacing: Theme.Spacing.xl, verticalSpacing: Theme.Spacing.xs) {
-            ForEach(0..<max(half, 1), id: \.self) { i in
-                GridRow {
-                    if i < rows.count { rowView(rows[i]) } else { Color.clear.frame(height: 1) }
-                    if i + half < rows.count { rowView(rows[i + half]) } else { Color.clear.frame(height: 1) }
-                }
-            }
-            if rows.isEmpty {
-                GridRow {
-                    Text("No stream details yet.")
-                        .font(Theme.Font.body)
-                        .foregroundStyle(Theme.Palette.textSecondary)
-                        .gridCellColumns(2)
-                }
+        if info.rows.isEmpty {
+            Text("No stream details yet.")
+                .font(Theme.Font.body)
+                .foregroundStyle(Theme.Palette.textSecondary)
+        } else {
+            PlayerInfoFitGridLayout(columns: 2, horizontalSpacing: Theme.Spacing.lg,
+                                    verticalSpacing: Theme.Spacing.xs) {
+                ForEach(info.rows) { rowView($0) }
             }
         }
     }
 
     private func rowView(_ row: NativeInfoRow) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.md) {
+        HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.sm) {
             Text(row.label)
-                .font(Theme.Font.body)
+                .font(Theme.Font.meta)
                 .foregroundStyle(Theme.Palette.textSecondary)
-                .frame(width: 260, alignment: .leading)
+                .lineLimit(1)
+                .frame(width: 180, alignment: .leading)
             Text(row.value)
-                .font(Theme.Font.body.monospacedDigit())
+                .font(Theme.Font.meta.monospacedDigit())
                 .foregroundStyle(Theme.Palette.textPrimary)
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// A row-major grid of equal-width cells that shows only the whole rows fitting the offered height
+/// (all of them when the height is unbounded). Like `BadgeChipRowLayout`, the cells that do not fit
+/// are parked far above at zero size (a Layout must place every subview).
+struct PlayerInfoFitGridLayout: Layout {
+    var columns: Int
+    var horizontalSpacing: CGFloat
+    var verticalSpacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let plan = plan(subviews, width: proposal.width, height: proposal.height)
+        return CGSize(width: plan.width, height: plan.height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let plan = plan(subviews, width: bounds.width, height: bounds.height)
+        var y = bounds.minY
+        for (r, rowHeight) in plan.rowHeights.enumerated() {
+            for c in 0..<columns {
+                let i = r * columns + c
+                guard i < subviews.count else { break }
+                let x = bounds.minX + CGFloat(c) * (plan.cellWidth + horizontalSpacing)
+                subviews[i].place(at: CGPoint(x: x, y: y), anchor: .topLeading,
+                                  proposal: ProposedViewSize(width: plan.cellWidth, height: rowHeight))
+            }
+            y += rowHeight + verticalSpacing
+        }
+        for i in (plan.rowHeights.count * columns)..<max(subviews.count, plan.rowHeights.count * columns) {
+            subviews[i].place(at: CGPoint(x: bounds.minX, y: bounds.minY - 10_000), anchor: .topLeading,
+                              proposal: .zero)
+        }
+    }
+
+    /// The cell width, the heights of the rows that fit, and the size they take.
+    func plan(_ subviews: Subviews, width: CGFloat?, height: CGFloat?)
+        -> (cellWidth: CGFloat, rowHeights: [CGFloat], width: CGFloat, height: CGFloat) {
+        let cols = max(columns, 1)
+        let cellWidth: CGFloat
+        if let width, width.isFinite {
+            cellWidth = max((width - horizontalSpacing * CGFloat(cols - 1)) / CGFloat(cols), 0)
+        } else {
+            cellWidth = subviews.map { $0.sizeThatFits(.unspecified).width }.max() ?? 0
+        }
+        let heights = subviews.map { $0.sizeThatFits(ProposedViewSize(width: cellWidth, height: nil)).height }
+        let rows = PlayerInfoFitGridLayout.fittingRows(cellHeights: heights, columns: cols,
+                                                       spacing: verticalSpacing,
+                                                       maxHeight: height.flatMap { $0.isFinite ? $0 : nil })
+        let used = rows.reduce(0, +) + verticalSpacing * CGFloat(max(rows.count - 1, 0))
+        let totalWidth = rows.isEmpty ? 0 : cellWidth * CGFloat(cols) + horizontalSpacing * CGFloat(cols - 1)
+        return (cellWidth, rows, totalWidth, used)
+    }
+
+    /// Pure: the heights of the leading rows (row-major, `columns` cells each, a row as tall as its
+    /// tallest cell) whose stack, with `spacing` between rows, fits `maxHeight` (nil = all rows).
+    static func fittingRows(cellHeights: [CGFloat], columns: Int, spacing: CGFloat,
+                            maxHeight: CGFloat?) -> [CGFloat] {
+        let cols = max(columns, 1)
+        var rows: [CGFloat] = []
+        var used: CGFloat = 0
+        var start = 0
+        while start < cellHeights.count {
+            let row = cellHeights[start..<min(start + cols, cellHeights.count)].max() ?? 0
+            let next = used + (rows.isEmpty ? 0 : spacing) + row
+            if let maxHeight, next > maxHeight + 0.5 { break }
+            rows.append(row)
+            used = next
+            start += cols
+        }
+        return rows
     }
 }
 

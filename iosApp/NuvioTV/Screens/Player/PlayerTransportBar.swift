@@ -211,6 +211,13 @@ enum TransportHideRule {
     /// A hide timer that fires while a pill is focused (disc or text pill), a shelf or popover is
     /// open, or a seek mode is active does nothing; the next input re-arms it.
     static func mayHide(pillFocused: Bool, modeActive: Bool) -> Bool { !pillFocused && !modeActive }
+
+    /// What counts as "a pill focused" for `mayHide` on the mpv route: a disc, a text pill (Insights
+    /// device pass 2026-11-01: the bar must not hide under a focused text pill), or an open popover
+    /// or shelf.
+    static func holdsBar(discFocused: Bool, infoPillFocused: Bool, overlayOpen: Bool) -> Bool {
+        discFocused || infoPillFocused || overlayOpen
+    }
 }
 
 // MARK: - Fonts
@@ -470,11 +477,8 @@ struct PlayerTransportBar: View {
                         .accessibilityIdentifier("player.bar.time.remaining")
                         .accessibilityValue(rightText)
                 }
-                if preview == nil {
-                    Label("Swipe down for info", systemImage: "chevron.down")
-                        .font(Theme.Font.caption)
-                        .foregroundStyle(.white.opacity(0.7))
-                }
+                // Insights device pass (2026-11-01): the "Swipe down for info" hint is gone with
+                // the top panel; the text pill row under this row is the visible affordance.
             }
             .frame(width: row.width, height: row.height)
             .position(x: row.midX, y: row.midY)

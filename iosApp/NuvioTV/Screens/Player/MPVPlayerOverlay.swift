@@ -14,8 +14,10 @@ extension PillKind {
     /// Info shelf).
     var popoverSize: CGSize? {
         switch self {
-        case .subtitles: return CGSize(width: 820, height: 560)
-        case .audio: return CGSize(width: 820, height: 520)
+        // Subtitles and Audio at the Playback width (device pass 2026-11-01: at 820 the Timing
+        // chips and the Language column did not fit, and the rows ran past the right edge).
+        case .subtitles: return CGSize(width: 1180, height: 560)
+        case .audio: return CGSize(width: 1180, height: 520)
         case .speed: return CGSize(width: 1180, height: 500)
         case .sources: return CGSize(width: 820, height: 560)
         case .episodes: return CGSize(width: 680, height: 560)
@@ -31,6 +33,10 @@ struct MPVPlayerOverlay: View {
     let engine: NextEpisodeEngine
     let canSwitchStreams: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.resetFocus) private var resetFocus
+    /// The open popover's or shelf's focus scope: its preferred row (`playerOverlayDefaultFocus`)
+    /// is where the focus lands when it opens.
+    @Namespace private var overlayFocus
 
     var body: some View {
         GeometryReader { geo in
@@ -40,8 +46,9 @@ struct MPVPlayerOverlay: View {
                    let size = pill.popoverSize {
                     let frame = layout.popoverFrame(discIndex: index, size: size)
                     popoverContent(pill)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                         .id(pill)
-                        .onAppear { state.requestOverlayFocus?() }
+                        .onAppear { focusIntoOverlay() }
                         .padding(Theme.Spacing.lg)
                         .frame(width: frame.width, height: frame.height, alignment: .topLeading)
                         .playerSurface(in: RoundedRectangle(cornerRadius: TransportBarLayout.overlayCornerRadius,
@@ -55,8 +62,9 @@ struct MPVPlayerOverlay: View {
                 if let pill = model.openInfoPill {
                     let frame = layout.shelfFrame
                     shelfContent(pill)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                         .id(pill)
-                        .onAppear { state.requestOverlayFocus?() }
+                        .onAppear { focusIntoOverlay() }
                         .padding(Theme.Spacing.lg)
                         .frame(width: frame.width, height: frame.height, alignment: .topLeading)
                         .playerSurface(in: RoundedRectangle(cornerRadius: TransportBarLayout.overlayCornerRadius,
@@ -69,6 +77,8 @@ struct MPVPlayerOverlay: View {
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+            .focusScope(overlayFocus)
+            .environment(\.playerOverlayFocusScope, overlayFocus)
             .animation(.easeInOut(duration: 0.2), value: model.openPopover)
             .animation(.easeInOut(duration: 0.2), value: model.openInfoPill)
         }
@@ -78,6 +88,14 @@ struct MPVPlayerOverlay: View {
         .onExitCommand { state.overlayMenu?() }
         // Same reason: Play/Pause from inside goes to the controller's toggle.
         .onPlayPauseCommand { state.togglePause?() }
+    }
+
+    /// Device pass 2026-11-01: Select opened the overlay but the focus stayed outside it until the
+    /// next press. The controller asks UIKit's focus system to move in (with retries), and the
+    /// scope's default focus is re-evaluated once the rows are in the tree.
+    private func focusIntoOverlay() {
+        state.requestOverlayFocus?()
+        DispatchQueue.main.async { resetFocus(in: overlayFocus) }
     }
 
     @ViewBuilder
@@ -118,5 +136,10 @@ struct MPVPlayerOverlay: View {
 /// every Stream Info refresh.
 private struct MPVInfoShelf: View {
     @ObservedObject var model: PlayerTopPanelModel
-    var body: some View { PlayerInfoTab(info: model.info) }
+    var body: some View {
+        // Read-only and controller-held: anything taller than the shelf is clipped at its bottom
+        // edge, never drawn over the bar (device pass 2026-11-01).
+        PlayerInfoTab(info: model.info)
+            .clipped()
+    }
 }

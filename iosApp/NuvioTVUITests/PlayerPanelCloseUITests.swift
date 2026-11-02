@@ -42,15 +42,18 @@ final class PlayerPanelCloseUITests: XCTestCase {
     }
 
     /// The overlay is gone within 2 s, the player is still presented, and the Menu ladder still
-    /// exits it (a visible bar takes one Menu to hide first; the swallowed-Menu bug ignores both).
+    /// exits it (a focused text pill takes one Menu to let go and a visible bar one to hide; a
+    /// focused disc hides the bar with it; the swallowed-Menu bug ignores them all).
     private func assertClosesThenExits(_ app: XCUIApplication, overlay: XCUIElement, _ leg: String) {
         XCTAssertTrue(waitGone(overlay, timeout: 2), "\(leg): overlay still up 2 s after the close")
         let player = app.otherElements["player.mpv"]
         Thread.sleep(forTimeInterval: 1.0)   // the simulator dismisses a cover ~0.6 s after a consumed Menu
         XCTAssertTrue(player.exists, "\(leg): Menu inside the overlay left the player")
         guard player.exists else { return }
-        remote.press(.menu)
-        if waitGone(player, timeout: 3) { return }
+        for _ in 0..<2 {
+            remote.press(.menu)
+            if waitGone(player, timeout: 3) { return }
+        }
         remote.press(.menu)
         XCTAssertTrue(waitGone(player, timeout: 4), "\(leg): Menu after the close did not exit the player")
     }

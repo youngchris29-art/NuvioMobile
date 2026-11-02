@@ -3,9 +3,10 @@ import Foundation
 /// What Menu does on the mpv player, highest precedence first (P1 spec, Insights levels added
 /// 2026-11-01): a presented controller takes it, then inside an open shelf or popover one level per
 /// press (the Cast actor view back to the cards, then the shelf or popover closes back to its pill),
-/// then an active step/scan is cancelled, then the up-next chip is dismissed, then a focused pill
-/// (disc or text pill) or the bar hides, and only then the player exits. Pure, so the order has
-/// unit-test proof.
+/// then an active step/scan is cancelled, then the up-next chip is dismissed, then a focused disc
+/// hides the bar, a focused text pill only loses its focus (the bar stays: device pass 2026-11-01,
+/// the approved levels are shelf → pill row → bar → exit), then the bar hides, and only then the
+/// player exits. Pure, so the order has unit-test proof.
 enum MenuPrecedence {
     enum Action: Equatable {
         case panel           // a presented controller handles it (it never reaches the player)
@@ -13,7 +14,8 @@ enum MenuPrecedence {
         case closeOverlay    // the open shelf or popover closes; its pill keeps the focus
         case cancelMode      // stepping / scrubbing: nothing committed; scanning: back to the scan origin
         case dismissUpNext
-        case hidePill        // hides the bar and clears the pill focus
+        case hidePill        // a focused disc: hides the bar and clears the pill focus
+        case unfocusInfoPill // a focused text pill: clears its focus, the bar stays up
         case hideBar
         case exit
     }
@@ -27,7 +29,8 @@ enum MenuPrecedence {
         }
         if modeActive { return .cancelMode }
         if upNextShowing { return .dismissUpNext }
-        if pillFocused || infoPillFocused { return .hidePill }
+        if pillFocused { return .hidePill }
+        if infoPillFocused { return .unfocusInfoPill }
         if barUp { return .hideBar }
         return .exit
     }

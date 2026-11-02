@@ -143,8 +143,42 @@ final class PlayerInsightsMPVChromeTests: XCTestCase {
     }
 
     func testHideBlockedWhileOverlayOpen() {
-        // The controller passes "disc or text pill focused, or an overlay open" as `pillFocused`.
+        // The controller passes `holdsBar(...)` as `pillFocused`.
         XCTAssertFalse(TransportHideRule.mayHide(pillFocused: true, modeActive: false))
+    }
+
+    func testAFocusedTextPillHoldsTheBar() {
+        // Device pass 2026-11-01: the bar hid under a focused text pill after 4–5 s, paused too.
+        XCTAssertTrue(TransportHideRule.holdsBar(discFocused: false, infoPillFocused: true, overlayOpen: false))
+        XCTAssertTrue(TransportHideRule.holdsBar(discFocused: true, infoPillFocused: false, overlayOpen: false))
+        XCTAssertTrue(TransportHideRule.holdsBar(discFocused: false, infoPillFocused: false, overlayOpen: true))
+        XCTAssertFalse(TransportHideRule.holdsBar(discFocused: false, infoPillFocused: false, overlayOpen: false))
+    }
+
+    // MARK: - Info content fits its host's height
+
+    func testInfoRowsShowOnlyTheWholeRowsThatFit() {
+        let cells: [CGFloat] = Array(repeating: 40, count: 9)   // 5 rows of 2
+        // 3 rows = 40 + 8 + 40 + 8 + 40 = 136
+        XCTAssertEqual(PlayerInfoFitGridLayout.fittingRows(cellHeights: cells, columns: 2, spacing: 8, maxHeight: 140),
+                       [40, 40, 40])
+        XCTAssertEqual(PlayerInfoFitGridLayout.fittingRows(cellHeights: cells, columns: 2, spacing: 8, maxHeight: 39),
+                       [])
+        XCTAssertEqual(PlayerInfoFitGridLayout.fittingRows(cellHeights: cells, columns: 2, spacing: 8, maxHeight: nil).count,
+                       5)
+    }
+
+    func testInfoRowHeightIsItsTallestCell() {
+        XCTAssertEqual(PlayerInfoFitGridLayout.fittingRows(cellHeights: [30, 50, 20], columns: 2, spacing: 0,
+                                                           maxHeight: nil), [50, 20])
+    }
+
+    func testSubtitlesAndAudioPopoversFitTheirRows() {
+        // Device pass 2026-11-01: the Subtitles rows ran past an 820 pt popover.
+        XCTAssertEqual(PillKind.subtitles.popoverSize?.width, 1180)
+        XCTAssertEqual(PillKind.audio.popoverSize?.width, 1180)
+        XCTAssertLessThanOrEqual(layout().popoverFrame(discIndex: 0, size: PillKind.subtitles.popoverSize!).maxX,
+                                 layout().trackMaxX)
     }
 
     // MARK: - MenuPrecedence, the new levels
@@ -167,7 +201,7 @@ final class PlayerInsightsMPVChromeTests: XCTestCase {
 
     func testActorViewWithoutAnOpenShelfIsIgnored() {
         // A stale actor view never takes Menu once its shelf is closed.
-        XCTAssertEqual(menu(actor: true, infoPill: true, bar: true), .hidePill)
+        XCTAssertEqual(menu(actor: true, infoPill: true, bar: true), .unfocusInfoPill)
     }
 
     func testOverlayClosesBeforeUpNextChipAndPills() {
@@ -179,15 +213,30 @@ final class PlayerInsightsMPVChromeTests: XCTestCase {
         XCTAssertEqual(menu(upNext: true, infoPill: true, bar: true), .dismissUpNext)
     }
 
-    func testTextPillRowHidesTheBar() {
-        XCTAssertEqual(menu(infoPill: true, bar: true), .hidePill)
+    func testTextPillLetsGoOfTheFocusAndTheBarStays() {
+        // Device pass 2026-11-01: Menu on a focused text pill used to hide the bar too.
+        XCTAssertEqual(menu(infoPill: true, bar: true), .unfocusInfoPill)
+    }
+
+    func testFocusedDiscStillHidesTheBar() {
+        // Base behaviour for the disc row is unchanged.
+        XCTAssertEqual(menu(pill: true, bar: true), .hidePill)
+        XCTAssertEqual(menu(pill: true, infoPill: true, bar: true), .hidePill)
     }
 
     func testOneLevelPerPressSequence() {
-        // actor view → shelf → pill row → bar hidden → exit
+        // actor view → shelf → pill row unfocused (bar stays) → bar hidden → exit
         XCTAssertEqual(menu(actor: true, overlay: true, infoPill: true, bar: true), .actorBack)
         XCTAssertEqual(menu(overlay: true, infoPill: true, bar: true), .closeOverlay)
-        XCTAssertEqual(menu(infoPill: true, bar: true), .hidePill)
+        XCTAssertEqual(menu(infoPill: true, bar: true), .unfocusInfoPill)
+        XCTAssertEqual(menu(bar: true), .hideBar)
+        XCTAssertEqual(menu(), .exit)
+    }
+
+    func testPopoverSequenceFromADisc() {
+        // popover → disc focused (hides the bar with it, base behaviour) → exit
+        XCTAssertEqual(menu(overlay: true, pill: true, bar: true), .closeOverlay)
+        XCTAssertEqual(menu(pill: true, bar: true), .hidePill)
         XCTAssertEqual(menu(), .exit)
     }
 
@@ -202,6 +251,7 @@ final class PlayerInsightsMPVChromeTests: XCTestCase {
     func testNewLevelsSwallowTheirRelease() {
         XCTAssertTrue(MenuPrecedence.swallowsRelease(.actorBack))
         XCTAssertTrue(MenuPrecedence.swallowsRelease(.closeOverlay))
+        XCTAssertTrue(MenuPrecedence.swallowsRelease(.unfocusInfoPill))
     }
 
     // MARK: - Down-press decision table
