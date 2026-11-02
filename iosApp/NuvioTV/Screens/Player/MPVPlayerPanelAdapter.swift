@@ -189,7 +189,7 @@ final class MPVPlayerPanelAdapter {
     static func upNextCard(_ episode: MetaVideo) -> PlayerPanelUpNext {
         let subtitle: String?
         if let s = episode.season?.intValue, let e = episode.episode?.intValue {
-            subtitle = "S\(s) · E\(e)"
+            subtitle = String(localized: "S\(Int(s)) · E\(Int(e))")   // catalog "S%lld · E%lld"
         } else {
             subtitle = nil
         }

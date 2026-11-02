@@ -383,6 +383,15 @@ private data class PersonCombinedCreditsDto(
  * Independent of the TMDB Enrichment toggles by design: "Show cast in player" fetches credits even
  * when [TmdbSettings.enabled] or [TmdbSettings.useCredits] is off.
  */
+/**
+ * Review r7: whether a credits result may be cached for the session under its identity key. An
+ * episode whose own credits request failed (null: network or HTTP failure) is served the show's
+ * aggregate credits uncached, so one timeout does not pin show-level cast (no guests) until
+ * relaunch; an episode answer that decoded, even empty (the aggregate fallback), is cached.
+ */
+internal fun playerCreditsCacheable(isEpisode: Boolean, episodeResponseDecoded: Boolean): Boolean =
+    !isEpisode || episodeResponseDecoded
+
 internal fun playerCreditsApiKey(settings: TmdbSettings): String? =
     settings.apiKey.ifBlank { TmdbConfig.API_KEY }.takeIf { it.isNotBlank() }
 
@@ -421,6 +430,7 @@ object PlayerCreditsService {
         cacheMutex.withLock { creditsCache[cacheKey] }?.let { return@withContext it }
 
         val query = mapOf("language" to language)
+        var episodeResponseDecoded = false
         val response: CreditsResponseDto? = when {
             identity.mediaType == "movie" ->
                 fetch("movie/${identity.tmdbId}/credits", apiKey, query)
@@ -430,6 +440,7 @@ object PlayerCreditsService {
                     apiKey,
                     query,
                 )
+                episodeResponseDecoded = episodeResponse != null
                 if (episodeResponse == null ||
                     (episodeResponse.cast.isEmpty() && episodeResponse.guestStars.isEmpty() && episodeResponse.crew.isEmpty())
                 ) {
@@ -448,7 +459,9 @@ object PlayerCreditsService {
             guests = response.guestStars.map { it.toInput() },
             crew = response.crew.map { it.toInput() },
         )
-        cacheMutex.withLock { creditsCache[cacheKey] = credits }
+        if (playerCreditsCacheable(identity.isEpisode, episodeResponseDecoded)) {
+            cacheMutex.withLock { creditsCache[cacheKey] = credits }
+        }
         credits
     }
 

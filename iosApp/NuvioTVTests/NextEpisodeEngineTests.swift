@@ -942,6 +942,19 @@ final class NextEpisodeEngineTests: XCTestCase {
         XCTAssertEqual(engine.sources.count, 1, "the re-fired preload blanked the list")
     }
 
+    /// Review r7: a jump that ends without a stream leaves the Up Next pill on the real next
+    /// episode (its Play then jumps there), not on the episode that just failed.
+    func testFailedJumpKeepsUpNextOnTheResolvedNextEpisode() {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder)
+        XCTAssertEqual(engine.upNextEpisode?.id, "tt1:1:2")
+        engine.jumpForTesting(to: episode(season: 1, episode: 5))
+        XCTAssertEqual(engine.nextVideoForTesting?.id, "tt1:1:5", "the jump searches its own target")
+        XCTAssertEqual(engine.upNextEpisode?.id, "tt1:1:2", "the jump took over the Up Next pill")
+        engine.finishWithoutStreamForTesting()
+        XCTAssertEqual(engine.upNextEpisode?.id, "tt1:1:2", "the failed jump's episode is on the pill")
+    }
+
     /// Review r6: the seek back lands with the bar still up (the seek raised it), so the held list
     /// loads right then instead of falling to "No alternate sources found yet.".
     func testSeekBackWithTheBarUpLoadsTheHeldListAtOnce() {

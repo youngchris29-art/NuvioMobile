@@ -252,7 +252,7 @@ final class NativePlayerPanelAdapter {
     static func upNextCard(_ video: MetaVideo) -> PlayerPanelUpNext {
         let s = video.season?.value, e = video.episode?.value
         let subtitle: String? = switch (s, e) {
-        case let (s?, e?): "S\(s) · E\(e)"
+        case let (s?, e?): String(localized: "S\(Int(s)) · E\(Int(e))")   // catalog "S%lld · E%lld"
         case let (nil, e?): "E\(e)"
         default: nil
         }

@@ -407,14 +407,7 @@ final class NativeTransportMenusInstaller {
     /// compare against, any labelled item inside the player's view counts (the r3 behaviour).
     private func barItemName(of view: UIView, in playerVC: AVPlayerViewController) -> String? {
         let root = playerVC.view!
-        guard view.isDescendant(of: root) else { return nil }
-        var name: String?
-        var candidate: UIView? = view
-        while let v = candidate, v !== root {
-            if let label = v.accessibilityLabel, !label.isEmpty { name = label; break }
-            candidate = v.superview
-        }
-        guard let name else { return nil }
+        guard view.isDescendant(of: root), let name = Self.labelledName(of: view, below: root) else { return nil }
         let titles = playerVC.transportBarCustomMenuItems.compactMap { element -> String? in
             (element as? UIMenu)?.title ?? (element as? UIAction)?.title
         }
@@ -440,24 +433,47 @@ final class NativeTransportMenusInstaller {
                 print("[NativePlayer] tools: refocus \(name) ok (attempt \(attempt))")
                 return
             }
-            guard let target = Self.focusableView(named: name, in: playerVC.view) else {
+            let candidates = Self.focusableViews(named: name, in: playerVC.view)
+            guard let target = candidates.first else {
+                print("[NativePlayer] tools: refocus \(name) attempt \(attempt): no candidate")
                 self.restoreFocus(to: name, attempt: attempt + 1)
                 return
             }
+            print("[NativePlayer] tools: refocus \(name) attempt \(attempt): candidates=\(candidates.count) target=\(type(of: target))")
             UIFocusSystem.focusSystem(for: playerVC.view)?.requestFocusUpdate(to: target)
             self.restoreFocus(to: name, attempt: attempt + 1)
         }
     }
 
-    /// The first focusable view whose accessibility name (its own, or its nearest labelled
-    /// ancestor's below the player's view) is `name`.
-    private static func focusableView(named name: String, in root: UIView) -> UIView? {
-        var stack: [UIView] = [root]
-        while let v = stack.popLast() {
-            if v.canBecomeFocused, v.accessibilityLabel == name { return v }
-            stack.append(contentsOf: v.subviews)
+    /// A view's accessibility name: its own label, else its nearest labelled ancestor's below
+    /// `root` (AVKit's system buttons carry the label on a wrapper, not on the focusable view).
+    private static func labelledName(of view: UIView, below root: UIView) -> String? {
+        var candidate: UIView? = view
+        while let v = candidate, v !== root {
+            if let label = v.accessibilityLabel, !label.isEmpty { return label }
+            candidate = v.superview
         }
         return nil
+    }
+
+    /// Device r4 (C2): the focusable views whose name is `name`, the same way `barItemName` reads
+    /// it (own label or nearest labelled ancestor's), so a name read off a system button finds that
+    /// button again. Views whose own label matches come first.
+    private static func focusableViews(named name: String, in root: UIView) -> [UIView] {
+        var own: [UIView] = []
+        var inherited: [UIView] = []
+        var stack: [UIView] = [root]
+        while let v = stack.popLast() {
+            if v.canBecomeFocused, labelledName(of: v, below: root) == name {
+                if v.accessibilityLabel == name { own.append(v) } else { inherited.append(v) }
+            }
+            stack.append(contentsOf: v.subviews)
+        }
+        return own + inherited
+    }
+
+    private static func focusableView(named name: String, in root: UIView) -> UIView? {
+        focusableViews(named: name, in: root).first
     }
 
     /// The transport bar came up. The Sources button is on screen from now on, so the list is

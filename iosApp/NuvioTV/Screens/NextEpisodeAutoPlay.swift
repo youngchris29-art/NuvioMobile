@@ -239,9 +239,12 @@ final class NextEpisodeEngine: ObservableObject {
     private var timeoutTask: Task<Void, Never>?
     private var hideTask: Task<Void, Never>?
 
-    private var nextVideo: MetaVideo? {
-        didSet { upNextEpisode = nextVideo }
-    }
+    /// The episode the up-next machinery searches for: the resolved next episode, or an episode
+    /// jump's target once `performJump` set it.
+    private var nextVideo: MetaVideo?
+    /// The Up Next pill's episode. Review r7: published only from the next-episode resolve, never
+    /// from a jump (which overwrites `nextVideo`), so a jump that ends without a stream leaves the
+    /// pill (and its Play) on the real next episode instead of the failed one.
     @Published private(set) var upNextEpisode: MetaVideo?
     /// BUG-229: the episode list fetched after launch. A play started before the stream picker's own
     /// episode fetch finished (a quick auto-picked source from Continue Watching with Auto-Play Best
@@ -293,6 +296,7 @@ final class NextEpisodeEngine: ObservableObject {
     /// and the trigger settings directly.
     func configureForTesting(nextVideo: MetaVideo?, trigger: TriggerSettings) {
         self.nextVideo = nextVideo
+        self.upNextEpisode = nextVideo
         self.trigger = trigger
     }
 
@@ -366,9 +370,11 @@ final class NextEpisodeEngine: ObservableObject {
     private func resolveNextVideo() {
         guard !episodes.isEmpty else {
             nextVideo = nil
+            upNextEpisode = nil
             return
         }
         nextVideo = hooks.resolveNextEpisode(context, episodes)
+        upNextEpisode = nextVideo
         if let next = nextVideo {
             nextEpisodeTitle = Self.episodeTitle(next)
         }

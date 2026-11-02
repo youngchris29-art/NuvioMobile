@@ -208,4 +208,14 @@ class PlayerCreditsTest {
         assertEquals("movie:12", out.first().id)
         assertEquals("T12", out.first().title)
     }
+
+    @Test
+    fun failedEpisodeRequestServesTheFallbackUncached() {
+        // A failed episode request (null) → aggregate fallback, not cached for the session.
+        assertFalse(playerCreditsCacheable(isEpisode = true, episodeResponseDecoded = false))
+        // A decoded episode answer (with credits, or empty → aggregate fallback) is cached.
+        assertTrue(playerCreditsCacheable(isEpisode = true, episodeResponseDecoded = true))
+        // Movies and show-level lookups never had an episode request.
+        assertTrue(playerCreditsCacheable(isEpisode = false, episodeResponseDecoded = false))
+    }
 }
