@@ -387,6 +387,14 @@ internal fun playerCreditsCacheable(isEpisode: Boolean, episodeResponseDecoded: 
     !isEpisode || episodeResponseDecoded
 
 /**
+ * Review r13: whether a person summary may be cached for the session. A summary built from a failed
+ * `combined_credits` request (empty known-for) or from a needed-but-failed English biography
+ * fallback (null biography) is returned but not pinned until relaunch.
+ */
+internal fun playerPersonCacheable(combinedDecoded: Boolean, englishNeeded: Boolean, englishDecoded: Boolean): Boolean =
+    combinedDecoded && (!englishNeeded || englishDecoded)
+
+/**
  * The key the Cast pill calls TMDB with: the personal key, else the bundled one (same rule as
  * [TmdbSettingsRepository.effectiveApiKey]); null when neither exists.
  * Independent of the TMDB Enrichment toggles by design: "Show cast in player" fetches credits even
@@ -480,8 +488,12 @@ object PlayerCreditsService {
         }
         person ?: return@withContext null
         val name = person.name?.trim()?.takeIf(String::isNotBlank) ?: return@withContext null
-        val biography = if (shouldFetchEnglishBiography(language, person.biography)) {
-            fetch<PersonDto>("person/$personId", apiKey, mapOf("language" to "en"))?.biography
+        val englishNeeded = shouldFetchEnglishBiography(language, person.biography)
+        var englishDecoded = false
+        val biography = if (englishNeeded) {
+            val english = fetch<PersonDto>("person/$personId", apiKey, mapOf("language" to "en"))
+            englishDecoded = english != null
+            english?.biography
         } else {
             person.biography
         }
@@ -503,7 +515,9 @@ object PlayerCreditsService {
             knownForDepartment = department,
             knownFor = selectKnownFor(source.mapNotNull { it.toCandidate() }),
         )
-        cacheMutex.withLock { personCache[cacheKey] = summary }
+        if (playerPersonCacheable(combined != null, englishNeeded, englishDecoded)) {
+            cacheMutex.withLock { personCache[cacheKey] = summary }
+        }
         summary
     }
 

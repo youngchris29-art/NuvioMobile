@@ -220,6 +220,15 @@ class PlayerCreditsTest {
     }
 
     @Test
+    fun personSummaryFromAFailedRequestIsNotCached() {
+        assertTrue(playerPersonCacheable(combinedDecoded = true, englishNeeded = false, englishDecoded = false))
+        assertTrue(playerPersonCacheable(combinedDecoded = true, englishNeeded = true, englishDecoded = true))
+        assertFalse(playerPersonCacheable(combinedDecoded = true, englishNeeded = true, englishDecoded = false))
+        assertFalse(playerPersonCacheable(combinedDecoded = false, englishNeeded = false, englishDecoded = false))
+        assertFalse(playerPersonCacheable(combinedDecoded = false, englishNeeded = true, englishDecoded = true))
+    }
+
+    @Test
     fun failureLogLineNamesEndpointAndClassButNeverTheMessageOrKey() {
         val error = IllegalStateException(
             "Request timeout: https://api.themoviedb.org/3/person/42?api_key=SECRET123&language=en",
