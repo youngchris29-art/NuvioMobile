@@ -289,6 +289,24 @@ final class AetherSessionTests: XCTestCase {
         XCTAssertTrue(session.isPaused)
     }
 
+    func testSwitchBetweenSidecarsWithIdenticalCuesRepublishes() async throws {
+        _ = try await session.load(request())
+        let a = AetherTrack(id: 5, name: "A", codec: "srt")
+        let b = AetherTrack(id: 6, name: "B", codec: "srt")
+        let window = [AetherCue(id: 0, startSec: 1, endSec: 2, body: .text("hi"))]
+        var publishes = 0
+        let sub = session.$cues.dropFirst().sink { _ in publishes += 1 }
+        engine.send(.tracks(audio: [], subtitle: [a, b], activeAudio: nil, activeSubtitle: 5))
+        engine.send(.cues(window))
+        XCTAssertEqual(publishes, 1)
+        engine.send(.cues(window))
+        XCTAssertEqual(publishes, 1, "same track and window is deduped")
+        engine.send(.tracks(audio: [], subtitle: [a, b], activeAudio: nil, activeSubtitle: 6))
+        engine.send(.cues(window))
+        XCTAssertEqual(publishes, 2, "identical window under a new track must publish")
+        sub.cancel()
+    }
+
     func testClockMirrorsEngineSamples() async throws {
         _ = try await session.load(request())
         let sample = AetherClockSample(currentSec: 12, sourceSec: 12.5, bufferedSec: 40, durationSec: 600,

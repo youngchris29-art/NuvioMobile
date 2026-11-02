@@ -66,6 +66,7 @@ public final class AetherPlaybackSession: ObservableObject {
     @Published public private(set) var activeSubtitleID: Int?
     /// Window: 300 s behind the playhead to the decode lead, on the `clock.sourceSec` axis.
     @Published public private(set) var cues: [AetherCue] = []
+    private var cuesTrackID: Int?
     @Published public private(set) var chapters: [AetherChapter] = []
 
     // MARK: Events (set before `load`, called on the main actor)
@@ -399,7 +400,9 @@ public final class AetherPlaybackSession: ObservableObject {
         case .clock(let sample):
             if phase != .ended { clock.apply(sample) }
         case .cues(let c):
-            if cues != c { cues = c }
+            // The same window under a different subtitle track is a new window (sidecar cue ids restart at 0).
+            if cues != c || cuesTrackID != activeSubtitleID { cues = c }
+            cuesTrackID = activeSubtitleID
         case .chapters(let c):
             if chapters != c { chapters = c }
         case .diagnostics(var d):

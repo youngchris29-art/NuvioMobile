@@ -26,6 +26,10 @@ final class LiveEngine: EngineDriving {
     private var subtitleTracks: [AetherTrack] = []
     private var activeAudio: Int?
     private var activeSubtitle: Int?
+    /// Last cue window the engine published, kept so a subtitle track change can re-send it: sidecar cue ids
+    /// restart at 0 per file, so two files with identical timings compare equal across a switch.
+    private var latestCues: [AetherCue] = []
+    private var lastSentCues: (track: Int?, cues: [AetherCue])?
     private var firstFrame = false
 
     init() throws {
@@ -162,6 +166,13 @@ final class LiveEngine: EngineDriving {
         }
     }
 
+    /// Sends a cue window unless it repeats the last one sent for the same active subtitle track.
+    private func sendCues(_ cues: [AetherCue]) {
+        if let last = lastSentCues, last.track == activeSubtitle, last.cues == cues { return }
+        lastSentCues = (activeSubtitle, cues)
+        send(.cues(cues))
+    }
+
     private func sink<P: Publisher>(_ p: P, _ body: @escaping @MainActor (LiveEngine, P.Output) -> Void)
     where P.Failure == Never, P.Output: Sendable {
         p.sink { [weak self] value in
@@ -204,8 +215,17 @@ final class LiveEngine: EngineDriving {
         sink(engine.$audioTracks.removeDuplicates()) { me, v in me.audioTracks = v.map(Self.track); me.sendTracks() }
         sink(engine.$subtitleTracks.removeDuplicates()) { me, v in me.subtitleTracks = v.map(Self.track); me.sendTracks() }
         sink(engine.$activeAudioTrackIndex.removeDuplicates()) { me, v in me.activeAudio = v; me.sendTracks() }
-        sink(engine.$activeSubtitleTrackIndex.removeDuplicates()) { me, v in me.activeSubtitle = v; me.sendTracks() }
-        sink(engine.$subtitleCues.removeDuplicates()) { me, v in me.send(.cues(v.map(Self.cue))) }
+        sink(engine.$activeSubtitleTrackIndex.removeDuplicates()) { me, v in
+            me.activeSubtitle = v
+            me.sendTracks()
+            // A track change invalidates the dedupe: re-send the current window under the new track.
+            me.lastSentCues = nil
+            me.sendCues(me.latestCues)
+        }
+        sink(engine.$subtitleCues.removeDuplicates()) { me, v in
+            me.latestCues = v.map(Self.cue)
+            me.sendCues(me.latestCues)
+        }
         sink(engine.$mediaChapters.removeDuplicates()) { me, v in
             me.send(.chapters(v.map { AetherChapter(id: $0.id, title: $0.name, startSec: $0.startSeconds,
                                                      durationSec: $0.durationSeconds) }))
