@@ -5054,6 +5054,17 @@
         }
       }
     },
+    "Add a Cast pill under the timeline with who is on screen and a short bio": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add a Cast pill under the timeline with who is on screen and a short bio"
+          }
+        }
+      }
+    },
     "Add a raised edge highlight and a glossy top sheen to cards for a little more depth.": {
       "localizations": {
         "de": {
@@ -5323,6 +5334,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Địa chỉ không có giao thức sẽ được coi là HTTPS — hãy thêm http:// nếu máy chủ chỉ hỗ trợ HTTP."
+          }
+        }
+      }
+    },
+    "Adds a Cast pill under the timeline in the player. It lists who is on screen and the key crew, and opens a short biography with their best-known titles. Default: On.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Adds a Cast pill under the timeline in the player. It lists who is on screen and the key crew, and opens a short biography with their best-known titles. Default: On."
           }
         }
       }
@@ -15785,6 +15807,17 @@
         }
       }
     },
+    "Delay %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delay %@"
+          }
+        }
+      }
+    },
     "Delete Badge Pack": {
       "localizations": {
         "de": {
@@ -24943,6 +24976,17 @@
         }
       }
     },
+    "Loading sources…": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loading sources…"
+          }
+        }
+      }
+    },
     "Loading subtitle lines…": {
       "localizations": {
         "de": {
@@ -32815,6 +32859,17 @@
         }
       }
     },
+    "Pick the line that was spoken when you pressed Sync Line.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pick the line that was spoken when you pressed Sync Line."
+          }
+        }
+      }
+    },
     "Pick the next episode from the same release or add-on group when it has one.": {
       "extractionState": "manual",
       "localizations": {
@@ -33221,6 +33276,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Phát tập tiếp theo"
+          }
+        }
+      }
+    },
+    "Play Now": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Play Now"
           }
         }
       }
@@ -39501,6 +39567,17 @@
         }
       }
     },
+    "Season %d": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Season %d"
+          }
+        }
+      }
+    },
     "Season %lld": {
       "localizations": {
         "de": {
@@ -41512,6 +41589,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Hiển thị tất cả %lld"
+          }
+        }
+      }
+    },
+    "Show cast in player": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show cast in player"
           }
         }
       }
@@ -46328,6 +46416,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Độ trễ phụ đề"
+          }
+        }
+      }
+    },
+    "Subtitle Timing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Subtitle Timing"
           }
         }
       }
@@ -52216,6 +52315,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Chưa xem"
+          }
+        }
+      }
+    },
+    "Up Next": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Up Next"
           }
         }
       }
