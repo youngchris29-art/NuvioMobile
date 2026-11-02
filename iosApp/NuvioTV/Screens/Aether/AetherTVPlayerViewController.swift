@@ -164,6 +164,8 @@ final class AetherTVPlayerViewController: UIViewController {
 
     var playerSettings: PlayerSettingsUiState?
     private var playerSettingsWatcher: FlowWatcher?
+    /// Subtitle selection and add-on side-load bookkeeping (`AetherTVPlayerViewController+Panels`).
+    let panel = AetherPanelState()
     /// P5 N1: the audio delay's saved / stream-hint / session parts for this file.
     var audioDelayParts = AudioDelayParts(savedMs: 0, streamMs: nil, sessionAdjustMs: 0)
 
@@ -711,7 +713,7 @@ final class AetherTVPlayerViewController: UIViewController {
         }
     }
 
-    private func setSpeed(_ speed: Double) {
+    func setSpeed(_ speed: Double) {
         guard let session else { return }
         if scanRate != nil { return }
         let clamped = AetherRatePlan.clampedSpeed(speed, maxRate: session.maxRate)
@@ -898,6 +900,7 @@ final class AetherTVPlayerViewController: UIViewController {
         let skipIntroFlipped = playerSettings.map { $0.skipIntroEnabled != settings.skipIntroEnabled } ?? false
         playerSettings = settings
         if skipIntroFlipped { updateChapterSkipIntervals(durationSec: transportDurationSec) }
+        settingsChangedPanels(settings)
     }
 
     // MARK: - End of file and Replay
@@ -1142,6 +1145,7 @@ final class AetherTVPlayerViewController: UIViewController {
         transportInput.invalidate()
         playerSettingsWatcher?.cancel()
         playerSettingsWatcher = nil
+        teardownPanels()
         print("[AetherPlayer] teardown (\(reason))")
     }
 
@@ -1155,6 +1159,7 @@ final class AetherTVPlayerViewController: UIViewController {
         // Backstop for a teardown path where `viewDidDisappear` never ran: idempotent.
         finishTracking(positionSec: positionMirror)
         session?.stop()
+        deinitPanels()
     }
 }
 
