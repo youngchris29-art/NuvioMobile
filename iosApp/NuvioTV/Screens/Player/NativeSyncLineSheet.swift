@@ -11,6 +11,8 @@ struct NativeSyncLineSheet: View {
     let capturedMs: Int64
     let delayAtCaptureMs: Int
     let onDone: () -> Void
+    /// How long the cue fetch may take before the sheet shows its failure line (tests shorten it).
+    var loadDeadlineSeconds: Double = 12
 
     private enum Focus: Hashable { case cancel, cue(Int) }
 
@@ -82,18 +84,7 @@ struct NativeSyncLineSheet: View {
     }
 
     private func load() async {
-        // A fetch that hangs must not hang the sheet: give up after 12 s, like the mpv tab.
-        let loader = model.syncLineCues
-        let loaded = await withTaskGroup(of: [SubtitleSyncCue]?.self) { group in
-            group.addTask { await loader?() }
-            group.addTask {
-                try? await Task.sleep(nanoseconds: 12_000_000_000)
-                return nil
-            }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first
-        }
+        let loaded = await Self.loadCues(model.syncLineCues, deadlineSeconds: loadDeadlineSeconds)
         guard let loaded else { failed = true; return }
         cues = loaded
         let anchor = SubtitleSyncLine.shared.anchorIndex(windowed: windowed, capturedPositionMs: capturedMs,
@@ -101,6 +92,15 @@ struct NativeSyncLineSheet: View {
         print("[SyncLine] native captured=\(capturedMs)ms delay=\(delayAtCaptureMs)ms cues=\(loaded.count) window=\(windowed.count) anchor=\(anchor.map { "\($0)" } ?? "-")")
         try? await Task.sleep(nanoseconds: 350_000_000)
         focus = anchor.map { .cue(Int(truncating: $0)) } ?? .cancel
+    }
+
+    /// A fetch that hangs must not hang the sheet: nil (the failure line) once the deadline
+    /// passes, even when the loader ignores cancellation (review r10: the old task group waited
+    /// for it anyway).
+    static func loadCues(_ loader: (() async -> [SubtitleSyncCue]?)?,
+                         deadlineSeconds: Double) async -> [SubtitleSyncCue]? {
+        guard let loader else { return nil }
+        return await SyncLineDeadline.value(within: deadlineSeconds) { await loader() }
     }
 
     private func message(_ text: String, id: String) -> some View {

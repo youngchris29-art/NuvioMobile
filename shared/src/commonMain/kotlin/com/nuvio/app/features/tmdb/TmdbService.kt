@@ -76,11 +76,13 @@ object TmdbService {
             imdbToTmdbCache[cacheKey]?.let { return it }
         }
 
-        val body = fetch<TmdbFindResponse>(
-            endpoint = "find/$cleanId",
-            apiKey = apiKey,
-            query = mapOf("external_source" to "tvdb_id"),
-        ) ?: return null
+        // Not the shared `fetch`: its failure log carries the exception message, which can hold
+        // the request URL and with it the user's api_key.
+        val endpoint = "find/$cleanId"
+        val url = buildTmdbUrl(endpoint = endpoint, apiKey = apiKey, query = mapOf("external_source" to "tvdb_id"))
+        val body = runCatching { json.decodeFromString<TmdbFindResponse>(httpGetText(url)) }
+            .onFailure { log.w { tmdbRequestFailureLogLine(endpoint, it) } }
+            .getOrNull() ?: return null
 
         val resultId = when (normalizedType) {
             "movie" -> body.movieResults.firstOrNull()?.id

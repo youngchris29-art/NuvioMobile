@@ -521,7 +521,15 @@ object PlayerCreditsService {
     ): T? {
         val url = buildTmdbUrl(endpoint = endpoint, apiKey = apiKey, query = query)
         return runCatching { json.decodeFromString<T>(httpGetText(url)) }
-            .onFailure { log.w { "TMDB request failed for $endpoint: ${it.message}" } }
+            .onFailure { log.w { tmdbRequestFailureLogLine(endpoint, it) } }
             .getOrNull()
     }
 }
+
+/**
+ * Failure log line for a TMDB request. Names only the endpoint path and the exception class:
+ * transport exceptions can carry the full request URL, whose query holds the user's `api_key`,
+ * so neither the message nor the URL is ever logged.
+ */
+internal fun tmdbRequestFailureLogLine(endpoint: String, error: Throwable): String =
+    "TMDB request failed for ${endpoint.substringBefore('?')} (${error::class.simpleName ?: "Throwable"})"

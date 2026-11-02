@@ -110,22 +110,90 @@ final class NativePlayerHostController: UIViewController, UIGestureRecognizerDel
         super.pressesEnded(presses, with: event)
     }
 
+    /// Review r10: a panel waiting in `presentWhenClear` for the player's own popover to go.
+    private var pendingPanel: PlayerPanelPresenting?
+
+    /// Something is presented over (or still transitioning on) the player, so UIKit would refuse
+    /// a presentation now. AVKit presents its transport-bar popovers from the player VC, which
+    /// `presentedViewController` on this container does not report, so both are checked.
+    var isPresentationBlocked: Bool {
+        presentedViewController != nil || playerVC.presentedViewController != nil
+            || transitionCoordinator != nil || playerVC.transitionCoordinator != nil
+    }
+
     /// Present a sheet over the live player. `crossDissolve` fades the host; the panel content
-    /// animates its own slide-in. Reduce Motion → no animation at all.
-    func present<Content: View>(panel: PlayerPanelHostController<Content>) {
-        guard panelHost == nil, presentedViewController == nil else { return }
+    /// animates its own slide-in. Reduce Motion → no animation at all. Returns whether UIKit took
+    /// the presentation; `panelHost` is latched only then (review r10: it used to be latched
+    /// before `present`, so a refused presentation left a stale latch that blocked every later
+    /// panel and kept the open state stuck).
+    @discardableResult
+    func present<Content: View>(panel: PlayerPanelHostController<Content>) -> Bool {
+        guard panelHost == nil, !isPresentationBlocked else { return false }
         panel.modalPresentationStyle = .overFullScreen
         panel.modalTransitionStyle = .crossDissolve
-        panel.onClosed = { [weak self] in
-            self?.panelHost = nil
-            self?.onPanelClosed?()
+        panel.onClosed = { [weak self, weak panel] in
+            guard let self else { return }
+            if self.panelHost === panel { self.panelHost = nil }
+            self.onPanelClosed?()
+        }
+        present(panel, animated: !UIAccessibility.isReduceMotionEnabled)
+        // UIKit sets the presenting controller synchronously for a presentation it accepted; a
+        // refused one ("already presenting") leaves it nil and never calls a completion.
+        guard panel.presentingViewController != nil || panel.isBeingPresented else {
+            panel.onClosed = nil
+            print("[PlayerPanel] presentation refused by UIKit, panel not shown")
+            return false
         }
         panelHost = panel
-        present(panel, animated: !UIAccessibility.isReduceMotionEnabled)
+        return true
+    }
+
+    /// Review r10: present once nothing is presented over the player any more (the transport
+    /// bar's popover that started the action is still dismissing when the action fires). Polls
+    /// the main run loop every `pollMs` for at most `capMs`; `completion(true)` runs only for a
+    /// presentation UIKit accepted. A panel that could not be shown in time is dropped and logged.
+    func presentWhenClear<Content: View>(panel: PlayerPanelHostController<Content>,
+                                          capMs: Int = 2000, pollMs: Int = 50,
+                                          completion: @escaping (Bool) -> Void) {
+        guard panelHost == nil, pendingPanel == nil else { completion(false); return }
+        pendingPanel = panel
+        attemptPresent(panel: panel, startedAt: Date(), capMs: capMs, pollMs: pollMs, completion: completion)
+    }
+
+    private func attemptPresent<Content: View>(panel: PlayerPanelHostController<Content>, startedAt: Date,
+                                               capMs: Int, pollMs: Int, completion: @escaping (Bool) -> Void) {
+        // `closePanel` (the player going away) cancels a wait.
+        guard pendingPanel === panel else { completion(false); return }
+        let elapsedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
+        switch PlayerPanelPresentGate.decide(blocked: isPresentationBlocked, elapsedMs: elapsedMs, capMs: capMs) {
+        case .present:
+            pendingPanel = nil
+            completion(present(panel: panel))
+        case .wait:
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(pollMs)) { [weak self] in
+                self?.attemptPresent(panel: panel, startedAt: startedAt, capMs: capMs, pollMs: pollMs,
+                                     completion: completion)
+            }
+        case .giveUp:
+            pendingPanel = nil
+            print("[PlayerPanel] still blocked after \(capMs) ms, panel not shown")
+            completion(false)
+        }
     }
 
     func closePanel(animated: Bool) {
+        pendingPanel = nil
         panelHost?.close(animated: animated)
+    }
+}
+
+/// Review r10: whether a waiting panel is presented now, waits for the next poll, or is dropped.
+enum PlayerPanelPresentGate: Equatable {
+    case present, wait, giveUp
+
+    static func decide(blocked: Bool, elapsedMs: Int, capMs: Int) -> PlayerPanelPresentGate {
+        guard blocked else { return .present }
+        return elapsedMs >= capMs ? .giveUp : .wait
     }
 }
 

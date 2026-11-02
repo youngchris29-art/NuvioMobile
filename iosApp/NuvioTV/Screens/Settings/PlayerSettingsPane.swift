@@ -82,7 +82,7 @@ struct PlayerSettingsPane: View {
             )
             SettingsToggleRow(
                 title: String(localized: "Show cast in player"),
-                subtitle: String(localized: "Add a Cast pill under the timeline with who is on screen and a short bio"),
+                subtitle: String(localized: "A Cast pill under the timeline with the cast and crew, and a short bio for each"),
                 isOn: Binding(get: { model.showCastInPlayer }, set: { model.setShowCastInPlayer($0) }),
                 descriptionID: .playerShowCast
             )

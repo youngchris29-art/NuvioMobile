@@ -4374,6 +4374,47 @@
         }
       }
     },
+    "A Cast pill under the timeline with the cast and crew, and a short bio for each": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A Cast pill under the timeline with the cast and crew, and a short bio for each"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Eine Besetzung-Schaltfläche unter der Zeitleiste mit Darstellern und Crew, samt Kurzbiografie zu jeder Person"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un botón de Reparto bajo la línea de tiempo con el reparto y el equipo, y una breve biografía de cada uno"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Une pastille Casting sous la timeline avec la distribution et l’équipe, et une courte biographie pour chacun"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un pulsante Cast sotto la timeline con cast e troupe, e una breve biografia per ciascuno"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nút Diễn viên dưới thanh thời gian với dàn diễn viên và êkíp, kèm tiểu sử ngắn của từng người"
+          }
+        }
+      }
+    },
     "A muted trailer plays behind the description on detail pages": {
       "localizations": {
         "de": {
@@ -5054,47 +5095,6 @@
         }
       }
     },
-    "Add a Cast pill under the timeline with who is on screen and a short bio": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Add a Cast pill under the timeline with who is on screen and a short bio"
-          }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Fügt unter der Zeitleiste eine Besetzung-Schaltfläche hinzu, die zeigt, wer im Bild ist, samt Kurzbiografie"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Añade un botón de Reparto bajo la línea de tiempo con quién aparece en pantalla y una breve biografía"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ajoute une pastille Casting sous la timeline avec les personnes à l’écran et une courte biographie"
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Aggiunge un pulsante Cast sotto la timeline con chi è in scena e una breve biografia"
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Thêm nút Diễn viên dưới thanh thời gian, cho biết ai đang xuất hiện trên màn hình kèm tiểu sử ngắn"
-          }
-        }
-      }
-    },
     "Add a raised edge highlight and a glossy top sheen to cards for a little more depth.": {
       "localizations": {
         "de": {
@@ -5368,43 +5368,43 @@
         }
       }
     },
-    "Adds a Cast pill under the timeline in the player. It lists who is on screen and the key crew, and opens a short biography with their best-known titles. Default: On.": {
+    "Adds a Cast pill under the timeline in the player. It lists the cast, guest stars and key crew for the title or episode, and opens a short biography with their best-known titles. Works whether or not TMDB Enrichment is on. Default: On.": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Adds a Cast pill under the timeline in the player. It lists who is on screen and the key crew, and opens a short biography with their best-known titles. Default: On."
+            "value": "Adds a Cast pill under the timeline in the player. It lists the cast, guest stars and key crew for the title or episode, and opens a short biography with their best-known titles. Works whether or not TMDB Enrichment is on. Default: On."
           }
         },
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Fügt im Player unter der Zeitleiste eine Besetzung-Schaltfläche hinzu. Sie listet, wer im Bild ist, und die wichtigsten Crew-Mitglieder und öffnet eine Kurzbiografie mit den bekanntesten Titeln. Standard: An."
+            "value": "Fügt im Player unter der Zeitleiste eine Besetzung-Schaltfläche hinzu. Sie listet die Besetzung, Gaststars und die wichtigsten Crew-Mitglieder des Titels oder der Folge und öffnet eine Kurzbiografie mit den bekanntesten Titeln. Funktioniert unabhängig davon, ob die TMDB-Anreicherung an ist. Standard: An."
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Añade un botón de Reparto bajo la línea de tiempo en el reproductor. Muestra quién aparece en pantalla y el equipo principal, y abre una breve biografía con sus títulos más conocidos. Por defecto: activado."
+            "value": "Añade un botón de Reparto bajo la línea de tiempo en el reproductor. Muestra el reparto, las estrellas invitadas y el equipo principal del título o del episodio, y abre una breve biografía con sus títulos más conocidos. Funciona tanto si el Enriquecimiento TMDB está activado como si no. Por defecto: activado."
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Ajoute une pastille Casting sous la timeline dans le lecteur. Elle liste les personnes à l’écran et l’équipe clé, et ouvre une courte biographie avec leurs titres les plus connus. Par défaut : activé."
+            "value": "Ajoute une pastille Casting sous la timeline dans le lecteur. Elle liste la distribution, les invités et l’équipe clé du titre ou de l’épisode, et ouvre une courte biographie avec leurs titres les plus connus. Fonctionne que l’Enrichissement TMDB soit activé ou non. Par défaut : activé."
           }
         },
         "it": {
           "stringUnit": {
             "state": "translated",
-            "value": "Aggiunge un pulsante Cast sotto la timeline nel player. Elenca chi è in scena e la troupe principale, e apre una breve biografia con i titoli più noti. Predefinito: attivo."
+            "value": "Aggiunge un pulsante Cast sotto la timeline nel player. Elenca il cast, le guest star e la troupe principale del titolo o dell’episodio, e apre una breve biografia con i titoli più noti. Funziona sia con l’Arricchimento TMDB attivo sia senza. Predefinito: attivo."
           }
         },
         "vi": {
           "stringUnit": {
             "state": "translated",
-            "value": "Thêm nút Diễn viên dưới thanh thời gian trong trình phát. Nút liệt kê ai đang xuất hiện trên màn hình cùng êkíp chính, và mở tiểu sử ngắn với các tác phẩm nổi tiếng nhất. Mặc định: bật."
+            "value": "Thêm nút Diễn viên dưới thanh thời gian trong trình phát. Nút liệt kê dàn diễn viên, khách mời và êkíp chính của phim hoặc tập phim, và mở tiểu sử ngắn với các tác phẩm nổi tiếng nhất. Hoạt động dù Bổ sung dữ liệu TMDB đang bật hay tắt. Mặc định: bật."
           }
         }
       }

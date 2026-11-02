@@ -218,4 +218,22 @@ class PlayerCreditsTest {
         // Movies and show-level lookups never had an episode request.
         assertTrue(playerCreditsCacheable(isEpisode = false, episodeResponseDecoded = false))
     }
+
+    @Test
+    fun failureLogLineNamesEndpointAndClassButNeverTheMessageOrKey() {
+        val error = IllegalStateException(
+            "Request timeout: https://api.themoviedb.org/3/person/42?api_key=SECRET123&language=en",
+        )
+        val line = tmdbRequestFailureLogLine("person/42", error)
+        assertEquals("TMDB request failed for person/42 (IllegalStateException)", line)
+        assertFalse(line.contains("SECRET123"))
+        assertFalse(line.contains("api_key"))
+    }
+
+    @Test
+    fun failureLogLineDropsAnyQueryOnTheEndpoint() {
+        val line = tmdbRequestFailureLogLine("find/123?api_key=SECRET", RuntimeException("x"))
+        assertFalse(line.contains("SECRET"))
+        assertTrue(line.startsWith("TMDB request failed for find/123 "))
+    }
 }

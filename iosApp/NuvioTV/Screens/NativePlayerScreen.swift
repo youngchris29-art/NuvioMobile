@@ -623,17 +623,17 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
             // The position is captured at the press, while the line is still being spoken.
             let captured = model.syncLineCapturePositionMs?() ?? 0
             let delayAtCapture = model.subtitleDelayMs
-            // Let the transport bar finish dismissing its popover before presenting over it.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak host, weak coordinator] in
-                guard let host else { return }
-                let box = WeakPanelBox()
-                let panel = PlayerPanelHostController(rootView: NativeSyncLineSheet(
-                    model: model, capturedMs: captured, delayAtCaptureMs: delayAtCapture,
-                    onDone: { box.panel?.close(animated: true) }))
-                box.panel = panel
-                host.present(panel: panel)
-                guard host.panelHost === panel else { return }
-                coordinator?.sheetOpen = true
+            let box = WeakPanelBox()
+            let panel = PlayerPanelHostController(rootView: NativeSyncLineSheet(
+                model: model, capturedMs: captured, delayAtCaptureMs: delayAtCapture,
+                onDone: { box.panel?.close(animated: true) }))
+            box.panel = panel
+            // Review r10: the transport bar's popover is still dismissing when the action fires.
+            // Present once it is actually gone (polled, capped), and publish the open state only
+            // for a presentation UIKit accepted; a fixed 350 ms wait could lose the sheet.
+            host.presentWhenClear(panel: panel) { [weak coordinator] presented in
+                guard presented, let coordinator else { return }
+                coordinator.sheetOpen = true
                 openChanged(true)
             }
         }
