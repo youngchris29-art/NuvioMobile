@@ -155,7 +155,9 @@ final class AetherTVPlayerViewController: UIViewController {
     private(set) var handedOff = false
     private var rebuiltOnce = false
     private var trackingStarted = false
-    private var trackingFinished = false
+    /// Once-only flush / tracker stops and the handoff (`PlaybackHandoffLedger`).
+    private var handoffLedger = PlaybackHandoffLedger()
+    private var trackingFinished: Bool { handoffLedger.trackingFinished }
     private var teardownDone = false
     /// Seconds really played (playing ticks only), fed by the housekeeping tick.
     private var playClock = PlaybackHealthClock()
@@ -965,15 +967,26 @@ final class AetherTVPlayerViewController: UIViewController {
 
     /// Once per player: one resume flush, then the Trakt and tracker stops (W1-B 4.3 order).
     private func finishTracking(positionSec: Double) {
-        guard !trackingFinished else { return }
-        trackingFinished = true
+        apply(handoffLedger.finishTracking(positionSec: positionSec, durationSec: transportDurationSec,
+                                           everShowedFrame: everShowedFrame))
+    }
+
+    /// Runs the ledger's tracking effects. `.handOff` is the caller's (it stops the session first).
+    private func apply(_ effects: [PlaybackHandoffLedger.Effect]) {
         let duration = transportDurationSec
-        if everShowedFrame, duration > 0 {
-            recorder.record(positionSec: positionSec, durationSec: duration, isPaused: true, speed: 1,
-                            flush: true, isLive: false)
+        for effect in effects {
+            switch effect {
+            case .flushResume(let sec):
+                recorder.record(positionSec: sec, durationSec: duration, isPaused: true, speed: 1,
+                                flush: true, isLive: false)
+            case .stopTrakt(let sec):
+                recorder.stopTrakt(positionSec: sec, durationSec: duration, isLive: false)
+            case .stopTrackers(let sec):
+                recorder.stopTrackers(positionSec: sec, durationSec: duration, isLive: false)
+            case .handOff:
+                break
+            }
         }
-        recorder.stopTrakt(positionSec: positionSec, durationSec: duration, isLive: false)
-        recorder.stopTrackers(positionSec: positionSec, durationSec: duration, isLive: false)
     }
 
     // MARK: - Start watchdog
@@ -1072,12 +1085,15 @@ final class AetherTVPlayerViewController: UIViewController {
         stopStartWatchdogTimer()
         stopScanTimer()
         loadTask?.cancel()
-        let position = AetherFailurePlan.handoffPosition(positionMirror)
-        let handoff = PlaybackHandoff(positionSec: position, secondsPlayed: secondsPlayed,
-                                      startedPlaying: everShowedFrame, kind: .local)
-        finishTracking(positionSec: position)
+        let effects = handoffLedger.handOff(positionSec: positionMirror, secondsPlayed: secondsPlayed,
+                                            durationSec: transportDurationSec, everShowedFrame: everShowedFrame)
+        apply(effects)
         session?.stop(handingOff: true)
-        print("[Failover] aether → mpv handoff (\(reason)) pos=\(String(format: "%.1f", position))"
+        guard let handoff = effects.compactMap({ effect -> PlaybackHandoff? in
+            if case .handOff(let h) = effect { return h }
+            return nil
+        }).first else { return }
+        print("[Failover] aether → mpv handoff (\(reason)) pos=\(String(format: "%.1f", handoff.positionSec))"
               + " played=\(Int(handoff.secondsPlayed)) started=\(handoff.startedPlaying)")
         onFallback(handoff)
     }

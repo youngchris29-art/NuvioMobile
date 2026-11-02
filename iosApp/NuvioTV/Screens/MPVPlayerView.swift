@@ -3794,6 +3794,7 @@ private struct MPVPlayerRepresentable: UIViewControllerRepresentable {
         case .aether:
             let aether = AetherTVPlayerViewController(context: context, state: state)
             aether.onFallback = onFallback
+            aether.failureDecider = AetherFailurePolicy()   // W3-C: the ladder incl. the 10 s interruption window
             controller = aether
         default:
             let mpv = MPVTVPlayerViewController(context: context, state: state)
