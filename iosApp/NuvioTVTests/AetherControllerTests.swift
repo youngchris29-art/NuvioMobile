@@ -164,6 +164,14 @@ final class AetherControllerTests: XCTestCase {
         XCTAssertEqual(AetherFailurePlan.resolve(.fallbackToMpv, alreadyRebuilt: false), .fallbackToMpv)
     }
 
+    func testRateLimitAndOfflineNeverOfferAnMpvRetry() {
+        // Review r3: the terminal rate limit reaches the alert as `.network`; mpv would hit the same meter.
+        XCTAssertFalse(AetherFailurePlan.offersMpvRetry(AetherFailurePlan.failureKind(.sourceRateLimited)))
+        XCTAssertFalse(AetherFailurePlan.offersMpvRetry(.offline))
+        XCTAssertTrue(AetherFailurePlan.offersMpvRetry(AetherFailurePlan.failureKind(.sourceOpenFailed)))
+        XCTAssertTrue(AetherFailurePlan.offersMpvRetry(.endedEarly))
+    }
+
     func testTerminalKindsAndHandoffPosition() {
         XCTAssertEqual(AetherFailurePlan.failureKind(.sourceRateLimited), .network)
         XCTAssertEqual(AetherFailurePlan.failureKind(.sourceRefused), .local)

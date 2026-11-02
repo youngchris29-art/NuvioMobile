@@ -187,6 +187,13 @@ enum AetherFailurePlan {
         kind == .sourceRateLimited ? .network : .local
     }
 
+    /// Review r3: whether the failure alert may offer "Try with mpv" for a terminal Aether failure. A
+    /// rate limit (`.network`) is terminal because mpv meets the same meter, and with no network path
+    /// (`.offline`) mpv cannot open the source either.
+    static func offersMpvRetry(_ kind: PlaybackFailureKind) -> Bool {
+        kind != .network && kind != .offline
+    }
+
     /// Where the handoff resumes: the last clock position, finite and >= 0.
     static func handoffPosition(_ sec: Double) -> Double {
         sec.isFinite && sec > 0 ? sec : 0

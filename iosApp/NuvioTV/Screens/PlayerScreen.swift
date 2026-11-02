@@ -194,7 +194,11 @@ struct PlayerScreen: View {
             // A native or Aether run that was itself a forced retry never offers mpv back. After an
             // Aether fallback the mpv run reports `.mpv` with `forcedMPV` set: it never offers Aether
             // (or native) back either (plan section 4).
-            case .native, .aether: tagged.otherEngineEligible = context.forcedEngine == nil
+            // An Aether rate limit or offline failure never offers mpv: it meets the same wall.
+            case .native: tagged.otherEngineEligible = context.forcedEngine == nil
+            case .aether:
+                tagged.otherEngineEligible = context.forcedEngine == nil
+                    && AetherFailurePlan.offersMpvRetry(failure.kind)
             case .mpv: tagged.otherEngineEligible = eligibleForNative
             }
             onPlaybackFailed(tagged)
