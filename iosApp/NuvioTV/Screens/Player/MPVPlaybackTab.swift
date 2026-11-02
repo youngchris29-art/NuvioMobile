@@ -17,10 +17,15 @@ struct MPVPlaybackTab: View {
     let canSwitchStreams: Bool
     /// Closes the panel after an action that replaces playback (episode jump, source switch).
     let onClose: () -> Void
+    /// Insights (2026-11-01): the Speed popover draws the settings column alone; Episodes and
+    /// Sources have popovers of their own.
+    var settingsOnly = false
     private let state: MPVPlaybackState
 
-    init(state: MPVPlaybackState, engine: NextEpisodeEngine, canSwitchStreams: Bool, onClose: @escaping () -> Void) {
+    init(state: MPVPlaybackState, engine: NextEpisodeEngine, canSwitchStreams: Bool, settingsOnly: Bool = false,
+         onClose: @escaping () -> Void) {
         self.state = state
+        self.settingsOnly = settingsOnly
         _values = StateObject(wrappedValue: MPVPlaybackTabValues(state: state))
         _engine = ObservedObject(wrappedValue: engine)
         self.canSwitchStreams = canSwitchStreams
@@ -28,6 +33,15 @@ struct MPVPlaybackTab: View {
     }
 
     var body: some View {
+        if settingsOnly {
+            settingsColumn
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        } else {
+            columns
+        }
+    }
+
+    private var columns: some View {
         HStack(alignment: .top, spacing: Theme.Spacing.xl) {
             settingsColumn
                 .frame(maxWidth: .infinity, alignment: .leading)

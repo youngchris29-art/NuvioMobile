@@ -11,13 +11,13 @@ enum PlayerChipStyle {
     static let animation: Animation = .easeInOut(duration: 0.25)
     /// Bottom-trailing inset from the screen edge (overscan-safe), both engines.
     static let edgePadding: CGFloat = Theme.Spacing.screen
-    /// Chip insets while the mpv transport bar is up: clear of the pill row (top at 213 from the
-    /// bottom) and aligned with the track end.
-    static let barUpBottomInset: CGFloat = 240
+    /// Chip insets while the mpv transport bar is up: clear of the disc row (top at 273 from the
+    /// bottom since the info pill row moved the bar up 60) and aligned with the track end.
+    static let barUpBottomInset: CGFloat = 300
     static let barUpTrailingInset: CGFloat = 86
-    /// While a swipe scrub's preview card is up: above the card's chapter label (top at 681 on a
-    /// 1080 canvas, 1080 − 681 + 21).
-    static let scrubCardBottomInset: CGFloat = 420
+    /// While a swipe scrub's preview card is up: above the card's chapter label (top at 621 on a
+    /// 1080 canvas, 1080 − 621 + 21).
+    static let scrubCardBottomInset: CGFloat = 480
     /// SF Symbols mirrored on the native contextual actions.
     static let skipSymbol = "forward.frame.fill"
     static let nextSymbol = "forward.end.fill"

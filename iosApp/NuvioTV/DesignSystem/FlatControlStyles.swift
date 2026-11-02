@@ -218,6 +218,32 @@ struct PlayerPillDisc: View {
     }
 }
 
+/// The mpv player's text pill under the times row (Insights, 2026-11-01; AVKit tvOS 26's info
+/// pills): a capsule title, white fill and dark text when focused or open. Drawn, never focusable:
+/// the mpv controller routes the remote.
+struct PlayerInfoPillCapsule: View {
+    let title: String
+    let focused: Bool
+
+    var body: some View {
+        let label = Text(verbatim: title)
+            .font(PlayerTransportMetrics.meta.weight(.semibold))
+            .lineLimit(1)
+            .foregroundStyle(focused ? FocusLook.onPlatter : Color.white)
+            .padding(.horizontal, TransportBarLayout.infoPillHorizontalPadding)
+            .frame(height: TransportBarLayout.infoPillHeight)
+        Group {
+            if focused {
+                label.background(Capsule().fill(FocusLook.platter))
+            } else {
+                label.playerSurface(in: Capsule(), fill: PlayerSurfaceStyle.chipFill)
+            }
+        }
+        .scaleEffect(focused ? FocusLook.liftScale : 1)
+        .animation(FocusLook.anim, value: focused)
+    }
+}
+
 extension ButtonStyle where Self == ChipButtonStyle {
     /// Capsule chip with no selection state.
     static var chip: ChipButtonStyle { .init() }

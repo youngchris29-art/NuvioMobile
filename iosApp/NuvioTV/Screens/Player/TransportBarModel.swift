@@ -47,6 +47,15 @@ enum PillKind: String, CaseIterable { case subtitles, audio, speed, aspect, sour
     @Published var showsClock = false
     @Published var pills: [PillKind] = []
     @Published var focusedPill: PillKind? = nil
+    /// Insights (2026-11-01): the text pills under the times row (Info · Cast · Chapters · Up Next),
+    /// fed from `PlayerInfoPill.visible(for:)`. Drawn non-focusable like the discs: the controller
+    /// routes the remote and publishes `focusedInfoPill`.
+    @Published var infoPills: [PlayerInfoPill] = []
+    @Published var focusedInfoPill: PlayerInfoPill? = nil
+    /// The pill whose content shelf is open over the lower screen; nil = none.
+    @Published var openInfoPill: PlayerInfoPill? = nil
+    /// The tool disc whose popover is open above it; nil = none. Aspect never opens one.
+    @Published var openPopover: PillKind? = nil
     /// The scrub card's frame for the current preview target (nil = no frame yet).
     @Published var previewFrame: CGImage? = nil
     /// BUG-181 (Steven rc7): seek previews are on for this file (a harvest or the decoder can fill
@@ -74,6 +83,8 @@ enum PillKind: String, CaseIterable { case subtitles, audio, speed, aspect, sour
     @Published var debugAspectWrites = 0
     #endif
     var pillsEngaged: Bool { focusedPill != nil }
+    /// A popover or a content shelf is on screen.
+    var overlayOpen: Bool { openPopover != nil || openInfoPill != nil }
     /// The chapter title at `sec` (the one rule, `PlayerChapters.title(at:in:)`); nil = none or untitled.
     func chapterTitle(at sec: Double) -> String? { PlayerChapters.title(at: sec, in: chapters) }
 }
