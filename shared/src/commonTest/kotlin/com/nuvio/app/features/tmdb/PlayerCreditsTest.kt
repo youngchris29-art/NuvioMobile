@@ -77,10 +77,41 @@ class PlayerCreditsTest {
     fun unsupportedInputs() {
         assertEquals(PlayerCreditsIdentityParse.Unsupported, PlayerCreditsIdentity.parse("series", "kitsu:1", 1, 1))
         assertEquals(PlayerCreditsIdentityParse.Unsupported, PlayerCreditsIdentity.parse("series", "mal:5", 1, 1))
-        assertEquals(PlayerCreditsIdentityParse.Unsupported, PlayerCreditsIdentity.parse("anime", "tt1", 1, 1))
+        // Anime without episode coordinates stays unsupported.
+        assertEquals(PlayerCreditsIdentityParse.Unsupported, PlayerCreditsIdentity.parse("anime", "tt1", null, null))
+        assertEquals(PlayerCreditsIdentityParse.Unsupported, PlayerCreditsIdentity.parse("anime", "tmdb:1399", 1, null))
+        assertEquals(PlayerCreditsIdentityParse.Unsupported, PlayerCreditsIdentity.parse("anime", "tmdb:1399", 1, 0))
+        assertEquals(PlayerCreditsIdentityParse.Unsupported, PlayerCreditsIdentity.parse("anime", "kitsu:1", 1, 1))
         assertEquals(PlayerCreditsIdentityParse.Unsupported, PlayerCreditsIdentity.parse("movie", "  ", null, null))
         assertEquals(PlayerCreditsIdentityParse.Unsupported, PlayerCreditsIdentity.parse("movie", "tvdb:abc", null, null))
         assertEquals(PlayerCreditsIdentityParse.Unsupported, PlayerCreditsIdentity.parse("movie", "addon:xyz", null, null))
+    }
+
+    @Test
+    fun animeWithEpisodeCoordinatesMapsToTv() {
+        val r = resolved("anime", "tmdb:1399", 1, 2)
+        assertEquals(PlayerCreditsIdentity("tv", 1399, 1, 2), r)
+        assertEquals("tv:1399:s1:e2", r.key)
+        val imdb = lookup("anime", "tt0944947:1:2", 1, 2)
+        assertEquals("tv", imdb.mediaType)
+        assertEquals("imdb_id", imdb.externalSource)
+        assertEquals("tt0944947", imdb.externalId)
+        assertEquals(1, imdb.season)
+        assertEquals(2, imdb.episode)
+        val tvdb = lookup("ANIME", "tvdb:81189", 0, 1)
+        assertEquals("tv", tvdb.mediaType)
+        assertEquals(0, tvdb.season)
+    }
+
+    // ─── playerCreditsApiKey ───
+
+    @Test
+    fun castKeyIgnoresEnrichmentToggles() {
+        val off = TmdbSettings(enabled = false, useCredits = false, apiKey = "personal")
+        assertEquals("personal", playerCreditsApiKey(off))
+        val bundled = TmdbSettings(enabled = false, useCredits = false)
+        assertEquals(TmdbConfig.API_KEY.takeIf { it.isNotBlank() }, playerCreditsApiKey(bundled))
+        assertEquals(playerCreditsApiKey(TmdbSettings(enabled = true, useCredits = true)), playerCreditsApiKey(bundled))
     }
 
     // ─── buildPlayerCredits ───

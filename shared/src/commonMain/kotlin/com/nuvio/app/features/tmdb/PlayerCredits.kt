@@ -113,8 +113,15 @@ fun PlayerCreditsIdentity.Companion.parse(
     season: Int?,
     episode: Int?,
 ): PlayerCreditsIdentityParse {
-    val mediaType = normalizePlayerCreditsMediaType(contentType) ?: return PlayerCreditsIdentityParse.Unsupported
-    val keepEpisode = mediaType == "tv" && season != null && episode != null && season >= 0 && episode >= 1
+    val hasEpisodeCoordinates = season != null && episode != null && season >= 0 && episode >= 1
+    // Anime add-ons (contentType "anime") play episodes of a TMDB show: with valid episode
+    // coordinates the id maps like a series. Coordinate-less anime stays Unsupported (no way to
+    // tell a film from a show).
+    val mediaType = when {
+        contentType.trim().equals("anime", ignoreCase = true) && hasEpisodeCoordinates -> "tv"
+        else -> normalizePlayerCreditsMediaType(contentType)
+    } ?: return PlayerCreditsIdentityParse.Unsupported
+    val keepEpisode = mediaType == "tv" && hasEpisodeCoordinates
     val resolvedSeason = if (keepEpisode) season else null
     val resolvedEpisode = if (keepEpisode) episode else null
 
@@ -370,6 +377,15 @@ private data class PersonCombinedCreditsDto(
 
 // ─── Service ───
 
+/**
+ * The key the Cast pill calls TMDB with: the personal key, else the bundled one (same rule as
+ * [TmdbSettingsRepository.effectiveApiKey]); null when neither exists.
+ * Independent of the TMDB Enrichment toggles by design: "Show cast in player" fetches credits even
+ * when [TmdbSettings.enabled] or [TmdbSettings.useCredits] is off.
+ */
+internal fun playerCreditsApiKey(settings: TmdbSettings): String? =
+    settings.apiKey.ifBlank { TmdbConfig.API_KEY }.takeIf { it.isNotBlank() }
+
 object PlayerCreditsService {
     private val log = Logger.withTag("PlayerCredits")
     private val json = Json { ignoreUnknownKeys = true }
@@ -398,8 +414,9 @@ object PlayerCreditsService {
 
     /** Episode credits (cast, guests, crew) with the show's aggregate credits as the fallback. */
     suspend fun fetchCredits(identity: PlayerCreditsIdentity): PlayerCredits? = withContext(Dispatchers.Default) {
-        val apiKey = TmdbSettingsRepository.effectiveApiKey().takeIf(String::isNotBlank) ?: return@withContext null
-        val language = normalizeTmdbLanguage(TmdbSettingsRepository.snapshot().language)
+        val settings = TmdbSettingsRepository.snapshot()
+        val apiKey = playerCreditsApiKey(settings) ?: return@withContext null
+        val language = normalizeTmdbLanguage(settings.language)
         val cacheKey = identity.key + ":" + language
         cacheMutex.withLock { creditsCache[cacheKey] }?.let { return@withContext it }
 
@@ -436,8 +453,9 @@ object PlayerCreditsService {
     }
 
     suspend fun fetchPersonSummary(personId: Int): PlayerPersonSummary? = withContext(Dispatchers.Default) {
-        val apiKey = TmdbSettingsRepository.effectiveApiKey().takeIf(String::isNotBlank) ?: return@withContext null
-        val language = normalizeTmdbLanguage(TmdbSettingsRepository.snapshot().language)
+        val settings = TmdbSettingsRepository.snapshot()
+        val apiKey = playerCreditsApiKey(settings) ?: return@withContext null
+        val language = normalizeTmdbLanguage(settings.language)
         val cacheKey = "$personId:$language"
         cacheMutex.withLock { personCache[cacheKey] }?.let { return@withContext it }
 
