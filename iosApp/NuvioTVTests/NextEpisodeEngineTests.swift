@@ -942,6 +942,26 @@ final class NextEpisodeEngineTests: XCTestCase {
         XCTAssertEqual(engine.sources.count, 1, "the re-fired preload blanked the list")
     }
 
+    /// Review r6: the seek back lands with the bar still up (the seek raised it), so the held list
+    /// loads right then instead of falling to "No alternate sources found yet.".
+    func testSeekBackWithTheBarUpLoadsTheHeldListAtOnce() {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(percent: 99, preload: true), recorder: recorder)
+        engine.onProgress(positionSec: 2346, durationSec: Self.duration)
+        engine.transportBarSourcesShown()
+        XCTAssertTrue(engine.sourcesBlockedBySearch, "held behind the preload")
+
+        engine.onProgress(positionSec: 1200, durationSec: Self.duration)   // seek back, bar up
+        XCTAssertEqual(recorder.calls, [nextLoad, currentLoad], "the visible held list did not load")
+        XCTAssertFalse(engine.sourcesBlockedBySearch)
+        XCTAssertTrue(engine.sourcesLoading)
+        XCTAssertNotEqual(NativeTransportMenus.sourcesState(engine).0, .empty, "the menu fell to the empty state")
+        recorder.callbacks.last?(listState([directStream()]))
+        XCTAssertEqual(engine.sources.count, 1)
+        engine.transportBarSourcesShown()
+        XCTAssertEqual(recorder.calls, [nextLoad, currentLoad], "a later raise loaded it again")
+    }
+
     /// Review r5 (P3): stands in for `Hooks.sourceListDeadline`; returns when the test fires it.
     private final class DeadlineGate {
         private var continuation: CheckedContinuation<Void, Never>?

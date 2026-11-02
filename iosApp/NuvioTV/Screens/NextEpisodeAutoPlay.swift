@@ -831,6 +831,9 @@ final class NextEpisodeEngine: ObservableObject {
                     sourcesHeldForPreload = false
                     sourcesBlockedBySearch = false
                     sourcesBlockedByJump = false
+                    // Review r6: the seek usually raised the bar, so the Sources menu is on screen;
+                    // load it now (as `searchEnded` does) rather than fall to the false empty state.
+                    if sourceColumnVisible { loadSources() }
                 }
                 print("[UpNext] left the preload lead window (pos=\(Int(positionSec))s) — preload dropped")
             }
