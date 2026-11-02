@@ -12,7 +12,7 @@ struct PlayerCastContent: View {
     var body: some View {
         Group {
             if let person = model.actorView {
-                PlayerActorView(person: person, detail: model.actorDetail, isFocused: $actorFocused)
+                PlayerActorView(person: person, detail: model.actorDetail, failed: model.actorDetailFailed, isFocused: $actorFocused)
                     .playerOverlayDefaultFocus(true)
                     .onAppear { actorFocused = true }
             } else {
@@ -96,6 +96,7 @@ private struct PlayerCastCard: View {
 private struct PlayerActorView: View {
     let person: PlayerPanelPerson
     let detail: PlayerPanelPersonDetail?
+    let failed: Bool
     var isFocused: FocusState<Bool>.Binding
 
     private var metaLine: String? {
@@ -137,6 +138,11 @@ private struct PlayerActorView: View {
                     if !detail.knownFor.isEmpty {
                         knownForRow(detail.knownFor)
                     }
+                } else if failed {
+                    Text(String(localized: "Details aren't available right now."))
+                        .font(Theme.Font.meta)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                        .lineLimit(2)
                 } else {
                     ProgressView().padding(.top, Theme.Spacing.sm)
                 }

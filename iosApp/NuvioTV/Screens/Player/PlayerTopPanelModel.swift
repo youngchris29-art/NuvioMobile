@@ -134,6 +134,8 @@ final class PlayerTopPanelModel: ObservableObject {
     @Published var actorView: PlayerPanelPerson?
     /// The open actor view's detail; nil while it loads (the view draws from `actorView` meanwhile).
     @Published var actorDetail: PlayerPanelPersonDetail?
+    /// True when the open actor view's detail fetch finished without a result.
+    @Published var actorDetailFailed = false
     /// The card last opened, so focus returns to it when the actor view closes.
     @Published var lastOpenedCardKey: String?
     /// Asked to load the actor view's detail (set by the loader).
@@ -143,6 +145,7 @@ final class PlayerTopPanelModel: ObservableObject {
     func openPerson(_ person: PlayerPanelPerson) {
         lastOpenedCardKey = person.cardKey
         actorDetail = nil
+        actorDetailFailed = false
         actorView = person
         onOpenPerson?(person)
     }
@@ -154,6 +157,7 @@ final class PlayerTopPanelModel: ObservableObject {
         guard actorView != nil else { return false }
         actorView = nil
         actorDetail = nil
+        actorDetailFailed = false
         return true
     }
 

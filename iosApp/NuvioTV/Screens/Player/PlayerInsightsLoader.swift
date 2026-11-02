@@ -111,6 +111,7 @@ final class PlayerInsightsLoader {
         personTask?.cancel()
         model.actorView = nil
         model.actorDetail = nil
+        model.actorDetailFailed = false
     }
 
     private func openPerson(_ person: PlayerPanelPerson) {
@@ -129,6 +130,7 @@ final class PlayerInsightsLoader {
         // Stale (a newer open), closed, or switched to another card: drop it.
         guard token == personGeneration, model.actorView?.id == person.id else { return }
         model.actorDetail = detail
+        model.actorDetailFailed = (detail == nil)
     }
 
     // MARK: - Live fetches (SharedCore)

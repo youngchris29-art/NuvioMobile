@@ -215,6 +215,36 @@ final class PlayerInsightsLoaderTests: XCTestCase {
         XCTAssertEqual(model.actorDetail?.name, "D1")
     }
 
+    // Review r9 (P2): a failed detail fetch is flagged so the actor view can stop its spinner.
+    func testFailedPersonDetailSetsFailedFlagAndReopenResetsIt() async {
+        let cg = Gate<PlayerInsightsIdentity, PlayerInsightsCredits>()
+        let pg = Gate<Int, PlayerPanelPersonDetail>()
+        let (model, loader) = make(cg, pg)
+        defer { withExtendedLifetime(loader) {} }
+        XCTAssertFalse(model.actorDetailFailed)
+        model.openPerson(person(1))
+        await settle()
+        XCTAssertFalse(model.actorDetailFailed, "loading is not failed")
+        pg.resume(pg.index { $0 == 1 }, nil)
+        await settle()
+        XCTAssertNil(model.actorDetail)
+        XCTAssertTrue(model.actorDetailFailed)
+        model.openPerson(person(1))
+        XCTAssertFalse(model.actorDetailFailed, "reopening resets the flag while loading")
+        await settle()
+        pg.resume(pg.lastIndex { $0 == 1 }, detail(1))
+        await settle()
+        XCTAssertEqual(model.actorDetail?.name, "D1")
+        XCTAssertFalse(model.actorDetailFailed, "a successful fetch leaves it false")
+        model.openPerson(person(2))
+        await settle()
+        pg.resume(pg.index { $0 == 2 }, nil)
+        await settle()
+        XCTAssertTrue(model.actorDetailFailed)
+        XCTAssertTrue(model.menuBack())
+        XCTAssertFalse(model.actorDetailFailed, "closing resets the flag")
+    }
+
     // (f)
     func testClosingActorViewBeforeDetailReturnsKeepsDetailNil() async {
         let cg = Gate<PlayerInsightsIdentity, PlayerInsightsCredits>()

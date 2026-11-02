@@ -16180,6 +16180,40 @@
         }
       }
     },
+    "Details aren't available right now.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Details sind gerade nicht verfügbar."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Los detalles no están disponibles en este momento."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Les détails ne sont pas disponibles pour le moment."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "I dettagli non sono disponibili al momento."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hiện chưa có thông tin chi tiết."
+          }
+        }
+      }
+    },
     "Dev build": {
       "localizations": {
         "de": {
