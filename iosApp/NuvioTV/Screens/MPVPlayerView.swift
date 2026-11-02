@@ -448,8 +448,9 @@ final class MPVTVPlayerViewController: UIViewController {
     var onPlaybackHealthy: ((Double) -> Void)?
     /// The native engine already failed before start, so this attempt gets the shortened budget.
     var startWatchdogShortened = false
-    /// Seconds the native engine played before it fell back to this player (added to `secondsPlayed`).
-    var nativeSecondsPlayedBeforeFallback: Double = 0
+    /// Seconds the engine before this one (native today) played before it fell back to this player
+    /// (added to `secondsPlayed`).
+    var secondsPlayedBeforeFallback: Double = 0
     /// B10 (BUG-166): the router sent a Dolby Vision profile 5 stream here, so `setupMpv` uses
     /// `gpu-next` whatever Enhanced Video Renderer says. Set by the representable right after init,
     /// before `viewDidLoad` runs `setupMpv`.
@@ -2106,7 +2107,7 @@ final class MPVTVPlayerViewController: UIViewController {
         if let s = context.resumeAtSec, s > 10 { pendingResumeSec = s; return }
         // Start Over: play from 0 whatever progress is saved. Not after a native fallback that
         // already played: that session's own saved progress is the point to continue from.
-        if context.startFromBeginning, nativeSecondsPlayedBeforeFallback <= 0 {
+        if context.startFromBeginning, secondsPlayedBeforeFallback <= 0 {
             print("[Failover] start over: ignoring saved progress")
             return
         }
@@ -3094,7 +3095,7 @@ final class MPVTVPlayerViewController: UIViewController {
     /// whatever the other engine did).
     private var failoverSecondsPlayed: Double {
         guard failoverLoadedUptime != nil else { return 0 }
-        return playClock.seconds + nativeSecondsPlayedBeforeFallback
+        return playClock.seconds + secondsPlayedBeforeFallback
     }
 
     /// One `refreshState` tick into the play clock. Nothing counts before `MPV_EVENT_FILE_LOADED`
@@ -3765,31 +3766,47 @@ extension MPVTVPlayerViewController: PlayerTransportHost {
     }
 }
 
+extension MPVTVPlayerViewController: ChromePlayerController {}
+
+/// Builds the player controller for `engine` (any `ChromePlayerController`) and hands it the
+/// screen's hooks. Read once, when the controller is made: a presenter that switches engines must
+/// give each engine its own screen identity (a different `switch` case or `.id(engine)`), or this
+/// never runs again.
 private struct MPVPlayerRepresentable: UIViewControllerRepresentable {
     let context: PlaybackContext
     let state: MPVPlaybackState
+    /// Which controller to build. Phase 1: every engine but Aether (W3-A) builds mpv.
+    let engine: PlaybackEngine
     let onExit: () -> Void
     /// Failover hooks, handed straight to the controller (see its doc comments).
     let onPlaybackFailed: ((PlaybackFailure) -> Void)?
     let onPlaybackHealthy: ((Double) -> Void)?
+    /// The Aether controller's handoff to mpv (W3-A); unused by the mpv controller.
+    let onFallback: ((PlaybackHandoff) -> Void)?
     let startWatchdogShortened: Bool
-    let nativeSecondsPlayedBeforeFallback: Double
+    let secondsPlayedBeforeFallback: Double
     /// B10 (BUG-166): see `MPVTVPlayerViewController.forcesGpuNext`.
     let forcesGpuNext: Bool
 
-    func makeUIViewController(context ctx: Context) -> MPVTVPlayerViewController {
-        let controller = MPVTVPlayerViewController(context: context, state: state)
-        // Before anything touches `controller.view`: `viewDidLoad` runs `setupMpv`, which reads it.
-        controller.forcesGpuNext = forcesGpuNext
+    func makeUIViewController(context ctx: Context) -> UIViewController {
+        let controller: ChromePlayerController
+        switch engine {
+        // case .aether: (W3-A) the Aether controller, its `onFallback = onFallback`.
+        default:
+            let mpv = MPVTVPlayerViewController(context: context, state: state)
+            // Before anything touches `controller.view`: `viewDidLoad` runs `setupMpv`, which reads it.
+            mpv.forcesGpuNext = forcesGpuNext
+            controller = mpv
+        }
         controller.onExit = onExit
         controller.onPlaybackFailed = onPlaybackFailed
         controller.onPlaybackHealthy = onPlaybackHealthy
         controller.startWatchdogShortened = startWatchdogShortened
-        controller.nativeSecondsPlayedBeforeFallback = nativeSecondsPlayedBeforeFallback
+        controller.secondsPlayedBeforeFallback = secondsPlayedBeforeFallback
         return controller
     }
 
-    func updateUIViewController(_ controller: MPVTVPlayerViewController, context: Context) {}
+    func updateUIViewController(_ controller: UIViewController, context: Context) {}
 }
 
 /// SwiftUI host for the libmpv player + transport overlay; presented full-screen over the stream
@@ -3818,6 +3835,11 @@ struct MPVPlayerScreen: View {
     /// P5 B22: set by presenters that can push a Detail page after the player closes; enables the
     /// post-play More Like This row.
     var onOpenTitle: ((MetaPreview) -> Void)? = nil
+    /// Which player controller this screen hosts (read once, when it is made). Phase 1 builds mpv
+    /// for every value; W3-A adds the Aether controller.
+    var engine: PlaybackEngine = .mpv
+    /// The Aether controller's handoff to mpv (W3-A); never fired by mpv.
+    var onFallback: ((PlaybackHandoff) -> Void)? = nil
 
     @StateObject private var state: MPVPlaybackState
     @StateObject private var upNext: NextEpisodeEngine
@@ -3851,9 +3873,13 @@ struct MPVPlayerScreen: View {
          startWatchdogShortened: Bool = false,
          nativeSecondsPlayedBeforeFallback: Double = 0,
          forcesGpuNext: Bool = false,
-         onOpenTitle: ((MetaPreview) -> Void)? = nil) {
+         onOpenTitle: ((MetaPreview) -> Void)? = nil,
+         engine: PlaybackEngine = .mpv,
+         onFallback: ((PlaybackHandoff) -> Void)? = nil) {
         self.context = context
         self.onOpenTitle = onOpenTitle
+        self.engine = engine
+        self.onFallback = onFallback
         self.onPlayNext = onPlayNext
         self.routingNote = routingNote
         self.forcesGpuNext = forcesGpuNext
@@ -3892,12 +3918,13 @@ struct MPVPlayerScreen: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             MPVPlayerRepresentable(
-                context: context, state: state,
+                context: context, state: state, engine: engine,
                 onExit: { dismiss() },
                 onPlaybackFailed: onPlaybackFailed,
                 onPlaybackHealthy: onPlaybackHealthy,
+                onFallback: onFallback,
                 startWatchdogShortened: startWatchdogShortened,
-                nativeSecondsPlayedBeforeFallback: nativeSecondsPlayedBeforeFallback,
+                secondsPlayedBeforeFallback: nativeSecondsPlayedBeforeFallback,
                 forcesGpuNext: forcesGpuNext
             )
             .ignoresSafeArea()
