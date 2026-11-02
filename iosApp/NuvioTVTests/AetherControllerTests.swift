@@ -173,6 +173,24 @@ final class AetherControllerTests: XCTestCase {
         XCTAssertEqual(AetherFailurePlan.handoffPosition(.nan), 0)
     }
 
+    // MARK: Subtitle start plan at load return (review r1 F1)
+
+    func testLoadReturnRunsTheStartPlanUnlessPrefetchedFilesWillPublish() {
+        // Tracks published before `load()` returned, the picker's prefetch already complete and empty:
+        // nothing else will publish, so load return must run the plan itself.
+        XCTAssertTrue(AetherSubtitleStartGate.runsAtLoadReturn(prefetchedAddonsAdded: 0))
+        XCTAssertFalse(AetherSubtitleStartGate.runsAtLoadReturn(prefetchedAddonsAdded: 2),
+                       "the add-on files' own track publish runs it")
+    }
+
+    func testLoadReturnRunWaitsOnlyWhileTheKickedFetchIsOut() {
+        let key = "movie|tt1"
+        XCTAssertFalse(AetherSubtitleStartGate.addonFetchPending(completedRequest: key, requestKey: key),
+                       "a completed (deduplicated) fetch never arrives: decide now, Off included")
+        XCTAssertTrue(AetherSubtitleStartGate.addonFetchPending(completedRequest: nil, requestKey: key))
+        XCTAssertTrue(AetherSubtitleStartGate.addonFetchPending(completedRequest: "series|tt2:1:1", requestKey: key))
+    }
+
     // MARK: Audio tab Atmos note (W3-C)
 
     func testAtmosNoteShowsOnlyOnAetherWithBoostOrDialogue() {

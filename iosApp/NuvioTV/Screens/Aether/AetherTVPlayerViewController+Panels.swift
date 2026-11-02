@@ -74,8 +74,19 @@ extension AetherTVPlayerViewController {
                 setSpeed(saved)
             }
         }
-        startAddonSubtitles()
+        let prefetchedAdded = startAddonSubtitles()
         refreshStreamInfo()
+        // Review r1 F1: tracks published before `load()` returned were turned away by the start plan
+        // (media not ready). Run it now on the tracks in hand; it waits while the add-on fetch just
+        // kicked is still out, and a prefetched file just added runs it through its own publish.
+        if AetherSubtitleStartGate.runsAtLoadReturn(prefetchedAddonsAdded: prefetchedAdded), let session {
+            let pending = AetherSubtitleStartGate.addonFetchPending(
+                completedRequest: SubtitleRepository.shared.completedRequest.value_ as? String,
+                requestKey: SubtitleRepository.shared.requestKey(type: context.contentType, videoId: context.videoId))
+            tracksChanged(audio: session.audioTracks, subtitles: session.subtitleTracks,
+                          activeAudio: session.activeAudioID, activeSubtitle: session.activeSubtitleID,
+                          addonFetchPending: pending)
+        }
     }
 
     func settingsChangedPanels(_ settings: PlayerSettingsUiState) {
@@ -99,14 +110,16 @@ extension AetherTVPlayerViewController {
 
     // MARK: Tracks
 
-    private func tracksChanged(audio: [AetherTrack], subtitles: [AetherTrack], activeAudio: Int?, activeSubtitle: Int?) {
+    private func tracksChanged(audio: [AetherTrack], subtitles: [AetherTrack], activeAudio: Int?, activeSubtitle: Int?,
+                               addonFetchPending: Bool = false) {
         let audioRows = AetherTrackRows.audio(audio, activeID: activeAudio)
         let subtitleRows = AetherTrackRows.subtitles(subtitles, activeID: activeSubtitle)
         if state.audioTracks != audioRows { state.audioTracks = audioRows }
         if state.subtitleTracks != subtitleRows { state.subtitleTracks = subtitleRows }
         let source = activeSubtitle.flatMap { panel.externalSourceByTrackID[$0] }
         if state.selectedExternalSubtitleSource != source { state.selectedExternalSubtitleSource = source }
-        applySubtitleStartPlanIfNeeded(audio: audio, subtitles: subtitles, activeAudio: activeAudio)
+        applySubtitleStartPlanIfNeeded(audio: audio, subtitles: subtitles, activeAudio: activeAudio,
+                                       addonFetchPending: addonFetchPending)
         syncOverlayTrack(subtitles: subtitles, activeSubtitle: activeSubtitle)
         publishBadgeFacts()
     }
@@ -152,10 +165,11 @@ extension AetherTVPlayerViewController {
     /// The mpv start pick on Aether: the shared audio-aware subtitle plan over the engine's tracks
     /// (`resolveSubtitleAutoSelectionPlan` + `findPreferredSubtitleTrackIndex`, FEAT-84 Off stays Off,
     /// BUG-171 no plan = Off). Decided once a match is found, or once no add-on file is still arriving.
-    private func applySubtitleStartPlanIfNeeded(audio: [AetherTrack], subtitles: [AetherTrack], activeAudio: Int?) {
+    private func applySubtitleStartPlanIfNeeded(audio: [AetherTrack], subtitles: [AetherTrack], activeAudio: Int?,
+                                                addonFetchPending: Bool) {
         guard !panel.didAutoSelectSubtitles, !panel.userSelectedSubtitle, mediaReady,
               let session, let settings = playerSettings else { return }
-        let arriving = state.subtitleSearchInFlight
+        let arriving = state.subtitleSearchInFlight || addonFetchPending
         guard !subtitles.isEmpty else {
             if !arriving { panel.didAutoSelectSubtitles = true }
             return
@@ -208,8 +222,10 @@ extension AetherTVPlayerViewController {
 
     // MARK: Add-on subtitles
 
-    private func startAddonSubtitles() {
-        guard panel.subtitleWatcher == nil else { return }
+    /// Returns how many prefetched add-on files went to the engine now.
+    @discardableResult
+    private func startAddonSubtitles() -> Int {
+        guard panel.subtitleWatcher == nil else { return 0 }
         panel.subtitleWatcher = FlowWatcherKt.watch(SubtitleRepository.shared.addonSubtitles) { [weak self] emitted in
             guard let subs = emitted as? [AddonSubtitle] else { return }
             DispatchQueue.main.async { self?.addAddonSubtitles(subs) }
@@ -233,14 +249,16 @@ extension AetherTVPlayerViewController {
         if (SubtitleRepository.shared.completedRequest.value_ as? String)
             == SubtitleRepository.shared.requestKey(type: context.contentType, videoId: context.videoId),
            let prefetched = SubtitleRepository.shared.addonSubtitles.value_ as? [AddonSubtitle], !prefetched.isEmpty {
-            addAddonSubtitles(prefetched)
+            return addAddonSubtitles(prefetched)
         }
+        return 0
     }
 
     /// Add-on files through `addExternalSubtitle`, "Show only preferred languages" applied, preferred
     /// languages first. A stream whose headers carry credentials never forwards them to a subtitle host.
-    private func addAddonSubtitles(_ subs: [AddonSubtitle]) {
-        guard mediaReady, let session, canTransport else { return }
+    @discardableResult
+    private func addAddonSubtitles(_ subs: [AddonSubtitle]) -> Int {
+        guard mediaReady, let session, canTransport else { return 0 }
         let kept = playerSettings.map {
             PlayerTrackSelectionKt.filterAddonSubtitlesForSettings(subtitles: subs, settings: $0)
         } ?? subs
@@ -264,6 +282,7 @@ extension AetherTVPlayerViewController {
             }
         }
         if added > 0 { print("[AetherPlayer] add-on subtitles added=\(added) total=\(panel.addedSubtitleURLs.count)") }
+        return added
     }
 
     // MARK: Timing

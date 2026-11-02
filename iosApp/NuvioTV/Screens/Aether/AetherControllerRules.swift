@@ -219,6 +219,22 @@ enum AetherTrackRows {
     }
 }
 
+/// Review r1 F1: the subtitle start plan's run at `load()` return. The engine publishes its tracks
+/// before `load()` returns, and the plan ignores every publish until the media is ready, so load
+/// return runs it once on the tracks already in hand. Only when prefetched add-on files were just
+/// handed to the engine does it leave the decision to the track list those files publish.
+enum AetherSubtitleStartGate {
+    static func runsAtLoadReturn(prefetchedAddonsAdded: Int) -> Bool {
+        prefetchedAddonsAdded == 0
+    }
+
+    /// That run waits (no Off on a missing match) while the add-on fetch kicked at load return has not
+    /// completed: `SubtitleRepository.isLoading` reaches the main thread later than the kick.
+    static func addonFetchPending(completedRequest: String?, requestKey: String) -> Bool {
+        completedRequest != requestKey
+    }
+}
+
 enum AetherChapterMapping {
     /// Façade chapters as the transport's, in start order, end markers trimmed like mpv's.
     static func transportChapters(_ chapters: [AetherChapter], durationSec: Double) -> (raw: [TransportChapter], published: [TransportChapter]) {
