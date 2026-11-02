@@ -227,6 +227,23 @@ final class AetherRoutingTests: XCTestCase {
         XCTAssertEqual(PlayerEngineRouter.route(probe: sample(audio: ["opus"]), nativeDVEnabled: true, aether: off).engine, .mpv)
     }
 
+    // Review r4: a failure-alert retry with Aether Off ("Try with mpv" / "Try with native") routes as
+    // today: the forced engine never reaches `route`, so the reason and gpu-next flag are the probe's.
+    func testFlagOffWithAForcedRetryMatchesTodaysCall() {
+        let probes: [ProbeResult?] = [nil, sample(), sample(dv: p5), sample(dv: p5, container: mp4), sample(dv: p81),
+                                      sample(dv: p7(.fel)), sample(audio: ["opus"])]
+        for probe in probes {
+            for forced: PlaybackEngine? in [.mpv, .native, nil] {
+                let today = PlayerEngineRouter.route(probe: probe, nativeDVEnabled: true, dvP7FelToMpv: false)
+                let viaScreen = PlayerEngineRouter.route(
+                    probe: probe, nativeDVEnabled: true, dvP7FelToMpv: false, aether: nil,
+                    forcedEngine: PlayerEngineRouter.forcedEngineForRouting(forced, aether: nil))
+                XCTAssertEqual(today, viaScreen)
+            }
+        }
+        XCTAssertEqual(PlayerEngineRouter.forcedEngineForRouting(.mpv, aether: on), .mpv, "Aether On keeps row 1")
+    }
+
     func testAetherIsIndependentOfTheNativeDolbyVisionSetting() {
         XCTAssertEqual(route(sample(), native: false).engine, .aether)
         XCTAssertEqual(route(sample(), native: true).engine, .aether)

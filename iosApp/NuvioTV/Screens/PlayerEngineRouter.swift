@@ -79,6 +79,14 @@ nonisolated enum PlayerEngineRouter {
         return decision
     }
 
+    /// Review r4: the forced engine the player screen hands `route`. Only with Aether On (`aether` set):
+    /// with Aether Off a failure-alert retry ("Try with mpv") keeps today's call, its probe reason and
+    /// its gpu-next flag, byte for byte; `PlayerScreen` reaches the forced engine through `forcedMPV`
+    /// and its own engine switch as before.
+    static func forcedEngineForRouting(_ forced: PlaybackEngine?, aether: AetherRoutingOptions?) -> PlaybackEngine? {
+        aether == nil ? nil : forced
+    }
+
     /// B10 (BUG-166): a Dolby Vision profile 5 stream that plays on mpv needs `gpu-next`: whatever
     /// sent it there (P5 in MP4 today, or a native failure falling over). `PlayerScreen` asks this
     /// for the native → mpv fallback too.

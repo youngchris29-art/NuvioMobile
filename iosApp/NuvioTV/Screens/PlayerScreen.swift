@@ -146,8 +146,11 @@ struct PlayerScreen: View {
     /// B10 (BUG-166): mpv renders a Dolby Vision profile 5 stream with `gpu-next`. The router flags
     /// the streams it sends to mpv; a native run that fell over carries the same probe.
     private var mpvForcesGpuNext: Bool {
-        // `forcedEngine == .mpv`: the router returns the forced decision before its gpu-next check.
-        if forcedMPV || context.forcedEngine == .mpv { return PlayerEngineRouter.mpvNeedsGpuNext(probe: probe) }
+        // Aether On only: `forcedEngine == .mpv` makes the router return the forced decision before its
+        // gpu-next check. With Aether Off the router never sees it (`forcedEngineForRouting`).
+        if forcedMPV || (aetherEnabled && context.forcedEngine == .mpv) {
+            return PlayerEngineRouter.mpvNeedsGpuNext(probe: probe)
+        }
         return decision?.prefersGpuNext ?? false
     }
 
@@ -224,7 +227,7 @@ struct PlayerScreen: View {
         let requestHeaders = context.requestHeaders
         let felToMpv = UserDefaults.standard.bool(forKey: PlayerTuning.dvP7FelMpvKey)
         let nativeOn = nativeDVEnabled
-        let forced = context.forcedEngine
+        let forced = PlayerEngineRouter.forcedEngineForRouting(context.forcedEngine, aether: aetherOptions)
         let probeTimeoutSec = 4.0
         let (result, probeResult, probeMs) = await Task.detached(priority: .utility) {
             let t0 = ProcessInfo.processInfo.systemUptime
