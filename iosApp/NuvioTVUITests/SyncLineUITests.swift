@@ -1,10 +1,15 @@
 import XCTest
 
-/// Sync Line (P5 B19) legs. The mpv legs skip unless `PLAYER_BAR_PROBE=1`, the native leg unless
-/// `PLAYER_NATIVE_PROBE=1`. `PLAYER_SMOKE_URL` is the smoke
-/// video; `PLAYER_SMOKE_SUB_URL` an SRT beside it (cues every 2 s over the first 10 minutes, kept in
-/// the gitignored `iosApp/build/smoke`). Pass both as `TEST_RUNNER_*`. The tvOS 27 sim never reports
-/// `hasFocus`, so legs assert existence and values, and drive focus with fixed press counts.
+/// Sync Line (P5 B19) legs on the mpv route, driven through the Subtitles disc's popover
+/// (`player.popover.subtitles`; the swipe-down top panel is gone). Skipped unless `PLAYER_BAR_PROBE=1`.
+/// `PLAYER_SMOKE_URL` is the smoke video; `PLAYER_SMOKE_SUB_URL` an SRT beside it (cues every 2 s
+/// over the first 10 minutes, kept in the gitignored `iosApp/build/smoke`). Pass both as
+/// `TEST_RUNNER_*`. The tvOS 27 sim reports `hasFocus` only on some controls, so legs assert
+/// existence and values and walk focus geometrically (`PlayerChrome.focusWalk`).
+///
+/// The native route's Sync Line is a `transportBarCustomMenuItems` action that presents a full-screen
+/// sheet after the system popover dismisses; the simulator cannot drive that popover, so it is a
+/// device-pass item (the old `testNativeSyncLineSetsDelay` was removed with the panel).
 final class SyncLineUITests: XCTestCase {
     let remote = XCUIRemote.shared
 
@@ -18,42 +23,28 @@ final class SyncLineUITests: XCTestCase {
 
     private func pause(_ s: TimeInterval) { Thread.sleep(forTimeInterval: s) }
 
-    private func launch(native: Bool, withSubtitle: Bool) throws -> XCUIApplication {
+    private func launch(withSubtitle: Bool) throws -> XCUIApplication {
         let env = ProcessInfo.processInfo.environment
-        try XCTSkipUnless(env[native ? "PLAYER_NATIVE_PROBE" : "PLAYER_BAR_PROBE"] == "1",
-                          native ? "PLAYER_NATIVE_PROBE not set" : "PLAYER_BAR_PROBE not set")
+        try XCTSkipUnless(env["PLAYER_BAR_PROBE"] == "1", "PLAYER_BAR_PROBE not set")
         let url = try XCTUnwrap(env["PLAYER_SMOKE_URL"], "PLAYER_SMOKE_URL not set")
         let app = XCUIApplication()
-        var args = ["-debug.mpvSmokeURL", url, "-player.nativeDolbyVision", native ? "YES" : "NO",
+        var args = ["-debug.mpvSmokeURL", url, "-player.nativeDolbyVision", "NO",
                     "-player.bufferMB", "8", "-debug.mpvSmokeStartOver", "YES"]
-        if native { args += ["-debug.mpvSmokeEngine", "native"] }
         if withSubtitle {
             let sub = try XCTUnwrap(env["PLAYER_SMOKE_SUB_URL"], "PLAYER_SMOKE_SUB_URL not set")
             args += ["-debug.mpvSmokeSubtitleURL", sub]
         }
         app.launchArguments += args
         app.launch()
-        let playerId = native ? "player.native" : "player.mpv"
-        XCTAssertTrue(app.otherElements[playerId].waitForExistence(timeout: 40), "player did not appear")
-        awaitPlaybackStarted(app, native: native)
+        XCTAssertTrue(app.otherElements["player.mpv"].waitForExistence(timeout: 40), "player did not appear")
+        awaitPlaybackStarted(app)
         return app
     }
 
-    /// Same start gates as `NativePlayerParityUITests`: mpv waits for `debug_seekProbe` pos > 1 and
-    /// the transport bar hidden (`debug_transportProbe` vis=0); native waits for `debug_nativeProbe`
-    /// pos > 1 and bar=0. A Down press before that does not open the panel.
-    private func awaitPlaybackStarted(_ app: XCUIApplication, native: Bool) {
+    /// Same start gates as `NativePlayerParityUITests`: `debug_seekProbe` pos > 1 and the transport
+    /// bar hidden (`debug_transportProbe` vis=0), so the first Up starts from a known state.
+    private func awaitPlaybackStarted(_ app: XCUIApplication) {
         let parse = NativePlayerParityUITests.parse
-        if native {
-            let probe = app.descendants(matching: .any)["debug_nativeProbe"]
-            XCTAssertTrue(probe.waitForExistence(timeout: 30), "no native probe")
-            var end = Date().addingTimeInterval(40)
-            while Date() < end, (Double(parse(probe.label)["pos"] ?? "") ?? 0) <= 1 { Thread.sleep(forTimeInterval: 0.3) }
-            XCTAssertGreaterThan(Double(parse(probe.label)["pos"] ?? "") ?? 0, 1, "native playback never started: \(probe.label)")
-            end = Date().addingTimeInterval(10)
-            while Date() < end, parse(probe.label)["bar"] != "0" { Thread.sleep(forTimeInterval: 0.3) }
-            return
-        }
         let seek = app.descendants(matching: .any)["debug_seekProbe"]
         XCTAssertTrue(seek.waitForExistence(timeout: 30), "no seek probe")
         var end = Date().addingTimeInterval(30)
@@ -66,49 +57,23 @@ final class SyncLineUITests: XCTestCase {
         XCTAssertEqual(parse(bar.label)["vis"], "0", "bar never hid: \(bar.label)")
     }
 
-    /// Down opens the panel; Right walks to the Subtitles tab.
-    private func openSubtitlesTab(_ app: XCUIApplication) {
-        remote.press(.down)
-        XCTAssertTrue(app.otherElements["player.panel"].waitForExistence(timeout: 8), "panel did not present")
-        pause(3)
-        let tab = element(app, "player.panel.tab.subtitles")
-        for _ in 0..<6 where (tab.value as? String) != "selected" {
-            remote.press(.right)
-            pause(0.6)
-        }
-        XCTAssertEqual(tab.value as? String, "selected", "Subtitles tab not selected")
-    }
-
-    /// Down from the tab row to the "Smoke EN" subtitle row; Select it; then Down to the Sync Line row.
+    /// Pick the "Smoke EN" row, then walk focus to the Sync Line button.
     private func selectSmokeSubtitleAndReachSyncLine(_ app: XCUIApplication) {
         let smoke = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS 'Smoke EN'")).firstMatch
         XCTAssertTrue(smoke.waitForExistence(timeout: 20), "no Smoke EN subtitle row")
-        remote.press(.down)
-        pause(0.8)
-        // Walk Down until the Smoke EN row is picked (Off first, then the add-on row).
-        for _ in 0..<4 where (smoke.value as? String) != "selected" {
-            remote.press(.select)
-            pause(1.5)
-            if (smoke.value as? String) == "selected" { break }
-            remote.press(.down)
-            pause(0.8)
-        }
+        XCTAssertTrue(PlayerChrome.focusWalk(app, to: smoke), "focus never reached the Smoke EN row")
+        remote.press(.select)
+        pause(1.5)
         XCTAssertEqual(smoke.value as? String, "selected", "Smoke EN not selected")
         pause(2)
         let row = element(app, "player.panel.syncLine")
         XCTAssertTrue(row.waitForExistence(timeout: 10), "no Sync Line row with an external subtitle selected")
-        // Down to the Timing row, then Right along the delay chips to Sync Line (last control).
-        remote.press(.down)
-        pause(0.8)
-        for _ in 0..<7 where !row.hasFocus {
-            remote.press(.right)
-            pause(0.6)
-        }
+        XCTAssertTrue(PlayerChrome.focusWalk(app, to: row), "focus never reached the Sync Line button")
     }
 
-    private func runSyncLine(native: Bool) throws {
-        let app = try launch(native: native, withSubtitle: true)
-        openSubtitlesTab(app)
+    func testMpvSyncLineSetsDelay() throws {
+        let app = try launch(withSubtitle: true)
+        PlayerChrome.openDisc(app, "subtitles")
         selectSmokeSubtitleAndReachSyncLine(app)
         remote.press(.select)
         let cue0 = element(app, "player.panel.syncLine.cue.0")
@@ -119,30 +84,16 @@ final class SyncLineUITests: XCTestCase {
         let value = element(app, "player.panel.subtitleDelay.value")
         XCTAssertTrue(value.waitForExistence(timeout: 5), "no delay value after picking a cue")
         XCTAssertNotEqual(value.label, "+0.00 s", "Sync Line left the delay at zero")
-        if native {
-            // Native snaps to the 100 ms step.
-            let sec = Double(value.label.replacingOccurrences(of: " s", with: "")) ?? 0
-            XCTAssertEqual((sec * 10).rounded(), sec * 10, accuracy: 0.001, "native delay not on the 0.1 s step: \(value.label)")
-        }
         // Reset so the profile stays clean.
         let reset = element(app, "player.panel.subtitleDelay.reset")
-        if reset.exists {
-            for _ in 0..<8 where !reset.hasFocus { remote.press(.right); pause(0.4) }
+        if reset.exists, PlayerChrome.focusWalk(app, to: reset) {
             remote.press(.select)
         }
     }
 
-    func testMpvSyncLineSetsDelay() throws {
-        try runSyncLine(native: false)
-    }
-
-    func testNativeSyncLineSetsDelay() throws {
-        try runSyncLine(native: true)
-    }
-
     func testSyncLineHiddenWithoutExternalSubtitle() throws {
-        let app = try launch(native: false, withSubtitle: false)
-        openSubtitlesTab(app)
+        let app = try launch(withSubtitle: false)
+        PlayerChrome.openDisc(app, "subtitles")
         XCTAssertTrue(element(app, "player.panel.subtitleDelay.value").waitForExistence(timeout: 5), "no Timing row")
         XCTAssertFalse(element(app, "player.panel.syncLine").exists, "Sync Line shown without an external subtitle")
     }
