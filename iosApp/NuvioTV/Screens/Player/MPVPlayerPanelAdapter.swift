@@ -187,11 +187,10 @@ final class MPVPlayerPanelAdapter {
     }
 
     static func upNextCard(_ episode: MetaVideo) -> PlayerPanelUpNext {
-        let subtitle: String?
-        if let s = episode.season?.intValue, let e = episode.episode?.intValue {
-            subtitle = String(localized: "S\(Int(s)) · E\(Int(e))")   // catalog "S%lld · E%lld"
-        } else {
-            subtitle = nil
+        let subtitle: String? = switch (episode.season?.intValue, episode.episode?.intValue) {
+        case let (s?, e?): String(localized: "S\(Int(s)) · E\(Int(e))")   // catalog "S%lld · E%lld"
+        case let (nil, e?): String(localized: "E\(Int(e))")   // catalog "E%lld"
+        default: nil
         }
         return PlayerPanelUpNext(title: episode.title, subtitle: subtitle,
                                  still: episode.thumbnail.flatMap { URL(string: $0) })
