@@ -11,6 +11,7 @@
 		7397CF462F80FE3A00AC0F84 /* MPVKit in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4E5F6A7B8C9D0E1F2 /* MPVKit */; };
 		941331072FF49A2B003DA3AA /* MPVKit in Frameworks */ = {isa = PBXBuildFile; productRef = 941331062FF49A2B003DA3AA /* MPVKit */; };
 		AE7E0001000000000000AE01 /* NuvioAether in Frameworks */ = {isa = PBXBuildFile; productRef = AE7E0002000000000000AE02 /* NuvioAether */; };
+		AE7E0004000000000000AE04 /* NuvioAether in Embed Frameworks */ = {isa = PBXBuildFile; productRef = AE7E0002000000000000AE02 /* NuvioAether */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 		947233692FF8500F001B4F7C /* TVServices.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 947233682FF8500F001B4F7C /* TVServices.framework */; };
 		947233702FF8500F001B4F7C /* NuvioTopShelf.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 947233672FF8500F001B4F7C /* NuvioTopShelf.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
@@ -67,6 +68,17 @@
 				947233702FF8500F001B4F7C /* NuvioTopShelf.appex in Embed Foundation Extensions */,
 			);
 			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AE7E0005000000000000AE05 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				AE7E0004000000000000AE04 /* NuvioAether in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXCopyFilesBuildPhase section */
@@ -304,6 +316,7 @@
 				94AEB9E12FF2294B007C43F2 /* Frameworks */,
 				94AEB9E22FF2294B007C43F2 /* Resources */,
 				947233752FF8500F001B4F7C /* Embed Foundation Extensions */,
+				AE7E0005000000000000AE05 /* Embed Frameworks */,
 				9A1B2C3D4E5F60718293A4C1 /* Stamp Build Metadata */,
 			);
 			buildRules = (

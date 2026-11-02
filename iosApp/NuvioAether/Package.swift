@@ -11,7 +11,11 @@ import PackageDescription
 let package = Package(
     name: "NuvioAether",
     platforms: [.tvOS(.v18), .iOS(.v18), .macOS(.v15)],
-    products: [.library(name: "NuvioAether", targets: ["NuvioAether"])],
+    // Dynamic (2026-11-02, link isolation): NuvioAether.framework is the only image that links the Aether
+    // FFmpeg xcframeworks, so the app binary's libav* references can only bind to MPVKit's static
+    // archives. As a static product, the app linked AetherLibav* itself and ld resolved mpv's FFmpeg
+    // calls to Aether's dylibs (no network protocols: mpv could not open http://).
+    products: [.library(name: "NuvioAether", type: .dynamic, targets: ["NuvioAether"])],
     dependencies: [
         // Pinned: Aether ships minors almost daily, and a bump is its own task with the fixture matrix
         // rerun (plan section 11).
