@@ -455,6 +455,10 @@ final class MPVTVPlayerViewController: UIViewController {
     /// `gpu-next` whatever Enhanced Video Renderer says. Set by the representable right after init,
     /// before `viewDidLoad` runs `setupMpv`.
     var forcesGpuNext = false
+    /// Aether W3-C: where the engine that fell back to this one was (`PlaybackHandoff.positionSec`).
+    /// When > 0 it wins over the failure-alert retry position and the saved progress
+    /// (`computeResumePosition`). nil / 0 for every other start.
+    var handoffPositionSec: Double?
     private var startWatchdog = MPVStartWatchdog(limitSeconds: MPVStartWatchdog.defaultLimitSeconds)
     private var startWatchdogTimer: Timer?
     /// Main thread: a failure was already reported (every path shares this one-shot).
@@ -2103,6 +2107,12 @@ final class MPVTVPlayerViewController: UIViewController {
     // MARK: - Watch progress (resume + save)
 
     private func computeResumePosition() {
+        // Aether W3-C: an engine that fell back to this one hands over where it was.
+        if let p = handoffPositionSec, p.isFinite, p > 0 {
+            print("[Failover] mpv resumes at the engine handoff position \(String(format: "%.1f", p)) s")
+            pendingResumeSec = p
+            return
+        }
         // A failure-alert retry resumes where the failed attempt stopped.
         if let s = context.resumeAtSec, s > 10 { pendingResumeSec = s; return }
         // Start Over: play from 0 whatever progress is saved. Not after a native fallback that
@@ -3787,6 +3797,8 @@ private struct MPVPlayerRepresentable: UIViewControllerRepresentable {
     let secondsPlayedBeforeFallback: Double
     /// B10 (BUG-166): see `MPVTVPlayerViewController.forcesGpuNext`.
     let forcesGpuNext: Bool
+    /// Aether W3-C: see `MPVTVPlayerViewController.handoffPositionSec`.
+    let handoffPositionSec: Double?
 
     func makeUIViewController(context ctx: Context) -> UIViewController {
         let controller: ChromePlayerController
@@ -3800,6 +3812,7 @@ private struct MPVPlayerRepresentable: UIViewControllerRepresentable {
             let mpv = MPVTVPlayerViewController(context: context, state: state)
             // Before anything touches `controller.view`: `viewDidLoad` runs `setupMpv`, which reads it.
             mpv.forcesGpuNext = forcesGpuNext
+            mpv.handoffPositionSec = handoffPositionSec
             controller = mpv
         }
         controller.onExit = onExit
@@ -3836,6 +3849,9 @@ struct MPVPlayerScreen: View {
     /// B10 (BUG-166): a Dolby Vision profile 5 stream routed to mpv renders with `gpu-next`
     /// (`EngineDecision.prefersGpuNext`). Read once, when the controller is made.
     var forcesGpuNext = false
+    /// Aether W3-C: the position the engine that fell back to this screen was at; mpv resumes there
+    /// (read once, when the controller is made).
+    var handoffPositionSec: Double? = nil
     /// P5 B22: set by presenters that can push a Detail page after the player closes; enables the
     /// post-play More Like This row.
     var onOpenTitle: ((MetaPreview) -> Void)? = nil
@@ -3880,6 +3896,7 @@ struct MPVPlayerScreen: View {
          startWatchdogShortened: Bool = false,
          nativeSecondsPlayedBeforeFallback: Double = 0,
          forcesGpuNext: Bool = false,
+         handoffPositionSec: Double? = nil,
          onOpenTitle: ((MetaPreview) -> Void)? = nil,
          engine: PlaybackEngine = .mpv,
          onFallback: ((PlaybackHandoff) -> Void)? = nil) {
@@ -3890,6 +3907,7 @@ struct MPVPlayerScreen: View {
         self.onPlayNext = onPlayNext
         self.routingNote = routingNote
         self.forcesGpuNext = forcesGpuNext
+        self.handoffPositionSec = handoffPositionSec
         self.onPlaybackFailed = onPlaybackFailed
         self.onPlaybackHealthy = onPlaybackHealthy
         self.startWatchdogShortened = startWatchdogShortened
@@ -3932,7 +3950,8 @@ struct MPVPlayerScreen: View {
                 onFallback: onFallback,
                 startWatchdogShortened: startWatchdogShortened,
                 secondsPlayedBeforeFallback: nativeSecondsPlayedBeforeFallback,
-                forcesGpuNext: forcesGpuNext
+                forcesGpuNext: forcesGpuNext,
+                handoffPositionSec: handoffPositionSec
             )
             .ignoresSafeArea()
 

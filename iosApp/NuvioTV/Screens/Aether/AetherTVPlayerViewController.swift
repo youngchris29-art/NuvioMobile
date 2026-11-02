@@ -698,7 +698,42 @@ final class AetherTVPlayerViewController: UIViewController {
             reportHealthyIfNeeded()
         }
         updateSkipPrompt(position: positionMirror, duration: transportDurationSec, paused: pausedMirror)
+        #if DEBUG
+        debugInjectFailureIfDue(now: now)
+        #endif
     }
+
+    #if DEBUG
+    // Harness only (W3-C): `debug.mpvSmokeAetherFailAtSec` <sec> raises a `softwarePipelineFailed`
+    // failure once playback passes that position (`debug.mpvSmokeAetherFailCount` times, default 1, at
+    // least 3 s apart), so the policy, the rebuild-once rule and the handoff position run mid-play.
+    // `debug.mpvSmokeAetherInterrupt` YES posts an `AVAudioSession` route change just before each, so
+    // the failure lands inside the policy's 10 s window (rebuild) rather than outside it (mpv).
+    private var debugInjected = 0
+    private var debugLastInjectUptime = 0.0
+    private func debugInjectFailureIfDue(now: Double) {
+        let defaults = UserDefaults.standard
+        guard everShowedFrame, let at = defaults.object(forKey: "debug.mpvSmokeAetherFailAtSec") as? Double,
+              positionMirror >= at, now - debugLastInjectUptime >= 3 else { return }
+        let limit = max(defaults.integer(forKey: "debug.mpvSmokeAetherFailCount"), 1)
+        guard debugInjected < limit else { return }
+        debugInjected += 1
+        debugLastInjectUptime = now
+        let interrupt = defaults.bool(forKey: "debug.mpvSmokeAetherInterrupt")
+        print("[AetherPlayer] DEBUG injecting softwarePipelineFailed #\(debugInjected) at \(String(format: "%.1f", positionMirror))"
+              + " interrupt=\(interrupt)")
+        if interrupt {
+            NotificationCenter.default.post(
+                name: AVAudioSession.routeChangeNotification, object: nil,
+                userInfo: [AVAudioSessionRouteChangeReasonKey: AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue])
+        }
+        let failure = AetherFailure(kind: .softwarePipelineFailed, message: "debug injected", atSec: positionMirror,
+                                    beforeFirstFrame: false)
+        DispatchQueue.main.asyncAfter(deadline: .now() + (interrupt ? 0.3 : 0)) { [weak self] in
+            self?.handleFailure(failure)
+        }
+    }
+    #endif
 
     // MARK: - Speed and pause
 
