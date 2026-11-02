@@ -965,7 +965,8 @@ final class AetherTVPlayerViewController: UIViewController {
     }
 
     /// Post-play "Play Again": `.ended` is terminal on Aether, so this is a fresh `load` at 0 on the
-    /// same request (the clock keeps its axis). One tracker session for the whole visit.
+    /// same request with the live tracks (`reloadRequest`; the clock keeps its axis). One tracker
+    /// session for the whole visit.
     private func replay() {
         guard let session, let request = session.currentRequest, !handedOff else { return }
         transportInput.cancelExactStage()
@@ -976,7 +977,7 @@ final class AetherTVPlayerViewController: UIViewController {
         positionMirror = 0
         print("[AetherPlayer] replay: load at 0")
         armStartWatchdog()
-        runLoad(session, request.starting(atSec: 0))
+        runLoad(session, reloadRequest(request, startSec: 0))
         transportInput.flashControls()
         becomeFirstResponder()
     }
@@ -1091,8 +1092,9 @@ final class AetherTVPlayerViewController: UIViewController {
         }
     }
 
-    /// The DV-interruption rebuild: a fresh `load` of the same request at the last position (plan
-    /// section 14: not `reloadAtCurrentPosition`). Its failure reports again (new generation).
+    /// The DV-interruption rebuild: a fresh `load` of the same request with the live tracks
+    /// (`reloadRequest`) at the last position (plan section 14: not `reloadAtCurrentPosition`). Its
+    /// failure reports again (new generation).
     private func rebuild(after failure: AetherFailure) {
         rebuiltOnce = true
         guard let session, let request = session.currentRequest else {
@@ -1103,7 +1105,7 @@ final class AetherTVPlayerViewController: UIViewController {
         print("[Failover] aether rebuild at \(String(format: "%.1f", at)) after \(failure.kind.token)")
         endedHandled = false
         armStartWatchdog()
-        runLoad(session, request.starting(atSec: at > 1 ? at : nil))
+        runLoad(session, reloadRequest(request, startSec: at > 1 ? at : nil))
     }
 
     /// Fallback: stop for a handoff, flush once, then `onFallback`. With no host for a handoff the

@@ -235,6 +235,25 @@ enum AetherSubtitleStartGate {
     }
 }
 
+/// Review r1 F3: the request of a fresh `load` mid-visit (the DV-interruption rebuild, Replay). The
+/// session's `currentRequest` is the start request, so it carries the start preferences, not what is
+/// playing. The fresh request keeps the live audio track and, once the start plan or the viewer has
+/// decided the subtitle (the plan never runs again), the live subtitle track or Off. Add-on files added
+/// mid-session are declared after the request's own sidecars in their add order, so every external
+/// track keeps its id (`externalTrackIDBase + ordinal`).
+enum AetherReloadRequestPlan {
+    static func request(from base: AetherLoadRequest, startSec: Double?, activeAudioID: Int?,
+                        activeSubtitleID: Int?, subtitleDecided: Bool,
+                        addedSubtitles: [AetherExternalSubtitle]) -> AetherLoadRequest {
+        var r = base.starting(atSec: startSec)
+        let declared = Set(r.externalSubtitles.map(\.url))
+        r.externalSubtitles += addedSubtitles.filter { !declared.contains($0.url) }
+        if let audio = activeAudioID { r.audioStreamIndex = audio }
+        if subtitleDecided { r.initialSubtitle = activeSubtitleID.map { .track(id: $0) } ?? .off }
+        return r
+    }
+}
+
 enum AetherChapterMapping {
     /// Façade chapters as the transport's, in start order, end markers trimmed like mpv's.
     static func transportChapters(_ chapters: [AetherChapter], durationSec: Double) -> (raw: [TransportChapter], published: [TransportChapter]) {

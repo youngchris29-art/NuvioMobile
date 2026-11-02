@@ -191,6 +191,45 @@ final class AetherControllerTests: XCTestCase {
         XCTAssertTrue(AetherSubtitleStartGate.addonFetchPending(completedRequest: "series|tt2:1:1", requestKey: key))
     }
 
+    // MARK: Fresh load keeps the live tracks (review r1 F3)
+
+    private func startRequest() -> AetherLoadRequest {
+        AetherLoadRequest(url: URL(string: "https://example.com/film.mkv")!, startSec: 600,
+                          preferredAudioLanguages: ["eng"], initialSubtitle: .preferLanguages(["eng"]),
+                          externalSubtitles: [AetherExternalSubtitle(url: URL(string: "https://example.com/a.vtt")!)])
+    }
+
+    func testRebuildAfterManualDubAndSubtitlesOffKeepsBoth() {
+        let r = AetherReloadRequestPlan.request(from: startRequest(), startSec: 1234, activeAudioID: 2,
+                                                activeSubtitleID: nil, subtitleDecided: true, addedSubtitles: [])
+        XCTAssertEqual(r.startSec, 1234)
+        XCTAssertEqual(r.audioStreamIndex, 2, "the dub picked mid-play, which wins over the language targets")
+        XCTAssertEqual(r.initialSubtitle, .off, "the viewer's Off, not the start preference")
+        XCTAssertNotEqual(r, startRequest().starting(atSec: 1234), "the old rebuild request dropped both picks")
+    }
+
+    func testReplayKeepsTheLiveSubtitleTrackAndReDeclaresAddonFiles() {
+        let addon = AetherExternalSubtitle(url: URL(string: "https://subs.example.com/b.srt")!, language: "eng")
+        let r = AetherReloadRequestPlan.request(from: startRequest(), startSec: 0, activeAudioID: 1,
+                                                activeSubtitleID: AetherTrack.externalTrackIDBase + 1,
+                                                subtitleDecided: true, addedSubtitles: [addon])
+        XCTAssertEqual(r.startSec, 0)
+        XCTAssertEqual(r.initialSubtitle, .track(id: AetherTrack.externalTrackIDBase + 1))
+        XCTAssertEqual(r.externalSubtitles.map(\.url.lastPathComponent), ["a.vtt", "b.srt"],
+                       "the add-on file keeps ordinal 1")
+        let again = AetherReloadRequestPlan.request(from: r, startSec: 0, activeAudioID: 1, activeSubtitleID: nil,
+                                                    subtitleDecided: true, addedSubtitles: [addon])
+        XCTAssertEqual(again.externalSubtitles.count, 2, "a second fresh load never declares a file twice")
+    }
+
+    func testUndecidedSubtitleKeepsTheStartPreference() {
+        let r = AetherReloadRequestPlan.request(from: startRequest(), startSec: nil, activeAudioID: nil,
+                                                activeSubtitleID: nil, subtitleDecided: false, addedSubtitles: [])
+        XCTAssertEqual(r.initialSubtitle, .preferLanguages(["eng"]), "the start plan still runs on the fresh load")
+        XCTAssertNil(r.audioStreamIndex)
+        XCTAssertNil(r.startSec)
+    }
+
     // MARK: Audio tab Atmos note (W3-C)
 
     func testAtmosNoteShowsOnlyOnAetherWithBoostOrDialogue() {

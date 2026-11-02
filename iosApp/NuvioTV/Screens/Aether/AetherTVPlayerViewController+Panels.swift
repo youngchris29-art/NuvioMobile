@@ -21,12 +21,23 @@ final class AetherPanelState {
     var startPlanForcedOnly = false
     /// Add-on files handed to the engine (by URL), and the URL behind each external track id.
     var addedSubtitleURLs = Set<String>()
+    /// The add-on files handed to the engine mid-session, in add order (a fresh load re-declares them).
+    var addedAddonSubtitles: [AetherExternalSubtitle] = []
     var externalSourceByTrackID: [Int: String] = [:]
     var subtitleWatcher: FlowWatcher?
     var subtitleLoadingWatcher: FlowWatcher?
 }
 
 extension AetherTVPlayerViewController {
+
+    /// Review r1 F3: a fresh `load` (rebuild, Replay) at `startSec` keeps what is playing: the live
+    /// audio, the decided subtitle (or Off), and the add-on files added so far.
+    func reloadRequest(_ base: AetherLoadRequest, startSec: Double?) -> AetherLoadRequest {
+        AetherReloadRequestPlan.request(from: base, startSec: startSec, activeAudioID: session?.activeAudioID,
+                                        activeSubtitleID: session?.activeSubtitleID,
+                                        subtitleDecided: panel.didAutoSelectSubtitles || panel.userSelectedSubtitle,
+                                        addedSubtitles: panel.addedAddonSubtitles)
+    }
 
     /// `viewDidLoad`: the state closures the panels call.
     func wirePanels() {
@@ -277,6 +288,7 @@ extension AetherTVPlayerViewController {
             let external = AetherExternalSubtitle(url: url, name: sub.display, language: sub.language,
                                                   httpHeaders: credentialed ? [:] : nil)
             if let track = session.addExternalSubtitle(external) {
+                panel.addedAddonSubtitles.append(external)
                 panel.externalSourceByTrackID[track.id] = sub.url
                 added += 1
             }
