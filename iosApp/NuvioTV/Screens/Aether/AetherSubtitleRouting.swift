@@ -47,16 +47,18 @@ nonisolated enum AetherSubtitleRouting {
     /// Review r1 F2: the audio track playback starts on, resolved by the start plan's own audio
     /// resolver (`PlayerAudioLanguagePlan.trackToForce`, the mpv post-track-list pick): the first
     /// preferred-language target that matches a track decides; with no match the default stays. The
-    /// probe carries no audio disposition, so its first track stands in for the default.
+    /// default is the probe's `defaultAudioIndex` (the engine's `av_find_best_stream` pick), else the
+    /// first track.
     static func effectiveAudioTrack(probe: ProbeResult, preferredAudioTargets: [String]) -> AudioStreamInfo? {
+        let defaultOffset = probe.defaultAudioIndex.flatMap { index in probe.audio.firstIndex { $0.index == index } } ?? 0
         let tracks = probe.audio.enumerated().map { offset, info in
-            (id: offset, lang: info.language ?? "", selected: offset == 0)
+            (id: offset, lang: info.language ?? "", selected: offset == defaultOffset)
         }
         if let forced = PlayerAudioLanguagePlan.trackToForce(targets: preferredAudioTargets, tracks: tracks),
            forced < probe.audio.count {
             return probe.audio[forced]
         }
-        return probe.audio.first
+        return probe.audio.indices.contains(defaultOffset) ? probe.audio[defaultOffset] : nil
     }
 
     static func isStyledASSCodec(_ codec: String) -> Bool {

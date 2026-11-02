@@ -125,6 +125,10 @@ nonisolated struct ProbeResult: Sendable {
     /// Aether (Phase 1): attachment streams that carry a font (`ttf`/`otf`, see
     /// `MediaProbe.isFontAttachment`). Styled ASS only renders as authored when fonts ship with it.
     var fontAttachmentCount: Int = 0
+    /// Aether (Phase 1, review r3): the container stream index of the audio track the Aether engine
+    /// starts on when no language preference matches (`av_find_best_stream`, as its demuxer runs it).
+    /// nil when the file has no audio or the probe could not pick one.
+    var defaultAudioIndex: Int? = nil
 }
 
 nonisolated enum MediaProbe {
@@ -239,6 +243,9 @@ nonisolated enum MediaProbe {
                 break
             }
         }
+
+        let bestAudio = av_find_best_stream(fmt, AVMEDIA_TYPE_AUDIO, -1, -1, nil, 0)
+        if bestAudio >= 0 { result.defaultAudioIndex = Int(bestAudio) }
 
         // Profile 7 needs one more fact the container can't provide: the MEL/FEL flavor, read from
         // the first RPU NAL in the bitstream (Phase 5 routing + the FEL fidelity sub-setting). The

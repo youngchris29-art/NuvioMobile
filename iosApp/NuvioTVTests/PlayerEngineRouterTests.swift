@@ -475,6 +475,25 @@ final class AetherSubtitleRoutingTests: XCTestCase {
                                                                      useForcedSubtitles: false, preferredAudioTargets: ["eng"]))
     }
 
+    // Review r3: with no matching audio preference the engine starts its `av_find_best_stream` pick,
+    // which need not be the first stream.
+    func testNoAudioPreferenceFollowsTheContainerDefaultAudio() {
+        var p = ProbeResult(
+            container: "matroska,webm", videoCodec: "hevc", videoProfile: 0, hdr: .sdr, dolbyVision: nil,
+            audio: [AudioStreamInfo(index: 1, codec: "eac3", channels: 6, language: "jpn"),
+                    AudioStreamInfo(index: 2, codec: "eac3", channels: 6, language: "fre")],
+            subtitles: [sub(3, "ass", "fre", isForced: true)], durationSec: 3600, seekable: true,
+            videoStreamCount: 1, fontAttachmentCount: 2
+        )
+        p.defaultAudioIndex = 2
+        XCTAssertEqual(AetherSubtitleRouting.effectiveAudioTrack(probe: p, preferredAudioTargets: ["eng"])?.index, 2)
+        XCTAssertTrue(AetherSubtitleRouting.initialTrackIsStyledASS(probe: p, preferredLanguages: ["fre"], subtitlesOff: false,
+                                                                    useForcedSubtitles: true, preferredAudioTargets: ["eng"]),
+                      "French audio plays, so the forced French ASS track does")
+        XCTAssertEqual(AetherSubtitleRouting.effectiveAudioTrack(probe: p, preferredAudioTargets: ["jpn"])?.index, 1,
+                       "a matching preference still wins over the default")
+    }
+
     func testNoSubtitleTracksIsNotStyled() {
         XCTAssertFalse(AetherSubtitleRouting.initialTrackIsStyledASS(probe: probe([], fonts: 5), preferredLanguages: ["eng"], subtitlesOff: false))
     }
