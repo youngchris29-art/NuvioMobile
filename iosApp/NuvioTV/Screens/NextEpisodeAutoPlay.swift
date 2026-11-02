@@ -87,14 +87,19 @@ final class NextEpisodeEngine: ObservableObject {
     /// The in-player source list owns the shared streams flow (set by `loadSources`, cleared by
     /// `cancelSourceLoad`/`stop`). Kept beside the watcher because the test seam's watcher is nil.
     private var sourceListOwnsFlow = false
-    /// Insights review r4 (P2): the current episode's list finished loading and its rows (or its
-    /// empty answer) are still held. Kept true when an idle list hands the flow to the FEAT-49
+    /// Insights review r4 (P2): the current episode's list finished loading and its rows are
+    /// still held (review r5: only a non-empty list latches; an empty or all-error answer gets
+    /// another try on the next bar raise). Kept true when an idle list hands the flow to the FEAT-49
     /// preload (`releaseIdleSourceList`), so the native transport bar never loads it again for the
     /// same playback; cleared by anything that blanks the rows (`cancelSourceLoad`, a new load).
     private var sourceListSettled = false
     /// Insights review r4 (P2): the native transport bar asked for the list while a next-episode
     /// preload was pending, so the list was held (busy line) instead of clearing the preload.
     private var sourcesHeldForPreload = false
+    /// Review r5 (P3): the current list load's soft deadline (`Hooks.sourceListDeadline`).
+    private var sourcesDeadlineTask: Task<Void, Never>?
+    /// Matches the up-next search's soft timeout plus its grace window (3 s + 12 s).
+    nonisolated static let sourceListDeadlineSeconds: UInt64 = 15
     /// r2 P3: an up-next search (or a jump's search) owns the shared streams flow: set when its
     /// watcher is installed, cleared the moment it ends (select, no stream, teardown) and BEFORE
     /// `searchEnded()` runs, so the deferred list reload is not turned away by a stale `.searching`
@@ -144,6 +149,12 @@ final class NextEpisodeEngine: ObservableObject {
         /// BUG-229 seam: the series' episode list, fetched when the launch carried none. `.live`
         /// is the `@Throws` twin (`fetchChecked`): a Kotlin exception out of the plain suspend
         /// export would abort the process. Same call and cache flag as the stream picker's fetch.
+        /// Review r5 (P3): the source list's soft deadline. A hung add-on can keep the flow
+        /// "loading" for good; once this returns, a list still loading stops loading (rows kept),
+        /// so the FEAT-49 preload is not blocked for the rest of the playback. Tests replace it.
+        var sourceListDeadline: @MainActor () async -> Void = {
+            try? await Task.sleep(nanoseconds: NextEpisodeEngine.sourceListDeadlineSeconds * 1_000_000_000)
+        }
         var fetchEpisodes: @MainActor (_ type: String, _ id: String) async throws -> [MetaVideo] = { type, id in
             let details = try await MetaDetailsRepository.shared.fetchChecked(type: type, id: id, cacheResult: true)
             return details?.videos ?? []
@@ -480,6 +491,8 @@ final class NextEpisodeEngine: ObservableObject {
         sourceListOwnsFlow = false
         sourceListSettled = false
         sourcesHeldForPreload = false
+        sourcesDeadlineTask?.cancel()
+        sourcesDeadlineTask = nil
         tearDownSearch()
     }
 
@@ -565,8 +578,20 @@ final class NextEpisodeEngine: ObservableObject {
             if state.isAnyLoading || !state.groups.isEmpty { sawActivity = true }
             if sawActivity, !state.isAnyLoading {
                 self.sourcesLoading = false
-                self.sourceListSettled = true
+                self.sourceListSettled = !self.sources.isEmpty
+                self.sourcesDeadlineTask?.cancel()
+                self.sourcesDeadlineTask = nil
             }
+        }
+        sourcesDeadlineTask?.cancel()
+        let deadline = hooks.sourceListDeadline
+        sourcesDeadlineTask = Task { [weak self] in
+            await deadline()
+            guard let self, !Task.isCancelled, generation == self.sourceLoadGeneration,
+                  self.sourcesLoading else { return }
+            self.sourcesLoading = false
+            self.sourceListSettled = !self.sources.isEmpty
+            print("[UpNext] source list deadline: \(self.sources.count) rows, add-ons still loading — stopped waiting")
         }
 
         hooks.loadStreams(
@@ -594,6 +619,8 @@ final class NextEpisodeEngine: ObservableObject {
         sources = []
         sourcesLoading = false
         sourceListSettled = false
+        sourcesDeadlineTask?.cancel()
+        sourcesDeadlineTask = nil
     }
 
     /// Insights review r4 (P2): an idle (finished) source list gives the shared streams flow to the
@@ -790,6 +817,24 @@ final class NextEpisodeEngine: ObservableObject {
         // subs early). Never while the in-player source list is still loading on the shared
         // streams flow; an idle (finished) list hands the flow over and keeps its rows
         // (Insights review r4, `releaseIdleSourceList`).
+        // Review r5 (P2): a seek back out of the lead window drops a preload nobody used yet, so a
+        // native Sources list held for it loads on the next bar raise and the preload re-fires on
+        // the way back in (the repository replays a matching request key, so that costs little).
+        if !reachesNow, preloaded, !triggered, trigger.preloadEnabled {
+            let lead = NextEpisodeTriggerPolicy.preloadLeadSeconds(timeoutSeconds: trigger.autoPlayTimeoutSeconds)
+            if !NextEpisodeTriggerPolicy.reachesThreshold(
+                positionSec: positionSec + lead, durationSec: durationSec, trigger: trigger,
+                holdUntilSec: holdUntilSec, endOfFileSlack: Self.endOfFileSlack
+            ) {
+                preloaded = false
+                if sourcesHeldForPreload {
+                    sourcesHeldForPreload = false
+                    sourcesBlockedBySearch = false
+                    sourcesBlockedByJump = false
+                }
+                print("[UpNext] left the preload lead window (pos=\(Int(positionSec))s) — preload dropped")
+            }
+        }
         if !reachesNow, trigger.preloadEnabled, !preloaded, !(sourceListOwnsFlow && sourcesLoading),
            !WatchingPoliciesKt.isShortPlaceholderDuration(durationMs: Int64(durationSec * 1000)) {
             let lead = NextEpisodeTriggerPolicy.preloadLeadSeconds(timeoutSeconds: trigger.autoPlayTimeoutSeconds)

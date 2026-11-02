@@ -135,8 +135,9 @@ final class NextEpisodeEngineTests: XCTestCase {
     }
 
     private func makeEngine(trigger: NextEpisodeEngine.TriggerSettings, recorder: Recorder,
-                            network: @escaping () -> Bool = { true }) -> NextEpisodeEngine {
-        let hooks = NextEpisodeEngine.Hooks(loadStreams: { type, videoId, season, episode in
+                            network: @escaping () -> Bool = { true },
+                            sourceListDeadline: (@MainActor () async -> Void)? = nil) -> NextEpisodeEngine {
+        var hooks = NextEpisodeEngine.Hooks(loadStreams: { type, videoId, season, episode in
             recorder.calls.append(LoadCall(type: type, videoId: videoId, season: season?.value, episode: episode?.value))
             recorder.log.append("load:\(videoId)")
         }, searchBegan: { recorder.searchBegan += 1 },
@@ -148,6 +149,7 @@ final class NextEpisodeEngineTests: XCTestCase {
             recorder.callbacks.append(callback)
             return nil
         })
+        if let sourceListDeadline { hooks.sourceListDeadline = sourceListDeadline }
         let engine = NextEpisodeEngine(context: makeContext(), onPlayNext: { _ in }, hooks: hooks)
         engine.configureForTesting(nextVideo: episode(season: 1, episode: 2), trigger: trigger)
         return engine
@@ -898,16 +900,95 @@ final class NextEpisodeEngineTests: XCTestCase {
         XCTAssertEqual(engine.sources.count, 1, "hiding the bar dropped the rows")
     }
 
-    /// An empty answer is an answer: the menu keeps "No alternate sources" instead of re-asking.
-    func testTransportBarDoesNotReloadAnEmptySettledList() {
+    /// Review r5 (P3): an empty (or all-error) answer does not latch: the next raise asks again,
+    /// while a list with rows still loads once (`testTransportBarCyclesLoadTheSourceListOnce`).
+    func testTransportBarRetriesAnEmptyList() {
         let recorder = Recorder()
         let engine = makeEngine(trigger: trigger(), recorder: recorder)
         engine.transportBarSourcesShown()
         recorder.callbacks.last?(nonEmptyState())    // a group with no listable streams
+        XCTAssertFalse(engine.sourcesLoading)
         engine.transportBarSourcesHidden()
         engine.transportBarSourcesShown()
+        XCTAssertEqual(recorder.calls, [currentLoad, currentLoad], "an empty answer was latched")
+        recorder.callbacks.last?(listState([directStream()]))
+        engine.transportBarSourcesHidden()
+        engine.transportBarSourcesShown()
+        XCTAssertEqual(recorder.calls, [currentLoad, currentLoad], "a list with rows loaded again")
+        XCTAssertEqual(engine.sources.count, 1)
+    }
+
+    /// Review r5 (P2): a seek back out of the lead window drops the unused preload, so a list
+    /// held for it loads on the next raise, and the preload fires again on the way back in.
+    func testSeekBackOutOfTheLeadWindowReleasesAHeldList() {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(percent: 99, preload: true), recorder: recorder)
+        engine.onProgress(positionSec: 2346, durationSec: Self.duration)
+        engine.transportBarSourcesShown()
+        XCTAssertTrue(engine.sourcesBlockedBySearch, "held behind the preload")
+        engine.transportBarSourcesHidden()
+
+        engine.onProgress(positionSec: 1200, durationSec: Self.duration)   // seek back
+        XCTAssertFalse(engine.sourcesBlockedBySearch, "the hold outlived the seek back")
+        engine.transportBarSourcesShown()
+        XCTAssertEqual(recorder.calls, [nextLoad, currentLoad], "the next raise did not load the list")
+        recorder.callbacks.last?(listState([directStream()]))
+        engine.transportBarSourcesHidden()
+
+        engine.onProgress(positionSec: 1201, durationSec: Self.duration)
+        XCTAssertEqual(recorder.calls, [nextLoad, currentLoad], "outside the window: no preload")
+        engine.onProgress(positionSec: 2346, durationSec: Self.duration)
+        XCTAssertEqual(recorder.calls, [nextLoad, currentLoad, nextLoad], "the preload did not re-fire")
+        XCTAssertEqual(engine.sources.count, 1, "the re-fired preload blanked the list")
+    }
+
+    /// Review r5 (P3): stands in for `Hooks.sourceListDeadline`; returns when the test fires it.
+    private final class DeadlineGate {
+        private var continuation: CheckedContinuation<Void, Never>?
+        var waiting: Bool { continuation != nil }
+        func wait() async { await withCheckedContinuation { continuation = $0 } }
+        func fire() { continuation?.resume(); continuation = nil }
+    }
+
+    /// Review r5 (P3): a hung add-on (the flow never stops "loading") no longer blocks the
+    /// preload or keeps the menu loading: at the soft deadline the list stops loading, keeps its
+    /// rows and latches, and the next tick hands the flow to the preload.
+    func testHungSourceListStopsAtTheDeadlineAndFreesThePreload() async {
+        let recorder = Recorder()
+        let gate = DeadlineGate()
+        let engine = makeEngine(trigger: trigger(percent: 99, preload: true), recorder: recorder,
+                                sourceListDeadline: { await gate.wait() })
+        engine.transportBarSourcesShown()
+        recorder.callbacks.last?(listState([directStream()], loading: true))
+        engine.transportBarSourcesHidden()
+        engine.onProgress(positionSec: 2346, durationSec: Self.duration)
+        XCTAssertEqual(recorder.calls, [currentLoad], "the preload cleared a list mid-load")
+
+        for _ in 0..<50 where !gate.waiting { await Task.yield() }
+        XCTAssertTrue(gate.waiting, "the list load armed no deadline")
+        gate.fire()
+        for _ in 0..<50 where engine.sourcesLoading { await Task.yield() }
+        XCTAssertFalse(engine.sourcesLoading, "the hung list still reads as loading")
+        XCTAssertEqual(engine.sources.count, 1, "the deadline dropped the rows")
+
+        engine.transportBarSourcesShown()
+        XCTAssertEqual(recorder.calls, [currentLoad], "a raise after the deadline re-scraped")
+        engine.onProgress(positionSec: 2347, durationSec: Self.duration)
+        XCTAssertEqual(recorder.calls, [currentLoad, nextLoad], "the preload stayed blocked")
+    }
+
+    /// The deadline of a load that already finished, or was replaced, changes nothing.
+    func testSourceListDeadlineAfterTheListSettledIsANoOp() async {
+        let recorder = Recorder()
+        let gate = DeadlineGate()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder, sourceListDeadline: { await gate.wait() })
+        engine.transportBarSourcesShown()
+        for _ in 0..<50 where !gate.waiting { await Task.yield() }
+        recorder.callbacks.last?(nonEmptyState())    // settles empty: not latched
+        gate.fire()
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertFalse(engine.sourcesLoading)
         XCTAssertTrue(engine.sources.isEmpty)
-        XCTAssertEqual(recorder.calls, [currentLoad])
     }
 
     /// With preload on: the list loads at the first raise, the preload takes the flow from the

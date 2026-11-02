@@ -159,7 +159,8 @@ enum NativeTransportMenus {
     static func episodeRows(_ episodes: [MetaVideo], currentSeason: Int?, currentEpisode: Int?) -> [EpisodeRow] {
         episodes.map { episode in
             let s = episode.season?.value ?? 0, e = episode.episode?.value ?? 0
-            return EpisodeRow(key: episode.id, title: "S\(s)E\(e) · \(episode.title)",
+            // Review r5: localized through the catalog's `S%lldE%lld · %@` (es "T1E5 · …").
+            return EpisodeRow(key: episode.id, title: String(localized: "S\(Int(s))E\(Int(e)) · \(episode.title)"),
                               isCurrent: Int(s) == currentSeason && Int(e) == currentEpisode)
         }
     }
