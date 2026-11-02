@@ -480,6 +480,11 @@ object PlayerCreditsService {
         }
         person ?: return@withContext null
         val name = person.name?.trim()?.takeIf(String::isNotBlank) ?: return@withContext null
+        val biography = if (shouldFetchEnglishBiography(language, person.biography)) {
+            fetch<PersonDto>("person/$personId", apiKey, mapOf("language" to "en"))?.biography
+        } else {
+            person.biography
+        }
 
         val department = person.knownForDepartment?.trim()?.takeIf(String::isNotBlank)
         val source = if (department == null || department.equals("Acting", ignoreCase = true)) {
@@ -490,7 +495,7 @@ object PlayerCreditsService {
         val summary = PlayerPersonSummary(
             personId = person.id ?: personId,
             name = name,
-            biography = person.biography?.trim()?.takeIf(String::isNotBlank),
+            biography = biography?.trim()?.takeIf(String::isNotBlank),
             birthday = person.birthday?.takeIf(String::isNotBlank),
             deathday = person.deathday?.takeIf(String::isNotBlank),
             placeOfBirth = person.placeOfBirth?.takeIf(String::isNotBlank),
@@ -525,6 +530,13 @@ object PlayerCreditsService {
             .getOrNull()
     }
 }
+
+/**
+ * Mirrors the person page's English fallback (TmdbMetadataService): TMDB rarely translates
+ * biographies, so a non-English language with a blank biography also asks for the English one.
+ */
+internal fun shouldFetchEnglishBiography(language: String, biography: String?): Boolean =
+    language != "en" && biography.isNullOrBlank()
 
 /**
  * Failure log line for a TMDB request. Names only the endpoint path and the exception class:

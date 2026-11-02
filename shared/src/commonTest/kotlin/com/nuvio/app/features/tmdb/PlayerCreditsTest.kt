@@ -236,4 +236,12 @@ class PlayerCreditsTest {
         assertFalse(line.contains("SECRET"))
         assertTrue(line.startsWith("TMDB request failed for find/123 "))
     }
+
+    @Test
+    fun englishBiographyFallbackDecision() {
+        assertTrue(shouldFetchEnglishBiography("de", null))
+        assertTrue(shouldFetchEnglishBiography("fr-FR", "  "))
+        assertFalse(shouldFetchEnglishBiography("en", ""))
+        assertFalse(shouldFetchEnglishBiography("de", "Eine Biografie"))
+    }
 }
