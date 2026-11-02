@@ -11,6 +11,7 @@ import Foundation
 nonisolated enum PlaybackEngine: String, Sendable {
     case native   // AVPlayer, fed by the on-device MKV→fMP4 remux (true Dolby Vision, hardware decode)
     case mpv      // libmpv, the universal fallback
+    case aether   // Aether (experimental, Settings > Playback): AVPlayer HLS + libavcodec software host
 }
 
 nonisolated struct EngineDecision: Equatable, Sendable {
@@ -25,17 +26,52 @@ nonisolated struct EngineDecision: Equatable, Sendable {
     /// Short label for the Stream Info overlay, e.g. "Native · DV P8.1" or "mpv · audio truehd";
     /// "· gpu-next" is appended when `prefersGpuNext` (B10).
     var displayNote: String {
-        let base = "\(engine == .native ? String(localized: "Native") : "mpv") \u{00B7} \(reason)"
+        let label: String
+        switch engine {
+        case .native: label = String(localized: "Native")
+        case .mpv: label = "mpv"
+        case .aether: label = "Aether"
+        }
+        let base = "\(label) \u{00B7} \(reason)"
         return prefersGpuNext ? "\(base) \u{00B7} gpu-next" : base
     }
+}
+
+/// Everything the Aether routing rows need beyond the probe (plan section 4). Plain values so the
+/// router stays pure; the player screen builds it from the settings and the subtitle preferences.
+nonisolated struct AetherRoutingOptions: Equatable, Sendable {
+    /// `player.aetherEngine`. When false the router is today's, unchanged.
+    var enabled: Bool
+    /// `player.aetherDualLayerDV` (the engine reads it; routing only labels the FEL row).
+    var dualLayerDV: Bool = false
+    /// `player.aetherStyledSubsToMpv` (row 10).
+    var styledSubsToMpv: Bool = true
+    /// The source URL, for the `.m3u8` / `.mpd` live check (row 4).
+    var sourceURL: URL? = nil
+    /// Resolved subtitle language targets (`AetherSubtitleRouting.preferredTargets`).
+    var preferredSubtitleTargets: [String] = []
+    /// Subtitles set to Off (`SubtitleFallbackGuard.isOff`).
+    var subtitlesOff: Bool = false
+    /// "Use forced subtitles" (the shared auto-select plan then picks forced tracks only).
+    var useForcedSubtitles: Bool = false
 }
 
 nonisolated enum PlayerEngineRouter {
     /// Decide the engine for a probed stream. `nativeDVEnabled` is the Settings > Playback beta flag;
     /// `dvP7FelToMpv` is its FEL-fidelity sub-setting (send Profile 7 FEL files to mpv instead of
     /// discarding their enhancement layer in the 8.1 conversion).
-    static func route(probe: ProbeResult?, nativeDVEnabled: Bool, dvP7FelToMpv: Bool = false) -> EngineDecision {
-        var decision = decide(probe: probe, nativeDVEnabled: nativeDVEnabled, dvP7FelToMpv: dvP7FelToMpv)
+    ///
+    /// Aether (Phase 1): `forcedEngine` (routing row 1) and `aether` (rows 2 to 11) are additive. With
+    /// `aether` nil or disabled the decision is today's router, byte for byte.
+    static func route(probe: ProbeResult?, nativeDVEnabled: Bool, dvP7FelToMpv: Bool = false,
+                      aether: AetherRoutingOptions? = nil, forcedEngine: PlaybackEngine? = nil) -> EngineDecision {
+        if let forced = forcedEngine { return EngineDecision(engine: forced, reason: "forced") }
+        var decision: EngineDecision
+        if let aether, aether.enabled {
+            decision = decideAether(probe: probe, options: aether)
+        } else {
+            decision = decide(probe: probe, nativeDVEnabled: nativeDVEnabled, dvP7FelToMpv: dvP7FelToMpv)
+        }
         if decision.engine == .mpv, mpvNeedsGpuNext(probe: probe) { decision.prefersGpuNext = true }
         return decision
     }
@@ -102,6 +138,74 @@ nonisolated enum PlayerEngineRouter {
         }
 
         return EngineDecision(engine: .native, reason: nativeReason(p))
+    }
+
+    // MARK: - Aether (Phase 1)
+
+    /// Video codecs the Aether route accepts (plan section 4 row 6; the engine's software host decodes
+    /// every one of them, AV1 through dav1d).
+    static let aetherVideoCodecs: Set<String> = ["hevc", "h264", "av1", "vp9", "mpeg2video", "vc1", "mpeg4"]
+
+    /// Audio codecs the Aether route accepts (row 9, plan section 14): stream-copied or bridged by the
+    /// engine. `pcm_bluray` and `mlp` are deliberately absent and stay on mpv.
+    static let aetherAudioCodecs: Set<String> = [
+        "aac", "ac3", "eac3", "flac", "alac", "mp3", "mp2", "truehd", "dts", "opus", "vorbis",
+        "pcm_s16le", "pcm_s24le", "pcm_s32le", "pcm_f32le", "pcm_s16be", "pcm_u8",
+        "pcm_alaw", "pcm_mulaw", "pcm_dvd",
+    ]
+
+    /// Plan section 4 rows 3 to 11 (rows 1 and 2 are handled by `route`). Independent of the native
+    /// Dolby Vision setting; the caller runs the probe whenever Aether is On.
+    private static func decideAether(probe: ProbeResult?, options: AetherRoutingOptions) -> EngineDecision {
+        func mpv(_ reason: String) -> EngineDecision { EngineDecision(engine: .mpv, reason: reason) }
+
+        // Row 3
+        guard let p = probe else { return mpv("probe unavailable") }
+        // Row 4
+        let ext = options.sourceURL?.pathExtension.lowercased()
+        if !p.seekable || p.durationSec <= 0 || ext == "m3u8" || ext == "mpd" {
+            return mpv("live or non-seekable")
+        }
+        // Row 5
+        guard isNativeContainer(p.container) else { return mpv("container \(p.container)") }
+        // Row 6
+        guard aetherVideoCodecs.contains(p.videoCodec) else {
+            return mpv(p.videoCodec.isEmpty ? "no video stream" : "video \(p.videoCodec)")
+        }
+        // Rows 7 and 8: two-track P7 stays on mpv; a single-track FEL file is labelled (the dual-layer
+        // setting only changes how the engine renders it, read by the Aether controller).
+        var reason: String? = nil
+        if let dv = p.dolbyVision, dv.profile == 7 {
+            if p.videoStreamCount >= 2 { return mpv("DV P7 two-track") }
+            if dv.elKind == .fel { reason = "DV P7 FEL" }
+        }
+        // Row 9: an audio-less file is fine; otherwise at least one track must be in the set.
+        if !p.audio.isEmpty, !p.audio.contains(where: { aetherAudioCodecs.contains($0.codec) }) {
+            return mpv("audio \(p.audio.first?.codec ?? "none")")
+        }
+        // Row 10
+        if options.styledSubsToMpv,
+           AetherSubtitleRouting.initialTrackIsStyledASS(
+               probe: p, preferredLanguages: options.preferredSubtitleTargets,
+               subtitlesOff: options.subtitlesOff, useForcedSubtitles: options.useForcedSubtitles) {
+            return mpv("styled ASS")
+        }
+        // Row 11
+        return EngineDecision(engine: .aether, reason: reason ?? aetherReason(p))
+    }
+
+    private static func aetherReason(_ p: ProbeResult) -> String {
+        if let dv = p.dolbyVision {
+            if dv.profile == 7 { return "DV P7 \u{2192} 8.1" }
+            return dv.profile == 8 && dv.compatId == 1 ? "DV P8.1" : "DV P\(dv.profile)"
+        }
+        if p.videoCodec == "av1" { return "AV1" }
+        switch p.hdr {
+        case .hdr10: return "HDR10"
+        case .hlg: return "HLG"
+        case .other: return "HDR"
+        case .sdr: return "SDR"
+        }
     }
 
     // MARK: - Criteria
