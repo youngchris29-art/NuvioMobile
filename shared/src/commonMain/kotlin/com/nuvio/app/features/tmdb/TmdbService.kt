@@ -66,6 +66,38 @@ object TmdbService {
         return imdbId
     }
 
+    /** Maps a TVDB id to a TMDB id through `find/{id}?external_source=tvdb_id`. */
+    suspend fun tvdbToTmdb(tvdbId: String, mediaType: String): String? {
+        val apiKey = TmdbSettingsRepository.effectiveApiKey().takeIf(String::isNotBlank) ?: return null
+        val cleanId = tvdbId.trim().takeIf { it.isNotEmpty() && it.all(Char::isDigit) } ?: return null
+        val normalizedType = normalizeMediaType(mediaType)
+        val cacheKey = "tvdb:$cleanId:$normalizedType"
+        cacheMutex.withLock {
+            imdbToTmdbCache[cacheKey]?.let { return it }
+        }
+
+        // Not the shared `fetch`: its failure log carries the exception message, which can hold
+        // the request URL and with it the user's api_key.
+        val endpoint = "find/$cleanId"
+        val url = buildTmdbUrl(endpoint = endpoint, apiKey = apiKey, query = mapOf("external_source" to "tvdb_id"))
+        val body = runCatching { json.decodeFromString<TmdbFindResponse>(httpGetText(url)) }
+            .onFailure { log.w { tmdbRequestFailureLogLine(endpoint, it) } }
+            .getOrNull() ?: return null
+
+        val resultId = when (normalizedType) {
+            "movie" -> body.movieResults.firstOrNull()?.id
+            "tv" -> body.tvResults.firstOrNull()?.id
+            else -> body.movieResults.firstOrNull()?.id ?: body.tvResults.firstOrNull()?.id
+        }?.takeIf { it > 0 }?.toString()
+
+        if (resultId != null) {
+            cacheMutex.withLock { imdbToTmdbCache[cacheKey] = resultId }
+        } else {
+            log.d { "No TMDB ID found for tvdb:$cleanId ($normalizedType)" }
+        }
+        return resultId
+    }
+
     private suspend fun imdbToTmdb(imdbId: String, mediaType: String, apiKey: String): String? {
         val normalizedType = normalizeMediaType(mediaType)
         val cacheKey = "$imdbId:$normalizedType"

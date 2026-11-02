@@ -1,10 +1,10 @@
 import XCTest
 
-/// Ad-hoc probe for the beta.15 §B1/B2 subtitle-delay Timing row (`PlayerSubtitlesTab`), mpv
-/// engine. Attaches to an already-running app pre-warmed with the `debug.mpvSmokeURL` harness
+/// Ad-hoc probe for the beta.15 §B1/B2 subtitle-delay Timing row (`PlayerSubtitlesTab`, now inside
+/// the Subtitles disc's popover), mpv engine. Attaches to an already-running app pre-warmed with the `debug.mpvSmokeURL` harness
 /// (see `MPVSmokeTest.swift`) forced onto the mpv path — mpv reports `supportsSubtitleDelay = true`
 /// unconditionally (`MPVPlayerPanelAdapter`), so no addon subtitle needs to be fetched first; the
-/// Timing row is present as soon as the Subtitles tab is. Skipped unless `SUBTITLE_DELAY_PROBE=1`
+/// Timing row is present as soon as the Subtitles popover is. Skipped unless `SUBTITLE_DELAY_PROBE=1`
 /// is in the environment (pass it as `TEST_RUNNER_SUBTITLE_DELAY_PROBE=1` to xcodebuild).
 ///
 /// Pre-launch setup (device/sim, `<dev>` = target udid, matches the recipe in `MPVSmokeTest.swift`
@@ -43,27 +43,21 @@ final class SubtitleDelayProbeTests: XCTestCase {
         app.descendants(matching: .any).matching(identifier: id).firstMatch
     }
 
-    /// Opens the top panel (Down) and switches to the Subtitles tab (Right), from a state where the
-    /// transport/panel is fully dismissed — mirrors `PlayerTopPanelProbeTests`' steps 1–2.
+    /// Opens the Subtitles disc's popover (Up, Up, Select) from a state where the bar is hidden.
+    /// Insights wave 2a: the top panel's Down + Right to the Subtitles tab is gone.
     private func openSubtitlesTab(_ app: XCUIApplication) {
-        let panel = app.otherElements["player.panel"]
-        remote.press(.down)
-        XCTAssertTrue(panel.waitForExistence(timeout: 5), "panel did not present on Down")
-        pause(3)   // let the presentation + SwiftUI accessibility tree settle (matches PlayerTopPanelProbeTests)
-        remote.press(.right)
-        pause(2)
-        XCTAssertEqual(app.buttons["player.panel.tab.subtitles"].value as? String, "selected",
-                        "Subtitles tab not selected")
+        PlayerChrome.openDisc(app, "subtitles")
+        pause(1)
         // No "Off" row assertion here: mpv's adapter only emits an Off entry when
         // `state.subtitleTracks` is non-empty (MPVPlayerPanelAdapter.rebuildSelections) — the mpv
-        // smoke fixture has no embedded/external subtitle tracks, so the tab legitimately shows
+        // smoke fixture has no embedded/external subtitle tracks, so the popover legitimately shows
         // only "No subtitles for this title" + the Timing row. Assert the Timing row's presence
         // instead, which is what this probe actually cares about.
         XCTAssertTrue(element(app, "player.panel.subtitleDelay.value").waitForExistence(timeout: 3),
                        "no Timing row / subtitle delay value label")
     }
 
-    /// From the Subtitles tab (focus still on the tab bar), two Down presses land focus somewhere
+    /// With the popover just opened (focus on its first row), two Down presses land focus somewhere
     /// in the Timing row — with no embedded/addon subtitles (mpv smoke context has none) there is no
     /// Off row at all (`MPVPlayerPanelAdapter.rebuildSelections` only emits one when
     /// `subtitleTracks` is non-empty), just the non-focusable "No subtitles" caption, which the
@@ -93,9 +87,9 @@ final class SubtitleDelayProbeTests: XCTestCase {
         app.activate()
         XCTAssertTrue(app.otherElements["player.mpv"].waitForExistence(timeout: 30),
                       "mpv player view never appeared — MPVSmokeTest harness not armed?")
-        pause(3)   // let the panel's swipe-down recognizer attach
+        pause(3)
 
-        // 1. Open the panel, switch to Subtitles.
+        // 1. Open the Subtitles popover.
         openSubtitlesTab(app)
         shot("01-subtitles-tab")
 

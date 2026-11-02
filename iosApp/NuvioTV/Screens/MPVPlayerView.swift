@@ -38,6 +38,7 @@ final class MPVPlaybackState: ObservableObject {
             if controlsVisible && !oldValue {
                 controlsSession &+= 1
                 transport.focusedPill = nil
+                transport.focusedInfoPill = nil
                 transport.showsEndTime = false
             }
         }
@@ -52,10 +53,21 @@ final class MPVPlaybackState: ObservableObject {
     /// Playback position in ms for Sync Line, read when the row is pressed.
     var captureSyncPositionMs: (() -> Int64)?
     var syncLineStripSdh: (() -> Bool)?
-    /// The swipe-down top panel (Info · Subtitles · Audio · Playback) is presented.
+    /// Insights (2026-11-01): a popover or a content shelf is open (`transport.openPopover` /
+    /// `openInfoPill`). Kept published under its old name: the up-next engine (FEAT-49 source list)
+    /// and the panel adapter (chapter rows) watch its edges.
     @Published var panelOpen: Bool = false
-    /// BUG-180: the panel's selected tab while it is open (nil = closed). Read on ticks, not published.
-    var panelTab: PlayerPanelTab?
+    /// The panel model the popovers and shelves draw (weak: the screen owns it). The controller
+    /// reads the Cast actor view from it for Menu.
+    weak var panelModel: PlayerTopPanelModel?
+    /// Menu inside a focused popover or shelf (SwiftUI `onExitCommand`), resolved by the controller.
+    var overlayMenu: (() -> Void)?
+    /// Closes the open popover or shelf (an episode jump, a source switch, a chapter seek, Play Now).
+    var closeOverlay: (() -> Void)?
+    /// Asks the focus engine into the open popover or shelf (the overlay calls it once it is drawn).
+    var requestOverlayFocus: (() -> Void)?
+    /// Play/Pause with the focus inside a popover or shelf (the controller is not in that chain).
+    var togglePause: (() -> Void)?
     /// Addon subtitle fetch in flight — the picker shows "Searching…" instead of hiding the row.
     @Published var subtitleSearchInFlight: Bool = false
 
@@ -152,7 +164,7 @@ final class MPVPlaybackState: ObservableObject {
 }
 
 /// libmpv-backed player for tvOS. Siri-remote transport: select/play-pause toggles, left/right seek
-/// ±10s, down (or a down swipe) opens the top panel, Menu exits. Publishes position/duration/paused/buffering and
+/// ±10s, down (or a down swipe) raises the bar with the text pill row focused, Menu exits. Publishes position/duration/paused/buffering and
 /// track lists to `state`, and records watch progress (resume position) via `WatchProgressRepository`.
 final class MPVTVPlayerViewController: UIViewController {
 
@@ -451,10 +463,12 @@ final class MPVTVPlayerViewController: UIViewController {
     /// Called when the user presses Menu, so the SwiftUI cover can dismiss.
     var onExit: (() -> Void)?
     /// Set when a Menu press was consumed by the up-next dismiss so the matching release is
-    /// swallowed too (same pattern as `PlayerPanelHostController`) — nothing above sees a half press.
+    /// swallowed too — nothing above sees a half press.
     private var swallowMenuRelease = false
     /// A consumed Menu's action, performed when the press ends (never while it is down).
     private var pendingMenuAction: MenuPrecedence.Action?
+    /// Bumped by every overlay focus request; a retry chain from an older request stops.
+    private var overlayFocusGeneration = 0
     /// BUG-165: when the exit Menu was decided (`systemUptime`), for the `[MenuProbe]` timing lines
     /// that say where the press's later phases and the cover's teardown land relative to it.
     private var exitDecidedAt: TimeInterval?
@@ -506,13 +520,55 @@ final class MPVTVPlayerViewController: UIViewController {
         case .hidePill, .hideBar:
             // Menu hides the bar (hideControlsNow clears the pill focus); the next Menu exits.
             hideControlsNow()
+        case .unfocusInfoPill:
+            // Insights device pass (2026-11-01): a focused text pill only lets go of the focus;
+            // the bar stays (back on the track), the next Menu hides it, the one after exits.
+            state.transport.focusedInfoPill = nil
+            flashControls()
+        case .actorBack:
+            // Insights: the Cast actor view backs out to the card row; the shelf stays.
+            _ = state.panelModel?.menuBack()
+        case .closeOverlay:
+            closeOverlay()
         case .panel, .exit:
             break
         }
     }
-    /// Open the top panel on a tab (D-pad Down with nothing else to do, a down swipe: `.info`; a
-    /// pill's Select: that pill's tab).
-    var onOpenPanel: ((PlayerPanelTab) -> Void)?
+
+    /// The Menu decision for the player as it stands (both the controller's press path and the
+    /// SwiftUI overlay's `onExitCommand` ask here).
+    private func currentMenuAction() -> MenuPrecedence.Action {
+        let t = state.transport
+        return MenuPrecedence.resolve(
+            // A presented controller takes its own presses.
+            panelOpen: presentedViewController != nil,
+            actorViewOpen: t.openInfoPill == .cast && state.panelModel?.actorView != nil,
+            overlayOpen: t.overlayOpen,
+            modeActive: transport.mode.isActive,
+            upNextShowing: state.upNextVisible?() ?? false,
+            pillFocused: t.focusedPill != nil,
+            infoPillFocused: t.focusedInfoPill != nil,
+            barUp: state.controlsVisible)
+    }
+
+    /// Menu with focus inside a popover or shelf (SwiftUI `onExitCommand`). Only the overlay levels
+    /// act here; anything else means the overlay was already gone, and the press is dropped.
+    private func handleOverlayMenu() {
+        let action = currentMenuAction()
+        NSLog("[MenuProbe] overlay menu action=%@", String(describing: action))
+        switch action {
+        case .actorBack:
+            _ = state.panelModel?.menuBack()
+        case .closeOverlay:
+            closeOverlay()
+            // Focus is back with this controller now: if the press's release lands here, it is
+            // swallowed like every consumed Menu (a stale flag only swallows a release whose press
+            // began elsewhere; every Menu press sets it afresh).
+            swallowMenuRelease = true
+        default:
+            break
+        }
+    }
     /// `systemUptime` of the last press of any button beginning, ending or being cancelled: a click
     /// (arrows included) is also a touch, so the light-tap recogniser ignores a tap within 0.5 s of
     /// one (`LightTapGuard`).
@@ -609,6 +665,12 @@ final class MPVTVPlayerViewController: UIViewController {
             self?.pressesDown.removeAll()
             self?.becomeFirstResponder()
         }
+        state.overlayMenu = { [weak self] in self?.handleOverlayMenu() }
+        // Every `state.closeOverlay` caller closes because of a pick inside the overlay (or its
+        // pill leaving the row): back to the track.
+        state.closeOverlay = { [weak self] in self?.closeOverlay(.selection) }
+        state.requestOverlayFocus = { [weak self] in self?.requestOverlayFocus() }
+        state.togglePause = { [weak self] in self?.togglePause(); self?.flashControls() }
         view.accessibilityIdentifier = "player.mpv"
 
         transport.holdMode = TransportPreview.HoldMode(
@@ -681,7 +743,7 @@ final class MPVTVPlayerViewController: UIViewController {
         edgeClickMode = EdgeClickMode(
             rawValue: UserDefaults.standard.string(forKey: PlayerTuning.edgeClickModeKey) ?? "skip10") ?? .skip10
 
-        // Touch-surface swipe down → top panel (presses arrive as `.downArrow`; real swipes don't).
+        // Touch-surface swipe down → the text pill row (presses arrive as `.downArrow`; real swipes don't).
         let swipeDown = UISwipeGestureRecognizer(target: self, action: #selector(handleSwipeDown))
         swipeDown.direction = .down
         swipeDown.delegate = self
@@ -727,22 +789,24 @@ final class MPVTVPlayerViewController: UIViewController {
     }
 
     @objc private func handleSwipeDown() {
-        // A scrub stroke that drifts down must not open the panel.
+        // A scrub stroke that drifts down must not move the focus.
         guard scrubArbiter.intent != .horizontal else { return }
-        openPanelFromGesture()
+        focusInfoPillsFromGesture()
     }
 
-    /// The one panel opener for gestures: the swipe recogniser and the arbiter's vertical-down both
-    /// land here, deduped within 0.6 s.
-    private func openPanelFromGesture() {
+    /// The one down-gesture handler: the swipe recogniser and the arbiter's vertical-down both
+    /// land here, deduped within 0.6 s. Same as Down with nothing else to do: the bar comes up with
+    /// the text pill row focused (Insights; it opened the top panel before).
+    private func focusInfoPillsFromGesture() {
         let now = ProcessInfo.processInfo.systemUptime
-        guard presentedViewController == nil, now - lastGesturePanelUptime > 0.6 else { return }
+        guard presentedViewController == nil, !state.transport.overlayOpen,
+              now - lastGesturePanelUptime > 0.6 else { return }
         lastGesturePanelUptime = now
         cancelExactStage()
         stopHoldTimer()
-        cancelScrub(why: "panel")
+        cancelScrub(why: "pills")
         apply(transport.cancel())
-        onOpenPanel?(.info)
+        focusInfoPills()
     }
 
     @objc private func handleLightTap() { performLightTap(force: false) }
@@ -2488,9 +2552,9 @@ final class MPVTVPlayerViewController: UIViewController {
         }
 
         // BUG-180 (Steven rc7): only while someone can see the rows — the Stream Info overlay, or
-        // the panel's Info tab (its rows and chips). Every other tab skipped a dozen mpv reads and a
-        // publish twice a second. At most once every 2 s: diagnostics, not a meter.
-        if state.showStreamInfo || (state.panelOpen && state.panelTab == .info),
+        // the Info shelf (its rows and chips). Every other shelf or popover skipped a dozen mpv
+        // reads and a publish twice a second. At most once every 2 s: diagnostics, not a meter.
+        if state.showStreamInfo || state.transport.openInfoPill == .info,
            harvestNow - lastStreamInfoRefresh >= Self.streamInfoRefreshSec {
             lastStreamInfoRefresh = harvestNow
             refreshStreamInfoAsync()
@@ -2895,11 +2959,12 @@ final class MPVTVPlayerViewController: UIViewController {
         }
     }
 
-    /// BUG-180 (Steven rc7): the transport bar or the top panel is on screen. Seek-preview harvest
-    /// and decode pre-warm wait while it is (both compete with the overlay over a 4K/HDR frame);
-    /// a scrub's own decode is not gated. `presentedViewController` covers a stale `panelOpen`.
+    /// BUG-180 (Steven rc7): the transport bar, a popover or a shelf is on screen. Seek-preview
+    /// harvest and decode pre-warm wait while it is (both compete with the overlay over a 4K/HDR
+    /// frame); a scrub's own decode is not gated. `presentedViewController` covers the Sync Line
+    /// sheet and the post-play cover.
     private var playerOverlayUp: Bool {
-        state.controlsVisible || state.panelOpen || presentedViewController != nil
+        state.controlsVisible || state.transport.overlayOpen || presentedViewController != nil
     }
 
     /// What the byte budget has charged across every thumbnailer of this file (review r1 P1).
@@ -3126,6 +3191,18 @@ final class MPVTVPlayerViewController: UIViewController {
             default:
                 break
             }
+            // Insights: a popover or shelf is open and the remote is still here (nothing in it
+            // took the focus). Everything but Menu stays inside it; no press seeks.
+            if state.transport.overlayOpen, press.type != .menu {
+                switch press.type {
+                case .playPause, .select, .leftArrow, .rightArrow, .upArrow, .downArrow:
+                    handleOverlayPress(press.type)
+                    handled = true
+                default:
+                    break
+                }
+                continue
+            }
             switch press.type {
             case .playPause, .select:
                 if isScrubbing {
@@ -3140,6 +3217,9 @@ final class MPVTVPlayerViewController: UIViewController {
                     if case .stepping = transport.mode { stopHoldTimer(); apply(transport.cancel()) }
                     if press.type == .select, let pill = state.transport.focusedPill {
                         activatePill(pill)
+                    } else if press.type == .select, let pill = state.transport.focusedInfoPill {
+                        state.transport.focusedPill = nil
+                        openOverlay(popover: nil, shelf: pill)
                     } else {
                         togglePause(); flashControls()
                     }
@@ -3152,6 +3232,8 @@ final class MPVTVPlayerViewController: UIViewController {
                     apply(transport.endScanInPlace())
                 } else if state.transport.focusedPill != nil {
                     movePill(by: -1)        // a focused pill row never seeks
+                } else if state.transport.focusedInfoPill != nil {
+                    moveInfoPill(by: -1)
                 } else {
                     beginHold(-1)
                 }
@@ -3163,6 +3245,8 @@ final class MPVTVPlayerViewController: UIViewController {
                     apply(transport.pressBegan(direction: 1, positionSec: 0))   // next rate
                 } else if state.transport.focusedPill != nil {
                     movePill(by: 1)
+                } else if state.transport.focusedInfoPill != nil {
+                    moveInfoPill(by: 1)
                 } else {
                     beginHold(1)
                 }
@@ -3176,9 +3260,12 @@ final class MPVTVPlayerViewController: UIViewController {
                 case .stepping:
                     stopHoldTimer(); apply(transport.cancel()); handled = true
                 default:
-                    // Hidden bar: raise it (focus on the track). Bar up: focus the first pill; with
-                    // a pill already focused Up does nothing but keep the bar up.
-                    if state.controlsVisible, state.transport.focusedPill == nil {
+                    // Hidden bar: raise it (focus on the track). Text pill row: back to the track.
+                    // Track: focus the first disc; with a disc already focused Up does nothing but
+                    // keep the bar up.
+                    if state.transport.focusedInfoPill != nil {
+                        state.transport.focusedInfoPill = nil
+                    } else if state.controlsVisible, state.transport.focusedPill == nil {
                         state.transport.focusedPill = state.transport.pills.first
                     }
                     flashControls()
@@ -3188,15 +3275,12 @@ final class MPVTVPlayerViewController: UIViewController {
                 var consumed = chipRevealed
                 switch transport.mode {
                 case .scrubbing:
-                    // Cancel, then the panel: no chip, no up-next, no pill.
+                    // Cancel, then the text pill row: no chip, no up-next.
                     cancelScrub(why: "down")
-                    if presentedViewController == nil {
-                        refreshTracksAsync()
-                        onOpenPanel?(.info)
-                    }
+                    focusInfoPills()
                     consumed = true
                 case .scanning:
-                    apply(transport.endScanInPlace()); consumed = true   // no chip, no panel
+                    apply(transport.endScanInPlace()); consumed = true   // no chip, no pill row
                 case .stepping:
                     stopHoldTimer(); apply(transport.cancel())
                 default:
@@ -3204,36 +3288,40 @@ final class MPVTVPlayerViewController: UIViewController {
                 }
                 if consumed {
                     handled = true
-                } else if state.transport.focusedPill != nil {
-                    // Back to the track; the next Down fires the chip or opens the panel.
-                    state.transport.focusedPill = nil
-                    flashControls()
-                    handled = true
-                } else if state.upNextPlayNow?() == true {
-                    handled = true
-                } else if let prompt = state.skipPrompt {
-                    // Already clamped against duration by `SkipSegmentPlanner` (a target past EOF
-                    // wedges mpv; unclamped while the duration is still unknown). The planner
-                    // shows no chip until mpv confirms this seek, so a second press can't re-seek.
-                    seekAbsolute(prompt.targetSec, kind: .chip)
-                    state.skipPrompt = nil
-                    flashControls()
-                    handled = true
-                } else if presentedViewController == nil {
-                    // Same gesture as the native player: Down opens the top panel. Track lists
-                    // are refreshed on open (the async walk fills them if this raced the events).
-                    refreshTracksAsync()
-                    onOpenPanel?(.info)
+                } else {
+                    // `DownPressRule`: disc → track; text pills keep the focus; then the up-next
+                    // chip, the skip chip, and with nothing else the bar with the text pill row.
+                    let action = DownPressRule.resolve(
+                        overlayOpen: false,              // handled above
+                        discFocused: state.transport.focusedPill != nil,
+                        infoPillFocused: state.transport.focusedInfoPill != nil,
+                        skipChip: state.skipPrompt != nil,
+                        playUpNext: { state.upNextPlayNow?() == true })
+                    switch action {
+                    case .ignore:
+                        flashControls()
+                    case .discToTrack:
+                        state.transport.focusedPill = nil
+                        flashControls()
+                    case .playedUpNext:
+                        break
+                    case .skip:
+                        // Already clamped against duration by `SkipSegmentPlanner` (a target past
+                        // EOF wedges mpv; unclamped while the duration is still unknown). The
+                        // planner shows no chip until mpv confirms this seek, so a second press
+                        // can't re-seek.
+                        if let prompt = state.skipPrompt {
+                            seekAbsolute(prompt.targetSec, kind: .chip)
+                            state.skipPrompt = nil
+                        }
+                        flashControls()
+                    case .focusInfoPills:
+                        focusInfoPills()
+                    }
                     handled = true
                 }
             case .menu:
-                let action = MenuPrecedence.resolve(
-                    // A presented panel takes its own presses; `state.panelOpen` could go stale.
-                    panelOpen: presentedViewController != nil,
-                    modeActive: transport.mode.isActive,
-                    upNextShowing: state.upNextVisible?() ?? false,
-                    pillFocused: state.transport.focusedPill != nil,
-                    barUp: state.controlsVisible)
+                let action = currentMenuAction()
                 NSLog("[MenuProbe] menu began action=%@ leaving=%d window=%d", String(describing: action),
                       isLeavingPlayer ? 1 : 0, view.window == nil ? 0 : 1)
                 switch action {
@@ -3251,7 +3339,7 @@ final class MPVTVPlayerViewController: UIViewController {
                     #endif
                     closeFailover()
                     onExit?()
-                case .cancelMode, .dismissUpNext, .hidePill, .hideBar:
+                case .actorBack, .closeOverlay, .cancelMode, .dismissUpNext, .hidePill, .unfocusInfoPill, .hideBar:
                     // Consumed, but PERFORMED ON RELEASE (`pressesEnded`). Acting here changed the
                     // view tree while the press was still down (the bar leaving, the chip leaving),
                     // and the system then treated the half-finished Menu as unhandled and dismissed
@@ -3556,9 +3644,10 @@ final class MPVTVPlayerViewController: UIViewController {
         return ScrubContext(
             barVisible: state.controlsVisible,
             paused: snap.paused,
-            pillFocused: state.transport.focusedPill != nil,
+            pillFocused: state.transport.focusedPill != nil || state.transport.focusedInfoPill != nil,
             scrubbing: isScrubbing,
-            canScrub: fileLoaded && snap.duration > 0 && presentedViewController == nil && !state.isEnded,
+            canScrub: fileLoaded && snap.duration > 0 && presentedViewController == nil && !state.isEnded
+                && !state.transport.overlayOpen,
             pressesDown: pressesDown.count,
             lastPressUptime: lastClickUptime)
     }
@@ -3604,6 +3693,7 @@ final class MPVTVPlayerViewController: UIViewController {
             guard case .idle = transport.mode else { restartScrubIdle(); return }
             cancelExactStage()
             state.transport.focusedPill = nil
+            state.transport.focusedInfoPill = nil
             let base = skipPlanner.seekInFlight?.targetSec ?? cachedProps().position   // beginHold's rule
             #if DEBUG
             NSLog("[Scrub] begin base=%.2f thr=%.0f curve=%@", base,
@@ -3616,8 +3706,8 @@ final class MPVTVPlayerViewController: UIViewController {
         case .scrubDelta(let points):
             performScrubOutput(transport.scrubMoved(deltaPoints: points))
         case .openPanel:
-            cancelScrub(why: "panel")
-            openPanelFromGesture()
+            cancelScrub(why: "pills")
+            focusInfoPillsFromGesture()
         case .swipeUp:
             if isScrubbing {
                 cancelScrub(why: "up")
@@ -4092,14 +4182,22 @@ final class MPVTVPlayerViewController: UIViewController {
     private func armHide(after seconds: TimeInterval, elapsed: TimeInterval) {
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            guard TransportHideRule.mayHide(pillFocused: self.state.transport.focusedPill != nil,
-                                            modeActive: self.transport.mode.isActive) else { return }
+            let t = self.state.transport
+            // A focused disc or text pill, or an open popover or shelf, holds the bar (Insights
+            // device pass 2026-11-01: a text pill that let the bar hide under it left the next
+            // Menu to exit the player). Menu lets go of the pill, then hides the bar.
+            guard TransportHideRule.mayHide(
+                pillFocused: TransportHideRule.holdsBar(discFocused: t.focusedPill != nil,
+                                                        infoPillFocused: t.focusedInfoPill != nil,
+                                                        overlayOpen: t.overlayOpen),
+                modeActive: self.transport.mode.isActive) else { return }
             guard let due = self.currentHideDelay() else { return }
             if due > elapsed {
                 self.armHide(after: due - elapsed, elapsed: due)
                 return
             }
-            self.state.transport.focusedPill = nil
+            t.focusedPill = nil
+            t.focusedInfoPill = nil
             self.state.controlsVisible = false
         }
         hideWork = work
@@ -4107,9 +4205,11 @@ final class MPVTVPlayerViewController: UIViewController {
     }
 
     private func hideControlsNow() {
+        if state.transport.overlayOpen { closeOverlay() }
         hideWork?.cancel()
         hideWork = nil
         state.transport.focusedPill = nil
+        state.transport.focusedInfoPill = nil
         state.controlsVisible = false
     }
 
@@ -4122,13 +4222,136 @@ final class MPVTVPlayerViewController: UIViewController {
     }
 
     private func activatePill(_ pill: PillKind) {
-        // Aspect cycles in place: focus stays on the pill so repeated Select keeps cycling.
-        if pill == .aspect { cycleAspect(); flashControls(); return }
-        state.transport.focusedPill = nil
+        switch pill {
+        case .aspect:
+            // Aspect cycles in place: focus stays on the pill so repeated Select keeps cycling.
+            cycleAspect(); flashControls()
+        case .more:
+            // More opens the Info shelf; the text pill row takes the focus under it.
+            state.transport.focusedPill = nil
+            state.transport.focusedInfoPill = .info
+            openOverlay(popover: nil, shelf: .info)
+        default:
+            // The disc keeps its focus under its popover, so Menu lands back on it.
+            openOverlay(popover: pill, shelf: nil)
+        }
+    }
+
+    // MARK: - Text pills, popovers and shelves (Insights, 2026-11-01)
+
+    /// Down with nothing else to do (or a down swipe): the bar comes up with the text pill row
+    /// focused. Raising the bar clears the per-raise focus, so the focus is set after it.
+    private func focusInfoPills() {
         flashControls()
+        let t = state.transport
+        t.focusedPill = nil
+        t.focusedInfoPill = t.infoPills.first
+    }
+
+    private func moveInfoPill(by delta: Int) {
+        let t = state.transport
+        if let current = t.focusedInfoPill,
+           let next = PlayerInfoPill.move(from: current, by: delta, in: t.infoPills) {
+            t.focusedInfoPill = next
+        }
+        flashControls()
+    }
+
+    /// Opens a disc's popover or a text pill's shelf over the playing video. The bar stays up
+    /// while it is open (`TransportHideRule`); the focus engine is asked to move into it.
+    private func openOverlay(popover: PillKind?, shelf: PlayerInfoPill?) {
         guard presentedViewController == nil else { return }
+        let t = state.transport
+        if shelf != .cast { _ = state.panelModel?.menuBack() }   // a stale actor view never shows later
         refreshTracksAsync()
-        onOpenPanel?(pill.panelTab)
+        t.openPopover = popover
+        t.openInfoPill = shelf
+        state.panelOpen = true
+        state.controlsVisible = true
+        hideWork?.cancel()
+        hideWork = nil
+        requestOverlayFocus()
+    }
+
+    /// Asks the focus engine to look again once SwiftUI has inserted the overlay: nothing else in
+    /// the player is focusable, so a popover or shelf with focusable rows takes the focus (a shelf
+    /// with none, Info, leaves the remote with this controller). The request goes to the top of
+    /// this controller's container chain, the SwiftUI host that draws the overlay.
+    ///
+    /// Device pass 2026-11-01: `setNeedsFocusUpdate` alone is ignored while nothing is focused (the
+    /// environment must contain the focused item), so the focus stayed off the overlay until the
+    /// next press. `UIFocusSystem.requestFocusUpdate(to:)` moves it in from nothing; it is retried a
+    /// few runloop turns later while the overlay is open and still holds no focus (SwiftUI may not
+    /// have laid the rows out yet; Sources and Episodes rows load late). The overlay itself also
+    /// resets its focus scope on appear, which picks the preferred row (`PlayerOverlayDefaultFocus`).
+    private static let overlayFocusRetryDelays: [TimeInterval] = [0, 0.08, 0.2, 0.45]
+
+    private func requestOverlayFocus() {
+        overlayFocusGeneration &+= 1
+        requestOverlayFocus(attempt: 0, generation: overlayFocusGeneration)
+    }
+
+    private func requestOverlayFocus(attempt: Int, generation: Int) {
+        let delays = Self.overlayFocusRetryDelays
+        guard attempt < delays.count else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delays[attempt]) { [weak self] in
+            guard let self, generation == self.overlayFocusGeneration,
+                  self.state.transport.overlayOpen else { return }
+            var host: UIViewController = self
+            while let parent = host.parent { host = parent }
+            let system = UIFocusSystem.focusSystem(for: host)
+            // Nothing else in the player is focusable: any focused item is inside the overlay.
+            if system?.focusedItem != nil { return }
+            system?.requestFocusUpdate(to: host)
+            host.setNeedsFocusUpdate()
+            host.updateFocusIfNeeded()
+            self.requestOverlayFocus(attempt: attempt + 1, generation: generation)
+        }
+    }
+
+    /// Closes the open popover or shelf, and this controller takes the remote back (libmpv's
+    /// controller must be first responder again). Backing out (Menu, Select on the open pill) leaves
+    /// the focus on its pill; a close that a pick inside caused (a chapter seek, an episode jump, a
+    /// source switch, Play Now) returns to the track, so the bar hides on its timer
+    /// (`OverlayCloseFocus`, review r3: a focused text pill holds the bar, and keeping it focused
+    /// after a chapter pick held the bar up for good).
+    private func closeOverlay(_ reason: OverlayCloseFocus.Reason = .back) {
+        let t = state.transport
+        guard t.overlayOpen else { return }
+        let keep = OverlayCloseFocus.pillKeepsFocus(reason)
+        if let pill = t.openPopover { t.focusedPill = keep ? pill : nil }
+        if let pill = t.openInfoPill { t.focusedInfoPill = keep ? pill : nil }
+        _ = state.panelModel?.menuBack()
+        t.openPopover = nil
+        t.openInfoPill = nil
+        state.panelOpen = false
+        state.reclaimFocus?()
+        flashControls()
+    }
+
+    /// A press while a popover or shelf is open and this controller still holds the remote (the
+    /// Info shelf has nothing focusable; a shelf whose rows have not loaded yet). Left/Right walk
+    /// the text pills and the shelf follows; Select on the open pill closes its shelf; Play/Pause
+    /// still toggles. Menu is decided by `MenuPrecedence` like every Menu.
+    private func handleOverlayPress(_ type: UIPress.PressType) {
+        let t = state.transport
+        // A popover always has focusable rows: a press arriving here means the focus has not
+        // landed in it yet (rows still loading, or the first request ran before SwiftUI drew it).
+        if t.openPopover != nil, type != .playPause { requestOverlayFocus() }
+        switch type {
+        case .leftArrow, .rightArrow:
+            guard t.openInfoPill != nil, let current = t.focusedInfoPill ?? t.openInfoPill,
+                  let next = PlayerInfoPill.move(from: current, by: type == .leftArrow ? -1 : 1, in: t.infoPills),
+                  next != t.openInfoPill else { return }
+            t.focusedInfoPill = next
+            openOverlay(popover: nil, shelf: next)
+        case .select:
+            if t.openInfoPill != nil { closeOverlay() }
+        case .playPause:
+            togglePause()
+        default:
+            break
+        }
     }
 
     // MARK: - Failover signals
@@ -4740,9 +4963,6 @@ extension MPVTVPlayerViewController: UIGestureRecognizerDelegate {
 private struct MPVPlayerRepresentable: UIViewControllerRepresentable {
     let context: PlaybackContext
     let state: MPVPlaybackState
-    let panelModel: PlayerTopPanelModel
-    /// Builds the engine-specific fourth tab at open time (its views observe live state).
-    let makeExtraTab: () -> PlayerPanelExtraTab
     let onExit: () -> Void
     /// Failover hooks, handed straight to the controller (see its doc comments).
     let onPlaybackFailed: ((PlaybackFailure) -> Void)?
@@ -4761,23 +4981,6 @@ private struct MPVPlayerRepresentable: UIViewControllerRepresentable {
         controller.onPlaybackHealthy = onPlaybackHealthy
         controller.startWatchdogShortened = startWatchdogShortened
         controller.nativeSecondsPlayedBeforeFallback = nativeSecondsPlayedBeforeFallback
-        let state = state, model = panelModel, makeExtraTab = makeExtraTab
-        controller.onOpenPanel = { [weak controller] tab in
-            guard let controller, controller.presentedViewController == nil else { return }
-            let panel = PlayerPanelHostController(rootView: PlayerTopPanel(model: model, extraTab: makeExtraTab(), initialTab: tab))
-            panel.modalPresentationStyle = .overFullScreen
-            panel.modalTransitionStyle = .crossDissolve
-            model.onClose = { [weak panel] in panel?.close(animated: true) }
-            model.onTabChange = { [weak state] in state?.panelTab = $0 }
-            panel.onClosed = { [weak state] in
-                state?.panelOpen = false
-                state?.panelTab = nil
-                state?.reclaimFocus?()     // libmpv's controller must be first responder again
-            }
-            state.panelOpen = true
-            state.panelTab = tab
-            controller.present(panel, animated: !UIAccessibility.isReduceMotionEnabled)
-        }
         return controller
     }
 
@@ -4831,6 +5034,10 @@ struct MPVPlayerScreen: View {
         state.transport.pills = PillKind.visible(
             isSeries: context.contentType == "series", canSwitchStreams: onPlayNext != nil,
             hasEpisodes: !upNext.episodes.isEmpty)
+        // A popover whose disc left the row (Sources/Episodes) cannot stay open without its anchor.
+        if let open = state.transport.openPopover, !state.transport.pills.contains(open) {
+            state.closeOverlay?()
+        }
     }
 
     init(context: PlaybackContext, onPlayNext: ((PlaybackContext) -> Void)? = nil, routingNote: String? = nil,
@@ -4880,13 +5087,7 @@ struct MPVPlayerScreen: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             MPVPlayerRepresentable(
-                context: context, state: state, panelModel: panelModel,
-                makeExtraTab: { [state, upNext, onPlayNext, panelModel] in
-                    PlayerPanelExtraTab {
-                        MPVPlaybackTab(state: state, engine: upNext, canSwitchStreams: onPlayNext != nil,
-                                       onClose: { panelModel.onClose?() })
-                    }
-                },
+                context: context, state: state,
                 onExit: { dismiss() },
                 onPlaybackFailed: onPlaybackFailed,
                 onPlaybackHealthy: onPlaybackHealthy,
@@ -4906,6 +5107,11 @@ struct MPVPlayerScreen: View {
             }
 
             PlayerTransportBar(model: state.transport, state: state)
+
+            // Insights: the disc popovers and the text pills' shelves, over the bar (never
+            // presented; the video keeps playing). See `MPVPlayerOverlay`.
+            MPVPlayerOverlay(model: state.transport, state: state, panelModel: panelModel, engine: upNext,
+                             canSwitchStreams: onPlayNext != nil)
 
             #if DEBUG
             SeekProbeLabel(probe: state.seekProbe)
@@ -5036,7 +5242,11 @@ struct MPVPlayerScreen: View {
             pauseCardEnabled = (PlayerSettingsRepository.shared.uiState.value_ as? PlayerSettingsUiState)?
                 .pauseOverlayEnabled != false
             if panelAdapter == nil {
-                panelAdapter = MPVPlayerPanelAdapter(state: state, model: panelModel, context: context)
+                let adapter = MPVPlayerPanelAdapter(state: state, model: panelModel, context: context)
+                // The Up Next pill plays through the engine, which needs a presenter that can swap
+                // contexts.
+                if onPlayNext != nil { adapter.attachUpNext(engine: upNext) }
+                panelAdapter = adapter
             }
             // Start the orchestration whenever a presenter can swap contexts — autoplay needs
             // episodes, but source switching works for movies too (the engine no-ops the rest).

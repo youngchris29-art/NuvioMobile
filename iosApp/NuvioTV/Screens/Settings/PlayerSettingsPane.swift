@@ -80,6 +80,12 @@ struct PlayerSettingsPane: View {
                 isOn: Binding(get: { model.showClock }, set: { model.setShowClock($0) }),
                 descriptionID: .playerShowClock
             )
+            SettingsToggleRow(
+                title: String(localized: "Show cast in player"),
+                subtitle: String(localized: "A Cast pill under the timeline with the cast and crew, and a short bio for each"),
+                isOn: Binding(get: { model.showCastInPlayer }, set: { model.setShowCastInPlayer($0) }),
+                descriptionID: .playerShowCast
+            )
         }
 
         SettingsSection(String(localized: "Video")) {

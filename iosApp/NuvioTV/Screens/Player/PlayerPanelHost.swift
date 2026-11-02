@@ -2,27 +2,22 @@ import AVKit
 import SwiftUI
 import UIKit
 
-// tvOS 26 removed AVPlayerViewController's classic swipe-down tabbed panel (Info · Subtitles ·
-// Audio): custom info view controllers now render as a pill under the seek bar, and Subtitles /
-// Audio became transport-bar popovers. Nuvio wants the classic top panel back (Infuse-style), so
-// this file owns the two UIKit pieces that make an app-drawn panel possible ON TOP of the system
-// player without giving up its transport bar, popovers, or contextual actions:
+// The native player's UIKit host. Insights wave 1c (2026-11-01): the app-drawn swipe-down top
+// panel is gone from this route — the system swipe down shows tvOS 26's own pill row, which carries
+// the app's text pills (`NativeInfoPills.swift`) and round tool buttons (`NativeTransportMenus`).
+// Two pieces stay here:
 //
 //  - `NativePlayerHostController` — container VC whose only child is the `AVPlayerViewController`.
-//    Remote presses and swipes are dispatched to the FOCUSED view's responder chain; gesture
-//    recognizers on any superview in that chain observe them too, so recognizers on this container's
-//    view see the Down press / down swipe regardless of which internal AVPVC view holds focus.
-//    (`contentOverlayView` is the wrong place — it sits below the controls, outside the chain.)
-//  - `PlayerPanelHostController` — the presented panel. Presenting (`.overFullScreen`, clear
-//    background) gives focus containment for free (AVPVC's focus environment goes inactive so the
-//    transport bar can't react to the panel's presses), keeps the video rendering underneath, and
-//    lets us swallow Menu deterministically so it closes the panel instead of popping the player.
+//    Remote presses are dispatched to the FOCUSED view's responder chain; gesture recognizers on
+//    any superview in that chain observe them too, so the any-press recognizer on this container's
+//    view sees presses regardless of which internal AVPVC view holds focus, and Menu the system
+//    player did not consume passes through `pressesBegan` (the up-next chip dismiss).
+//  - `PlayerPanelHostController` — a presented full-screen sheet over the live player (now only
+//    the Sync Line sheet). Presenting (`.overFullScreen`, clear background) gives focus
+//    containment, keeps the video rendering underneath, and lets us swallow Menu deterministically
+//    so it closes the sheet instead of popping the player.
 final class NativePlayerHostController: UIViewController, UIGestureRecognizerDelegate, AVPlayerViewControllerDelegate {
     let playerVC = AVPlayerViewController()
-    /// Asked to open the panel on a tab, optionally with one Playback column focused (Down press /
-    /// down swipe → `.info`; the transport bar's Episodes / Sources items → `.playback`). The owner
-    /// builds the panel content and calls `present(panel:)`.
-    var onOpenPanel: ((PlayerPanelTab, PlaybackColumn?) -> Void)?
     /// The system transport bar is about to show (`true`) or hide (`false`). Reported from the
     /// AVPlayerViewController delegate (P4 B16, the native pause card's "bar known hidden" input).
     var onTransportBarVisibilityChange: ((Bool) -> Void)?
@@ -31,7 +26,7 @@ final class NativePlayerHostController: UIViewController, UIGestureRecognizerDel
     var onAnyPress: (() -> Void)?
     /// Last reported transport-bar visibility, so the log line prints transitions only.
     private var lastBarVisible: Bool?
-    /// Fired after a presented panel has been dismissed (any way: Menu, swipe up, programmatic).
+    /// Fired after a presented sheet has been dismissed (any way: Menu, swipe up, programmatic).
     var onPanelClosed: (() -> Void)?
     /// Menu press hook (upstream 4026ec92 parity): return true to consume it — the up-next chip
     /// was dismissed — or false to let the press continue up to SwiftUI, whose `fullScreenCover`
@@ -39,8 +34,6 @@ final class NativePlayerHostController: UIViewController, UIGestureRecognizerDel
     var onMenuPress: (() -> Bool)?
     private var swallowMenuRelease = false
     private(set) var panelHost: PlayerPanelPresenting?
-    private var downPress: UITapGestureRecognizer!
-    private var downSwipe: UISwipeGestureRecognizer!
     private var anyPress: UITapGestureRecognizer!
 
     override func viewDidLoad() {
@@ -55,18 +48,9 @@ final class NativePlayerHostController: UIViewController, UIGestureRecognizerDel
         // P4 B16: transport-bar visibility for the native pause card (nothing else sets it).
         playerVC.delegate = self
 
-        downPress = UITapGestureRecognizer(target: self, action: #selector(handleOpenGesture))
-        downPress.allowedPressTypes = [NSNumber(value: UIPress.PressType.downArrow.rawValue)]
-        downPress.delegate = self
-        downSwipe = UISwipeGestureRecognizer(target: self, action: #selector(handleOpenGesture))
-        downSwipe.direction = .down
-        downSwipe.delegate = self
-        view.addGestureRecognizer(downPress)
-        view.addGestureRecognizer(downSwipe)
-
         // P4 B16 [C-5]: presses reach `pressesBegan` here only when the focused AVPVC view did not
         // consume them (in practice Menu with the bar hidden), so Select, the arrows and
-        // Play/Pause are observed with a simultaneous recogniser, like `downPress`, that consumes
+        // Play/Pause are observed with a simultaneous recogniser that consumes
         // nothing. Menu is left out of it on purpose and reported from `pressesBegan` instead: a
         // recogniser on Menu would sit in front of the player's Menu-to-exit path.
         anyPress = UITapGestureRecognizer(target: self, action: #selector(handleAnyPress))
@@ -99,28 +83,11 @@ final class NativePlayerHostController: UIViewController, UIGestureRecognizerDel
         true
     }
 
-    @objc private func handleOpenGesture() {
-        // Not while our panel is up, and not while the system player has one of ITS popovers
-        // (Subtitles / Audio menus) presented — a Down there navigates the popover's rows and
-        // must not also open the panel over it (`presentedViewController` reports ancestors'
-        // presentations, not the child's, so check the player VC explicitly).
-        guard panelHost == nil, presentedViewController == nil,
-              playerVC.presentedViewController == nil else { return }
-        onOpenPanel?(.info, nil)
-    }
-
-    /// Opens the panel on `tab` with `column` focused (the transport bar's Episodes / Sources menu
-    /// items). Same guards as the Down press: never over our own panel or a system popover.
-    func openPanel(tab: PlayerPanelTab, column: PlaybackColumn?) {
-        guard panelHost == nil, presentedViewController == nil,
-              playerVC.presentedViewController == nil else { return }
-        onOpenPanel?(tab, column)
-    }
-
     // This controller sits between AVPlayerViewController and the SwiftUI host in the focused
     // responder chain, so a Menu the system player did not consume (transport bar hidden) passes
-    // through here on its way to the cover's default exit. Not while our panel or one of AVPVC's
-    // own popovers is up — those own Menu themselves (same guard as `handleOpenGesture`).
+    // through here on its way to the cover's default exit. Not while our sheet or one of AVPVC's
+    // own popovers is up — those own Menu themselves (`presentedViewController` reports ancestors'
+    // presentations, not the child's, so the player VC is checked explicitly).
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         // P4 B16: Menu is the one press the any-press recogniser leaves out; report it here
         // (observation only, the handling below is unchanged).
@@ -143,22 +110,90 @@ final class NativePlayerHostController: UIViewController, UIGestureRecognizerDel
         super.pressesEnded(presses, with: event)
     }
 
-    /// Present the panel over the live player. `crossDissolve` fades the host; the panel content
-    /// animates its own slide-in. Reduce Motion → no animation at all.
-    func present<Content: View>(panel: PlayerPanelHostController<Content>) {
-        guard panelHost == nil, presentedViewController == nil else { return }
+    /// Review r10: a panel waiting in `presentWhenClear` for the player's own popover to go.
+    private var pendingPanel: PlayerPanelPresenting?
+
+    /// Something is presented over (or still transitioning on) the player, so UIKit would refuse
+    /// a presentation now. AVKit presents its transport-bar popovers from the player VC, which
+    /// `presentedViewController` on this container does not report, so both are checked.
+    var isPresentationBlocked: Bool {
+        presentedViewController != nil || playerVC.presentedViewController != nil
+            || transitionCoordinator != nil || playerVC.transitionCoordinator != nil
+    }
+
+    /// Present a sheet over the live player. `crossDissolve` fades the host; the panel content
+    /// animates its own slide-in. Reduce Motion → no animation at all. Returns whether UIKit took
+    /// the presentation; `panelHost` is latched only then (review r10: it used to be latched
+    /// before `present`, so a refused presentation left a stale latch that blocked every later
+    /// panel and kept the open state stuck).
+    @discardableResult
+    func present<Content: View>(panel: PlayerPanelHostController<Content>) -> Bool {
+        guard panelHost == nil, !isPresentationBlocked else { return false }
         panel.modalPresentationStyle = .overFullScreen
         panel.modalTransitionStyle = .crossDissolve
-        panel.onClosed = { [weak self] in
-            self?.panelHost = nil
-            self?.onPanelClosed?()
+        panel.onClosed = { [weak self, weak panel] in
+            guard let self else { return }
+            if self.panelHost === panel { self.panelHost = nil }
+            self.onPanelClosed?()
+        }
+        present(panel, animated: !UIAccessibility.isReduceMotionEnabled)
+        // UIKit sets the presenting controller synchronously for a presentation it accepted; a
+        // refused one ("already presenting") leaves it nil and never calls a completion.
+        guard panel.presentingViewController != nil || panel.isBeingPresented else {
+            panel.onClosed = nil
+            print("[PlayerPanel] presentation refused by UIKit, panel not shown")
+            return false
         }
         panelHost = panel
-        present(panel, animated: !UIAccessibility.isReduceMotionEnabled)
+        return true
+    }
+
+    /// Review r10: present once nothing is presented over the player any more (the transport
+    /// bar's popover that started the action is still dismissing when the action fires). Polls
+    /// the main run loop every `pollMs` for at most `capMs`; `completion(true)` runs only for a
+    /// presentation UIKit accepted. A panel that could not be shown in time is dropped and logged.
+    func presentWhenClear<Content: View>(panel: PlayerPanelHostController<Content>,
+                                          capMs: Int = 2000, pollMs: Int = 50,
+                                          completion: @escaping (Bool) -> Void) {
+        guard panelHost == nil, pendingPanel == nil else { completion(false); return }
+        pendingPanel = panel
+        attemptPresent(panel: panel, startedAt: Date(), capMs: capMs, pollMs: pollMs, completion: completion)
+    }
+
+    private func attemptPresent<Content: View>(panel: PlayerPanelHostController<Content>, startedAt: Date,
+                                               capMs: Int, pollMs: Int, completion: @escaping (Bool) -> Void) {
+        // `closePanel` (the player going away) cancels a wait.
+        guard pendingPanel === panel else { completion(false); return }
+        let elapsedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
+        switch PlayerPanelPresentGate.decide(blocked: isPresentationBlocked, elapsedMs: elapsedMs, capMs: capMs) {
+        case .present:
+            pendingPanel = nil
+            completion(present(panel: panel))
+        case .wait:
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(pollMs)) { [weak self] in
+                self?.attemptPresent(panel: panel, startedAt: startedAt, capMs: capMs, pollMs: pollMs,
+                                     completion: completion)
+            }
+        case .giveUp:
+            pendingPanel = nil
+            print("[PlayerPanel] still blocked after \(capMs) ms, panel not shown")
+            completion(false)
+        }
     }
 
     func closePanel(animated: Bool) {
+        pendingPanel = nil
         panelHost?.close(animated: animated)
+    }
+}
+
+/// Review r10: whether a waiting panel is presented now, waits for the next poll, or is dropped.
+enum PlayerPanelPresentGate: Equatable {
+    case present, wait, giveUp
+
+    static func decide(blocked: Bool, elapsedMs: Int, capMs: Int) -> PlayerPanelPresentGate {
+        guard blocked else { return .present }
+        return elapsedMs >= capMs ? .giveUp : .wait
     }
 }
 

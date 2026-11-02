@@ -10,16 +10,6 @@ extension PillKind {
         return out
     }
 
-    /// The top-panel tab a pill opens. P1: Speed/Sources/Episodes land on Playback, not a column.
-    var panelTab: PlayerPanelTab {
-        switch self {
-        case .subtitles: return .subtitles
-        case .audio: return .audio
-        case .speed, .aspect, .sources, .episodes: return .playback   // aspect cycles in place
-        case .more: return .info
-        }
-    }
-
     var symbol: String {
         switch self {
         case .subtitles: return "captions.bubble"
@@ -52,7 +42,7 @@ extension PillKind {
     }
 }
 
-/// The pill row. Nothing here is focusable: the mpv controller routes the remote and publishes
+/// The disc row. Nothing here is focusable: the mpv controller routes the remote and publishes
 /// `focusedPill`; the discs just draw the focused look.
 struct PlayerPillRow: View {
     @ObservedObject var model: TransportBarModel
@@ -60,7 +50,8 @@ struct PlayerPillRow: View {
     var body: some View {
         HStack(spacing: TransportBarLayout.pillSpacing) {
             ForEach(model.pills, id: \.self) { kind in
-                let focused = model.focusedPill == kind
+                // An open popover keeps its disc lit, so the popover reads as coming from it.
+                let focused = model.focusedPill == kind || model.openPopover == kind
                 PlayerPillDisc(symbol: kind.symbol, focused: focused)
                     .accessibilityElement()
                     .accessibilityLabel(kind.title)

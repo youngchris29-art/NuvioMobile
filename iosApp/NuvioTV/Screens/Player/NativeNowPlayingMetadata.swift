@@ -5,8 +5,8 @@ import CoreMedia
 /// system transport bar shows above the scrubber, the synopsis in its Info area, and the Now
 /// Playing artwork. Pure apart from the artwork item wrapping already-encoded JPEG bytes.
 enum NativeNowPlayingMetadata {
-    /// Title, subtitle ("S1 · E4 · Episode name", or the stream label for a movie) and description,
-    /// the last two omitted when empty.
+    /// Title, subtitle ("S1 · E4 · Episode name", or the stream label for a movie), description and
+    /// genres, all but the title omitted when empty.
     static func textItems(context: PlaybackContext) -> [AVMetadataItem] {
         let header = NativeInfoHeader(context: context)
         var items = [item(.commonIdentifierTitle, context.title)]
@@ -15,6 +15,12 @@ enum NativeNowPlayingMetadata {
         }
         if let synopsis = context.synopsis, !synopsis.isEmpty {
             items.append(item(.commonIdentifierDescription, synopsis))
+        }
+        // Insights device fix: the system Info pill is the native route's what's-playing panel
+        // (the app's own pill is "Stream Info"), so it gets the genres too. No content rating: on
+        // tvOS that item drives the parental-restriction gate, which must not start blocking here.
+        if let genres = context.meta?.genres, !genres.isEmpty {
+            items.append(item(.quickTimeMetadataGenre, genres.prefix(3).joined(separator: ", ")))
         }
         return items
     }

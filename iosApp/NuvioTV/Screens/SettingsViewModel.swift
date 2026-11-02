@@ -526,6 +526,8 @@ final class SettingsViewModel: ObservableObject {
     @Published var edgeClickMode: String = UserDefaults.standard.string(forKey: PlayerTuning.edgeClickModeKey) ?? "skip10"
     /// Show the time of day while the mpv player controls are up. Device-local.
     @Published var showClock: Bool = UserDefaults.standard.bool(forKey: PlayerTuning.showClockKey)
+    /// Show the Cast pill under the player timeline. Device-local, default On.
+    @Published var showCastInPlayer: Bool = PlayerTuning.showCastInPlayer
     /// Use mpv's `gpu-next` (libplacebo) renderer for better HDR (real Apple TV only).
     @Published var enhancedRenderer: Bool = UserDefaults.standard.bool(forKey: PlayerTuning.enhancedRendererKey)
     /// Route Dolby Vision / native-friendly files to the AVPlayer engine for true DV output (beta).
@@ -576,6 +578,11 @@ final class SettingsViewModel: ObservableObject {
     func setShowClock(_ value: Bool) {
         showClock = value
         UserDefaults.standard.set(value, forKey: PlayerTuning.showClockKey)
+    }
+
+    func setShowCastInPlayer(_ value: Bool) {
+        showCastInPlayer = value
+        UserDefaults.standard.set(value, forKey: PlayerTuning.showCastInPlayerKey)
     }
 
     func setEnhancedRenderer(_ value: Bool) {

@@ -87,6 +87,19 @@ final class NextEpisodeEngine: ObservableObject {
     /// The in-player source list owns the shared streams flow (set by `loadSources`, cleared by
     /// `cancelSourceLoad`/`stop`). Kept beside the watcher because the test seam's watcher is nil.
     private var sourceListOwnsFlow = false
+    /// Insights review r4 (P2): the current episode's list finished loading and its rows are
+    /// still held (review r5: only a non-empty list latches; an empty or all-error answer gets
+    /// another try on the next bar raise). Kept true when an idle list hands the flow to the FEAT-49
+    /// preload (`releaseIdleSourceList`), so the native transport bar never loads it again for the
+    /// same playback; cleared by anything that blanks the rows (`cancelSourceLoad`, a new load).
+    private var sourceListSettled = false
+    /// Insights review r4 (P2): the native transport bar asked for the list while a next-episode
+    /// preload was pending, so the list was held (busy line) instead of clearing the preload.
+    private var sourcesHeldForPreload = false
+    /// Review r5 (P3): the current list load's soft deadline (`Hooks.sourceListDeadline`).
+    private var sourcesDeadlineTask: Task<Void, Never>?
+    /// Matches the up-next search's soft timeout plus its grace window (3 s + 12 s).
+    nonisolated static let sourceListDeadlineSeconds: UInt64 = 15
     /// r2 P3: an up-next search (or a jump's search) owns the shared streams flow: set when its
     /// watcher is installed, cleared the moment it ends (select, no stream, teardown) and BEFORE
     /// `searchEnded()` runs, so the deferred list reload is not turned away by a stale `.searching`
@@ -136,6 +149,12 @@ final class NextEpisodeEngine: ObservableObject {
         /// BUG-229 seam: the series' episode list, fetched when the launch carried none. `.live`
         /// is the `@Throws` twin (`fetchChecked`): a Kotlin exception out of the plain suspend
         /// export would abort the process. Same call and cache flag as the stream picker's fetch.
+        /// Review r5 (P3): the source list's soft deadline. A hung add-on can keep the flow
+        /// "loading" for good; once this returns, a list still loading stops loading (rows kept),
+        /// so the FEAT-49 preload is not blocked for the rest of the playback. Tests replace it.
+        var sourceListDeadline: @MainActor () async -> Void = {
+            try? await Task.sleep(nanoseconds: NextEpisodeEngine.sourceListDeadlineSeconds * 1_000_000_000)
+        }
         var fetchEpisodes: @MainActor (_ type: String, _ id: String) async throws -> [MetaVideo] = { type, id in
             let details = try await MetaDetailsRepository.shared.fetchChecked(type: type, id: id, cacheResult: true)
             return details?.videos ?? []
@@ -220,7 +239,13 @@ final class NextEpisodeEngine: ObservableObject {
     private var timeoutTask: Task<Void, Never>?
     private var hideTask: Task<Void, Never>?
 
+    /// The episode the up-next machinery searches for: the resolved next episode, or an episode
+    /// jump's target once `performJump` set it.
     private var nextVideo: MetaVideo?
+    /// The Up Next pill's episode. Review r7: published only from the next-episode resolve, never
+    /// from a jump (which overwrites `nextVideo`), so a jump that ends without a stream leaves the
+    /// pill (and its Play) on the real next episode instead of the failed one.
+    @Published private(set) var upNextEpisode: MetaVideo?
     /// BUG-229: the episode list fetched after launch. A play started before the stream picker's own
     /// episode fetch finished (a quick auto-picked source from Continue Watching with Auto-Play Best
     /// Source, or Detail's Play) hands the player an EMPTY list, so `nextVideo` stayed nil and the
@@ -271,6 +296,7 @@ final class NextEpisodeEngine: ObservableObject {
     /// and the trigger settings directly.
     func configureForTesting(nextVideo: MetaVideo?, trigger: TriggerSettings) {
         self.nextVideo = nextVideo
+        self.upNextEpisode = nextVideo
         self.trigger = trigger
     }
 
@@ -320,8 +346,10 @@ final class NextEpisodeEngine: ObservableObject {
     /// `onProgress` → `onPlayNext`). See docs/tvos-hybrid-player-plan.md.
     func startNative() { prime() }
 
-    /// The native host's panel closed (P4 §7.2 item 3): the native twin of mpv's `panelOpen`
-    /// sink, so the FEAT-49 layer-2 re-preload works on the native engine too.
+    /// The twin of mpv's `panelOpen` close sink: drops a list that owns the flow and re-arms a
+    /// preload it clobbered. Insights review r4 (P2): the native transport bar no longer calls it
+    /// on every hide (each raise then re-scraped the current episode and wiped a finished
+    /// preload); it uses `transportBarSourcesShown`/`Hidden` instead. Kept for the engine tests.
     func noteSourceListClosed() { sourceListClosed() }
 
     private func prime() {
@@ -342,9 +370,11 @@ final class NextEpisodeEngine: ObservableObject {
     private func resolveNextVideo() {
         guard !episodes.isEmpty else {
             nextVideo = nil
+            upNextEpisode = nil
             return
         }
         nextVideo = hooks.resolveNextEpisode(context, episodes)
+        upNextEpisode = nextVideo
         if let next = nextVideo {
             nextEpisodeTitle = Self.episodeTitle(next)
         }
@@ -465,6 +495,10 @@ final class NextEpisodeEngine: ObservableObject {
         sourcesWatcher?.cancel()
         sourcesWatcher = nil
         sourceListOwnsFlow = false
+        sourceListSettled = false
+        sourcesHeldForPreload = false
+        sourcesDeadlineTask?.cancel()
+        sourcesDeadlineTask = nil
         tearDownSearch()
     }
 
@@ -482,7 +516,7 @@ final class NextEpisodeEngine: ObservableObject {
         // "No alternate sources found yet.": capture whether the list is up before the teardown
         // and `cancelSourceLoad()` blank it, and set the busy state before the search starts (a
         // search that ends at once then reloads the list through `searchEnded()`).
-        let listUp = sourceListOwnsFlow || sourcesBlockedBySearch
+        let listUp = sourceListOwnsFlow || sourceListSettled || sourcesBlockedBySearch
         suppressSourceReload = true
         tearDownSearch()
         suppressSourceReload = false
@@ -529,6 +563,7 @@ final class NextEpisodeEngine: ObservableObject {
         guard !sourcesLoading else { return }
         sourcesLoading = true
         sources = []
+        sourceListSettled = false
 
         // Reset the shared flow *before* subscribing so the StateFlow replay is the cleared state,
         // not a previous request's results; then subscribe *before* triggering the load so no
@@ -547,7 +582,22 @@ final class NextEpisodeEngine: ObservableObject {
             guard let self, generation == self.sourceLoadGeneration else { return }
             self.sources = self.listableStreams(state.groups)
             if state.isAnyLoading || !state.groups.isEmpty { sawActivity = true }
-            if sawActivity, !state.isAnyLoading { self.sourcesLoading = false }
+            if sawActivity, !state.isAnyLoading {
+                self.sourcesLoading = false
+                self.sourceListSettled = !self.sources.isEmpty
+                self.sourcesDeadlineTask?.cancel()
+                self.sourcesDeadlineTask = nil
+            }
+        }
+        sourcesDeadlineTask?.cancel()
+        let deadline = hooks.sourceListDeadline
+        sourcesDeadlineTask = Task { [weak self] in
+            await deadline()
+            guard let self, !Task.isCancelled, generation == self.sourceLoadGeneration,
+                  self.sourcesLoading else { return }
+            self.sourcesLoading = false
+            self.sourceListSettled = !self.sources.isEmpty
+            print("[UpNext] source list deadline: \(self.sources.count) rows, add-ons still loading — stopped waiting")
         }
 
         hooks.loadStreams(
@@ -574,6 +624,22 @@ final class NextEpisodeEngine: ObservableObject {
         sourceListOwnsFlow = false
         sources = []
         sourcesLoading = false
+        sourceListSettled = false
+        sourcesDeadlineTask?.cancel()
+        sourcesDeadlineTask = nil
+    }
+
+    /// Insights review r4 (P2): an idle (finished) source list gives the shared streams flow to the
+    /// FEAT-49 preload. Unlike `cancelSourceLoad` the rows stay: they are the current episode's and
+    /// still right, so the Sources menu keeps them and nothing reloads. The generation bump drops
+    /// every later emission, so the preload's next-episode streams never land in the list.
+    private func releaseIdleSourceList() {
+        guard sourceListOwnsFlow else { return }
+        sourceLoadGeneration += 1
+        sourcesWatcher?.cancel()
+        sourcesWatcher = nil
+        sourceListOwnsFlow = false
+        print("[UpNext] idle source list released to the preload (rows kept)")
     }
 
     /// Switch the current video to a different stream (position resumes via saved watch progress).
@@ -754,8 +820,31 @@ final class NextEpisodeEngine: ObservableObject {
         // FEAT-49 Tier 1 (upstream 22c9ab20): request the next episode's streams one lead window
         // before the card would appear, silently: no phase change, no watcher, no timeout, no
         // subtitle prefetch (the subtitle repository is single-slot and would swap the panel's
-        // subs early). Never while the in-player source list owns the shared streams flow.
-        if !reachesNow, trigger.preloadEnabled, !preloaded, !sourceListOwnsFlow,
+        // subs early). Never while the in-player source list is still loading on the shared
+        // streams flow; an idle (finished) list hands the flow over and keeps its rows
+        // (Insights review r4, `releaseIdleSourceList`).
+        // Review r5 (P2): a seek back out of the lead window drops a preload nobody used yet, so a
+        // native Sources list held for it loads on the next bar raise and the preload re-fires on
+        // the way back in (the repository replays a matching request key, so that costs little).
+        if !reachesNow, preloaded, !triggered, trigger.preloadEnabled {
+            let lead = NextEpisodeTriggerPolicy.preloadLeadSeconds(timeoutSeconds: trigger.autoPlayTimeoutSeconds)
+            if !NextEpisodeTriggerPolicy.reachesThreshold(
+                positionSec: positionSec + lead, durationSec: durationSec, trigger: trigger,
+                holdUntilSec: holdUntilSec, endOfFileSlack: Self.endOfFileSlack
+            ) {
+                preloaded = false
+                if sourcesHeldForPreload {
+                    sourcesHeldForPreload = false
+                    sourcesBlockedBySearch = false
+                    sourcesBlockedByJump = false
+                    // Review r6: the seek usually raised the bar, so the Sources menu is on screen;
+                    // load it now (as `searchEnded` does) rather than fall to the false empty state.
+                    if sourceColumnVisible { loadSources() }
+                }
+                print("[UpNext] left the preload lead window (pos=\(Int(positionSec))s) — preload dropped")
+            }
+        }
+        if !reachesNow, trigger.preloadEnabled, !preloaded, !(sourceListOwnsFlow && sourcesLoading),
            !WatchingPoliciesKt.isShortPlaceholderDuration(durationMs: Int64(durationSec * 1000)) {
             let lead = NextEpisodeTriggerPolicy.preloadLeadSeconds(timeoutSeconds: trigger.autoPlayTimeoutSeconds)
             if NextEpisodeTriggerPolicy.reachesThreshold(
@@ -795,6 +884,7 @@ final class NextEpisodeEngine: ObservableObject {
         // Offline: skip without marking the preload as triggered, so a later tick retries once
         // the path is satisfied again (upstream bb94cb1c1).
         guard hooks.networkSatisfied() else { return }
+        releaseIdleSourceList()
         preloaded = true
         let videoId = Self.episodeVideoId(metaId: context.parentMetaId, episode: next)
         print("[UpNext] preload begin — \(videoId) lead=\(Int(leadSec))s pos=\(Int(positionSec))/\(Int(durationSec))s")
@@ -1039,7 +1129,9 @@ final class NextEpisodeEngine: ObservableObject {
     /// r1 P3 (BUG-129, reverse race): a search that starts while the Sources list owns the flow
     /// blanks that list, so the open column flips to the busy line instead of an empty list.
     private func takeFlowFromSourceList() {
-        if sourceListOwnsFlow {
+        // Insights review r4: a settled list that already handed the flow to the preload is
+        // blanked here too, so it shows the busy line rather than "No alternate sources".
+        if sourceListOwnsFlow || sourceListSettled {
             sourcesBlockedBySearch = true
             sourcesBlockedByJump = immediatePlay
             print("[UpNext] source list blocked: up-next search took the flow")
@@ -1054,6 +1146,7 @@ final class NextEpisodeEngine: ObservableObject {
     /// `listWiped`: the teardown's clear dropped a list that owned the flow; reload it the same way.
     private func searchEnded(listWiped: Bool = false) {
         let wasBlocked = sourcesBlockedBySearch || listWiped
+        sourcesHeldForPreload = false
         sourcesBlockedBySearch = false
         sourcesBlockedByJump = false
         guard wasBlocked, sourceColumnVisible, !suppressSourceReload,
@@ -1065,6 +1158,40 @@ final class NextEpisodeEngine: ObservableObject {
     /// The Sources column's `onAppear` / `onDisappear`.
     func sourceColumnAppeared() { sourceColumnVisible = true }
     func sourceColumnDisappeared() { sourceColumnVisible = false }
+
+    /// A FEAT-49 preload was issued for the next episode and no up-next search has used it yet.
+    private var preloadPending: Bool { preloaded && !triggered }
+
+    /// Insights review r4 (P2): the native transport bar came up, so its Sources button is on
+    /// screen. The current episode's list loads at most once per playback: bar raises (pause, seek,
+    /// Select) after it settled change nothing, and the list stays when the bar hides (no
+    /// `noteSourceListClosed`, which would drop it and reload it on the next raise). A list that is
+    /// loading, or deferred behind an up-next search, is left alone (the search end reloads it while
+    /// the bar is up; otherwise the next raise does). A pending next-episode preload is never
+    /// cleared for it: the list is held with the "next episode" busy line until a search takes
+    /// over or the preload goes away (the next raise then loads it). mpv keeps its own path: its
+    /// Sources column calls `loadSources` on appear and `panelOpen` closing releases the list.
+    func transportBarSourcesShown() {
+        sourceColumnAppeared()
+        if sourcesHeldForPreload, !preloadPending {
+            sourcesHeldForPreload = false
+            sourcesBlockedBySearch = false
+            sourcesBlockedByJump = false
+        }
+        guard !sourcesBlockedBySearch, !sourcesLoading, !sourceListSettled else { return }
+        if preloadPending {
+            sourcesHeldForPreload = true
+            sourcesBlockedBySearch = true
+            sourcesBlockedByJump = false
+            print("[UpNext] source list held: a next-episode preload owns the flow")
+            return
+        }
+        loadSources()
+    }
+
+    /// The native transport bar went away: the list is off screen but keeps its rows and, while
+    /// it loads, its watcher (the FEAT-49 preload waits for it to settle, then takes the flow).
+    func transportBarSourcesHidden() { sourceColumnDisappeared() }
 
     #if DEBUG
     /// Tests only (BUG-129): `phase = .searching` plus `beginSearch()`'s watcher wiring, without

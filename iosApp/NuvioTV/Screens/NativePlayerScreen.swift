@@ -16,10 +16,11 @@ import SwiftUI
 //    segments come from the shared `SkipIntroRepository`, evaluated against playback ticks).
 //  - "Play Next Episode" / "Continue Watching" are contextual actions too; the countdown is a small
 //    app-drawn caption (`PlayerChipCaption`, shared with the mpv screen) above them.
-//  - Info · Subtitles · Audio live in an app-drawn swipe-down top panel (Infuse-style) presented by
-//    `NativePlayerHostController` over the system player — tvOS 26 has no system swipe-down panel
-//    (a `customInfoViewControllers` tab would render as an "Info" pill under the seek bar). The
-//    native transport-bar Subtitles/Audio popovers stay (Enhance Dialogue etc. have no public API).
+//  - Insights wave 1c (Rivulet / AVKit tvOS 26 layout): text pills under the seek bar — Info · Cast
+//    · Up Next as `customInfoViewControllers` (`NativeInfoPills`), Chapters from the system's own
+//    pill (the remux's `navigationMarkerGroups`). Subtitles, Audio and Speed are the system's
+//    transport-bar buttons; Episodes, Sources, subtitle Timing, Sync Line and Remember Speed are
+//    round tool buttons (`NativeTransportMenus`). No app-drawn swipe-down panel.
 struct NativePlayerScreen: View {
     let context: PlaybackContext
     var onPlayNext: ((PlaybackContext) -> Void)?
@@ -50,10 +51,6 @@ struct NativePlayerScreen: View {
     @State private var skipSources = SkipIntervalSources()
     @State private var chapterSkipFeed = ChapterSkipFeed()
     @State private var skipPrompt: SkipPrompt?
-    /// "Swipe down for info" hint (start + after a pause); hidden while the panel is open.
-    @State private var showSwipeHint = false
-    @State private var swipeHintTask: Task<Void, Never>?
-    @State private var swipeHintReason: SwipeHintReason?
     @State private var panelOpen = false
     // P4 B16: the pause info card (rule in `NativePauseCardRule`).
     /// Settings › Playback › Pause Info Card, read once in `onAppear` (as on mpv).
@@ -122,7 +119,7 @@ struct NativePlayerScreen: View {
                         onPanelOpenChanged: { open in panelOpen = open },
                         engine: upNext,
                         canSwitchStreams: onPlayNext != nil,
-                        hasEpisodes: !upNext.episodes.isEmpty && context.season != nil,
+                        isSeries: context.season != nil,
                         rememberSpeedShowId: (context.season != nil || context.episode != nil) ? context.parentMetaId : nil,
                         onBarVisibility: { visible in barVisibilityChanged(visible) },
                         onAnyPress: { hidePauseCard(reason: "press") }
@@ -167,10 +164,6 @@ struct NativePlayerScreen: View {
             // (a per-second UIAction title change re-animates the transport bar), so the countdown
             // lives here, in the shared chip caption both engines draw. Inset above the system's
             // contextual-action pill; the extra bottom offset is device-tuned for tvOS 26.
-            if showSwipeHint, !panelOpen, coordinator.phase == .playing {
-                PlayerSwipeHint().transition(.opacity)
-            }
-
             // P4 B16: paused, the system bar known hidden, the panel closed. Above the player,
             // below the up-next caption; never focusable, never hit-tested.
             if showPauseCard, coordinator.phase == .playing {
@@ -207,7 +200,6 @@ struct NativePlayerScreen: View {
         }
         .animation(PlayerChipStyle.animation, value: upNext.phase)
         .animation(PlayerChipStyle.animation, value: upNext.sourceSwitchFailure)
-        .animation(PlayerChipStyle.animation, value: showSwipeHint)
         .animation(.easeInOut(duration: 0.25), value: showPauseCard)
         .animation(.easeInOut(duration: 0.25), value: showsLoadingOverlay)
         #if DEBUG
@@ -233,22 +225,17 @@ struct NativePlayerScreen: View {
             )
         }
         .onChange(of: coordinator.phase) { _, phase in
-            if phase == .playing { flashSwipeHint(after: 1, reason: .start) }
             // P5 B22 review r1 (P3-2): load once playback runs, not while the stream opens.
             if phase == .playing, onOpenTitle != nil {
                 moreLikeThisLoader.load(type: context.contentType, id: context.parentMetaId)
             }
             evaluatePauseCard()
         }
+        // Insights device fix: no "Swipe down for info" hint on this route any more. It was drawn
+        // at the top centre for the old app-drawn top panel; on tvOS 26 the info pills sit under
+        // the seek bar and show whenever the system transport bar is up, so the hint pointed at
+        // nothing (the mpv bar dropped its copy for the same reason).
         .onChange(of: coordinator.isPaused) { _, paused in
-            // Re-show the hint once per pause (after the pause has settled), like Infuse. Resuming
-            // only cancels a PAUSE hint — the start hint must survive the initial paused→playing
-            // transition, which happens right after readyToPlay.
-            if paused {
-                if coordinator.phase == .playing { flashSwipeHint(after: 1.5, reason: .pause) }
-            } else if swipeHintReason == .pause {
-                hideSwipeHint()
-            }
             pauseChanged(paused)
         }
         .onChange(of: coordinator.isRebuildingItem) { _, _ in evaluatePauseCard() }
@@ -268,7 +255,8 @@ struct NativePlayerScreen: View {
             pauseCardEnabled = (PlayerSettingsRepository.shared.uiState.value_ as? PlayerSettingsUiState)?
                 .pauseOverlayEnabled != false
             let adapter = NativePlayerPanelAdapter(coordinator: coordinator, model: panelModel,
-                                                   context: context, routingNote: routingNote)
+                                                   context: context, routingNote: routingNote,
+                                                   upNext: onPlayNext != nil ? upNext : nil)
             panelAdapter = adapter
             coordinator.onTick = { [weak upNext, weak adapter] position, duration in
                 upNext?.onProgress(positionSec: position, durationSec: duration)
@@ -292,31 +280,10 @@ struct NativePlayerScreen: View {
             fetchSkipSegments()
         }
         .onDisappear {
-            swipeHintTask?.cancel()
             pauseCardTask?.cancel()
             coordinator.stop()
             upNext.stop()
         }
-    }
-
-    private enum SwipeHintReason { case start, pause }
-
-    private func flashSwipeHint(after delay: Double, reason: SwipeHintReason) {
-        swipeHintTask?.cancel()
-        swipeHintReason = reason
-        swipeHintTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(delay))
-            guard !Task.isCancelled else { return }
-            showSwipeHint = true
-            try? await Task.sleep(for: .seconds(4))
-            guard !Task.isCancelled else { return }
-            showSwipeHint = false
-        }
-    }
-
-    private func hideSwipeHint() {
-        swipeHintTask?.cancel()
-        showSwipeHint = false
     }
 
     // MARK: - Pause info card (P4 B16)
@@ -355,8 +322,6 @@ struct NativePlayerScreen: View {
             isRebuilding: isRebuildingItem)
         if visible, !showPauseCard {
             showPauseCard = true
-            // The two would overlap at the top centre.
-            if swipeHintReason == .pause { hideSwipeHint() }
             print("[NativePlayer] pause card shown after \(String(format: "%.1f", now - (pausedSince ?? now)))s")
         } else if !visible, showPauseCard {
             hidePauseCard(reason: isRebuildingItem ? "rebuild" : (panelOpen ? "panel" : "rule"))
@@ -568,6 +533,12 @@ enum UpNextAction: String {
     }
 }
 
+/// The Sync Line sheet's handle on its own host controller (created after the sheet's view).
+@MainActor
+private final class WeakPanelBox {
+    weak var panel: PlayerPanelPresenting?
+}
+
 private struct AVPlayerContainer: UIViewControllerRepresentable {
     let player: AVPlayer
     let skipPrompt: SkipPrompt?
@@ -580,13 +551,14 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
     let onPlayNow: () -> Void
     /// Menu while the up-next chip is showing → dismiss it (returns true) instead of exiting.
     let onDismissUpNext: () -> Bool
+    /// A text pill or the Sync Line sheet opened (`true`) / closed (`false`).
     let onPanelOpenChanged: (Bool) -> Void
-    /// The Playback tab's Episodes / Sources columns (P4 A8).
+    /// The Episodes / Sources tool buttons' lists.
     let engine: NextEpisodeEngine
     /// The presenter can swap playback contexts (episode jump / source switching).
     let canSwitchStreams: Bool
-    /// A series with an episode list: the transport bar offers "Episodes".
-    let hasEpisodes: Bool
+    /// A series: the transport bar offers "Episodes" once the engine knows the episode list.
+    let isSeries: Bool
     /// P5 B23: the show id that "Remember Speed for This Show" saves under; nil (movies) hides the row.
     let rememberSpeedShowId: String?
     /// System transport bar about to show / hide (host delegate, P4 B16).
@@ -600,27 +572,17 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
         let host = NativePlayerHostController()
         host.loadViewIfNeeded()          // viewDidLoad wires the child + delegate before configuring
         host.playerVC.player = player
-        // No `customInfoViewControllers`: on tvOS 26 that renders as pills under the seek bar and
-        // would split the native player into two panels. Info · Subtitles · Audio · Playback live
-        // in the app-drawn swipe-down panel presented by the host; the Playback tab (speed,
-        // Episodes, Sources) and the transport bar's Episodes / Sources menu items replace the old
-        // `customInfoViewControllers` idea (P4 A8, spec D1/D5).
         let model = panelModel
         let openChanged = onPanelOpenChanged
         let engine = engine
-        let canSwitchStreams = canSwitchStreams
+        let coordinator = context.coordinator
 
         // D4: one speed list, the same seven rates the panel row offers, so the system pill and the
         // tab stay in step through `selectSpeed`.
         host.playerVC.speeds = PlayerPlaybackColumns.speeds.map {
             AVPlaybackSpeed(rate: Float($0), localizedName: String(format: "%g\u{00D7}", $0))
         }
-        let speedModel = context.coordinator.speedModel
-        speedModel.onSelect = { [weak host, weak speedModel] value in
-            guard let host, let speedModel else { return }
-            NativeSpeedModel.apply(value, on: host.playerVC, model: speedModel)
-            speedModel.saveIfRemembered(rate: speedModel.rate)
-        }
+        let speedModel = coordinator.speedModel
         // P5 B23: Remember Speed for This Show (series only). A saved speed is applied before play.
         if let showId = rememberSpeedShowId {
             speedModel.showId = showId
@@ -640,44 +602,71 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
             }
         }
 
-        installTransportMenu(on: host, coordinator: context.coordinator)
-
-        host.onOpenPanel = { [weak host] tab, column in
+        // Insights wave 1c: the text pills under the seek bar.
+        let pills = NativeInfoPillsInstaller(playerVC: host.playerVC, model: model)
+        coordinator.pills = pills
+        coordinator.pillsOpen = false
+        // Review r3: the coordinator owns the installers, so their callbacks hold it weakly (a
+        // strong capture leaked one player per episode in a binge).
+        pills.onOpenChanged = { [weak coordinator] open in
+            guard let coordinator else { return }
+            coordinator.pillsOpen = open
+            openChanged(open || coordinator.sheetOpen)
+        }
+        // The round tool buttons, rebuilt whenever what they show changes.
+        let tools = NativeTransportMenusInstaller(
+            playerVC: host.playerVC, engine: engine, model: model, speedModel: speedModel,
+            canSwitchStreams: canSwitchStreams, isSeries: isSeries)
+        coordinator.tools = tools
+        tools.onSyncLine = { [weak host, weak coordinator] in
             guard let host else { return }
-            // Catches a change made with the system speed pill, which bypasses `select`. Only when
-            // the player reports a selection: a nil one must not overwrite the saved speed with 1.0.
+            // The position is captured at the press, while the line is still being spoken.
+            let captured = model.syncLineCapturePositionMs?() ?? 0
+            let delayAtCapture = model.subtitleDelayMs
+            let box = WeakPanelBox()
+            let panel = PlayerPanelHostController(rootView: NativeSyncLineSheet(
+                model: model, capturedMs: captured, delayAtCaptureMs: delayAtCapture,
+                onDone: { box.panel?.close(animated: true) }))
+            box.panel = panel
+            // Review r10: the transport bar's popover is still dismissing when the action fires.
+            // Present once it is actually gone (polled, capped), and publish the open state only
+            // for a presentation UIKit accepted; a fixed 350 ms wait could lose the sheet.
+            host.presentWhenClear(panel: panel) { [weak coordinator] presented in
+                guard presented, let coordinator else { return }
+                coordinator.sheetOpen = true
+                openChanged(true)
+            }
+        }
+
+        host.onPanelClosed = { [weak coordinator] in
+            guard let coordinator else { return }
+            coordinator.sheetOpen = false
+            openChanged(coordinator.pillsOpen)
+        }
+        let barVisibility = onBarVisibility
+        host.onTransportBarVisibilityChange = { [weak host, weak tools] visible in
+            barVisibility(visible)
+            if visible { tools?.transportBarShown() } else { tools?.transportBarHidden() }
+            guard !visible, let host else { return }
+            // Catches a change made with the system speed pill, which bypasses the model. Only
+            // when the player reports a selection: a nil one must not overwrite the saved speed.
             if let selected = host.playerVC.selectedSpeed {
                 speedModel.rate = Double(selected.rate)
                 speedModel.saveIfRemembered(rate: speedModel.rate)
-            } else {
-                speedModel.rate = 1
             }
-            let extra = PlayerPanelExtraTab {
-                NativePlaybackTab(engine: engine, speed: speedModel, canSwitchStreams: canSwitchStreams,
-                                  initialColumn: column, onClose: { model.onClose?() })
-            }
-            let panel = PlayerPanelHostController(rootView: PlayerTopPanel(model: model, extraTab: extra, initialTab: tab))
-            model.onClose = { [weak panel] in panel?.close(animated: true) }
-            host.present(panel: panel)
-            openChanged(true)
         }
-        host.onPanelClosed = {
-            openChanged(false)
-            // FEAT-49 layer 2 on native: the Sources column may have clobbered a preload.
-            engine.noteSourceListClosed()
-        }
-        host.onTransportBarVisibilityChange = onBarVisibility
         host.onAnyPress = onAnyPress
         let speedList = PlayerPlaybackColumns.speeds.map { String(format: "%g", $0) }.joined(separator: ",")
-        let menuTitles = host.playerVC.transportBarCustomMenuItems.compactMap { ($0 as? UIAction)?.title }.joined(separator: ",")
+        let menuTitles = host.playerVC.transportBarCustomMenuItems
+            .compactMap { ($0 as? UIMenu)?.title ?? ($0 as? UIAction)?.title }.joined(separator: ",")
         print("[NativePlayer] avpvc speeds=\(speedList) menu=\(menuTitles.isEmpty ? "-" : menuTitles) delegate=\(host.playerVC.delegate === host ? 1 : 0)")
-        // Set once, like `onOpenPanel`: the closure captures the screen's stable `@StateObject`.
+        // Set once: the closure captures the screen's stable `@StateObject`.
         host.onMenuPress = onDismissUpNext
         return host
     }
 
     static func dismantleUIViewController(_ host: NativePlayerHostController, coordinator: Coordinator) {
-        // P5 B23: persist a speed changed with the system pill since the panel last opened.
+        // P5 B23: persist a speed changed with the system pill since the bar last hid.
         MainActor.assumeIsolated {
             // Review r2: only a speed AVKit actually reports is saved; a nil selectedSpeed (the
             // player never exposed its pill) must not overwrite the remembered speed with 1.0.
@@ -686,34 +675,21 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
             }
         }
         host.closePanel(animated: false)
-    }
-
-    /// D5: Episodes (series with episodes) and Sources, each opening the panel on Playback with
-    /// that column focused. Installed at creation, and once more if the episode list arrives after
-    /// start (BUG-229: the engine fetched it); otherwise its meaning never changes in a session.
-    private func installTransportMenu(on host: NativePlayerHostController, coordinator: Coordinator) {
-        coordinator.menuHasEpisodes = hasEpisodes
-        var menu: [UIMenuElement] = []
-        if canSwitchStreams, hasEpisodes {
-            menu.append(UIAction(title: String(localized: "Episodes"), image: UIImage(systemName: "list.number")) { [weak host] _ in
-                host?.openPanel(tab: .playback, column: .episodes)
-            })
+        // Review r3: drop the installers and their callbacks with the player.
+        MainActor.assumeIsolated {
+            coordinator.pills?.onOpenChanged = nil
+            coordinator.tools?.onSyncLine = {}
+            coordinator.pills = nil
+            coordinator.tools = nil
+            host.onPanelClosed = nil
         }
-        if canSwitchStreams {
-            menu.append(UIAction(title: String(localized: "Sources"),
-                                 image: UIImage(systemName: "arrow.triangle.2.circlepath")) { [weak host] _ in
-                host?.openPanel(tab: .playback, column: .sources)
-            })
-        }
-        host.playerVC.transportBarCustomMenuItems = menu
     }
 
     func updateUIViewController(_ host: NativePlayerHostController, context: Context) {
         let controller = host.playerVC
         if controller.player !== player { controller.player = player }
-        if context.coordinator.menuHasEpisodes != hasEpisodes {
-            installTransportMenu(on: host, coordinator: context.coordinator)
-        }
+        // The tool buttons follow their own publishers; this only catches anything they miss.
+        context.coordinator.tools?.refresh()
         // Only assign on change — it's a panel-content property, not part of the transport-bar
         // signature below, and reassigning identical arrays each SwiftUI tick is pointless work.
         if context.coordinator.allowedSubtitleLanguages != allowedSubtitleLanguages {
@@ -752,9 +728,13 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
     final class Coordinator {
         var actionsSignature = ""
         var allowedSubtitleLanguages: [String]?
-        /// `hasEpisodes` as the installed transport menu saw it.
-        var menuHasEpisodes = false
-        /// The Playback tab's speed model, alive as long as the container.
+        /// The round tool buttons' installer, alive as long as the container.
+        var tools: NativeTransportMenusInstaller?
+        /// The speed model (Remember Speed for This Show), alive as long as the container.
         let speedModel = NativeSpeedModel()
+        /// The text pills' installer, alive as long as the container.
+        var pills: NativeInfoPillsInstaller?
+        var pillsOpen = false
+        var sheetOpen = false
     }
 }

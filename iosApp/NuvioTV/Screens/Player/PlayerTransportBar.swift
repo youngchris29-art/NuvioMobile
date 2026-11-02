@@ -12,7 +12,8 @@ import UIKit
 /// `canvas`). All frames are in the full-screen coordinate space (the bar ignores safe areas).
 struct TransportBarLayout: Equatable {
     static let sideInset: CGFloat = 86
-    static let trackCentreFromBottom: CGFloat = 95
+    /// 95 + the info pill row (46) and its gap (14) under the times row (Insights, 2026-11-01).
+    static let trackCentreFromBottom: CGFloat = 155
     static let trackRestHeight: CGFloat = 10
     static let trackActiveHeight: CGFloat = 14
     static let timesGap: CGFloat = 13
@@ -24,7 +25,18 @@ struct TransportBarLayout: Equatable {
     static let pillSize: CGFloat = 62
     static let pillSpacing: CGFloat = 25
     static let lockupPillGap: CGFloat = 40
-    static let scrimHeight: CGFloat = 300
+    static let scrimHeight: CGFloat = 360
+    // Info pills (Insights): AVKit tvOS 26's text pills under the times row.
+    static let infoPillGap: CGFloat = 14
+    static let infoPillHeight: CGFloat = 46
+    static let infoPillSpacing: CGFloat = 16
+    static let infoPillHorizontalPadding: CGFloat = 26
+    // Popovers and shelves (Insights).
+    static let popoverGap: CGFloat = 24
+    static let popoverMaxHeight: CGFloat = 600
+    static let shelfGap: CGFloat = 24
+    static let shelfHeight: CGFloat = 420
+    static let overlayCornerRadius: CGFloat = 28
     static let labelGap: CGFloat = 16
     // Swipe scrub preview card (P2).
     static let cardSize = CGSize(width: 400, height: 225)
@@ -58,6 +70,34 @@ struct TransportBarLayout: Equatable {
     var timesRowFrame: CGRect { CGRect(x: trackMinX, y: timesTop, width: trackWidth, height: Self.timesHeight) }
 
     var titleFrameBottom: CGFloat { trackCentreY - Self.titleAboveTrack }
+
+    /// The info pill row's band: under the times row, from the track's left end.
+    var infoPillRowFrame: CGRect {
+        CGRect(x: trackMinX, y: timesRowFrame.maxY + Self.infoPillGap, width: trackWidth, height: Self.infoPillHeight)
+    }
+
+    /// The disc at `index` of the disc row (for anchoring its popover).
+    func discFrame(index: Int) -> CGRect {
+        let row = pillRowFrame
+        let x = row.minX + CGFloat(index) * (Self.pillSize + Self.pillSpacing)
+        return CGRect(x: x, y: row.minY, width: Self.pillSize, height: Self.pillSize)
+    }
+
+    /// A disc's popover: bottom `popoverGap` above the disc row, centred on the disc and clamped
+    /// inside the track span; the height is capped at `popoverMaxHeight`.
+    func popoverFrame(discIndex: Int, size: CGSize) -> CGRect {
+        let disc = discFrame(index: discIndex)
+        let h = min(size.height, Self.popoverMaxHeight)
+        let w = min(size.width, trackWidth)
+        let x = min(max(disc.midX - w / 2, trackMinX), max(trackMaxX - w, trackMinX))
+        return CGRect(x: x, y: pillRowFrame.minY - Self.popoverGap - h, width: w, height: h)
+    }
+
+    /// The content shelf: full track width, its bottom `shelfGap` above the lockup.
+    var shelfFrame: CGRect {
+        CGRect(x: trackMinX, y: lockupFrame.minY - Self.shelfGap - Self.shelfHeight,
+               width: trackWidth, height: Self.shelfHeight)
+    }
     var pillRowWidth: CGFloat {
         guard pillCount > 0 else { return 0 }
         return CGFloat(pillCount) * Self.pillSize + CGFloat(pillCount - 1) * Self.pillSpacing
@@ -168,9 +208,31 @@ enum TransportHideRule {
         return pauseCardEnabled ? 5 : nil
     }
 
-    /// A hide timer that fires while a pill is focused or a seek mode is active does nothing; the
-    /// next input re-arms it.
+    /// A hide timer that fires while a pill is focused (disc or text pill), a shelf or popover is
+    /// open, or a seek mode is active does nothing; the next input re-arms it.
     static func mayHide(pillFocused: Bool, modeActive: Bool) -> Bool { !pillFocused && !modeActive }
+
+    /// What counts as "a pill focused" for `mayHide` on the mpv route: a disc, a text pill (Insights
+    /// device pass 2026-11-01: the bar must not hide under a focused text pill), or an open popover
+    /// or shelf.
+    static func holdsBar(discFocused: Bool, infoPillFocused: Bool, overlayOpen: Bool) -> Bool {
+        discFocused || infoPillFocused || overlayOpen
+    }
+}
+
+/// Where the focus goes when an mpv popover or shelf closes (review r3).
+enum OverlayCloseFocus {
+    enum Reason: Equatable {
+        /// Menu, or Select on the open text pill: one level back, to the pill row.
+        case back
+        /// A pick inside closed it (chapter seek, episode jump, source switch, Play Now), or its
+        /// pill left the row: the interaction is over.
+        case selection
+    }
+
+    /// True: the overlay's pill keeps the focus (and so holds the bar, `TransportHideRule.holdsBar`).
+    /// False: back to the track, and the bar hides on its timer.
+    static func pillKeepsFocus(_ reason: Reason) -> Bool { reason == .back }
 }
 
 // MARK: - Fonts
@@ -246,6 +308,12 @@ struct PlayerTransportBar: View {
 
             track(layout, active: active)
             timesRow(layout)
+            PlayerInfoPillRow(model: model)
+                .frame(width: layout.infoPillRowFrame.width, height: layout.infoPillRowFrame.height,
+                       alignment: .leading)
+                .position(x: layout.infoPillRowFrame.midX, y: layout.infoPillRowFrame.midY)
+                .opacity(active ? 0 : 1)
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: active)
             scrubCard(layout)
         }
         .foregroundStyle(.white)
@@ -424,11 +492,8 @@ struct PlayerTransportBar: View {
                         .accessibilityIdentifier("player.bar.time.remaining")
                         .accessibilityValue(rightText)
                 }
-                if preview == nil {
-                    Label("Swipe down for info", systemImage: "chevron.down")
-                        .font(Theme.Font.caption)
-                        .foregroundStyle(.white.opacity(0.7))
-                }
+                // Insights device pass (2026-11-01): the "Swipe down for info" hint is gone with
+                // the top panel; the text pill row under this row is the visible affordance.
             }
             .frame(width: row.width, height: row.height)
             .position(x: row.midX, y: row.midY)

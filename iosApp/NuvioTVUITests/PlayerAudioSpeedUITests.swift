@@ -1,47 +1,35 @@
 import XCTest
 
-/// P5 Wave 1 (B20 audio effects, B23 per-show speed) panel legs. The mpv legs are gated on
-/// `PLAYER_BAR_PROBE=1`, the native leg on `PLAYER_NATIVE_PROBE=1`, plus `PLAYER_SMOKE_URL`
-/// (pass as `TEST_RUNNER_*`), like the P1/P4 harness legs.
+/// P5 Wave 1 (B20 audio effects, B23 per-show speed) legs on the mpv route, driven through the
+/// Audio and Speed discs' popovers (`player.popover.audio` / `player.popover.speed`; the swipe-down
+/// top panel is gone). Gated on `PLAYER_BAR_PROBE=1` plus `PLAYER_SMOKE_URL` (pass as
+/// `TEST_RUNNER_*`), like the P1/P4 harness legs. The native route has no Boost/Dialogue rows and
+/// its Audio and Speed are system pills the simulator cannot open: that contrast is a device-pass
+/// item (the old `testNativeAudioTabHasNoEffects` went with the panel). Remember Speed on native is
+/// a round transport button, covered by `NativePlayerChromeTests`.
 class PlayerAudioSpeedUITests: XCTestCase {
     let remote = XCUIRemote.shared
 
     // MARK: Harness
 
-    private func launch(engine: String = "mpv", extra: [String] = []) throws -> XCUIApplication {
+    private func launch(extra: [String] = []) throws -> XCUIApplication {
         let env = ProcessInfo.processInfo.environment
-        let native = engine == "native"
-        try XCTSkipUnless(env[native ? "PLAYER_NATIVE_PROBE" : "PLAYER_BAR_PROBE"] == "1",
-                          native ? "PLAYER_NATIVE_PROBE not set" : "PLAYER_BAR_PROBE not set")
+        try XCTSkipUnless(env["PLAYER_BAR_PROBE"] == "1", "PLAYER_BAR_PROBE not set")
         let url = try XCTUnwrap(env["PLAYER_SMOKE_URL"], "PLAYER_SMOKE_URL not set")
         let app = XCUIApplication()
-        var args = ["-debug.mpvSmokeURL", url, "-player.nativeDolbyVision", native ? "YES" : "NO",
-                    "-player.bufferMB", "8", "-debug.mpvSmokeStartOver", "YES"]
-        if native { args += ["-debug.mpvSmokeEngine", "native"] }
-        app.launchArguments += args
+        app.launchArguments += ["-debug.mpvSmokeURL", url, "-player.nativeDolbyVision", "NO",
+                                "-player.bufferMB", "8", "-debug.mpvSmokeStartOver", "YES"]
         app.launchArguments += extra
         app.launch()
-        let player = engine == "native" ? "player.native" : "player.mpv"
-        XCTAssertTrue(app.otherElements[player].waitForExistence(timeout: 40), "player did not appear")
-        awaitPlaybackStarted(app, native: native)
+        XCTAssertTrue(app.otherElements["player.mpv"].waitForExistence(timeout: 40), "player did not appear")
+        awaitPlaybackStarted(app)
         return app
     }
 
-    /// Same start gates as `NativePlayerParityUITests`: mpv waits for `debug_seekProbe` pos > 1 and
-    /// the transport bar hidden (`debug_transportProbe` vis=0); native waits for `debug_nativeProbe`
-    /// pos > 1 and bar=0. A Down press before that does not open the panel.
-    private func awaitPlaybackStarted(_ app: XCUIApplication, native: Bool) {
+    /// Same start gates as `NativePlayerParityUITests`: `debug_seekProbe` pos > 1 and the transport
+    /// bar hidden (`debug_transportProbe` vis=0), so the first Up starts from a known state.
+    private func awaitPlaybackStarted(_ app: XCUIApplication) {
         let parse = NativePlayerParityUITests.parse
-        if native {
-            let probe = app.descendants(matching: .any)["debug_nativeProbe"]
-            XCTAssertTrue(probe.waitForExistence(timeout: 30), "no native probe")
-            var end = Date().addingTimeInterval(40)
-            while Date() < end, (Double(parse(probe.label)["pos"] ?? "") ?? 0) <= 1 { Thread.sleep(forTimeInterval: 0.3) }
-            XCTAssertGreaterThan(Double(parse(probe.label)["pos"] ?? "") ?? 0, 1, "native playback never started: \(probe.label)")
-            end = Date().addingTimeInterval(10)
-            while Date() < end, parse(probe.label)["bar"] != "0" { Thread.sleep(forTimeInterval: 0.3) }
-            return
-        }
         let seek = app.descendants(matching: .any)["debug_seekProbe"]
         XCTAssertTrue(seek.waitForExistence(timeout: 30), "no seek probe")
         var end = Date().addingTimeInterval(30)
@@ -58,15 +46,9 @@ class PlayerAudioSpeedUITests: XCTestCase {
         app.descendants(matching: .any)[id]
     }
 
-    private func openTab(_ app: XCUIApplication, _ name: String) {
-        remote.press(.down)
-        let tab = element(app, "player.panel.tab.\(name)")
-        XCTAssertTrue(tab.waitForExistence(timeout: 8), "no \(name) tab")
-        for _ in 0..<6 where (tab.value as? String) != "selected" {
-            remote.press(.right)
-            Thread.sleep(forTimeInterval: 0.5)
-        }
-        XCTAssertEqual(tab.value as? String, "selected", "never reached the \(name) tab")
+    /// Opens the disc's popover (`audio` / `speed`) from a hidden bar.
+    private func openPopover(_ app: XCUIApplication, _ disc: String) {
+        PlayerChrome.openDisc(app, disc)
     }
 
     /// Down/Up/Left/Right toward `target` until it has focus.
@@ -107,7 +89,7 @@ class PlayerAudioSpeedUITests: XCTestCase {
 
     func testMpvAudioEffectsRows() throws {
         let app = try launch()
-        openTab(app, "audio")
+        openPopover(app, "audio")
         let boost = element(app, "player.panel.audioFx.boost.value")
         XCTAssertTrue(boost.waitForExistence(timeout: 5), "no Boost value")
         XCTAssertTrue(waitValue(boost, "Off"), "Boost not Off: \(boost.label)")
@@ -122,17 +104,10 @@ class PlayerAudioSpeedUITests: XCTestCase {
         XCTAssertEqual(element(app, "player.panel.audioFx.mode.off").value as? String, "selected", "Off not restored")
     }
 
-    func testNativeAudioTabHasNoEffects() throws {
-        let app = try launch(engine: "native")
-        openTab(app, "audio")
-        XCTAssertFalse(element(app, "player.panel.audioFx.boost.value").waitForExistence(timeout: 2),
-                       "native Audio tab shows Boost")
-    }
-
     func testSpeedMemoryMpv() throws {
         let series = ["-debug.mpvSmokeSeries", "YES"]
         var app = try launch(extra: series)
-        openTab(app, "playback")
+        openPopover(app, "speed")
         press(app, "player.panel.speed.1.25")
         XCTAssertEqual(element(app, "player.panel.speed.1.25").value as? String, "selected")
         press(app, "player.panel.speed.remember")
@@ -140,7 +115,7 @@ class PlayerAudioSpeedUITests: XCTestCase {
         app.terminate()
 
         app = try launch(extra: series)
-        openTab(app, "playback")
+        openPopover(app, "speed")
         let speed = element(app, "player.panel.speed.1.25")
         XCTAssertTrue(speed.waitForExistence(timeout: 5))
         XCTAssertTrue(waitValue(speed, "selected"), "1.25x not restored")
@@ -152,7 +127,7 @@ class PlayerAudioSpeedUITests: XCTestCase {
 
     func testSpeedMemoryHiddenForMovies() throws {
         let app = try launch()
-        openTab(app, "playback")
+        openPopover(app, "speed")
         XCTAssertTrue(element(app, "player.panel.speed.1.0").waitForExistence(timeout: 5), "no speed row")
         XCTAssertFalse(element(app, "player.panel.speed.remember").exists, "Remember row shown for a movie")
     }

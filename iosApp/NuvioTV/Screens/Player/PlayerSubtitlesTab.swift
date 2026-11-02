@@ -87,11 +87,20 @@ struct PlayerSubtitlesTab: View {
     private var subtitleDelayRow: some View {
         let delayMs = model.subtitleDelayMs
         let delaySec = Double(delayMs) / 1000.0
-        return HStack(spacing: Theme.Spacing.sm) {
+        // Device pass 2026-11-01: label above the chips (it used to take a 200 pt column in the
+        // same row, which with the chips ran past the popover's right edge). Every chip stays in
+        // ONE HStack: Sync Line must remain one Right past Reset (P5 device pass, below).
+        return VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
             Text(String(localized: "Subtitle Delay"))
                 .font(Theme.Font.body)
                 .foregroundStyle(Theme.Palette.textPrimary)
-                .frame(width: 200, alignment: .leading)
+                .lineLimit(1)
+            subtitleDelayChips(delayMs: delayMs, delaySec: delaySec)
+        }
+    }
+
+    private func subtitleDelayChips(delayMs: Int, delaySec: Double) -> some View {
+        HStack(spacing: Theme.Spacing.xs) {
             delayButton(String(localized: "−1 s")) { applyDelay(delayMs - 1000) }
                 .accessibilityIdentifier("player.panel.subtitleDelay.minus1")
             delayButton(String(localized: "−0.1 s")) { applyDelay(delayMs - 100) }
@@ -101,7 +110,7 @@ struct PlayerSubtitlesTab: View {
                 .foregroundStyle(Theme.Palette.textPrimary)
                 .lineLimit(1)
                 .fixedSize()
-                .frame(minWidth: 100)
+                .frame(minWidth: 90)
                 .accessibilityIdentifier("player.panel.subtitleDelay.value")
             delayButton(String(localized: "+0.1 s")) { applyDelay(delayMs + 100) }
                 .accessibilityIdentifier("player.panel.subtitleDelay.plus")

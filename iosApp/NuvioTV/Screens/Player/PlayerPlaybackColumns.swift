@@ -61,6 +61,9 @@ struct PlayerEpisodesColumn: View {
     /// Optional: bound to the first row so a host can move focus into this column (the native
     /// transport bar's Episodes item). nil (mpv) leaves focus entirely to the engine.
     var firstRowFocus: FocusState<Bool>.Binding? = nil
+    /// Called when the first rows arrive in a column that had none (mpv: the overlay asks the
+    /// focus engine to move in again, its open-time retries having ended before the rows loaded).
+    var onFirstRowsAppear: (() -> Void)? = nil
 
     /// The engine's episodes with a season and number, in season/episode order. Shared with the
     /// tabs so they can hide the column when it would be empty.
@@ -105,6 +108,9 @@ struct PlayerEpisodesColumn: View {
             Text("Jumping finds a stream automatically and switches playback.")
                 .font(Theme.Font.caption)
                 .foregroundStyle(Theme.Palette.textSecondary)
+        }
+        .onChange(of: sortedEpisodes.count) { old, new in
+            if PlayerOverlayRowFocus.shouldRefocus(oldRowCount: old, newRowCount: new) { onFirstRowsAppear?() }
         }
     }
 
@@ -152,6 +158,8 @@ struct PlayerSourcesColumn: View {
     let onClose: () -> Void
     /// Optional: bound to the first source row (see `PlayerEpisodesColumn.firstRowFocus`).
     var firstRowFocus: FocusState<Bool>.Binding? = nil
+    /// See `PlayerEpisodesColumn.onFirstRowsAppear`.
+    var onFirstRowsAppear: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
@@ -186,6 +194,9 @@ struct PlayerSourcesColumn: View {
                 .foregroundStyle(Theme.Palette.textSecondary)
         }
         .onAppear { engine.sourceColumnAppeared(); engine.loadSources() }
+        .onChange(of: min(engine.sources.count, 12)) { old, new in
+            if PlayerOverlayRowFocus.shouldRefocus(oldRowCount: old, newRowCount: new) { onFirstRowsAppear?() }
+        }
         .onDisappear { engine.sourceColumnDisappeared() }
     }
 
@@ -216,6 +227,15 @@ struct PlayerSourcesColumn: View {
             }
             .contentShape(Rectangle())
         }
+    }
+}
+
+/// mpv overlay focus (review r3): the overlay's open-time focus retries end after ~450 ms, and
+/// Sources / Episodes rows can load later, leaving nothing focused until a press is spent. When a
+/// column goes from no rows to some, the overlay asks again.
+enum PlayerOverlayRowFocus {
+    static func shouldRefocus(oldRowCount: Int, newRowCount: Int) -> Bool {
+        oldRowCount == 0 && newRowCount > 0
     }
 }
 

@@ -226,9 +226,10 @@ final class PlayerTransportUITests: XCTestCase {
     func testBarGeometryProbe() throws {
         let app = try launchWithBarHidden()
         remote.press(.up)
-        XCTAssertTrue(waitBar(app) { $0["vis"] == "1" && abs((Double($0["y"] ?? "") ?? 0) - 95) <= 2 }, barProbeText(app))
+        XCTAssertTrue(waitBar(app) { $0["vis"] == "1" && abs((Double($0["y"] ?? "") ?? 0) - 155) <= 2 }, barProbeText(app))
         let p = bar(app)
-        XCTAssertEqual(Double(p["y"] ?? "") ?? 0, 95, accuracy: 2, barProbeText(app))
+        // 155: the track sits above the text pill row (Insights wave 1d moved it up from 95).
+        XCTAssertEqual(Double(p["y"] ?? "") ?? 0, 155, accuracy: 2, barProbeText(app))
         XCTAssertEqual(Double(p["x0"] ?? "") ?? 0, 86, accuracy: 1, barProbeText(app))
         XCTAssertEqual(Double(p["x1"] ?? "") ?? 0, 1834, accuracy: 1, barProbeText(app))
         XCTAssertGreaterThanOrEqual(Int(p["pills"] ?? "") ?? 0, 4, barProbeText(app))
@@ -253,9 +254,8 @@ final class PlayerTransportUITests: XCTestCase {
         remote.press(.up)
         XCTAssertTrue(waitBar(app) { $0["focus"] == "pill:subtitles" }, barProbeText(app))
         remote.press(.select)
-        let tab = app.descendants(matching: .any)["player.panel.tab.subtitles"]
-        XCTAssertTrue(tab.waitForExistence(timeout: 6), "subtitles tab did not open")
-        XCTAssertEqual(tab.value as? String, "selected")
+        let popover = app.descendants(matching: .any)["player.popover.subtitles"]
+        XCTAssertTrue(popover.waitForExistence(timeout: 6), "subtitles popover did not open")
         print("[BarProbe] pillwalk end: \(barProbeText(app))")
     }
 
@@ -444,15 +444,18 @@ final class PlayerTransportUITests: XCTestCase {
         XCTAssertTrue(waitBar(app) { $0["mode"] == "idle" }, barProbeText(app))
     }
 
-    /// A 150 pt downward stroke (decided at 120 pt) opens the top panel on Info.
-    func testVerticalSwipeOpensPanel() throws {
+    /// A 150 pt downward stroke (decided at 120 pt) is a Down press and nothing else: the bar comes
+    /// up with the Info pill focused (the top panel it used to open is gone) and no scrub starts.
+    func testVerticalSwipeFocusesInfoPill() throws {
         let script = Array(repeating: "0,0.03,30", count: 5).joined(separator: ";")
         let app = try launchWithBarHidden(extra: ["-debug.scrubInject", script])
         raiseBarForScrub(app)
         postScrubInject()
-        let tab = app.descendants(matching: .any)["player.panel.tab.info"]
-        XCTAssertTrue(tab.waitForExistence(timeout: 6), "info tab did not open")
-        XCTAssertEqual(tab.value as? String, "selected")
+        let info = app.descendants(matching: .any)["player.infoPill.info"]
+        XCTAssertTrue(info.waitForExistence(timeout: 6), "info pill did not appear")
+        let end = Date().addingTimeInterval(5)
+        while Date() < end, (info.value as? String) != "focused" { Thread.sleep(forTimeInterval: 0.25) }
+        XCTAssertEqual(info.value as? String, "focused", "a down swipe did not focus the Info pill")
         XCTAssertEqual(probe(app)["scrubs"], "0", probeText(app))
     }
 
@@ -599,24 +602,28 @@ final class PlayerTransportUITests: XCTestCase {
         print("[ChapterLeg] ticks: \(barProbeText(app))")
     }
 
-    /// Down opens the panel; the Chapters tab is last; its third row seeks to 240 s and closes the panel.
-    func testChaptersTabSeeks() throws {
+    /// Down focuses the pill row (past the Opening skip span); the Chapters pill opens its shelf; its third row seeks to 240 s
+    /// and closes the shelf. Re-opened mid-file, the shelf ticks Act Two and focus enters the list on
+    /// it (the list's default focus), not on the first row.
+    func testChaptersShelfSeeks() throws {
         let app = try launchWithBarHidden(url: try chaptersURL())
         XCTAssertTrue(waitBar(app) { $0["chapters"] == "5" }, barProbeText(app))
-        let c0 = Int(probe(app)["commits"] ?? "") ?? -1
-        remote.press(.down)
-        let chaptersTab = app.descendants(matching: .any)["player.panel.tab.chapters"]
-        XCTAssertTrue(chaptersTab.waitForExistence(timeout: 6), "no Chapters tab")
-        for _ in 0..<6 where (chaptersTab.value as? String) != "selected" {
+        // The Opening chapter (0-90 s) is a skip span, and Down skips it ahead of the pill row
+        // (`DownPressRule`: a skip interval at the playhead wins). Step past it with Right first.
+        for _ in 0..<20 where pos(app) < 100 {
             remote.press(.right)
-            Thread.sleep(forTimeInterval: 0.5)
+            Thread.sleep(forTimeInterval: 0.6)
         }
-        XCTAssertEqual(chaptersTab.value as? String, "selected", "never reached the Chapters tab")
+        XCTAssertGreaterThan(pos(app), 100, "never left the Opening span: \(probeText(app))")
+        XCTAssertLessThan(pos(app), 235, "stepped into Act Two: \(probeText(app))")
+        XCTAssertTrue(waitBar(app, timeout: 10) { $0["vis"] == "0" }, "bar never hid: \(barProbeText(app))")
+        let c0 = Int(probe(app)["commits"] ?? "") ?? -1
+        let shelf = PlayerChrome.openShelf(app, "chapters")
         let row = app.descendants(matching: .any)["player.panel.chapter.2"]
         XCTAssertTrue(row.waitForExistence(timeout: 3), "no chapter row 2")
         XCTAssertTrue(row.label.contains("Act Two"), row.label)
-        XCTAssertEqual(app.descendants(matching: .any)["player.panel.chapter.0"].value as? String, "selected",
-                       "the current chapter (Opening) is not ticked")
+        XCTAssertEqual(app.descendants(matching: .any)["player.panel.chapter.1"].value as? String, "selected",
+                       "the current chapter (Act One) is not ticked")
         for _ in 0..<6 where !row.hasFocus {
             remote.press(.down)
             Thread.sleep(forTimeInterval: 0.5)
@@ -627,32 +634,39 @@ final class PlayerTransportUITests: XCTestCase {
             Int($0["commits"] ?? "") == c0 + 1 && $0["stages"] == "ch" && $0["lastTarget"] == "240"
         }, "chapter seek not recorded: \(probeText(app))")
         let gone = NSPredicate(format: "exists == false")
-        XCTAssertEqual(XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: gone, object: chaptersTab)], timeout: 5),
-                       .completed, "panel did not close")
+        XCTAssertEqual(XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: gone, object: shelf)], timeout: 5),
+                       .completed, "shelf did not close")
         XCTAssertTrue(waitFor(app, timeout: 8) { (Double($0["pos"] ?? "") ?? 0) >= 239 }, "never landed at 240: \(probeText(app))")
-        print("[ChapterLeg] tab seek: \(probeText(app)) | \(barProbeText(app))")
+        print("[ChapterLeg] shelf seek: \(probeText(app)) | \(barProbeText(app))")
 
-        // Review r2 P3 #4: re-opened mid-file, the tab ticks Act Two and one Down into the list
-        // lands on it (the list's default focus), not on the first row.
         XCTAssertTrue(waitBar(app, timeout: 8) { $0["vis"] == "0" }, "bar never hid: \(barProbeText(app))")
-        remote.press(.down)
-        XCTAssertTrue(chaptersTab.waitForExistence(timeout: 6), "panel did not re-open")
-        for _ in 0..<6 where (chaptersTab.value as? String) != "selected" {
-            remote.press(.right)
-            Thread.sleep(forTimeInterval: 0.5)
-        }
-        XCTAssertEqual(chaptersTab.value as? String, "selected", "never reached the Chapters tab again")
+        PlayerChrome.openShelf(app, "chapters")
         XCTAssertTrue(row.waitForExistence(timeout: 3), "no chapter row 2 on re-open")
         XCTAssertEqual(row.value as? String, "selected", "the current chapter (Act Two) is not ticked")
         let first = app.descendants(matching: .any)["player.panel.chapter.0"]
-        XCTAssertFalse(row.hasFocus, "a list row is focused before entering the list")
-        remote.press(.down)
-        // Wait for the focus to land rather than sleeping a fixed 0.8 s (review r3 P3 #3).
+        // Since the Insights device fixes the controller pulls the focus into the shelf as it
+        // opens (`UIFocusSystem.requestFocusUpdate`) and the list's first entry lands on the
+        // current chapter, with no press. (Until then nothing was focused after the open on the
+        // simulator and this leg pressed Down to make the controller ask; that press now moves
+        // the focus one row on.) A press is sent only if nothing in the shelf is focused yet.
+        let anyRowFocused = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "hasFocus == true AND identifier BEGINSWITH 'player.panel.chapter.'"))
+        let entry = Date()
+        while anyRowFocused.count == 0 && Date().timeIntervalSince(entry) < 2 { Thread.sleep(forTimeInterval: 0.2) }
+        if anyRowFocused.count == 0 {
+            print("[ChapterLeg] nothing focused 2 s after the open; pressing Down")
+            remote.press(.down)
+        }
         let landed = Date()
         while !row.hasFocus && Date().timeIntervalSince(landed) < 4 { Thread.sleep(forTimeInterval: 0.2) }
+        if !row.hasFocus {
+            let focused = app.descendants(matching: .any).matching(NSPredicate(format: "hasFocus == true")).allElementsBoundByIndex
+                .map { "\($0.identifier)|\($0.label)" }
+            print("[ChapterLeg] focused elements: \(focused) | \(barProbeText(app))")
+        }
         XCTAssertTrue(row.hasFocus, "focus did not enter the list on the current chapter (row 2)")
         XCTAssertFalse(first.hasFocus, "focus entered the list on the first row, not the current chapter")
-        print("[ChapterLeg] tab end: \(probeText(app)) | \(barProbeText(app))")
+        print("[ChapterLeg] shelf end: \(probeText(app)) | \(barProbeText(app))")
     }
 
     /// Chapter mode: one Right click jumps to the next chapter (on release, C8); a hold after

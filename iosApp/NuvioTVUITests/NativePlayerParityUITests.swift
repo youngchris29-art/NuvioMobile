@@ -10,6 +10,15 @@ import UIKit
 /// Gated on `PLAYER_NATIVE_PROBE=1` and `PLAYER_SMOKE_URL` (pass them as `TEST_RUNNER_*`).
 ///
 /// The mpv regression leg uses the P1 transport harness (`PLAYER_BAR_PROBE=1`).
+///
+/// Insights wave 2a: the swipe-down top panel is gone from both engines. The native route now uses
+/// the system `AVPlayerViewController` info pills (Info / Cast / Up Next, behind the system swipe
+/// down) and round `transportBarCustomMenuItems` (Episodes, Sources, Subtitle Timing, Sync Line,
+/// Remember Speed) whose popovers are system UI. XCUITest on the simulator cannot issue the swipe
+/// down or drive those popovers, so the panel-driven native legs (speed tab, sources column, chapters
+/// tab, late-subtitle pick) were removed; they are device-pass items, with the pure logic in
+/// `NativePlayerChromeTests`. What the sim can prove is kept: the custom items exist, the model
+/// still receives chapters and the late rendition, the pause card, and the loading overlay.
 class NativePlayerParityUITests: XCTestCase {
     let remote = XCUIRemote.shared
 
@@ -71,22 +80,10 @@ class NativePlayerParityUITests: XCTestCase {
         return out
     }
 
-    // MARK: Shared panel helpers
+    // MARK: Shared helpers
 
     func element(_ app: XCUIApplication, _ id: String) -> XCUIElement {
         app.descendants(matching: .any)[id]
-    }
-
-    /// Opens the panel with Down and walks Right until the Playback tab is selected.
-    func openPlaybackTab(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
-        remote.press(.down)
-        let tab = element(app, "player.panel.tab.playback")
-        XCTAssertTrue(tab.waitForExistence(timeout: 8), "no Playback tab", file: file, line: line)
-        for _ in 0..<6 where (tab.value as? String) != "selected" {
-            remote.press(.right)
-            Thread.sleep(forTimeInterval: 0.5)
-        }
-        XCTAssertEqual(tab.value as? String, "selected", "never reached the Playback tab", file: file, line: line)
     }
 
     /// Geometric focus walk: presses Down/Up/Left/Right toward `target` until it has focus.
@@ -115,10 +112,10 @@ class NativePlayerParityUITests: XCTestCase {
 
     // MARK: mpv regression (A step 1)
 
-    /// Regression only: the mpv Playback tab keeps its speed row, Timing and Diagnostics after the
-    /// columns moved into `PlayerPlaybackColumns.swift`. It also passed before the extraction; it
-    /// guards the move. Picking 1.25 marks that button selected.
-    func testMpvPlaybackTabUnchanged() throws {
+    /// Regression only: the mpv Speed popover keeps its speed row, Audio Delay and Stream Info after
+    /// the columns moved into `PlayerPlaybackColumns.swift` and the Playback tab became a disc
+    /// popover. Picking 1.25 marks that button selected.
+    func testMpvSpeedPopoverUnchanged() throws {
         let env = ProcessInfo.processInfo.environment
         try XCTSkipUnless(env["PLAYER_BAR_PROBE"] == "1", "PLAYER_BAR_PROBE not set")
         let url = try requiredEnv("PLAYER_SMOKE_URL")
@@ -139,7 +136,7 @@ class NativePlayerParityUITests: XCTestCase {
         while Date() < end, Self.parse(bar.label)["vis"] != "0" { Thread.sleep(forTimeInterval: 0.3) }
         XCTAssertEqual(Self.parse(bar.label)["vis"], "0", "bar never hid: \(bar.label)")
 
-        openPlaybackTab(app)
+        PlayerChrome.openDisc(app, "speed")
         for speed in [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0] {
             XCTAssertTrue(element(app, "player.panel.speed.\(speed)").waitForExistence(timeout: 3), "no speed \(speed)")
         }
@@ -152,7 +149,7 @@ class NativePlayerParityUITests: XCTestCase {
         let end2 = Date().addingTimeInterval(4)
         while Date() < end2, (target.value as? String) != "selected" { Thread.sleep(forTimeInterval: 0.3) }
         XCTAssertEqual(target.value as? String, "selected", "1.25x not selected after the pick")
-        print("[ParityLeg] mpv tab: \(seek.label) | \(bar.label)")
+        print("[ParityLeg] mpv speed popover: \(seek.label) | \(bar.label)")
     }
 
     // MARK: Native legs (A step 6)
@@ -163,73 +160,46 @@ class NativePlayerParityUITests: XCTestCase {
         _ = waitNative(app, timeout: timeout) { $0["bar"] == "0" }
     }
 
-    /// A8: the Playback tab's speed row drives the live rate through `selectSpeed`, and the tab
-    /// re-reads the player's speed when the panel opens again. Fails before P4 (no Playback tab).
-    func testNativePlaybackTabSpeed() throws {
-        let app = try launchNative()
-        waitBarSettled(app)
-        openPlaybackTab(app)
-        XCTAssertEqual(element(app, "player.panel.speed.1.0").value as? String, "selected",
-                       "1x not ticked on open: \(nativeProbeText(app))")
-        let target = element(app, "player.panel.speed.1.5")
-        XCTAssertTrue(target.waitForExistence(timeout: 3), "no 1.5x button")
-        XCTAssertTrue(focusWalk(app, to: target), "focus never reached 1.5x")
-        remote.press(.select)
-        XCTAssertTrue(waitNative(app, timeout: 4) { $0["speed"] == "1.5" }, "rate never became 1.5: \(nativeProbeText(app))")
-        remote.press(.menu)
-        let gone = NSPredicate(format: "exists == false")
-        XCTAssertEqual(XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: gone, object: element(app, "player.panel"))],
-                                        timeout: 5), .completed, "panel did not close")
-        try requireNativeStillPresented(app)
-        waitBarSettled(app, timeout: 8)
-        openPlaybackTab(app)
-        XCTAssertTrue(target.waitForExistence(timeout: 3))
-        XCTAssertEqual(target.value as? String, "selected", "1.5x not ticked on re-open")
-        XCTAssertTrue(waitNative(app, timeout: 2) { $0["speed"] == "1.5" }, nativeProbeText(app))
-        print("[ParityLeg] native speed: \(nativeProbeText(app))")
-    }
-
-    /// A8: the native Playback tab carries the shared Sources column (`canSwitchStreams`: the smoke
-    /// presenter has `onPlayNext`). Fails before P4 (no Playback tab on native).
-    func testNativeSourcesColumnPresent() throws {
-        let app = try launchNative()
-        waitBarSettled(app)
-        openPlaybackTab(app)
-        XCTAssertTrue(app.staticTexts["SOURCES"].waitForExistence(timeout: 5), "no Sources caption")
-        // The column itself is the oracle: its empty line, its loading spinner or a source row
-        // (the smoke video id's add-on fetch may still be running on the fixture).
-        let settled = app.staticTexts["No alternate sources found yet."].waitForExistence(timeout: 8)
-        XCTAssertTrue(settled || app.activityIndicators.count > 0 || app.staticTexts["Switching resumes from your last saved position."].exists,
-                      "the Sources column has no body: \(nativeProbeText(app))")
-        XCTAssertTrue(app.staticTexts["Switching resumes from your last saved position."].exists, "no Sources footer")
-        print("[ParityLeg] native sources settled=\(settled ? 1 : 0)")
-        XCTAssertTrue(app.staticTexts["PLAYBACK SPEED"].exists, "no speed caption")
-        print("[ParityLeg] native sources: \(nativeProbeText(app))")
-    }
-
-    /// D5: the transport bar's Sources menu item opens the app panel on the Playback tab. Fails
-    /// before P4 (no custom menu items).
-    func testNativeMenuItemOpensSources() throws {
+    /// D5: the transport bar's custom round buttons exist next to the system speed pill. Their
+    /// popovers (Sources list, Episodes, Subtitle Timing) are system UI the simulator cannot drive:
+    /// opening them is a device-pass item. Select on the first custom item must at least leave the player running.
+    func testNativeTransportMenuItemsExist() throws {
         let app = try launchNative()
         waitBarSettled(app)
         remote.press(.select)                       // raise the bar
         XCTAssertTrue(waitNative(app, timeout: 4) { $0["bar"] == "1" }, "bar did not show: \(nativeProbeText(app))")
         // tvOS 26 draws the custom menu items as cells in the bar's top-right row, left of the
-        // speed pill and the Subtitles / Audio cells; Up from the scrubber lands on the first one.
-        let item = app.cells["Sources"]
-        XCTAssertTrue(item.waitForExistence(timeout: 5), "no Sources item in the transport bar")
-        XCTAssertTrue(app.cells["Playback Speed"].exists, "no system speed pill (playerVC.speeds)")
-        for _ in 0..<4 where !item.hasFocus {
+        // speed pill and the Subtitles / Audio cells. Review r3: each round button now carries its
+        // name as `accessibilityLabel` (Sources, Episodes, Subtitle Timing, Sync Line, Remember
+        // Speed for This Show), so they are found by name. If this simulator's AVKit still exposes
+        // the cells with an empty label (the wave 2a reading), the leg falls back to counting the
+        // empty-label cells and logs it; the device pass confirms VoiceOver reads the names.
+        XCTAssertTrue(app.cells["Playback Speed"].waitForExistence(timeout: 5), "no system speed pill (playerVC.speeds)")
+        let names = ["Sources", "Episodes", "Subtitle Timing", "Sync Line", "Remember Speed for This Show"]
+        let named = app.cells.matching(NSPredicate(format: "label IN %@", names))
+        let custom: XCUIElementQuery
+        if named.count > 0 {
+            custom = named
+            let labels = named.allElementsBoundByIndex.map(\.label)
+            XCTAssertTrue(labels.contains("Sources"), "no Sources button by name: \(labels)")
+            print("[ParityLeg] native custom items by name: \(labels)")
+        } else {
+            custom = app.cells.matching(NSPredicate(format: "label == ''"))
+            print("[ParityLeg] native custom items expose no label on this sim; counted by empty label")
+        }
+        XCTAssertGreaterThanOrEqual(custom.count, 1, "no custom transport items beside the system pills")
+        let first = custom.element(boundBy: 0)
+        for _ in 0..<4 where !first.hasFocus {
             remote.press(.up)
             Thread.sleep(forTimeInterval: 0.6)
         }
-        XCTAssertTrue(item.hasFocus || focusWalk(app, to: item, maxSteps: 8), "focus never reached the Sources item")
+        XCTAssertTrue(first.hasFocus || focusWalk(app, to: first, maxSteps: 8), "focus never reached a custom item")
         remote.press(.select)
-        XCTAssertTrue(element(app, "player.panel").waitForExistence(timeout: 6), "the panel did not open")
-        let tab = element(app, "player.panel.tab.playback")
-        XCTAssertTrue(tab.waitForExistence(timeout: 3), "no Playback tab")
-        XCTAssertEqual(tab.value as? String, "selected", "the panel did not open on Playback")
-        print("[ParityLeg] native menu item: \(nativeProbeText(app))")
+        Thread.sleep(forTimeInterval: 1.5)
+        XCTAssertTrue(app.otherElements["player.native"].exists, "the native player left after Select on a custom item")
+        XCTAssertFalse(element(app, "player.panel").exists, "an app-drawn panel appeared on native")
+        print("[ParityLeg] native custom items=\(custom.count)")
+        print("[ParityLeg] native menu items: \(nativeProbeText(app))")
     }
 
     /// B16: the pause card never draws over a visible transport bar; once the bar is known hidden
@@ -272,41 +242,21 @@ class NativePlayerParityUITests: XCTestCase {
 
     // MARK: B legs (agent B, step 8)
 
-    /// Walks Right from the panel's first tab until `tabId` reads selected.
-    func selectPanelTab(_ app: XCUIApplication, _ tabId: String, file: StaticString = #filePath, line: UInt = #line) {
-        let tab = element(app, "player.panel.tab.\(tabId)")
-        XCTAssertTrue(tab.waitForExistence(timeout: 8), "no \(tabId) tab", file: file, line: line)
-        for _ in 0..<6 where (tab.value as? String) != "selected" {
-            remote.press(.right)
-            Thread.sleep(forTimeInterval: 0.5)
-        }
-        XCTAssertEqual(tab.value as? String, "selected", "never reached the \(tabId) tab", file: file, line: line)
-    }
-
-    /// A6-native: the remux's chapters fill the panel's Chapters tab, and picking row 3 (Act Two,
-    /// 240 s in the fixture) lands there.
-    func testNativeChaptersTab() throws {
+    /// A6-native: the remux's chapters reach the model (`chapters=5` on the probe). The system
+    /// Chapters pill that draws them is behind the system swipe down: device-pass item.
+    func testNativeChaptersReachModel() throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["PLAYER_NATIVE_PROBE"] == "1", "PLAYER_NATIVE_PROBE not set")
         let url = try requiredEnv("PLAYER_SMOKE_CHAPTERS_URL")
         let app = try launchNative(url: url)
         XCTAssertTrue(waitNative(app, timeout: 10) { $0["chapters"] == "5" }, "chapters: \(nativeProbeText(app))")
-        remote.press(.down)
-        selectPanelTab(app, "chapters")
-        let row = element(app, "player.panel.chapter.2")
-        XCTAssertTrue(row.waitForExistence(timeout: 3), "no chapter row 2")
-        XCTAssertTrue(row.label.contains("Act Two"), row.label)
-        XCTAssertTrue(focusWalk(app, to: row), "focus never reached chapter row 2")
-        remote.press(.select)
-        XCTAssertTrue(waitNative(app, timeout: 8) { (Double($0["pos"] ?? "") ?? 0) >= 238 },
-                      "never reached chapter 3: \(nativeProbeText(app))")
-        let pos = Double(nativeProbe(app)["pos"] ?? "") ?? 0
-        XCTAssertLessThanOrEqual(pos, 245, "landed past chapter 3: \(nativeProbeText(app))")
         print("[NativeParityLeg] chapters: \(nativeProbeText(app))")
     }
 
-    /// B17 lazy path: an add-on subtitle injected after the master (DEBUG knobs) is listed as a
-    /// row before the pick; picking it rebuilds the item once at the same position and shows it.
-    func testNativeLateSubtitleLazyPick() throws {
+    /// B17 lazy path: an add-on subtitle injected after the master (DEBUG knobs) is published as a
+    /// rendition (`late=published`), or rebuilt at once when the profile prefers a subtitle
+    /// language. Picking it from the system subtitles menu (and the pause card after the rebuild) is
+    /// a device-pass item: the simulator cannot drive that menu.
+    func testNativeLateSubtitlePublished() throws {
         let env = ProcessInfo.processInfo.environment
         try XCTSkipUnless(env["PLAYER_NATIVE_PROBE"] == "1", "PLAYER_NATIVE_PROBE not set")
         let smoke = try requiredEnv("PLAYER_SMOKE_URL")
@@ -316,52 +266,7 @@ class NativePlayerParityUITests: XCTestCase {
                                            "-debug.nativeSubsGateSec", "0"])
         XCTAssertTrue(waitNative(app, timeout: 20) { $0["late"] == "published" || $0["late"] == "rebuilt" },
                       "late rendition never published: \(nativeProbeText(app))")
-        if nativeProbe(app)["late"] == "rebuilt" {
-            // The fixture profile prefers a subtitle language: the auto path ran instead.
-            print("[NativeParityLeg] late: auto path (fixture prefers a subtitle language): \(nativeProbeText(app))")
-            return
-        }
-        remote.press(.down)
-        selectPanelTab(app, "subtitles")
-        let row = element(app, "player.panel.subtitle.Late Test")
-        XCTAssertTrue(row.waitForExistence(timeout: 5), "no late row before the pick")
-        XCTAssertTrue(focusWalk(app, to: row), "focus never reached the late row")
-        let before = Double(nativeProbe(app)["pos"] ?? "") ?? 0
-        let pickedAt = Date()
-        remote.press(.select)
-        let selected = NSPredicate(format: "value == 'selected'")
-        XCTAssertEqual(XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: selected, object: row)], timeout: 4),
-                       .completed, "the late row never read selected")
-        XCTAssertTrue(waitNative(app, timeout: 5) { $0["late"] == "rebuilt" }, "no rebuild: \(nativeProbeText(app))")
-        // Playback keeps running through the pick, so compare against where it would be without
-        // the swap: a rebuild that restarted from t=0 or jumped would miss by far more than 3 s.
-        let after = Double(nativeProbe(app)["pos"] ?? "") ?? 0
-        let expected = before + Date().timeIntervalSince(pickedAt)
-        XCTAssertLessThan(abs(after - expected), 3, "position \(before) → \(after), expected ≈\(expected)")
         print("[NativeParityLeg] late: \(nativeProbeText(app))")
-
-        // P4-F2: after the rebuild, close the panel and pause: the pause card must still show.
-        remote.press(.menu)
-        try requireNativeStillPresented(app)
-        XCTAssertTrue(waitNative(app, timeout: 4) { $0["panel"] == "0" }, "panel never closed: \(nativeProbeText(app))")
-        waitBarSettled(app)
-        remote.press(.playPause)
-        XCTAssertTrue(waitNative(app, timeout: 4) { $0["paused"] == "1" }, "did not pause after the rebuild: \(nativeProbeText(app))")
-        var sawBarHidden: Date?
-        var cardShown = false
-        let end = Date().addingTimeInterval(14)
-        while Date() < end {
-            let p = nativeProbe(app)
-            if p["card"] == "1" { cardShown = true; break }
-            if p["bar"] == "0", p["paused"] == "1" { sawBarHidden = sawBarHidden ?? Date() }
-            if let hidden = sawBarHidden, Date().timeIntervalSince(hidden) > 3 { break }
-            Thread.sleep(forTimeInterval: 0.25)
-        }
-        guard sawBarHidden != nil || cardShown else {
-            throw XCTSkip("sim bar never hides while paused after the rebuild: \(nativeProbeText(app))")
-        }
-        XCTAssertTrue(cardShown, "no pause card after a late-subtitle rebuild: \(nativeProbeText(app))")
-        print("[NativeParityLeg] late + pause card: \(nativeProbeText(app))")
     }
 
     // MARK: B24 loading screen (agent C, spec §10.2)

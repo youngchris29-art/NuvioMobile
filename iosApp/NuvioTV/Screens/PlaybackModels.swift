@@ -30,6 +30,11 @@ enum PlayerTuning {
     static let edgeClickModeKey = "player.edgeClickMode"
     /// Show the time of day while the mpv player controls are up. Device-local, off by default.
     static let showClockKey = "player.showClock"
+    /// "Show cast in player" (Insights, 2026-11-01): the Cast pill on both engines. Device-local, on by default.
+    static let showCastInPlayerKey = "player.showCastInPlayer"
+    static var showCastInPlayer: Bool {
+        UserDefaults.standard.object(forKey: showCastInPlayerKey) as? Bool ?? true
+    }
     /// mpv only: extra loudness in dB (0, 2, 4, 6, 8, 10). Device-local, default 0.
     static let boostDbKey = "player.boostDb"
     /// mpv only: "off" (default) or "dialogue". Device-local.

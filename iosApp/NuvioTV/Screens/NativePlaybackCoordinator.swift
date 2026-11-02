@@ -884,6 +884,10 @@ final class NativePlaybackCoordinator: ObservableObject {
         item.preferredForwardBufferDuration = 24
         item.textStyleRules = NativeSubtitleStyle.rules(subtitleStyleInput)
         item.externalMetadata = metadataTextItems + (artworkMetadata.map { [$0] } ?? [])
+        // Device oracle (re-pass 2026-11-01: the system Info pill showed no genres): which items
+        // the system got, and whether the launch path had genres at all.
+        print("[NativePlayer] externalMetadata ids=\(metadataTextItems.compactMap { $0.identifier?.rawValue }.joined(separator: ",")) "
+              + "genres=\(context.meta?.genres.count ?? -1)")
         item.navigationMarkerGroups = chapterGroups
     }
 

@@ -4374,6 +4374,47 @@
         }
       }
     },
+    "A Cast pill under the timeline with the cast and crew, and a short bio for each": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A Cast pill under the timeline with the cast and crew, and a short bio for each"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Eine Besetzung-Schaltfläche unter der Zeitleiste mit Darstellern und Crew, samt Kurzbiografie zu jeder Person"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un botón de Reparto bajo la línea de tiempo con el reparto y el equipo, y una breve biografía de cada uno"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Une pastille Casting sous la timeline avec la distribution et l’équipe, et une courte biographie pour chacun"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un pulsante Cast sotto la timeline con cast e troupe, e una breve biografia per ciascuno"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nút Diễn viên dưới thanh thời gian với dàn diễn viên và êkíp, kèm tiểu sử ngắn của từng người"
+          }
+        }
+      }
+    },
     "A muted trailer plays behind the description on detail pages": {
       "localizations": {
         "de": {
@@ -5323,6 +5364,47 @@
           "stringUnit": {
             "state": "translated",
             "value": "Địa chỉ không có giao thức sẽ được coi là HTTPS — hãy thêm http:// nếu máy chủ chỉ hỗ trợ HTTP."
+          }
+        }
+      }
+    },
+    "Adds a Cast pill under the timeline in the player. It lists the cast, guest stars and key crew for the title or episode, and opens a short biography with their best-known titles. Works whether or not TMDB Enrichment is on. Default: On.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Adds a Cast pill under the timeline in the player. It lists the cast, guest stars and key crew for the title or episode, and opens a short biography with their best-known titles. Works whether or not TMDB Enrichment is on. Default: On."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fügt im Player unter der Zeitleiste eine Besetzung-Schaltfläche hinzu. Sie listet die Besetzung, Gaststars und die wichtigsten Crew-Mitglieder des Titels oder der Folge und öffnet eine Kurzbiografie mit den bekanntesten Titeln. Funktioniert unabhängig davon, ob die TMDB-Anreicherung an ist. Standard: An."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Añade un botón de Reparto bajo la línea de tiempo en el reproductor. Muestra el reparto, las estrellas invitadas y el equipo principal del título o del episodio, y abre una breve biografía con sus títulos más conocidos. Funciona tanto si el Enriquecimiento TMDB está activado como si no. Por defecto: activado."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ajoute une pastille Casting sous la timeline dans le lecteur. Elle liste la distribution, les invités et l’équipe clé du titre ou de l’épisode, et ouvre une courte biographie avec leurs titres les plus connus. Fonctionne que l’Enrichissement TMDB soit activé ou non. Par défaut : activé."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aggiunge un pulsante Cast sotto la timeline nel player. Elenca il cast, le guest star e la troupe principale del titolo o dell’episodio, e apre una breve biografia con i titoli più noti. Funziona sia con l’Arricchimento TMDB attivo sia senza. Predefinito: attivo."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thêm nút Diễn viên dưới thanh thời gian trong trình phát. Nút liệt kê dàn diễn viên, khách mời và êkíp chính của phim hoặc tập phim, và mở tiểu sử ngắn với các tác phẩm nổi tiếng nhất. Hoạt động dù Bổ sung dữ liệu TMDB đang bật hay tắt. Mặc định: bật."
           }
         }
       }
@@ -15785,6 +15867,47 @@
         }
       }
     },
+    "Delay %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delay %@"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verzögerung %@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retraso %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Délai %@"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ritardo %@"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Độ trễ %@"
+          }
+        }
+      }
+    },
     "Delete Badge Pack": {
       "localizations": {
         "de": {
@@ -16053,6 +16176,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Thông tin"
+          }
+        }
+      }
+    },
+    "Details aren't available right now.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Details sind gerade nicht verfügbar."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Los detalles no están disponibles en este momento."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Les détails ne sont pas disponibles pour le moment."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "I dettagli non sono disponibili al momento."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hiện chưa có thông tin chi tiết."
           }
         }
       }
@@ -17287,6 +17444,46 @@
           "stringUnit": {
             "state": "translated",
             "value": "Dải động"
+          }
+        }
+      }
+    },
+    "E%lld": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "E%lld"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "E%lld"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "E%lld"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "É%lld"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "E%lld"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "T%lld"
           }
         }
       }
@@ -24999,6 +25196,47 @@
           "stringUnit": {
             "state": "translated",
             "value": "Đang tải thể loại…"
+          }
+        }
+      }
+    },
+    "Loading sources…": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loading sources…"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quellen werden geladen…"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cargando fuentes…"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chargement des sources…"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Caricamento sorgenti…"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đang tải nguồn…"
           }
         }
       }
@@ -32905,6 +33143,47 @@
         }
       }
     },
+    "Pick the line that was spoken when you pressed Sync Line.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pick the line that was spoken when you pressed Sync Line."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wähle die Zeile, die gesprochen wurde, als du Zeile abgleichen gedrückt hast."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Elige la línea que se dijo cuando pulsaste Sincronizar línea."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choisissez la réplique prononcée quand vous avez appuyé sur Caler la ligne."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scegli la riga pronunciata quando hai premuto Allinea riga."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chọn dòng được nói khi bạn nhấn Khớp dòng."
+          }
+        }
+      }
+    },
     "Pick the next episode from the same release or add-on group when it has one.": {
       "extractionState": "manual",
       "localizations": {
@@ -33311,6 +33590,47 @@
           "stringUnit": {
             "state": "translated",
             "value": "Phát tập tiếp theo"
+          }
+        }
+      }
+    },
+    "Play Now": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Play Now"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Jetzt abspielen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reproducir ahora"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lire maintenant"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Riproduci ora"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Phát ngay"
           }
         }
       }
@@ -41626,6 +41946,47 @@
         }
       }
     },
+    "Show cast in player": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show cast in player"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Besetzung im Player anzeigen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostrar el reparto en el reproductor"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Afficher le casting dans le lecteur"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostra il cast nel player"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hiện diễn viên trong trình phát"
+          }
+        }
+      }
+    },
     "Show posters without a title label": {
       "localizations": {
         "de": {
@@ -46452,6 +46813,47 @@
         }
       }
     },
+    "Subtitle Timing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Subtitle Timing"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Untertitel-Timing"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sincronización de subtítulos"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Synchronisation des sous-titres"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sincronizzazione sottotitoli"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đồng bộ phụ đề"
+          }
+        }
+      }
+    },
     "Subtitle style and preferred languages": {
       "localizations": {
         "de": {
@@ -46686,40 +47088,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Tốc độ tua bằng vuốt (A/B)"
-          }
-        }
-      }
-    },
-    "Swipe down for info": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Nach unten streichen für Infos"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Desliza hacia abajo para ver la información"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Balayez vers le bas pour les infos"
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Scorri verso il basso per le info"
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Vuốt xuống để xem thông tin"
           }
         }
       }
@@ -52356,6 +52724,47 @@
           "stringUnit": {
             "state": "translated",
             "value": "Chưa xem"
+          }
+        }
+      }
+    },
+    "Up Next": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Up Next"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Als Nächstes"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A continuación"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "À suivre"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Prossimo"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tiếp theo"
           }
         }
       }

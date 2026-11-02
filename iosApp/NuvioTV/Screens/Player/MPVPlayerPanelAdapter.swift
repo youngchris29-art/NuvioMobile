@@ -14,11 +14,15 @@ final class MPVPlayerPanelAdapter {
     private let context: PlaybackContext
     private var cancellables: Set<AnyCancellable> = []
     private var routeObserver: NSObjectProtocol?
+    /// The Cast pill's loader (Insights). Retained here: the model only holds it weakly.
+    private var insights: PlayerInsightsLoader?
 
     init(state: MPVPlaybackState, model: PlayerTopPanelModel, context: PlaybackContext) {
         self.state = state
         self.model = model
         self.context = context
+        // Cast pill: credits for what is playing, keyed on the title (never the stream).
+        insights = PlayerInsightsLoader.attach(model: model, context: context)
 
         model.onSelectSubtitle = { [weak state] option in
             state?.selectSubtitle?(option.flatMap { Int($0.id) } ?? -1)
@@ -78,13 +82,22 @@ final class MPVPlayerPanelAdapter {
             state?.seekToChapter?(chapter.sec)
             model?.onClose?()
         }
-        Publishers.Merge(
-            state.transport.$chapters.map { _ in () }.eraseToAnyPublisher(),
-            state.$panelOpen.removeDuplicates().filter { $0 }.map { _ in () }.eraseToAnyPublisher()
-        )
-        .receive(on: RunLoop.main)
-        .sink { [weak self] in self?.rebuildChapters() }
-        .store(in: &cancellables)
+        state.transport.$chapters
+            .map { _ in () }
+            .receive(on: RunLoop.main)
+            .sink { [weak self] in self?.rebuildChapters() }
+            .store(in: &cancellables)
+        // Review r3 (B4): on open, synchronously, before SwiftUI draws the shelf. The shelf asks for
+        // focus as it appears and its default focus is the ticked row; a rebuild one runloop turn
+        // later ticked the current chapter only after the focus had landed on the stale tick (the
+        // chapter playing when the shelf last opened). The rebuild reads the chapters and the
+        // position, never `panelOpen`, so the will-set emission is safe to act on here.
+        // Review r4 (P3): also when the Chapters shelf opens from another shelf (Left/Right moves
+        // shelf to shelf with `panelOpen` staying true), so its tick and its entry focus
+        // (`PlayerChapterFocus.entryRedirect`) follow the playhead there too.
+        Self.chapterRebuildTriggers(panelOpen: state.$panelOpen, openInfoPill: state.transport.$openInfoPill)
+            .sink { [weak self] in self?.rebuildChapters() }
+            .store(in: &cancellables)
 
         // mpv audio effects (P5 B20): the native adapter never sets `audioEffects`, so its Audio
         // tab hides the rows.
@@ -110,8 +123,26 @@ final class MPVPlayerPanelAdapter {
             .sink { [weak model] facts in model?.setBadgeFacts(facts) }
             .store(in: &cancellables)
 
+        // Insights (2026-11-01): the popovers and shelves read this model; "close" means close the
+        // open popover or shelf (a chapter seek, an episode jump, Play Now).
+        state.panelModel = model
+        model.onClose = { [weak state] in state?.closeOverlay?() }
+        // The text pill row follows the model (Cast once someone is known, Chapters once the list
+        // lands, Up Next while there is a next episode). On the next main turn: `@Published`
+        // emits before the value is stored.
+        Publishers.Merge4(
+            model.$people.map { _ in () }.eraseToAnyPublisher(),
+            model.$castEnabled.map { _ in () }.eraseToAnyPublisher(),
+            model.$chapters.map { _ in () }.eraseToAnyPublisher(),
+            model.$upNext.map { _ in () }.eraseToAnyPublisher()
+        )
+        .receive(on: RunLoop.main)
+        .sink { [weak self] in self?.rebuildInfoPills() }
+        .store(in: &cancellables)
+
         rebuildSelections()
         rebuildInfo()
+        rebuildInfoPills()
         refreshRoute()
         routeObserver = NotificationCenter.default.addObserver(
             forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main
@@ -122,6 +153,59 @@ final class MPVPlayerPanelAdapter {
 
     deinit {
         if let routeObserver { NotificationCenter.default.removeObserver(routeObserver) }
+    }
+
+    /// The Up Next pill from the screen's `NextEpisodeEngine`: the next episode's title, S/E and
+    /// still; Play plays the ready stream when the countdown card has one, else jumps to it (search,
+    /// then play, as the Episodes list does).
+    func attachUpNext(engine: NextEpisodeEngine) {
+        engine.$upNextEpisode
+            .receive(on: RunLoop.main)
+            .sink { [weak model] episode in
+                guard let model else { return }
+                let card = episode.map(Self.upNextCard(_:))
+                if model.upNext != card { model.upNext = card }
+            }
+            .store(in: &cancellables)
+        model.onPlayUpNext = { [weak engine, weak model] in
+            guard let engine, let next = engine.upNextEpisode else { return }
+            if !engine.playNow() { engine.jumpToEpisode(next) }
+            model?.onClose?()
+        }
+    }
+
+    /// When the chapter rows are rebuilt besides a list change: the panel opening, and the
+    /// Chapters shelf becoming the open one (also shelf to shelf, with the panel already open).
+    /// Synchronous (no main-queue hop): both run on the will-set emission, before SwiftUI draws.
+    static func chapterRebuildTriggers(panelOpen: Published<Bool>.Publisher,
+                                       openInfoPill: Published<PlayerInfoPill?>.Publisher) -> AnyPublisher<Void, Never> {
+        Publishers.Merge(
+            panelOpen.removeDuplicates().filter { $0 }.map { _ in () },
+            openInfoPill.removeDuplicates().filter { $0 == .chapters }.map { _ in () }
+        )
+        .eraseToAnyPublisher()
+    }
+
+    static func upNextCard(_ episode: MetaVideo) -> PlayerPanelUpNext {
+        let subtitle: String? = switch (episode.season?.intValue, episode.episode?.intValue) {
+        case let (s?, e?): String(localized: "S\(Int(s)) · E\(Int(e))")   // catalog "S%lld · E%lld"
+        case let (nil, e?): String(localized: "E\(Int(e))")   // catalog "E%lld"
+        default: nil
+        }
+        return PlayerPanelUpNext(title: episode.title, subtitle: subtitle,
+                                 still: episode.thumbnail.flatMap { URL(string: $0) })
+    }
+
+    private func rebuildInfoPills() {
+        let t = state.transport
+        let pills = PlayerInfoPill.visible(for: model)
+        guard pills != t.infoPills else { return }
+        let fixed = PlayerInfoPill.reconcile(focused: t.focusedInfoPill, open: t.openInfoPill,
+                                             old: t.infoPills, new: pills)
+        t.infoPills = pills
+        // Close first: closing hands the focus back to the open pill, which may be the one gone.
+        if t.openInfoPill != nil, fixed.open == nil { state.closeOverlay?() }
+        if t.focusedInfoPill != fixed.focused { t.focusedInfoPill = fixed.focused }
     }
 
     private func rebuildSelections() {
