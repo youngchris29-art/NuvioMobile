@@ -51,10 +51,6 @@ struct NativePlayerScreen: View {
     @State private var skipSources = SkipIntervalSources()
     @State private var chapterSkipFeed = ChapterSkipFeed()
     @State private var skipPrompt: SkipPrompt?
-    /// "Swipe down for info" hint (start + after a pause); hidden while the panel is open.
-    @State private var showSwipeHint = false
-    @State private var swipeHintTask: Task<Void, Never>?
-    @State private var swipeHintReason: SwipeHintReason?
     @State private var panelOpen = false
     // P4 B16: the pause info card (rule in `NativePauseCardRule`).
     /// Settings › Playback › Pause Info Card, read once in `onAppear` (as on mpv).
@@ -168,10 +164,6 @@ struct NativePlayerScreen: View {
             // (a per-second UIAction title change re-animates the transport bar), so the countdown
             // lives here, in the shared chip caption both engines draw. Inset above the system's
             // contextual-action pill; the extra bottom offset is device-tuned for tvOS 26.
-            if showSwipeHint, !panelOpen, coordinator.phase == .playing {
-                PlayerSwipeHint().transition(.opacity)
-            }
-
             // P4 B16: paused, the system bar known hidden, the panel closed. Above the player,
             // below the up-next caption; never focusable, never hit-tested.
             if showPauseCard, coordinator.phase == .playing {
@@ -208,7 +200,6 @@ struct NativePlayerScreen: View {
         }
         .animation(PlayerChipStyle.animation, value: upNext.phase)
         .animation(PlayerChipStyle.animation, value: upNext.sourceSwitchFailure)
-        .animation(PlayerChipStyle.animation, value: showSwipeHint)
         .animation(.easeInOut(duration: 0.25), value: showPauseCard)
         .animation(.easeInOut(duration: 0.25), value: showsLoadingOverlay)
         #if DEBUG
@@ -234,22 +225,17 @@ struct NativePlayerScreen: View {
             )
         }
         .onChange(of: coordinator.phase) { _, phase in
-            if phase == .playing { flashSwipeHint(after: 1, reason: .start) }
             // P5 B22 review r1 (P3-2): load once playback runs, not while the stream opens.
             if phase == .playing, onOpenTitle != nil {
                 moreLikeThisLoader.load(type: context.contentType, id: context.parentMetaId)
             }
             evaluatePauseCard()
         }
+        // Insights device fix: no "Swipe down for info" hint on this route any more. It was drawn
+        // at the top centre for the old app-drawn top panel; on tvOS 26 the info pills sit under
+        // the seek bar and show whenever the system transport bar is up, so the hint pointed at
+        // nothing (the mpv bar dropped its copy for the same reason).
         .onChange(of: coordinator.isPaused) { _, paused in
-            // Re-show the hint once per pause (after the pause has settled), like Infuse. Resuming
-            // only cancels a PAUSE hint — the start hint must survive the initial paused→playing
-            // transition, which happens right after readyToPlay.
-            if paused {
-                if coordinator.phase == .playing { flashSwipeHint(after: 1.5, reason: .pause) }
-            } else if swipeHintReason == .pause {
-                hideSwipeHint()
-            }
             pauseChanged(paused)
         }
         .onChange(of: coordinator.isRebuildingItem) { _, _ in evaluatePauseCard() }
@@ -294,31 +280,10 @@ struct NativePlayerScreen: View {
             fetchSkipSegments()
         }
         .onDisappear {
-            swipeHintTask?.cancel()
             pauseCardTask?.cancel()
             coordinator.stop()
             upNext.stop()
         }
-    }
-
-    private enum SwipeHintReason { case start, pause }
-
-    private func flashSwipeHint(after delay: Double, reason: SwipeHintReason) {
-        swipeHintTask?.cancel()
-        swipeHintReason = reason
-        swipeHintTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(delay))
-            guard !Task.isCancelled else { return }
-            showSwipeHint = true
-            try? await Task.sleep(for: .seconds(4))
-            guard !Task.isCancelled else { return }
-            showSwipeHint = false
-        }
-    }
-
-    private func hideSwipeHint() {
-        swipeHintTask?.cancel()
-        showSwipeHint = false
     }
 
     // MARK: - Pause info card (P4 B16)
@@ -357,8 +322,6 @@ struct NativePlayerScreen: View {
             isRebuilding: isRebuildingItem)
         if visible, !showPauseCard {
             showPauseCard = true
-            // The two would overlap at the top centre.
-            if swipeHintReason == .pause { hideSwipeHint() }
             print("[NativePlayer] pause card shown after \(String(format: "%.1f", now - (pausedSince ?? now)))s")
         } else if !visible, showPauseCard {
             hidePauseCard(reason: isRebuildingItem ? "rebuild" : (panelOpen ? "panel" : "rule"))

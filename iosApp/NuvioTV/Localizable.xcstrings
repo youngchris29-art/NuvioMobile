@@ -46658,40 +46658,6 @@
         }
       }
     },
-    "Swipe down for info": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Nach unten streichen für Infos"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Desliza hacia abajo para ver la información"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Balayez vers le bas pour les infos"
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Scorri verso il basso per le info"
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Vuốt xuống để xem thông tin"
-          }
-        }
-      }
-    },
     "Switch": {
       "localizations": {
         "fr": {
