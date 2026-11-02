@@ -21,6 +21,12 @@ final class PlayerInsightsLoaderTests: XCTestCase {
             lock.lock(); let c = conts[index]; lock.unlock()
             c.resume(returning: value)
         }
+        /// Index of the first fetch whose key matches. Fetches run in unstructured Tasks, so their
+        /// arrival order is not guaranteed; tests that start several resume by key, not by position.
+        func index(where match: (Key) -> Bool) -> Int {
+            lock.lock(); defer { lock.unlock() }
+            return keys.firstIndex(where: match)!
+        }
     }
 
     private func person(_ id: Int, _ name: String = "P") -> PlayerPanelPerson {
@@ -68,9 +74,9 @@ final class PlayerInsightsLoaderTests: XCTestCase {
         loader.load(identity: ident("b"))
         await settle()
         XCTAssertEqual(g.count, 2)
-        g.resume(1, credits([2]))
+        g.resume(g.index { $0.parentMetaId == "b" }, credits([2]))
         await settle()
-        g.resume(0, credits([1]))
+        g.resume(g.index { $0.parentMetaId == "a" }, credits([1]))
         await settle()
         XCTAssertEqual(model.people.map(\.id), [2])
     }
@@ -128,10 +134,10 @@ final class PlayerInsightsLoaderTests: XCTestCase {
         model.openPerson(person(2))
         await settle()
         XCTAssertEqual(pg.count, 2)
-        pg.resume(0, detail(1))
+        pg.resume(pg.index { $0 == 1 }, detail(1))
         await settle()
         XCTAssertNil(model.actorDetail)
-        pg.resume(1, detail(2))
+        pg.resume(pg.index { $0 == 2 }, detail(2))
         await settle()
         XCTAssertEqual(model.actorDetail?.id, 2)
     }
@@ -145,7 +151,7 @@ final class PlayerInsightsLoaderTests: XCTestCase {
         model.openPerson(person(1))
         await settle()
         XCTAssertTrue(model.menuBack())
-        pg.resume(0, detail(1))
+        pg.resume(pg.index { $0 == 1 }, detail(1))
         await settle()
         XCTAssertNil(model.actorDetail)
         XCTAssertNil(model.actorView)
