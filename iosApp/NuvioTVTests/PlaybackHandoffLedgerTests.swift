@@ -26,6 +26,17 @@ final class PlaybackHandoffLedgerTests: XCTestCase {
         XCTAssertTrue(ledger.trackingFinished)
     }
 
+    func testEndOfFileClosesTrackingSoAReplayExitSendsNoSecondStop() {
+        // Review r3: the controller finishes tracking at EOF (the end position), so a Play Again that
+        // the viewer leaves at 10% never sends the only tracker stop at 10%.
+        var ledger = PlaybackHandoffLedger()
+        XCTAssertEqual(ledger.finishTracking(positionSec: 3_000, durationSec: 3_000, everShowedFrame: true), [
+            .flushResume(positionSec: 3_000), .stopTrakt(positionSec: 3_000), .stopTrackers(positionSec: 3_000),
+        ])
+        XCTAssertEqual(ledger.finishTracking(positionSec: 300, durationSec: 3_000, everShowedFrame: true), [],
+                       "teardown after the replay exit")
+    }
+
     func testASecondFailureVerdictEmitsNothing() {
         var ledger = PlaybackHandoffLedger()
         XCTAssertFalse(ledger.handOff(positionSec: 100, secondsPlayed: 50, durationSec: 3_000, everShowedFrame: true).isEmpty)

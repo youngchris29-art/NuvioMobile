@@ -296,7 +296,7 @@ final class AetherTVPlayerViewController: UIViewController {
             teardown(reason: "leaving")
         } else {
             // A cover over the player (the post-play card): Replay comes back here. Progress is
-            // flushed; the tracker sessions stay open (one per watch session).
+            // flushed (a no-op once the end closed the tracker sessions, `handleEnded`).
             recordProgress(flush: true)
         }
     }
@@ -961,12 +961,15 @@ final class AetherTVPlayerViewController: UIViewController {
         print("[AetherPlayer] ended at \(String(format: "%.1f", position))")
         recorder.record(positionSec: position, durationSec: transportDurationSec, isPaused: true, speed: 1,
                         flush: true, isLive: false)
+        // Review r3: the watch is complete here, so the Trakt and tracker sessions close at the end
+        // position (mpv closes them when the post-play cover goes up). Play Again is not tracked again.
+        finishTracking(positionSec: position)
         state.isEnded = true
     }
 
     /// Post-play "Play Again": `.ended` is terminal on Aether, so this is a fresh `load` at 0 on the
-    /// same request with the live tracks (`reloadRequest`; the clock keeps its axis). One tracker
-    /// session for the whole visit.
+    /// same request with the live tracks (`reloadRequest`; the clock keeps its axis). The tracker
+    /// sessions closed at the end (`handleEnded`); the second viewing is not tracked.
     private func replay() {
         guard let session, let request = session.currentRequest, !handedOff else { return }
         transportInput.cancelExactStage()
