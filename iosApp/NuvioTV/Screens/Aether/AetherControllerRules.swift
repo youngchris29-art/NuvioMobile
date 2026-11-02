@@ -311,7 +311,7 @@ enum AetherStreamInfo {
         if let delivery = deliveryLabel(d.audioDelivery) { audio.append(delivery) }
         if d.audioShaping == .applied { audio.append(String(localized: "shaped")) }
         info.audio = audio.joined(separator: " \u{00B7} ")
-        if bufferedAheadSec.isFinite, bufferedAheadSec > 0 {
+        if bufferedAheadSec.isFinite, bufferedAheadSec >= 0.5 {
             info.cache = String(format: "%.0fs buffered", bufferedAheadSec.rounded())
         }
         return info

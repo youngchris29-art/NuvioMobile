@@ -68,12 +68,16 @@ struct MPVSmokeModifier: ViewModifier {
                     if UserDefaults.standard.object(forKey: "debug.mpvSmokeAudioDelayMs") != nil {
                         ctx.streamAudioDelayMs = UserDefaults.standard.integer(forKey: "debug.mpvSmokeAudioDelayMs")
                     }
-                    // `debug.mpvSmokeEngine` native|mpv (P4 legs): force the engine. A forced
-                    // native engine skips the probe and the silent mpv fallback
-                    // (`PlayerScreen.shown`), so a native leg can never quietly pass on mpv.
+                    // `debug.mpvSmokeEngine` native|mpv|aether (P4 legs, Aether W3-A): force the
+                    // engine. A forced native engine skips the probe and the silent mpv fallback
+                    // (`PlayerScreen.shown`), so a native leg can never quietly pass on mpv. A forced
+                    // Aether engine opens the Aether controller behind the shared chrome; its
+                    // fallback still hands off to mpv (`SmokeAetherScreen`, until `PlayerScreen`
+                    // dispatches `.aether` itself, W3-C).
                     switch UserDefaults.standard.string(forKey: "debug.mpvSmokeEngine")?.lowercased() {
                     case "native": ctx.forcedEngine = .native
                     case "mpv": ctx.forcedEngine = .mpv
+                    case "aether": ctx.forcedEngine = .aether
                     default: break
                     }
                     // `debug.mpvSmokeResumeSec` <sec> (P5 B22 legs): start near the end of a short fixture.
@@ -85,14 +89,17 @@ struct MPVSmokeModifier: ViewModifier {
                 }
             }
             .fullScreenCover(item: $context) { ctx in
-                PlayerScreen(
-                    context: ctx, onPlayNext: { _ in },
-                    // `debug.mpvSmokePostPlay` YES: enable the More Like This row; a pick is
-                    // recorded in `smokeOpened` instead of pushing a page.
-                    onOpenTitle: UserDefaults.standard.bool(forKey: "debug.mpvSmokePostPlay")
-                        ? { smokeOpened = $0.id } : nil
-                )
-                .ignoresSafeArea()
+                // `debug.mpvSmokePostPlay` YES: enable the More Like This row; a pick is recorded
+                // in `smokeOpened` instead of pushing a page.
+                let onOpenTitle: ((MetaPreview) -> Void)? = UserDefaults.standard.bool(forKey: "debug.mpvSmokePostPlay")
+                    ? { smokeOpened = $0.id } : nil
+                if ctx.forcedEngine == .aether {
+                    SmokeAetherScreen(context: ctx, onOpenTitle: onOpenTitle)
+                        .ignoresSafeArea()
+                } else {
+                    PlayerScreen(context: ctx, onPlayNext: { _ in }, onOpenTitle: onOpenTitle)
+                        .ignoresSafeArea()
+                }
             }
             .overlay(alignment: .topLeading) {
                 if UserDefaults.standard.bool(forKey: "debug.mpvSmokePostPlay") {
@@ -109,6 +116,61 @@ struct MPVSmokeModifier: ViewModifier {
 }
 
 extension URL: @retroactive Identifiable { public var id: String { absoluteString } }
+
+/// `debug.mpvSmokeEngine aether`: the Aether controller behind the shared chrome, and the handoff to
+/// mpv a fallback asks for, without `PlayerScreen` (its `.aether` dispatch is W3-C's). The mpv screen
+/// gets what `PlayerScreen` will pass: the handoff position as the resume point, the seconds played,
+/// the shortened start budget when Aether never showed a frame.
+///
+/// `debug.mpvSmokeAetherBreak` YES: Aether opens a path that does not exist while mpv keeps the real
+/// URL, so the forced-bad run proves the handoff and mpv's takeover (`[MPVSmoke] aether handoff`).
+private struct SmokeAetherScreen: View {
+    let context: PlaybackContext
+    let onOpenTitle: ((MetaPreview) -> Void)?
+    @State private var handoff: PlaybackHandoff?
+
+    private var aetherContext: PlaybackContext {
+        guard UserDefaults.standard.bool(forKey: "debug.mpvSmokeAetherBreak") else { return context }
+        print("[MPVSmoke] aether break: opening a missing file on Aether")
+        var broken = PlaybackContext(
+            url: URL(fileURLWithPath: "/nonexistent/aether-break.mkv"), title: context.title,
+            contentType: context.contentType, parentMetaId: context.parentMetaId, videoId: context.videoId,
+            season: context.season, episode: context.episode, poster: context.poster, background: context.background,
+            providerName: context.providerName, providerAddonId: context.providerAddonId,
+            streamTitle: context.streamTitle, streamSubtitle: context.streamSubtitle,
+            externalSubtitles: context.externalSubtitles, synopsis: context.synopsis)
+        broken.startFromBeginning = context.startFromBeginning
+        broken.resumeAtSec = context.resumeAtSec
+        return broken
+    }
+
+    var body: some View {
+        if let handoff {
+            MPVPlayerScreen(context: mpvContext(after: handoff), onPlayNext: { _ in },
+                            routingNote: String(localized: "mpv \u{00B7} fallback"),
+                            onPlaybackFailed: { print("[MPVSmoke] mpv failure after handoff: \($0.reason)") },
+                            startWatchdogShortened: !handoff.startedPlaying,
+                            nativeSecondsPlayedBeforeFallback: handoff.secondsPlayed,
+                            onOpenTitle: onOpenTitle)
+        } else {
+            MPVPlayerScreen(context: aetherContext, onPlayNext: { _ in }, routingNote: "Aether \u{00B7} forced",
+                            onPlaybackFailed: { print("[MPVSmoke] aether terminal failure: \($0.reason) kind=\($0.kind.rawValue)") },
+                            onOpenTitle: onOpenTitle, engine: .aether,
+                            onFallback: { h in
+                                print("[MPVSmoke] aether handoff pos=\(String(format: "%.1f", h.positionSec)) played=\(Int(h.secondsPlayed))"
+                                      + " started=\(h.startedPlaying) kind=\(h.kind.rawValue) → mpv")
+                                handoff = h
+                            })
+        }
+    }
+
+    private func mpvContext(after h: PlaybackHandoff) -> PlaybackContext {
+        var ctx = context
+        ctx.forcedEngine = .mpv
+        if h.positionSec > 10 { ctx.resumeAtSec = h.positionSec }
+        return ctx
+    }
+}
 
 private struct BareAVPlayerView: UIViewControllerRepresentable {
     let url: URL

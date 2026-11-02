@@ -3775,13 +3775,13 @@ extension MPVTVPlayerViewController: ChromePlayerController {}
 private struct MPVPlayerRepresentable: UIViewControllerRepresentable {
     let context: PlaybackContext
     let state: MPVPlaybackState
-    /// Which controller to build. Phase 1: every engine but Aether (W3-A) builds mpv.
+    /// Which controller to build: `.aether` builds the Aether controller (W3-A), every other engine mpv.
     let engine: PlaybackEngine
     let onExit: () -> Void
     /// Failover hooks, handed straight to the controller (see its doc comments).
     let onPlaybackFailed: ((PlaybackFailure) -> Void)?
     let onPlaybackHealthy: ((Double) -> Void)?
-    /// The Aether controller's handoff to mpv (W3-A); unused by the mpv controller.
+    /// The Aether controller's handoff to mpv; unused by the mpv controller.
     let onFallback: ((PlaybackHandoff) -> Void)?
     let startWatchdogShortened: Bool
     let secondsPlayedBeforeFallback: Double
@@ -3791,7 +3791,10 @@ private struct MPVPlayerRepresentable: UIViewControllerRepresentable {
     func makeUIViewController(context ctx: Context) -> UIViewController {
         let controller: ChromePlayerController
         switch engine {
-        // case .aether: (W3-A) the Aether controller, its `onFallback = onFallback`.
+        case .aether:
+            let aether = AetherTVPlayerViewController(context: context, state: state)
+            aether.onFallback = onFallback
+            controller = aether
         default:
             let mpv = MPVTVPlayerViewController(context: context, state: state)
             // Before anything touches `controller.view`: `viewDidLoad` runs `setupMpv`, which reads it.
@@ -3835,10 +3838,10 @@ struct MPVPlayerScreen: View {
     /// P5 B22: set by presenters that can push a Detail page after the player closes; enables the
     /// post-play More Like This row.
     var onOpenTitle: ((MetaPreview) -> Void)? = nil
-    /// Which player controller this screen hosts (read once, when it is made). Phase 1 builds mpv
-    /// for every value; W3-A adds the Aether controller.
+    /// Which player controller this screen hosts (read once, when it is made): `.aether` hosts the
+    /// Aether controller, every other value mpv.
     var engine: PlaybackEngine = .mpv
-    /// The Aether controller's handoff to mpv (W3-A); never fired by mpv.
+    /// The Aether controller's handoff to mpv; never fired by mpv.
     var onFallback: ((PlaybackHandoff) -> Void)? = nil
 
     @StateObject private var state: MPVPlaybackState
@@ -3858,9 +3861,12 @@ struct MPVPlayerScreen: View {
 
     /// The transport pill row. Episodes reads the engine's list (BUG-229: it may arrive after start).
     private func updateTransportPills() {
-        state.transport.pills = PillKind.visible(
+        var pills = PillKind.visible(
             isSeries: context.contentType == "series", canSwitchStreams: onPlayNext != nil,
             hasEpisodes: !upNext.episodes.isEmpty)
+        // Aether Phase 1 (plan section 14): the Aspect pill is mpv's picture fit; hidden on Aether.
+        if engine == .aether { pills.removeAll { $0 == .aspect } }
+        state.transport.pills = pills
         // A popover whose disc left the row (Sources/Episodes) cannot stay open without its anchor.
         if let open = state.transport.openPopover, !state.transport.pills.contains(open) {
             state.closeOverlay?()
