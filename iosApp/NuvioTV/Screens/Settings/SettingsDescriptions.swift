@@ -147,6 +147,13 @@ enum SettingsDescriptionID: String, CaseIterable {
     case playerEnhancedRenderer = "player.enhancedRenderer"
     case playerNativeDolbyVision = "player.nativeDolbyVision"
     case playerP7FelMpv = "player.p7FelMpv"
+    // MARK: Aether (Phase 1)
+    case playerAetherEngine = "player.aetherEngine"
+    case playerAetherObjectAudio = "player.aetherObjectAudio"
+    case playerAetherObjectAudioLayout = "player.aetherObjectAudioLayout"
+    case playerAetherDualLayerDV = "player.aetherDualLayerDV"
+    case playerAetherStyledSubsToMpv = "player.aetherStyledSubsToMpv"
+    case playerAetherLosslessBridge = "player.aetherLosslessBridge"
     case playerStreamingBuffer = "player.streamingBuffer"
     case playerNetworkReadahead = "player.networkReadahead"
     case playerPreloadNextEpisode = "player.preloadNextEpisode"
@@ -362,6 +369,13 @@ enum SettingsDescriptions {
         case .playerEnhancedRenderer: return LocalizedStringResource("Uses a different video renderer for better HDR color. It is experimental, works only on a real Apple TV and applies to the next video. Off by default. Dolby Vision profile 5 streams that play on mpv always use it.")
         case .playerNativeDolbyVision: return LocalizedStringResource("Plays Dolby Vision and HDR10 files in Apple's own player for true Dolby Vision on Apple TV 4K. Everything else stays on the mpv player. On by default.")
         case .playerP7FelMpv: return LocalizedStringResource("Some Dolby Vision discs (Profile 7 FEL) carry extra picture data that native playback must drop. This keeps those files on the mpv player as plain HDR10 so nothing is dropped. Off by default.")
+        // MARK: Aether (Phase 1)
+        case .playerAetherEngine: return LocalizedStringResource("Tries a new playback engine for compatible files, with automatic fallback to mpv if anything goes wrong. Off by default.")
+        case .playerAetherObjectAudio: return LocalizedStringResource("Plays TrueHD and DTS:X with height channels when your receiver supports it. Off by default.")
+        case .playerAetherObjectAudioLayout: return LocalizedStringResource("Pick the speaker layout your receiver and speakers use for height channels. 7.1.4 by default.")
+        case .playerAetherDualLayerDV: return LocalizedStringResource("Renders both layers of Dolby Vision Profile 7 FEL discs when the Apple TV can keep up. Off by default.")
+        case .playerAetherStyledSubsToMpv: return LocalizedStringResource("Keeps files whose subtitles are styled ASS with embedded fonts on the mpv player, which draws them exactly as authored. On by default.")
+        case .playerAetherLosslessBridge: return LocalizedStringResource("Sends TrueHD and DTS as lossless surround. Off sends Dolby Digital Plus 5.1 instead, for soundbars. On by default.")
         case .playerStreamingBuffer: return LocalizedStringResource("Sets how much memory the player may use to store video ahead of time. A larger buffer helps on a shaky connection. Default: Default.")
         case .playerNetworkReadahead: return LocalizedStringResource("Sets how many seconds of video the player downloads ahead of what you are watching. More seconds help on a slow connection. Default: Default.")
         case .playerPreloadNextEpisode: return LocalizedStringResource("Starts looking for the next episode's sources about 30 seconds before the Up Next card appears, so playback starts sooner. Off by default.")

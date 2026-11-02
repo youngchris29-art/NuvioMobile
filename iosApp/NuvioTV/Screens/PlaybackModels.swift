@@ -36,6 +36,52 @@ enum PlayerTuning {
     static let audioModeKey = "player.audioMode"
 }
 
+// MARK: - Aether (Phase 1)
+
+/// Device-local keys for the experimental Aether engine (Settings > Playback). Like the rest of
+/// `PlayerTuning` these are hardware knobs and are never synced. Defaults are applied at read time
+/// (`AetherTuning`), so no `register(defaults:)` call is needed.
+extension PlayerTuning {
+    static let aetherEngineKey = "player.aetherEngine"
+    static let aetherObjectAudioKey = "player.aetherObjectAudio"
+    static let aetherObjectAudioLayoutKey = "player.aetherObjectAudioLayout"
+    static let aetherDualLayerDVKey = "player.aetherDualLayerDV"
+    static let aetherStyledSubsToMpvKey = "player.aetherStyledSubsToMpv"
+    static let aetherLosslessBridgeKey = "player.aetherLosslessBridge"
+}
+
+/// Defaults and readers for the Aether settings. A missing key reads as its default, so the
+/// settings model and the router agree without registering defaults at launch.
+nonisolated enum AetherTuning {
+    static let defaultLayout = "7.1.4"
+    static let layouts = ["5.1.2", "5.1.4", "7.1.2", "7.1.4", "9.1.6"]
+
+    static func bool(_ key: String, default value: Bool, defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: key) as? Bool ?? value
+    }
+
+    static func layout(defaults: UserDefaults = .standard) -> String {
+        let stored = defaults.string(forKey: PlayerTuning.aetherObjectAudioLayoutKey) ?? defaultLayout
+        return layouts.contains(stored) ? stored : defaultLayout
+    }
+
+    static func isEngineEnabled(defaults: UserDefaults = .standard) -> Bool {
+        bool(PlayerTuning.aetherEngineKey, default: false, defaults: defaults)
+    }
+    static func isObjectAudioEnabled(defaults: UserDefaults = .standard) -> Bool {
+        bool(PlayerTuning.aetherObjectAudioKey, default: false, defaults: defaults)
+    }
+    static func isDualLayerDVEnabled(defaults: UserDefaults = .standard) -> Bool {
+        bool(PlayerTuning.aetherDualLayerDVKey, default: false, defaults: defaults)
+    }
+    static func keepStyledSubsOnMpv(defaults: UserDefaults = .standard) -> Bool {
+        bool(PlayerTuning.aetherStyledSubsToMpvKey, default: true, defaults: defaults)
+    }
+    static func isLosslessBridgeEnabled(defaults: UserDefaults = .standard) -> Bool {
+        bool(PlayerTuning.aetherLosslessBridgeKey, default: true, defaults: defaults)
+    }
+}
+
 /// Everything the player needs to render a stream and record watch progress for it.
 struct PlaybackContext: Identifiable {
     let url: URL

@@ -100,6 +100,9 @@ nonisolated struct SubtitleStreamInfo: Sendable {
     var codec: String         // "subrip", "ass", "hdmv_pgs_subtitle", "dvd_subtitle", ...
     var isBitmap: Bool         // PGS/VobSub/DVB → must burn-in or route to mpv
     var language: String?
+    /// Aether (Phase 1): container disposition flags, so the router can mirror the start-track pick.
+    var isDefault: Bool = false
+    var isForced: Bool = false
 }
 
 /// Everything the router needs, as plain Swift values (no libav* types leak out).
@@ -119,6 +122,9 @@ nonisolated struct ProbeResult: Sendable {
     var videoStreamCount: Int = 0
     /// Where `hdr` came from (see `ColourSource`). `.none` for SDR and for files with no video.
     var hdrSource: ColourSource = .none
+    /// Aether (Phase 1): attachment streams that carry a font (`ttf`/`otf`, see
+    /// `MediaProbe.isFontAttachment`). Styled ASS only renders as authored when fonts ship with it.
+    var fontAttachmentCount: Int = 0
 }
 
 nonisolated enum MediaProbe {
@@ -215,12 +221,20 @@ nonisolated enum MediaProbe {
                 ))
             case AVMEDIA_TYPE_SUBTITLE:
                 let props = avcodec_descriptor_get(par.codec_id)?.pointee.props ?? 0
+                let disposition = stream.pointee.disposition
                 result.subtitles.append(SubtitleStreamInfo(
                     index: i,
                     codec: codecName(par.codec_id),
                     isBitmap: (props & AV_CODEC_PROP_BITMAP_SUB) != 0,
-                    language: lang
+                    language: lang,
+                    isDefault: disposition & 1 != 0,          // AV_DISPOSITION_DEFAULT
+                    isForced: disposition & (1 << 6) != 0     // AV_DISPOSITION_FORCED
                 ))
+            case AVMEDIA_TYPE_ATTACHMENT:
+                if isFontAttachment(codec: codecName(par.codec_id),
+                                    mimeType: dictValue(stream.pointee.metadata, "mimetype")) {
+                    result.fontAttachmentCount += 1
+                }
             default:
                 break
             }
@@ -268,6 +282,19 @@ nonisolated enum MediaProbe {
     }
 
     // MARK: - Extraction helpers
+
+    /// Aether (Phase 1): whether an attachment stream is a font. Matroska attachments carry the font
+    /// as codec `ttf`/`otf` (FFmpeg maps the MIME type) or only as a `mimetype` tag; accept either.
+    static func isFontAttachment(codec: String, mimeType: String?) -> Bool {
+        let fontCodecs: Set<String> = ["ttf", "otf"]
+        let fontMimes: Set<String> = [
+            "font/ttf", "font/otf", "application/x-truetype-font", "application/vnd.ms-opentype",
+            "application/x-font-ttf",
+        ]
+        if fontCodecs.contains(codec.lowercased()) { return true }
+        guard let mime = mimeType?.lowercased().trimmingCharacters(in: .whitespaces) else { return false }
+        return fontMimes.contains(mime)
+    }
 
     private static func codecName(_ id: AVCodecID) -> String {
         guard let cName = avcodec_get_name(id) else { return "" }

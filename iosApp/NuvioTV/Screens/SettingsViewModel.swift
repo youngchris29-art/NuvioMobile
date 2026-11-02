@@ -534,6 +534,20 @@ final class SettingsViewModel: ObservableObject {
     /// of converting them to Profile 8.1 for the native player.
     @Published var dvP7FelMpv: Bool = UserDefaults.standard.bool(forKey: PlayerTuning.dvP7FelMpvKey)
 
+    // MARK: - Aether (Phase 1)
+    /// Experimental Aether engine. Off by default; the rows below show only while it is On.
+    @Published var aetherEngine: Bool = AetherTuning.isEngineEnabled()
+    /// Height channels for TrueHD and DTS:X (object audio). Off by default.
+    @Published var aetherObjectAudio: Bool = AetherTuning.isObjectAudioEnabled()
+    /// Speaker layout for height channels: "5.1.2", "5.1.4", "7.1.2", "7.1.4" (default) or "9.1.6".
+    @Published var aetherObjectAudioLayout: String = AetherTuning.layout()
+    /// Dolby Vision Profile 7 FEL dual-layer rendering. Off by default.
+    @Published var aetherDualLayerDV: Bool = AetherTuning.isDualLayerDVEnabled()
+    /// Keep files whose first subtitle is styled ASS (with embedded fonts) on mpv. On by default.
+    @Published var aetherStyledSubsToMpv: Bool = AetherTuning.keepStyledSubsOnMpv()
+    /// Send TrueHD and DTS as lossless LPCM. On by default; Off sends Dolby Digital Plus 5.1.
+    @Published var aetherLosslessBridge: Bool = AetherTuning.isLosslessBridgeEnabled()
+
     func setBufferMB(_ value: Int) {
         bufferMB = value
         UserDefaults.standard.set(value, forKey: PlayerTuning.bufferMBKey)
@@ -577,6 +591,39 @@ final class SettingsViewModel: ObservableObject {
     func setDvP7FelMpv(_ value: Bool) {
         dvP7FelMpv = value
         UserDefaults.standard.set(value, forKey: PlayerTuning.dvP7FelMpvKey)
+    }
+
+    // MARK: - Aether (Phase 1) setters
+
+    func setAetherEngine(_ value: Bool) {
+        aetherEngine = value
+        UserDefaults.standard.set(value, forKey: PlayerTuning.aetherEngineKey)
+    }
+
+    func setAetherObjectAudio(_ value: Bool) {
+        aetherObjectAudio = value
+        UserDefaults.standard.set(value, forKey: PlayerTuning.aetherObjectAudioKey)
+    }
+
+    func setAetherObjectAudioLayout(_ value: String) {
+        let layout = AetherTuning.layouts.contains(value) ? value : AetherTuning.defaultLayout
+        aetherObjectAudioLayout = layout
+        UserDefaults.standard.set(layout, forKey: PlayerTuning.aetherObjectAudioLayoutKey)
+    }
+
+    func setAetherDualLayerDV(_ value: Bool) {
+        aetherDualLayerDV = value
+        UserDefaults.standard.set(value, forKey: PlayerTuning.aetherDualLayerDVKey)
+    }
+
+    func setAetherStyledSubsToMpv(_ value: Bool) {
+        aetherStyledSubsToMpv = value
+        UserDefaults.standard.set(value, forKey: PlayerTuning.aetherStyledSubsToMpvKey)
+    }
+
+    func setAetherLosslessBridge(_ value: Bool) {
+        aetherLosslessBridge = value
+        UserDefaults.standard.set(value, forKey: PlayerTuning.aetherLosslessBridgeKey)
     }
 
     // MARK: - TMDB

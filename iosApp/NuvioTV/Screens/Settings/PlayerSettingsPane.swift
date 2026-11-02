@@ -104,12 +104,55 @@ struct PlayerSettingsPane: View {
                 isOn: Binding(get: { model.nativeDolbyVision }, set: { model.setNativeDolbyVision($0) }),
                 descriptionID: .playerNativeDolbyVision
             )
-            if model.nativeDolbyVision {
+            if model.nativeDolbyVision && !model.aetherEngine {   // Aether ignores this setting (hidden while it is On)
                 SettingsToggleRow(
                     title: String(localized: "Keep Profile 7 FEL on mpv"),
                     subtitle: String(localized: "Profile 7 FEL releases carry enhancement data the 8.1 conversion must discard. Turn on to keep those files on the mpv player (plays as HDR10, nothing discarded) instead of native Dolby Vision. MEL releases convert losslessly and always play native."),
                     isOn: Binding(get: { model.dvP7FelMpv }, set: { model.setDvP7FelMpv($0) }),
                     descriptionID: .playerP7FelMpv
+                )
+            }
+        }
+
+        // MARK: - Aether (Phase 1)
+        SettingsSection(
+            String(localized: "Experimental Engine"),
+            footer: String(localized: "Turning Lossless surround (LPCM) off sends TrueHD and DTS as Dolby Digital Plus 5.1, which older soundbars accept.")
+        ) {
+            SettingsToggleRow(
+                title: String(localized: "Experimental engine: Aether"),
+                isOn: Binding(get: { model.aetherEngine }, set: { model.setAetherEngine($0) }),
+                descriptionID: .playerAetherEngine
+            )
+            if model.aetherEngine {
+                SettingsToggleRow(
+                    title: String(localized: "Height channels for TrueHD and DTS:X"),
+                    isOn: Binding(get: { model.aetherObjectAudio }, set: { model.setAetherObjectAudio($0) }),
+                    descriptionID: .playerAetherObjectAudio
+                )
+                if model.aetherObjectAudio {
+                    SettingsPickerRow(
+                        title: String(localized: "Speaker layout"),
+                        selection: Binding(get: { model.aetherObjectAudioLayout }, set: { model.setAetherObjectAudioLayout($0) }),
+                        options: AetherTuning.layouts,
+                        descriptionID: .playerAetherObjectAudioLayout,
+                        label: { $0 }
+                    )
+                }
+                SettingsToggleRow(
+                    title: String(localized: "Dolby Vision Profile 7 FEL dual-layer"),
+                    isOn: Binding(get: { model.aetherDualLayerDV }, set: { model.setAetherDualLayerDV($0) }),
+                    descriptionID: .playerAetherDualLayerDV
+                )
+                SettingsToggleRow(
+                    title: String(localized: "Keep styled subtitles on mpv"),
+                    isOn: Binding(get: { model.aetherStyledSubsToMpv }, set: { model.setAetherStyledSubsToMpv($0) }),
+                    descriptionID: .playerAetherStyledSubsToMpv
+                )
+                SettingsToggleRow(
+                    title: String(localized: "Lossless surround (LPCM)"),
+                    isOn: Binding(get: { model.aetherLosslessBridge }, set: { model.setAetherLosslessBridge($0) }),
+                    descriptionID: .playerAetherLosslessBridge
                 )
             }
         }

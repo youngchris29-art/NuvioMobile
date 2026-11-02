@@ -17043,6 +17043,16 @@
         }
       }
     },
+    "Dolby Vision Profile 7 FEL dual-layer": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dolby Vision Profile 7 FEL dual-layer"
+          }
+        }
+      }
+    },
     "Done": {
       "localizations": {
         "fr": {
@@ -18739,6 +18749,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "ID nhà cung cấp xem bị loại trừ"
+          }
+        }
+      }
+    },
+    "Experimental Engine": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Experimental Engine"
+          }
+        }
+      }
+    },
+    "Experimental engine: Aether": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Experimental engine: Aether"
           }
         }
       }
@@ -21160,6 +21190,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Tiêu đề và thư mục chỉ hiện tên"
+          }
+        }
+      }
+    },
+    "Height channels for TrueHD and DTS:X": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Height channels for TrueHD and DTS:X"
           }
         }
       }
@@ -23684,6 +23724,16 @@
         }
       }
     },
+    "Keep styled subtitles on mpv": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keep styled subtitles on mpv"
+          }
+        }
+      }
+    },
     "Keep this Settings screen open while you make changes.": {
       "localizations": {
         "de": {
@@ -23748,6 +23798,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Giữ màn hình này mở trong khi bạn thay đổi."
+          }
+        }
+      }
+    },
+    "Keeps files whose subtitles are styled ASS with embedded fonts on the mpv player, which draws them exactly as authored. On by default.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keeps files whose subtitles are styled ASS with embedded fonts on the mpv player, which draws them exactly as authored. On by default."
           }
         }
       }
@@ -25211,6 +25271,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Phong cách"
+          }
+        }
+      }
+    },
+    "Lossless surround (LPCM)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lossless surround (LPCM)"
           }
         }
       }
@@ -32338,6 +32408,26 @@
         }
       }
     },
+    "Pick the speaker layout your receiver and speakers use for height channels. 7.1.4 by default.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pick the speaker layout your receiver and speakers use for height channels. 7.1.4 by default."
+          }
+        }
+      }
+    },
+    "Plays TrueHD and DTS:X with height channels when your receiver supports it. Off by default.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Plays TrueHD and DTS:X with height channels when your receiver supports it. Off by default."
+          }
+        }
+      }
+    },
     "PRIMARY": {
       "localizations": {
         "de": {
@@ -37451,6 +37541,16 @@
         }
       }
     },
+    "Renders both layers of Dolby Vision Profile 7 FEL discs when the Apple TV can keep up. Off by default.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Renders both layers of Dolby Vision Profile 7 FEL discs when the Apple TV can keep up. Off by default."
+          }
+        }
+      }
+    },
     "Replaces catalog artwork with posters from a service such as RPDB. Opens a page where you enter the poster URL pattern.": {
       "localizations": {
         "de": {
@@ -39837,6 +39937,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Bán phần"
+          }
+        }
+      }
+    },
+    "Sends TrueHD and DTS as lossless surround. Off sends Dolby Digital Plus 5.1 instead, for soundbars. On by default.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sends TrueHD and DTS as lossless surround. Off sends Dolby Digital Plus 5.1 instead, for soundbars. On by default."
           }
         }
       }
@@ -44937,6 +45047,16 @@
         }
       }
     },
+    "Speaker layout": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Speaker layout"
+          }
+        }
+      }
+    },
     "Speakers & Headphones": {
       "localizations": {
         "de": {
@@ -47587,6 +47707,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "NGÀY MAI"
+          }
+        }
+      }
+    },
+    "Tries a new playback engine for compatible files, with automatic fallback to mpv if anything goes wrong. Off by default.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tries a new playback engine for compatible files, with automatic fallback to mpv if anything goes wrong. Off by default."
+          }
+        }
+      }
+    },
+    "Turning Lossless surround (LPCM) off sends TrueHD and DTS as Dolby Digital Plus 5.1, which older soundbars accept.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Turning Lossless surround (LPCM) off sends TrueHD and DTS as Dolby Digital Plus 5.1, which older soundbars accept."
           }
         }
       }
