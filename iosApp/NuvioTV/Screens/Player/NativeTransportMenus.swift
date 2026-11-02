@@ -259,9 +259,18 @@ final class NativeTransportMenusInstaller {
     private(set) var installed: NativeTransportMenus.Inputs?
     private var episodesByKey: [String: MetaVideo] = [:]
     private var sourcesByKey: [String: StreamItem] = [:]
-    /// The source list was asked for while the transport bar is up (released when it hides).
+    /// The source list has been asked for (the bar came up once). Latched for the playback:
+    /// Insights review r4 (P2) — the list loads once and is not dropped when the bar hides.
     private var sourcesRequested = false
     private var cancellable: AnyCancellable?
+    /// C2 re-pass (review r4): the name of the last transport-bar button that held the focus,
+    /// tracked on every focus update. A tool-set change usually lands while the focus is inside a
+    /// popover (an add-on subtitle picked in the Subtitles popover), where nothing in the bar is
+    /// focused; this is the button the viewer came from.
+    private var lastBarItemName: String?
+    /// A refocus asked for while the focus was outside the bar: applied when it comes back.
+    private var pendingRefocus: String?
+    private var focusObserver: NSObjectProtocol?
 
     /// Sync Line pressed (the host captures the position and presents the sheet).
     var onSyncLine: () -> Void = {}
@@ -290,6 +299,17 @@ final class NativeTransportMenusInstaller {
         ])
         .receive(on: DispatchQueue.main)
         .sink { [weak self] in self?.refresh() }
+        focusObserver = NotificationCenter.default.addObserver(
+            forName: UIFocusSystem.didUpdateNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            let context = note.userInfo?[UIFocusSystem.focusUpdateContextUserInfoKey] as? UIFocusUpdateContext
+            let next = context?.nextFocusedItem as? UIView
+            MainActor.assumeIsolated { self?.focusDidUpdate(to: next) }
+        }
+    }
+
+    deinit {
+        if let focusObserver { NotificationCenter.default.removeObserver(focusObserver) }
     }
 
     /// The inputs as they stand now (and the lookup tables behind the row keys).
@@ -326,28 +346,85 @@ final class NativeTransportMenusInstaller {
     /// name once AVKit has redrawn the row. A content-only change keeps the count, so the position
     /// AVKit keeps is the right button. (A Timing step still closes its popover: a `UIMenu`'s
     /// children cannot be changed in place, only a new menu assigned.)
+    ///
+    /// Review r4 (device, C2 still failing): the change usually lands while the focus is in the
+    /// Subtitles popover, outside the bar, so nothing could be read at that moment. The name now
+    /// comes from the focused bar button when there is one, else from the last bar button that
+    /// had the focus (`lastBarItemName`); in that case the refocus waits until the focus is back
+    /// in the bar (the popover closed, AVKit put it on the old position) and is applied then.
     func refresh() {
         guard let playerVC else { return }
         let inputs = currentInputs()
         guard inputs != installed else { return }
         let setChanged = installed.map(NativeTransportMenus.itemKinds) != NativeTransportMenus.itemKinds(inputs)
-        let focusedName = (installed != nil && setChanged) ? focusedBarItemName(in: playerVC) : nil
+        var focusedName: String?
+        var deferred = false
+        if installed != nil, setChanged {
+            if let now = focusedBarItemName(in: playerVC) {
+                focusedName = now
+            } else if let last = lastBarItemName {
+                focusedName = last
+                deferred = true
+            }
+        }
         installed = inputs
         playerVC.transportBarCustomMenuItems = NativeTransportMenus.build(inputs, actions: actions())
-        print("[NativePlayer] tools=\(Self.summary(inputs))\(focusedName.map { " refocus=\($0)" } ?? "")")
-        if let focusedName { restoreFocus(to: focusedName, attempt: 0) }
+        print("[NativePlayer] tools=\(Self.summary(inputs))\(focusedName.map { " refocus=\($0)\(deferred ? " (deferred)" : "")" } ?? "")")
+        guard let focusedName else { return }
+        if deferred {
+            pendingRefocus = focusedName
+        } else {
+            pendingRefocus = nil
+            restoreFocus(to: focusedName, attempt: 0)
+        }
     }
 
-    /// The accessibility name of the focused item, when it is inside the player's view.
+    /// Every focus update anywhere: remembers the bar button that got the focus, and applies a
+    /// deferred refocus once the focus is back in the bar.
+    private func focusDidUpdate(to view: UIView?) {
+        guard let playerVC, let view, let name = barItemName(of: view, in: playerVC) else { return }
+        lastBarItemName = name
+        guard let pending = pendingRefocus else { return }
+        pendingRefocus = nil
+        if name == pending {
+            print("[NativePlayer] tools: refocus \(pending) ok (focus back in the bar)")
+            return
+        }
+        // Not from inside the focus update: ask once the engine has settled.
+        restoreFocus(to: pending, attempt: 0)
+    }
+
+    /// The accessibility name of the focused item, when it is a transport-bar button.
     private func focusedBarItemName(in playerVC: AVPlayerViewController) -> String? {
-        guard let view = UIFocusSystem.focusSystem(for: playerVC.view)?.focusedItem as? UIView,
-              view.isDescendant(of: playerVC.view) else { return nil }
+        guard let view = UIFocusSystem.focusSystem(for: playerVC.view)?.focusedItem as? UIView else { return nil }
+        return barItemName(of: view, in: playerVC)
+    }
+
+    /// `view`'s name (its own label or its nearest labelled ancestor's below the player's view)
+    /// when it sits in the transport bar's button row: inside the player's view and level with the
+    /// custom buttons (a popover's rows sit above the row). With no custom button on screen to
+    /// compare against, any labelled item inside the player's view counts (the r3 behaviour).
+    private func barItemName(of view: UIView, in playerVC: AVPlayerViewController) -> String? {
+        let root = playerVC.view!
+        guard view.isDescendant(of: root) else { return nil }
+        var name: String?
         var candidate: UIView? = view
-        while let v = candidate, v !== playerVC.view {
-            if let label = v.accessibilityLabel, !label.isEmpty { return label }
+        while let v = candidate, v !== root {
+            if let label = v.accessibilityLabel, !label.isEmpty { name = label; break }
             candidate = v.superview
         }
-        return nil
+        guard let name else { return nil }
+        let titles = playerVC.transportBarCustomMenuItems.compactMap { element -> String? in
+            (element as? UIMenu)?.title ?? (element as? UIAction)?.title
+        }
+        if titles.contains(name) { return name }
+        guard let reference = titles.lazy.compactMap({ Self.focusableView(named: $0, in: root) }).first else {
+            return name
+        }
+        let a = view.convert(view.bounds, to: root)
+        let b = reference.convert(reference.bounds, to: root)
+        let tolerance = max(a.height, b.height) * 0.75
+        return abs(a.midY - b.midY) <= tolerance ? name : nil
     }
 
     private func restoreFocus(to name: String, attempt: Int) {
@@ -384,29 +461,29 @@ final class NativeTransportMenusInstaller {
 
     /// The transport bar came up. The Sources button is on screen from now on, so the list is
     /// asked for here (a deferred, load-on-open list is not possible in a transport-bar menu) and
-    /// is usually in by the time the popover is opened; the menu rebuilds as rows arrive. This is
-    /// the native twin of the mpv Sources popover opening (`sourceColumnAppeared` + `loadSources`).
+    /// is usually in by the time the popover is opened; the menu rebuilds as rows arrive.
+    /// Insights review r4 (P2): the engine loads the current episode's list at most once per
+    /// playback (`transportBarSourcesShown`), so a pause, seek or Select that raises the bar never
+    /// re-scrapes the add-ons, and a next-episode preload is never cleared for it.
     func transportBarShown() {
-        guard canSwitchStreams, !sourcesRequested else { return }
+        guard canSwitchStreams else { return }
         sourcesRequested = true
-        // A list blocked by an up-next search reloads itself when the search ends while the list
-        // is on screen.
-        engine.sourceColumnAppeared()
-        if engine.sources.isEmpty, !engine.sourcesLoading, !engine.sourcesBlockedBySearch {
-            engine.loadSources()
-        }
+        engine.transportBarSourcesShown()
         refresh()
     }
 
-    /// The transport bar went away: the list is off screen (the popover closes with the bar).
-    /// FEAT-49 layer 2: with next-episode preload on, the list gives the shared stream flow back
-    /// (`noteSourceListClosed` drops it), so the preload is never starved by an idle list; the
-    /// next bar show loads it again. With preload off the list stays.
+    /// The transport bar went away: the list is off screen (the popover closes with the bar). The
+    /// list keeps its rows (Insights review r4: no `noteSourceListClosed`, which dropped them and
+    /// made the next raise load them again); an idle list hands the stream flow to the FEAT-49
+    /// preload by itself when the preload fires.
     func transportBarHidden() {
-        guard canSwitchStreams, sourcesRequested else { return }
-        sourcesRequested = false
-        engine.sourceColumnDisappeared()
-        engine.noteSourceListClosed()
+        if let pending = pendingRefocus {
+            print("[NativePlayer] tools: refocus \(pending) gave up (bar hidden)")
+        }
+        pendingRefocus = nil
+        lastBarItemName = nil
+        guard canSwitchStreams else { return }
+        engine.transportBarSourcesHidden()
         refresh()
     }
 

@@ -91,9 +91,12 @@ final class PlayerInsightsLoader {
         model.people = []
         closeActorView()
         let fetch = fetchCredits
+        // Review r4 (P3): the generation token alone decides whether a result applies. Every path
+        // that cancels this Task bumps `generation` first, so a cancelled fetch that still returns
+        // (a fetch that ignores cancellation, or one that answers nil on it) is dropped by the token;
+        // the cancel only lets a cancellation-aware fetch stop its work early.
         creditsTask = Task { [weak self] in
             let result = await fetch(identity)
-            guard !Task.isCancelled else { return }
             self?.applyCredits(result, token: token)
         }
     }
@@ -115,9 +118,9 @@ final class PlayerInsightsLoader {
         let token = personGeneration
         personTask?.cancel()
         let fetch = fetchPerson
+        // As for credits: `personGeneration` (bumped by every cancel path) decides, not the cancel.
         personTask = Task { [weak self] in
             let detail = await fetch(person.id)
-            guard !Task.isCancelled else { return }
             self?.applyPerson(detail, for: person, token: token)
         }
     }

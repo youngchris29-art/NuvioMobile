@@ -27,6 +27,20 @@ final class PlayerInsightsLoaderTests: XCTestCase {
             lock.lock(); defer { lock.unlock() }
             return keys.firstIndex(where: match)!
         }
+        /// Index of the last fetch whose key matches (for a key requested twice, with a settle in
+        /// between so the first request is known to have arrived first).
+        func lastIndex(where match: (Key) -> Bool) -> Int {
+            lock.lock(); defer { lock.unlock() }
+            return keys.lastIndex(where: match)!
+        }
+    }
+
+    /// Records whether a fetch's Task saw cancellation (the Gate's continuation ignores it).
+    private final class CancelFlags: @unchecked Sendable {
+        private let lock = NSLock()
+        private var cancelled: Set<String> = []
+        func mark(_ key: String) { lock.lock(); cancelled.insert(key); lock.unlock() }
+        func contains(_ key: String) -> Bool { lock.lock(); defer { lock.unlock() }; return cancelled.contains(key) }
     }
 
     private func person(_ id: Int, _ name: String = "P") -> PlayerPanelPerson {
@@ -66,7 +80,9 @@ final class PlayerInsightsLoaderTests: XCTestCase {
                         streamSubtitle: nil, externalSubtitles: [])
     }
 
-    // (a)
+    // (a) Pins the generation token. The Gate ignores cancellation, so A's fetch still returns
+    // after B's load cancelled it and A's result reaches `applyCredits`; only the token check
+    // (A's token is no longer `generation`) keeps A off the panel. Drop that guard and this fails.
     func testLoadAThenBBeforeAReturnsAppliesOnlyB() async {
         let g = Gate<PlayerInsightsIdentity, PlayerInsightsCredits>()
         let (model, loader) = make(g)
@@ -77,6 +93,52 @@ final class PlayerInsightsLoaderTests: XCTestCase {
         g.resume(g.index { $0.parentMetaId == "b" }, credits([2]))
         await settle()
         g.resume(g.index { $0.parentMetaId == "a" }, credits([1]))
+        await settle()
+        XCTAssertEqual(model.people.map(\.id), [2])
+    }
+
+    // (a2) The token again, stale first: A returns while B is still out; the panel stays empty
+    // (no flash of A's cast) until B lands.
+    func testStaleCreditsBeforeTheCurrentOneLeaveThePanelEmpty() async {
+        let g = Gate<PlayerInsightsIdentity, PlayerInsightsCredits>()
+        let (model, loader) = make(g)
+        loader.load(identity: ident("a"))
+        loader.load(identity: ident("b"))
+        await settle()
+        g.resume(g.index { $0.parentMetaId == "a" }, credits([1]))
+        await settle()
+        XCTAssertTrue(model.people.isEmpty, "a superseded result was applied")
+        g.resume(g.index { $0.parentMetaId == "b" }, credits([2]))
+        await settle()
+        XCTAssertEqual(model.people.map(\.id), [2])
+    }
+
+    // (a3) Pins the cancel, which the token does not need: a superseded fetch's Task is cancelled,
+    // so a cancellation-aware fetch (the live one could become one) can stop its network work.
+    func testSupersededCreditsFetchIsCancelled() async {
+        let g = Gate<PlayerInsightsIdentity, PlayerInsightsCredits>()
+        let flags = CancelFlags()
+        let model = PlayerTopPanelModel(info: PlayerPanelInfo(header: Self.header()))
+        model.castEnabled = true
+        let loader = PlayerInsightsLoader(
+            model: model,
+            fetchCredits: { identity in
+                await withTaskCancellationHandler {
+                    await g.fetch(identity)
+                } onCancel: {
+                    flags.mark(identity.parentMetaId)
+                }
+            },
+            fetchPerson: { _ in nil })
+        defer { withExtendedLifetime(loader) {} }
+        loader.load(identity: ident("a"))
+        await settle()
+        loader.load(identity: ident("b"))
+        await settle()
+        XCTAssertTrue(flags.contains("a"), "the superseded fetch was not cancelled")
+        XCTAssertFalse(flags.contains("b"))
+        g.resume(g.index { $0.parentMetaId == "a" }, nil)
+        g.resume(g.index { $0.parentMetaId == "b" }, credits([2]))
         await settle()
         XCTAssertEqual(model.people.map(\.id), [2])
     }
@@ -124,22 +186,33 @@ final class PlayerInsightsLoaderTests: XCTestCase {
         XCTAssertNil(model.actorDetail)
     }
 
-    // (e)
+    // (e) Pins `personGeneration`. Person 1 is opened, then 2, then 1 again, so when the first
+    // fetch for 1 returns (the Gate ignores cancellation) the actor view shows person 1 again and
+    // the id check passes: only the token keeps the stale detail out. Drop that guard and this fails.
     func testPersonDetailStaleDiscard() async {
         let cg = Gate<PlayerInsightsIdentity, PlayerInsightsCredits>()
         let pg = Gate<Int, PlayerPanelPersonDetail>()
         let (model, loader) = make(cg, pg)
         defer { withExtendedLifetime(loader) {} }
         model.openPerson(person(1))
+        await settle()
         model.openPerson(person(2))
+        model.openPerson(person(1))
         await settle()
-        XCTAssertEqual(pg.count, 2)
-        pg.resume(pg.index { $0 == 1 }, detail(1))
+        XCTAssertEqual(pg.count, 3)
+        let staleOne = pg.index { $0 == 1 }
+        let freshOne = pg.lastIndex { $0 == 1 }
+        XCTAssertNotEqual(staleOne, freshOne)
+        pg.resume(staleOne, PlayerPanelPersonDetail(id: 1, name: "stale", photo: nil, knownForDepartment: nil,
+                                                    lifeDates: nil, biography: nil, knownFor: []))
         await settle()
-        XCTAssertNil(model.actorDetail)
+        XCTAssertNil(model.actorDetail, "a superseded detail for the same person was applied")
         pg.resume(pg.index { $0 == 2 }, detail(2))
         await settle()
-        XCTAssertEqual(model.actorDetail?.id, 2)
+        XCTAssertNil(model.actorDetail, "a detail for a card no longer open was applied")
+        pg.resume(freshOne, detail(1))
+        await settle()
+        XCTAssertEqual(model.actorDetail?.name, "D1")
     }
 
     // (f)

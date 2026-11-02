@@ -329,4 +329,37 @@ final class PlayerInsightsMPVChromeTests: XCTestCase {
         XCTAssertNil(PlayerChapterFocus.entryRedirect(entered: 2, current: 2))
         XCTAssertNil(PlayerChapterFocus.entryRedirect(entered: 1, current: nil))
     }
+
+    // MARK: - Review r4 (P3): chapter rows follow a shelf-to-shelf move
+
+    private final class PanelFlag: ObservableObject { @Published var open = false }
+
+    /// The Chapters shelf rebuilds its rows (current tick, entry focus) when the panel opens AND
+    /// when Left/Right moves onto it from another shelf, which keeps `panelOpen` true. Synchronous,
+    /// so the rows are fresh before SwiftUI draws the shelf.
+    func testChapterRowsRebuildWhenTheChaptersShelfOpensFromAnotherShelf() {
+        let flag = PanelFlag()
+        let transport = TransportBarModel()
+        var rebuilds = 0
+        let sub = MPVPlayerPanelAdapter.chapterRebuildTriggers(panelOpen: flag.$open,
+                                                               openInfoPill: transport.$openInfoPill)
+            .sink { rebuilds += 1 }
+        defer { sub.cancel() }
+        XCTAssertEqual(rebuilds, 0, "the initial closed / nil values trigger nothing")
+
+        transport.openInfoPill = .info
+        flag.open = true
+        XCTAssertEqual(rebuilds, 1, "panel open")
+        transport.openInfoPill = .cast
+        XCTAssertEqual(rebuilds, 1, "another shelf: no rebuild")
+        transport.openInfoPill = .chapters
+        XCTAssertEqual(rebuilds, 2, "shelf to shelf onto Chapters, panel still open")
+        transport.openInfoPill = .chapters
+        XCTAssertEqual(rebuilds, 2, "no duplicate for the same shelf")
+        transport.openInfoPill = .upNext
+        transport.openInfoPill = .chapters
+        XCTAssertEqual(rebuilds, 3)
+        flag.open = true
+        XCTAssertEqual(rebuilds, 3, "panelOpen re-set to true is not a new open")
+    }
 }

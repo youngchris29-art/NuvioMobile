@@ -92,10 +92,11 @@ final class MPVPlayerPanelAdapter {
         // later ticked the current chapter only after the focus had landed on the stale tick (the
         // chapter playing when the shelf last opened). The rebuild reads the chapters and the
         // position, never `panelOpen`, so the will-set emission is safe to act on here.
-        state.$panelOpen
-            .removeDuplicates()
-            .filter { $0 }
-            .sink { [weak self] _ in self?.rebuildChapters() }
+        // Review r4 (P3): also when the Chapters shelf opens from another shelf (Left/Right moves
+        // shelf to shelf with `panelOpen` staying true), so its tick and its entry focus
+        // (`PlayerChapterFocus.entryRedirect`) follow the playhead there too.
+        Self.chapterRebuildTriggers(panelOpen: state.$panelOpen, openInfoPill: state.transport.$openInfoPill)
+            .sink { [weak self] in self?.rebuildChapters() }
             .store(in: &cancellables)
 
         // mpv audio effects (P5 B20): the native adapter never sets `audioEffects`, so its Audio
@@ -171,6 +172,18 @@ final class MPVPlayerPanelAdapter {
             if !engine.playNow() { engine.jumpToEpisode(next) }
             model?.onClose?()
         }
+    }
+
+    /// When the chapter rows are rebuilt besides a list change: the panel opening, and the
+    /// Chapters shelf becoming the open one (also shelf to shelf, with the panel already open).
+    /// Synchronous (no main-queue hop): both run on the will-set emission, before SwiftUI draws.
+    static func chapterRebuildTriggers(panelOpen: Published<Bool>.Publisher,
+                                       openInfoPill: Published<PlayerInfoPill?>.Publisher) -> AnyPublisher<Void, Never> {
+        Publishers.Merge(
+            panelOpen.removeDuplicates().filter { $0 }.map { _ in () },
+            openInfoPill.removeDuplicates().filter { $0 == .chapters }.map { _ in () }
+        )
+        .eraseToAnyPublisher()
     }
 
     static func upNextCard(_ episode: MetaVideo) -> PlayerPanelUpNext {
