@@ -173,6 +173,18 @@ final class AetherControllerTests: XCTestCase {
         XCTAssertEqual(AetherFailurePlan.handoffPosition(.nan), 0)
     }
 
+    // MARK: Audio tab Atmos note (W3-C)
+
+    func testAtmosNoteShowsOnlyOnAetherWithBoostOrDialogue() {
+        let off = PlayerAudioEffectsState(boostDb: 0, mode: .off)
+        XCTAssertFalse(PlayerAudioAtmosNote.isShown(endsAtmos: true, effects: off))
+        XCTAssertTrue(PlayerAudioAtmosNote.isShown(endsAtmos: true, effects: PlayerAudioEffectsState(boostDb: 2, mode: .off)))
+        XCTAssertTrue(PlayerAudioAtmosNote.isShown(endsAtmos: true, effects: PlayerAudioEffectsState(boostDb: 0, mode: .dialogue)))
+        XCTAssertTrue(PlayerAudioAtmosNote.isShown(endsAtmos: true, effects: PlayerAudioEffectsState(boostDb: 6, mode: .dialogue)))
+        XCTAssertFalse(PlayerAudioAtmosNote.isShown(endsAtmos: false, effects: PlayerAudioEffectsState(boostDb: 6, mode: .dialogue)),
+                       "mpv keeps its passthrough rules: no note")
+    }
+
     // MARK: Diagnostics → info rows
 
     private func diagnostics() -> AetherDiagnostics {

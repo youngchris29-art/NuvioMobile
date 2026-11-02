@@ -114,6 +114,23 @@ extension PlayerAudioTab {
             .foregroundStyle(Theme.Palette.textSecondary)
             .fixedSize(horizontal: false, vertical: true)
             .padding(.top, Theme.Spacing.xs)
+        // Aether: active shaping needs PCM, so Dolby Atmos passthrough is off while either is on.
+        if PlayerAudioAtmosNote.isShown(endsAtmos: model.audioShapingEndsAtmos, effects: fx) {
+            Text("Dolby Atmos passthrough is off while this is on")
+                .font(Theme.Font.caption)
+                .foregroundStyle(Theme.Palette.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, Theme.Spacing.xxs)
+                .accessibilityIdentifier("player.panel.audioFx.atmosNote")
+        }
+    }
+}
+
+/// When the Audio tab warns that Dolby Atmos passthrough is off (Aether only: Boost and Dialogue are
+/// applied to decoded PCM there). Pure so it is unit-testable.
+nonisolated enum PlayerAudioAtmosNote {
+    static func isShown(endsAtmos: Bool, effects: PlayerAudioEffectsState) -> Bool {
+        endsAtmos && (effects.boostDb > 0 || effects.mode == .dialogue)
     }
 }
 

@@ -95,6 +95,9 @@ final class MPVPlaybackState: ObservableObject {
     /// Engine routing decision from `PlayerEngineRouter`, shown as the Stream Info "Engine" row.
     /// Diagnostic only in Phase 1 — playback still runs through libmpv regardless.
     @Published var routingNote: String = ""
+    /// Which engine drives this state (set once by `MPVPlayerScreen`): the Audio tab's Atmos note and
+    /// anything else engine-specific reads it here.
+    var engine: PlaybackEngine = .mpv
 
     /// True once playback hit end-of-file (keep-open holds the last frame; drives the post-play cover).
     @Published var isEnded: Bool = false
@@ -3914,6 +3917,7 @@ struct MPVPlayerScreen: View {
         self.nativeSecondsPlayedBeforeFallback = nativeSecondsPlayedBeforeFallback
         _loadingOverlayOn = State(initialValue: PlayerLoadingOverlaySetting.enabled)
         let playbackState = MPVPlaybackState(title: context.title)
+        playbackState.engine = engine
         _state = StateObject(wrappedValue: playbackState)
         _upNext = StateObject(wrappedValue: NextEpisodeEngine(
             context: context,

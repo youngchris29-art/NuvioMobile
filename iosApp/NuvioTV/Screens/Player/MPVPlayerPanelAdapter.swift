@@ -102,6 +102,7 @@ final class MPVPlayerPanelAdapter {
         // mpv audio effects (P5 B20): the native adapter never sets `audioEffects`, so its Audio
         // tab hides the rows.
         model.audioEffects = state.audioEffects
+        model.audioShapingEndsAtmos = state.engine == .aether
         state.$audioEffects
             .receive(on: RunLoop.main)
             .sink { [weak self] fx in

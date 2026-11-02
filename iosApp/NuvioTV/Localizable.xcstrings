@@ -16588,6 +16588,16 @@
         }
       }
     },
+    "Dolby Atmos passthrough is off while this is on": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dolby Atmos passthrough is off while this is on"
+          }
+        }
+      }
+    },
     "Died %@": {
       "localizations": {
         "de": {

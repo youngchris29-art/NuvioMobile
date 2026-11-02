@@ -179,6 +179,9 @@ final class PlayerTopPanelModel: ObservableObject {
     @Published var canPickRoute = true
     /// mpv audio effects (P5 B20). nil hides the rows (the native engine).
     @Published var audioEffects: PlayerAudioEffectsState?
+    /// Aether: Boost and Dialogue shape the audio as PCM, which turns Dolby Atmos passthrough off
+    /// (the Audio tab says so while either is on). Set from `MPVPlaybackState.engine`.
+    var audioShapingEndsAtmos = false
     var onAudioBoostChange: ((Int) -> Void)?
     var onAudioModeChange: ((PlayerAudioMode) -> Void)?
 
