@@ -209,6 +209,22 @@ final class AetherControllerTests: XCTestCase {
         XCTAssertTrue(AetherSubtitleStartGate.addonFetchPending(completedRequest: "series|tt2:1:1", requestKey: key))
     }
 
+    func testNoPrefetchAndAnInstantEmptyFetchStillDecides() {
+        // Review r4: tracks published before load return, no picker prefetch for this key, and a fetch
+        // with no subtitle add-on that completes empty at once (its isLoading edge can be conflated away).
+        let key = "movie|tt1"
+        XCTAssertTrue(AetherSubtitleStartGate.runsAtLoadReturn(prefetchedAddonsAdded: 0))
+        XCTAssertTrue(AetherSubtitleStartGate.addonFetchPending(completedRequest: nil, requestKey: key),
+                      "the load-return run waits on the fetch it just kicked")
+        XCTAssertTrue(AetherSubtitleStartGate.wakesOnFetchCompletion(completedRequest: key, requestKey: key, keptAddonFiles: 0),
+                      "completion alone wakes it, so Off can land")
+        XCTAssertFalse(AetherSubtitleStartGate.wakesOnFetchCompletion(completedRequest: nil, requestKey: key, keptAddonFiles: 0))
+        XCTAssertFalse(AetherSubtitleStartGate.wakesOnFetchCompletion(completedRequest: "series|tt2:1:2", requestKey: key,
+                                                                      keptAddonFiles: 0), "another title's fetch")
+        XCTAssertFalse(AetherSubtitleStartGate.wakesOnFetchCompletion(completedRequest: key, requestKey: key, keptAddonFiles: 2),
+                       "kept files wake it through their own track publish")
+    }
+
     // MARK: Fresh load keeps the live tracks (review r1 F3)
 
     private func startRequest() -> AetherLoadRequest {

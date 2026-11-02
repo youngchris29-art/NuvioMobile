@@ -251,6 +251,14 @@ enum AetherSubtitleStartGate {
     static func addonFetchPending(completedRequest: String?, requestKey: String) -> Bool {
         completedRequest != requestKey
     }
+
+    /// Review r4: what wakes a waiting plan once the fetch is done. `completedRequest` reaching the key,
+    /// not the `isLoading` true→false edge (StateFlow conflation can hide a fetch that flips with no
+    /// suspension, and an equal empty list never re-emits). Only when no kept add-on file is left to
+    /// publish: those files' own track publish runs the plan with them in the list.
+    static func wakesOnFetchCompletion(completedRequest: String?, requestKey: String, keptAddonFiles: Int) -> Bool {
+        completedRequest == requestKey && keptAddonFiles == 0
+    }
 }
 
 /// Review r1 F3: the request of a fresh `load` mid-visit (the DV-interruption rebuild, Replay). The
