@@ -88,6 +88,9 @@ struct PlayerPanelPerson: Identifiable, Equatable {
     let photo: URL?
     let isCrew: Bool
     var isGuest = false
+
+    /// Unique per card: the credits builder emits a person twice when they are both cast and key crew.
+    var cardKey: String { isCrew ? "\(id)-crew" : "\(id)" }
 }
 
 /// One display-only poster in the compact actor view.
@@ -132,13 +135,13 @@ final class PlayerTopPanelModel: ObservableObject {
     /// The open actor view's detail; nil while it loads (the view draws from `actorView` meanwhile).
     @Published var actorDetail: PlayerPanelPersonDetail?
     /// The card last opened, so focus returns to it when the actor view closes.
-    @Published var lastOpenedPersonId: Int?
+    @Published var lastOpenedCardKey: String?
     /// Asked to load the actor view's detail (set by the loader).
     var onOpenPerson: ((PlayerPanelPerson) -> Void)?
 
     /// Opens the compact actor view for a card.
     func openPerson(_ person: PlayerPanelPerson) {
-        lastOpenedPersonId = person.id
+        lastOpenedCardKey = person.cardKey
         actorDetail = nil
         actorView = person
         onOpenPerson?(person)

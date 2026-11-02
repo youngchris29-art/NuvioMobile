@@ -98,6 +98,35 @@ final class NativePlayerChromeTests: XCTestCase {
         XCTAssertEqual(NativeSubtitleTiming.label(2000), "+2 s")
     }
 
+    // MARK: Episodes menu
+
+    func testEpisodesMenuIsFlatAcrossSeasons() {
+        func ep(_ s: Int32, _ e: Int32) -> MetaVideo {
+            MetaVideo(id: "tt1:\(s):\(e)", title: "T\(s)\(e)", released: nil, available: true,
+                      thumbnail: nil, seasonPoster: nil, season: KotlinInt(int: s), episode: KotlinInt(int: e),
+                      overview: nil, runtime: nil, rating: nil, streams: [])
+        }
+        let items = NativeTransportMenus.episodeItems([ep(1, 1), ep(1, 2), ep(2, 1)],
+                                                      currentSeason: 1, currentEpisode: 2) { _ in }
+        XCTAssertEqual(items.count, 3)
+        XCTAssertTrue(items.allSatisfy { $0 is UIAction && !($0 is UIMenu) }, "no nested UIMenu")
+        XCTAssertEqual(items.map(\.title), ["S1E1 · T11", "S1E2 · T12", "S2E1 · T21"])
+        XCTAssertEqual((items[1] as? UIAction)?.state, .on)
+    }
+
+    // MARK: Cast card identity
+
+    func testCastAndCrewEntriesOfOnePersonGetDistinctCardKeys() {
+        let cast = PlayerPanelPerson(id: 9, name: "A", role: "Lead", photo: nil, isCrew: false)
+        let crew = PlayerPanelPerson(id: 9, name: "A", role: "Director", photo: nil, isCrew: true)
+        XCTAssertNotEqual(cast.cardKey, crew.cardKey)
+        let m = model()
+        m.people = [cast, crew]
+        XCTAssertEqual(Set(m.people.map(\.cardKey)).count, 2)
+        m.openPerson(crew)
+        XCTAssertEqual(m.lastOpenedCardKey, crew.cardKey)
+    }
+
     // MARK: Cast pill Menu
 
     func testMenuWithTheActorViewOpenIsConsumedBothWays() {
@@ -106,7 +135,7 @@ final class NativePlayerChromeTests: XCTestCase {
         var router = NativePillMenuRouter()
         XCTAssertTrue(router.menuBegan(menuBack: { m.menuBack() }))
         XCTAssertNil(m.actorView, "back to the card row")
-        XCTAssertEqual(m.lastOpenedPersonId, 7, "focus returns to the card that was opened")
+        XCTAssertEqual(m.lastOpenedCardKey, "7", "focus returns to the card that was opened")
         XCTAssertTrue(router.menuEnded(), "the release is swallowed too")
     }
 

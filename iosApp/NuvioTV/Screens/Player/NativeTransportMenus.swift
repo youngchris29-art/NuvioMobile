@@ -65,32 +65,25 @@ enum NativeTransportMenus {
     private static func episodesElement(engine: NextEpisodeEngine) -> UIMenuElement {
         UIDeferredMenuElement.uncached { [weak engine] completion in
             guard let engine else { completion([]); return }
-            let episodes = PlayerEpisodesColumn.sortedEpisodes(engine)
-            let actions = episodes.map { episodeAction($0, engine: engine) }
-            let seasons = Set(episodes.compactMap { $0.season?.value })
-            guard seasons.count > 1 else { completion(actions); return }
-            // Several seasons: one submenu each, in order.
-            var bySeason: [(Int, [UIMenuElement])] = []
-            for (episode, action) in zip(episodes, actions) {
-                let season = episode.season?.value ?? 0
-                if bySeason.last?.0 == season {
-                    bySeason[bySeason.count - 1].1.append(action)
-                } else {
-                    bySeason.append((season, [action]))
-                }
-            }
-            completion(bySeason.map { season, children in
-                UIMenu(title: String(format: String(localized: "Season %d"), season), children: children)
+            completion(episodeItems(PlayerEpisodesColumn.sortedEpisodes(engine),
+                                    currentSeason: engine.currentSeason,
+                                    currentEpisode: engine.currentEpisode) { [weak engine] episode in
+                engine?.jumpToEpisode(episode)
             })
         }
     }
 
-    private static func episodeAction(_ episode: MetaVideo, engine: NextEpisodeEngine) -> UIAction {
-        let s = episode.season?.value ?? 0, e = episode.episode?.value ?? 0
-        let isCurrent = s == engine.currentSeason && e == engine.currentEpisode
-        return UIAction(title: "S\(s)E\(e) · \(episode.title)", state: isCurrent ? .on : .off) { [weak engine] _ in
-            guard !isCurrent else { return }
-            engine?.jumpToEpisode(episode)
+    /// One flat action per episode, in the order given (titles carry `S#E#`). Never nested:
+    /// `AVPlayerViewController.transportBarCustomMenuItems` does not support submenus.
+    static func episodeItems(_ episodes: [MetaVideo], currentSeason: Int?, currentEpisode: Int?,
+                             jump: @escaping (MetaVideo) -> Void) -> [UIMenuElement] {
+        episodes.map { episode in
+            let s = episode.season?.value ?? 0, e = episode.episode?.value ?? 0
+            let isCurrent = Int(s) == currentSeason && Int(e) == currentEpisode
+            return UIAction(title: "S\(s)E\(e) · \(episode.title)", state: isCurrent ? .on : .off) { _ in
+                guard !isCurrent else { return }
+                jump(episode)
+            }
         }
     }
 

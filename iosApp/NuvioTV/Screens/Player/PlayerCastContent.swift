@@ -2,11 +2,11 @@ import SwiftUI
 
 /// The Cast pill's content on both engines: a horizontal row of person cards (headshot, name,
 /// role), and in place of it the compact actor view while `model.actorView` is set. Selecting a
-/// card calls `model.openPerson(_:)`; focus returns to the card `model.lastOpenedPersonId` names
+/// card calls `model.openPerson(_:)`; focus returns to the card `model.lastOpenedCardKey` names
 /// when the actor view closes. Menu is handled by the host (`model.menuBack()`), never here.
 struct PlayerCastContent: View {
     @ObservedObject var model: PlayerTopPanelModel
-    @FocusState private var focusedPerson: Int?
+    @FocusState private var focusedCard: String?
     @FocusState private var actorFocused: Bool
 
     var body: some View {
@@ -20,9 +20,9 @@ struct PlayerCastContent: View {
         }
         .frame(maxHeight: 400, alignment: .top)
         .onChange(of: model.actorView?.id) { _, newValue in
-            guard newValue == nil, let id = model.lastOpenedPersonId else { return }
+            guard newValue == nil, let key = model.lastOpenedCardKey else { return }
             // Next runloop turn: the row is rebuilt this pass, so the card must exist first.
-            DispatchQueue.main.async { focusedPerson = id }
+            DispatchQueue.main.async { focusedCard = key }
         }
     }
 
@@ -30,21 +30,21 @@ struct PlayerCastContent: View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(alignment: .top, spacing: Theme.Spacing.lg) {
-                    ForEach(model.people) { person in
+                    ForEach(model.people, id: \.cardKey) { person in
                         Button { model.openPerson(person) } label: {
                             PlayerCastCard(person: person)
                         }
                         .buttonStyle(.card)
-                        .focused($focusedPerson, equals: person.id)
-                        .id(person.id)
-                        .accessibilityIdentifier("player.cast.card.\(person.id)")
+                        .focused($focusedCard, equals: person.cardKey)
+                        .id(person.cardKey)
+                        .accessibilityIdentifier("player.cast.card.\(person.cardKey)")
                     }
                 }
                 .padding(.vertical, Theme.Spacing.md)
                 .padding(.horizontal, Theme.Spacing.xs)
             }
             .focusSection()
-            .onChange(of: focusedPerson) { _, id in
+            .onChange(of: focusedCard) { _, id in
                 if let id { withAnimation { proxy.scrollTo(id, anchor: .center) } }
             }
         }
