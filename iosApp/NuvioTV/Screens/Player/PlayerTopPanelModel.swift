@@ -2,10 +2,11 @@ import Combine
 import SharedCore
 import SwiftUI
 
-// Engine-agnostic backing model for the swipe-down top panel (Info · Subtitles · Audio). The native
-// AVPlayer screen fills it through `NativePlayerPanelAdapter`; the mpv screen can plug in the same
-// way later (its `MPVPlaybackState` already exposes track lists + select closures). Closures rather
-// than a protocol keep it a plain ObservableObject the SwiftUI panel can observe directly.
+// Engine-agnostic backing model for the player's pills (Info · Cast · Chapters · Up Next) and tool
+// popovers (Subtitles · Audio · Playback). The native screen fills it through
+// `NativePlayerPanelAdapter`, the mpv screen through `MPVPlayerPanelAdapter`; Cast comes from
+// `PlayerInsightsLoader`. Closures rather than a protocol keep it a plain ObservableObject the
+// SwiftUI views observe directly. (The swipe-down top panel it was built for is gone, 2026-11-01.)
 
 /// One selectable row in the Subtitles or Audio tab.
 struct PlayerPanelOption: Identifiable, Equatable {
@@ -198,9 +199,6 @@ final class PlayerTopPanelModel: ObservableObject {
     var syncLineCues: (() async -> [SubtitleSyncCue]?)?
     var onSelectChapter: ((PlayerPanelChapter) -> Void)?
     var onClose: (() -> Void)?
-    /// BUG-180 (Steven rc7): the panel's selected tab, on open and on every switch. The mpv screen
-    /// refreshes its Stream Info rows only while Info is on screen; unset on the native engine.
-    var onTabChange: ((PlayerPanelTab) -> Void)?
 
     init(info: PlayerPanelInfo) {
         self.info = info

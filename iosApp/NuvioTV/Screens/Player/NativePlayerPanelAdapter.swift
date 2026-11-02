@@ -15,6 +15,8 @@ final class NativePlayerPanelAdapter {
     private let routingNote: String?
     private var cancellables: Set<AnyCancellable> = []
     private var routeObserver: NSObjectProtocol?
+    /// The Cast pill's loader (Insights). Retained here: the model only holds it weakly.
+    private var insights: PlayerInsightsLoader?
 
     /// `upNext` is the screen's `NextEpisodeEngine` when a presenter can swap contexts (series
     /// autoplay); nil keeps the Up Next pill hidden.
@@ -23,6 +25,8 @@ final class NativePlayerPanelAdapter {
         self.coordinator = coordinator
         self.model = model
         self.context = context
+        // Cast pill: credits for what is playing, keyed on the title (never the stream).
+        insights = PlayerInsightsLoader.attach(model: model, context: context)
         self.routingNote = routingNote
 
         model.onSelectSubtitle = { [weak self] option in self?.selectSubtitle(option) }

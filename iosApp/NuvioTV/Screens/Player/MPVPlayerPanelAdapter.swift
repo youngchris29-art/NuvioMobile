@@ -14,11 +14,15 @@ final class MPVPlayerPanelAdapter {
     private let context: PlaybackContext
     private var cancellables: Set<AnyCancellable> = []
     private var routeObserver: NSObjectProtocol?
+    /// The Cast pill's loader (Insights). Retained here: the model only holds it weakly.
+    private var insights: PlayerInsightsLoader?
 
     init(state: MPVPlaybackState, model: PlayerTopPanelModel, context: PlaybackContext) {
         self.state = state
         self.model = model
         self.context = context
+        // Cast pill: credits for what is playing, keyed on the title (never the stream).
+        insights = PlayerInsightsLoader.attach(model: model, context: context)
 
         model.onSelectSubtitle = { [weak state] option in
             state?.selectSubtitle?(option.flatMap { Int($0.id) } ?? -1)
