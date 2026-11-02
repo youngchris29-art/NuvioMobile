@@ -172,6 +172,16 @@ final class AetherControllerTests: XCTestCase {
         XCTAssertTrue(AetherFailurePlan.offersMpvRetry(.endedEarly))
     }
 
+    func testNormalEndReportsTheDurationOnlyNearTheEnd() {
+        // Review r4: a manual healthy source that ran dry at 30 min of 2 h is not marked watched.
+        XCTAssertEqual(AetherFailurePlan.endPosition(positionSec: 1_800, durationSec: 7_200), 1_800)
+        XCTAssertEqual(AetherFailurePlan.endPosition(positionSec: 7_195, durationSec: 7_200), 7_200)
+        XCTAssertEqual(AetherFailurePlan.endPosition(positionSec: 7_140, durationSec: 7_200), 7_200, "inside the 60 s slack")
+        XCTAssertEqual(AetherFailurePlan.endPosition(positionSec: 7_139, durationSec: 7_200), 7_139)
+        XCTAssertEqual(AetherFailurePlan.endPosition(positionSec: 42, durationSec: 0), 42, "unknown duration")
+        XCTAssertEqual(AetherFailurePlan.endPosition(positionSec: .nan, durationSec: 7_200), 0)
+    }
+
     func testTerminalKindsAndHandoffPosition() {
         XCTAssertEqual(AetherFailurePlan.failureKind(.sourceRateLimited), .network)
         XCTAssertEqual(AetherFailurePlan.failureKind(.sourceRefused), .local)

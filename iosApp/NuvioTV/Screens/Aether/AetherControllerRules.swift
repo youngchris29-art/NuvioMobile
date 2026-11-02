@@ -194,6 +194,17 @@ enum AetherFailurePlan {
         kind != .network && kind != .offline
     }
 
+    /// Review r4: where a normal end reports (the local flush and the tracker stops). The declared
+    /// duration only when the clock got within `PlaybackEndPolicy.earlyEndSlackSeconds` of it; a source
+    /// that ran dry earlier but was not an early-end failure (manual and healthy) reports where it
+    /// stopped, as mpv does.
+    static func endPosition(positionSec: Double, durationSec: Double) -> Double {
+        let position = handoffPosition(positionSec)
+        guard durationSec.isFinite, durationSec > 0,
+              position >= durationSec - PlaybackEndPolicy.earlyEndSlackSeconds else { return position }
+        return max(position, durationSec)
+    }
+
     /// Where the handoff resumes: the last clock position, finite and >= 0.
     static func handoffPosition(_ sec: Double) -> Double {
         sec.isFinite && sec > 0 ? sec : 0

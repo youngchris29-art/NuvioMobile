@@ -948,7 +948,7 @@ final class AetherTVPlayerViewController: UIViewController {
         updateBuffering()
         transportInput.noteScanTick(positionSec: positionMirror, eof: true)
         stopScanTimer()
-        let position = transportDurationSec > 0 ? max(positionMirror, transportDurationSec) : positionMirror
+        let position = AetherFailurePlan.endPosition(positionSec: positionMirror, durationSec: transportDurationSec)
         // A stream that ran dry well before its declared end is a failure for the failover, not a
         // finished movie (`PlaybackEndPolicy`, the mpv rule).
         if onPlaybackFailed != nil,
