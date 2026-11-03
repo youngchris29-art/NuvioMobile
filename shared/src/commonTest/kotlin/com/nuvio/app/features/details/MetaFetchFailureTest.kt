@@ -83,6 +83,24 @@ class MetaFetchFailureTest {
         assertFalse(message.contains("location unknown"), message)
     }
 
+    @Test
+    fun `serialization error quoting a json escaped url is scrubbed`() {
+        val error = kotlinx.serialization.SerializationException(
+            "Unexpected JSON token at offset 40: {\"poster\":\"https:\\/\\/addon.example\\/tok999\\/poster.jpg\"}"
+        )
+        val message = MetaFetchFailureLog.message("Some Addon", "movie", "tt1", error)
+        assertFalse(message.contains("tok999"), message)
+        assertFalse(message.contains("https:"), message)
+    }
+
+    @Test
+    fun `raw payload excerpt with json escaped url is scrubbed`() {
+        val scrubbed = MetaFetchFailureLog.scrub("{\"stream\":\"https:\\/\\/h\\/tokABC\\/x.m3u8?token=zzz\"}")
+        assertFalse(scrubbed.contains("tokABC"), scrubbed)
+        assertFalse(scrubbed.contains("zzz"), scrubbed)
+        assertEquals("{\"stream\":\"<url>\"}", scrubbed)
+    }
+
     private fun throwFromDetailsPackage(): Nothing =
         throw IllegalArgumentException("Element class kotlinx.serialization.json.JsonObject is not a JsonPrimitive")
 }
