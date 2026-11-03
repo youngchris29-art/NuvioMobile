@@ -276,29 +276,46 @@ enum AetherTrackRows {
     }
 }
 
-/// Review r1 F1: the subtitle start plan's run at `load()` return. The engine publishes its tracks
-/// before `load()` returns, and the plan ignores every publish until the media is ready, so load
-/// return runs it once on the tracks already in hand. Only when prefetched add-on files were just
-/// handed to the engine does it leave the decision to the track list those files publish.
+/// The subtitle start plan's moments (review r1 F1, r4, r5, r6 F3). The engine publishes its tracks
+/// before `load()` returns and the plan ignores every publish until the media is ready, so load return
+/// runs it once. Whenever the host registers add-on files itself (the prefetched list at load return,
+/// the final list at fetch completion), the plan runs once on the published list plus the tracks just
+/// registered: each registration's own publish arrives later through the queued pipeline, one file at a
+/// time, and a partial list must never decide Off or a weaker language variant.
 enum AetherSubtitleStartGate {
-    static func runsAtLoadReturn(prefetchedAddonsAdded: Int) -> Bool {
-        prefetchedAddonsAdded == 0
-    }
-
-    /// That run waits (no Off on a missing match) while the add-on fetch kicked at load return has not
-    /// completed: `SubtitleRepository.isLoading` reaches the main thread later than the kick.
+    /// The add-on fetch kicked at load return has not completed (`isLoading` reaches main later than
+    /// the kick, so it is not the signal).
     static func addonFetchPending(completedRequest: String?, requestKey: String) -> Bool {
         completedRequest != requestKey
     }
 
-    /// Review r4/r5: what wakes a waiting plan once the fetch is done. `completedRequest` reaching the
-    /// key, not the `isLoading` true→false edge (StateFlow conflation can hide a fetch that flips with no
-    /// suspension, and an equal list never re-emits). At completion the controller hands the final list
-    /// to the engine idempotently; only the files that became NEW tracks just now hold the plan back,
-    /// because their own track publish runs it with them in the list. Kept files the stream already
-    /// declared, or that were added earlier, publish nothing, so they never hold it.
-    static func wakesOnFetchCompletion(completedRequest: String?, requestKey: String, newTracksAdded: Int) -> Bool {
-        completedRequest == requestKey && newTracksAdded == 0
+    /// No Off on a missing match while an add-on file may still arrive: the search reads in flight and
+    /// this title's fetch has not completed, or the kicked fetch is still outstanding.
+    static func isArriving(searchInFlight: Bool, fetchCompleted: Bool, fetchOutstanding: Bool) -> Bool {
+        (searchInFlight && !fetchCompleted) || fetchOutstanding
+    }
+
+    enum Completion: Equatable {
+        /// This title's fetch completed: register the final list, then decide.
+        case ours
+        /// Another title's fetch replaced ours (the Up Next prefetch): ours never completes, decide now.
+        case superseded
+        case none
+    }
+
+    /// What a `completedRequest` emission means. Not the `isLoading` edge: StateFlow conflation can hide
+    /// a fetch that flips with no suspension, and an equal list never re-emits.
+    static func completion(completedRequest: String?, requestKey: String, outstanding: Bool) -> Completion {
+        if completedRequest == requestKey { return .ours }
+        if completedRequest != nil, outstanding { return .superseded }
+        return .none
+    }
+
+    /// The list the plan runs on right after the host registered files: the published tracks plus the
+    /// ones just registered that the publish has not carried yet.
+    static func planTracks(published: [AetherTrack], registered: [AetherTrack]) -> [AetherTrack] {
+        let known = Set(published.map(\.id))
+        return published + registered.filter { !known.contains($0.id) }
     }
 }
 

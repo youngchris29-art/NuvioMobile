@@ -191,15 +191,7 @@ final class AetherControllerTests: XCTestCase {
         XCTAssertEqual(AetherFailurePlan.handoffPosition(.nan), 0)
     }
 
-    // MARK: Subtitle start plan at load return (review r1 F1)
-
-    func testLoadReturnRunsTheStartPlanUnlessPrefetchedFilesWillPublish() {
-        // Tracks published before `load()` returned, the picker's prefetch already complete and empty:
-        // nothing else will publish, so load return must run the plan itself.
-        XCTAssertTrue(AetherSubtitleStartGate.runsAtLoadReturn(prefetchedAddonsAdded: 0))
-        XCTAssertFalse(AetherSubtitleStartGate.runsAtLoadReturn(prefetchedAddonsAdded: 2),
-                       "the add-on files' own track publish runs it")
-    }
+    // MARK: Subtitle start plan moments (review r1 F1, r4, r5, r6 F3)
 
     func testLoadReturnRunWaitsOnlyWhileTheKickedFetchIsOut() {
         let key = "movie|tt1"
@@ -209,32 +201,35 @@ final class AetherControllerTests: XCTestCase {
         XCTAssertTrue(AetherSubtitleStartGate.addonFetchPending(completedRequest: "series|tt2:1:1", requestKey: key))
     }
 
-    func testNoPrefetchAndAnInstantEmptyFetchStillDecides() {
-        // Review r4: tracks published before load return, no picker prefetch for this key, and a fetch
-        // with no subtitle add-on that completes empty at once (its isLoading edge can be conflated away).
+    func testCompletionAloneDecidesEvenWithAConflatedLoadingEdge() {
+        // r4/r5: no prefetch, a fetch that completes at once (empty, or only URLs already declared):
+        // completion alone wakes the plan and nothing is still arriving, so Off can land.
         let key = "movie|tt1"
-        XCTAssertTrue(AetherSubtitleStartGate.runsAtLoadReturn(prefetchedAddonsAdded: 0))
-        XCTAssertTrue(AetherSubtitleStartGate.addonFetchPending(completedRequest: nil, requestKey: key),
-                      "the load-return run waits on the fetch it just kicked")
-        XCTAssertTrue(AetherSubtitleStartGate.wakesOnFetchCompletion(completedRequest: key, requestKey: key, newTracksAdded: 0),
-                      "completion alone wakes it, so Off can land")
-        XCTAssertFalse(AetherSubtitleStartGate.wakesOnFetchCompletion(completedRequest: nil, requestKey: key, newTracksAdded: 0))
-        XCTAssertFalse(AetherSubtitleStartGate.wakesOnFetchCompletion(completedRequest: "series|tt2:1:2", requestKey: key,
-                                                                      newTracksAdded: 0), "another title's fetch")
-        XCTAssertFalse(AetherSubtitleStartGate.wakesOnFetchCompletion(completedRequest: key, requestKey: key, newTracksAdded: 2),
-                       "files that just became new tracks wake it through their own track publish")
+        XCTAssertEqual(AetherSubtitleStartGate.completion(completedRequest: key, requestKey: key, outstanding: true), .ours)
+        XCTAssertFalse(AetherSubtitleStartGate.isArriving(searchInFlight: true, fetchCompleted: true, fetchOutstanding: false),
+                       "a stale in-flight reading after completion")
+        XCTAssertTrue(AetherSubtitleStartGate.isArriving(searchInFlight: false, fetchCompleted: false, fetchOutstanding: true),
+                       "a stale idle reading before completion")
+        XCTAssertEqual(AetherSubtitleStartGate.completion(completedRequest: nil, requestKey: key, outstanding: true), .none)
+        XCTAssertEqual(AetherSubtitleStartGate.completion(completedRequest: "series|tt2:1:2", requestKey: key, outstanding: true),
+                       .superseded, "the Up Next prefetch replaced ours: decide rather than wait forever")
+        XCTAssertEqual(AetherSubtitleStartGate.completion(completedRequest: "series|tt2:1:2", requestKey: key, outstanding: false),
+                       .none)
     }
 
-    func testAnAllDuplicateFetchResultStillDecides() {
-        // Review r5: a fast fetch (no loading edge seen) returns only a URL the stream already declared as
-        // a sidecar. The idempotent add at completion makes no new track, so nothing will publish, and
-        // completion must decide on its own; the old rule waited on the two kept files forever.
-        let key = "movie|tt1"
-        let keptFiles = 2
-        let newTracks = 0   // both URLs already in `addedSubtitleURLs`
-        XCTAssertGreaterThan(keptFiles, 0)
-        XCTAssertTrue(AetherSubtitleStartGate.wakesOnFetchCompletion(completedRequest: key, requestKey: key,
-                                                                     newTracksAdded: newTracks))
+    func testThePlanRunsOnTheWholeRegisteredBatchNotAPartialPublish() {
+        // r6 F3: completion registers three add-on files; the queued publishes would carry them one at a
+        // time. The plan's list right after registration already holds all of them.
+        let embedded = AetherTrack(id: 3, name: "Japanese", codec: "subrip", language: "jpn")
+        let esES = AetherTrack(id: AetherTrack.externalTrackIDBase, name: "Spanish", codec: "subrip", language: "es", isExternal: true)
+        let es419 = AetherTrack(id: AetherTrack.externalTrackIDBase + 1, name: "Spanish (Latin America)", codec: "subrip",
+                                language: "es-419", isExternal: true)
+        let en = AetherTrack(id: AetherTrack.externalTrackIDBase + 2, name: "English", codec: "subrip", language: "en", isExternal: true)
+        let partial = [embedded, esES]   // the first publish after the first registration
+        let list = AetherSubtitleStartGate.planTracks(published: partial, registered: [esES, es419, en])
+        XCTAssertEqual(list.map(\.id), [3, AetherTrack.externalTrackIDBase, AetherTrack.externalTrackIDBase + 1,
+                                         AetherTrack.externalTrackIDBase + 2])
+        XCTAssertEqual(AetherSubtitleStartGate.planTracks(published: list, registered: [en]).count, 4, "no duplicates")
     }
 
     // MARK: Fresh load keeps the live tracks (review r1 F3)
