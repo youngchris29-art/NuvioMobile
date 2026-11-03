@@ -497,6 +497,7 @@ final class AetherTVPlayerViewController: UIViewController {
                 let target = duration * pct / 100
                 if target > 10 { issueSeek(kind: .resume, targetSec: target, fromSec: nil, mode: .absolute, planner: true, onRejected: nil) }
             }
+            firstLoadReturned()
             mediaOpened()
             fetchSkipSegments()
         } else {

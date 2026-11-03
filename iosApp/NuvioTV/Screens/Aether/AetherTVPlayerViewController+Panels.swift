@@ -114,6 +114,12 @@ extension AetherTVPlayerViewController {
 
     /// A fresh load (rebuild, Replay) returned: the add-on files that waited are registered after the
     /// declared ones, and the start plan runs on the result (review r8).
+    /// Hardening (r9): the first `load()` returned. A fresh load begun before it (a rebuild ahead of the
+    /// first return) must not leave the gate shut for the whole visit.
+    func firstLoadReturned() {
+        _ = panel.freshLoad.loadReturned()
+    }
+
     func freshLoadReturned() {
         guard panel.freshLoad.loadReturned() else { return }
         let subs = SubtitleRepository.shared.addonSubtitles.value_ as? [AddonSubtitle] ?? []
@@ -198,6 +204,7 @@ extension AetherTVPlayerViewController {
     /// BUG-171 no plan = Off). Decided once a match is found, or once no add-on file is still arriving.
     private func applySubtitleStartPlanIfNeeded(audio: [AetherTrack], subtitles: [AetherTrack], activeAudio: Int?) {
         guard !panel.didAutoSelectSubtitles, !panel.userSelectedSubtitle, mediaReady,
+              panel.freshLoad.allowsStartPlan,   // r9: decided at the fresh load's return instead
               let session, let settings = playerSettings else { return }
         // A completed fetch is final whatever `isLoading` last showed; a kicked one still out is not.
         let arriving = AetherSubtitleStartGate.isArriving(searchInFlight: state.subtitleSearchInFlight,

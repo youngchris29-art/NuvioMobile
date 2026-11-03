@@ -380,6 +380,11 @@ struct AetherFreshLoadGate: Equatable {
     /// The add-on list watcher and the fetch completion may register files now.
     var acceptsAddonFiles: Bool { !inFlight }
 
+    /// Review r9: the start plan may decide now. Not while a fresh load is in flight: its list lacks the
+    /// waiting files, and a selection made then is wiped by the engine's load prologue. The single run
+    /// happens at the load's return, on the declared and the waiting files.
+    var allowsStartPlan: Bool { !inFlight }
+
     /// `load()` returned. True when a fresh load was in flight: re-register the current list and run
     /// the start plan on the result.
     mutating func loadReturned() -> Bool {

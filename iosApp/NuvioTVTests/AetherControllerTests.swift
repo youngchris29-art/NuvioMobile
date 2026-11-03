@@ -379,6 +379,42 @@ final class AetherControllerTests: XCTestCase {
         XCTAssertEqual(again.externalSubtitles.map(\.url.lastPathComponent), ["a.vtt", "a.srt", "b.srt"])
     }
 
+    func testAFetchCompletingDuringARebuildIsDecidedAtTheLoadReturnWithTheWaitingFile() {
+        // r9: plan undecided, DV rebuild begins, this title's fetch completes (.ours) during it.
+        let key = "movie|tt1"
+        var gate = AetherFreshLoadGate()
+        gate.begin()
+        XCTAssertEqual(AetherSubtitleStartGate.completion(completedRequest: key, requestKey: key, outstanding: true), .ours)
+        XCTAssertFalse(gate.acceptsAddonFiles, "the English add-on file waits")
+        XCTAssertFalse(gate.allowsStartPlan, "and the plan does not decide Off on a list without it")
+
+        // Load return: the gate opens before the single run, on the declared tracks plus the waiting file.
+        XCTAssertTrue(gate.loadReturned())
+        XCTAssertTrue(gate.allowsStartPlan)
+        let declared = [AetherTrack(id: 3, name: "Japanese", codec: "subrip", language: "jpn")]
+        let english = AetherTrack(id: AetherTrack.externalTrackIDBase + 1, name: "English", codec: "subrip",
+                                  language: "eng", isExternal: true)
+        let list = AetherSubtitleStartGate.planTracks(published: declared, registered: [english])
+        XCTAssertFalse(AetherSubtitleStartGate.isArriving(searchInFlight: false, fetchCompleted: true, fetchOutstanding: false))
+        let shared = list.enumerated().map { i, t in
+            SubtitleTrack(index: Int32(i), id: String(t.id), label: t.name, language: t.language, isSelected: false,
+                          isForced: t.isForced)
+        }
+        let match = PlayerTrackSelectionKt.findPreferredSubtitleTrackIndex(tracks: shared, targets: ["eng"],
+                                                                           mode: .normalOnly, selectedAudioTrack: nil)
+        XCTAssertEqual(list[Int(match)].id, english.id, "the waiting English file is the one selected")
+        XCTAssertEqual(AetherSubtitleStartGate.command(for: .select(id: english.id), activeSubtitleID: nil),
+                       .select(id: english.id))
+    }
+
+    func testAFirstLoadReturnNeverLeavesTheGateShut() {
+        var gate = AetherFreshLoadGate()
+        gate.begin()            // a rebuild ahead of the first return
+        _ = gate.loadReturned() // `firstLoadReturned`
+        XCTAssertTrue(gate.acceptsAddonFiles)
+        XCTAssertTrue(gate.allowsStartPlan)
+    }
+
     // MARK: Audio tab Atmos note (W3-C)
 
     func testAtmosNoteShowsOnlyOnAetherWithBoostOrDialogue() {
