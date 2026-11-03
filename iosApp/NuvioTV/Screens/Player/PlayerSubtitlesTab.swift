@@ -161,7 +161,7 @@ struct PlayerSubtitlesTab: View {
         // to the tab row (which selects on focus) while the cues load.
         focusAfterDelay(.cancel)
         Task { @MainActor in
-            let loaded = await withTimeoutOrNil(seconds: 12) { await model.syncLineCues?() }
+            let loaded = await Self.loadSyncLineCues(model.syncLineCues, deadlineSeconds: Self.syncLineDeadlineSeconds)
             guard syncSession?.id == sessionID else { return }
             if let loaded {
                 syncSession?.cues = loaded
@@ -178,19 +178,16 @@ struct PlayerSubtitlesTab: View {
         }
     }
 
-    /// A cue fetch that hangs or fails must not hang the panel: nil after `seconds`.
-    private func withTimeoutOrNil(seconds: Double,
-                                  _ work: @escaping @Sendable () async -> [SubtitleSyncCue]?) async -> [SubtitleSyncCue]? {
-        await withTaskGroup(of: [SubtitleSyncCue]?.self) { group in
-            group.addTask { await work() }
-            group.addTask {
-                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-                return nil
-            }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first
-        }
+    /// How long the Sync Line list waits for cues before it shows the failure line.
+    static let syncLineDeadlineSeconds: Double = 12
+
+    /// A cue fetch that hangs or fails must not hang the panel: nil once the deadline passes, even
+    /// when the loader ignores cancellation (BUG-237: the old task group joined the hung loader,
+    /// so the sheet kept spinning past 12 s). Same race as the native sheet's `loadCues`.
+    static func loadSyncLineCues(_ loader: (() async -> [SubtitleSyncCue]?)?,
+                                 deadlineSeconds: Double) async -> [SubtitleSyncCue]? {
+        guard let loader else { return nil }
+        return await SyncLineDeadline.value(within: deadlineSeconds) { await loader() }
     }
 
     private func focusAfterDelay(_ target: SyncFocus) {
