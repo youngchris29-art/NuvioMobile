@@ -3,9 +3,10 @@ import XCTest
 
 final class PlayerSettingsPaneFooterTests: XCTestCase {
     func testFooterShownWhenEngineOn() {
-        let footer = PlayerSettingsPane.experimentalEngineFooter(engineOn: true)
-        XCTAssertNotNil(footer)
-        XCTAssertTrue(footer?.contains("Lossless surround") ?? false)
+        XCTAssertEqual(
+            PlayerSettingsPane.experimentalEngineFooter(engineOn: true),
+            String(localized: "Turning Lossless surround (LPCM) off sends TrueHD and DTS as Dolby Digital Plus 5.1, which older soundbars accept.")
+        )
     }
 
     func testFooterHiddenWhenEngineOff() {
