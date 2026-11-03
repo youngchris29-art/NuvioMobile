@@ -335,7 +335,7 @@ object MetaDetailsRepository {
             TmdbSettingsRepository.ensureLoaded()
             log.d { "Fetching meta from add-on \"${manifest.name}\" for type=$type id=$id" }
             val payload = fetchAddonResponseText(url)
-            log.d { "Raw payload length=${payload.length}, first 500 chars: ${payload.take(500)}" }
+            log.d { "Raw payload length=${payload.length}, first 500 chars: ${MetaFetchFailureLog.scrub(payload.take(500))}" }
             val result = MetaDetailsParser.parse(payload)
             val tmdbEnriched = withTimeoutOrNull(TMDB_ENRICH_TIMEOUT_MS) {
                 TmdbMetadataService.enrichMeta(

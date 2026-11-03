@@ -39,16 +39,50 @@ class MetaFetchFailureTest {
         val error = IllegalStateException("boom")
         assertFalse(MetaFetchFailureLog.isAddonAnswer(error))
         val message = MetaFetchFailureLog.message("Some Addon", "movie", "tt1745960", error)
-        assertEquals("Failed to fetch/parse meta from add-on \"Some Addon\" for type=movie id=tt1745960: boom", message)
+        assertTrue(
+            message.startsWith("Failed to fetch/parse meta from add-on \"Some Addon\" for type=movie id=tt1745960: IllegalStateException: boom at "),
+            message,
+        )
         assertFalse(message.contains("://"))
     }
 
     @Test
-    fun `network error message with a tokenized url is reduced to the class name`() {
+    fun `network error message with a tokenized url keeps the class and loses the url`() {
         val error = RuntimeException("Request timeout [url=https://addon.example/tok123/meta/movie/tt1.json]")
         val message = MetaFetchFailureLog.message("Some Addon", "movie", "tt1", error)
         assertTrue(message.contains("RuntimeException"), message)
         assertFalse(message.contains("https://"), message)
         assertFalse(message.contains("tok123"), message)
     }
+
+    @Test
+    fun `serialization error quoting a tokenized url is scrubbed`() {
+        val error = kotlinx.serialization.SerializationException(
+            "Unexpected JSON token at offset 12: … {\"poster\":\"https://cdn.example/img.jpg?token=tok123\"}"
+        )
+        val message = MetaFetchFailureLog.message("Some Addon", "movie", "tt1", error)
+        assertTrue(message.contains("Unexpected JSON token"), message)
+        assertFalse(message.contains("https://"), message)
+        assertFalse(message.contains("tok123"), message)
+    }
+
+    @Test
+    fun `bare secret query values are scrubbed`() {
+        val scrubbed = MetaFetchFailureLog.scrub("path?apikey=abc123&x=1 api_key=def456 token=tok123")
+        assertFalse(scrubbed.contains("abc123"), scrubbed)
+        assertFalse(scrubbed.contains("def456"), scrubbed)
+        assertFalse(scrubbed.contains("tok123"), scrubbed)
+        assertTrue(scrubbed.contains("x=1"), scrubbed)
+    }
+
+    @Test
+    fun `failure line names the app frame that threw`() {
+        val error = runCatching { throwFromDetailsPackage() }.exceptionOrNull()!!
+        val message = MetaFetchFailureLog.message("Some Addon", "movie", "tt1", error)
+        assertTrue(message.contains("com.nuvio.app.features.details"), message)
+        assertFalse(message.contains("location unknown"), message)
+    }
+
+    private fun throwFromDetailsPackage(): Nothing =
+        throw IllegalArgumentException("Element class kotlinx.serialization.json.JsonObject is not a JsonPrimitive")
 }

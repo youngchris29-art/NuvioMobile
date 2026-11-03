@@ -1,7 +1,5 @@
 package com.nuvio.app.features.details
 
-import kotlinx.serialization.SerializationException
-
 /**
  * BUG-239: an add-on answered its `meta` resource with a JSON object that holds no meta (an
  * error body, `{"meta":null}`, an empty object). Still an [IllegalStateException], so callers
@@ -15,22 +13,43 @@ class MissingMetaObjectException : IllegalStateException("Response did not conta
  * add-on answer, not an app fault: one warning, no stack trace.
  */
 internal object MetaFetchFailureLog {
+    private val urlPattern = Regex("""https?://[^\s"'<>)\]]+""")
+    private val secretParamPattern =
+        Regex("""(?i)\b(token|access_token|apikey|api_key|key|auth|password)=[^&\s"'<>)\]]+""")
+
     fun isAddonAnswer(error: Throwable): Boolean = error is MissingMetaObjectException
+
+    /**
+     * Review r1 F1: any text that can quote an add-on URL or response (exception messages,
+     * payload excerpts, stack frames) passes through here: each URL becomes `<url>` and bare
+     * secret-style query values become `<redacted>`.
+     */
+    fun scrub(text: String): String =
+        secretParamPattern.replace(urlPattern.replace(text, "<url>")) { "${it.groupValues[1]}=<redacted>" }
 
     fun message(addonName: String, type: String, id: String, error: Throwable): String =
         if (isAddonAnswer(error)) {
             "Add-on \"$addonName\" returned no meta object for type=$type id=$id; trying the next source"
         } else {
-            "Failed to fetch/parse meta from add-on \"$addonName\" for type=$type id=$id: " + detail(error)
+            "Failed to fetch/parse meta from add-on \"$addonName\" for type=$type id=$id: " +
+                detail(error) + " at " + location(error)
         }
 
-    /**
-     * Only parser-class messages are ours; any other message (a Ktor timeout or connection
-     * error) can hold the request URL with the add-on's token, so those print the class name.
-     */
+    /** The class name plus the scrubbed message, for every class (a timeout keeps its reason). */
     private fun detail(error: Throwable): String {
         val name = error::class.simpleName ?: "unknown error"
-        val ours = error is IllegalStateException || error is SerializationException
-        return if (ours) error.message ?: name else name
+        val text = error.message?.takeIf(String::isNotBlank)?.let(::scrub)
+        return if (text == null) name else "$name: $text"
     }
+
+    /**
+     * Review r1 F2: no stack trace reaches the logger, so name where it was thrown: the first
+     * app frame (`com.nuvio`), trimmed and scrubbed.
+     */
+    private fun location(error: Throwable): String =
+        error.stackTraceToString().lineSequence()
+            .map(String::trim)
+            .firstOrNull { it.startsWith("at ") && it.contains("com.nuvio") }
+            ?.let(::scrub)
+            ?: "location unknown"
 }
