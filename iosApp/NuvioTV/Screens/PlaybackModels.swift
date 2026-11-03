@@ -62,7 +62,8 @@ nonisolated enum AetherTuning {
     static let layouts = ["5.1.2", "5.1.4", "7.1.2", "7.1.4", "9.1.6"]
 
     static func bool(_ key: String, default value: Bool, defaults: UserDefaults = .standard) -> Bool {
-        defaults.object(forKey: key) as? Bool ?? value
+        // bool(forKey:) coerces launch-argument strings ("YES", "1", "true") that `as? Bool` rejects.
+        defaults.object(forKey: key) != nil ? defaults.bool(forKey: key) : value
     }
 
     static func layout(defaults: UserDefaults = .standard) -> String {
