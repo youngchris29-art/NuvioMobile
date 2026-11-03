@@ -1,5 +1,6 @@
 import CoreGraphics
 import NuvioAether
+import SharedCore
 import XCTest
 @testable import NuvioTV
 
@@ -308,6 +309,27 @@ final class AetherControllerTests: XCTestCase {
         XCTAssertEqual(AetherStartWatchdogRule.action(verdict: .fired(elapsed: 30), firstFrameShown: v.firstFrameShown), .reportTimeout,
                        "a load that never shows a frame times out")
         XCTAssertTrue(v.everShowedFrame, "a rebuild mid-viewing keeps the viewing's latch")
+    }
+
+    // MARK: Add-on forced subtitles (review r6 F4)
+
+    func testAForcedAddonFileIsForcedAndStaysForcedAcrossAFreshLoad() {
+        let forced = AddonSubtitle(id: "opensubtitles-forced-123", url: "https://subs.example.com/en.srt", language: "eng",
+                                   display: "English (OpenSubtitles)", addonName: "OpenSubtitles", isSelected: false)
+        let byURL = AddonSubtitle(id: "os-456", url: "https://subs.example.com/en.forced.srt", language: "eng",
+                                  display: "English", addonName: nil, isSelected: false)
+        let normal = AddonSubtitle(id: "os-789", url: "https://subs.example.com/en.full.srt", language: "eng",
+                                   display: "English", addonName: nil, isSelected: false)
+        XCTAssertEqual(AetherAddonSubtitlePlan.external(forced, credentialed: false)?.isForced, true, "by add-on id")
+        XCTAssertEqual(AetherAddonSubtitlePlan.external(byURL, credentialed: false)?.isForced, true, "by URL")
+        XCTAssertEqual(AetherAddonSubtitlePlan.external(normal, credentialed: false)?.isForced, false)
+        XCTAssertEqual(AetherAddonSubtitlePlan.external(normal, credentialed: true)?.httpHeaders, [:])
+        XCTAssertNil(AetherAddonSubtitlePlan.external(normal, credentialed: false)?.httpHeaders)
+
+        let added = [AetherAddonSubtitlePlan.external(forced, credentialed: false)!]
+        let r = AetherReloadRequestPlan.request(from: startRequest(), startSec: 10, activeAudioID: nil,
+                                                activeSubtitleID: nil, subtitleDecided: false, addedSubtitles: added)
+        XCTAssertEqual(r.externalSubtitles.last?.isForced, true, "re-declared forced on the rebuild / Replay load")
     }
 
     // MARK: Audio tab Atmos note (W3-C)

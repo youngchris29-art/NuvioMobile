@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import NuvioAether
+import SharedCore
 
 // Aether Phase 1, W3-A: the pure decisions behind `AetherTVPlayerViewController`, factored out so
 // `AetherControllerTests` pins them without an engine (the façade's `FakeEngine` is package-internal).
@@ -316,6 +317,20 @@ enum AetherSubtitleStartGate {
     static func planTracks(published: [AetherTrack], registered: [AetherTrack]) -> [AetherTrack] {
         let known = Set(published.map(\.id))
         return published + registered.filter { !known.contains($0.id) }
+    }
+}
+
+/// Review r6 F4: one add-on subtitle as the engine's external track. The forced flag is the shared
+/// rule (`addonSubtitleIsForced`: "forced" in the add-on id, URL or name), so a forced add-on file can
+/// satisfy a forced-only plan and is skipped by a normal-only one; the stored value carries it across
+/// a fresh load (`AetherReloadRequestPlan`). A stream whose headers carry credentials never forwards
+/// them to a subtitle host (`credentialed` sends none).
+enum AetherAddonSubtitlePlan {
+    static func external(_ sub: AddonSubtitle, credentialed: Bool) -> AetherExternalSubtitle? {
+        guard let url = URL(string: sub.url) else { return nil }
+        return AetherExternalSubtitle(url: url, name: sub.display, language: sub.language,
+                                      isForced: PlayerTrackSelectionKt.addonSubtitleIsForced(subtitle: sub),
+                                      httpHeaders: credentialed ? [:] : nil)
     }
 }
 

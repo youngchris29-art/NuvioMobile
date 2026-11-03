@@ -324,10 +324,8 @@ extension AetherTVPlayerViewController {
         }
         var added: [AetherTrack] = []
         for sub in kept.sorted(by: { rank($0) < rank($1) }) where !panel.addedSubtitleURLs.contains(sub.url) {
-            guard let url = URL(string: sub.url) else { continue }
+            guard let external = AetherAddonSubtitlePlan.external(sub, credentialed: credentialed) else { continue }
             panel.addedSubtitleURLs.insert(sub.url)
-            let external = AetherExternalSubtitle(url: url, name: sub.display, language: sub.language,
-                                                  httpHeaders: credentialed ? [:] : nil)
             if let track = session.addExternalSubtitle(external) {
                 panel.addedAddonSubtitles.append(external)
                 panel.externalSourceByTrackID[track.id] = sub.url
