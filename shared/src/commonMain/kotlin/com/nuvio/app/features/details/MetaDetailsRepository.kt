@@ -364,7 +364,9 @@ object MetaDetailsRepository {
             enriched
         } catch (e: Throwable) {
             if (e is CancellationException) throw e
-            log.e(e) { "Failed to fetch/parse meta from $url (manifest=${manifest.transportUrl})" }
+            // BUG-239: name the add-on, never its URLs; a body without meta is a warning.
+            val message = MetaFetchFailureLog.message(manifest.name, type, id, e)
+            if (MetaFetchFailureLog.isAddonAnswer(e)) log.w { message } else log.e(e) { message }
             null
         }
     }

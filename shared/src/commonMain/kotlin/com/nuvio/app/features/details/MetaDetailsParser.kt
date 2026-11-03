@@ -25,7 +25,7 @@ object MetaDetailsParser {
         val root = json.parseToJsonElement(payload).asJsonObjectOrNull()
             ?: error("Expected top-level JSON object in response")
         val meta = root.extractMetaObject()
-            ?: error("Response did not contain a valid meta object")
+            ?: throw MissingMetaObjectException()
         val links = meta.links()
         val videos = meta.videos()
 
