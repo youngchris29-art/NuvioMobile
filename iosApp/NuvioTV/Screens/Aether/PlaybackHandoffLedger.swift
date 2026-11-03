@@ -9,7 +9,8 @@ import Foundation
 //   is known (a pre-start failure and a live stream write nothing);
 // - the Trakt stop and the tracker stop come after the flush and before the handoff reaches mpv, so
 //   Aether's sessions are closed before mpv opens its own (never two open at once);
-// - everything after the first handoff, or after tracking finished (teardown, `deinit`), emits nothing.
+// - everything after the first handoff, or after tracking finished (teardown, `deinit`), emits nothing,
+//   until a Play Again after the end reopens tracking for the second viewing (`beginReplay`).
 
 struct PlaybackHandoffLedger: Equatable {
     enum Effect: Equatable {
@@ -33,6 +34,15 @@ struct PlaybackHandoffLedger: Equatable {
         effects.append(.stopTrakt(positionSec: positionSec))
         effects.append(.stopTrackers(positionSec: positionSec))
         return effects
+    }
+
+    /// Review r5: Play Again after the end closed tracking starts a new watch, so tracking reopens
+    /// (the controller takes a fresh recorder and opens new sessions at the replay's first frame).
+    /// Never after a handoff, and a no-op while tracking is still open. Returns whether it reopened.
+    mutating func beginReplay() -> Bool {
+        guard !handedOff, trackingFinished else { return false }
+        trackingFinished = false
+        return true
     }
 
     /// The fallback verdict: the tracking effects, then the handoff. Once only; a second verdict emits

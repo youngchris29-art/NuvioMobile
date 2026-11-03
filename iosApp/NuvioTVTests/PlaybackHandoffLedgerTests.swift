@@ -27,14 +27,36 @@ final class PlaybackHandoffLedgerTests: XCTestCase {
     }
 
     func testEndOfFileClosesTrackingSoAReplayExitSendsNoSecondStop() {
-        // Review r3: the controller finishes tracking at EOF (the end position), so a Play Again that
-        // the viewer leaves at 10% never sends the only tracker stop at 10%.
+        // Review r3: the controller finishes tracking at EOF (the end position), so the first viewing's
+        // stop is at the end; a later teardown without a Play Again sends nothing more.
         var ledger = PlaybackHandoffLedger()
         XCTAssertEqual(ledger.finishTracking(positionSec: 3_000, durationSec: 3_000, everShowedFrame: true), [
             .flushResume(positionSec: 3_000), .stopTrakt(positionSec: 3_000), .stopTrackers(positionSec: 3_000),
         ])
         XCTAssertEqual(ledger.finishTracking(positionSec: 300, durationSec: 3_000, everShowedFrame: true), [],
-                       "teardown after the replay exit")
+                       "teardown with no Play Again")
+    }
+
+    func testPlayAgainAfterTheEndReopensTrackingForTheSecondViewing() {
+        // Review r5: finish, Play Again, watch 20 min, exit: the exit records and stops at 1200 s.
+        var ledger = PlaybackHandoffLedger()
+        _ = ledger.finishTracking(positionSec: 3_000, durationSec: 3_000, everShowedFrame: true)
+        XCTAssertTrue(ledger.beginReplay(), "the replay opens a new watch")
+        XCTAssertFalse(ledger.trackingFinished, "progress and the replay's first-frame sessions are accepted again")
+        XCTAssertEqual(ledger.finishTracking(positionSec: 1_200, durationSec: 3_000, everShowedFrame: true), [
+            .flushResume(positionSec: 1_200), .stopTrakt(positionSec: 1_200), .stopTrackers(positionSec: 1_200),
+        ])
+        XCTAssertEqual(ledger.finishTracking(positionSec: 1_300, durationSec: 3_000, everShowedFrame: true), [],
+                       "the deinit backstop after the exit")
+    }
+
+    func testReplayNeverReopensAfterAHandoffOrWhileTrackingIsOpen() {
+        var open = PlaybackHandoffLedger()
+        XCTAssertFalse(open.beginReplay())
+        var handed = PlaybackHandoffLedger()
+        _ = handed.handOff(positionSec: 100, secondsPlayed: 50, durationSec: 3_000, everShowedFrame: true)
+        XCTAssertFalse(handed.beginReplay())
+        XCTAssertTrue(handed.trackingFinished)
     }
 
     func testASecondFailureVerdictEmitsNothing() {

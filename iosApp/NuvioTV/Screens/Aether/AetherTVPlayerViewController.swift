@@ -90,7 +90,8 @@ final class AetherTVPlayerViewController: UIViewController {
     /// The subtitle overlay (W3-B), above the surface and below the chrome.
     private(set) var subtitleOverlay: AetherSubtitleOverlayModel?
     private var surfaceHost: UIHostingController<AetherSurfaceRoot>?
-    let recorder: PlaybackProgressRecorder
+    /// Replaced on Play Again after the end (review r5): the second viewing is a new watch session.
+    private(set) var recorder: PlaybackProgressRecorder
     var bag = Set<AnyCancellable>()
     private var loadTask: Task<Void, Never>?
     /// Scrub stills over `session.scrubFrame` (time-only when the session cannot serve them).
@@ -962,14 +963,14 @@ final class AetherTVPlayerViewController: UIViewController {
         recorder.record(positionSec: position, durationSec: transportDurationSec, isPaused: true, speed: 1,
                         flush: true, isLive: false)
         // Review r3: the watch is complete here, so the Trakt and tracker sessions close at the end
-        // position (mpv closes them when the post-play cover goes up). Play Again is not tracked again.
+        // position (mpv closes them when the post-play cover goes up). Play Again reopens them.
         finishTracking(positionSec: position)
         state.isEnded = true
     }
 
     /// Post-play "Play Again": `.ended` is terminal on Aether, so this is a fresh `load` at 0 on the
     /// same request with the live tracks (`reloadRequest`; the clock keeps its axis). The tracker
-    /// sessions closed at the end (`handleEnded`); the second viewing is not tracked.
+    /// sessions closed at the end (`handleEnded`); the second viewing is tracked as a new watch.
     private func replay() {
         guard let session, let request = session.currentRequest, !handedOff else { return }
         transportInput.cancelExactStage()
@@ -978,6 +979,12 @@ final class AetherTVPlayerViewController: UIViewController {
         endedHandled = false
         state.isEnded = false
         positionMirror = 0
+        // Review r5: the end closed tracking; the second viewing records progress and scrobbles as a
+        // new watch (fresh recorder, sessions reopened at its first frame by `startTrackingIfNeeded`).
+        if handoffLedger.beginReplay() {
+            recorder = PlaybackProgressRecorder(context: context)
+            trackingStarted = false
+        }
         print("[AetherPlayer] replay: load at 0")
         armStartWatchdog()
         runLoad(session, reloadRequest(request, startSec: 0))
