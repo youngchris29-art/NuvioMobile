@@ -717,8 +717,11 @@ final class AetherTVPlayerViewController: UIViewController {
     private var debugLastInjectUptime = 0.0
     private func debugInjectFailureIfDue(now: Double) {
         let defaults = UserDefaults.standard
-        guard everShowedFrame, let at = defaults.object(forKey: "debug.mpvSmokeAetherFailAtSec") as? Double,
-              positionMirror >= at, now - debugLastInjectUptime >= 3 else { return }
+        // `object(forKey:)` is a String when the key comes in as a device launch argument (`-debug.x 20`),
+        // so read it through `double(forKey:)`, which converts; an unset key stays nil (W5, 2026-11-03).
+        guard everShowedFrame, defaults.object(forKey: "debug.mpvSmokeAetherFailAtSec") != nil else { return }
+        let at = defaults.double(forKey: "debug.mpvSmokeAetherFailAtSec")
+        guard at > 0, positionMirror >= at, now - debugLastInjectUptime >= 3 else { return }
         let limit = max(defaults.integer(forKey: "debug.mpvSmokeAetherFailCount"), 1)
         guard debugInjected < limit else { return }
         debugInjected += 1
