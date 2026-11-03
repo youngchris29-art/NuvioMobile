@@ -36,10 +36,19 @@ class MetaFetchFailureTest {
 
     @Test
     fun `other failures stay errors and carry no url`() {
-        val error = IllegalArgumentException("boom")
+        val error = IllegalStateException("boom")
         assertFalse(MetaFetchFailureLog.isAddonAnswer(error))
         val message = MetaFetchFailureLog.message("Some Addon", "movie", "tt1745960", error)
         assertEquals("Failed to fetch/parse meta from add-on \"Some Addon\" for type=movie id=tt1745960: boom", message)
         assertFalse(message.contains("://"))
+    }
+
+    @Test
+    fun `network error message with a tokenized url is reduced to the class name`() {
+        val error = RuntimeException("Request timeout [url=https://addon.example/tok123/meta/movie/tt1.json]")
+        val message = MetaFetchFailureLog.message("Some Addon", "movie", "tt1", error)
+        assertTrue(message.contains("RuntimeException"), message)
+        assertFalse(message.contains("https://"), message)
+        assertFalse(message.contains("tok123"), message)
     }
 }

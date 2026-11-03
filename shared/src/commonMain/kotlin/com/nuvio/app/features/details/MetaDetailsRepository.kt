@@ -333,7 +333,7 @@ object MetaDetailsRepository {
 
         return try {
             TmdbSettingsRepository.ensureLoaded()
-            log.d { "Fetching meta from: $url" }
+            log.d { "Fetching meta from add-on \"${manifest.name}\" for type=$type id=$id" }
             val payload = fetchAddonResponseText(url)
             log.d { "Raw payload length=${payload.length}, first 500 chars: ${payload.take(500)}" }
             val result = MetaDetailsParser.parse(payload)
@@ -366,7 +366,8 @@ object MetaDetailsRepository {
             if (e is CancellationException) throw e
             // BUG-239: name the add-on, never its URLs; a body without meta is a warning.
             val message = MetaFetchFailureLog.message(manifest.name, type, id, e)
-            if (MetaFetchFailureLog.isAddonAnswer(e)) log.w { message } else log.e(e) { message }
+            // Never hand the Throwable to Kermit: its stack print carries the message (the URL).
+            if (MetaFetchFailureLog.isAddonAnswer(e)) log.w { message } else log.e { message }
             null
         }
     }
