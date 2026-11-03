@@ -216,13 +216,25 @@ final class AetherControllerTests: XCTestCase {
         XCTAssertTrue(AetherSubtitleStartGate.runsAtLoadReturn(prefetchedAddonsAdded: 0))
         XCTAssertTrue(AetherSubtitleStartGate.addonFetchPending(completedRequest: nil, requestKey: key),
                       "the load-return run waits on the fetch it just kicked")
-        XCTAssertTrue(AetherSubtitleStartGate.wakesOnFetchCompletion(completedRequest: key, requestKey: key, keptAddonFiles: 0),
+        XCTAssertTrue(AetherSubtitleStartGate.wakesOnFetchCompletion(completedRequest: key, requestKey: key, newTracksAdded: 0),
                       "completion alone wakes it, so Off can land")
-        XCTAssertFalse(AetherSubtitleStartGate.wakesOnFetchCompletion(completedRequest: nil, requestKey: key, keptAddonFiles: 0))
+        XCTAssertFalse(AetherSubtitleStartGate.wakesOnFetchCompletion(completedRequest: nil, requestKey: key, newTracksAdded: 0))
         XCTAssertFalse(AetherSubtitleStartGate.wakesOnFetchCompletion(completedRequest: "series|tt2:1:2", requestKey: key,
-                                                                      keptAddonFiles: 0), "another title's fetch")
-        XCTAssertFalse(AetherSubtitleStartGate.wakesOnFetchCompletion(completedRequest: key, requestKey: key, keptAddonFiles: 2),
-                       "kept files wake it through their own track publish")
+                                                                      newTracksAdded: 0), "another title's fetch")
+        XCTAssertFalse(AetherSubtitleStartGate.wakesOnFetchCompletion(completedRequest: key, requestKey: key, newTracksAdded: 2),
+                       "files that just became new tracks wake it through their own track publish")
+    }
+
+    func testAnAllDuplicateFetchResultStillDecides() {
+        // Review r5: a fast fetch (no loading edge seen) returns only a URL the stream already declared as
+        // a sidecar. The idempotent add at completion makes no new track, so nothing will publish, and
+        // completion must decide on its own; the old rule waited on the two kept files forever.
+        let key = "movie|tt1"
+        let keptFiles = 2
+        let newTracks = 0   // both URLs already in `addedSubtitleURLs`
+        XCTAssertGreaterThan(keptFiles, 0)
+        XCTAssertTrue(AetherSubtitleStartGate.wakesOnFetchCompletion(completedRequest: key, requestKey: key,
+                                                                     newTracksAdded: newTracks))
     }
 
     // MARK: Fresh load keeps the live tracks (review r1 F3)

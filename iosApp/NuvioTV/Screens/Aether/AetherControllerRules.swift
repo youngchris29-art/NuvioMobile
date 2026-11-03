@@ -252,12 +252,14 @@ enum AetherSubtitleStartGate {
         completedRequest != requestKey
     }
 
-    /// Review r4: what wakes a waiting plan once the fetch is done. `completedRequest` reaching the key,
-    /// not the `isLoading` true→false edge (StateFlow conflation can hide a fetch that flips with no
-    /// suspension, and an equal empty list never re-emits). Only when no kept add-on file is left to
-    /// publish: those files' own track publish runs the plan with them in the list.
-    static func wakesOnFetchCompletion(completedRequest: String?, requestKey: String, keptAddonFiles: Int) -> Bool {
-        completedRequest == requestKey && keptAddonFiles == 0
+    /// Review r4/r5: what wakes a waiting plan once the fetch is done. `completedRequest` reaching the
+    /// key, not the `isLoading` true→false edge (StateFlow conflation can hide a fetch that flips with no
+    /// suspension, and an equal list never re-emits). At completion the controller hands the final list
+    /// to the engine idempotently; only the files that became NEW tracks just now hold the plan back,
+    /// because their own track publish runs it with them in the list. Kept files the stream already
+    /// declared, or that were added earlier, publish nothing, so they never hold it.
+    static func wakesOnFetchCompletion(completedRequest: String?, requestKey: String, newTracksAdded: Int) -> Bool {
+        completedRequest == requestKey && newTracksAdded == 0
     }
 }
 

@@ -27,6 +27,9 @@ final class AetherPanelState {
     var subtitleWatcher: FlowWatcher?
     var subtitleLoadingWatcher: FlowWatcher?
     var subtitleCompletedWatcher: FlowWatcher?
+    /// This title's add-on fetch completed (review r5): no file is still arriving, whatever `isLoading`
+    /// last showed, so a later run (the new tracks' publish) may decide Off.
+    var addonFetchCompleted = false
 }
 
 extension AetherTVPlayerViewController {
@@ -184,7 +187,8 @@ extension AetherTVPlayerViewController {
         guard !panel.didAutoSelectSubtitles, !panel.userSelectedSubtitle, mediaReady,
               let session, let settings = playerSettings else { return }
         // A completed fetch with nothing left to publish is final, whatever `isLoading` last showed.
-        let arriving = (state.subtitleSearchInFlight && !addonFetchCompleted) || addonFetchPending
+        let completed = addonFetchCompleted || panel.addonFetchCompleted
+        let arriving = (state.subtitleSearchInFlight && !completed) || addonFetchPending
         guard !subtitles.isEmpty else {
             if !arriving { panel.didAutoSelectSubtitles = true }
             return
@@ -264,11 +268,15 @@ extension AetherTVPlayerViewController {
         panel.subtitleCompletedWatcher = FlowWatcherKt.watch(SubtitleRepository.shared.completedRequest) { [weak self] emitted in
             let completed = emitted as? String
             DispatchQueue.main.async {
-                guard let self, let session = self.session, !self.panel.didAutoSelectSubtitles else { return }
+                guard let self, let session = self.session, completed == requestKey else { return }
+                // Review r5: the final list goes to the engine (idempotent: known URLs are skipped), and
+                // the fetch counts as done for every later run of the plan.
+                self.panel.addonFetchCompleted = true
                 let subs = SubtitleRepository.shared.addonSubtitles.value_ as? [AddonSubtitle] ?? []
-                guard AetherSubtitleStartGate.wakesOnFetchCompletion(
-                    completedRequest: completed, requestKey: requestKey,
-                    keptAddonFiles: self.keptAddonSubtitles(subs).count) else { return }
+                let added = self.addAddonSubtitles(subs)
+                guard !self.panel.didAutoSelectSubtitles,
+                      AetherSubtitleStartGate.wakesOnFetchCompletion(
+                          completedRequest: completed, requestKey: requestKey, newTracksAdded: added) else { return }
                 self.tracksChanged(audio: session.audioTracks, subtitles: session.subtitleTracks,
                                    activeAudio: session.activeAudioID, activeSubtitle: session.activeSubtitleID,
                                    addonFetchCompleted: true)
