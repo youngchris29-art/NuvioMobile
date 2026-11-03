@@ -138,7 +138,7 @@ object TmdbService {
         return runCatching {
             json.decodeFromString<T>(httpGetText(url))
         }.onFailure { error ->
-            log.w { "TMDB request failed for $endpoint: ${error.message}" }
+            log.w { "TMDB request failed for $endpoint: ${TmdbLogRedaction.redact(error.message)}" }
         }.getOrNull()
     }
 

@@ -202,7 +202,7 @@ object TmdbMetadataService {
             cacheMutex.withLock { personCache[cacheKey] = detail }
             detail
         } catch (e: Exception) {
-            log.w(e) { "Failed to fetch person detail for $personId" }
+            log.w { "Failed to fetch person detail for $personId: ${TmdbLogRedaction.describe(e)}" }
             null
         }
     }
@@ -553,7 +553,7 @@ object TmdbMetadataService {
                 hasMore = page < totalPages && mappedItems.isNotEmpty(),
             )
         } catch (e: Exception) {
-            log.w(e) { "Failed to fetch entity rail ${railType.value}/${mediaType.value} for $entityId" }
+            log.w { "Failed to fetch entity rail ${railType.value}/${mediaType.value} for $entityId: ${TmdbLogRedaction.describe(e)}" }
             TmdbEntityRailPageResult(items = emptyList(), hasMore = false)
         }
 
@@ -619,7 +619,7 @@ object TmdbMetadataService {
                 }
             }
         } catch (e: Exception) {
-            log.w(e) { "Failed to fetch ${entityKind.routeValue} header for $entityId" }
+            log.w { "Failed to fetch ${entityKind.routeValue} header for $entityId: ${TmdbLogRedaction.describe(e)}" }
             null
         } ?: fallbackName?.takeIf { it.isNotBlank() }?.let {
             TmdbEntityHeader(
@@ -1238,7 +1238,7 @@ object TmdbMetadataService {
                 }
             }
         }.getOrElse { error ->
-            log.w(error) { "Failed to fetch English credits fallback for $numericId" }
+            log.w { "Failed to fetch English credits fallback for $numericId: ${TmdbLogRedaction.describe(error)}" }
             emptyMap()
         }
     }
@@ -1297,7 +1297,7 @@ object TmdbMetadataService {
         return runCatching {
             json.decodeFromString<T>(httpGetText(url))
         }.onFailure { error ->
-            log.w { "TMDB request failed for $endpoint: ${error.message}" }
+            log.w { "TMDB request failed for $endpoint: ${TmdbLogRedaction.redact(error.message)}" }
         }.getOrNull()
     }
 
