@@ -9,6 +9,13 @@ import SharedCore
 struct PlayerSettingsPane: View {
     @ObservedObject var model: SettingsViewModel
 
+    /// The LPCM footnote explains a row that only renders while the engine is on, so it shows only then.
+    static func experimentalEngineFooter(engineOn: Bool) -> String? {
+        engineOn
+            ? String(localized: "Turning Lossless surround (LPCM) off sends TrueHD and DTS as Dolby Digital Plus 5.1, which older soundbars accept.")
+            : nil
+    }
+
     var body: some View {
         SettingsSection(String(localized: "Playback")) {
             // Hidden entirely unless an external player (Infuse) is installed.
@@ -123,7 +130,7 @@ struct PlayerSettingsPane: View {
         // MARK: - Aether (Phase 1)
         SettingsSection(
             String(localized: "Experimental Engine"),
-            footer: String(localized: "Turning Lossless surround (LPCM) off sends TrueHD and DTS as Dolby Digital Plus 5.1, which older soundbars accept.")
+            footer: Self.experimentalEngineFooter(engineOn: model.aetherEngine)
         ) {
             SettingsToggleRow(
                 title: String(localized: "Experimental engine: Aether"),
