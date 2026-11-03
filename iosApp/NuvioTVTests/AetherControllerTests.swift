@@ -301,6 +301,20 @@ final class AetherControllerTests: XCTestCase {
                       "the replay's own minute: an early end is a failure")
     }
 
+    func testAFreshLoadsWatchdogNeverStandsDownOnThePreviousLoadsFrame() {
+        // Review r6 F2: rebuild after a route interruption; `session.load` still awaits the audio session
+        // when the new watchdog's first tick runs.
+        var v = AetherViewingState()
+        v.firstFrameChanged(true)
+        XCTAssertEqual(AetherStartWatchdogRule.action(verdict: .waiting, firstFrameShown: v.firstFrameShown), .standDown,
+                       "what the old mirror told the new watchdog")
+        v.loadStarting()
+        XCTAssertEqual(AetherStartWatchdogRule.action(verdict: .waiting, firstFrameShown: v.firstFrameShown), .wait)
+        XCTAssertEqual(AetherStartWatchdogRule.action(verdict: .fired(elapsed: 30), firstFrameShown: v.firstFrameShown), .reportTimeout,
+                       "a load that never shows a frame times out")
+        XCTAssertTrue(v.everShowedFrame, "a rebuild mid-viewing keeps the viewing's latch")
+    }
+
     // MARK: Audio tab Atmos note (W3-C)
 
     func testAtmosNoteShowsOnlyOnAetherWithBoostOrDialogue() {

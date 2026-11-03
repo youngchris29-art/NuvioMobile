@@ -192,9 +192,16 @@ struct AetherViewingState: Equatable {
         if everShowedFrame { playClock.note(playing: playing, at: now) }
     }
 
+    /// A fresh `load` (Replay, the DV rebuild) is about to be armed: the previous load's first frame
+    /// no longer counts, so the new start watchdog never stands down on it while `session.load` is
+    /// still awaiting the audio session (review r6 F2). The viewing's latch and clock stay.
+    mutating func loadStarting() {
+        firstFrameShown = false
+    }
+
     /// Play Again after the end (the ledger reopened tracking): a new viewing.
     mutating func replayStarting() {
-        firstFrameShown = false
+        loadStarting()
         everShowedFrame = false
         playClock = PlaybackHealthClock()
     }

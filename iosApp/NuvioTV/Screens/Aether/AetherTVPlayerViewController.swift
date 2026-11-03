@@ -986,6 +986,8 @@ final class AetherTVPlayerViewController: UIViewController {
             // Review r6: a new viewing, so its early end or pre-frame failure is judged on its own.
             viewing.replayStarting()
         }
+        viewing.loadStarting()   // review r6 F2: the new watchdog never sees the old load's frame
+        updateBuffering()
         print("[AetherPlayer] replay: load at 0")
         armStartWatchdog()
         runLoad(session, reloadRequest(request, startSec: 0))
@@ -1115,6 +1117,8 @@ final class AetherTVPlayerViewController: UIViewController {
         let at = AetherFailurePlan.handoffPosition(positionMirror)
         print("[Failover] aether rebuild at \(String(format: "%.1f", at)) after \(failure.kind.token)")
         endedHandled = false
+        viewing.loadStarting()   // review r6 F2: the new watchdog never sees the old load's frame
+        updateBuffering()
         armStartWatchdog()
         runLoad(session, reloadRequest(request, startSec: at > 1 ? at : nil))
     }
