@@ -125,6 +125,37 @@ class MetaFetchFailureTest {
         }
     }
 
+    @Test
+    fun `real parser excerpt starting mid url is removed`() {
+        // Over 200 chars, so kotlinx trims the excerpt to a window around the error offset,
+        // which then starts inside the tokenized poster URL.
+        val filler = "f".repeat(240)
+        val body = "{\"meta\":{\"name\":\"x\",\"overview\":\"$filler\"," +
+            "\"poster\":\"https://cdn.example/PRIVATE_TOKEN_abc/x\",\"id\":}"
+        val error = runCatching { MetaDetailsParser.parse(body) }.exceptionOrNull()!!
+        val raw = error.message.orEmpty()
+        assertTrue(raw.contains("JSON input", ignoreCase = true), raw)
+        assertTrue(raw.contains("PRIVATE_TOKEN_abc"), "premise: the excerpt quotes the token: $raw")
+        val message = MetaFetchFailureLog.message("Some Addon", "series", "tt1", error)
+        assertFalse(message.contains("PRIVATE_TOKEN_abc"), message)
+        assertFalse(message.contains("JSON input", ignoreCase = true), message)
+        assertTrue(message.contains("input excerpt removed"), message)
+        assertTrue(message.contains("offset"), message)
+    }
+
+    @Test
+    fun `hand built message with json input mid string keeps only the reason`() {
+        val error = IllegalArgumentException(
+            "Unexpected JSON token at offset 7: Expected string at path: \$.poster json input: ....example/SECRET/x\",\"id\":}"
+        )
+        val message = MetaFetchFailureLog.message("Some Addon", "movie", "tt1", error)
+        assertTrue(
+            message.contains("IllegalArgumentException: Unexpected JSON token at offset 7: Expected string at path: \$.poster [input excerpt removed]"),
+            message,
+        )
+        assertFalse(message.contains("SECRET"), message)
+    }
+
     private fun throwFromDetailsPackage(): Nothing =
         throw IllegalArgumentException("Element class kotlinx.serialization.json.JsonObject is not a JsonPrimitive")
 }
