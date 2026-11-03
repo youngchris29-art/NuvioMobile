@@ -366,6 +366,28 @@ enum AetherAddonSubtitlePlan {
     }
 }
 
+/// Review r8: add-on files arriving while a fresh `load` (the DV rebuild, Replay) is in flight. The
+/// fresh request's declared list is fixed when it is built, and AetherEngine clears its external list
+/// and numbering at the start of every load, then registers the declared sidecars after the probe; a
+/// file registered in between is wiped or shifts every declared id by one. Such files wait (their URL
+/// is not marked added) and are registered once the load returns, after the declared ones.
+struct AetherFreshLoadGate: Equatable {
+    private(set) var inFlight = false
+
+    /// `reloadRequest` built the fresh request: the declared list is fixed from here.
+    mutating func begin() { inFlight = true }
+
+    /// The add-on list watcher and the fetch completion may register files now.
+    var acceptsAddonFiles: Bool { !inFlight }
+
+    /// `load()` returned. True when a fresh load was in flight: re-register the current list and run
+    /// the start plan on the result.
+    mutating func loadReturned() -> Bool {
+        defer { inFlight = false }
+        return inFlight
+    }
+}
+
 /// Review r1 F3: the request of a fresh `load` mid-visit (the DV-interruption rebuild, Replay). The
 /// session's `currentRequest` is the start request, so it carries the start preferences, not what is
 /// playing. The fresh request keeps the live audio track and, once the start plan or the viewer has

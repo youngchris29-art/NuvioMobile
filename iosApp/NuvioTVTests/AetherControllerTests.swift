@@ -352,6 +352,33 @@ final class AetherControllerTests: XCTestCase {
         XCTAssertEqual(r.externalSubtitles.last?.isForced, true, "re-declared forced on the rebuild / Replay load")
     }
 
+    // MARK: Add-on files during a fresh load (review r8)
+
+    func testAddonFilesDuringAFreshLoadWaitAndRegisterAfterTheDeclaredOnes() {
+        var gate = AetherFreshLoadGate()
+        XCTAssertTrue(gate.acceptsAddonFiles)
+        XCTAssertFalse(gate.loadReturned(), "the first load's return re-registers nothing")
+
+        // Rebuild: the request declares the stream sidecar and the add-on file added before it.
+        let early = AetherExternalSubtitle(url: URL(string: "https://subs.example.com/a.srt")!, language: "eng")
+        let late = AetherExternalSubtitle(url: URL(string: "https://subs.example.com/b.srt")!, language: "eng")
+        gate.begin()
+        let rebuilt = AetherReloadRequestPlan.request(from: startRequest(), startSec: 900, activeAudioID: nil,
+                                                      activeSubtitleID: AetherTrack.externalTrackIDBase + 1,
+                                                      subtitleDecided: true, addedSubtitles: [early])
+        XCTAssertFalse(gate.acceptsAddonFiles, "the file arriving mid-load waits (its URL is not marked added)")
+        XCTAssertEqual(rebuilt.externalSubtitles.map(\.url.lastPathComponent), ["a.vtt", "a.srt"])
+        XCTAssertEqual(rebuilt.initialSubtitle, .track(id: AetherTrack.externalTrackIDBase + 1),
+                       "the viewer's add-on track keeps its id: nothing was registered in between")
+
+        XCTAssertTrue(gate.loadReturned(), "load return registers the waiting file and runs the plan")
+        XCTAssertTrue(gate.acceptsAddonFiles)
+        // Registered after the declared ones, it takes the next ordinal; a later reload declares it there.
+        let again = AetherReloadRequestPlan.request(from: rebuilt, startSec: 0, activeAudioID: nil, activeSubtitleID: nil,
+                                                    subtitleDecided: true, addedSubtitles: [early, late])
+        XCTAssertEqual(again.externalSubtitles.map(\.url.lastPathComponent), ["a.vtt", "a.srt", "b.srt"])
+    }
+
     // MARK: Audio tab Atmos note (W3-C)
 
     func testAtmosNoteShowsOnlyOnAetherWithBoostOrDialogue() {

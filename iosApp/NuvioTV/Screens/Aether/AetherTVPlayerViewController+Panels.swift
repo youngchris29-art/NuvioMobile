@@ -33,6 +33,8 @@ final class AetherPanelState {
     /// The fetch kicked at load return has not completed or been superseded (review r6 F3): the plan
     /// keeps waiting on a missing match, whatever `isLoading` last showed.
     var addonFetchOutstanding = false
+    /// A fresh load is in flight: add-on files wait for its return (review r8).
+    var freshLoad = AetherFreshLoadGate()
 }
 
 extension AetherTVPlayerViewController {
@@ -40,7 +42,8 @@ extension AetherTVPlayerViewController {
     /// Review r1 F3: a fresh `load` (rebuild, Replay) at `startSec` keeps what is playing: the live
     /// audio, the decided subtitle (or Off), and the add-on files added so far.
     func reloadRequest(_ base: AetherLoadRequest, startSec: Double?) -> AetherLoadRequest {
-        AetherReloadRequestPlan.request(from: base, startSec: startSec, activeAudioID: session?.activeAudioID,
+        panel.freshLoad.begin()   // review r8: the declared list is fixed from here until load returns
+        return AetherReloadRequestPlan.request(from: base, startSec: startSec, activeAudioID: session?.activeAudioID,
                                         activeSubtitleID: session?.activeSubtitleID,
                                         subtitleDecided: panel.didAutoSelectSubtitles || panel.userSelectedSubtitle,
                                         addedSubtitles: panel.addedAddonSubtitles)
@@ -107,6 +110,14 @@ extension AetherTVPlayerViewController {
         tracksChanged(audio: session.audioTracks,
                       subtitles: AetherSubtitleStartGate.planTracks(published: session.subtitleTracks, registered: registered),
                       activeAudio: session.activeAudioID, activeSubtitle: session.activeSubtitleID)
+    }
+
+    /// A fresh load (rebuild, Replay) returned: the add-on files that waited are registered after the
+    /// declared ones, and the start plan runs on the result (review r8).
+    func freshLoadReturned() {
+        guard panel.freshLoad.loadReturned() else { return }
+        let subs = SubtitleRepository.shared.addonSubtitles.value_ as? [AddonSubtitle] ?? []
+        runSubtitleStartPlan(registered: addAddonSubtitles(subs))
     }
 
     func settingsChangedPanels(_ settings: PlayerSettingsUiState) {
@@ -324,7 +335,7 @@ extension AetherTVPlayerViewController {
     /// languages first. A stream whose headers carry credentials never forwards them to a subtitle host.
     @discardableResult
     private func addAddonSubtitles(_ subs: [AddonSubtitle]) -> [AetherTrack] {
-        guard mediaReady, let session, canTransport else { return [] }
+        guard mediaReady, panel.freshLoad.acceptsAddonFiles, let session, canTransport else { return [] }
         let kept = keptAddonSubtitles(subs)
         let targets = playerSettings.map { PlayerTrackSelectionKt.preferredSubtitleTargetsForSettings(settings: $0) } ?? []
         let rank: (AddonSubtitle) -> Int = { sub in

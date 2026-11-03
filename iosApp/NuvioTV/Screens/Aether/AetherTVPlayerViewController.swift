@@ -499,6 +499,8 @@ final class AetherTVPlayerViewController: UIViewController {
             }
             mediaOpened()
             fetchSkipSegments()
+        } else {
+            freshLoadReturned()
         }
     }
 
