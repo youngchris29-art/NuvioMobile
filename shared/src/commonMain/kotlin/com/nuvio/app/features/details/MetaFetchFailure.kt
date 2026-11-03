@@ -15,6 +15,7 @@ class MissingMetaObjectException : IllegalStateException("Response did not conta
 internal object MetaFetchFailureLog {
     // A backslash ends a match too, so a JSON `\"` after a URL is never swallowed.
     private val urlPattern = Regex("""https?://[^\s"'<>)\]\\]+""")
+    private val unicodeEscape = Regex("""\\u([0-9a-fA-F]{4})""")
     private val secretParamPattern =
         Regex("""(?i)\b(token|access_token|apikey|api_key|key|auth|password)=[^&\s"'<>)\]\\]+""")
 
@@ -23,13 +24,25 @@ internal object MetaFetchFailureLog {
     /**
      * Review r1 F1: any text that can quote an add-on URL or response (exception messages,
      * payload excerpts, stack frames) passes through here: each URL becomes `<url>` and bare
-     * secret-style query values become `<redacted>`. Review r2: JSON may escape slashes
-     * (`https:\/\/host\/secret`), so `\/` is normalised to `/` before matching.
+     * secret-style query values become `<redacted>`. Reviews r2/r3: a quoted body can spell a
+     * URL with JSON escapes (`https:\/\/h`, `\u002F`, `\u0026token=`), so every JSON escape is
+     * decoded first and the patterns run on the plain text.
      */
     fun scrub(text: String): String {
-        val unescaped = text.replace("\\/", "/")
-        return secretParamPattern.replace(urlPattern.replace(unescaped, "<url>")) { "${it.groupValues[1]}=<redacted>" }
+        val decoded = decodeJsonEscapes(text)
+        return secretParamPattern.replace(urlPattern.replace(decoded, "<url>")) { "${it.groupValues[1]}=<redacted>" }
     }
+
+    /** `\uXXXX` first, then `\/`, `\\` and `\"`. Over-decoding is harmless here: it only feeds the scrub. */
+    private fun decodeJsonEscapes(text: String): String =
+        unicodeEscape.replace(text) { it.groupValues[1].toInt(16).toChar().toString() }
+            .replace("\\/", "/")
+            .replace("\\\\", "\\")
+            .replace("\\\"", "\"")
+
+    /** Review r3: the debug line describes the add-on body without quoting any of it. */
+    fun payloadSummary(payload: String): String =
+        "Raw payload length=${payload.length}, hasMetaKey=${payload.contains("\"meta\"")}"
 
     fun message(addonName: String, type: String, id: String, error: Throwable): String =
         if (isAddonAnswer(error)) {

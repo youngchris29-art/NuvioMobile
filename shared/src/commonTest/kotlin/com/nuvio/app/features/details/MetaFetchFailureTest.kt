@@ -101,6 +101,30 @@ class MetaFetchFailureTest {
         assertEquals("{\"stream\":\"<url>\"}", scrubbed)
     }
 
+    @Test
+    fun `unicode escaped ampersand cannot smuggle a token past the url match`() {
+        val scrubbed = MetaFetchFailureLog.scrub("{\"poster\":\"https://h/image?size=1\\u0026token=SECRET\"}")
+        assertFalse(scrubbed.contains("SECRET"), scrubbed)
+        assertFalse(scrubbed.contains("&"), scrubbed)
+    }
+
+    @Test
+    fun `unicode escaped scheme and slashes are still a url`() {
+        val scrubbed = MetaFetchFailureLog.scrub("https\\u003A\\u002F\\u002Fh\\u002FtokQ\\u002Fposter.jpg")
+        assertFalse(scrubbed.contains("tokQ"), scrubbed)
+    }
+
+    @Test
+    fun `payload summary never quotes the body`() {
+        val payload = "{\"meta\":{\"id\":\"tt1\",\"poster\":\"https:\\/\\/cdn.example\\/tokXYZ\\/p.jpg?token=zzz\"}}"
+        val summary = MetaFetchFailureLog.payloadSummary(payload)
+        assertEquals("Raw payload length=${payload.length}, hasMetaKey=true", summary)
+        for (start in 0..payload.length - 6) {
+            val window = payload.substring(start, start + 6)
+            assertFalse(summary.contains(window), "summary quotes \"$window\"")
+        }
+    }
+
     private fun throwFromDetailsPackage(): Nothing =
         throw IllegalArgumentException("Element class kotlinx.serialization.json.JsonObject is not a JsonPrimitive")
 }
