@@ -15,6 +15,7 @@ class MissingMetaObjectException : IllegalStateException("Response did not conta
 internal object MetaFetchFailureLog {
     // A backslash ends a match too, so a JSON `\"` after a URL is never swallowed.
     private val urlPattern = Regex("""https?://[^\s"'<>)\]\\]+""")
+    private val inputExcerptMarker = Regex("""\s*JSON input:""", RegexOption.IGNORE_CASE)
     private val unicodeEscape = Regex("""\\u([0-9a-fA-F]{4})""")
     private val secretParamPattern =
         Regex("""(?i)\b(token|access_token|apikey|api_key|key|auth|password)=[^&\s"'<>)\]\\]+""")
@@ -52,11 +53,25 @@ internal object MetaFetchFailureLog {
                 detail(error) + " at " + location(error)
         }
 
-    /** The class name plus the scrubbed message, for every class (a timeout keeps its reason). */
+    /**
+     * The class name plus the message, for every class (a timeout keeps its reason): any input
+     * excerpt is cut off first, then the rest is scrubbed.
+     */
     private fun detail(error: Throwable): String {
         val name = error::class.simpleName ?: "unknown error"
-        val text = error.message?.takeIf(String::isNotBlank)?.let(::scrub)
+        val text = error.message?.takeIf(String::isNotBlank)?.let(::stripInputExcerpt)?.let(::scrub)
         return if (text == null) name else "$name: $text"
+    }
+
+    /**
+     * Review r4: kotlinx.serialization appends `\nJSON input: <window>` to its errors, and the
+     * window can start inside a tokenized URL where no pattern can see it. Everything from the
+     * first `JSON input:` (any case, any preceding whitespace) is dropped, whatever the class;
+     * the reason before it (`Unexpected JSON token at offset N …`, `at path: $.poster`) stays.
+     */
+    internal fun stripInputExcerpt(text: String): String {
+        val marker = inputExcerptMarker.find(text) ?: return text
+        return text.substring(0, marker.range.first) + " [input excerpt removed]"
     }
 
     /**
