@@ -105,8 +105,10 @@ final class AetherTVPlayerViewController: UIViewController {
     /// The last façade phase (willSet value).
     private(set) var phaseMirror: AetherPhase = .idle
     /// `firstFrameShown`, latched per load by the session; `everShowedFrame` latches for the player.
-    private(set) var firstFrameMirror = false
-    private(set) var everShowedFrame = false
+    var firstFrameMirror: Bool { viewing.firstFrameShown }
+    var everShowedFrame: Bool { viewing.everShowedFrame }
+    /// The per-load first frame, the per-viewing "a frame was shown" and the play clock (review r6).
+    private var viewing = AetherViewingState()
     /// `load()` returned (the source opened and was probed).
     private(set) var mediaReady = false
     private(set) var probe: AetherProbeSummary?
@@ -160,8 +162,6 @@ final class AetherTVPlayerViewController: UIViewController {
     private var handoffLedger = PlaybackHandoffLedger()
     private var trackingFinished: Bool { handoffLedger.trackingFinished }
     private var teardownDone = false
-    /// Seconds really played (playing ticks only), fed by the housekeeping tick.
-    private var playClock = PlaybackHealthClock()
 
     // MARK: Settings
 
@@ -602,10 +602,9 @@ final class AetherTVPlayerViewController: UIViewController {
     }
 
     private func firstFrameChanged(_ shown: Bool) {
-        firstFrameMirror = shown
+        viewing.firstFrameChanged(shown)
         updateBuffering()
         guard shown else { return }
-        everShowedFrame = true
         stopStartWatchdogTimer()
         startWatchdog.noteFileLoaded()
         if state.startupStage != .started { publishStartupStage(.started) }
@@ -679,7 +678,7 @@ final class AetherTVPlayerViewController: UIViewController {
         guard session != nil, !handedOff, !teardownDone else { return }
         let now = ProcessInfo.processInfo.systemUptime
         let playing = firstFrameMirror && phaseMirror == .playing && !pausedMirror
-        if everShowedFrame { playClock.note(playing: playing, at: now) }
+        viewing.note(playing: playing, at: now)
         // The screen reads `positionSec` for Up Next and the pause card: the exact value once a tick.
         if state.positionSec != positionMirror { state.positionSec = positionMirror }
         transportInput.noteScanTick(positionSec: positionMirror, eof: phaseMirror == .ended)
@@ -984,6 +983,8 @@ final class AetherTVPlayerViewController: UIViewController {
         if handoffLedger.beginReplay() {
             recorder = PlaybackProgressRecorder(context: context)
             trackingStarted = false
+            // Review r6: a new viewing, so its early end or pre-frame failure is judged on its own.
+            viewing.replayStarting()
         }
         print("[AetherPlayer] replay: load at 0")
         armStartWatchdog()
@@ -995,7 +996,7 @@ final class AetherTVPlayerViewController: UIViewController {
     // MARK: - Progress and trackers (`PlaybackProgressRecorder`, the native engine's precedent)
 
     private var secondsPlayed: Double {
-        everShowedFrame ? playClock.seconds + secondsPlayedBeforeFallback : 0
+        viewing.secondsPlayed(beforeFallback: secondsPlayedBeforeFallback)
     }
 
     func recordProgress(flush: Bool) {

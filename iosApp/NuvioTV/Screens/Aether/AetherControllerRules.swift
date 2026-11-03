@@ -173,6 +173,38 @@ enum AetherStartWatchdogRule {
     }
 }
 
+/// Review r6: the first-frame and played-seconds facts the failover reads. `firstFrameShown` is per
+/// load (the session's latch), `everShowedFrame` and the play clock are per viewing: Play Again after
+/// the end starts a new one, so a second viewing's early end or pre-frame failure is judged on its own
+/// seconds, never the first viewing's.
+struct AetherViewingState: Equatable {
+    private(set) var firstFrameShown = false
+    private(set) var everShowedFrame = false
+    private(set) var playClock = PlaybackHealthClock()
+
+    mutating func firstFrameChanged(_ shown: Bool) {
+        firstFrameShown = shown
+        if shown { everShowedFrame = true }
+    }
+
+    /// The housekeeping tick: real playback seconds, counted once a frame has been shown.
+    mutating func note(playing: Bool, at now: TimeInterval) {
+        if everShowedFrame { playClock.note(playing: playing, at: now) }
+    }
+
+    /// Play Again after the end (the ledger reopened tracking): a new viewing.
+    mutating func replayStarting() {
+        firstFrameShown = false
+        everShowedFrame = false
+        playClock = PlaybackHealthClock()
+    }
+
+    /// Seconds really played this viewing, with the engine before this one's seconds added.
+    func secondsPlayed(beforeFallback: Double) -> Double {
+        everShowedFrame ? playClock.seconds + beforeFallback : 0
+    }
+}
+
 enum AetherFailurePlan {
     /// A decider's verdict as the controller acts on it: the DV-interruption rebuild happens once per
     /// player, a second one falls back to mpv.

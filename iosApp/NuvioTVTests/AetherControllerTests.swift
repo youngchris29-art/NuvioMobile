@@ -276,6 +276,31 @@ final class AetherControllerTests: XCTestCase {
         XCTAssertNil(r.startSec)
     }
 
+    // MARK: Per-viewing failover facts (review r6 F1)
+
+    func testReplayIsJudgedOnItsOwnSecondsNotTheFirstViewings() {
+        var v = AetherViewingState()
+        v.firstFrameChanged(true)
+        var now: TimeInterval = 0
+        for _ in 0..<1_000 { now += 3; v.note(playing: true, at: now) }   // ~50 min of a first viewing
+        XCTAssertGreaterThan(v.secondsPlayed(beforeFallback: 0), 2_900)
+        XCTAssertFalse(PlaybackEndPolicy.isEarlyEndFailure(position: 600, duration: 7_200,
+                                                           secondsPlayed: v.secondsPlayed(beforeFallback: 0),
+                                                           launchSource: .manual),
+                       "the old carried seconds hid a replay's early end")
+
+        v.replayStarting()
+        XCTAssertFalse(v.everShowedFrame, "a pre-frame replay failure is reported as not started")
+        XCTAssertFalse(v.firstFrameShown)
+        XCTAssertEqual(v.secondsPlayed(beforeFallback: 0), 0)
+        v.firstFrameChanged(true)
+        for _ in 0..<20 { now += 3; v.note(playing: true, at: now) }       // one minute into the replay
+        XCTAssertTrue(PlaybackEndPolicy.isEarlyEndFailure(position: 600, duration: 7_200,
+                                                          secondsPlayed: v.secondsPlayed(beforeFallback: 0),
+                                                          launchSource: .manual),
+                      "the replay's own minute: an early end is a failure")
+    }
+
     // MARK: Audio tab Atmos note (W3-C)
 
     func testAtmosNoteShowsOnlyOnAetherWithBoostOrDialogue() {
