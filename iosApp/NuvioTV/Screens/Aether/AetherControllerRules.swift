@@ -312,6 +312,14 @@ enum AetherSubtitleStartGate {
         return .none
     }
 
+    /// Review r6 F5: what the engine activates on its own at load. With "Use forced subtitles" on the
+    /// shared plan is audio-aware (forced-only when the audio matches, normal otherwise, Off when the
+    /// audio is unknown), which the engine's language pick cannot mirror, so the engine starts with no
+    /// subtitle and the host's plan makes the only selection once the tracks are in.
+    static func initialSubtitle(targets: [String], useForcedSubtitles: Bool) -> AetherInitialSubtitle {
+        useForcedSubtitles || targets.isEmpty ? .off : .preferLanguages(targets)
+    }
+
     /// The list the plan runs on right after the host registered files: the published tracks plus the
     /// ones just registered that the publish has not carried yet.
     static func planTracks(published: [AetherTrack], registered: [AetherTrack]) -> [AetherTrack] {

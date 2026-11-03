@@ -233,6 +233,15 @@ final class AetherControllerTests: XCTestCase {
         XCTAssertEqual(AetherSubtitleStartGate.planTracks(published: list, registered: [en]).count, 4, "no duplicates")
     }
 
+    func testForcedPolicyStartsTheEngineWithNoSubtitle() {
+        // r6 F5: with "Use forced subtitles" on, the engine never picks the full English track on its own
+        // while the host waits for add-ons; the host's audio-aware plan makes the only selection.
+        XCTAssertEqual(AetherSubtitleStartGate.initialSubtitle(targets: ["eng"], useForcedSubtitles: true), .off)
+        XCTAssertEqual(AetherSubtitleStartGate.initialSubtitle(targets: ["eng"], useForcedSubtitles: false),
+                       .preferLanguages(["eng"]))
+        XCTAssertEqual(AetherSubtitleStartGate.initialSubtitle(targets: [], useForcedSubtitles: false), .off)
+    }
+
     // MARK: Fresh load keeps the live tracks (review r1 F3)
 
     private func startRequest() -> AetherLoadRequest {

@@ -403,7 +403,8 @@ final class AetherTVPlayerViewController: UIViewController {
             let targets = AetherSubtitleRouting.preferredTargets(primary: settings.preferredSubtitleLanguage,
                                                                  secondary: settings.secondaryPreferredSubtitleLanguage,
                                                                  deviceLanguages: device)
-            r.initialSubtitle = targets.isEmpty ? .off : .preferLanguages(targets)
+            r.initialSubtitle = AetherSubtitleStartGate.initialSubtitle(
+                targets: targets, useForcedSubtitles: settings.subtitleStyle.useForcedSubtitles)
         }
         r.externalSubtitles = context.externalSubtitles.compactMap { sub in
             URL(string: sub.url).map { AetherExternalSubtitle(url: $0, name: sub.name ?? sub.language, language: sub.language) }
