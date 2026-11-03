@@ -13,19 +13,23 @@ class MissingMetaObjectException : IllegalStateException("Response did not conta
  * add-on answer, not an app fault: one warning, no stack trace.
  */
 internal object MetaFetchFailureLog {
-    private val urlPattern = Regex("""https?://[^\s"'<>)\]]+""")
+    // A backslash ends a match too, so a JSON `\"` after a URL is never swallowed.
+    private val urlPattern = Regex("""https?://[^\s"'<>)\]\\]+""")
     private val secretParamPattern =
-        Regex("""(?i)\b(token|access_token|apikey|api_key|key|auth|password)=[^&\s"'<>)\]]+""")
+        Regex("""(?i)\b(token|access_token|apikey|api_key|key|auth|password)=[^&\s"'<>)\]\\]+""")
 
     fun isAddonAnswer(error: Throwable): Boolean = error is MissingMetaObjectException
 
     /**
      * Review r1 F1: any text that can quote an add-on URL or response (exception messages,
      * payload excerpts, stack frames) passes through here: each URL becomes `<url>` and bare
-     * secret-style query values become `<redacted>`.
+     * secret-style query values become `<redacted>`. Review r2: JSON may escape slashes
+     * (`https:\/\/host\/secret`), so `\/` is normalised to `/` before matching.
      */
-    fun scrub(text: String): String =
-        secretParamPattern.replace(urlPattern.replace(text, "<url>")) { "${it.groupValues[1]}=<redacted>" }
+    fun scrub(text: String): String {
+        val unescaped = text.replace("\\/", "/")
+        return secretParamPattern.replace(urlPattern.replace(unescaped, "<url>")) { "${it.groupValues[1]}=<redacted>" }
+    }
 
     fun message(addonName: String, type: String, id: String, error: Throwable): String =
         if (isAddonAnswer(error)) {
