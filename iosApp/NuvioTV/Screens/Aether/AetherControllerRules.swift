@@ -320,6 +320,30 @@ enum AetherSubtitleStartGate {
         useForcedSubtitles || targets.isEmpty ? .off : .preferLanguages(targets)
     }
 
+    enum Decision: Equatable {
+        case select(id: Int)
+        case off
+    }
+
+    enum Command: Equatable {
+        case none
+        case select(id: Int)
+        case clear
+    }
+
+    /// Review r7: what a start-plan decision sends the engine. Off always clears, even with nothing
+    /// active: `clearSubtitle` is what records the host's explicit choice (`hostExplicitSubtitleAction`
+    /// on AetherEngine 7.54); without it every later `addExternalSubtitle` (the Up Next prefetch's
+    /// next-episode files reach this engine through the add-on list watcher) re-runs the engine's own
+    /// language pick and can switch a track on. A pick of the already-active track sends nothing: an
+    /// active track already blocks that re-run.
+    static func command(for decision: Decision, activeSubtitleID: Int?) -> Command {
+        switch decision {
+        case .off: return .clear
+        case .select(let id): return activeSubtitleID == id ? .none : .select(id: id)
+        }
+    }
+
     /// The list the plan runs on right after the host registered files: the published tracks plus the
     /// ones just registered that the publish has not carried yet.
     static func planTracks(published: [AetherTrack], registered: [AetherTrack]) -> [AetherTrack] {

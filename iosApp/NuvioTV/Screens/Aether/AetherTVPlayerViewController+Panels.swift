@@ -193,7 +193,10 @@ extension AetherTVPlayerViewController {
                                                           fetchCompleted: panel.addonFetchCompleted,
                                                           fetchOutstanding: panel.addonFetchOutstanding)
         guard !subtitles.isEmpty else {
-            if !arriving { panel.didAutoSelectSubtitles = true }
+            if !arriving {
+                panel.didAutoSelectSubtitles = true
+                applyStartPlan(.off, session: session)   // r7: the engine records the host's Off
+            }
             return
         }
         let device = DeviceLanguagePreferences.shared.preferredLanguageCodes()
@@ -219,7 +222,7 @@ extension AetherTVPlayerViewController {
             // "Use forced subtitles" on, audio language unknown (BUG-171): subtitles off.
             panel.didAutoSelectSubtitles = true
             print("[AetherPlayer] subtitle plan: none (forced, audio unknown) → off")
-            if session.activeSubtitleID != nil { session.clearSubtitle() }
+            applyStartPlan(.off, session: session)
             return
         }
         panel.startPlanForcedOnly = plan.mode == .forcedOnly
@@ -234,11 +237,20 @@ extension AetherTVPlayerViewController {
             panel.didAutoSelectSubtitles = true
             let id = subtitles[Int(match)].id
             print("[AetherPlayer] subtitle plan: \(plan.mode) → track \(id)")
-            if session.activeSubtitleID != id { session.selectSubtitle(id: id) }
+            applyStartPlan(.select(id: id), session: session)
         } else if !arriving {
             panel.didAutoSelectSubtitles = true
             print("[AetherPlayer] subtitle plan: \(plan.mode), no match → off")
-            if session.activeSubtitleID != nil { session.clearSubtitle() }
+            applyStartPlan(.off, session: session)
+        }
+    }
+
+    /// The start plan's decision as an engine command (`AetherSubtitleStartGate.command`).
+    private func applyStartPlan(_ decision: AetherSubtitleStartGate.Decision, session: AetherPlaybackSession) {
+        switch AetherSubtitleStartGate.command(for: decision, activeSubtitleID: session.activeSubtitleID) {
+        case .none: break
+        case .select(let id): session.selectSubtitle(id: id)
+        case .clear: session.clearSubtitle()
         }
     }
 

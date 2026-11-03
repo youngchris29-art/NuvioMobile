@@ -242,6 +242,17 @@ final class AetherControllerTests: XCTestCase {
         XCTAssertEqual(AetherSubtitleStartGate.initialSubtitle(targets: [], useForcedSubtitles: false), .off)
     }
 
+    func testAnOffDecisionAlwaysReachesTheEngine() {
+        // r7: Off decided with nothing active (no English track, empty add-on fetch). The clear is what
+        // stops a late next-episode add-on file from being switched on by the engine's own pick.
+        XCTAssertEqual(AetherSubtitleStartGate.command(for: .off, activeSubtitleID: nil), .clear)
+        XCTAssertEqual(AetherSubtitleStartGate.command(for: .off, activeSubtitleID: 3), .clear)
+        XCTAssertEqual(AetherSubtitleStartGate.command(for: .select(id: 3), activeSubtitleID: nil), .select(id: 3))
+        XCTAssertEqual(AetherSubtitleStartGate.command(for: .select(id: 3), activeSubtitleID: 4), .select(id: 3))
+        XCTAssertEqual(AetherSubtitleStartGate.command(for: .select(id: 3), activeSubtitleID: 3), .none,
+                       "an active track already blocks the engine's re-run")
+    }
+
     // MARK: Fresh load keeps the live tracks (review r1 F3)
 
     private func startRequest() -> AetherLoadRequest {
