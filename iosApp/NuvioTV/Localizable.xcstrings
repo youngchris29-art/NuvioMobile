@@ -16590,10 +16590,40 @@
     },
     "Dolby Atmos passthrough is off while this is on": {
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dolby Atmos Passthrough ist aus, solange diese Option ein ist"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "Dolby Atmos passthrough is off while this is on"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dolby Atmos passthrough está desactivado mientras esto esté activado"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le passthrough Dolby Atmos est désactivé tant que cette option est activée"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Il passthrough Dolby Atmos è disattivato finché questa opzione è attiva"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dolby Atmos passthrough tắt khi mục này bật"
           }
         }
       }
@@ -17212,10 +17242,40 @@
     },
     "Dolby Vision Profile 7 FEL dual-layer": {
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dolby Vision Profile 7 FEL mit zwei Ebenen"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "Dolby Vision Profile 7 FEL dual-layer"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dolby Vision Profile 7 FEL de doble capa"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dolby Vision Profile 7 FEL double couche"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dolby Vision Profile 7 FEL a doppio livello"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dolby Vision Profile 7 FEL hai lớp"
           }
         }
       }
@@ -18962,20 +19022,80 @@
     },
     "Experimental Engine": {
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Experimentelle Engine"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "Experimental Engine"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Motor experimental"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Moteur expérimental"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Motore sperimentale"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Engine thử nghiệm"
           }
         }
       }
     },
     "Experimental engine: Aether": {
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Experimentelle Engine: Aether"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "Experimental engine: Aether"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Motor experimental: Aether"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Moteur expérimental : Aether"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Motore sperimentale: Aether"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Engine thử nghiệm: Aether"
           }
         }
       }
@@ -21403,10 +21523,40 @@
     },
     "Height channels for TrueHD and DTS:X": {
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Höhenkanäle für TrueHD und DTS:X"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "Height channels for TrueHD and DTS:X"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Canales de altura para TrueHD y DTS:X"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Canaux de hauteur pour TrueHD et DTS:X"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Canali di altezza per TrueHD e DTS:X"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kênh độ cao cho TrueHD và DTS:X"
           }
         }
       }
@@ -23933,10 +24083,40 @@
     },
     "Keep styled subtitles on mpv": {
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Formatierte Untertitel auf mpv behalten"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "Keep styled subtitles on mpv"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mantener los subtítulos con estilo en mpv"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Garder les sous-titres stylisés sur mpv"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mantieni i sottotitoli con stile su mpv"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Giữ phụ đề có kiểu dáng trên mpv"
           }
         }
       }
@@ -24011,10 +24191,40 @@
     },
     "Keeps files whose subtitles are styled ASS with embedded fonts on the mpv player, which draws them exactly as authored. On by default.": {
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Behält Dateien, deren Untertitel als formatierte ASS-Untertitel mit eingebetteten Schriftarten vorliegen, im mpv-Player, der sie genau wie vorgesehen darstellt. Standardmäßig ein."
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "Keeps files whose subtitles are styled ASS with embedded fonts on the mpv player, which draws them exactly as authored. On by default."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mantiene en el reproductor mpv los archivos cuyos subtítulos son ASS con estilo y fuentes incrustadas; mpv los dibuja exactamente como se crearon. Activado por defecto."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Garde sur le lecteur mpv les fichiers dont les sous-titres sont des ASS stylisés avec polices intégrées ; mpv les affiche exactement comme prévu. Activé par défaut."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mantiene sul lettore mpv i file con sottotitoli ASS con stile e font incorporati, che li mostra esattamente come sono stati creati. Attivato per impostazione predefinita."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Giữ các tệp có phụ đề ASS có kiểu dáng kèm phông chữ nhúng trên trình phát mpv, vốn hiển thị đúng như bản gốc. Mặc định bật."
           }
         }
       }
@@ -25525,10 +25735,40 @@
     },
     "Lossless surround (LPCM)": {
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verlustfreier Surround-Sound (LPCM)"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "Lossless surround (LPCM)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sonido envolvente sin pérdidas (LPCM)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Son surround sans perte (LPCM)"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Surround senza perdita (LPCM)"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Âm thanh vòm không mất dữ liệu (LPCM)"
           }
         }
       }
@@ -32658,20 +32898,80 @@
     },
     "Pick the speaker layout your receiver and speakers use for height channels. 7.1.4 by default.": {
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wähle die Lautsprecheranordnung, die dein Receiver und deine Lautsprecher für Höhenkanäle nutzen. Standardmäßig 7.1.4."
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "Pick the speaker layout your receiver and speakers use for height channels. 7.1.4 by default."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Elige la disposición de altavoces que usan tu receptor y tus altavoces para los canales de altura. 7.1.4 por defecto."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choisissez la disposition d’enceintes que votre récepteur et vos enceintes utilisent pour les canaux de hauteur. 7.1.4 par défaut."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scegli la disposizione degli altoparlanti che il tuo ricevitore e i tuoi altoparlanti usano per i canali di altezza. 7.1.4 per impostazione predefinita."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chọn bố trí loa mà bộ thu AV và loa của bạn dùng cho kênh độ cao. Mặc định 7.1.4."
           }
         }
       }
     },
     "Plays TrueHD and DTS:X with height channels when your receiver supports it. Off by default.": {
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gibt TrueHD und DTS:X mit Höhenkanälen wieder, wenn dein Receiver das unterstützt. Standardmäßig aus."
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "Plays TrueHD and DTS:X with height channels when your receiver supports it. Off by default."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reproduce TrueHD y DTS:X con canales de altura cuando tu receptor lo admite. Desactivado por defecto."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lit TrueHD et DTS:X avec les canaux de hauteur si votre récepteur le prend en charge. Désactivé par défaut."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Riproduce TrueHD e DTS:X con i canali di altezza se il tuo ricevitore li supporta. Disattivato per impostazione predefinita."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Phát TrueHD và DTS:X với kênh độ cao khi bộ thu AV của bạn hỗ trợ. Mặc định tắt."
           }
         }
       }
@@ -37873,10 +38173,40 @@
     },
     "Renders both layers of Dolby Vision Profile 7 FEL discs when the Apple TV can keep up. Off by default.": {
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stellt beide Ebenen von Dolby-Vision-Profile-7-FEL-Discs dar, wenn die Leistung des Apple TV ausreicht. Standardmäßig aus."
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "Renders both layers of Dolby Vision Profile 7 FEL discs when the Apple TV can keep up. Off by default."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Muestra las dos capas de los discos Dolby Vision Profile 7 FEL cuando el Apple TV puede con ello. Desactivado por defecto."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Affiche les deux couches des disques Dolby Vision Profile 7 FEL quand l’Apple TV peut suivre. Désactivé par défaut."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostra entrambi i livelli dei dischi Dolby Vision Profile 7 FEL quando l’Apple TV ce la fa. Disattivato per impostazione predefinita."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hiển thị cả hai lớp của đĩa Dolby Vision Profile 7 FEL khi Apple TV đủ sức xử lý. Mặc định tắt."
           }
         }
       }
@@ -40273,10 +40603,40 @@
     },
     "Sends TrueHD and DTS as lossless surround. Off sends Dolby Digital Plus 5.1 instead, for soundbars. On by default.": {
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sendet TrueHD und DTS als verlustfreien Surround-Sound. Aus sendet stattdessen Dolby Digital Plus 5.1, für Soundbars. Standardmäßig ein."
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "Sends TrueHD and DTS as lossless surround. Off sends Dolby Digital Plus 5.1 instead, for soundbars. On by default."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Envía TrueHD y DTS como sonido envolvente sin pérdidas. Desactivado envía Dolby Digital Plus 5.1 en su lugar, para barras de sonido. Activado por defecto."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Envoie TrueHD et DTS en son surround sans perte. Désactivé envoie Dolby Digital Plus 5.1 à la place, pour les barres de son. Activé par défaut."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Invia TrueHD e DTS come surround senza perdita. Disattivato invia invece Dolby Digital Plus 5.1, per le soundbar. Attivato per impostazione predefinita."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gửi TrueHD và DTS dưới dạng âm thanh vòm không mất dữ liệu. Tắt sẽ gửi Dolby Digital Plus 5.1 thay thế, dành cho loa thanh. Mặc định bật."
           }
         }
       }
@@ -45420,10 +45780,40 @@
     },
     "Speaker layout": {
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lautsprecheranordnung"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "Speaker layout"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disposición de altavoces"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disposition des enceintes"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disposizione degli altoparlanti"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bố trí loa"
           }
         }
       }
@@ -48091,20 +48481,80 @@
     },
     "Tries a new playback engine for compatible files, with automatic fallback to mpv if anything goes wrong. Off by default.": {
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Probiert für kompatible Dateien eine neue Wiedergabe-Engine aus, mit automatischem Rückgriff auf mpv, falls etwas schiefgeht. Standardmäßig aus."
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "Tries a new playback engine for compatible files, with automatic fallback to mpv if anything goes wrong. Off by default."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Prueba un nuevo motor de reproducción con los archivos compatibles, con vuelta automática a mpv si algo sale mal. Desactivado por defecto."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Essaie un nouveau moteur de lecture pour les fichiers compatibles, avec repli automatique sur mpv en cas de problème. Désactivé par défaut."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Prova un nuovo motore di riproduzione per i file compatibili, con ripiego automatico su mpv in caso di problemi. Disattivato per impostazione predefinita."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thử một engine phát mới cho các tệp tương thích, tự động dự phòng bằng mpv nếu có sự cố. Mặc định tắt."
           }
         }
       }
     },
     "Turning Lossless surround (LPCM) off sends TrueHD and DTS as Dolby Digital Plus 5.1, which older soundbars accept.": {
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wenn „Verlustfreier Surround-Sound (LPCM)“ ausgeschaltet ist, werden TrueHD und DTS als Dolby Digital Plus 5.1 gesendet, das ältere Soundbars akzeptieren."
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "Turning Lossless surround (LPCM) off sends TrueHD and DTS as Dolby Digital Plus 5.1, which older soundbars accept."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Si desactivas «Sonido envolvente sin pérdidas (LPCM)», TrueHD y DTS se envían como Dolby Digital Plus 5.1, que aceptan las barras de sonido más antiguas."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Si vous désactivez « Son surround sans perte (LPCM) », TrueHD et DTS sont envoyés en Dolby Digital Plus 5.1, que les barres de son plus anciennes acceptent."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Se disattivi «Surround senza perdita (LPCM)», TrueHD e DTS vengono inviati come Dolby Digital Plus 5.1, che le soundbar meno recenti accettano."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Khi tắt “Âm thanh vòm không mất dữ liệu (LPCM)”, TrueHD và DTS được gửi dưới dạng Dolby Digital Plus 5.1, loại mà các loa thanh đời cũ chấp nhận."
           }
         }
       }
