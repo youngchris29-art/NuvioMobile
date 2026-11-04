@@ -358,7 +358,7 @@ object LibraryRepository {
             // or Trakt under the IMDb id, the page opened by an add-on id). Toggle the stored record,
             // so its membership is read and the + removes it (Simkl would otherwise add a second
             // status instead of removing the first).
-            val target = libraryToggleTarget(item, provider::find)
+            val target = libraryToggleTarget(item, provider::find) { provider.snapshot().items }
             val profileId = localState.snapshot().token.profileId
             log.i {
                 "toggleSaved routed to ${provider.providerId.storageId} library source " +
@@ -457,7 +457,10 @@ object LibraryRepository {
     fun isSavedMatchingIds(id: String, type: String?, imdbId: String?, tmdbId: Int?): Boolean {
         ensureLoaded()
         activeLibraryProvider()?.let { provider ->
-            return libraryLookupIds(id, imdbId, tmdbId).any { lookupId -> provider.contains(lookupId, type) }
+            if (libraryLookupIds(id, imdbId, tmdbId).any { lookupId -> provider.contains(lookupId, type) }) return true
+            // Review r3: a record the provider stores under a canonical id the page cannot know
+            // (Simkl's Kitsu ids) still matches by its own IMDb/TMDB fields; same rule as the toggle.
+            return providerStoredRecord(id, type, imdbId, tmdbId, provider::find) { provider.snapshot().items } != null
         }
         return localState.containsAnyId(id, type, imdbId, tmdbId)
     }
@@ -911,14 +914,44 @@ private fun localizedLibraryOtherTitle(): String =
     resourceString(DEFAULT_LIBRARY_OTHER_TITLE, StringKey.library_other)
 
 /**
- * Issue #17 (review r2): the item a connected provider's toggle acts on — the record the provider
- * already holds under any of the title's ids (own id, IMDb id, `tmdb:<n>`; [find] is the
- * provider's lookup), its missing IMDb/TMDB ids filled from the page's item, else the page's item.
+ * Issue #17 (review r2/r3): the record a connected provider holds for a title, if any. By the
+ * provider's own lookup ([find]) for each of the title's ids (own id, IMDb id, `tmdb:<n>`), else
+ * by the stored records' IMDb/TMDB fields ([allItems]: Simkl stores an anime under a Kitsu id a
+ * page opened by its IMDb id cannot know). Same type only ([type] null = any). The saved-state
+ * read and the toggle both go through this, so what reads "In Library" is what the + removes.
  */
-internal fun libraryToggleTarget(item: LibraryItem, find: (String) -> LibraryItem?): LibraryItem {
-    val stored = libraryLookupIds(item.id, item.imdbId, item.tmdbId).firstNotNullOfOrNull { id ->
-        find(id)?.takeIf { it.type.trim().equals(item.type.trim(), ignoreCase = true) }
-    } ?: return item
+internal fun providerStoredRecord(
+    id: String,
+    type: String?,
+    imdbId: String?,
+    tmdbId: Int?,
+    find: (String) -> LibraryItem?,
+    allItems: () -> List<LibraryItem>,
+): LibraryItem? {
+    val wantedType = type?.trim()?.takeIf { it.isNotEmpty() }
+    fun LibraryItem.sameType() = wantedType == null || this.type.trim().equals(wantedType, ignoreCase = true)
+    libraryLookupIds(id, imdbId, tmdbId)
+        .firstNotNullOfOrNull { lookupId -> find(lookupId)?.takeIf { it.sameType() } }
+        ?.let { return it }
+    val wantedImdb = imdbId?.trim()?.takeIf { it.startsWith("tt") }
+    if (wantedImdb == null && tmdbId == null) return null
+    return allItems().firstOrNull { stored ->
+        stored.sameType() &&
+            ((wantedImdb != null && stored.imdbId == wantedImdb) || (tmdbId != null && stored.tmdbId == tmdbId))
+    }
+}
+
+/**
+ * Issue #17 (review r2): the item a connected provider's toggle acts on — the record the provider
+ * already holds ([providerStoredRecord]), its missing IMDb/TMDB ids filled from the page's item,
+ * else the page's item.
+ */
+internal fun libraryToggleTarget(
+    item: LibraryItem,
+    find: (String) -> LibraryItem?,
+    allItems: () -> List<LibraryItem>,
+): LibraryItem {
+    val stored = providerStoredRecord(item.id, item.type, item.imdbId, item.tmdbId, find, allItems) ?: return item
     return stored.copy(
         imdbId = stored.imdbId ?: item.imdbId,
         tmdbId = stored.tmdbId ?: item.tmdbId,

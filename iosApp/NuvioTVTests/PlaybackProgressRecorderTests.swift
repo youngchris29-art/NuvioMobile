@@ -118,13 +118,28 @@ final class PlaybackProgressRecorderTests: XCTestCase {
 
     func testExternalResumeMovieWithoutMetaFetchesTheRuntime() {
         // Home / Library continue-watching pass no meta; a Trakt movie row has no position.
-        XCTAssertTrue(ExternalResumePolicy.needsCatalogRuntime(isSeries: false, hasMeta: false, resumePositionMs: nil))
-        XCTAssertFalse(ExternalResumePolicy.needsCatalogRuntime(isSeries: false, hasMeta: true, resumePositionMs: nil),
+        XCTAssertTrue(ExternalResumePolicy.needsCatalogRuntime(isSeries: false, hasMeta: false, hasEpisodes: false,
+                                                               resumePositionMs: nil))
+        XCTAssertFalse(ExternalResumePolicy.needsCatalogRuntime(isSeries: false, hasMeta: true, hasEpisodes: false,
+                                                                resumePositionMs: nil),
                        "Detail passes the catalog record")
-        XCTAssertFalse(ExternalResumePolicy.needsCatalogRuntime(isSeries: false, hasMeta: false, resumePositionMs: 600_000),
+        XCTAssertFalse(ExternalResumePolicy.needsCatalogRuntime(isSeries: false, hasMeta: false, hasEpisodes: false,
+                                                                resumePositionMs: 600_000),
                        "a saved position needs no runtime")
-        XCTAssertFalse(ExternalResumePolicy.needsCatalogRuntime(isSeries: true, hasMeta: false, resumePositionMs: nil),
-                       "series fetch the record for their episode list already")
+    }
+
+    func testExternalResumeSeriesWithoutEpisodesWaitsForTheFetch() {
+        // Review r3: a series from Continue Watching takes its episode runtime from the same fetch.
+        XCTAssertTrue(ExternalResumePolicy.needsCatalogRuntime(isSeries: true, hasMeta: false, hasEpisodes: false,
+                                                               resumePositionMs: nil))
+        XCTAssertTrue(ExternalResumePolicy.needsCatalogRuntime(isSeries: true, hasMeta: true, hasEpisodes: false,
+                                                               resumePositionMs: nil),
+                      "the title's runtime is not the episode's")
+        XCTAssertFalse(ExternalResumePolicy.needsCatalogRuntime(isSeries: true, hasMeta: false, hasEpisodes: true,
+                                                                resumePositionMs: nil),
+                       "EpisodesSection passes the episode list")
+        XCTAssertFalse(ExternalResumePolicy.needsCatalogRuntime(isSeries: true, hasMeta: false, hasEpisodes: false,
+                                                                resumePositionMs: 600_000))
     }
 
     @MainActor
@@ -146,8 +161,8 @@ final class PlaybackProgressRecorderTests: XCTestCase {
         let arrived = await ExternalResumePolicy.awaitRuntime(isPending: { true }, waitSeconds: 0.2)
         XCTAssertFalse(arrived)
         XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(started), 0.2)
-        XCTAssertTrue(await ExternalResumePolicy.awaitRuntime(isPending: { false }, waitSeconds: 0.2),
-                      "nothing pending returns at once")
+        let nothingPending = await ExternalResumePolicy.awaitRuntime(isPending: { false }, waitSeconds: 0.2)
+        XCTAssertTrue(nothingPending, "nothing pending returns at once")
     }
 
     func testExternalResumeStartOverSendsZero() {

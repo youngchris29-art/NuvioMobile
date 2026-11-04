@@ -113,17 +113,32 @@ class LibraryToggleIdsTest {
         val stored = LibraryItem(id = "tt0388629", type = "series", name = "Show", imdbId = "tt0388629", tmdbId = 30983)
         val fromAddonPage = LibraryItem(id = "kitsu:1376", type = "series", name = "Show", imdbId = "tt0388629")
         val find: (String) -> LibraryItem? = { id -> stored.takeIf { it.id == id } }
-        val target = libraryToggleTarget(fromAddonPage, find)
+        val target = libraryToggleTarget(fromAddonPage, find) { listOf(stored) }
         assertEquals("tt0388629", target.id)
         assertEquals(30983, target.tmdbId)
-        // The reverse: stored under the add-on id, the page carries the tt id.
-        val storedAddon = LibraryItem(id = "kitsu:1376", type = "series", name = "Show")
-        val fromImdbPage = LibraryItem(id = "tt0388629", type = "series", name = "Show", imdbId = "tt0388629", tmdbId = 30983)
-        val found = libraryToggleTarget(fromImdbPage) { id -> storedAddon.takeIf { it.id == id } }
-        assertEquals("tt0388629", found.id, "the tt page's own id is not held; nothing to resolve by")
         // Nothing held, or held as another type: the page's item is toggled as is.
-        assertEquals(fromAddonPage, libraryToggleTarget(fromAddonPage) { null })
-        assertEquals(fromAddonPage, libraryToggleTarget(fromAddonPage) { id -> stored.copy(type = "movie").takeIf { it.id == id } })
+        assertEquals(fromAddonPage, libraryToggleTarget(fromAddonPage, { null }) { emptyList() })
+        val asMovie = stored.copy(type = "movie")
+        assertEquals(fromAddonPage, libraryToggleTarget(fromAddonPage, { id -> asMovie.takeIf { it.id == id } }) { listOf(asMovie) })
+    }
+
+    @Test
+    fun `a record stored under a canonical id the page cannot know matches by its IMDb or TMDB field`() {
+        // Review r3: Simkl keeps the anime as kitsu:1376 (with its IMDb id); the page was opened by tt0388629.
+        val storedKitsu = LibraryItem(id = "kitsu:1376", type = "series", name = "Show", imdbId = "tt0388629")
+        val find: (String) -> LibraryItem? = { id -> storedKitsu.takeIf { it.id == id } }
+        val record = providerStoredRecord("tt0388629", "series", imdbId = "tt0388629", tmdbId = null, find = find) { listOf(storedKitsu) }
+        assertEquals("kitsu:1376", record?.id)
+        val target = libraryToggleTarget(
+            LibraryItem(id = "tt0388629", type = "series", name = "Show", imdbId = "tt0388629", tmdbId = 30983), find,
+        ) { listOf(storedKitsu) }
+        assertEquals("kitsu:1376", target.id)
+        assertEquals(30983, target.tmdbId, "the page's TMDB id rides along")
+        // By TMDB field; a different type or no ids to match by finds nothing.
+        val storedTmdb = LibraryItem(id = "simkl:9", type = "movie", name = "Film", tmdbId = 550)
+        assertEquals("simkl:9", providerStoredRecord("addon-1", "movie", null, 550, { null }) { listOf(storedTmdb) }?.id)
+        assertNull(providerStoredRecord("addon-1", "series", null, 550, { null }) { listOf(storedTmdb) })
+        assertNull(providerStoredRecord("addon-1", "movie", null, null, { null }) { listOf(storedTmdb) })
     }
 
     @Test

@@ -324,8 +324,10 @@ struct StreamPickerView: View {
         let needsEpisodes = isSeries && episodes.isEmpty && fetchedEpisodes.isEmpty
         let needsRuntime = ExternalResumePolicy.needsCatalogRuntime(
             isSeries: isSeries, hasMeta: meta != nil || fetchedRuntime != nil,
+            hasEpisodes: !episodes.isEmpty || !fetchedEpisodes.isEmpty,
             resumePositionMs: resumePositionMs)
         guard needsEpisodes || needsRuntime else { return }
+        // Review r3: a series from Continue Watching needs the episode runtime from this fetch too.
         runtimeFetchPending = needsRuntime
         // The `@Throws` twin: a Kotlin exception out of the plain suspend export aborts the process.
         Task { @MainActor in
@@ -2124,12 +2126,14 @@ nonisolated enum ExternalResumePolicy {
                       fallbackDurationMs: fallbackDurationMs)
     }
 
-    /// Review r1: whether the picker must fetch the catalog record for its runtime before an
-    /// external hand-off. True for a movie launched with no `meta` and no saved position (the
-    /// Home / Library continue-watching and deep-link paths with a percentage-only entry); series
-    /// fetch the record for their episode list anyway.
-    static func needsCatalogRuntime(isSeries: Bool, hasMeta: Bool, resumePositionMs: Int64?) -> Bool {
-        !isSeries && !hasMeta && resumePositionMs == nil
+    /// Review r1/r3: whether an external hand-off depends on the catalog record the picker fetches
+    /// (`fetchEpisodesIfNeeded`) for a duration. False with a saved position. Otherwise true for a
+    /// movie launched with no `meta` (Home / Library continue-watching, deep links) and for a
+    /// series launched without its episode list (the episode runtime comes from that fetch).
+    static func needsCatalogRuntime(isSeries: Bool, hasMeta: Bool, hasEpisodes: Bool,
+                                    resumePositionMs: Int64?) -> Bool {
+        guard resumePositionMs == nil else { return false }
+        return isSeries ? !hasEpisodes : !hasMeta
     }
 
     /// Review r2: how long an external hand-off waits for the runtime fetch (same order as the
