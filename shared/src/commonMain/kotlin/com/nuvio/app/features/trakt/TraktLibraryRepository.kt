@@ -207,9 +207,42 @@ object TraktLibraryRepository {
         applyMembershipChanges(item, TraktMembershipChanges(desiredMembership = desired))
     }
 
+    /**
+     * Test seam: the active profile's Trakt request headers, null when signed out or the token
+     * could not be refreshed. Production always reads [TraktAuthRepository.authorizedHeaders].
+     */
+    internal var authorizedHeadersSource: suspend () -> Map<String, String>? = {
+        TraktAuthRepository.authorizedHeaders()
+    }
+
+    /** Test seam: the list-tab loader [ensureListTabs] runs (production: [preloadListTabs]). */
+    internal var listTabsLoader: suspend () -> Unit = { preloadListTabs() }
+
+    /**
+     * Issue #17: loads the list tabs (the watchlist among them) when none are loaded yet. Tabs
+     * otherwise load lazily, so the Detail page's + could run before the watchlist tab exists.
+     * Never throws (other than cancellation): membership reads stay as they were, and the toggle
+     * reports a still-missing watchlist itself (`toggledTraktDefaultMembership`).
+     */
+    suspend fun ensureListTabs() {
+        if (_uiState.value.listTabs.isNotEmpty()) return
+        try {
+            listTabsLoader()
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            log.w(error) { "Failed to load Trakt list tabs on demand" }
+        }
+    }
+
     suspend fun applyMembershipChanges(item: LibraryItem, changes: TraktMembershipChanges) {
+        // Issue #17: this used to `return` silently when the token was missing or expired, so the
+        // Detail page's + did nothing. Fail loudly instead: the caller logs and shows the message.
+        val headers = authorizedHeadersSource() ?: run {
+            log.e { "Trakt library change refused item=${item.id} type=${item.type}: not signed in or token expired" }
+            throw TraktSessionExpiredException()
+        }
         ensureLoaded()
-        val headers = TraktAuthRepository.authorizedHeaders() ?: return
         ensureFresh()
 
         val current = getMembershipSnapshot(item).listMembership
@@ -701,7 +734,8 @@ object TraktLibraryRepository {
         val type = normalizeType(item.type)
         val ids = resolveIds(item)
         if (!ids.hasAnyId()) {
-            throw IllegalStateException(resourceString("Missing compatible Trakt IDs", StringKey.trakt_error_missing_ids))
+            // Issue #17: a search hit with an add-on-specific id and no IMDb/TMDB id lands here.
+            throw IllegalStateException(traktMissingIdsMessage())
         }
 
         val request = if (type == "movie") {
@@ -941,3 +975,28 @@ private data class TraktListShowRequestItemDto(
     val year: Int? = null,
     val ids: TraktIdsDto? = null,
 )
+
+/**
+ * Issue #17: the Trakt token is missing or could not be refreshed. Deliberately not a
+ * `CancellationException`: the caller must log it and show its message.
+ */
+class TraktSessionExpiredException : IllegalStateException(
+    resourceString(
+        "Trakt sign-in expired. Reconnect Trakt under Settings.",
+        StringKey.trakt_error_session_expired,
+    ),
+)
+
+/** Issue #17: the library + was pressed and the Trakt watchlist tab still could not be loaded. */
+class TraktWatchlistUnavailableException : IllegalStateException(
+    resourceString(
+        "Couldn’t load your Trakt watchlist. Try again.",
+        StringKey.trakt_error_watchlist_unavailable,
+    ),
+)
+
+internal fun traktMissingIdsMessage(): String =
+    resourceString(
+        "This title has no IMDb or TMDB id, so it can’t be added to Trakt.",
+        StringKey.trakt_error_title_missing_ids,
+    )

@@ -47,6 +47,10 @@ import nuvio.composeapp.generated.resources.trakt_error_empty_response
 import nuvio.composeapp.generated.resources.trakt_error_add_watchlist_failed
 import nuvio.composeapp.generated.resources.trakt_error_add_list_failed
 import nuvio.composeapp.generated.resources.trakt_error_missing_ids
+import nuvio.composeapp.generated.resources.trakt_error_session_expired
+import nuvio.composeapp.generated.resources.trakt_error_watchlist_unavailable
+import nuvio.composeapp.generated.resources.trakt_error_title_missing_ids
+import nuvio.composeapp.generated.resources.library_provider_update_failed
 import nuvio.composeapp.generated.resources.trakt_error_authorization_expired
 import nuvio.composeapp.generated.resources.trakt_error_list_not_found
 import nuvio.composeapp.generated.resources.trakt_error_list_limit_reached
@@ -451,6 +455,10 @@ object ComposeResourcesStringProvider : StringProvider {
         StringKey.trakt_error_add_watchlist_failed -> Res.string.trakt_error_add_watchlist_failed
         StringKey.trakt_error_add_list_failed -> Res.string.trakt_error_add_list_failed
         StringKey.trakt_error_missing_ids -> Res.string.trakt_error_missing_ids
+        StringKey.trakt_error_session_expired -> Res.string.trakt_error_session_expired
+        StringKey.trakt_error_watchlist_unavailable -> Res.string.trakt_error_watchlist_unavailable
+        StringKey.trakt_error_title_missing_ids -> Res.string.trakt_error_title_missing_ids
+        StringKey.library_provider_update_failed -> Res.string.library_provider_update_failed
         StringKey.trakt_error_authorization_expired -> Res.string.trakt_error_authorization_expired
         StringKey.trakt_error_list_not_found -> Res.string.trakt_error_list_not_found
         StringKey.trakt_error_list_limit_reached -> Res.string.trakt_error_list_limit_reached

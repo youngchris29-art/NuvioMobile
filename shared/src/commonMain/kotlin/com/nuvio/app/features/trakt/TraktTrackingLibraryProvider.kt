@@ -76,17 +76,19 @@ object TraktTrackingLibraryProvider : TrackingLibraryProvider {
         TraktLibraryRepository.uiState.value.allItems.firstOrNull { item -> item.id == contentId }
 
     override suspend fun membership(item: LibraryItem): Map<String, Boolean> =
-        TraktLibraryRepository.getMembershipSnapshot(item).listMembership
+        traktMembershipWithListTabs(
+            hasWatchlistTab = { hasWatchlistTab(snapshot().tabs) },
+            readMembership = { TraktLibraryRepository.getMembershipSnapshot(item).listMembership },
+            loadListTabs = TraktLibraryRepository::ensureListTabs,
+        )
 
     override fun toggledDefaultMembership(
         currentMembership: Map<String, Boolean>,
-    ): Map<String, Boolean> {
-        val watchlistKey = snapshot().tabs
-            .firstOrNull { tab -> tab.kind == TrackingLibraryTabKind.WATCHLIST }
-            ?.key
-            ?: return currentMembership
-        return toggledTraktWatchlistMembership(currentMembership, watchlistKey)
-    }
+    ): Map<String, Boolean> = toggledTraktDefaultMembership(
+        currentMembership = currentMembership,
+        tabs = snapshot().tabs,
+        isSignedIn = TraktAuthRepository.isAuthenticated.value,
+    )
 
     override suspend fun applyMembership(
         profileId: Int,
@@ -100,6 +102,41 @@ object TraktTrackingLibraryProvider : TrackingLibraryProvider {
         )
         return null
     }
+}
+
+private fun hasWatchlistTab(tabs: List<TrackingLibraryTab>): Boolean =
+    tabs.any { tab -> tab.kind == TrackingLibraryTabKind.WATCHLIST }
+
+/**
+ * Issue #17: the membership the library + toggles. Tabs load lazily, so when the watchlist tab
+ * is not loaded yet, load the list tabs and read the membership again (only the tabs that exist
+ * have a membership entry). Pure over its arguments, for tests.
+ */
+internal suspend fun traktMembershipWithListTabs(
+    hasWatchlistTab: () -> Boolean,
+    readMembership: suspend () -> Map<String, Boolean>,
+    loadListTabs: suspend () -> Unit,
+): Map<String, Boolean> {
+    val membership = readMembership()
+    if (hasWatchlistTab()) return membership
+    loadListTabs()
+    return readMembership()
+}
+
+/**
+ * Issue #17: the library +'s default toggle (watchlist membership only). When no watchlist tab
+ * exists even after [traktMembershipWithListTabs] tried to load it, this used to return the
+ * membership unchanged, a silent no-op; it now throws [TraktSessionExpiredException] when signed
+ * out, else [TraktWatchlistUnavailableException], and the caller shows the message.
+ */
+internal fun toggledTraktDefaultMembership(
+    currentMembership: Map<String, Boolean>,
+    tabs: List<TrackingLibraryTab>,
+    isSignedIn: Boolean,
+): Map<String, Boolean> {
+    val watchlistKey = tabs.firstOrNull { tab -> tab.kind == TrackingLibraryTabKind.WATCHLIST }?.key
+        ?: throw if (isSignedIn) TraktWatchlistUnavailableException() else TraktSessionExpiredException()
+    return toggledTraktWatchlistMembership(currentMembership, watchlistKey)
 }
 
 // Fork: public (upstream: internal) — shared tests consume this cross-module.

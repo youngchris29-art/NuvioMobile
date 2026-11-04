@@ -1578,6 +1578,10 @@
     <string name="trakt_error_add_watchlist_failed">Failed to add to Trakt watchlist</string>
     <string name="trakt_error_add_list_failed">Failed to add to Trakt list</string>
     <string name="trakt_error_missing_ids">Missing compatible Trakt IDs</string>
+    <string name="trakt_error_session_expired">Trakt sign-in expired. Reconnect Trakt under Settings.</string>
+    <string name="trakt_error_watchlist_unavailable">Couldn’t load your Trakt watchlist. Try again.</string>
+    <string name="trakt_error_title_missing_ids">This title has no IMDb or TMDB id, so it can’t be added to Trakt.</string>
+    <string name="library_provider_update_failed">Failed to update %1$s lists</string>
     <string name="trakt_error_empty_response">Empty response body</string>
     <string name="tmdb_sources_api_key_required">Add a TMDB API key in Settings to use TMDB sources.</string>
     <string name="tmdb_sources_collection_fallback_title">TMDB Collection %1$d</string>

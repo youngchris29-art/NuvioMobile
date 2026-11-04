@@ -342,7 +342,15 @@ object LibraryRepository {
     private fun isActiveOperation(token: LibraryProfileToken): Boolean =
         localState.isCurrent(token) && ProfileRepository.activeProfileId == token.profileId
 
-    fun toggleSaved(item: LibraryItem) {
+    fun toggleSaved(item: LibraryItem) = toggleSavedReporting(item) { }
+
+    /**
+     * [toggleSaved] that also reports the outcome. Issue #17: the shared toast controller is a
+     * no-op on tvOS, so the Detail page shows [onFinished]'s message itself. [onFinished] gets,
+     * off the main thread for a connected provider, nil when the toggle went through, else the
+     * failure's message (the provider's own words, or "Failed to update <provider> lists").
+     */
+    fun toggleSavedReporting(item: LibraryItem, onFinished: (String?) -> Unit) {
         ensureLoaded()
 
         activeLibraryProvider()?.let { provider ->
@@ -356,21 +364,20 @@ object LibraryRepository {
             // Upstream's suspend + TrackingMembershipApplyResult signature exists to drive Simkl's
             // destructive-removal confirmation dialog, which Phase 1 does not ship.
             syncScope.launch {
-                runCatching {
+                val failure = runCatching {
                     val currentMembership = provider.membership(item)
                     provider.applyMembership(
                         profileId = profileId,
                         item = item,
                         desiredMembership = provider.toggledDefaultMembership(currentMembership),
                     )
-                }.onFailure { e ->
-                    log.e(e) { "Failed to toggle ${provider.providerId.storageId} watchlist" }
-                    ToastControllerProvider.controller.show(
-                        e.message?.takeIf { it.isNotBlank() }
-                            ?: resourceString("Failed to update Trakt lists", StringKey.trakt_lists_update_failed),
-                    )
+                }.exceptionOrNull()
+                val message = failure?.let { e ->
+                    log.e(e) { "Failed to toggle ${provider.providerId.storageId} watchlist item=${item.id} type=${item.type}" }
+                    libraryToggleFailureMessage(e, provider.providerId).also(ToastControllerProvider.controller::show)
                 }
                 publish()
+                onFinished(message)
             }
             return
         }
@@ -392,6 +399,7 @@ object LibraryRepository {
         persist(result.snapshot)
         publish()
         pushToServer(result.snapshot)
+        onFinished(null)
     }
 
     fun save(item: LibraryItem) {
@@ -879,3 +887,15 @@ fun String.toLibraryDisplayTitle(): String {
 
 private fun localizedLibraryOtherTitle(): String =
     resourceString(DEFAULT_LIBRARY_OTHER_TITLE, StringKey.library_other)
+
+/**
+ * Issue #17: the library toggle's failure text — the error's own message, else a generic line
+ * naming the provider (it used to say "Trakt" for Simkl and MDBList too).
+ */
+internal fun libraryToggleFailureMessage(error: Throwable, providerId: TrackingProviderId): String =
+    error.message?.takeIf { it.isNotBlank() }
+        ?: resourceString(
+            "Failed to update ${providerId.displayName} lists",
+            StringKey.library_provider_update_failed,
+            providerId.displayName,
+        )

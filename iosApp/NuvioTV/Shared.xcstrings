@@ -5208,6 +5208,17 @@
         }
       }
     },
+    "library_provider_update_failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Failed to update %1$@ lists"
+          }
+        }
+      }
+    },
     "library_status_completed": {
       "extractionState": "manual",
       "localizations": {
@@ -8425,6 +8436,39 @@
           "stringUnit": {
             "state": "translated",
             "value": "Yêu cầu tới Trakt thất bại"
+          }
+        }
+      }
+    },
+    "trakt_error_session_expired": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trakt sign-in expired. Reconnect Trakt under Settings."
+          }
+        }
+      }
+    },
+    "trakt_error_title_missing_ids": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This title has no IMDb or TMDB id, so it can’t be added to Trakt."
+          }
+        }
+      }
+    },
+    "trakt_error_watchlist_unavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn’t load your Trakt watchlist. Try again."
           }
         }
       }

@@ -81,7 +81,9 @@ fun MetaDetails.toLibraryItem(savedAtEpochMs: Long): LibraryItem =
         imdbRating = imdbRating,
         genres = genres,
         posterShape = PosterShape.Poster,
-        imdbId = id.takeIf { it.startsWith("tt") },
+        // Issue #17: an add-on id ("kitsu:…", a provider slug) still has the parsed imdb_id.
+        imdbId = id.takeIf { it.startsWith("tt") } ?: imdbId?.trim()?.takeIf { it.startsWith("tt") },
+        tmdbId = tmdbIdFromContentId(id),
         savedAtEpochMs = savedAtEpochMs,
     )
 
@@ -101,8 +103,28 @@ fun MetaPreview.toLibraryItem(savedAtEpochMs: Long): LibraryItem =
         posterShape = posterShape,
         landscapePoster = if (customPosterApplied) rawLandscapePosterUrl else (rawLandscapePosterUrl ?: landscapePoster),
         imdbId = id.takeIf { it.startsWith("tt") },
+        tmdbId = tmdbIdFromContentId(id),
         savedAtEpochMs = savedAtEpochMs,
     )
+
+/**
+ * Issue #17: the item the Detail page's library + saves. The enriched [meta] wins (it may carry an
+ * IMDb id the [preview] does not); any IMDb or TMDB id still missing comes from the other, so a
+ * search hit with an add-on-specific id can still be written to Trakt. No network lookups.
+ */
+fun libraryItemForDetail(meta: MetaDetails?, preview: MetaPreview, savedAtEpochMs: Long): LibraryItem {
+    val fromPreview = preview.toLibraryItem(savedAtEpochMs)
+    val fromMeta = meta?.toLibraryItem(savedAtEpochMs) ?: return fromPreview
+    return fromMeta.copy(
+        imdbId = fromMeta.imdbId ?: fromPreview.imdbId,
+        tmdbId = fromMeta.tmdbId ?: fromPreview.tmdbId,
+    )
+}
+
+/** The TMDB id of a `tmdb:<n>` content id (the form Trakt's id parser accepts), else null. */
+internal fun tmdbIdFromContentId(id: String): Int? =
+    id.trim().takeIf { it.startsWith("tmdb:", ignoreCase = true) }
+        ?.substringAfter(':')?.substringBefore(':')?.toIntOrNull()
 
 fun LibraryItem.toMetaPreview(): MetaPreview =
     MetaPreview(
