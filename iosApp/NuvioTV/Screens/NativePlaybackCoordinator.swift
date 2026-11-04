@@ -355,7 +355,9 @@ final class NativePlaybackCoordinator: ObservableObject {
                 self.checkLateSubtitles()
             }
         }
-        SubtitleRepository.shared.fetchAddonSubtitles(type: context.contentType, videoId: context.videoId)
+        // With the stream's file extras, plus the lazily computed OpenSubtitles hash (it re-queries
+        // in place once ready; completion stays keyed on `subsRequestKey`).
+        context.fetchAddonSubtitlesForPlayback()
         startArtworkFetch()
         #if DEBUG
         scheduleDebugLateSubtitle()

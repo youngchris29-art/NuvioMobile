@@ -124,6 +124,13 @@ struct PlaybackContext: Identifiable {
     var meta: PlaybackMeta? = nil
     /// Declared file size of the playing stream (addon `behaviorHints.videoSize`), for the Info chips.
     var fileSizeBytes: Int64? = nil
+    /// `behaviorHints.filename` of the playing stream. With `fileSizeBytes` and `videoHash` it goes
+    /// out as the add-on subtitle request's extras (`subtitleRequestExtras`); when nil the shared
+    /// helper falls back to the URL's last path segment.
+    var streamFilename: String? = nil
+    /// `behaviorHints.videoHash` (OpenSubtitles hash) when the add-on declared one. nil → the
+    /// player computes it lazily from the resolved URL (`fetchAddonSubtitlesForPlayback`).
+    var videoHash: String? = nil
     /// `behaviorHints.audioDelayMs` of the playing stream (P5 N1), already clamped to ±60 s. mpv only.
     var streamAudioDelayMs: Int? = nil
     /// Sanitized HTTP request headers the addon declared for this stream
@@ -163,6 +170,32 @@ struct PlaybackContext: Identifiable {
     /// What the progress writers store as `lastSourceUrl`: the playing URL, or nil for a
     /// session-only link (`sessionOnlySourceUrl`).
     var persistedSourceUrl: String? { sessionOnlySourceUrl ? nil : url.absoluteString }
+
+    /// File extras for the add-on subtitle request (`subtitles/<type>/<id>/<extras>.json`):
+    /// filename (URL basename fallback), declared size and hash. nil when nothing usable, and for
+    /// local `file:` playback (shared `SubtitleRequestExtras.of`).
+    var subtitleRequestExtras: SubtitleRequestExtras? {
+        SubtitleRequestExtras.companion.of(
+            filename: streamFilename,
+            videoSize: fileSizeBytes.map { KotlinLong(value: $0) },
+            videoHash: videoHash,
+            sourceUrl: url.absoluteString)
+    }
+
+    /// Kick the add-on subtitle fetch for this playback, the call every player makes at start.
+    /// Sends `subtitleRequestExtras` right away, then — when no hash was declared and `url` is a
+    /// remote http(s) file — computes the OpenSubtitles hash from two 64 KiB range requests
+    /// (with this stream's `requestHeaders`) and re-queries the add-ons with it. `url` is the
+    /// resolved URL (debrid links are resolved before the context is built). Completion is still
+    /// signalled on `SubtitleRepository.requestKey(type:videoId:)`, extras or not.
+    func fetchAddonSubtitlesForPlayback() {
+        SubtitleRepository.shared.fetchAddonSubtitlesWithHashComputation(
+            type: contentType,
+            videoId: videoId,
+            extras: subtitleRequestExtras,
+            sourceUrl: url.absoluteString,
+            sourceHeaders: requestHeaders)
+    }
 
     // Headers join the identity (Codex 2026-08-20 round 3): two sources for the same episode can
     // share a URL but require different headers; StreamPickerView rebuilds the player and

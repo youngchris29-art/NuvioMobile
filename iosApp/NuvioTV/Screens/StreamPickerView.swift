@@ -299,6 +299,8 @@ struct StreamPickerView: View {
             logo: logoUrl,
             meta: meta,
             fileSizeBytes: { let n: Int64? = stream?.behaviorHints.videoSize?.int64Value; return n }(),
+            streamFilename: { let f: String? = stream?.behaviorHints.filename; return f }(),
+            videoHash: { let h: String? = stream?.behaviorHints.videoHash; return h }(),
             streamAudioDelayMs: { let n: Int? = stream?.behaviorHints.audioDelayMs?.intValue; return n }(),
             requestHeaders: StreamModelsKt.sanitizePlaybackHeaders(
                 headers: stream?.behaviorHints.proxyHeaders?.request),

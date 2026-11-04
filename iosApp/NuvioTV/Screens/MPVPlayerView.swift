@@ -1370,7 +1370,7 @@ final class MPVTVPlayerViewController: UIViewController {
         for sub in context.externalSubtitles {
             subAdd(url: sub.url, title: sub.name ?? sub.language, lang: sub.language, rank: 0)
         }
-        SubtitleRepository.shared.fetchAddonSubtitles(type: context.contentType, videoId: context.videoId)
+        context.fetchAddonSubtitlesForPlayback()
         // A stream-picker prefetch may already have completed (the fetch call above then no-ops,
         // and the flow watcher's replay fired before fileLoaded was set) — side-load what's there.
         // Key check: never side-load a lingering list that belongs to a different title.

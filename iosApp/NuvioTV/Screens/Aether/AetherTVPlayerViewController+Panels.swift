@@ -319,7 +319,7 @@ extension AetherTVPlayerViewController {
                 }
             }
         }
-        SubtitleRepository.shared.fetchAddonSubtitles(type: context.contentType, videoId: context.videoId)
+        context.fetchAddonSubtitlesForPlayback()
         panel.addonFetchOutstanding = AetherSubtitleStartGate.addonFetchPending(
             completedRequest: SubtitleRepository.shared.completedRequest.value_ as? String, requestKey: requestKey)
         if !panel.addonFetchOutstanding { panel.addonFetchCompleted = true }
