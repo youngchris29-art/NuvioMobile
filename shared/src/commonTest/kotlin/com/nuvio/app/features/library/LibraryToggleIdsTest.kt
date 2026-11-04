@@ -142,6 +142,22 @@ class LibraryToggleIdsTest {
     }
 
     @Test
+    fun `a hold menu's saved state resolves the same ids its toggle item carries`() {
+        // Review r5: isSaved(id, type) derives IMDb/TMDB ids from the content id exactly as
+        // MetaPreview.toLibraryItem does, so the label and the action see the same record.
+        for (id in listOf("tt0388629", "tmdb:550", "kitsu:1376")) {
+            val item = MetaPreview(id = id, type = "series", name = "T").toLibraryItem(savedAtEpochMs = 0L)
+            assertEquals(item.imdbId, imdbIdFromContentId(id), id)
+            assertEquals(item.tmdbId, tmdbIdFromContentId(id), id)
+        }
+        // The library holds kitsu:1376 (with its IMDb id); a tt0388629 card reads "Remove", and
+        // the toggle target is that Kitsu record, not a second one.
+        val state = loadedState(LibraryItem(id = "kitsu:1376", type = "series", name = "Show", imdbId = "tt0388629"))
+        assertTrue(state.containsAnyId("tt0388629", "series", imdbIdFromContentId("tt0388629"), tmdbIdFromContentId("tt0388629")))
+        assertEquals("kitsu:1376", state.findAnyId("tt0388629", "series", "tt0388629", null)?.id)
+    }
+
+    @Test
     fun `a provider lookup tries the own id then the IMDb and TMDB ids`() {
         assertEquals(listOf("kitsu:1376", "tt0388629", "tmdb:30983"),
             libraryLookupIds("kitsu:1376", imdbId = "tt0388629", tmdbId = 30983))

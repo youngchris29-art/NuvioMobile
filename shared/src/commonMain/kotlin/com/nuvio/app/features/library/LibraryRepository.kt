@@ -465,17 +465,14 @@ object LibraryRepository {
         return localState.containsAnyId(id, type, imdbId, tmdbId)
     }
 
-    fun isSaved(id: String, type: String? = null): Boolean {
-        ensureLoaded()
-
-        activeLibraryProvider()?.let { provider -> return provider.contains(id, type) }
-
-        return if (type != null) {
-            localState.contains(id, type)
-        } else {
-            localState.containsId(id)
-        }
-    }
+    /**
+     * Issue #17 (review r5): resolves the same ids the toggle does for an item built from this
+     * content id alone (`MetaPreview.toLibraryItem`: a `tt` id is its IMDb id, `tmdb:<n>` its TMDB
+     * id), so a hold menu's "Add to Library" / "Remove" label and the action it runs agree even
+     * when the library holds the title under another of its ids.
+     */
+    fun isSaved(id: String, type: String? = null): Boolean =
+        isSavedMatchingIds(id, type, imdbId = imdbIdFromContentId(id), tmdbId = tmdbIdFromContentId(id))
 
     fun savedItem(id: String): LibraryItem? {
         ensureLoaded()

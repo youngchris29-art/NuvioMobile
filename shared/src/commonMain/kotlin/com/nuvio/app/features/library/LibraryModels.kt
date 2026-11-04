@@ -102,7 +102,7 @@ fun MetaPreview.toLibraryItem(savedAtEpochMs: Long): LibraryItem =
         genres = genres,
         posterShape = posterShape,
         landscapePoster = if (customPosterApplied) rawLandscapePosterUrl else (rawLandscapePosterUrl ?: landscapePoster),
-        imdbId = id.takeIf { it.startsWith("tt") },
+        imdbId = imdbIdFromContentId(id),
         tmdbId = tmdbIdFromContentId(id),
         savedAtEpochMs = savedAtEpochMs,
     )
@@ -120,6 +120,10 @@ fun libraryItemForDetail(meta: MetaDetails?, preview: MetaPreview, savedAtEpochM
         tmdbId = fromMeta.tmdbId ?: fromPreview.tmdbId,
     )
 }
+
+/** The IMDb id a `tt` content id is, else null (the rule `MetaPreview.toLibraryItem` applies). */
+internal fun imdbIdFromContentId(id: String): String? =
+    id.trim().takeIf { it.startsWith("tt") }
 
 /** The TMDB id of a `tmdb:<n>` content id (the form Trakt's id parser accepts), else null. */
 internal fun tmdbIdFromContentId(id: String): Int? =
