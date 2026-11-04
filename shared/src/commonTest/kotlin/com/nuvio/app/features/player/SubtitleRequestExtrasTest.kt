@@ -4,6 +4,7 @@ import com.nuvio.app.features.streams.StreamBehaviorHints
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -132,6 +133,20 @@ class SubtitleRequestExtrasTest {
     fun sourceFilenameFromUrlStripsQueryAndFragment() {
         assertEquals("video.mp4", sourceFilenameFromUrl("https://cdn.example.com/video.mp4?token=abc&expires=123"))
         assertEquals("video.mp4", sourceFilenameFromUrl("https://cdn.example.com/video.mp4#t=10"))
+    }
+
+    @Test
+    fun sourceIdentityTellsHeadersApartAndIgnoresTheirOrder() {
+        // Review r2: the same endpoint with other authorization headers can be another file.
+        val plain = subtitleSourceIdentity("https://cdn.example.com/a.mkv", emptyMap())
+        val authed = subtitleSourceIdentity("https://cdn.example.com/a.mkv", mapOf("Authorization" to "Bearer x"))
+        val authedOther = subtitleSourceIdentity("https://cdn.example.com/a.mkv", mapOf("Authorization" to "Bearer y"))
+        assertNotEquals(plain, authed)
+        assertNotEquals(authed, authedOther)
+        assertEquals(
+            subtitleSourceIdentity("https://x/a", mapOf("Referer" to "r", "User-Agent" to "u")),
+            subtitleSourceIdentity("https://x/a", mapOf("user-agent" to "u", "referer" to "r")),
+        )
     }
 
     @Test

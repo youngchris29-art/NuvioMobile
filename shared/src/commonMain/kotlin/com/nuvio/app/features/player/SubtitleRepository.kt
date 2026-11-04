@@ -89,9 +89,16 @@ object SubtitleRepository {
     // Extras of the active/completed fetch for `activeKey` — decides whether a second call for the
     // same content brings anything new (see `isRicherThan`).
     private var activeExtras: SubtitleRequestExtras? = null
-    // The stream the hash was asked for; another source of the same title starts over, since a
-    // measured hash describes one file only (review r1).
-    private var activeSourceUrl: String? = null
+    // The stream the hash was asked for (URL plus its request headers, like the players' own
+    // playback identity: the same endpoint with other headers can serve another file); another
+    // source of the same title starts over, since a measured hash describes one file only
+    // (review r1/r2).
+    private var activeSourceIdentity: String? = null
+    // Review r2: completion of the first fetch and of the upgrade, recorded on Main inside their
+    // final publish; `isLoading` ends when both are done. (A job's `isActive` is not usable for
+    // this: it stays true until the coroutine fully returns, after its final publish.)
+    private var firstFetchDone = false
+    private var upgradeDone = true
     // Bumped per content change and on clear(), so a job for the previous content can't publish.
     // Atomic: written on Main, read by fetch jobs on Default (K/N gives a plain var no visibility).
     private val contentGeneration = kotlinx.atomicfu.atomic(0L)
@@ -134,6 +141,7 @@ object SubtitleRepository {
         val effectiveExtras = extras.mergedOver(activeExtras)
         activeExtras = effectiveExtras
         upgradeJob?.cancel()
+        upgradeDone = false
         val generation = contentGeneration.value
         upgradeJob = scope.launch {
             runFetch(key = key, type = type, videoId = videoId, extras = effectiveExtras, upgrade = true, generation = generation)
@@ -147,9 +155,11 @@ object SubtitleRepository {
         hashJob?.cancel()
         hashJob = null
         hashAttemptKey = null
-        activeSourceUrl = null
+        activeSourceIdentity = null
         activeKey = key
         activeExtras = extras
+        firstFetchDone = false
+        upgradeDone = true
         val generation = contentGeneration.incrementAndGet()
         _addonSubtitles.value = emptyList()
         _error.value = null
@@ -179,13 +189,14 @@ object SubtitleRepository {
         sourceHeaders: Map<String, String>,
     ) {
         val key = requestKey(type, videoId)
-        if (key == activeKey && activeSourceUrl != null && activeSourceUrl != sourceUrl) {
+        val sourceIdentity = subtitleSourceIdentity(sourceUrl, sourceHeaders)
+        if (key == activeKey && activeSourceIdentity != null && activeSourceIdentity != sourceIdentity) {
             log.d { "Source changed for $key — subtitles start over for the new file" }
             activeKey = null
         }
         fetchAddonSubtitles(type, videoId, extras)
-        activeSourceUrl = sourceUrl
-        val attemptKey = "$key|$sourceUrl"
+        activeSourceIdentity = sourceIdentity
+        val attemptKey = "$key|$sourceIdentity"
         if (extras?.usableHash != null) {
             // The stream declared its hash: nothing to measure, and a measurement in flight for
             // this title must not replace it later.
@@ -416,10 +427,10 @@ object SubtitleRepository {
         }
     }
 
-    /** Main-confined: loading ends when neither the first fetch nor an upgrade still runs. */
+    /** Main-confined: loading ends once the first fetch and any upgrade have both finished. */
     private fun finishLoading(fromUpgrade: Boolean) {
-        val otherStillRunning = if (fromUpgrade) activeFetchJob?.isActive == true else upgradeJob?.isActive == true
-        if (!otherStillRunning) _isLoading.value = false
+        if (fromUpgrade) upgradeDone = true else firstFetchDone = true
+        if (firstFetchDone && upgradeDone) _isLoading.value = false
     }
 
     fun clear() {
@@ -432,13 +443,24 @@ object SubtitleRepository {
         contentGeneration.incrementAndGet()
         activeKey = null
         activeExtras = null
-        activeSourceUrl = null
+        activeSourceIdentity = null
+        firstFetchDone = false
+        upgradeDone = true
         _completedRequest.value = null
         _addonSubtitles.value = emptyList()
         _isLoading.value = false
         _error.value = null
     }
 }
+
+/**
+ * Review r2: what tells one stream from another for the hash — the URL and its request headers
+ * (sorted, so order never matters), joined with separators `sanitizePlaybackHeaders` never lets
+ * through. The same endpoint with other authorization or routing headers can be another file.
+ */
+internal fun subtitleSourceIdentity(sourceUrl: String, headers: Map<String, String>): String =
+    headers.entries.sortedBy { it.key.lowercase() }
+        .joinToString(separator = "\u001E", prefix = "$sourceUrl\u001F") { "${it.key.lowercase()}\u001F${it.value}" }
 
 /** Upgrade results first (hash-matched releases lead), then earlier entries not repeated by URL. */
 internal fun mergeUpgradedSubtitles(

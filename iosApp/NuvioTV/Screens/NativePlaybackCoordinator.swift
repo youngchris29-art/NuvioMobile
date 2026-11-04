@@ -694,10 +694,11 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// playback tick re-calls this every 200 ms, so a gated apply is deferred to the first tick
     /// after `play()`, not lost (nothing is recorded in `servedAddonURLs` until the apply runs).
     private func checkLateSubtitles() {
-        // Review r1 (subtitle extras): no `lateRebuildsUsed == 0` gate here any more — a hashed
-        // re-query that lands after the one late rebuild is still published to the list
-        // (`LateSubtitlePlan.decide` returns `.publishOnly` once a rebuild was used).
-        guard server != nil, phase == .playing, playIssued, !isRebuildingItem,
+        // Subtitle extras (review r1/r2): the one-rebuild rule stays. A hashed re-query that
+        // lands after the late rebuild is NOT shown in the native player: a published row could
+        // not be selected (`rebuildItem` is one-shot) and, with Up Next prefetching the next
+        // episode into the same repository, a later emission is not necessarily this episode's.
+        guard server != nil, phase == .playing, playIssued, !isRebuildingItem, lateRebuildsUsed == 0,
               !pendingLateFiles.isEmpty else { return }
         lateDebounce?.cancel()
         lateDebounce = Task { @MainActor [weak self] in
@@ -709,7 +710,7 @@ final class NativePlaybackCoordinator: ObservableObject {
     }
 
     private func applyLateSubtitles() {
-        guard let server, phase == .playing, playIssued, !isRebuildingItem else { return }
+        guard let server, phase == .playing, playIssued, !isRebuildingItem, lateRebuildsUsed == 0 else { return }
         let files = pendingLateFiles
         guard !files.isEmpty else { return }
         files.forEach { servedAddonURLs.insert($0.url) }
