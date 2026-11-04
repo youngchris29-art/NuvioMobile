@@ -480,7 +480,9 @@ object FolderDetailRepository {
                     tab.copy(
                         items = mergedItems,
                         supportsPagination = supportsPagination,
-                        isLoading = false,
+                        // Review r4: the tab stays "loading", not "Nothing here yet", while nothing
+                        // visible has arrived and the follow-up below asks for the next page.
+                        isLoading = autoAdvance && mergedItems.isEmpty(),
                         isLoadingMore = false,
                         nextSkip = paginationState.nextSkip,
                         consecutiveDuplicatePages = paginationState.consecutiveDuplicatePages,

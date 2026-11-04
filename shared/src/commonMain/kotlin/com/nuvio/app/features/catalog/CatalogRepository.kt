@@ -42,61 +42,72 @@ object CatalogRepository {
     // a plain Int has no cross-thread visibility guarantee on K/N (Codex round 12).
     private val fetchGeneration = kotlinx.atomicfu.atomic(0)
     private var activeRequest: CatalogRequest? = null
+    // #20 (review r4): the request bookkeeping (generation bump, job cancel, request and job
+    // registration) is one atomic step for load()/loadMore()/detach()/clear() on the main thread
+    // and the automatic follow-up fetch that a completing job starts on Dispatchers.Default, so a
+    // stale follow-up can never cancel or replace a newer request's job.
+    private val requestLock = kotlinx.atomicfu.locks.SynchronizedObject()
     private val scrollPositions = linkedMapOf<CatalogRequest, CatalogScrollPosition>()
 
     fun load(
         target: CatalogTarget,
         force: Boolean = false,
     ) {
-        val request = catalogRequest(target)
-        // `isLoading` may only short-circuit while the fetch that set it is still alive: after a
-        // pop-time detach() a cancelled-before-start job can leave isLoading=true behind with no
-        // job to ever clear it, and trusting it here would wedge every same-target reload.
-        val fetchStillRunning = activeJob?.isActive == true && _uiState.value.isLoading
-        if (!force && activeRequest == request && (_uiState.value.items.isNotEmpty() || fetchStillRunning)) {
-            // Re-entering a retained grid whose fetch was detach()-cancelled mid-page: heal the
-            // stranded isLoading before returning, or the Swift side's `itemAppeared` guard never
-            // calls loadMore() again and the footer spinner sticks forever (Codex round 3). Safe
-            // to emit here — this runs from a live screen's own load(), not a pop teardown.
-            if (_uiState.value.isLoading && activeJob?.isActive != true) {
-                _uiState.value = _uiState.value.copy(isLoading = false)
+        kotlinx.atomicfu.locks.synchronized(requestLock) {
+            val request = catalogRequest(target)
+            // `isLoading` may only short-circuit while the fetch that set it is still alive: after a
+            // pop-time detach() a cancelled-before-start job can leave isLoading=true behind with no
+            // job to ever clear it, and trusting it here would wedge every same-target reload.
+            val fetchStillRunning = activeJob?.isActive == true && _uiState.value.isLoading
+            if (!force && activeRequest == request && (_uiState.value.items.isNotEmpty() || fetchStillRunning)) {
+                // Re-entering a retained grid whose fetch was detach()-cancelled mid-page: heal the
+                // stranded isLoading before returning, or the Swift side's `itemAppeared` guard never
+                // calls loadMore() again and the footer spinner sticks forever (Codex round 3). Safe
+                // to emit here — this runs from a live screen's own load(), not a pop teardown.
+                if (_uiState.value.isLoading && activeJob?.isActive != true) {
+                    _uiState.value = _uiState.value.copy(isLoading = false)
+                }
+                return
             }
-            return
+            activeRequest = request
+            if (target is CatalogTarget.Library) {
+                fetchInternalLibrary(request)
+                return
+            }
+            fetchPage(
+                request = request,
+                reset = true,
+                forceRefresh = force,
+            )
         }
-        activeRequest = request
-        if (target is CatalogTarget.Library) {
-            fetchInternalLibrary(request)
-            return
-        }
-        fetchPage(
-            request = request,
-            reset = true,
-            forceRefresh = force,
-        )
     }
 
     fun loadMore() {
-        val request = activeRequest ?: return
-        val current = _uiState.value
-        // Same rationale as load()'s guard: trust isLoading only while the fetch that set it is
-        // still alive. A pop-time detach() during a page load strands isLoading=true with no job
-        // to ever clear it — an unconditional check would disable pagination for this catalog
-        // permanently (Codex round 2).
-        val fetchStillRunning = activeJob?.isActive == true && current.isLoading
-        if (fetchStillRunning || current.nextSkip == null) return
-        fetchPage(
-            request = request,
-            reset = false,
-            forceRefresh = false,
-        )
+        kotlinx.atomicfu.locks.synchronized(requestLock) {
+            val request = activeRequest ?: return
+            val current = _uiState.value
+            // Same rationale as load()'s guard: trust isLoading only while the fetch that set it is
+            // still alive. A pop-time detach() during a page load strands isLoading=true with no job
+            // to ever clear it — an unconditional check would disable pagination for this catalog
+            // permanently (Codex round 2).
+            val fetchStillRunning = activeJob?.isActive == true && current.isLoading
+            if (fetchStillRunning || current.nextSkip == null) return
+            fetchPage(
+                request = request,
+                reset = false,
+                forceRefresh = false,
+            )
+        }
     }
 
     fun clear() {
-        fetchGeneration.incrementAndGet()
-        activeJob?.cancel()
-        activeRequest = null
-        scrollPositions.clear()
-        _uiState.value = CatalogUiState()
+        kotlinx.atomicfu.locks.synchronized(requestLock) {
+            fetchGeneration.incrementAndGet()
+            activeJob?.cancel()
+            activeRequest = null
+            scrollPositions.clear()
+            _uiState.value = CatalogUiState()
+        }
     }
 
     /// H1 hardening (BUG-47/UX-13): the "See All" grid's `stop()` used to call [clear], which is the
@@ -109,8 +120,10 @@ object CatalogRepository {
     /// so a subsequent `load()` for the same target still early-returns with everything intact.
     /// `clear()` itself is untouched; its sign-out caller needs the full wipe.
     fun detach() {
-        fetchGeneration.incrementAndGet()
-        activeJob?.cancel()
+        kotlinx.atomicfu.locks.synchronized(requestLock) {
+            fetchGeneration.incrementAndGet()
+            activeJob?.cancel()
+        }
     }
 
     fun scrollPosition(
@@ -132,53 +145,55 @@ object CatalogRepository {
     }
 
     private fun fetchInternalLibrary(request: CatalogRequest) {
-        activeJob?.cancel()
-        val generation = fetchGeneration.incrementAndGet()
-        _uiState.value = _uiState.value.copy(
-            isLoading = true,
-            errorMessage = null,
-        )
-
-        activeJob = scope.launch {
-            runCatching {
-                val target = request.target as CatalogTarget.Library
-                LibraryRepository.ensureLoaded()
-                val libraryState = LibraryRepository.uiState.value
-                val items = libraryState.sections
-                    .firstOrNull { it.type == target.sectionType }
-                    ?.items
-                    .orEmpty()
-                sortLibraryItems(
-                    items = items,
-                    selected = target.sortOption,
-                    sourceMode = libraryState.sourceMode,
-                    listKey = target.sectionType,
-                )
-                    .map { it.toMetaPreview() }
-                    .let(::dedupeCatalogItems)
-            }.fold(
-                onSuccess = { items ->
-                    if (generation != fetchGeneration.value || activeRequest != request) return@fold
-                    _uiState.value = CatalogUiState(
-                        items = items,
-                        isLoading = false,
-                        nextSkip = null,
-                        errorMessage = null,
-                    )
-                },
-                onFailure = { error ->
-                    // A detach()-cancelled job must not surface as a failure: activeRequest is
-                    // deliberately retained across pops, so the request guard alone can't stop it.
-                    if (error is CancellationException) return@fold
-                    if (generation != fetchGeneration.value || activeRequest != request) return@fold
-                    _uiState.value = CatalogUiState(
-                        items = emptyList(),
-                        isLoading = false,
-                        nextSkip = null,
-                        errorMessage = error.message ?: resourceString("Unable to load catalog items.", StringKey.catalog_load_failed),
-                    )
-                },
+        kotlinx.atomicfu.locks.synchronized(requestLock) {
+            activeJob?.cancel()
+            val generation = fetchGeneration.incrementAndGet()
+            _uiState.value = _uiState.value.copy(
+                isLoading = true,
+                errorMessage = null,
             )
+
+            activeJob = scope.launch {
+                runCatching {
+                    val target = request.target as CatalogTarget.Library
+                    LibraryRepository.ensureLoaded()
+                    val libraryState = LibraryRepository.uiState.value
+                    val items = libraryState.sections
+                        .firstOrNull { it.type == target.sectionType }
+                        ?.items
+                        .orEmpty()
+                    sortLibraryItems(
+                        items = items,
+                        selected = target.sortOption,
+                        sourceMode = libraryState.sourceMode,
+                        listKey = target.sectionType,
+                    )
+                        .map { it.toMetaPreview() }
+                        .let(::dedupeCatalogItems)
+                }.fold(
+                    onSuccess = { items ->
+                        if (generation != fetchGeneration.value || activeRequest != request) return@fold
+                        _uiState.value = CatalogUiState(
+                            items = items,
+                            isLoading = false,
+                            nextSkip = null,
+                            errorMessage = null,
+                        )
+                    },
+                    onFailure = { error ->
+                        // A detach()-cancelled job must not surface as a failure: activeRequest is
+                        // deliberately retained across pops, so the request guard alone can't stop it.
+                        if (error is CancellationException) return@fold
+                        if (generation != fetchGeneration.value || activeRequest != request) return@fold
+                        _uiState.value = CatalogUiState(
+                            items = emptyList(),
+                            isLoading = false,
+                            nextSkip = null,
+                            errorMessage = error.message ?: resourceString("Unable to load catalog items.", StringKey.catalog_load_failed),
+                        )
+                    },
+                )
+            }
         }
     }
 
@@ -194,91 +209,96 @@ object CatalogRepository {
         forceRefresh: Boolean,
         onlyForGeneration: Int? = null,
     ) {
-        val generation = if (onlyForGeneration == null) {
-            fetchGeneration.incrementAndGet()
-        } else {
-            if (!fetchGeneration.compareAndSet(onlyForGeneration, onlyForGeneration + 1)) return
-            if (activeRequest != request) return
-            onlyForGeneration + 1
-        }
-        activeJob?.cancel()
-        val current = _uiState.value
-        val requestedSkip = if (reset) 0 else current.nextSkip ?: return
+        kotlinx.atomicfu.locks.synchronized(requestLock) {
+            val generation = if (onlyForGeneration == null) {
+                fetchGeneration.incrementAndGet()
+            } else {
+                if (!fetchGeneration.compareAndSet(onlyForGeneration, onlyForGeneration + 1)) return
+                if (activeRequest != request) return
+                onlyForGeneration + 1
+            }
+            activeJob?.cancel()
+            val current = _uiState.value
+            val requestedSkip = if (reset) 0 else current.nextSkip ?: return
 
-        _uiState.value = current.copy(
-            items = if (reset) emptyList() else current.items,
-            isLoading = true,
-            nextSkip = if (reset) null else current.nextSkip,
-            errorMessage = null,
-        )
-
-        activeJob = scope.launch {
-            runCatching {
-                when (val target = request.target) {
-                    is CatalogTarget.Addon -> fetchCatalogPage(
-                        manifestUrl = target.manifestUrl,
-                        type = target.contentType,
-                        catalogId = target.catalogId,
-                        genre = target.genre,
-                        search = target.search,
-                        skip = requestedSkip.takeIf { it > 0 },
-                        forceRefresh = forceRefresh,
-                    )
-
-                    is CatalogTarget.CollectionSource -> fetchCollectionSourcePage(
-                        target = target,
-                        page = requestedSkip.takeIf { it > 0 } ?: 1,
-                    )
-
-                    is CatalogTarget.Library -> error(resourceString("Unable to load catalog items.", StringKey.catalog_load_failed))
-                }.withUnreleasedFilter(request.hideUnreleasedContent)
-            }.fold(
-                onSuccess = { page ->
-                    if (generation != fetchGeneration.value || activeRequest != request) return@fold
-
-                    val mergedItems = if (reset) {
-                        dedupeCatalogItems(page.items)
-                    } else {
-                        mergeCatalogItems(_uiState.value.items, page.items)
-                    }
-                    val supportsPagination = request.target.supportsPagination || page.rawItemCount >= CATALOG_PAGE_SIZE
-                    val loadedNewItems = catalogPageAddedVisibleItems(reset, current.items.size, mergedItems.size)
-                    val paginationState = nextCatalogPaginationState(
-                        supportsPagination = supportsPagination,
-                        requestedSkip = requestedSkip,
-                        page = page,
-                        loadedNewItems = loadedNewItems,
-                        consecutiveDuplicatePages = if (reset) 0 else current.consecutiveDuplicatePages,
-                    )
-                    CustomPosterUrlRepository.ensureLoaded()
-                    val posterPattern = CustomPosterUrlRepository.patternForScreen(CustomPosterScreen.HOME)
-                    _uiState.value = CatalogUiState(
-                        items = mergedItems.withCustomPosterUrls(posterPattern),
-                        isLoading = false,
-                        nextSkip = paginationState.nextSkip,
-                        consecutiveDuplicatePages = paginationState.consecutiveDuplicatePages,
-                        errorMessage = null,
-                    )
-                    // #20 (review r2): the grid asks for more only when a new cell appears, so a page
-                    // that added no visible item (filtered out, repeated, or a server that ignores
-                    // `skip`) is followed up here; `nextCatalogPaginationState` bounds it at three.
-                    if (catalogPageNeedsAutoAdvance(loadedNewItems, paginationState.nextSkip)) {
-                        fetchPage(request = request, reset = false, forceRefresh = false, onlyForGeneration = generation)
-                    }
-                },
-                onFailure = { error ->
-                    // See fetchInternalLibrary: a pop-time detach() cancellation is not a failure.
-                    if (error is CancellationException) return@fold
-                    if (generation != fetchGeneration.value || activeRequest != request) return@fold
-
-                    _uiState.value = current.copy(
-                        items = if (reset) emptyList() else current.items,
-                        isLoading = false,
-                        nextSkip = null,
-                        errorMessage = error.message ?: resourceString("Unable to load catalog items.", StringKey.catalog_load_failed),
-                    )
-                },
+            _uiState.value = current.copy(
+                items = if (reset) emptyList() else current.items,
+                isLoading = true,
+                nextSkip = if (reset) null else current.nextSkip,
+                errorMessage = null,
             )
+
+            activeJob = scope.launch {
+                runCatching {
+                    when (val target = request.target) {
+                        is CatalogTarget.Addon -> fetchCatalogPage(
+                            manifestUrl = target.manifestUrl,
+                            type = target.contentType,
+                            catalogId = target.catalogId,
+                            genre = target.genre,
+                            search = target.search,
+                            skip = requestedSkip.takeIf { it > 0 },
+                            forceRefresh = forceRefresh,
+                        )
+
+                        is CatalogTarget.CollectionSource -> fetchCollectionSourcePage(
+                            target = target,
+                            page = requestedSkip.takeIf { it > 0 } ?: 1,
+                        )
+
+                        is CatalogTarget.Library -> error(resourceString("Unable to load catalog items.", StringKey.catalog_load_failed))
+                    }.withUnreleasedFilter(request.hideUnreleasedContent)
+                }.fold(
+                    onSuccess = { page ->
+                        if (generation != fetchGeneration.value || activeRequest != request) return@fold
+
+                        val mergedItems = if (reset) {
+                            dedupeCatalogItems(page.items)
+                        } else {
+                            mergeCatalogItems(_uiState.value.items, page.items)
+                        }
+                        val supportsPagination = request.target.supportsPagination || page.rawItemCount >= CATALOG_PAGE_SIZE
+                        val loadedNewItems = catalogPageAddedVisibleItems(reset, current.items.size, mergedItems.size)
+                        val paginationState = nextCatalogPaginationState(
+                            supportsPagination = supportsPagination,
+                            requestedSkip = requestedSkip,
+                            page = page,
+                            loadedNewItems = loadedNewItems,
+                            consecutiveDuplicatePages = if (reset) 0 else current.consecutiveDuplicatePages,
+                        )
+                        CustomPosterUrlRepository.ensureLoaded()
+                        val posterPattern = CustomPosterUrlRepository.patternForScreen(CustomPosterScreen.HOME)
+                        val autoAdvance = catalogPageNeedsAutoAdvance(loadedNewItems, paginationState.nextSkip)
+                        _uiState.value = CatalogUiState(
+                            items = mergedItems.withCustomPosterUrls(posterPattern),
+                            // Review r4: still "loading", not "empty", while nothing visible has arrived
+                            // and the follow-up below is about to ask for the next page.
+                            isLoading = autoAdvance && mergedItems.isEmpty(),
+                            nextSkip = paginationState.nextSkip,
+                            consecutiveDuplicatePages = paginationState.consecutiveDuplicatePages,
+                            errorMessage = null,
+                        )
+                        // #20 (review r2): the grid asks for more only when a new cell appears, so a page
+                        // that added no visible item (filtered out, repeated, or a server that ignores
+                        // `skip`) is followed up here; `nextCatalogPaginationState` bounds it at three.
+                        if (autoAdvance) {
+                            fetchPage(request = request, reset = false, forceRefresh = false, onlyForGeneration = generation)
+                        }
+                    },
+                    onFailure = { error ->
+                        // See fetchInternalLibrary: a pop-time detach() cancellation is not a failure.
+                        if (error is CancellationException) return@fold
+                        if (generation != fetchGeneration.value || activeRequest != request) return@fold
+
+                        _uiState.value = current.copy(
+                            items = if (reset) emptyList() else current.items,
+                            isLoading = false,
+                            nextSkip = null,
+                            errorMessage = error.message ?: resourceString("Unable to load catalog items.", StringKey.catalog_load_failed),
+                        )
+                    },
+                )
+            }
         }
     }
 
