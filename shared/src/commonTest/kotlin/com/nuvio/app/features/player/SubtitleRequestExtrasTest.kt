@@ -135,6 +135,18 @@ class SubtitleRequestExtrasTest {
     }
 
     @Test
+    fun sourceFilenameFromUrlDecodesPercentEscapesOnce() {
+        // Review r1: the add-on gets "Movie Name.mkv", not "Movie%2520Name.mkv".
+        assertEquals("Movie Name.mkv", sourceFilenameFromUrl("https://cdn.example.com/Movie%20Name.mkv"))
+        assertEquals("100%.mkv", sourceFilenameFromUrl("https://cdn.example.com/100%25.mkv"))
+        assertEquals("你好.mkv", sourceFilenameFromUrl("https://cdn.example.com/%E4%BD%A0%E5%A5%BD.mkv"))
+        assertEquals("bad%ZZ.mkv", sourceFilenameFromUrl("https://cdn.example.com/bad%ZZ.mkv"), "malformed: kept as is")
+        assertEquals("filename=Movie%20Name.mkv",
+            SubtitleRequestExtras.of(filename = null, videoSize = null, videoHash = null,
+                sourceUrl = "https://cdn.example.com/Movie%20Name.mkv")?.toPathSegment())
+    }
+
+    @Test
     fun sourceFilenameFromUrlReturnsNullWhenUnusable() {
         assertNull(sourceFilenameFromUrl("https://cdn.example.com/stream"))
         assertNull(sourceFilenameFromUrl("https://cdn.example.com/"))

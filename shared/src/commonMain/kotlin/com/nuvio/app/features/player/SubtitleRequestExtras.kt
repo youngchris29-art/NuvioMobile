@@ -72,11 +72,36 @@ data class SubtitleRequestExtras(
 
 /**
  * The last path segment of [url] (query and fragment stripped) when it looks like a file name,
- * i.e. contains an extension dot. Mirrors upstream `sourceFilenameFromUrl`.
+ * i.e. contains an extension dot. Mirrors upstream `sourceFilenameFromUrl`. Review r1: the
+ * segment is percent-decoded, since `toPathSegment` encodes it again for the add-on (a raw
+ * `Movie%20Name.mkv` would reach the add-on as `Movie%2520Name.mkv`); a segment that does not
+ * decode cleanly is kept as it is.
  */
 fun sourceFilenameFromUrl(url: String?): String? =
     url?.substringBefore('?')?.substringBefore('#')?.substringAfterLast('/')
+        ?.let { segment -> percentDecodeOrSelf(segment) }
         ?.takeIf { it.isNotBlank() && it.contains('.') }
+
+/** `%XX` sequences decoded as UTF-8; the input itself when a sequence is malformed. */
+internal fun percentDecodeOrSelf(value: String): String {
+    if (!value.contains('%')) return value
+    val bytes = ArrayList<Byte>(value.length)
+    var i = 0
+    while (i < value.length) {
+        val c = value[i]
+        if (c == '%') {
+            if (i + 2 >= value.length) return value
+            val hex = value.substring(i + 1, i + 3)
+            val byte = hex.toIntOrNull(16) ?: return value
+            bytes.add(byte.toByte())
+            i += 3
+        } else {
+            value.substring(i, i + 1).encodeToByteArray().forEach { bytes.add(it) }
+            i += 1
+        }
+    }
+    return runCatching { bytes.toByteArray().decodeToString(throwOnInvalidSequence = true) }.getOrDefault(value)
+}
 
 /**
  * True when [other] carries information this request lacks — the only case where a second

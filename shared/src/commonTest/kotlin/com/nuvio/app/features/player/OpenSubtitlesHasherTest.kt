@@ -109,6 +109,32 @@ class OpenSubtitlesHasherTest {
     }
 
     @Test
+    fun returnsNullWhenARangeAnswerIsOversizedMisplacedOrUnlabelled() = runTest {
+        // Review r1: a server that ignores the range end sends more than a chunk (the HTTP layer
+        // keeps one byte over); one that answers from another offset or without a tail
+        // Content-Range gets no hash either.
+        val size = 1_000_000L
+        val oversized = FakeServer { range ->
+            if (range == "bytes=0-65535") RawHttpResponse(206, "", "", "", mapOf("content-range" to "bytes 0-${size - 1}/$size"), head + byteArrayOf(1))
+            else partial(size - chunk, tail, size)
+        }
+        assertNull(OpenSubtitlesHasher.compute("https://x/a", fetcher = oversized))
+        val misplacedTail = FakeServer { range ->
+            if (range == "bytes=0-65535") partial(0, head, size) else partial(size - chunk - 10, tail, size)
+        }
+        assertNull(OpenSubtitlesHasher.compute("https://x/a", fetcher = misplacedTail))
+        val unlabelledTail = FakeServer { range ->
+            if (range == "bytes=0-65535") partial(0, head, size) else RawHttpResponse(206, "", "", "", emptyMap(), tail)
+        }
+        assertNull(OpenSubtitlesHasher.compute("https://x/a", fetcher = unlabelledTail))
+        val shortHeadRange = FakeServer { range ->
+            if (range == "bytes=0-65535") RawHttpResponse(206, "", "", "", mapOf("content-range" to "bytes 0-1000/$size"), head)
+            else partial(size - chunk, tail, size)
+        }
+        assertNull(OpenSubtitlesHasher.compute("https://x/a", fetcher = shortHeadRange))
+    }
+
+    @Test
     fun returnsNullOnErrorOrTimeout() = runTest {
         assertNull(OpenSubtitlesHasher.compute("https://x/a", fetcher = FakeServer { error("boom") }))
         val slow = OpenSubtitlesHasher.RangeFetcher { _, _ ->

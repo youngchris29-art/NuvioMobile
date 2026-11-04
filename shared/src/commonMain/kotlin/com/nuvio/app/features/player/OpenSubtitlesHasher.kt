@@ -35,7 +35,9 @@ internal object OpenSubtitlesHasher {
             headers = headers,
             body = "",
             followRedirects = true,
-            maxResponseBodyBytes = CHUNK_SIZE,
+            // One byte over the chunk, so a server that ignores the range end (and would be
+            // truncated to exactly a chunk otherwise) is told apart from an exact answer.
+            maxResponseBodyBytes = CHUNK_SIZE + 1,
         )
     }
 
@@ -61,10 +63,13 @@ internal object OpenSubtitlesHasher {
             !it.equals("Range", ignoreCase = true) && !it.equals("Accept-Encoding", ignoreCase = true)
         } + ("Accept-Encoding" to "identity")
 
+        // Both answers must be 206 with a Content-Range that names exactly the bytes asked for
+        // and an exact-size body (review r1): a server that ignores the range end, answers from
+        // another offset, or omits the tail's Content-Range yields no hash rather than a wrong one.
         val head = fetcher.get(url, baseHeaders + ("Range" to "bytes=0-${CHUNK_SIZE - 1}"))
         if (head.status != 206) return null
         val headRange = parseContentRange(head.header("content-range")) ?: return null
-        if (headRange.start != 0L) return null
+        if (headRange.start != 0L || headRange.end != CHUNK_SIZE - 1L) return null
         val fileSize = headRange.total ?: return null
         if (fileSize < 2L * CHUNK_SIZE) return null
         val headBytes = head.bodyBytes.takeIf { it.size == CHUNK_SIZE } ?: return null
@@ -72,8 +77,8 @@ internal object OpenSubtitlesHasher {
         val tailStart = fileSize - CHUNK_SIZE
         val tail = fetcher.get(url, baseHeaders + ("Range" to "bytes=$tailStart-${fileSize - 1}"))
         if (tail.status != 206) return null
-        val tailRange = parseContentRange(tail.header("content-range"))
-        if (tailRange != null && (tailRange.start != tailStart || (tailRange.total != null && tailRange.total != fileSize))) {
+        val tailRange = parseContentRange(tail.header("content-range")) ?: return null
+        if (tailRange.start != tailStart || tailRange.end != fileSize - 1 || (tailRange.total != null && tailRange.total != fileSize)) {
             return null
         }
         val tailBytes = tail.bodyBytes.takeIf { it.size == CHUNK_SIZE } ?: return null

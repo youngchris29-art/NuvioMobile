@@ -75,18 +75,26 @@ object SubtitleRepository {
     private val _completedRequest = MutableStateFlow<String?>(null)
     val completedRequest: StateFlow<String?> = _completedRequest.asStateFlow()
 
-    // Dedupe state below (activeFetchJob, activeKey, activeExtras, fetchGeneration, hashJob,
-    // hashAttemptKey) is MAIN-CONFINED: it is written only by `fetchAddonSubtitles*` and `clear()`,
-    // which callers invoke on the main thread (every Swift call site does), and by the hash job,
-    // which hops to Dispatchers.Main before touching it. Fetch jobs on Default only read
-    // `fetchGeneration` to discard superseded results.
+    // Dedupe state below (activeFetchJob, upgradeJob, activeKey, activeExtras, activeSourceUrl,
+    // hashJob, hashAttemptKey) is MAIN-CONFINED: it is written only by `fetchAddonSubtitles*` and
+    // `clear()`, which callers invoke on the main thread (every Swift call site does), and by the
+    // hash job, which hops to Dispatchers.Main before touching it. Fetch jobs publish through
+    // `publish`, which hops to Main too, so the generation check and the write are one step
+    // against a content switch or `clear()` (review r1).
     private var activeFetchJob: Job? = null
+    // Review r1: a hash upgrade runs beside the first fetch instead of cancelling it, so a fast
+    // add-on's first answer and `completedRequest` never wait for the slowest re-query.
+    private var upgradeJob: Job? = null
     private var activeKey: String? = null
     // Extras of the active/completed fetch for `activeKey` — decides whether a second call for the
     // same content brings anything new (see `isRicherThan`).
     private var activeExtras: SubtitleRequestExtras? = null
-    // Bumped per launched fetch, so a superseded job that slipped past cancellation can't publish.
-    private var fetchGeneration = 0L
+    // The stream the hash was asked for; another source of the same title starts over, since a
+    // measured hash describes one file only (review r1).
+    private var activeSourceUrl: String? = null
+    // Bumped per content change and on clear(), so a job for the previous content can't publish.
+    // Atomic: written on Main, read by fetch jobs on Default (K/N gives a plain var no visibility).
+    private val contentGeneration = kotlinx.atomicfu.atomic(0L)
 
     private var hashJob: Job? = null
     // "<requestKey>|<sourceUrl>" of the last hash attempt (running or finished) — one attempt per
@@ -113,20 +121,42 @@ object SubtitleRepository {
 
     fun fetchAddonSubtitles(type: String, videoId: String, extras: SubtitleRequestExtras?) {
         val key = requestKey(type, videoId)
-        val sameContent = key == activeKey && (activeFetchJob?.isActive == true || _completedRequest.value == key)
+        val sameContent = key == activeKey &&
+            (activeFetchJob?.isActive == true || upgradeJob?.isActive == true || _completedRequest.value == key)
         if (sameContent && !extras.isRicherThan(activeExtras)) return
-        if (key != activeKey) {
-            hashJob?.cancel()
-            hashJob = null
-            hashAttemptKey = null
+        if (!sameContent) {
+            // New content: the previous jobs stop, and the state is cleared HERE, synchronously, so
+            // an upgrade that follows at once never merges into the previous title's list.
+            startNewContent(key, type, videoId, extras)
+            return
         }
-        val effectiveExtras = if (sameContent) extras.mergedOver(activeExtras) else extras
-        activeKey = key
+        // Richer extras for the content in flight or shown: re-query beside the first fetch.
+        val effectiveExtras = extras.mergedOver(activeExtras)
         activeExtras = effectiveExtras
+        upgradeJob?.cancel()
+        val generation = contentGeneration.value
+        upgradeJob = scope.launch {
+            runFetch(key = key, type = type, videoId = videoId, extras = effectiveExtras, upgrade = true, generation = generation)
+        }
+    }
+
+    private fun startNewContent(key: String, type: String, videoId: String, extras: SubtitleRequestExtras?) {
         activeFetchJob?.cancel()
-        val generation = ++fetchGeneration
+        upgradeJob?.cancel()
+        upgradeJob = null
+        hashJob?.cancel()
+        hashJob = null
+        hashAttemptKey = null
+        activeSourceUrl = null
+        activeKey = key
+        activeExtras = extras
+        val generation = contentGeneration.incrementAndGet()
+        _addonSubtitles.value = emptyList()
+        _error.value = null
+        if (_completedRequest.value != null) _completedRequest.value = null
+        _isLoading.value = true
         activeFetchJob = scope.launch {
-            runFetch(key = key, type = type, videoId = videoId, extras = effectiveExtras, upgrade = sameContent, generation = generation)
+            runFetch(key = key, type = type, videoId = videoId, extras = extras, upgrade = false, generation = generation)
         }
     }
 
@@ -136,6 +166,10 @@ object SubtitleRepository {
      * and re-fetch with it (upstream `fetchAddonSubtitlesWithHashComputation`, made non-blocking:
      * the first results don't wait for the hash). A failed or timed-out hash just leaves the
      * first results in place. [sourceHeaders] go with the range requests (CDN Referer/UA).
+     *
+     * Review r1: another source of the same title (a failover, a manual switch) starts the
+     * content over, because a hash measured on the first file describes that file only; a
+     * declared hash ends any measurement still running.
      */
     fun fetchAddonSubtitlesWithHashComputation(
         type: String,
@@ -144,11 +178,24 @@ object SubtitleRepository {
         sourceUrl: String,
         sourceHeaders: Map<String, String>,
     ) {
-        fetchAddonSubtitles(type, videoId, extras)
-        if (extras?.usableHash != null || activeExtras?.usableHash != null) return
-        if (!isHashableSubtitleSource(sourceUrl)) return
         val key = requestKey(type, videoId)
+        if (key == activeKey && activeSourceUrl != null && activeSourceUrl != sourceUrl) {
+            log.d { "Source changed for $key — subtitles start over for the new file" }
+            activeKey = null
+        }
+        fetchAddonSubtitles(type, videoId, extras)
+        activeSourceUrl = sourceUrl
         val attemptKey = "$key|$sourceUrl"
+        if (extras?.usableHash != null) {
+            // The stream declared its hash: nothing to measure, and a measurement in flight for
+            // this title must not replace it later.
+            hashJob?.cancel()
+            hashJob = null
+            hashAttemptKey = attemptKey
+            return
+        }
+        if (activeExtras?.usableHash != null) return
+        if (!isHashableSubtitleSource(sourceUrl)) return
         if (attemptKey == hashAttemptKey) return
         hashJob?.cancel()
         hashAttemptKey = attemptKey
@@ -174,6 +221,17 @@ object SubtitleRepository {
         }
     }
 
+    /**
+     * Review r1: every write a fetch job makes goes through here, on Main, after the generation
+     * check — the same thread `clear()` and a content switch run on, so a job for the previous
+     * content can neither append to the new list nor mark it complete.
+     */
+    private suspend fun publish(generation: Long, write: () -> Unit) {
+        withContext(Dispatchers.Main) {
+            if (contentGeneration.value == generation) write()
+        }
+    }
+
     private suspend fun runFetch(
         key: String,
         type: String,
@@ -182,15 +240,10 @@ object SubtitleRepository {
         upgrade: Boolean,
         generation: Long,
     ) {
-        fun current() = fetchGeneration == generation
+        fun current() = contentGeneration.value == generation
         val requestType = canonicalSubtitleType(type)
         val extraSegment = extras?.toPathSegment()
-        _isLoading.value = true
-        _error.value = null
-        if (!upgrade) {
-            _addonSubtitles.value = emptyList()
-            if (_completedRequest.value != null) _completedRequest.value = null
-        }
+        if (upgrade) publish(generation) { _isLoading.value = true }
 
         val fetchStart = TimeSource.Monotonic.markNow()
         // The player can outrun addon bootstrap (cold launch straight into playback, debug
@@ -231,22 +284,23 @@ object SubtitleRepository {
 
         if (subtitleAddons.isEmpty()) {
             log.d { "No subtitle-capable addon for type=$requestType id=$videoId — nothing to query" }
-            if (!current()) return
-            // An addon that declares a subtitles resource but doesn't cover this type/id is
-            // still a real empty result, so keep the fork's user-visible message for it.
-            if (_addonSubtitles.value.isEmpty() &&
-                addons.any { it.manifest?.resources?.any { r -> r.name.isSubtitleResourceName() } == true }
-            ) {
-                _error.value = resourceString(
-                    "No subtitles found",
-                    StringKey.compose_player_no_subtitles_found,
-                )
+            publish(generation) {
+                // An addon that declares a subtitles resource but doesn't cover this type/id is
+                // still a real empty result, so keep the fork's user-visible message for it.
+                if (_addonSubtitles.value.isEmpty() &&
+                    addons.any { it.manifest?.resources?.any { r -> r.name.isSubtitleResourceName() } == true }
+                ) {
+                    _error.value = resourceString(
+                        "No subtitles found",
+                        StringKey.compose_player_no_subtitles_found,
+                    )
+                }
+                // Terminal path — both tvOS players poll `completedRequest`
+                // (NativePlaybackCoordinator.subsFetchCompleted, MPVPlayerView's prefetch
+                // side-load). Returning without setting it hangs the native player's subtitle wait.
+                _completedRequest.value = key
+                finishLoading(upgrade)
             }
-            // Terminal path — both tvOS players poll `completedRequest`
-            // (NativePlaybackCoordinator.subsFetchCompleted, MPVPlayerView's prefetch
-            // side-load). Returning without setting it hangs the native player's subtitle wait.
-            _completedRequest.value = key
-            _isLoading.value = false
             return
         }
 
@@ -321,12 +375,15 @@ object SubtitleRepository {
                         }
 
                         log.d { "${addon.displayTitle}: ${addonSubs.size} subtitles in ${addonStart.elapsedNow()}" }
-                        // Atomic CAS append — several addons can land at once. The generation
-                        // check keeps a superseded fetch that slipped past cancellation from
-                        // splicing a previous request's subtitles into the current list.
-                        if (addonSubs.isNotEmpty() && current()) {
+                        // Published on Main after the generation check (review r1), so a fetch for
+                        // the previous content can't splice its subtitles into the current list.
+                        // The first fetch appends what the list doesn't hold yet (an upgrade for
+                        // the same content may have published the same URLs already).
+                        if (addonSubs.isNotEmpty()) {
                             if (upgrade) collected.update { it + addonSubs }
-                            else _addonSubtitles.update { it + addonSubs }
+                            else publish(generation) {
+                                _addonSubtitles.update { it + addonSubs.filter { sub -> it.none { have -> have.url == sub.url } } }
+                            }
                         }
                     } catch (error: Throwable) {
                         if (error is CancellationException) throw error
@@ -337,30 +394,45 @@ object SubtitleRepository {
         }
 
         if (!current()) return
-        if (upgrade) {
-            _addonSubtitles.value = mergeUpgradedSubtitles(collected.value, _addonSubtitles.value)
+        publish(generation) {
+            if (upgrade) {
+                _addonSubtitles.value = mergeUpgradedSubtitles(collected.value, _addonSubtitles.value)
+            }
+            val total = _addonSubtitles.value.size
+            log.d { "Subtitle fetch done${if (upgrade) " (upgrade)" else ""}: $total total in ${fetchStart.elapsedNow()}" }
+            // Every addon here declared support for this type/id, so an empty list is a real miss.
+            if (total == 0) {
+                _error.value = resourceString(
+                    "No subtitles found",
+                    StringKey.compose_player_no_subtitles_found,
+                )
+            } else if (_error.value != null) {
+                _error.value = null
+            }
+            // Whichever of the first fetch and the upgrade finishes first completes the request
+            // for the players' polling; the other only refines the list.
+            _completedRequest.value = key
+            finishLoading(upgrade)
         }
-        val total = _addonSubtitles.value.size
-        log.d { "Subtitle fetch done: $total total in ${fetchStart.elapsedNow()}" }
-        // Every addon here declared support for this type/id, so an empty list is a real miss.
-        if (total == 0) {
-            _error.value = resourceString(
-                "No subtitles found",
-                StringKey.compose_player_no_subtitles_found,
-            )
-        }
-        _completedRequest.value = key
-        _isLoading.value = false
+    }
+
+    /** Main-confined: loading ends when neither the first fetch nor an upgrade still runs. */
+    private fun finishLoading(fromUpgrade: Boolean) {
+        val otherStillRunning = if (fromUpgrade) activeFetchJob?.isActive == true else upgradeJob?.isActive == true
+        if (!otherStillRunning) _isLoading.value = false
     }
 
     fun clear() {
         activeFetchJob?.cancel()
+        upgradeJob?.cancel()
+        upgradeJob = null
         hashJob?.cancel()
         hashJob = null
         hashAttemptKey = null
-        fetchGeneration++
+        contentGeneration.incrementAndGet()
         activeKey = null
         activeExtras = null
+        activeSourceUrl = null
         _completedRequest.value = null
         _addonSubtitles.value = emptyList()
         _isLoading.value = false
