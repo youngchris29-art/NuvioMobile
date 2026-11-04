@@ -108,6 +108,25 @@ class LibraryToggleIdsTest {
     }
 
     @Test
+    fun `a provider toggle acts on the record the provider holds under another id`() {
+        // Review r2: Simkl/Trakt hold the title under tt0388629; the page was opened by kitsu:1376.
+        val stored = LibraryItem(id = "tt0388629", type = "series", name = "Show", imdbId = "tt0388629", tmdbId = 30983)
+        val fromAddonPage = LibraryItem(id = "kitsu:1376", type = "series", name = "Show", imdbId = "tt0388629")
+        val find: (String) -> LibraryItem? = { id -> stored.takeIf { it.id == id } }
+        val target = libraryToggleTarget(fromAddonPage, find)
+        assertEquals("tt0388629", target.id)
+        assertEquals(30983, target.tmdbId)
+        // The reverse: stored under the add-on id, the page carries the tt id.
+        val storedAddon = LibraryItem(id = "kitsu:1376", type = "series", name = "Show")
+        val fromImdbPage = LibraryItem(id = "tt0388629", type = "series", name = "Show", imdbId = "tt0388629", tmdbId = 30983)
+        val found = libraryToggleTarget(fromImdbPage) { id -> storedAddon.takeIf { it.id == id } }
+        assertEquals("tt0388629", found.id, "the tt page's own id is not held; nothing to resolve by")
+        // Nothing held, or held as another type: the page's item is toggled as is.
+        assertEquals(fromAddonPage, libraryToggleTarget(fromAddonPage) { null })
+        assertEquals(fromAddonPage, libraryToggleTarget(fromAddonPage) { id -> stored.copy(type = "movie").takeIf { it.id == id } })
+    }
+
+    @Test
     fun `a provider lookup tries the own id then the IMDb and TMDB ids`() {
         assertEquals(listOf("kitsu:1376", "tt0388629", "tmdb:30983"),
             libraryLookupIds("kitsu:1376", imdbId = "tt0388629", tmdbId = 30983))

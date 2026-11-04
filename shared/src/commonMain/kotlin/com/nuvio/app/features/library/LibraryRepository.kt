@@ -354,10 +354,15 @@ object LibraryRepository {
         ensureLoaded()
 
         activeLibraryProvider()?.let { provider ->
+            // Issue #17 (review r2): the provider may hold the title under another of its ids (Simkl
+            // or Trakt under the IMDb id, the page opened by an add-on id). Toggle the stored record,
+            // so its membership is read and the + removes it (Simkl would otherwise add a second
+            // status instead of removing the first).
+            val target = libraryToggleTarget(item, provider::find)
             val profileId = localState.snapshot().token.profileId
             log.i {
                 "toggleSaved routed to ${provider.providerId.storageId} library source " +
-                    "item=${item.id} type=${item.type} profile=$profileId"
+                    "item=${target.id} type=${target.type} profile=$profileId"
             }
             // Kept non-suspending: `LibraryRepository.toggleSaved(item:)` is called straight from
             // SwiftUI (LibraryViewModel/DetailViewModel) and from composeApp click handlers.
@@ -365,15 +370,15 @@ object LibraryRepository {
             // destructive-removal confirmation dialog, which Phase 1 does not ship.
             syncScope.launch {
                 val failure = runCatching {
-                    val currentMembership = provider.membership(item)
+                    val currentMembership = provider.membership(target)
                     provider.applyMembership(
                         profileId = profileId,
-                        item = item,
+                        item = target,
                         desiredMembership = provider.toggledDefaultMembership(currentMembership),
                     )
                 }.exceptionOrNull()
                 val message = failure?.let { e ->
-                    log.e(e) { "Failed to toggle ${provider.providerId.storageId} watchlist item=${item.id} type=${item.type}" }
+                    log.e(e) { "Failed to toggle ${provider.providerId.storageId} watchlist item=${target.id} type=${target.type}" }
                     libraryToggleFailureMessage(e, provider.providerId).also(ToastControllerProvider.controller::show)
                 }
                 publish()
@@ -904,6 +909,21 @@ fun String.toLibraryDisplayTitle(): String {
 
 private fun localizedLibraryOtherTitle(): String =
     resourceString(DEFAULT_LIBRARY_OTHER_TITLE, StringKey.library_other)
+
+/**
+ * Issue #17 (review r2): the item a connected provider's toggle acts on — the record the provider
+ * already holds under any of the title's ids (own id, IMDb id, `tmdb:<n>`; [find] is the
+ * provider's lookup), its missing IMDb/TMDB ids filled from the page's item, else the page's item.
+ */
+internal fun libraryToggleTarget(item: LibraryItem, find: (String) -> LibraryItem?): LibraryItem {
+    val stored = libraryLookupIds(item.id, item.imdbId, item.tmdbId).firstNotNullOfOrNull { id ->
+        find(id)?.takeIf { it.type.trim().equals(item.type.trim(), ignoreCase = true) }
+    } ?: return item
+    return stored.copy(
+        imdbId = stored.imdbId ?: item.imdbId,
+        tmdbId = stored.tmdbId ?: item.tmdbId,
+    )
+}
 
 /**
  * Issue #17: the library toggle's failure text — the error's own message, else a generic line

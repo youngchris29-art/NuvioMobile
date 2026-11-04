@@ -123,6 +123,9 @@ struct StreamPickerView: View {
     /// (Home / Library continue-watching, a deep link). A Trakt/Simkl percentage-only entry has
     /// no position, so an external player needs this runtime to resume (`externalDurationMs`).
     @State private var fetchedRuntime: String?
+    /// Review r2: true while that runtime fetch is in flight, so an external hand-off that comes
+    /// first (auto-play, a fast source) waits for it briefly (`ExternalResumePolicy.awaitRuntime`).
+    @State private var runtimeFetchPending = false
     /// Row key currently mid debrid-resolve (drives the row spinner; one resolve at a time).
     @State private var resolvingKey: String?
     /// False once the picker left the screen (a Menu press during a resolve): a late result must
@@ -323,8 +326,10 @@ struct StreamPickerView: View {
             isSeries: isSeries, hasMeta: meta != nil || fetchedRuntime != nil,
             resumePositionMs: resumePositionMs)
         guard needsEpisodes || needsRuntime else { return }
+        runtimeFetchPending = needsRuntime
         // The `@Throws` twin: a Kotlin exception out of the plain suspend export aborts the process.
         Task { @MainActor in
+            defer { runtimeFetchPending = false }
             do {
                 let details = try await MetaDetailsRepository.shared.fetchChecked(
                     type: type, id: parentMetaId, cacheResult: true
@@ -1435,6 +1440,11 @@ struct StreamPickerView: View {
         let videoId = videoId
         Task { @MainActor in
             let addonSubtitles = await ExternalSubtitleHandOff.liveAddonSubtitles(type: type, videoId: videoId)
+            // Review r2: a percentage-only movie row needs the catalog runtime still being fetched.
+            if runtimeFetchPending {
+                let arrived = await ExternalResumePolicy.awaitRuntime(isPending: { runtimeFetchPending })
+                if !arrived { print("[StreamPicker] external resume: runtime fetch still pending after the wait") }
+            }
             externalHandOffInFlight = false
             if resolvingKey == spinnerKey { resolvingKey = nil }
             // The viewer left the picker, or something else started playing, while it waited.
@@ -2120,6 +2130,22 @@ nonisolated enum ExternalResumePolicy {
     /// fetch the record for their episode list anyway.
     static func needsCatalogRuntime(isSeries: Bool, hasMeta: Bool, resumePositionMs: Int64?) -> Bool {
         !isSeries && !hasMeta && resumePositionMs == nil
+    }
+
+    /// Review r2: how long an external hand-off waits for the runtime fetch (same order as the
+    /// subtitle wait); after that it sends what it has (position 0 when the runtime never came).
+    static let runtimeWaitSeconds: TimeInterval = 1.5
+
+    /// Polls `isPending` until it turns false or `waitSeconds` pass; true when the fetch landed.
+    @MainActor
+    static func awaitRuntime(isPending: @MainActor () -> Bool,
+                             waitSeconds: TimeInterval = runtimeWaitSeconds) async -> Bool {
+        let deadline = Date().addingTimeInterval(waitSeconds)
+        while isPending() {
+            guard Date() < deadline else { return false }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        return true
     }
 
     /// Plain-value form. `percent` is 0...100 (only read when `lastPositionMs` is 0).

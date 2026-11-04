@@ -127,6 +127,29 @@ final class PlaybackProgressRecorderTests: XCTestCase {
                        "series fetch the record for their episode list already")
     }
 
+    @MainActor
+    func testExternalHandOffWaitsForARuntimeFetchThatLandsInTime() async {
+        // Review r2: the hand-off starts before the runtime resolves; the fetch lands 100 ms later.
+        var pending = true
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            pending = false
+        }
+        let arrived = await ExternalResumePolicy.awaitRuntime(isPending: { pending }, waitSeconds: 1.0)
+        XCTAssertTrue(arrived)
+        XCTAssertFalse(pending)
+    }
+
+    @MainActor
+    func testExternalHandOffGivesUpOnARuntimeFetchThatNeverLands() async {
+        let started = Date()
+        let arrived = await ExternalResumePolicy.awaitRuntime(isPending: { true }, waitSeconds: 0.2)
+        XCTAssertFalse(arrived)
+        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(started), 0.2)
+        XCTAssertTrue(await ExternalResumePolicy.awaitRuntime(isPending: { false }, waitSeconds: 0.2),
+                      "nothing pending returns at once")
+    }
+
     func testExternalResumeStartOverSendsZero() {
         XCTAssertEqual(ExternalResumePolicy.resume(startsOver: true, entry: traktEntry(percent: 40),
                                                    fallbackDurationMs: 6_000_000), ExternalResumePolicy.noResume)
