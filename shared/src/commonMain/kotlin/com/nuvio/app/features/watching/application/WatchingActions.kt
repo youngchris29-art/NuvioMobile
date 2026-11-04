@@ -299,6 +299,10 @@ fun canMarkWatched(entry: WatchProgressEntry, nowEpochMs: Long, releaseAtEpochMs
     if (entry.contentType.equals(CloudLibraryContentType, ignoreCase = true) ||
         entry.parentMetaType.equals(CloudLibraryContentType, ignoreCase = true)
     ) return false
+    // Review r2: a series entry that is not a full episode (Simkl can carry an episode number
+    // with no season) would be marked under a partial key the real episode never matches, with
+    // no series reconcile and no tracker write; it gets no action.
+    if (entry.parentMetaType.isSeriesLikeType() && !entry.isEpisode) return false
     if (entry.isContinueWatchingNextUp && releaseAtEpochMs != null && releaseAtEpochMs > nowEpochMs) return false
     return true
 }

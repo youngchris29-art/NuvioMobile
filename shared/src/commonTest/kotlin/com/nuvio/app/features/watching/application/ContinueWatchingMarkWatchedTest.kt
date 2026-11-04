@@ -85,6 +85,16 @@ class ContinueWatchingMarkWatchedTest {
     }
 
     @Test
+    fun `a series entry without both coordinates gets no action`() {
+        // Review r2: Simkl can carry an episode number with no season.
+        assertFalse(canMarkWatched(entry(type = "series", season = null, episode = 3), now))
+        assertFalse(canMarkWatched(entry(type = "series", season = 1, episode = null), now))
+        assertFalse(canMarkWatched(entry(type = "series"), now), "a bare series entry")
+        assertTrue(canMarkWatched(entry(type = "series", season = 1, episode = 3), now))
+        assertTrue(canMarkWatched(entry(type = "movie"), now))
+    }
+
+    @Test
     fun `a series reconcile is dropped when the profile or the source changed while the meta loaded`() {
         // Review r1: the meta fetch runs on a process-wide scope; the write must stay with the
         // profile and tracker source the mark was made in.
