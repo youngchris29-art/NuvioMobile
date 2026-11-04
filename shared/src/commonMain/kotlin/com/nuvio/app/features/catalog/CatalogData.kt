@@ -236,6 +236,17 @@ fun nextCatalogPaginationState(
     }
 }
 
+/**
+ * #20 (review r2): whether the repository should ask for the next page itself. The grids ask
+ * for more only when a new cell appears, so a page that added no visible item (the unreleased
+ * filter emptied it, the server repeated or overlapped a page, or it ignores `skip`) would
+ * otherwise leave `canLoadMore` true with nothing to trigger the load. Bounded by
+ * [nextCatalogPaginationState]: after [DUPLICATE_CATALOG_PAGE_ADVANCE_LIMIT] such pages in a
+ * row `nextSkip` is null and the list ends.
+ */
+fun catalogPageNeedsAutoAdvance(loadedNewItems: Boolean, nextSkip: Int?): Boolean =
+    !loadedNewItems && nextSkip != null
+
 fun mergeCatalogItems(
     existing: List<MetaPreview>,
     incoming: List<MetaPreview>,

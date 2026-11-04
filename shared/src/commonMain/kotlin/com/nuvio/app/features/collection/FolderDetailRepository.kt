@@ -9,7 +9,7 @@ import com.nuvio.app.features.addons.AddonManifest
 import com.nuvio.app.features.addons.AddonRepository
 import com.nuvio.app.features.catalog.CATALOG_PAGE_SIZE
 import com.nuvio.app.features.catalog.CatalogPage
-import com.nuvio.app.features.catalog.CatalogPaginationState
+import com.nuvio.app.features.catalog.catalogPageNeedsAutoAdvance
 import com.nuvio.app.features.catalog.CatalogTarget
 import com.nuvio.app.features.catalog.fetchCatalogPage
 import com.nuvio.app.features.catalog.mergeCatalogItems
@@ -46,8 +46,6 @@ data class FolderTab(
     val catalogId: String = "",
     val genre: String? = null,
     val supportsPagination: Boolean = false,
-    /** #20: the catalog is not in the add-on's manifest, so `skip` support is assumed, not declared. */
-    val isUnlistedCatalog: Boolean = false,
     val items: List<MetaPreview> = emptyList(),
     val isLoading: Boolean = true,
     val isLoadingMore: Boolean = false,
@@ -266,10 +264,10 @@ object FolderDetailRepository {
                             catalogId = catalogSource.catalogId,
                             genre = catalogSource.genre,
                             // Unlisted catalogs can't declare `skip`; treat them as paginated and let an empty
-                            // page end the list (rawItemCount 0 -> nextSkip null). Review r1: a repeated
-                            // page ends it too (`folderTabPaginationState`), for a server that ignores `skip`.
+                            // page end the list (rawItemCount 0 -> nextSkip null). A server that ignores
+                            // `skip` repeats its page: the load-more path then advances itself up to the
+                            // duplicate-page limit and stops (`catalogPageNeedsAutoAdvance`).
                             supportsPagination = catalog?.supportsPagination() ?: (addon != null),
-                            isUnlistedCatalog = catalog == null && addon != null,
                             isLoading = true,
                         ),
                     )
@@ -460,6 +458,7 @@ object FolderDetailRepository {
                 // outside the atomic updateTab lambda so the lambda stays pure (it may retry).
                 CustomPosterUrlRepository.ensureLoaded()
                 val posterPattern = CustomPosterUrlRepository.patternForScreen(CustomPosterScreen.COLLECTIONS)
+                var autoAdvance = false
                 updateTab(index) { tab ->
                     val mergedItems = if (reset) {
                         page.items
@@ -468,14 +467,14 @@ object FolderDetailRepository {
                     }.withCustomPosterUrls(posterPattern)
                     val supportsPagination = tab.supportsPagination || page.rawItemCount >= CATALOG_PAGE_SIZE
                     val loadedNewItems = reset || mergedItems.size > tab.items.size
-                    val paginationState = folderTabPaginationState(
-                        isUnlistedCatalog = tab.isUnlistedCatalog,
+                    val paginationState = nextCatalogPaginationState(
                         supportsPagination = supportsPagination,
                         requestedSkip = requestedSkip,
                         page = page,
                         loadedNewItems = loadedNewItems,
                         consecutiveDuplicatePages = if (reset) 0 else tab.consecutiveDuplicatePages,
                     )
+                    autoAdvance = catalogPageNeedsAutoAdvance(loadedNewItems, paginationState.nextSkip)
                     tab.copy(
                         items = mergedItems,
                         supportsPagination = supportsPagination,
@@ -488,6 +487,10 @@ object FolderDetailRepository {
                 }
                 rebuildAllTab()
                 } // synchronized(loadJobsLock)
+                // #20 (review r2): a page with no new visible item (filtered out, repeated, or a server
+                // that ignores `skip`) would leave the tab with nothing to trigger the next load; ask
+                // for it here. `nextCatalogPaginationState` bounds this at three such pages in a row.
+                if (autoAdvance) loadTabPage(index, reset = false)
             }.onFailure { error ->
                 // UX-14 (Codex gate 2): a [detach]-cancelled load is NOT a failure. Writing
                 // flags/error here raced the pop-back [initialize] — once the flags read false,
@@ -628,30 +631,3 @@ private fun traktCatalogId(source: CollectionSource): String =
         TraktListSort.normalize(source.sortBy),
         TraktSortHow.normalize(source.sortHow),
     ).joinToString("_")
-
-/**
- * #20 (review r1): the next page of a folder tab. An unlisted catalog (no manifest entry, so
- * `skip` support is assumed) ends on the first page that adds nothing: a server that ignores
- * `skip` returns its whole list again, the duplicate page adds no grid item to trigger the next
- * load, and the listed-catalog rule (advance the skip up to three duplicate pages) would leave
- * the tab with `canLoadMore` true and nothing to load it. Listed catalogs keep that rule.
- */
-internal fun folderTabPaginationState(
-    isUnlistedCatalog: Boolean,
-    supportsPagination: Boolean,
-    requestedSkip: Int,
-    page: CatalogPage,
-    loadedNewItems: Boolean,
-    consecutiveDuplicatePages: Int,
-): CatalogPaginationState {
-    if (isUnlistedCatalog && !loadedNewItems) {
-        return CatalogPaginationState(nextSkip = null, consecutiveDuplicatePages = consecutiveDuplicatePages + 1)
-    }
-    return nextCatalogPaginationState(
-        supportsPagination = supportsPagination,
-        requestedSkip = requestedSkip,
-        page = page,
-        loadedNewItems = loadedNewItems,
-        consecutiveDuplicatePages = consecutiveDuplicatePages,
-    )
-}

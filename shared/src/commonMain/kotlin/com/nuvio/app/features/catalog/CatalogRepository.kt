@@ -246,6 +246,12 @@ object CatalogRepository {
                         consecutiveDuplicatePages = paginationState.consecutiveDuplicatePages,
                         errorMessage = null,
                     )
+                    // #20 (review r2): the grid asks for more only when a new cell appears, so a page
+                    // that added no visible item (filtered out, repeated, or a server that ignores
+                    // `skip`) is followed up here; `nextCatalogPaginationState` bounds it at three.
+                    if (catalogPageNeedsAutoAdvance(loadedNewItems, paginationState.nextSkip)) {
+                        fetchPage(request = request, reset = false, forceRefresh = false)
+                    }
                 },
                 onFailure = { error ->
                     // See fetchInternalLibrary: a pop-time detach() cancellation is not a failure.
