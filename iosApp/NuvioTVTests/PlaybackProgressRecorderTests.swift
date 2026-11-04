@@ -78,6 +78,68 @@ final class PlaybackProgressRecorderTests: XCTestCase {
         XCTAssertEqual(reads, 0, "Start Over must not even look up saved progress")
     }
 
+    // MARK: External-player resume (issue #19)
+
+    /// A Trakt /sync/playback row: a percentage, no position and no duration.
+    private func traktEntry(percent: Float, completed: Bool = false) -> WatchProgressEntry {
+        entry(positionMs: 0, durationMs: 0, completed: completed, percent: percent)
+    }
+
+    func testExternalResumeScalesATraktPercentageByTheRuntime() {
+        let resume = ExternalResumePolicy.resume(startsOver: false, entry: traktEntry(percent: 40),
+                                                 fallbackDurationMs: 6_000_000)
+        XCTAssertEqual(resume.source, .percent)
+        XCTAssertEqual(resume.positionMs, 2_400_000, "40 % of a 100-minute runtime")
+    }
+
+    func testExternalResumePercentageWithoutARuntimeSendsZero() {
+        XCTAssertEqual(ExternalResumePolicy.resume(startsOver: false, entry: traktEntry(percent: 40),
+                                                   fallbackDurationMs: nil), ExternalResumePolicy.noResume)
+        XCTAssertEqual(ExternalResumePolicy.resume(startsOver: false, entry: traktEntry(percent: 40),
+                                                   fallbackDurationMs: 0), ExternalResumePolicy.noResume)
+    }
+
+    func testExternalResumeCompletedSendsZero() {
+        XCTAssertEqual(ExternalResumePolicy.resume(startsOver: false, entry: traktEntry(percent: 40, completed: true),
+                                                   fallbackDurationMs: 6_000_000), ExternalResumePolicy.noResume)
+        XCTAssertEqual(ExternalResumePolicy.resume(startsOver: false,
+                                                   entry: entry(positionMs: 600_000, completed: true),
+                                                   fallbackDurationMs: 6_000_000), ExternalResumePolicy.noResume)
+    }
+
+    func testExternalResumeSavedPositionUnderTenSecondsSendsZero() {
+        XCTAssertEqual(ExternalResumePolicy.resume(startsOver: false, entry: entry(positionMs: 10_000),
+                                                   fallbackDurationMs: 6_000_000), ExternalResumePolicy.noResume)
+        let saved = ExternalResumePolicy.resume(startsOver: false, entry: entry(positionMs: 600_000),
+                                                fallbackDurationMs: 6_000_000)
+        XCTAssertEqual(saved, ExternalResumePolicy.Resume(positionMs: 600_000, source: .position),
+                       "a real position wins over the runtime")
+    }
+
+    func testExternalResumeStartOverSendsZero() {
+        XCTAssertEqual(ExternalResumePolicy.resume(startsOver: true, entry: traktEntry(percent: 40),
+                                                   fallbackDurationMs: 6_000_000), ExternalResumePolicy.noResume)
+        XCTAssertEqual(ExternalResumePolicy.resume(startsOver: true, entry: entry(positionMs: 600_000),
+                                                   fallbackDurationMs: 6_000_000), ExternalResumePolicy.noResume)
+    }
+
+    func testExternalResumePercentageOutsideTwoToNinetyFiveSendsZero() {
+        XCTAssertEqual(ExternalResumePolicy.resume(startsOver: false, entry: traktEntry(percent: 1),
+                                                   fallbackDurationMs: 6_000_000), ExternalResumePolicy.noResume)
+        XCTAssertEqual(ExternalResumePolicy.resume(startsOver: false, entry: traktEntry(percent: 96),
+                                                   fallbackDurationMs: 6_000_000), ExternalResumePolicy.noResume)
+        // Both bounds are inclusive.
+        XCTAssertEqual(ExternalResumePolicy.resume(startsOver: false, entry: traktEntry(percent: 2),
+                                                   fallbackDurationMs: 6_000_000).positionMs, 120_000)
+        XCTAssertEqual(ExternalResumePolicy.resume(startsOver: false, entry: traktEntry(percent: 95),
+                                                   fallbackDurationMs: 6_000_000).positionMs, 5_700_000)
+    }
+
+    func testExternalResumeWithNoEntrySendsZero() {
+        XCTAssertEqual(ExternalResumePolicy.resume(startsOver: false, entry: nil, fallbackDurationMs: 6_000_000),
+                       ExternalResumePolicy.noResume)
+    }
+
     func testCompletedOrShortProgressDoesNotResume() {
         XCTAssertNil(PlaybackProgressRecorder.resumePositionSec(
             startFromBeginning: false, actualDurationSec: 0, entry: entry(positionMs: 600_000, completed: true)))

@@ -1442,13 +1442,14 @@ struct StreamPickerView: View {
             seasonNumber: season.map { KotlinInt(int: Int32($0)) },
             episodeNumber: episode.map { KotlinInt(int: Int32($0)) }
         )
-        // Percentage-only rows (Simkl/Trakt) stay 0 here: the real duration is unknown before the
-        // file opens, and scaling by the show runtime is the bug being avoided. "Start Over" sends 0.
-        let resumeMs: Int64 = {
-            guard !startsOver else { return 0 }
-            guard let progress, !progress.isCompleted, progress.lastPositionMs > 10_000 else { return 0 }
-            return progress.lastPositionMs
-        }()
+        // Issue #19: percentage-only rows (Trakt/Simkl) are scaled by the catalog runtime here
+        // (`ExternalResumePolicy`); "Start Over" and completed entries still send 0.
+        let resume = ExternalResumePolicy.resume(
+            startsOver: startsOver, entry: progress,
+            fallbackDurationMs: externalDurationMs(progress: progress)
+        )
+        let resumeMs = resume.positionMs
+        print("[StreamPicker] external resume player=\(playerId) source=\(resume.source.rawValue) positionMs=\(resumeMs)")
         var launchSessionId: String?
         var callbackSuccessUrl: String?
         var callbackErrorUrl: String?
@@ -2052,6 +2053,61 @@ enum StreamPickerExitPolicy {
         if failoverPickerQueued { return .openFailoverPicker }
         if listRequested { return .keepList }
         return .closePicker
+    }
+}
+
+/// Issue #19: the resume position handed to an external player (Infuse's `position=`, VLC's, …).
+/// Pure, so `PlaybackProgressRecorderTests` pins every case.
+///
+/// A position-based entry resumes at its saved position (not under ten seconds in). A
+/// percentage-only entry (Trakt's /sync/playback and Simkl give a percentage, no position) is
+/// scaled by the catalog runtime when its percentage is between 2 and 95 inclusive. This
+/// deliberately reverses the old "scaling by the show runtime is the bug being avoided" rule:
+/// the in-app players can wait for the file's real duration and apply the percentage there
+/// (`pendingResumePercent`), but an external player cannot — Infuse has no percentage
+/// parameter, and before hand-off the catalog runtime is the only duration there is. A runtime
+/// a minute or two off beats always starting from the beginning. Completed entries and
+/// "Start Over" send 0.
+nonisolated enum ExternalResumePolicy {
+    enum Source: String, Sendable {
+        case position
+        case percent
+        case none
+    }
+
+    struct Resume: Equatable, Sendable {
+        let positionMs: Int64
+        let source: Source
+    }
+
+    static let minPositionMs: Int64 = 10_000
+    static let minPercent: Double = 2
+    static let maxPercent: Double = 95
+
+    static let noResume = Resume(positionMs: 0, source: .none)
+
+    /// `fallbackDurationMs` is the episode's runtime, else the title's (`externalDurationMs`).
+    static func resume(startsOver: Bool, entry: WatchProgressEntry?,
+                       fallbackDurationMs: Int64?) -> Resume {
+        guard !startsOver, let entry else { return noResume }
+        // Rounded to 0.001 %: the shared Float fraction makes Trakt's 2 % read as 1.9999999.
+        let percent = entry.lastPositionMs <= 0 ? (Double(entry.progressFraction) * 100_000).rounded() / 1_000 : 0
+        return resume(startsOver: false, isCompleted: entry.isCompleted,
+                      lastPositionMs: entry.lastPositionMs, percent: percent,
+                      fallbackDurationMs: fallbackDurationMs)
+    }
+
+    /// Plain-value form. `percent` is 0...100 (only read when `lastPositionMs` is 0).
+    static func resume(startsOver: Bool, isCompleted: Bool, lastPositionMs: Int64,
+                       percent: Double, fallbackDurationMs: Int64?) -> Resume {
+        guard !startsOver, !isCompleted else { return noResume }
+        if lastPositionMs > 0 {
+            return lastPositionMs > minPositionMs ? Resume(positionMs: lastPositionMs, source: .position) : noResume
+        }
+        guard percent >= minPercent, percent <= maxPercent,
+              let durationMs = fallbackDurationMs, durationMs > 0 else { return noResume }
+        let positionMs = Int64((Double(durationMs) * percent / 100).rounded())
+        return positionMs > 0 ? Resume(positionMs: positionMs, source: .percent) : noResume
     }
 }
 

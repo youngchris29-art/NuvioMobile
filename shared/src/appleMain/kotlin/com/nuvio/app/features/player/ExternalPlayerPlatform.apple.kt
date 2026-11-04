@@ -21,30 +21,7 @@ private val iosExternalPlayerSpecs = listOf(
         id = "infuse",
         name = "Infuse",
         scheme = "infuse",
-        buildUrl = { request ->
-            buildString {
-                append("infuse://x-callback-url/play?url=")
-                append(request.sourceUrl.urlQueryEncode())
-                append("&position=")
-                append(request.resumePositionMs.coerceAtLeast(0L) / 1000L)
-                append("&filename=")
-                append(request.buildPlayerTitle(includeEpisodeTitle = true).urlQueryEncode())
-                request.subtitles?.forEach { subtitle ->
-                    append("&sub=")
-                    append(subtitle.url.urlQueryEncode())
-                }
-                // Upstream 99ced26a: Infuse opens these when playback ends, reporting the
-                // position back (`ExternalPlaybackReturn.handleUrl`).
-                request.callbackSuccessUrl?.let { callbackUrl ->
-                    append("&x-success=")
-                    append(callbackUrl.urlQueryEncode())
-                }
-                request.callbackErrorUrl?.let { callbackUrl ->
-                    append("&x-error=")
-                    append(callbackUrl.urlQueryEncode())
-                }
-            }
-        },
+        buildUrl = ::buildInfuseUrl,
     ),
     IosExternalPlayerSpec(
         id = "vlc",
@@ -156,6 +133,32 @@ private val iosExternalPlayerSpecs = listOf(
         supportsSource = { request -> nativePlayerSupportsSource(request.sourceUrl) },
     ),
 )
+
+/** Infuse's x-callback play URL. `position` is whole seconds (issue #19: the picker resolves it,
+ *  including a Trakt percentage scaled by the runtime). Unit tested (`InfuseUrlTest`). */
+internal fun buildInfuseUrl(request: ExternalPlayerPlaybackRequest): String =
+    buildString {
+        append("infuse://x-callback-url/play?url=")
+        append(request.sourceUrl.urlQueryEncode())
+        append("&position=")
+        append(request.resumePositionMs.coerceAtLeast(0L) / 1000L)
+        append("&filename=")
+        append(request.buildPlayerTitle(includeEpisodeTitle = true).urlQueryEncode())
+        request.subtitles?.forEach { subtitle ->
+            append("&sub=")
+            append(subtitle.url.urlQueryEncode())
+        }
+        // Upstream 99ced26a: Infuse opens these when playback ends, reporting the
+        // position back (`ExternalPlaybackReturn.handleUrl`).
+        request.callbackSuccessUrl?.let { callbackUrl ->
+            append("&x-success=")
+            append(callbackUrl.urlQueryEncode())
+        }
+        request.callbackErrorUrl?.let { callbackUrl ->
+            append("&x-error=")
+            append(callbackUrl.urlQueryEncode())
+        }
+    }
 
 /**
  * FEAT-78 (Steven, 2026-10-17): Native Player by Native IT (tvOS 26+). Its deep link (v1.1.3+)
