@@ -1,4 +1,5 @@
 import XCTest
+import SharedCore
 @testable import NuvioTV
 
 /// Direction C: the best-pick card's text rules (`StreamPickerCopy`) and the value types they feed
