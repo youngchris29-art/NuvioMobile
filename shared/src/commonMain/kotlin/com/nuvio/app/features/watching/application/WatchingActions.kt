@@ -2,6 +2,7 @@ package com.nuvio.app.features.watching.application
 
 import co.touchlab.kermit.Logger
 import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
+import com.nuvio.app.features.cloud.CloudLibraryContentType
 import com.nuvio.app.features.details.MetaDetails
 import com.nuvio.app.features.details.MetaDetailsRepository
 import com.nuvio.app.features.details.MetaVideo
@@ -16,6 +17,7 @@ import com.nuvio.app.features.watched.toWatchedItem
 import com.nuvio.app.features.watchprogress.CurrentDateProvider
 import com.nuvio.app.features.watchprogress.WatchProgressEntry
 import com.nuvio.app.features.watchprogress.WatchProgressRepository
+import com.nuvio.app.features.watchprogress.isContinueWatchingNextUp
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -197,6 +199,32 @@ object WatchingActions {
         }
     }
 
+    /**
+     * Continue Watching > Mark as Watched (upstream NuvioMobile 7c57f775e, re-expressed on
+     * [WatchProgressEntry]). Marks the entry watched, clears its progress unless it is an Up Next
+     * card (no progress row), and for a series episode reconciles series watched state the way
+     * playback completion does. Safe to call from Swift; the meta fetch runs on [actionScope].
+     */
+    fun markProgressEntryWatched(entry: WatchProgressEntry, nowEpochMs: Long) {
+        val plan = continueWatchingMarkWatchedPlan(entry, nowEpochMs)
+        WatchedRepository.markWatched(plan.item)
+        if (plan.clearProgress) {
+            WatchProgressRepository.clearProgress(videoId = entry.videoId, parentMetaId = entry.parentMetaId)
+        }
+        if (!plan.reconcileSeries) return
+        actionScope.launch {
+            val meta = try {
+                MetaDetailsRepository.fetch(type = entry.parentMetaType, id = entry.parentMetaId)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                log.e(error) { "Fetching meta to reconcile ${entry.parentMetaType}:${entry.parentMetaId} failed" }
+                null
+            } ?: return@launch
+            reconcileSeriesWatchedState(meta = meta)
+        }
+    }
+
     private fun toggleEpisodesWatched(
         meta: MetaDetails,
         episodes: Collection<MetaVideo>,
@@ -235,8 +263,38 @@ fun watchedItemFromProgress(entry: WatchProgressEntry, markedAtEpochMs: Long): W
         poster = entry.poster,
         season = entry.seasonNumber,
         episode = entry.episodeNumber,
+        videoId = entry.videoId,
         markedAtEpochMs = markedAtEpochMs,
     )
+
+/** What a manual Continue Watching mark does; pure so it can be unit-tested without repositories. */
+data class ContinueWatchingMarkWatchedPlan(
+    val item: WatchedItem,
+    val clearProgress: Boolean,
+    val reconcileSeries: Boolean,
+)
+
+fun continueWatchingMarkWatchedPlan(entry: WatchProgressEntry, nowEpochMs: Long): ContinueWatchingMarkWatchedPlan =
+    ContinueWatchingMarkWatchedPlan(
+        item = watchedItemFromProgress(entry, markedAtEpochMs = nowEpochMs),
+        // An Up Next card has no progress row to clear.
+        clearProgress = !entry.isContinueWatchingNextUp,
+        reconcileSeries = entry.isEpisode && entry.parentMetaType.isSeriesLikeType(),
+    )
+
+/**
+ * Whether the Continue Watching menu offers "Mark as Watched" for [entry]: not a cloud-library
+ * item, and not an Up Next card whose episode has not aired. [releaseAtEpochMs] is that episode's
+ * release instant when known. Under today's `UnairedNextUpPolicy.Drop` no unaired card is ever
+ * built, so callers can omit it; it matters once the `LabelAirDate` policy is flipped on.
+ */
+fun canMarkWatched(entry: WatchProgressEntry, nowEpochMs: Long, releaseAtEpochMs: Long? = null): Boolean {
+    if (entry.contentType.equals(CloudLibraryContentType, ignoreCase = true) ||
+        entry.parentMetaType.equals(CloudLibraryContentType, ignoreCase = true)
+    ) return false
+    if (entry.isContinueWatchingNextUp && releaseAtEpochMs != null && releaseAtEpochMs > nowEpochMs) return false
+    return true
+}
 
 private fun String.isSeriesLikeType(): Boolean =
     trim().lowercase() in setOf("series", "show", "tv", "tvshow")

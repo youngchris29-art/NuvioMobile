@@ -299,22 +299,7 @@ struct StageStripHome: View {
             onGoToDetails: { actions.push(TitleRoute(preview: HomeRowPreviews.entry($0))) },
             onPlayManually: { actions.resume(ResumeTarget(entry: $0, forceManual: true)) },
             onStartOver: { actions.resume(ResumeTarget(entry: $0, startFromBeginning: true)) },
-            onMarkWatched: { entry in
-                // Classic's pair: the episode joins watched history and its half-played progress
-                // row stops showing in the shelf.
-                // FEAT-85 P2-4: under Trakt the mark seeds Up Next at once; the show's progress is refetched 5 s later.
-                ContinueWatchingNextUp.shared.noteMarkedWatched(entry: entry)
-                WatchedRepository.shared.markWatched(
-                    item: WatchingActionsKt.watchedItemFromProgress(
-                        entry: entry,
-                        markedAtEpochMs: Int64(Date().timeIntervalSince1970 * 1000)
-                    )
-                )
-                // An Up Next card (FEAT-85) has no progress row to clear.
-                if !entry.isContinueWatchingNextUp {
-                    WatchProgressRepository.shared.clearProgress(videoId: entry.videoId, parentMetaId: entry.parentMetaId)
-                }
-            },
+            onMarkWatched: { ContinueWatchingMark.perform($0) },
             shuffleParentIds: model.shuffleParentIds,
             posterPattern: model.continueWatchingPosterPattern,
             onItemFocusChange: { entry in

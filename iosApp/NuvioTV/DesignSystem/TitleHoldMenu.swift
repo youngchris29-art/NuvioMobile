@@ -117,6 +117,8 @@ enum TitleHoldMenuPolicy {
         case playManually
         case goToDetails
         case markEpisodeWatched
+        /// A movie (non-episode) entry: "Mark as Watched" (same string as the Detail watched toggle).
+        case markWatched
         case startOver
         case remove
 
@@ -125,6 +127,7 @@ enum TitleHoldMenuPolicy {
             case .playManually: return String(localized: "Play Manually")
             case .goToDetails: return String(localized: "Go to Details")
             case .markEpisodeWatched: return String(localized: "Mark Episode Watched")
+            case .markWatched: return String(localized: "Mark as Watched")
             case .startOver: return String(localized: "Start Over")
             case .remove: return String(localized: "Remove from Continue Watching")
             }
@@ -134,7 +137,7 @@ enum TitleHoldMenuPolicy {
             switch self {
             case .playManually: return "list.bullet"
             case .goToDetails: return "info.circle"
-            case .markEpisodeWatched: return "checkmark.circle"
+            case .markEpisodeWatched, .markWatched: return "checkmark.circle"
             case .startOver: return "arrow.counterclockwise"
             case .remove: return "trash"
             }
@@ -143,12 +146,14 @@ enum TitleHoldMenuPolicy {
         var isDestructive: Bool { self == .remove }
     }
 
-    /// The menu's items, in display order. "Mark Episode Watched" only exists for an episode
-    /// entry; a movie's card has nothing episode-shaped to mark. An Up Next card (FEAT-85) has no
-    /// "Start Over": it already plays from the beginning, so the item would repeat a plain press.
-    static func continueWatchingActions(isEpisode: Bool, isNextUp: Bool = false) -> [CWAction] {
+    /// The menu's items, in display order. An episode entry gets "Mark Episode Watched", any other
+    /// entry (a movie) "Mark as Watched". `canMarkWatched` is the shared `canMarkWatched` verdict
+    /// (false for cloud-library items and unaired Up Next cards), which hides the item. An Up Next
+    /// card (FEAT-85) has no "Start Over": it already plays from the beginning, so the item would
+    /// repeat a plain press.
+    static func continueWatchingActions(isEpisode: Bool, isNextUp: Bool = false, canMarkWatched: Bool = true) -> [CWAction] {
         var actions: [CWAction] = [.playManually, .goToDetails]
-        if isEpisode { actions.append(.markEpisodeWatched) }
+        if canMarkWatched { actions.append(isEpisode ? .markEpisodeWatched : .markWatched) }
         if !isNextUp { actions.append(.startOver) }
         actions.append(.remove)
         return actions

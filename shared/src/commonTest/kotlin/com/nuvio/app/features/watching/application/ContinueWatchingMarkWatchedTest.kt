@@ -1,0 +1,84 @@
+package com.nuvio.app.features.watching.application
+
+import com.nuvio.app.features.cloud.CloudLibraryContentType
+import com.nuvio.app.features.watchprogress.WatchProgressEntry
+import com.nuvio.app.features.watchprogress.WatchProgressSourceNextUp
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
+
+/** Upstream NuvioMobile 7c57f775e, re-expressed on the fork's [WatchProgressEntry]. */
+class ContinueWatchingMarkWatchedTest {
+    private val now = 10_000L
+
+    private fun entry(
+        type: String = "movie",
+        season: Int? = null,
+        episode: Int? = null,
+        videoId: String = "tt1",
+        source: String = "local",
+        contentType: String = type,
+    ) = WatchProgressEntry(
+        contentType = contentType,
+        parentMetaId = "tt1",
+        parentMetaType = type,
+        videoId = videoId,
+        title = "Title",
+        seasonNumber = season,
+        episodeNumber = episode,
+        lastPositionMs = 5L,
+        durationMs = 10L,
+        lastUpdatedEpochMs = 1L,
+        source = source,
+    )
+
+    @Test
+    fun movieMarkClearsProgressWithoutReconcile() {
+        val plan = continueWatchingMarkWatchedPlan(entry(), now)
+        assertEquals("movie", plan.item.type)
+        assertEquals(now, plan.item.markedAtEpochMs)
+        assertTrue(plan.clearProgress)
+        assertFalse(plan.reconcileSeries)
+    }
+
+    @Test
+    fun episodeMarkReconcilesSeries() {
+        val plan = continueWatchingMarkWatchedPlan(entry("series", 2, 5, "tt1:2:5"), now)
+        assertEquals(2, plan.item.season)
+        assertEquals(5, plan.item.episode)
+        assertTrue(plan.clearProgress)
+        assertTrue(plan.reconcileSeries)
+    }
+
+    @Test
+    fun nextUpMarkKeepsProgressAndStillReconciles() {
+        val plan = continueWatchingMarkWatchedPlan(
+            entry("series", 2, 6, "tt1:2:6", source = WatchProgressSourceNextUp), now,
+        )
+        assertFalse(plan.clearProgress)
+        assertTrue(plan.reconcileSeries)
+    }
+
+    @Test
+    fun unairedNextUpCannotMark() {
+        val nextUp = entry("series", 2, 6, source = WatchProgressSourceNextUp)
+        assertFalse(canMarkWatched(nextUp, now, releaseAtEpochMs = now + 1))
+        assertTrue(canMarkWatched(nextUp, now, releaseAtEpochMs = now))
+        assertTrue(canMarkWatched(nextUp, now))
+        // A progress card is never "unaired".
+        assertTrue(canMarkWatched(entry("series", 2, 6), now, releaseAtEpochMs = now + 1))
+    }
+
+    @Test
+    fun cloudItemCannotMark() {
+        assertFalse(canMarkWatched(entry(type = CloudLibraryContentType), now))
+        assertFalse(canMarkWatched(entry(type = "movie", contentType = CloudLibraryContentType), now))
+    }
+
+    @Test
+    fun videoIdIsCarried() {
+        assertEquals("tt1:2:5", watchedItemFromProgress(entry("series", 2, 5, "tt1:2:5"), now).videoId)
+        assertEquals("tt1", watchedItemFromProgress(entry(), now).videoId)
+    }
+}

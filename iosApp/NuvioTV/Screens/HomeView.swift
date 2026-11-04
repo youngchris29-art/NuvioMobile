@@ -5657,9 +5657,15 @@ struct ContinueWatchingRow: View {
                             .focused($focusedVideoId, equals: entry.videoId)
                             .contextMenu {
                                 // Orivio item 3: the action list and its order come from
-                                // `TitleHoldMenuPolicy` (Mark Episode Watched exists for episodes only).
+                                // `TitleHoldMenuPolicy` (Mark Episode Watched / Mark as Watched, hidden when
+                                // the shared `canMarkWatched` says no).
                                 ForEach(TitleHoldMenuPolicy.continueWatchingActions(isEpisode: isEpisode(entry),
-                                                                    isNextUp: entry.isContinueWatchingNextUp), id: \.self) { action in
+                                                                    isNextUp: entry.isContinueWatchingNextUp,
+                                                                    canMarkWatched: WatchingActionsKt.canMarkWatched(
+                                                                        entry: entry,
+                                                                        nowEpochMs: Int64(Date().timeIntervalSince1970 * 1000),
+                                                                        releaseAtEpochMs: nil
+                                                                    )), id: \.self) { action in
                                     Button(role: action.isDestructive ? .destructive : nil) {
                                         perform(action, on: entry)
                                     } label: {
@@ -5799,7 +5805,7 @@ struct ContinueWatchingRow: View {
         switch action {
         case .playManually: onPlayManually(entry)
         case .goToDetails: onGoToDetails(entry)
-        case .markEpisodeWatched: onMarkWatched(entry)
+        case .markEpisodeWatched, .markWatched: onMarkWatched(entry)
         case .startOver: onStartOver(entry)
         case .remove: onRemove(entry)
         }

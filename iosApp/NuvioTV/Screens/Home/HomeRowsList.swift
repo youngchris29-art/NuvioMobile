@@ -46,24 +46,24 @@ final class HomeRowActions {
         ContinueWatchingNextUp.shared.removeFromContinueWatching(entry: entry)
     }
 
-    /// Continue Watching › Mark Episode Watched.
+    /// Continue Watching › Mark Episode Watched / Mark as Watched.
     func markWatched(_ entry: WatchProgressEntry) {
-        // Same pair a finished playback leaves behind: the episode joins watched
-        // history and its half-played progress row stops showing in the shelf.
-        // The helper has no default on the Swift side; WatchedRepository
-        // restamps the mark time on write anyway (review r2 #6).
+        ContinueWatchingMark.perform(entry)
+    }
+}
+
+/// The one Continue Watching "mark watched" implementation, shared by the Classic row
+/// (`HomeRowActions`), the Stage Strip row and the Library resume row.
+enum ContinueWatchingMark {
+    static func perform(_ entry: WatchProgressEntry) {
         // FEAT-85 P2-4: under Trakt the mark seeds Up Next at once; the show's progress is refetched 5 s later.
         ContinueWatchingNextUp.shared.noteMarkedWatched(entry: entry)
-        WatchedRepository.shared.markWatched(
-            item: WatchingActionsKt.watchedItemFromProgress(
-                entry: entry,
-                markedAtEpochMs: Int64(Date().timeIntervalSince1970 * 1000)
-            )
+        // Shared: marks watched (stamped now), clears the progress row unless the card is Up Next,
+        // and reconciles series watched state for an episode, as a finished playback does.
+        WatchingActions.shared.markProgressEntryWatched(
+            entry: entry,
+            nowEpochMs: Int64(Date().timeIntervalSince1970 * 1000)
         )
-        // An Up Next card (FEAT-85) has no progress row to clear: the mark alone moves the series on.
-        if !entry.isContinueWatchingNextUp {
-            WatchProgressRepository.shared.clearProgress(videoId: entry.videoId, parentMetaId: entry.parentMetaId)
-        }
     }
 }
 

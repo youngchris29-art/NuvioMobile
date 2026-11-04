@@ -124,8 +124,15 @@ final class TitleHoldMenuPolicyTests: XCTestCase {
                        [.playManually, .goToDetails, .markEpisodeWatched, .startOver, .remove])
     }
 
-    func testMovieEntryHasNoMarkEpisodeWatched() {
+    func testMovieEntryGetsMarkAsWatched() {
         XCTAssertEqual(TitleHoldMenuPolicy.continueWatchingActions(isEpisode: false),
+                       [.playManually, .goToDetails, .markWatched, .startOver, .remove])
+    }
+
+    func testMarkWatchedIsHiddenWhenTheSharedVerdictSaysNo() {
+        XCTAssertEqual(TitleHoldMenuPolicy.continueWatchingActions(isEpisode: true, isNextUp: true, canMarkWatched: false),
+                       [.playManually, .goToDetails, .remove])
+        XCTAssertEqual(TitleHoldMenuPolicy.continueWatchingActions(isEpisode: false, canMarkWatched: false),
                        [.playManually, .goToDetails, .startOver, .remove])
     }
 
@@ -166,6 +173,7 @@ final class TitleHoldMenuPolicyTests: XCTestCase {
             (.playManually, "Play Manually", "list.bullet"),
             (.goToDetails, "Go to Details", "info.circle"),
             (.markEpisodeWatched, "Mark Episode Watched", "checkmark.circle"),
+            (.markWatched, "Mark as Watched", "checkmark.circle"),
             (.startOver, "Start Over", "arrow.counterclockwise"),
             (.remove, "Remove from Continue Watching", "trash"),
         ]
