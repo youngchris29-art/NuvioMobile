@@ -75,6 +75,18 @@ fun isWatchedSourceOperationCurrent(
     activeGeneration: Long,
 ): Boolean = operation.source == activeSource && operation.generation == activeGeneration
 
+/**
+ * Review r1 (mark as watched): the profile and watched source a deferred write was started
+ * for. A write whose token no longer matches [WatchedRepository.scopeToken] must be dropped: the
+ * profile or the tracker source changed while a meta fetch was pending.
+ */
+data class WatchedScopeToken(
+    val profileId: Int,
+    val profileGeneration: Long,
+    val source: WatchProgressSource,
+    val sourceGeneration: Long,
+)
+
 fun watchedItemsForSource(
     source: WatchProgressSource,
     nuvioItems: Collection<WatchedItem>,
@@ -198,6 +210,14 @@ object WatchedRepository {
     private var profileGeneration: Long = 0L
     private var activeSource: WatchProgressSource = WatchProgressSource.NUVIO_SYNC
     private var sourceGeneration: Long = 0L
+
+    /** The profile and source every watched write goes to right now (see [WatchedScopeToken]). */
+    fun scopeToken(): WatchedScopeToken = WatchedScopeToken(
+        profileId = currentProfileId,
+        profileGeneration = profileGeneration,
+        source = activeSource,
+        sourceGeneration = sourceGeneration,
+    )
     private val itemsStore = WatchedItemsStore()
     private var nuvioFullyWatchedSeriesKeys: Set<String> = emptySet()
     private var providerFullyWatchedSeriesKeys: MutableMap<TrackingProviderId, Set<String>> = mutableMapOf()

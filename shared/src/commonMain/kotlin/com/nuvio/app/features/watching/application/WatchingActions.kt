@@ -9,6 +9,7 @@ import com.nuvio.app.features.details.MetaVideo
 import com.nuvio.app.features.home.MetaPreview
 import com.nuvio.app.features.watched.WatchedItem
 import com.nuvio.app.features.watched.WatchedRepository
+import com.nuvio.app.features.watched.WatchedScopeToken
 import com.nuvio.app.features.watched.episodePlaybackId
 import com.nuvio.app.features.watched.releasedMainSeasonEpisodes
 import com.nuvio.app.features.watched.toEpisodeWatchedItem
@@ -187,14 +188,30 @@ object WatchingActions {
         WatchedRepository.markWatchedFromPlaybackCompletion(watchedItem, syncRemote = syncRemote)
 
         if (!syncRemote || !entry.isEpisode) return
-        actionScope.launch {
-            val meta = runCatching {
-                MetaDetailsRepository.fetch(
-                    type = entry.parentMetaType,
-                    id = entry.parentMetaId,
-                )
-            }.getOrNull() ?: return@launch
+        reconcileSeriesAfterMetaFetch(entry)
+    }
 
+    /**
+     * Review r1 (mark as watched): the series reconcile that follows an episode mark fetches the
+     * meta on [actionScope]; the profile or the tracker source can change while that fetch is
+     * pending, and the reconcile must then be dropped rather than read and write the other
+     * profile's (or source's) watched state. Shared by playback completion and the manual mark.
+     */
+    private fun reconcileSeriesAfterMetaFetch(entry: WatchProgressEntry) {
+        val startedFor = WatchedRepository.scopeToken()
+        actionScope.launch {
+            val meta = try {
+                MetaDetailsRepository.fetch(type = entry.parentMetaType, id = entry.parentMetaId)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                log.e(error) { "Fetching meta to reconcile ${entry.parentMetaType}:${entry.parentMetaId} failed" }
+                null
+            } ?: return@launch
+            if (!reconcileScopeStillCurrent(startedFor, WatchedRepository.scopeToken())) {
+                log.w { "Series reconcile for ${entry.parentMetaId} dropped: profile or watched source changed while the meta loaded" }
+                return@launch
+            }
             reconcileSeriesWatchedState(meta = meta)
         }
     }
@@ -212,17 +229,7 @@ object WatchingActions {
             WatchProgressRepository.clearProgress(videoId = entry.videoId, parentMetaId = entry.parentMetaId)
         }
         if (!plan.reconcileSeries) return
-        actionScope.launch {
-            val meta = try {
-                MetaDetailsRepository.fetch(type = entry.parentMetaType, id = entry.parentMetaId)
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Exception) {
-                log.e(error) { "Fetching meta to reconcile ${entry.parentMetaType}:${entry.parentMetaId} failed" }
-                null
-            } ?: return@launch
-            reconcileSeriesWatchedState(meta = meta)
-        }
+        reconcileSeriesAfterMetaFetch(entry)
     }
 
     private fun toggleEpisodesWatched(
@@ -298,3 +305,7 @@ fun canMarkWatched(entry: WatchProgressEntry, nowEpochMs: Long, releaseAtEpochMs
 
 private fun String.isSeriesLikeType(): Boolean =
     trim().lowercase() in setOf("series", "show", "tv", "tvshow")
+
+/** Review r1: a deferred watched write applies only to the profile and source it was started for. */
+internal fun reconcileScopeStillCurrent(startedFor: WatchedScopeToken, now: WatchedScopeToken): Boolean =
+    startedFor == now

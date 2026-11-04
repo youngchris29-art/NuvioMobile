@@ -2,6 +2,8 @@ package com.nuvio.app.features.watching.application
 
 import com.nuvio.app.features.cloud.CloudLibraryContentType
 import com.nuvio.app.features.watchprogress.WatchProgressEntry
+import com.nuvio.app.features.watched.WatchedScopeToken
+import com.nuvio.app.features.tracking.WatchProgressSource
 import com.nuvio.app.features.watchprogress.WatchProgressSourceNextUp
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -80,5 +82,16 @@ class ContinueWatchingMarkWatchedTest {
     fun videoIdIsCarried() {
         assertEquals("tt1:2:5", watchedItemFromProgress(entry("series", 2, 5, "tt1:2:5"), now).videoId)
         assertEquals("tt1", watchedItemFromProgress(entry(), now).videoId)
+    }
+
+    @Test
+    fun `a series reconcile is dropped when the profile or the source changed while the meta loaded`() {
+        // Review r1: the meta fetch runs on a process-wide scope; the write must stay with the
+        // profile and tracker source the mark was made in.
+        val started = WatchedScopeToken(profileId = 1, profileGeneration = 3L, source = WatchProgressSource.NUVIO_SYNC, sourceGeneration = 7L)
+        assertTrue(reconcileScopeStillCurrent(started, started.copy()))
+        assertFalse(reconcileScopeStillCurrent(started, started.copy(profileId = 2, profileGeneration = 4L)), "profile switched")
+        assertFalse(reconcileScopeStillCurrent(started, started.copy(profileGeneration = 4L)), "same profile reloaded")
+        assertFalse(reconcileScopeStillCurrent(started, started.copy(source = WatchProgressSource.TRAKT, sourceGeneration = 8L)), "source switched")
     }
 }
