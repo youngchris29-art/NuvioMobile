@@ -121,6 +121,9 @@ sealed interface StreamLoadCompletion {
     ) : StreamLoadCompletion
 }
 
+/** `addonId` prefix of a stream group built per plugin repository ("Group by Repository"). */
+const val PLUGIN_REPOSITORY_GROUP_ID_PREFIX = "plugin-repo:"
+
 fun List<PluginScraper>.toPluginProviderGroups(
     repositories: List<PluginRepositoryItem>,
     groupByRepository: Boolean,
@@ -139,7 +142,7 @@ fun List<PluginScraper>.toPluginProviderGroups(
     return groupBy { it.repositoryUrl }
         .map { (repositoryUrl, scrapers) ->
             PluginProviderGroup(
-                addonId = "plugin-repo:${repositoryUrl.lowercase()}",
+                addonId = "$PLUGIN_REPOSITORY_GROUP_ID_PREFIX${repositoryUrl.lowercase()}",
                 addonName = repoNameByUrl[repositoryUrl].orEmpty().ifBlank { repositoryUrl.fallbackRepositoryLabel() },
                 scrapers = scrapers.sortedBy { it.name.lowercase() },
             )

@@ -142,6 +142,9 @@ nonisolated struct StreamRowModel: Equatable, Identifiable {
         let desc: String? = stream.description_
         let logo: String? = stream.addonLogo
         let badges: [StreamBadge] = stream.badges
+        // Repository-grouped plugin streams carry the repository in `addonName`; the shared helper
+        // names the provider that found the stream instead (`rowSourceLabel` is non-optional).
+        let sourceLabel: String = stream.rowSourceLabel
         // `facts` is parsed once per stream by the caller (`StreamFactsCache`), never here or in a
         // body (W3-16 F4); every derived field below comes from it.
         let resolution: Int? = facts.resolution.map { Int($0.intValue) }
@@ -170,8 +173,8 @@ nonisolated struct StreamRowModel: Equatable, Identifiable {
             sizeBytes: sizeBytes,
             badgesOnTop: display.badgesOnTop,
             showsAddonColumn: display.showAddonLogo,
-            showsAddonName: (headline != nil || display.showAddonLogo) && !stream.addonName.isEmpty,
-            addonName: stream.addonName,
+            showsAddonName: (headline != nil || display.showAddonLogo) && !sourceLabel.isEmpty,
+            addonName: sourceLabel,
             addonLogo: (logo ?? "").isEmpty ? nil : logo,
             isYouTube: StreamPickerView.isYouTubeResolved(stream),
             playbackKey: stream.playbackStreamKey,

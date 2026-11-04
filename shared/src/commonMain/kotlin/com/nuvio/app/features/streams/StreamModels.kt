@@ -40,6 +40,21 @@ data class StreamItem(
     val streamSubtitle: String?
         get() = description
 
+    /** True when this stream sits in a plugin "Group by Repository" group, whose `addonName` is the repository. */
+    val isPluginRepositoryGroup: Boolean
+        get() = addonId.startsWith(PLUGIN_REPOSITORY_GROUP_ID_PREFIX)
+
+    /**
+     * Per-row source label: the provider (scraper) that found a repository-group stream, so rows do
+     * not all repeat the repository name; otherwise the add-on name.
+     */
+    val rowSourceLabel: String
+        get() = if (isPluginRepositoryGroup) {
+            sourceName?.trim()?.takeIf { it.isNotEmpty() } ?: addonName
+        } else {
+            addonName
+        }
+
     val directPlaybackUrl: String?
         get() = url?.trim()?.takeIf { it.isNotEmpty() }
 

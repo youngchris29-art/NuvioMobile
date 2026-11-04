@@ -28,6 +28,7 @@ final class StreamRowModelTests: XCTestCase {
         ytId: String? = nil,
         addonId: String = "addon:x",
         addonName: String = "Add-on",
+        sourceName: String? = nil,
         addonLogo: String? = nil,
         size: Int64? = nil,
         badges: [StreamBadge] = [],
@@ -35,7 +36,7 @@ final class StreamRowModelTests: XCTestCase {
     ) -> StreamItem {
         StreamItem(
             name: name, title: nil, description: description, url: url, infoHash: infoHash, fileIdx: nil,
-            externalUrl: nil, ytId: ytId, sources: [], sourceName: nil, addonName: addonName, addonId: addonId,
+            externalUrl: nil, ytId: ytId, sources: [], sourceName: sourceName, addonName: addonName, addonId: addonId,
             addonLogo: addonLogo, streamType: nil, behaviorHints: hints(size: size),
             clientResolve: nil, debridCacheStatus: cache, externalSubtitles: [], badges: badges
         )
@@ -339,6 +340,32 @@ final class StreamRowModelTests: XCTestCase {
         let on = make(headlineStream, display: StreamRowDisplay(showAddonLogo: true))
         XCTAssertTrue(on.showsAddonName)
         XCTAssertTrue(on.showsAddonColumn)
+    }
+
+    func testARepositoryGroupRowShowsTheProviderNotTheRepository() {
+        let s = stream(name: "T", description: "Movie.2024.1080p.WEB-DL.HEVC",
+                       addonId: "plugin-repo:https://repo.example/manifest.json", addonName: "My Repo",
+                       sourceName: "Provider A")
+        let model = make(s)
+        XCTAssertEqual(model.addonName, "Provider A")
+        XCTAssertTrue(model.showsAddonName)
+        XCTAssertTrue(model.spokenLabel.contains("Provider A"), model.spokenLabel)
+        XCTAssertFalse(model.spokenLabel.contains("My Repo"), model.spokenLabel)
+    }
+
+    func testOtherRowsAndMissingProviderNamesKeepTheAddonName() {
+        let pluginRow = make(stream(name: "T", description: "Movie.2024.1080p.WEB-DL.HEVC",
+                                    addonId: "plugin:abc", addonName: "Provider A", sourceName: "Provider A"))
+        XCTAssertEqual(pluginRow.addonName, "Provider A")
+        let repoPrefix = "plugin-repo:https://repo.example/manifest.json"
+        for source in [nil, "", "  "] as [String?] {
+            let model = make(stream(name: "T", description: "Movie.2024.1080p.WEB-DL.HEVC",
+                                    addonId: repoPrefix, addonName: "My Repo", sourceName: source))
+            XCTAssertEqual(model.addonName, "My Repo", "sourceName \(String(describing: source))")
+        }
+        let addonRow = make(stream(name: "T", description: "Movie.2024.1080p.WEB-DL.HEVC",
+                                   addonId: "com.comet", addonName: "Comet", sourceName: "Ignored"))
+        XCTAssertEqual(addonRow.addonName, "Comet")
     }
 
     func testTheSpokenLabelCarriesFailedYouTubeAndBadges() {

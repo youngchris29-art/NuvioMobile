@@ -72,6 +72,24 @@ final class StreamBestPickModelTests: XCTestCase {
         XCTAssertEqual(notCached, ["Torrentio", label, "not cached"].joined(separator: sep))
     }
 
+    func testCardFactsNameTheProviderOfARepositoryGroupStream() {
+        let item = StreamItem(
+            name: "T", title: nil, description: "Movie.2024.1080p.WEB-DL.HEVC", url: "https://cdn.example.com/m.mkv",
+            infoHash: nil, fileIdx: nil, externalUrl: nil, ytId: nil, sources: [], sourceName: "Provider A",
+            addonName: "My Repo", addonId: "plugin-repo:https://repo.example/manifest.json", addonLogo: nil,
+            streamType: nil,
+            behaviorHints: StreamBehaviorHints(bingeGroup: nil, notWebReady: false, videoHash: nil, videoSize: nil,
+                                               filename: nil, proxyHeaders: nil, audioDelayMs: nil),
+            clientResolve: nil, debridCacheStatus: nil, externalSubtitles: [], badges: []
+        )
+        let model = StreamRowModel.make(stream: item, facts: StreamFactsParser.shared.parse(stream: item),
+                                        key: "k", display: StreamRowDisplay(), providerLabel: { $0.providerName })
+        let facts = StreamPickerCopy.cardFacts(model)
+        XCTAssertNotNil(facts)
+        XCTAssertTrue(facts?.hasPrefix("Provider A") == true, facts ?? "nil")
+        XCTAssertFalse(facts?.contains("My Repo") == true, facts ?? "nil")
+    }
+
     func testCardFactsDropMissingParts() {
         XCTAssertEqual(StreamPickerCopy.cardFacts(row(videoFacts: ["WEB-DL"], cached: nil, size: nil)),
                        "Torrentio · WEB-DL", "no cached state and no size: neither part")
