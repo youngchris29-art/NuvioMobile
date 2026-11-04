@@ -43,7 +43,8 @@ class TraktLibraryToggleFailureTest {
                     changes = TraktMembershipChanges(desiredMembership = mapOf("trakt:watchlist" to true)),
                 )
             }
-            assertFalse(error is CancellationException, "the caller must see it, not drop it as a cancellation")
+            val thrown: Throwable = error
+            assertFalse(thrown is CancellationException, "the caller must see it, not drop it as a cancellation")
             assertTrue(error.message.orEmpty().contains("Trakt"), error.message)
             assertTrue(error.message.orEmpty().contains("Settings"), error.message)
         } finally {
