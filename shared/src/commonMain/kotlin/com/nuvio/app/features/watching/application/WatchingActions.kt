@@ -299,16 +299,23 @@ fun canMarkWatched(entry: WatchProgressEntry, nowEpochMs: Long, releaseAtEpochMs
     if (entry.contentType.equals(CloudLibraryContentType, ignoreCase = true) ||
         entry.parentMetaType.equals(CloudLibraryContentType, ignoreCase = true)
     ) return false
-    // Review r2: a series entry that is not a full episode (Simkl can carry an episode number
-    // with no season) would be marked under a partial key the real episode never matches, with
-    // no series reconcile and no tracker write; it gets no action.
-    if (entry.parentMetaType.isSeriesLikeType() && !entry.isEpisode) return false
+    // Review r2/r3: without both episode coordinates only a movie can be marked. A series entry
+    // that is not a full episode (Simkl can carry an episode number with no season) would be
+    // marked under a partial key the real episode never matches, with no series reconcile and no
+    // tracker write; an add-on type such as `anime` without coordinates is dropped by the
+    // tracker-history guard (an anime film cannot be told from an anime series), so the mark
+    // would only clear the resume point. Neither gets the action.
+    if (!entry.isEpisode && !entry.parentMetaType.isMovieLikeType()) return false
     if (entry.isContinueWatchingNextUp && releaseAtEpochMs != null && releaseAtEpochMs > nowEpochMs) return false
     return true
 }
 
 private fun String.isSeriesLikeType(): Boolean =
     trim().lowercase() in setOf("series", "show", "tv", "tvshow")
+
+/** The types the tracker adapters treat as a film (`TraktWatchedSyncAdapter`, `MdbListMutationTarget`). */
+private fun String.isMovieLikeType(): Boolean =
+    trim().lowercase() in setOf("movie", "film")
 
 /** Review r1: a deferred watched write applies only to the profile and source it was started for. */
 internal fun reconcileScopeStillCurrent(startedFor: WatchedScopeToken, now: WatchedScopeToken): Boolean =

@@ -92,6 +92,11 @@ class ContinueWatchingMarkWatchedTest {
         assertFalse(canMarkWatched(entry(type = "series"), now), "a bare series entry")
         assertTrue(canMarkWatched(entry(type = "series", season = 1, episode = 3), now))
         assertTrue(canMarkWatched(entry(type = "movie"), now))
+        assertTrue(canMarkWatched(entry(type = "film"), now))
+        // Review r3: an add-on `anime` entry without coordinates would only lose its resume point
+        // (the tracker-history guard drops a coordinate-free anime mark).
+        assertFalse(canMarkWatched(entry(type = "anime"), now))
+        assertTrue(canMarkWatched(entry(type = "anime", season = 1, episode = 2), now), "a full anime episode marks")
     }
 
     @Test
