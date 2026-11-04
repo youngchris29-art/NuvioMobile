@@ -323,6 +323,21 @@ internal class LibraryLocalState {
         itemsById.containsKey(libraryItemKey(id, type))
     }
 
+    /**
+     * Issue #17: [contains] for any of the title's ids — saved under its IMDb/TMDB id and asked
+     * by an add-on id, or saved under an add-on id that carries the IMDb/TMDB id asked for.
+     */
+    fun containsAnyId(id: String, type: String?, imdbId: String?, tmdbId: Int?): Boolean = synchronized(lock) {
+        val lookupIds = libraryLookupIds(id, imdbId, tmdbId)
+        val wantedType = type?.trim()?.lowercase()
+        itemsById.values.any { item ->
+            (wantedType == null || item.type.trim().lowercase() == wantedType) &&
+                (item.id.trim() in lookupIds ||
+                    (imdbId != null && item.imdbId == imdbId) ||
+                    (tmdbId != null && item.tmdbId == tmdbId))
+        }
+    }
+
     fun containsId(id: String): Boolean = synchronized(lock) {
         itemsById.values.any { it.id == id }
     }
@@ -400,3 +415,14 @@ private fun MutableMap<String, LibrarySyncKey>.filterToExistingItems(
 
 internal fun libraryItemKey(id: String, type: String): String =
     "${type.trim().lowercase()}:${id.trim()}"
+
+/**
+ * Issue #17: the ids a title can be saved under — its own id, then its IMDb id and its `tmdb:<n>`
+ * id (the forms the Trakt content keys and `tt` library ids use). Distinct, in that order.
+ */
+internal fun libraryLookupIds(id: String, imdbId: String?, tmdbId: Int?): List<String> =
+    listOfNotNull(
+        id.trim(),
+        imdbId?.trim()?.takeIf { it.startsWith("tt") },
+        tmdbId?.let { "tmdb:$it" },
+    ).distinct()

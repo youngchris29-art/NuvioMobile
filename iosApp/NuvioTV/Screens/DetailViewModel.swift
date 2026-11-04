@@ -591,7 +591,11 @@ final class DetailViewModel: ObservableObject {
     /// continue-watching prefs, shuffle settings. Only the detail, watched and progress flows can.
     private func refreshFlags(episodes: Bool = true) {
         assign(\.isWatched, WatchedRepository.shared.isWatched(id: id, type: type, season: nil, episode: nil))
-        assign(\.isSaved, LibraryRepository.shared.isSaved(id: id, type: type))
+        // Issue #17: also match the IMDb/TMDB id, so a title Trakt saved under its `tt` id still
+        // reads "In Library" on a page opened by an add-on id (and the reverse).
+        let libraryIds = LibraryModelsKt.libraryItemForDetail(meta: meta, preview: preview, savedAtEpochMs: 0)
+        assign(\.isSaved, LibraryRepository.shared.isSavedMatchingIds(
+            id: id, type: type, imdbId: libraryIds.imdbId, tmdbId: libraryIds.tmdbId))
         if episodes { assign(\.watchedEpisodeKeys, computeWatchedEpisodeKeys()) }
         refreshShuffle()
         assign(\.seriesAction, computeSeriesAction())

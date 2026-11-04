@@ -5,7 +5,9 @@ import com.nuvio.app.features.home.MetaPreview
 import com.nuvio.app.features.tracking.TrackingProviderId
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /** Issue #17: the Detail page's library + carries an IMDb/TMDB id whenever either source has one. */
 class LibraryToggleIdsTest {
@@ -50,5 +52,43 @@ class LibraryToggleIdsTest {
             libraryToggleFailureMessage(IllegalStateException(" "), TrackingProviderId.MDBLIST))
         assertEquals("Trakt sign-in expired",
             libraryToggleFailureMessage(IllegalStateException("Trakt sign-in expired"), TrackingProviderId.TRAKT))
+    }
+
+    // Saved-state lookup: a title saved under one id reads as saved when asked by another.
+
+    private fun loadedState(vararg items: LibraryItem): LibraryLocalState {
+        val state = LibraryLocalState()
+        val token = state.beginProfileLoad(profileId = 1).snapshot.token
+        state.completeProfileLoad(token = token, activeProfileId = 1, items = items.toList())
+        return state
+    }
+
+    @Test
+    fun `saved under the IMDb id reads as saved when asked by the add-on id`() {
+        val state = loadedState(LibraryItem(id = "tt0388629", type = "series", name = "Show", imdbId = "tt0388629"))
+        assertTrue(state.containsAnyId("kitsu:1376", "series", imdbId = "tt0388629", tmdbId = null))
+        assertFalse(state.containsAnyId("kitsu:1376", "series", imdbId = null, tmdbId = null))
+        assertFalse(state.containsAnyId("kitsu:1376", "movie", imdbId = "tt0388629", tmdbId = null),
+            "a different type is a different title")
+    }
+
+    @Test
+    fun `saved under the add-on id reads as saved when asked by the IMDb or TMDB id`() {
+        val state = loadedState(
+            LibraryItem(id = "kitsu:1376", type = "series", name = "Show", imdbId = "tt0388629", tmdbId = 30983),
+        )
+        assertTrue(state.containsAnyId("tt0388629", "series", imdbId = "tt0388629", tmdbId = null))
+        assertTrue(state.containsAnyId("tmdb:30983", "series", imdbId = null, tmdbId = 30983))
+        assertFalse(state.containsAnyId("tt0000001", "series", imdbId = "tt0000001", tmdbId = null))
+    }
+
+    @Test
+    fun `a provider lookup tries the own id then the IMDb and TMDB ids`() {
+        assertEquals(listOf("kitsu:1376", "tt0388629", "tmdb:30983"),
+            libraryLookupIds("kitsu:1376", imdbId = "tt0388629", tmdbId = 30983))
+        assertEquals(listOf("tt0388629"), libraryLookupIds("tt0388629", imdbId = "tt0388629", tmdbId = null))
+        // Trakt's content keys: saved under the tt id, asked by the add-on id.
+        val traktSaved = setOf("tt0388629")
+        assertTrue(libraryLookupIds("kitsu:1376", "tt0388629", null).any(traktSaved::contains))
     }
 }

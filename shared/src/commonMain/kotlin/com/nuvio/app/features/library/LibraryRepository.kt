@@ -440,6 +440,19 @@ object LibraryRepository {
         }
     }
 
+    /**
+     * Issue #17: [isSaved] that also matches the title's IMDb/TMDB id, so a title a provider (or
+     * the local library) saved under its `tt`/`tmdb:` id reads as saved on a Detail page opened
+     * by an add-on id, and the reverse.
+     */
+    fun isSavedMatchingIds(id: String, type: String?, imdbId: String?, tmdbId: Int?): Boolean {
+        ensureLoaded()
+        activeLibraryProvider()?.let { provider ->
+            return libraryLookupIds(id, imdbId, tmdbId).any { lookupId -> provider.contains(lookupId, type) }
+        }
+        return localState.containsAnyId(id, type, imdbId, tmdbId)
+    }
+
     fun isSaved(id: String, type: String? = null): Boolean {
         ensureLoaded()
 
