@@ -244,9 +244,12 @@ object FolderDetailRepository {
                 } else {
                     val catalogSource = source.addonCatalogSource() ?: return@forEachIndexed
                     val resolvedCatalog = addons.findCollectionCatalog(catalogSource)
-                    val addon = resolvedCatalog?.addon
+                    // An add-on may serve catalogs its manifest does not list (configurable or
+                    // dynamic ones); request those from the declared add-on all the same.
+                    val addon = addons.findCollectionAddon(catalogSource)
                     val catalog = resolvedCatalog?.catalog
-                    val label = catalog?.name ?: catalogSource.catalogId
+                    val label = catalog?.name
+                        ?: addons.collectionSourceDisplayName(catalogSource, source.title)
                     val typeLabel = localizedMediaTypeLabel(catalogSource.type)
                     val genreSuffix = if (catalogSource.genre != null) " · ${catalogSource.genre}" else ""
                     add(
@@ -259,7 +262,9 @@ object FolderDetailRepository {
                             type = catalogSource.type,
                             catalogId = catalogSource.catalogId,
                             genre = catalogSource.genre,
-                            supportsPagination = catalog?.supportsPagination() == true,
+                            // Unlisted catalogs can't declare `skip`; treat them as paginated and let an empty
+                            // page end the list (rawItemCount 0 -> nextSkip null).
+                            supportsPagination = catalog?.supportsPagination() ?: (addon != null),
                             isLoading = true,
                         ),
                     )
@@ -281,8 +286,8 @@ object FolderDetailRepository {
         sources.forEachIndexed { sourceIndex, source ->
             val tabIndex = if (showAll) sourceIndex + 1 else sourceIndex
             val catalogSource = source.addonCatalogSource()
-            val resolvedCatalog = catalogSource?.let { addons.findCollectionCatalog(it) }
-            if (!source.isTmdb && !source.isTrakt && resolvedCatalog == null) {
+            val resolvedAddon = catalogSource?.let { addons.findCollectionAddon(it) }
+            if (!source.isTmdb && !source.isTrakt && resolvedAddon == null) {
                 updateTab(tabIndex) {
                     it.copy(
                         isLoading = false,

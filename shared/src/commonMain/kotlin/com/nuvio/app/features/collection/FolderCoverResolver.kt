@@ -56,7 +56,7 @@ object FolderCoverResolver {
             // finished loading yet is NOT cached — collection rows can render before
             // AddonRepository has its manifests, and AddonsUiState carries no readiness flag to
             // tell "still loading" from "uninstalled". Leaving the key absent lets a later
-            // render retry; the retry is cheap (findCollectionCatalog miss, no network).
+            // render retry; the retry is cheap (findCollectionAddon miss, no network).
             if (resolved.cacheable) {
                 cache[key] = resolved.url
             }
@@ -79,7 +79,7 @@ object FolderCoverResolver {
                 route
             } else {
                 val resolvedManifest = source.addonCatalogSource()
-                    ?.let { addons.findCollectionCatalog(it)?.addon?.manifestUrl }
+                    ?.let { addons.findCollectionAddon(it)?.manifestUrl }
                 "$route@${resolvedManifest ?: "?"}"
             }
         }
@@ -108,7 +108,7 @@ object FolderCoverResolver {
                 AddonRepository.uiState.first { state ->
                     val addons = state.addons
                     addons.isNotEmpty() && (
-                        wantedCatalogs.all { wanted -> addons.findCollectionCatalog(wanted) != null } ||
+                        wantedCatalogs.all { wanted -> addons.findCollectionAddon(wanted) != null } ||
                             addons.enabledAddons().all { addon -> addon.manifest != null }
                         )
                 }.addons
@@ -123,10 +123,11 @@ object FolderCoverResolver {
     private suspend fun attempt(folder: CollectionFolder, addons: List<ManagedAddon>): Resolution {
         var sawUnresolvedAddonCatalog = false
         var sawFailedRequest = false
+        var sawEmptyUnlistedCatalog = false
         for (source in folder.resolvedSources) {
             if (!source.isTmdb && !source.isTrakt) {
                 val catalogSource = source.addonCatalogSource()
-                if (catalogSource != null && addons.findCollectionCatalog(catalogSource) == null) {
+                if (catalogSource != null && addons.findCollectionAddon(catalogSource) == null) {
                     sawUnresolvedAddonCatalog = true
                     continue
                 }
@@ -142,12 +143,21 @@ object FolderCoverResolver {
                     log.d(error) { "Fallback cover resolution failed for folder ${folder.id}" }
                 }
                 .getOrNull()
-            val preview = page?.items?.firstOrNull() ?: continue
+            val preview = page?.items?.firstOrNull()
+            if (preview == null) {
+                // An unlisted (configurable/dynamic) catalog that returns nothing may just be
+                // unavailable right now; don't pin a blank cover for the rest of the app run.
+                val catalogSource = source.addonCatalogSource()
+                if (catalogSource != null && addons.findCollectionCatalog(catalogSource) == null) {
+                    sawEmptyUnlistedCatalog = true
+                }
+                continue
+            }
             val url = preview.poster?.takeIf { it.isNotBlank() }
                 ?: preview.banner?.takeIf { it.isNotBlank() }
             if (url != null) return Resolution(url, cacheable = true)
         }
-        return Resolution(url = null, cacheable = !sawUnresolvedAddonCatalog && !sawFailedRequest)
+        return Resolution(url = null, cacheable = !sawUnresolvedAddonCatalog && !sawFailedRequest && !sawEmptyUnlistedCatalog)
     }
 
     private const val ADDON_READY_TIMEOUT_MS = 10_000L
@@ -162,9 +172,9 @@ object FolderCoverResolver {
         isTrakt -> TraktPublicListSourceResolver.resolve(source = this, page = 1)
         else -> {
             val catalogSource = addonCatalogSource() ?: return null
-            val resolvedCatalog = addons.findCollectionCatalog(catalogSource) ?: return null
+            val resolvedAddon = addons.findCollectionAddon(catalogSource) ?: return null
             fetchCatalogPage(
-                manifestUrl = resolvedCatalog.addon.manifestUrl,
+                manifestUrl = resolvedAddon.manifestUrl,
                 type = catalogSource.type,
                 catalogId = catalogSource.catalogId,
                 genre = catalogSource.genre,

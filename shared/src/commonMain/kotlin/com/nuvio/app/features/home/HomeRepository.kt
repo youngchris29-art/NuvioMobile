@@ -20,7 +20,7 @@ import com.nuvio.app.features.collection.CollectionRepository
 import com.nuvio.app.features.collection.CollectionSource
 import com.nuvio.app.features.collection.TmdbCollectionSourceResolver
 import com.nuvio.app.features.collection.catalogRouteKey
-import com.nuvio.app.features.collection.findCollectionCatalog
+import com.nuvio.app.features.collection.findCollectionAddon
 import com.nuvio.app.features.tmdb.TmdbMetadataService
 import com.nuvio.app.features.tmdb.TmdbPreviewEnrichment
 import com.nuvio.app.features.tmdb.TmdbSettings
@@ -1774,9 +1774,9 @@ object HomeRepository {
             isTrakt -> TraktPublicListSourceResolver.resolve(source = this, page = 1)
             else -> {
                 val catalogSource = addonCatalogSource() ?: return emptyList()
-                val resolvedCatalog = addons.findCollectionCatalog(catalogSource) ?: return emptyList()
+                val resolvedAddon = addons.findCollectionAddon(catalogSource) ?: return emptyList()
                 fetchCatalogPage(
-                    manifestUrl = resolvedCatalog.addon.manifestUrl,
+                    manifestUrl = resolvedAddon.manifestUrl,
                     type = catalogSource.type,
                     catalogId = catalogSource.catalogId,
                     genre = catalogSource.genre,
