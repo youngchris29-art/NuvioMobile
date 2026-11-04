@@ -119,6 +119,10 @@ struct StreamPickerView: View {
     /// continue-watching, Detail's primary Play). Filled from `MetaDetailsRepository.fetch`
     /// (cache-first, side-effect free) so next-episode autoplay works from every path.
     @State private var fetchedEpisodes: [MetaVideo] = []
+    /// Issue #19 (review r1): the catalog runtime fetched for a launch path that carries no `meta`
+    /// (Home / Library continue-watching, a deep link). A Trakt/Simkl percentage-only entry has
+    /// no position, so an external player needs this runtime to resume (`externalDurationMs`).
+    @State private var fetchedRuntime: String?
     /// Row key currently mid debrid-resolve (drives the row spinner; one resolve at a time).
     @State private var resolvingKey: String?
     /// False once the picker left the screen (a Menu press during a resolve): a late result must
@@ -308,10 +312,17 @@ struct StreamPickerView: View {
 
     /// Series launch paths that don't carry the episode list (Home continue-watching, Detail's
     /// primary Play) get it fetched here so the player can offer next-episode autoplay. No-op for
-    /// movies and for paths that already passed `episodes` (EpisodesSection).
+    /// paths that already passed `episodes` (EpisodesSection). Issue #19 (review r1): a movie
+    /// launched without `meta` and without a saved position (a Trakt/Simkl percentage-only row
+    /// from Continue Watching) fetches the same record for its runtime, so an external player can
+    /// resume at the percentage (`ExternalResumePolicy.needsCatalogRuntime`).
     private func fetchEpisodesIfNeeded() {
-        guard episodes.isEmpty, fetchedEpisodes.isEmpty,
-              ["series", "tv", "show", "tvshow"].contains(type.lowercased()) else { return }
+        let isSeries = ["series", "tv", "show", "tvshow"].contains(type.lowercased())
+        let needsEpisodes = isSeries && episodes.isEmpty && fetchedEpisodes.isEmpty
+        let needsRuntime = ExternalResumePolicy.needsCatalogRuntime(
+            isSeries: isSeries, hasMeta: meta != nil || fetchedRuntime != nil,
+            resumePositionMs: resumePositionMs)
+        guard needsEpisodes || needsRuntime else { return }
         // The `@Throws` twin: a Kotlin exception out of the plain suspend export aborts the process.
         Task { @MainActor in
             do {
@@ -322,6 +333,10 @@ struct StreamPickerView: View {
                 if background == nil {
                     let fetchedBackground: String? = details?.background
                     if let fetchedBackground, !fetchedBackground.isEmpty { peekedBackground = fetchedBackground }
+                }
+                if meta == nil, fetchedRuntime == nil {
+                    let runtime: String? = details?.runtime
+                    if let runtime, !runtime.isEmpty { fetchedRuntime = runtime }
                 }
                 let videos = details?.videos ?? []
                 guard !videos.isEmpty else { return }
@@ -1550,7 +1565,7 @@ struct StreamPickerView: View {
            let minutes = video.runtime?.intValue, minutes > 0 {
             return Int64(minutes) * 60_000
         }
-        if let minutes = PlaybackMeta.runtimeMinutes(meta?.runtime), minutes > 0 {
+        if let minutes = PlaybackMeta.runtimeMinutes(meta?.runtime ?? fetchedRuntime), minutes > 0 {
             return Int64(minutes) * 60_000
         }
         return nil
@@ -2067,7 +2082,9 @@ enum StreamPickerExitPolicy {
 /// (`pendingResumePercent`), but an external player cannot — Infuse has no percentage
 /// parameter, and before hand-off the catalog runtime is the only duration there is. A runtime
 /// a minute or two off beats always starting from the beginning. Completed entries and
-/// "Start Over" send 0.
+/// "Start Over" send 0. Note (review r1): `TraktProgressRepository` marks a /sync/playback row
+/// at 90 % or more completed (the app-wide completion threshold, the in-app players start those
+/// over too), so for Trakt rows the 95 % ceiling never binds; it covers Simkl-style entries.
 nonisolated enum ExternalResumePolicy {
     enum Source: String, Sendable {
         case position
@@ -2095,6 +2112,14 @@ nonisolated enum ExternalResumePolicy {
         return resume(startsOver: false, isCompleted: entry.isCompleted,
                       lastPositionMs: entry.lastPositionMs, percent: percent,
                       fallbackDurationMs: fallbackDurationMs)
+    }
+
+    /// Review r1: whether the picker must fetch the catalog record for its runtime before an
+    /// external hand-off. True for a movie launched with no `meta` and no saved position (the
+    /// Home / Library continue-watching and deep-link paths with a percentage-only entry); series
+    /// fetch the record for their episode list anyway.
+    static func needsCatalogRuntime(isSeries: Bool, hasMeta: Bool, resumePositionMs: Int64?) -> Bool {
+        !isSeries && !hasMeta && resumePositionMs == nil
     }
 
     /// Plain-value form. `percent` is 0...100 (only read when `lastPositionMs` is 0).

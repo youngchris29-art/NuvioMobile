@@ -116,6 +116,17 @@ final class PlaybackProgressRecorderTests: XCTestCase {
                        "a real position wins over the runtime")
     }
 
+    func testExternalResumeMovieWithoutMetaFetchesTheRuntime() {
+        // Home / Library continue-watching pass no meta; a Trakt movie row has no position.
+        XCTAssertTrue(ExternalResumePolicy.needsCatalogRuntime(isSeries: false, hasMeta: false, resumePositionMs: nil))
+        XCTAssertFalse(ExternalResumePolicy.needsCatalogRuntime(isSeries: false, hasMeta: true, resumePositionMs: nil),
+                       "Detail passes the catalog record")
+        XCTAssertFalse(ExternalResumePolicy.needsCatalogRuntime(isSeries: false, hasMeta: false, resumePositionMs: 600_000),
+                       "a saved position needs no runtime")
+        XCTAssertFalse(ExternalResumePolicy.needsCatalogRuntime(isSeries: true, hasMeta: false, resumePositionMs: nil),
+                       "series fetch the record for their episode list already")
+    }
+
     func testExternalResumeStartOverSendsZero() {
         XCTAssertEqual(ExternalResumePolicy.resume(startsOver: true, entry: traktEntry(percent: 40),
                                                    fallbackDurationMs: 6_000_000), ExternalResumePolicy.noResume)

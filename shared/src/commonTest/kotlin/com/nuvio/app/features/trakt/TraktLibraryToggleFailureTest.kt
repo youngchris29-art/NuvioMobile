@@ -119,6 +119,35 @@ class TraktLibraryToggleFailureTest {
         assertEquals(mapOf("trakt:watchlist" to true, "trakt:list:42" to true), toggled)
     }
 
+    // Review r1: the membership read uses the same ids as the Detail page's saved-state lookup.
+
+    @Test
+    fun `membership is read by the IMDb id when Trakt holds the title under it`() {
+        val state = TraktLibraryUiState(
+            membershipByContent = mapOf("series:tt0388629" to setOf("trakt:watchlist")),
+        )
+        val fromAddonPage = LibraryItem(id = "kitsu:1376", type = "series", name = "Show", imdbId = "tt0388629")
+        assertEquals(setOf("trakt:watchlist"), TraktLibraryRepository.membershipListKeys(state, fromAddonPage))
+        val withoutIds = LibraryItem(id = "kitsu:1376", type = "series", name = "Show")
+        assertTrue(TraktLibraryRepository.membershipListKeys(state, withoutIds).isEmpty())
+        val otherType = LibraryItem(id = "kitsu:1376", type = "movie", name = "Show", imdbId = "tt0388629")
+        assertTrue(TraktLibraryRepository.membershipListKeys(state, otherType).isEmpty())
+    }
+
+    @Test
+    fun `membership is read by the TMDB id and the own id`() {
+        val state = TraktLibraryUiState(
+            membershipByContent = mapOf(
+                "movie:tmdb:550" to setOf("trakt:list:7"),
+                "movie:tt0111161" to setOf("trakt:watchlist"),
+            ),
+        )
+        assertEquals(setOf("trakt:list:7"),
+            TraktLibraryRepository.membershipListKeys(state, LibraryItem(id = "addon-1", type = "movie", name = "A", tmdbId = 550)))
+        assertEquals(setOf("trakt:watchlist"),
+            TraktLibraryRepository.membershipListKeys(state, LibraryItem(id = "tt0111161", type = "movie", name = "B")))
+    }
+
     @Test
     fun `missing ids message says the title has no IMDb or TMDB id`() {
         val message = traktMissingIdsMessage()

@@ -327,10 +327,19 @@ internal class LibraryLocalState {
      * Issue #17: [contains] for any of the title's ids — saved under its IMDb/TMDB id and asked
      * by an add-on id, or saved under an add-on id that carries the IMDb/TMDB id asked for.
      */
-    fun containsAnyId(id: String, type: String?, imdbId: String?, tmdbId: Int?): Boolean = synchronized(lock) {
+    fun containsAnyId(id: String, type: String?, imdbId: String?, tmdbId: Int?): Boolean =
+        findAnyId(id, type, imdbId, tmdbId) != null
+
+    /**
+     * Issue #17 (review r1): the stored item [containsAnyId] matches, the exact `type:id` record
+     * first. The toggle removes this record, so a title saved under its IMDb id and toggled from a
+     * page opened by an add-on id is removed instead of saved a second time.
+     */
+    fun findAnyId(id: String, type: String?, imdbId: String?, tmdbId: Int?): LibraryItem? = synchronized(lock) {
+        type?.let { itemsById[libraryItemKey(id, it)] }?.let { return it }
         val lookupIds = libraryLookupIds(id, imdbId, tmdbId)
         val wantedType = type?.trim()?.lowercase()
-        itemsById.values.any { item ->
+        itemsById.values.firstOrNull { item ->
             (wantedType == null || item.type.trim().lowercase() == wantedType) &&
                 (item.id.trim() in lookupIds ||
                     (imdbId != null && item.imdbId == imdbId) ||

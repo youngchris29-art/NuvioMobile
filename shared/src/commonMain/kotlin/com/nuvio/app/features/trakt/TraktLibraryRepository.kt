@@ -190,7 +190,8 @@ object TraktLibraryRepository {
         if (TraktAuthRepository.isAuthenticated.value) {
             ensureFresh()
         }
-        val itemMembership = _uiState.value.membershipByContent[contentKey(item.id, item.type)].orEmpty()
+        // Issue #17 (review r1): by any of the item's ids, like the Detail page's saved-state lookup.
+        val itemMembership = membershipListKeys(_uiState.value, item)
         val map = _uiState.value.listTabs.associate { tab ->
             tab.key to itemMembership.contains(tab.key)
         }
@@ -291,8 +292,9 @@ object TraktLibraryRepository {
     ): TraktLibraryUiState {
         if (state.listTabs.isEmpty()) return state
 
-        val contentKey = contentKey(item.id, item.type)
-        val currentMembership = state.membershipByContent[contentKey].orEmpty()
+        // Issue #17 (review r1): the entry may be stored under another of the item's ids.
+        val itemKeys = allContentKeys(item)
+        val currentMembership = membershipListKeys(state, item)
         val updatedEntriesByList = state.entriesByList.toMutableMap()
         val keys = (currentMembership + desiredMembership.keys).distinct()
 
@@ -305,11 +307,11 @@ object TraktLibraryRepository {
                 val resolvedItem = resolveOptimisticItem(state, item)
                 updatedEntriesByList[listKey] = listOf(resolvedItem) +
                     updatedEntriesByList[listKey].orEmpty().filterNot {
-                        allContentKeys(it).contains(contentKey)
+                        allContentKeys(it).any(itemKeys::contains)
                     }
             } else {
                 updatedEntriesByList[listKey] = updatedEntriesByList[listKey].orEmpty().filterNot {
-                    allContentKeys(it).contains(contentKey)
+                    allContentKeys(it).any(itemKeys::contains)
                 }
             }
         }
@@ -324,9 +326,9 @@ object TraktLibraryRepository {
         state: TraktLibraryUiState,
         item: LibraryItem,
     ): LibraryItem {
-        val itemKey = contentKey(item.id, item.type)
+        val itemKeys = allContentKeys(item)
         val existing = state.allItems.firstOrNull {
-            allContentKeys(it).contains(itemKey)
+            allContentKeys(it).any(itemKeys::contains)
         }
         val base = existing ?: item
         val savedAt = base.savedAtEpochMs.takeIf { it > 0L }
@@ -833,6 +835,15 @@ object TraktLibraryRepository {
         val stableId = normalizedId.ifBlank { itemId.trim() }
         return "${normalizeType(itemType)}:$stableId"
     }
+
+    /**
+     * Issue #17 (review r1): the list keys the item is a member of, read by any of its content
+     * keys (own id, IMDb, TMDB, Trakt), so an item Trakt holds under its `tt` id and asked for by
+     * an add-on id (with the IMDb id filled in by `libraryItemForDetail`) reads as a member, and
+     * the toggle removes it instead of adding it again.
+     */
+    internal fun membershipListKeys(state: TraktLibraryUiState, item: LibraryItem): Set<String> =
+        allContentKeys(item).flatMapTo(mutableSetOf()) { key -> state.membershipByContent[key].orEmpty() }
 
     private fun allContentKeys(entry: LibraryItem): Set<String> {
         val type = normalizeType(entry.type)

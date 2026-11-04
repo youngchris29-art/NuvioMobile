@@ -382,8 +382,12 @@ object LibraryRepository {
             return
         }
 
+        // Issue #17 (review r1): a title already saved under another of its ids (its `tt` id from a
+        // page opened by an add-on id, or the reverse) toggles that stored record, so the + removes
+        // it, with its sync deletion key, instead of adding a second one next to it.
+        val target = localState.findAnyId(item.id, item.type, item.imdbId, item.tmdbId) ?: item
         val result = localState.toggle(
-            item.copy(savedAtEpochMs = LibraryClock.nowEpochMs()),
+            target.copy(savedAtEpochMs = LibraryClock.nowEpochMs()),
         )
         if (result.isSaved) {
             log.i {
