@@ -75,6 +75,11 @@ object SubtitleRepository {
     private val _completedRequest = MutableStateFlow<String?>(null)
     val completedRequest: StateFlow<String?> = _completedRequest.asStateFlow()
 
+    // Dedupe state below (activeFetchJob, activeKey, activeExtras, fetchGeneration, hashJob,
+    // hashAttemptKey) is MAIN-CONFINED: it is written only by `fetchAddonSubtitles*` and `clear()`,
+    // which callers invoke on the main thread (every Swift call site does), and by the hash job,
+    // which hops to Dispatchers.Main before touching it. Fetch jobs on Default only read
+    // `fetchGeneration` to discard superseded results.
     private var activeFetchJob: Job? = null
     private var activeKey: String? = null
     // Extras of the active/completed fetch for `activeKey` — decides whether a second call for the
@@ -154,14 +159,18 @@ object SubtitleRepository {
                 log.d { "Video hash unavailable for $key after ${hashStart.elapsedNow()} — keeping unhashed results" }
                 return@launch
             }
-            if (activeKey != key || hashAttemptKey != attemptKey) return@launch
-            log.d { "Video hash ${result.hash} (size ${result.fileSize}) for $key in ${hashStart.elapsedNow()}" }
             val enriched = (extras ?: SubtitleRequestExtras()).copy(
                 videoHash = result.hash,
                 // An add-on declared size wins over the measured one (upstream behaviour).
                 videoSize = extras?.usableSize ?: result.fileSize,
             )
-            fetchAddonSubtitles(type, videoId, enriched)
+            // The dedupe state is main-confined (see the note on `activeKey`): the hash ran on
+            // Default, the staleness check and the re-fetch happen back on Main.
+            withContext(Dispatchers.Main) {
+                if (activeKey != key || hashAttemptKey != attemptKey) return@withContext
+                log.d { "Video hash ${result.hash} (size ${result.fileSize}) for $key in ${hashStart.elapsedNow()}" }
+                fetchAddonSubtitles(type, videoId, enriched)
+            }
         }
     }
 
