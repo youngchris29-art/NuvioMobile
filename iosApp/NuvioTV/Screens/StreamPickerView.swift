@@ -2130,9 +2130,11 @@ nonisolated enum ExternalResumePolicy {
     /// (`fetchEpisodesIfNeeded`) for a duration. False with a saved position. Otherwise true for a
     /// movie launched with no `meta` (Home / Library continue-watching, deep links) and for a
     /// series launched without its episode list (the episode runtime comes from that fetch).
+    /// Review r4: a zero position (Detail passes a percentage-only entry's `lastPositionMs`
+    /// through) counts as no saved position.
     static func needsCatalogRuntime(isSeries: Bool, hasMeta: Bool, hasEpisodes: Bool,
                                     resumePositionMs: Int64?) -> Bool {
-        guard resumePositionMs == nil else { return false }
+        guard (resumePositionMs ?? 0) <= 0 else { return false }
         return isSeries ? !hasEpisodes : !hasMeta
     }
 

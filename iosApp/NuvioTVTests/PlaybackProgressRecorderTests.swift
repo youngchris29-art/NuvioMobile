@@ -140,6 +140,12 @@ final class PlaybackProgressRecorderTests: XCTestCase {
                        "EpisodesSection passes the episode list")
         XCTAssertFalse(ExternalResumePolicy.needsCatalogRuntime(isSeries: true, hasMeta: false, hasEpisodes: false,
                                                                 resumePositionMs: 600_000))
+        // Review r4: Detail's series resume passes a Trakt entry's lastPositionMs of 0 through.
+        XCTAssertTrue(ExternalResumePolicy.needsCatalogRuntime(isSeries: true, hasMeta: true, hasEpisodes: false,
+                                                               resumePositionMs: 0),
+                      "a zero position is no saved position")
+        XCTAssertTrue(ExternalResumePolicy.needsCatalogRuntime(isSeries: false, hasMeta: false, hasEpisodes: false,
+                                                               resumePositionMs: 0))
     }
 
     @MainActor
