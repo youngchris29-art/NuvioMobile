@@ -81,6 +81,11 @@ object SubtitleRepository {
     // hash job, which hops to Dispatchers.Main before touching it. Fetch jobs publish through
     // `publish`, which hops to Main too, so the generation check and the write are one step
     // against a content switch or `clear()` (review r1).
+    // Review r3: `clear()` can arrive off the main thread (account cleanup from the credential
+    // observer on Default), so every state change and every publication holds this lock as well;
+    // the Main hop keeps the ordering with the Swift callers, the lock makes the generation check
+    // and the write one step against a `clear()` from anywhere. Reentrant.
+    private val stateLock = kotlinx.atomicfu.locks.SynchronizedObject()
     private var activeFetchJob: Job? = null
     // Review r1: a hash upgrade runs beside the first fetch instead of cancelling it, so a fast
     // add-on's first answer and `completedRequest` never wait for the slowest re-query.
@@ -126,16 +131,16 @@ object SubtitleRepository {
     // and the Swift call sites without extras keep calling `fetchAddonSubtitles(type:videoId:)`.
     fun fetchAddonSubtitles(type: String, videoId: String) = fetchAddonSubtitles(type, videoId, null)
 
-    fun fetchAddonSubtitles(type: String, videoId: String, extras: SubtitleRequestExtras?) {
+    fun fetchAddonSubtitles(type: String, videoId: String, extras: SubtitleRequestExtras?) = kotlinx.atomicfu.locks.synchronized(stateLock) {
         val key = requestKey(type, videoId)
         val sameContent = key == activeKey &&
             (activeFetchJob?.isActive == true || upgradeJob?.isActive == true || _completedRequest.value == key)
-        if (sameContent && !extras.isRicherThan(activeExtras)) return
+        if (sameContent && !extras.isRicherThan(activeExtras)) return@synchronized
         if (!sameContent) {
             // New content: the previous jobs stop, and the state is cleared HERE, synchronously, so
             // an upgrade that follows at once never merges into the previous title's list.
             startNewContent(key, type, videoId, extras)
-            return
+            return@synchronized
         }
         // Richer extras for the content in flight or shown: re-query beside the first fetch.
         val effectiveExtras = extras.mergedOver(activeExtras)
@@ -187,7 +192,7 @@ object SubtitleRepository {
         extras: SubtitleRequestExtras?,
         sourceUrl: String,
         sourceHeaders: Map<String, String>,
-    ) {
+    ) = kotlinx.atomicfu.locks.synchronized(stateLock) {
         val key = requestKey(type, videoId)
         val sourceIdentity = subtitleSourceIdentity(sourceUrl, sourceHeaders)
         if (key == activeKey && activeSourceIdentity != null && activeSourceIdentity != sourceIdentity) {
@@ -203,11 +208,11 @@ object SubtitleRepository {
             hashJob?.cancel()
             hashJob = null
             hashAttemptKey = attemptKey
-            return
+            return@synchronized
         }
-        if (activeExtras?.usableHash != null) return
-        if (!isHashableSubtitleSource(sourceUrl)) return
-        if (attemptKey == hashAttemptKey) return
+        if (activeExtras?.usableHash != null) return@synchronized
+        if (!isHashableSubtitleSource(sourceUrl)) return@synchronized
+        if (attemptKey == hashAttemptKey) return@synchronized
         hashJob?.cancel()
         hashAttemptKey = attemptKey
         hashJob = scope.launch {
@@ -225,9 +230,11 @@ object SubtitleRepository {
             // The dedupe state is main-confined (see the note on `activeKey`): the hash ran on
             // Default, the staleness check and the re-fetch happen back on Main.
             withContext(Dispatchers.Main) {
-                if (activeKey != key || hashAttemptKey != attemptKey) return@withContext
-                log.d { "Video hash ${result.hash} (size ${result.fileSize}) for $key in ${hashStart.elapsedNow()}" }
-                fetchAddonSubtitles(type, videoId, enriched)
+                kotlinx.atomicfu.locks.synchronized(stateLock) {
+                    if (activeKey != key || hashAttemptKey != attemptKey) return@synchronized
+                    log.d { "Video hash ${result.hash} (size ${result.fileSize}) for $key in ${hashStart.elapsedNow()}" }
+                    fetchAddonSubtitles(type, videoId, enriched)
+                }
             }
         }
     }
@@ -239,7 +246,9 @@ object SubtitleRepository {
      */
     private suspend fun publish(generation: Long, write: () -> Unit) {
         withContext(Dispatchers.Main) {
-            if (contentGeneration.value == generation) write()
+            kotlinx.atomicfu.locks.synchronized(stateLock) {
+                if (contentGeneration.value == generation) write()
+            }
         }
     }
 
@@ -309,7 +318,7 @@ object SubtitleRepository {
                 // Terminal path — both tvOS players poll `completedRequest`
                 // (NativePlaybackCoordinator.subsFetchCompleted, MPVPlayerView's prefetch
                 // side-load). Returning without setting it hangs the native player's subtitle wait.
-                _completedRequest.value = key
+                if (!upgrade) _completedRequest.value = key
                 finishLoading(upgrade)
             }
             return
@@ -420,9 +429,10 @@ object SubtitleRepository {
             } else if (_error.value != null) {
                 _error.value = null
             }
-            // Whichever of the first fetch and the upgrade finishes first completes the request
-            // for the players' polling; the other only refines the list.
-            _completedRequest.value = key
+            // Review r3: only the first fetch completes the request for the players' polling (Aether
+            // decides its auto-selection on that signal and never revisits it); an upgrade only
+            // refines the list, whether it finishes before or after.
+            if (!upgrade) _completedRequest.value = key
             finishLoading(upgrade)
         }
     }
@@ -433,7 +443,7 @@ object SubtitleRepository {
         if (firstFetchDone && upgradeDone) _isLoading.value = false
     }
 
-    fun clear() {
+    fun clear() = kotlinx.atomicfu.locks.synchronized(stateLock) {
         activeFetchJob?.cancel()
         upgradeJob?.cancel()
         upgradeJob = null
