@@ -15,7 +15,7 @@ import kotlin.test.assertTrue
 /** Issue #17: the library + no longer fails silently on the Trakt path. */
 class TraktLibraryToggleFailureTest {
 
-    private val item = LibraryItem(id = "tt0111161", type = "movie", name = "The Shawshank Redemption")
+    private val item = LibraryItem(id = "tt0111161", type = "movie", name = "The Shawshank Redemption", savedAtEpochMs = 0L)
 
     private val watchlistTab = TrackingLibraryTab(
         key = "trakt:watchlist",
@@ -126,11 +126,11 @@ class TraktLibraryToggleFailureTest {
         val state = TraktLibraryUiState(
             membershipByContent = mapOf("series:tt0388629" to setOf("trakt:watchlist")),
         )
-        val fromAddonPage = LibraryItem(id = "kitsu:1376", type = "series", name = "Show", imdbId = "tt0388629")
+        val fromAddonPage = LibraryItem(id = "kitsu:1376", type = "series", name = "Show", imdbId = "tt0388629", savedAtEpochMs = 0L)
         assertEquals(setOf("trakt:watchlist"), TraktLibraryRepository.membershipListKeys(state, fromAddonPage))
-        val withoutIds = LibraryItem(id = "kitsu:1376", type = "series", name = "Show")
+        val withoutIds = LibraryItem(id = "kitsu:1376", type = "series", name = "Show", savedAtEpochMs = 0L)
         assertTrue(TraktLibraryRepository.membershipListKeys(state, withoutIds).isEmpty())
-        val otherType = LibraryItem(id = "kitsu:1376", type = "movie", name = "Show", imdbId = "tt0388629")
+        val otherType = LibraryItem(id = "kitsu:1376", type = "movie", name = "Show", imdbId = "tt0388629", savedAtEpochMs = 0L)
         assertTrue(TraktLibraryRepository.membershipListKeys(state, otherType).isEmpty())
     }
 
@@ -143,9 +143,9 @@ class TraktLibraryToggleFailureTest {
             ),
         )
         assertEquals(setOf("trakt:list:7"),
-            TraktLibraryRepository.membershipListKeys(state, LibraryItem(id = "addon-1", type = "movie", name = "A", tmdbId = 550)))
+            TraktLibraryRepository.membershipListKeys(state, LibraryItem(id = "addon-1", type = "movie", name = "A", tmdbId = 550, savedAtEpochMs = 0L)))
         assertEquals(setOf("trakt:watchlist"),
-            TraktLibraryRepository.membershipListKeys(state, LibraryItem(id = "tt0111161", type = "movie", name = "B")))
+            TraktLibraryRepository.membershipListKeys(state, LibraryItem(id = "tt0111161", type = "movie", name = "B", savedAtEpochMs = 0L)))
     }
 
     @Test

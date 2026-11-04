@@ -65,7 +65,7 @@ class LibraryToggleIdsTest {
 
     @Test
     fun `saved under the IMDb id reads as saved when asked by the add-on id`() {
-        val state = loadedState(LibraryItem(id = "tt0388629", type = "series", name = "Show", imdbId = "tt0388629"))
+        val state = loadedState(LibraryItem(id = "tt0388629", type = "series", name = "Show", imdbId = "tt0388629", savedAtEpochMs = 0L))
         assertTrue(state.containsAnyId("kitsu:1376", "series", imdbId = "tt0388629", tmdbId = null))
         assertFalse(state.containsAnyId("kitsu:1376", "series", imdbId = null, tmdbId = null))
         assertFalse(state.containsAnyId("kitsu:1376", "movie", imdbId = "tt0388629", tmdbId = null),
@@ -75,7 +75,7 @@ class LibraryToggleIdsTest {
     @Test
     fun `saved under the add-on id reads as saved when asked by the IMDb or TMDB id`() {
         val state = loadedState(
-            LibraryItem(id = "kitsu:1376", type = "series", name = "Show", imdbId = "tt0388629", tmdbId = 30983),
+            LibraryItem(id = "kitsu:1376", type = "series", name = "Show", imdbId = "tt0388629", tmdbId = 30983, savedAtEpochMs = 0L),
         )
         assertTrue(state.containsAnyId("tt0388629", "series", imdbId = "tt0388629", tmdbId = null))
         assertTrue(state.containsAnyId("tmdb:30983", "series", imdbId = null, tmdbId = 30983))
@@ -85,8 +85,8 @@ class LibraryToggleIdsTest {
     @Test
     fun `toggling from a page with another id removes the stored record instead of adding a second`() {
         // Review r1: saved as tt0388629, toggled from the kitsu:1376 Detail page.
-        val state = loadedState(LibraryItem(id = "tt0388629", type = "series", name = "Show", imdbId = "tt0388629"))
-        val fromAddonPage = LibraryItem(id = "kitsu:1376", type = "series", name = "Show", imdbId = "tt0388629")
+        val state = loadedState(LibraryItem(id = "tt0388629", type = "series", name = "Show", imdbId = "tt0388629", savedAtEpochMs = 0L))
+        val fromAddonPage = LibraryItem(id = "kitsu:1376", type = "series", name = "Show", imdbId = "tt0388629", savedAtEpochMs = 0L)
         val target = state.findAnyId(fromAddonPage.id, fromAddonPage.type, fromAddonPage.imdbId, fromAddonPage.tmdbId)
         assertEquals("tt0388629", target?.id)
         val result = state.toggle((target ?: fromAddonPage).copy(savedAtEpochMs = 1L))
@@ -101,8 +101,8 @@ class LibraryToggleIdsTest {
     @Test
     fun `the exact record wins when a title is stored under two ids`() {
         val state = loadedState(
-            LibraryItem(id = "tt0388629", type = "series", name = "Show", imdbId = "tt0388629"),
-            LibraryItem(id = "kitsu:1376", type = "series", name = "Show", imdbId = "tt0388629"),
+            LibraryItem(id = "tt0388629", type = "series", name = "Show", imdbId = "tt0388629", savedAtEpochMs = 0L),
+            LibraryItem(id = "kitsu:1376", type = "series", name = "Show", imdbId = "tt0388629", savedAtEpochMs = 0L),
         )
         assertEquals("kitsu:1376", state.findAnyId("kitsu:1376", "series", imdbId = "tt0388629", tmdbId = null)?.id)
     }
@@ -110,8 +110,8 @@ class LibraryToggleIdsTest {
     @Test
     fun `a provider toggle acts on the record the provider holds under another id`() {
         // Review r2: Simkl/Trakt hold the title under tt0388629; the page was opened by kitsu:1376.
-        val stored = LibraryItem(id = "tt0388629", type = "series", name = "Show", imdbId = "tt0388629", tmdbId = 30983)
-        val fromAddonPage = LibraryItem(id = "kitsu:1376", type = "series", name = "Show", imdbId = "tt0388629")
+        val stored = LibraryItem(id = "tt0388629", type = "series", name = "Show", imdbId = "tt0388629", tmdbId = 30983, savedAtEpochMs = 0L)
+        val fromAddonPage = LibraryItem(id = "kitsu:1376", type = "series", name = "Show", imdbId = "tt0388629", savedAtEpochMs = 0L)
         val find: (String) -> LibraryItem? = { id -> stored.takeIf { it.id == id } }
         val target = libraryToggleTarget(fromAddonPage, find) { listOf(stored) }
         assertEquals("tt0388629", target.id)
@@ -125,17 +125,17 @@ class LibraryToggleIdsTest {
     @Test
     fun `a record stored under a canonical id the page cannot know matches by its IMDb or TMDB field`() {
         // Review r3: Simkl keeps the anime as kitsu:1376 (with its IMDb id); the page was opened by tt0388629.
-        val storedKitsu = LibraryItem(id = "kitsu:1376", type = "series", name = "Show", imdbId = "tt0388629")
+        val storedKitsu = LibraryItem(id = "kitsu:1376", type = "series", name = "Show", imdbId = "tt0388629", savedAtEpochMs = 0L)
         val find: (String) -> LibraryItem? = { id -> storedKitsu.takeIf { it.id == id } }
         val record = providerStoredRecord("tt0388629", "series", imdbId = "tt0388629", tmdbId = null, find = find) { listOf(storedKitsu) }
         assertEquals("kitsu:1376", record?.id)
         val target = libraryToggleTarget(
-            LibraryItem(id = "tt0388629", type = "series", name = "Show", imdbId = "tt0388629", tmdbId = 30983), find,
+            LibraryItem(id = "tt0388629", type = "series", name = "Show", imdbId = "tt0388629", tmdbId = 30983, savedAtEpochMs = 0L), find,
         ) { listOf(storedKitsu) }
         assertEquals("kitsu:1376", target.id)
         assertEquals(30983, target.tmdbId, "the page's TMDB id rides along")
         // By TMDB field; a different type or no ids to match by finds nothing.
-        val storedTmdb = LibraryItem(id = "simkl:9", type = "movie", name = "Film", tmdbId = 550)
+        val storedTmdb = LibraryItem(id = "simkl:9", type = "movie", name = "Film", tmdbId = 550, savedAtEpochMs = 0L)
         assertEquals("simkl:9", providerStoredRecord("addon-1", "movie", null, 550, { null }) { listOf(storedTmdb) }?.id)
         assertNull(providerStoredRecord("addon-1", "series", null, 550, { null }) { listOf(storedTmdb) })
         assertNull(providerStoredRecord("addon-1", "movie", null, null, { null }) { listOf(storedTmdb) })
@@ -152,7 +152,7 @@ class LibraryToggleIdsTest {
         }
         // The library holds kitsu:1376 (with its IMDb id); a tt0388629 card reads "Remove", and
         // the toggle target is that Kitsu record, not a second one.
-        val state = loadedState(LibraryItem(id = "kitsu:1376", type = "series", name = "Show", imdbId = "tt0388629"))
+        val state = loadedState(LibraryItem(id = "kitsu:1376", type = "series", name = "Show", imdbId = "tt0388629", savedAtEpochMs = 0L))
         assertTrue(state.containsAnyId("tt0388629", "series", imdbIdFromContentId("tt0388629"), tmdbIdFromContentId("tt0388629")))
         assertEquals("kitsu:1376", state.findAnyId("tt0388629", "series", "tt0388629", null)?.id)
     }
