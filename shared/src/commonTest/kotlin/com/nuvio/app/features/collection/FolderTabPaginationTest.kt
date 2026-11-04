@@ -1,6 +1,7 @@
 package com.nuvio.app.features.collection
 
 import com.nuvio.app.features.catalog.CatalogPage
+import com.nuvio.app.features.catalog.catalogPageAddedVisibleItems
 import com.nuvio.app.features.catalog.catalogPageNeedsAutoAdvance
 import com.nuvio.app.features.catalog.nextCatalogPaginationState
 import com.nuvio.app.features.home.MetaPreview
@@ -51,6 +52,11 @@ class FolderTabPaginationTest {
 
     @Test
     fun `a first page with every item filtered out is followed up too`() {
+        // Review r3: on a reset only a page with a visible item counts as having loaded one.
+        assertFalse(catalogPageAddedVisibleItems(reset = true, previousCount = 0, mergedCount = 0))
+        assertTrue(catalogPageAddedVisibleItems(reset = true, previousCount = 0, mergedCount = 1))
+        assertFalse(catalogPageAddedVisibleItems(reset = false, previousCount = 20, mergedCount = 20))
+        assertTrue(catalogPageAddedVisibleItems(reset = false, previousCount = 20, mergedCount = 21))
         val first = nextCatalogPaginationState(
             supportsPagination = true, requestedSkip = 0,
             page = page(rawItemCount = 20, nextSkip = 20), loadedNewItems = false, consecutiveDuplicatePages = 0,

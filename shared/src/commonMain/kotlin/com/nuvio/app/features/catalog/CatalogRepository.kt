@@ -182,13 +182,26 @@ object CatalogRepository {
         }
     }
 
+    /**
+     * `onlyForGeneration` (#20, review r3): the automatic follow-up of a page that added no
+     * visible item claims the next generation only if the completing fetch still owns it
+     * (compare-and-set); a load() for another catalog or a detach() in between wins and the
+     * follow-up does nothing, so it can never cancel a newer request's job.
+     */
     private fun fetchPage(
         request: CatalogRequest,
         reset: Boolean,
         forceRefresh: Boolean,
+        onlyForGeneration: Int? = null,
     ) {
+        val generation = if (onlyForGeneration == null) {
+            fetchGeneration.incrementAndGet()
+        } else {
+            if (!fetchGeneration.compareAndSet(onlyForGeneration, onlyForGeneration + 1)) return
+            if (activeRequest != request) return
+            onlyForGeneration + 1
+        }
         activeJob?.cancel()
-        val generation = fetchGeneration.incrementAndGet()
         val current = _uiState.value
         val requestedSkip = if (reset) 0 else current.nextSkip ?: return
 
@@ -229,7 +242,7 @@ object CatalogRepository {
                         mergeCatalogItems(_uiState.value.items, page.items)
                     }
                     val supportsPagination = request.target.supportsPagination || page.rawItemCount >= CATALOG_PAGE_SIZE
-                    val loadedNewItems = reset || mergedItems.size > current.items.size
+                    val loadedNewItems = catalogPageAddedVisibleItems(reset, current.items.size, mergedItems.size)
                     val paginationState = nextCatalogPaginationState(
                         supportsPagination = supportsPagination,
                         requestedSkip = requestedSkip,
@@ -250,7 +263,7 @@ object CatalogRepository {
                     // that added no visible item (filtered out, repeated, or a server that ignores
                     // `skip`) is followed up here; `nextCatalogPaginationState` bounds it at three.
                     if (catalogPageNeedsAutoAdvance(loadedNewItems, paginationState.nextSkip)) {
-                        fetchPage(request = request, reset = false, forceRefresh = false)
+                        fetchPage(request = request, reset = false, forceRefresh = false, onlyForGeneration = generation)
                     }
                 },
                 onFailure = { error ->

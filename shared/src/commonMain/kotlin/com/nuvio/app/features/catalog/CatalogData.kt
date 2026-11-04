@@ -247,6 +247,14 @@ fun nextCatalogPaginationState(
 fun catalogPageNeedsAutoAdvance(loadedNewItems: Boolean, nextSkip: Int?): Boolean =
     !loadedNewItems && nextSkip != null
 
+/**
+ * #20 (review r3): whether a loaded page added a visible item. On a reset the first page counts
+ * only when something survived the unreleased filter (a first page of upcoming titles is
+ * followed up like any other empty page); otherwise the merged list must have grown.
+ */
+fun catalogPageAddedVisibleItems(reset: Boolean, previousCount: Int, mergedCount: Int): Boolean =
+    if (reset) mergedCount > 0 else mergedCount > previousCount
+
 fun mergeCatalogItems(
     existing: List<MetaPreview>,
     incoming: List<MetaPreview>,

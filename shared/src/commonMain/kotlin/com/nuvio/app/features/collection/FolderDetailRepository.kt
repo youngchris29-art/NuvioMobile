@@ -9,6 +9,7 @@ import com.nuvio.app.features.addons.AddonManifest
 import com.nuvio.app.features.addons.AddonRepository
 import com.nuvio.app.features.catalog.CATALOG_PAGE_SIZE
 import com.nuvio.app.features.catalog.CatalogPage
+import com.nuvio.app.features.catalog.catalogPageAddedVisibleItems
 import com.nuvio.app.features.catalog.catalogPageNeedsAutoAdvance
 import com.nuvio.app.features.catalog.CatalogTarget
 import com.nuvio.app.features.catalog.fetchCatalogPage
@@ -452,13 +453,14 @@ object FolderDetailRepository {
                 // request or leak a cleared profile's items back into state. Only the job
                 // currently registered for this index may publish, and the check + publication
                 // hold the registry lock so a concurrent replacement can't slip between them.
+                // #20 (review r3): decided inside the locked update, acted on under the same lock.
+                var autoAdvance = false
                 kotlinx.atomicfu.locks.synchronized(loadJobsLock) {
                 if (loadJobs[index] !== registeredJob) return@onSuccess
                 // Upstream c7d23c04: COLLECTIONS overlay on the folder's items. The pattern is read
                 // outside the atomic updateTab lambda so the lambda stays pure (it may retry).
                 CustomPosterUrlRepository.ensureLoaded()
                 val posterPattern = CustomPosterUrlRepository.patternForScreen(CustomPosterScreen.COLLECTIONS)
-                var autoAdvance = false
                 updateTab(index) { tab ->
                     val mergedItems = if (reset) {
                         page.items
@@ -466,7 +468,7 @@ object FolderDetailRepository {
                         mergeCatalogItems(tab.items, page.items)
                     }.withCustomPosterUrls(posterPattern)
                     val supportsPagination = tab.supportsPagination || page.rawItemCount >= CATALOG_PAGE_SIZE
-                    val loadedNewItems = reset || mergedItems.size > tab.items.size
+                    val loadedNewItems = catalogPageAddedVisibleItems(reset, tab.items.size, mergedItems.size)
                     val paginationState = nextCatalogPaginationState(
                         supportsPagination = supportsPagination,
                         requestedSkip = requestedSkip,
@@ -486,11 +488,14 @@ object FolderDetailRepository {
                     )
                 }
                 rebuildAllTab()
-                } // synchronized(loadJobsLock)
-                // #20 (review r2): a page with no new visible item (filtered out, repeated, or a server
-                // that ignores `skip`) would leave the tab with nothing to trigger the next load; ask
-                // for it here. `nextCatalogPaginationState` bounds this at three such pages in a row.
+                // #20 (review r2/r3): a page with no new visible item (filtered out, repeated, or a
+                // server that ignores `skip`) would leave the tab with nothing to trigger the next
+                // load; ask for it here, still under the lock so a detach() or a newer folder's
+                // initialize() cannot slip in between the ownership check above and the new job's
+                // registration (loadTabPage re-enters the lock; it is reentrant).
+                // `nextCatalogPaginationState` bounds this at three such pages in a row.
                 if (autoAdvance) loadTabPage(index, reset = false)
+                } // synchronized(loadJobsLock)
             }.onFailure { error ->
                 // UX-14 (Codex gate 2): a [detach]-cancelled load is NOT a failure. Writing
                 // flags/error here raced the pop-back [initialize] — once the flags read false,
