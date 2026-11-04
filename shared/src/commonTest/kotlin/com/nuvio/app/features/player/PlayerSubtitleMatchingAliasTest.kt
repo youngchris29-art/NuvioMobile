@@ -50,6 +50,18 @@ class PlayerSubtitleMatchingAliasTest {
     }
 
     @Test
+    fun cantoneseCodesStayUnderChinese() {
+        for (code in listOf("zhc", "ZHC", "zc", "yue", "zh-ca")) {
+            assertEquals("zh-ca", SubtitleLanguageMatching.normalizeLanguageCode(code))
+        }
+        assertTrue(SubtitleLanguageMatching.matchesLanguageCode("zhc", "zh"))
+        assertTrue(SubtitleLanguageMatching.matchesLanguageCode("zhc", "zh-ca"))
+        assertTrue(!SubtitleLanguageMatching.matchesLanguageCode("zh-tw", "zh-ca"))
+        // Display names in this table are lowercase by convention.
+        assertEquals("chinese (cantonese)", SubtitleLanguageMatching.languageCodeToName("zhc"))
+    }
+
+    @Test
     fun audioPreferenceAliasesCoverMontenegrinCodes() {
         assertEquals("sr-me", normalizeLanguageCode("mne"))
         assertEquals("sr-me", normalizeLanguageCode("me"))
