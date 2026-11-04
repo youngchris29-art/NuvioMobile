@@ -353,6 +353,22 @@ final class StreamRowModelTests: XCTestCase {
         XCTAssertFalse(model.spokenLabel.contains("My Repo"), model.spokenLabel)
     }
 
+    func testARepositoryGroupRowNamesTheProviderWithoutAHeadlineAndTheLogoOff() {
+        // Review r1: no resolution in the title or release, logo column off: the provider still shows.
+        let s = stream(name: "Stream", description: "generic release",
+                       addonId: "plugin-repo:https://repo.example/manifest.json", addonName: "My Repo",
+                       sourceName: "Provider A")
+        let off = make(s, display: StreamRowDisplay(showAddonLogo: false))
+        XCTAssertNil(off.headline)
+        XCTAssertTrue(off.showsAddonName)
+        XCTAssertEqual(off.addonName, "Provider A")
+        XCTAssertTrue(off.spokenLabel.contains("Provider A"), off.spokenLabel)
+        // A plain add-on row with the same shape keeps the setting (its header names the add-on).
+        let plain = make(stream(name: "Stream", description: "generic release", addonId: "com.comet", addonName: "Comet"),
+                         display: StreamRowDisplay(showAddonLogo: false))
+        XCTAssertFalse(plain.showsAddonName)
+    }
+
     func testOtherRowsAndMissingProviderNamesKeepTheAddonName() {
         let pluginRow = make(stream(name: "T", description: "Movie.2024.1080p.WEB-DL.HEVC",
                                     addonId: "plugin:abc", addonName: "Provider A", sourceName: "Provider A"))

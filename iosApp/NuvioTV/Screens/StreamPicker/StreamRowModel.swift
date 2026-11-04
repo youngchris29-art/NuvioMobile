@@ -173,7 +173,11 @@ nonisolated struct StreamRowModel: Equatable, Identifiable {
             sizeBytes: sizeBytes,
             badgesOnTop: display.badgesOnTop,
             showsAddonColumn: display.showAddonLogo,
-            showsAddonName: (headline != nil || display.showAddonLogo) && !sourceLabel.isEmpty,
+            // #16 (review r1): under a repository header the row is the only place the provider
+            // can be read, so a repository-group row names it even with no headline and the logo
+            // column off (other rows keep the setting: their group header already names the add-on).
+            showsAddonName: (headline != nil || display.showAddonLogo || stream.isPluginRepositoryGroup)
+                && !sourceLabel.isEmpty,
             addonName: sourceLabel,
             addonLogo: (logo ?? "").isEmpty ? nil : logo,
             isYouTube: StreamPickerView.isYouTubeResolved(stream),
