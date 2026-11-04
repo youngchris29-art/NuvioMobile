@@ -87,6 +87,9 @@ final class DetailViewModel: ObservableObject {
     @Published private(set) var shuffleCaughtUp = false
     /// Resolved full-screen trailer (from the Trailers row); drives a player cover with sound.
     @Published var trailerPlayback: TrailerPlaybackItem?
+    /// Issue #17: why the library + failed (Trakt sign-in expired, no IMDb/TMDB id, …). The shared
+    /// toast controller is a no-op on tvOS, so DetailView shows this as an alert. nil = nothing to say.
+    @Published var libraryActionError: String?
     /// Trailer currently resolving (spinner on its row card).
     @Published private(set) var resolvingTrailerId: String?
 
@@ -562,13 +565,21 @@ final class DetailViewModel: ObservableObject {
         WatchedRepository.shared.toggleWatched(item: preview.toWatchedItem(markedAtEpochMs: 0))
     }
 
-    /// Toggle library membership. Prefers the enriched `meta`, falling back to the preview card.
-    /// `toLibraryItem` is a Kotlin extension → Swift instance method; the repo stamps
-    /// `savedAtEpochMs` itself, so we pass 0.
+    /// Toggle library membership. Prefers the enriched `meta`, falling back to the preview card;
+    /// issue #17: an IMDb/TMDB id missing from one is taken from the other (`libraryItemForDetail`),
+    /// so Trakt can save a search hit with an add-on id. The repo stamps `savedAtEpochMs` itself,
+    /// so we pass 0. A connected provider's failure comes back as a message and is shown here.
     func toggleLibrary() {
-        let item: LibraryItem = meta.map { $0.toLibraryItem(savedAtEpochMs: 0) }
-            ?? preview.toLibraryItem(savedAtEpochMs: 0)
-        LibraryRepository.shared.toggleSaved(item: item)
+        let item = LibraryModelsKt.libraryItemForDetail(meta: meta, preview: preview, savedAtEpochMs: 0)
+        LibraryRepository.shared.toggleSavedReporting(item: item) { [weak self] message in
+            // Off the main thread for a connected provider; nil = the toggle went through.
+            guard let message else { return }
+            Task { @MainActor in
+                self?.libraryActionError = message.isEmpty
+                    ? String(localized: "Couldn\u{2019}t update your library.")
+                    : message
+            }
+        }
     }
 
     /// Recomputes the action-button flags. Every write is equality-gated: seven watchers call

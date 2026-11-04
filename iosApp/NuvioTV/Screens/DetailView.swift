@@ -1296,6 +1296,20 @@ struct DetailView: View {
         .onChange(of: isSeries && model.seriesAction != nil && model.meta != nil && model.isPlayEnabled) { _, mounted in
             if mounted { claimLatePlayFocusIfNeeded() }
         }
+        // Issue #17: a failed library +. The shared toast controller is a no-op on tvOS.
+        .alert(
+            String(localized: "Library"),
+            isPresented: Binding(
+                get: { model.libraryActionError != nil },
+                set: { if !$0 { model.libraryActionError = nil } }
+            )
+        ) {
+            Button(String(localized: "OK"), role: .cancel) {
+                model.libraryActionError = nil
+            }
+        } message: {
+            Text(model.libraryActionError ?? "")
+        }
         .sheet(isPresented: $showShuffleSheet, onDismiss: {
             if let route = pendingShuffleRoute {
                 pendingShuffleRoute = nil
