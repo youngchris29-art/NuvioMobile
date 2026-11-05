@@ -242,8 +242,8 @@ internal class MdbListEpisodeMappingService(
         // dismissing its numbers, once an hour per episode (Codex r7 #2, r8 #1).
         val outsideTheLists = if (mapping.remaps) mapping.toTmdb(season, episode.number, catalog.videoId) == null
         else !mapping.covers(season, episode.number)
-        if (outsideTheLists && shouldRefreshFor(catalog.contentId, season, episode.number)) {
-            mapping = resolve(catalog.contentId, tmdbShowId, aliases, reload = true) ?: return reference
+        if (outsideTheLists) {
+            mapping = refreshForEpisode(catalog.contentId, tmdbShowId, aliases, season, episode.number, mapping) ?: return reference
         }
         if (!mapping.remaps) return reference
         val tmdb = mapping.toTmdb(season, episode.number, catalog.videoId) ?: return null
@@ -251,17 +251,63 @@ internal class MdbListEpisodeMappingService(
         return reference.copy(episode = episode.copy(season = tmdb.season, number = tmdb.episode))
     }
 
-    // Guarded by inFlightMutex: when each unmapped episode last had its lists reloaded.
-    private val unmappedRefreshedAt = mutableMapOf<String, TimeMark>()
+    // Guarded by inFlightMutex: the reload a write for an episode outside the lists is running
+    // (every other write for it awaits that one, Codex r9 #1), and when each last succeeded.
+    private val episodeRefreshes = mutableMapOf<String, CompletableDeferred<MdbListEpisodeMapping?>>()
+    private val episodeRefreshedAt = mutableMapOf<String, TimeMark>()
 
-    private suspend fun shouldRefreshFor(contentId: String, season: Int, episode: Int): Boolean {
-        val key = "${contentId.trim()}|$season|$episode"
-        return inFlightMutex.withLock {
-            val last = unmappedRefreshedAt[key]
-            if (last != null && last.elapsedNow() < UNMATCHED_REFRESH_INTERVAL) return@withLock false
-            unmappedRefreshedAt[key] = timeSource.markNow()
-            true
+    /**
+     * The show's mapping after reloading both lists for [season]/[episode], which the current
+     * lists do not have. One reload per episode at a time, shared by every writer that needs it;
+     * the hour between reloads starts when one succeeds, and while the show's last reload failed
+     * [current] is answered until [RELOAD_RETRY_INTERVAL] has passed, so TMDB coming back is seen
+     * ten minutes later, not an hour (Codex r9 #2).
+     */
+    private suspend fun refreshForEpisode(
+        contentId: String,
+        tmdbShowId: Long?,
+        aliases: Set<String>,
+        season: Int,
+        episode: Int,
+        current: MdbListEpisodeMapping,
+    ): MdbListEpisodeMapping? {
+        val showKey = contentId.trim()
+        val key = "$showKey|$season|$episode"
+        repeat(MAX_ATTEMPTS) {
+            currentCoroutineContext().ensureActive()
+            val deferred = CompletableDeferred<MdbListEpisodeMapping?>()
+            val existing = inFlightMutex.withLock {
+                episodeRefreshes[key] ?: run {
+                    if (reloadFailedRecently(showKey)) return current
+                    episodeRefreshedAt[key]?.let { if (it.elapsedNow() < UNMATCHED_REFRESH_INTERVAL) return current }
+                    episodeRefreshes[key] = deferred
+                    null
+                }
+            }
+            if (existing != null) {
+                return try {
+                    existing.await()
+                } catch (_: CancellationException) {
+                    currentCoroutineContext().ensureActive()
+                    return@repeat
+                }
+            }
+            return try {
+                val mapping = resolve(contentId, tmdbShowId, aliases, reload = true)
+                inFlightMutex.withLock {
+                    if (!reloadFailedRecently(showKey)) episodeRefreshedAt[key] = timeSource.markNow()
+                }
+                mapping.also(deferred::complete)
+            } catch (error: CancellationException) {
+                deferred.cancel(error)
+                throw error
+            } finally {
+                withContext(NonCancellable) {
+                    inFlightMutex.withLock { if (episodeRefreshes[key] === deferred) episodeRefreshes.remove(key) }
+                }
+            }
         }
+        return current
     }
 
     /** Forgets every mapping; loads still running belong to the previous epoch and are dropped. */
