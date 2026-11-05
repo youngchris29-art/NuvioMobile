@@ -1288,6 +1288,34 @@ object TmdbMetadataService {
         merged
     }
 
+    /**
+     * Episode count per season of TMDB show [tmdbShowId] from `tv/{id}` (specials and empty
+     * seasons dropped), or null when TMDB answered nothing. Serves [TmdbSeasonListService].
+     */
+    internal suspend fun fetchSeasonEpisodeCounts(tmdbShowId: Int): Map<Int, Int>? {
+        val details = fetch<TmdbDetailsResponse>(
+            endpoint = "tv/$tmdbShowId",
+            query = mapOf("language" to SEASON_LIST_LANGUAGE),
+        ) ?: return null
+        return details.seasons.mapNotNull { season ->
+            val number = season.seasonNumber?.takeIf { it > 0 } ?: return@mapNotNull null
+            val count = season.episodeCount?.takeIf { it > 0 } ?: return@mapNotNull null
+            number to count
+        }.toMap()
+    }
+
+    /** Episode numbers and titles of one season from `tv/{id}/season/{n}`; empty when unavailable. */
+    internal suspend fun fetchSeasonEpisodeTitles(tmdbShowId: Int, season: Int): List<Pair<Int, String?>> {
+        val details = fetch<TmdbSeasonDetailsResponse>(
+            endpoint = "tv/$tmdbShowId/season/$season",
+            query = mapOf("language" to SEASON_LIST_LANGUAGE),
+        ) ?: return emptyList()
+        return details.episodes.mapNotNull { episode ->
+            val number = episode.episodeNumber?.takeIf { it > 0 } ?: return@mapNotNull null
+            number to episode.name?.trim()?.takeIf(String::isNotBlank)
+        }
+    }
+
     private suspend inline fun <reified T> fetch(
         endpoint: String,
         query: Map<String, String> = emptyMap(),
@@ -1557,6 +1585,44 @@ object TmdbMetadataService {
  * Behind the Scenes clips" bug. The localized string is for DISPLAY only, never for matching wire
  * values.
  */
+
+/** Language of the season lists used for episode remapping: add-ons mostly title episodes in English. */
+private const val SEASON_LIST_LANGUAGE = "en-US"
+
+/**
+ * TMDB season lists for the MDBList episode remap (upstream NuvioTV facf25ec3): MDBList numbers
+ * episodes as TMDB does, so a show the add-on splits into seasons differently is matched against
+ * TMDB's own list. Interface so tests can fake the network; [TmdbSeasonListService] is production.
+ */
+internal interface TmdbSeasonListSource {
+    /** Episode count per season (specials excluded), or null when TMDB cannot be reached. */
+    suspend fun seasonEpisodeCounts(tmdbShowId: Int): Map<Int, Int>?
+
+    /** `(episode number, title)` of every episode in [season]; empty when unavailable. */
+    suspend fun seasonEpisodes(tmdbShowId: Int, season: Int): List<Pair<Int, String?>>
+
+    /** The TMDB id of the show behind [imdbId] / [tvdbId], or null when unknown. */
+    suspend fun findTmdbShowId(imdbId: String?, tvdbId: String?): Int?
+}
+
+internal object TmdbSeasonListService : TmdbSeasonListSource {
+    override suspend fun seasonEpisodeCounts(tmdbShowId: Int): Map<Int, Int>? =
+        TmdbMetadataService.fetchSeasonEpisodeCounts(tmdbShowId)
+
+    override suspend fun seasonEpisodes(tmdbShowId: Int, season: Int): List<Pair<Int, String?>> =
+        TmdbMetadataService.fetchSeasonEpisodeTitles(tmdbShowId, season)
+
+    override suspend fun findTmdbShowId(imdbId: String?, tvdbId: String?): Int? {
+        imdbId?.trim()?.takeIf { it.startsWith("tt", ignoreCase = true) }?.let { imdb ->
+            TmdbService.ensureTmdbId(videoId = imdb, mediaType = "series")?.toIntOrNull()?.let { return it }
+        }
+        tvdbId?.trim()?.takeIf(String::isNotBlank)?.let { tvdb ->
+            TmdbService.tvdbToTmdb(tvdbId = tvdb, mediaType = "series")?.toIntOrNull()?.let { return it }
+        }
+        return null
+    }
+}
+
 internal fun trailerCategoryRank(
     category: String,
     hasOfficialVideo: Boolean,
@@ -2074,6 +2140,13 @@ private data class TmdbDetailsResponse(
     val networks: List<TmdbCompany> = emptyList(),
     @SerialName("belongs_to_collection") val belongsToCollection: TmdbCollectionRef? = null,
     @SerialName("number_of_seasons") val numberOfSeasons: Int? = null,
+    val seasons: List<TmdbSeasonSummary> = emptyList(),
+)
+
+@Serializable
+private data class TmdbSeasonSummary(
+    @SerialName("season_number") val seasonNumber: Int? = null,
+    @SerialName("episode_count") val episodeCount: Int? = null,
 )
 
 @Serializable
