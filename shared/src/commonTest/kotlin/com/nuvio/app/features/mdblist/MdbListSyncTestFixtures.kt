@@ -111,6 +111,8 @@ internal open class MdbListTestAddonEpisodes(
     var seasons: List<Int> = emptyList(),
     var titles: Map<Pair<Int, Int>, String> = emptyMap(),
     var airDates: Map<Pair<Int, Int>, String> = emptyMap(),
+    /** First episode number per season (default 1): an add-on that numbers season 2 from 13. */
+    var firstEpisode: Map<Int, Int> = emptyMap(),
 ) : AddonEpisodeListSource {
     val calls = mutableListOf<Pair<String, String>>()
     /** The add-on set / metadata language stamp; bump it to invalidate what was built on it. */
@@ -123,7 +125,8 @@ internal open class MdbListTestAddonEpisodes(
         gate?.await()
         return seasons.flatMapIndexed { index, count ->
             val season = index + 1
-            (1..count).map { episode ->
+            val first = firstEpisode[season] ?: 1
+            (first until first + count).map { episode ->
                 EpisodeMappingEntry(season, episode, titles[season to episode], "$contentId:$season:$episode", airDates[season to episode])
             }
         }

@@ -233,7 +233,9 @@ internal class MdbListEpisodeMappingService(
         // and is matched within the season; an episode found in the other side's neighbouring
         // season is a moved boundary and the whole show is matched by position.
         val sameSeasons = seasons.keys == addonCounts.keys
-        if (sameSeasons && addonCounts == seasons) return MdbListEpisodeMapping.Unchanged
+        // The cheap path needs the add-on's numbers to be the 1..n TMDB uses, not just n of them
+        // (Codex r6 #1): an add-on numbering season 2 as E13..E24 has twelve too.
+        if (sameSeasons && addonCounts == seasons && addon.isNumberedContiguously()) return MdbListEpisodeMapping.Unchanged
 
         val tmdbEpisodes = coroutineScope {
             val semaphore = Semaphore(TMDB_SEASON_REQUEST_CONCURRENCY)
@@ -256,7 +258,7 @@ internal class MdbListEpisodeMappingService(
         if (tmdbEpisodes.any { it == null }) return null
         val tmdbList = tmdbEpisodes.filterNotNull().flatten()
         if (tmdbList.isEmpty()) return null
-        if (TraktEpisodeMappingService.hasSameSeasonStructure(addon, tmdbList)) return MdbListEpisodeMapping.Unchanged
+        if (addon.coordinates() == tmdbList.coordinates()) return MdbListEpisodeMapping.Unchanged
         val withinSeasons = sameSeasons && when (seasonsHoldTheSameEpisodes(addon, tmdbList)) {
             true -> true
             false -> false
@@ -283,6 +285,12 @@ internal class MdbListEpisodeMappingService(
 
     private fun List<EpisodeMappingEntry>.seasonCounts(): Map<Int, Int> =
         groupBy { it.season }.mapValues { it.value.size }
+
+    private fun List<EpisodeMappingEntry>.coordinates(): Set<Pair<Int, Int>> = mapTo(HashSet()) { it.season to it.episode }
+
+    /** True when every season's episodes are numbered 1..n, as TMDB numbers its own. */
+    private fun List<EpisodeMappingEntry>.isNumberedContiguously(): Boolean =
+        groupBy { it.season }.values.all { episodes -> episodes.map { it.episode }.sorted() == (1..episodes.size).toList() }
 
     internal companion object {
         const val TMDB_SEASON_REQUEST_CONCURRENCY = 4
@@ -386,21 +394,34 @@ internal class MdbListEpisodeMapping private constructor(
 
     /** The add-on seasons TMDB season [tmdbSeason] maps into (several when TMDB's is longer). */
     fun addonSeasonsOf(tmdbSeason: Int): Set<Int> =
-        addonByTmdb.entries.filter { it.key.first == tmdbSeason }.mapTo(HashSet()) { it.value.season }
+        if (tmdbSeason == SPECIALS_SEASON) setOf(tmdbSeason)
+        else addonByTmdb.entries.filter { it.key.first == tmdbSeason }.mapTo(HashSet()) { it.value.season }
+
+    /** [tmdbSeasons] as the add-on seasons they cover; what [addonSeasonsOf] gives for each. */
+    fun addonSeasonsOf(tmdbSeasons: Set<Int>): Set<Int> = tmdbSeasons.flatMapTo(HashSet(), ::addonSeasonsOf)
 
     /**
      * The add-on's episode for TMDB [season]/[episode]. Null when nothing needs remapping
      * ([remaps] false) or, for a show that does remap, when TMDB's episode has no counterpart in
      * the add-on's list (a recap the add-on skips): such a row must not be shown as another episode.
      */
-    fun toAddon(season: Int, episode: Int): EpisodeMappingEntry? = addonByTmdb[season to episode]
+    fun toAddon(season: Int, episode: Int): EpisodeMappingEntry? =
+        if (season == SPECIALS_SEASON) EpisodeMappingEntry(season, episode) else addonByTmdb[season to episode]
 
     /** TMDB's episode for the add-on's [season]/[episode]; null as for [toAddon]. */
-    fun toTmdb(season: Int, episode: Int, videoId: String? = null): EpisodeMappingEntry? =
-        videoId?.takeIf(String::isNotBlank)?.let(tmdbByAddonVideoId::get) ?: tmdbByAddon[season to episode]
+    fun toTmdb(season: Int, episode: Int, videoId: String? = null): EpisodeMappingEntry? {
+        if (season == SPECIALS_SEASON) return EpisodeMappingEntry(season, episode)
+        return videoId?.takeIf(String::isNotBlank)?.let(tmdbByAddonVideoId::get) ?: tmdbByAddon[season to episode]
+    }
 
     companion object {
         val Unchanged = MdbListEpisodeMapping(emptyMap(), emptyMap(), emptyMap(), unmatched = 0)
+
+        /**
+         * Season 0: neither list carries specials (both drop season ≤ 0), so they are never
+         * remapped and keep their coordinates at every port (Codex r6 #2).
+         */
+        const val SPECIALS_SEASON = 0
 
         /**
          * Matches episodes season by season: within season N the add-on's and TMDB's lists are
@@ -462,7 +483,7 @@ internal class MdbListEpisodeMapping private constructor(
             tmdbEpisodes: List<EpisodeMappingEntry>,
         ): MdbListEpisodeMapping {
             if (addonEpisodes.isEmpty() || tmdbEpisodes.isEmpty()) return Unchanged
-            val addonByTmdb = matchAll(tmdbEpisodes) { entry ->
+            val addonByTmdb = matchAll(tmdbEpisodes, addonEpisodes) { entry ->
                 TraktEpisodeMappingService.reverseRemapEpisodeByTitleOrIndex(
                     requestedSeason = entry.season,
                     requestedEpisode = entry.episode,
@@ -471,7 +492,7 @@ internal class MdbListEpisodeMapping private constructor(
                     traktEpisodes = tmdbEpisodes,
                 )
             }
-            val tmdbByAddon = matchAll(addonEpisodes) { entry ->
+            val tmdbByAddon = matchAll(addonEpisodes, tmdbEpisodes) { entry ->
                 TraktEpisodeMappingService.remapEpisodeByTitleOrIndex(
                     requestedSeason = entry.season,
                     requestedEpisode = entry.episode,
@@ -492,23 +513,34 @@ internal class MdbListEpisodeMapping private constructor(
 
         private suspend fun matchAll(
             source: List<EpisodeMappingEntry>,
+            target: List<EpisodeMappingEntry>,
             remap: suspend (EpisodeMappingEntry) -> EpisodeMappingEntry?,
         ): Map<Pair<Int, Int>, EpisodeMappingEntry> {
-            class Match(val key: Pair<Int, Int>, val counterpart: EpisodeMappingEntry, val byTitle: Boolean)
+            class Match(val key: Pair<Int, Int>, val counterpart: EpisodeMappingEntry, val byIdentity: Boolean)
+            // Air dates unique on both sides stand in for titles when those do not match (localized
+            // titles, Codex r6 #3), before the positional fallback.
+            val targetByDate = target.filter { it.airDate != null }.groupBy { it.airDate!! }.filterValues { it.size == 1 }.mapValues { it.value.single() }
+            val sourceDates = source.filter { it.airDate != null }.groupBy { it.airDate!! }.filterValues { it.size == 1 }.keys
             val matches = ArrayList<Match>(source.size)
-            val ownedByTitle = HashSet<Pair<Int, Int>>()
+            val ownedByIdentity = HashSet<Pair<Int, Int>>()
             for (entry in source) {
-                val counterpart = remap(entry) ?: continue
+                val remapped = remap(entry)
                 val title = entry.title?.let(MdbListEpisodeMappingService::usefulTitle)
-                val byTitle = title != null && title == counterpart.title?.let(MdbListEpisodeMappingService::usefulTitle)
-                if (byTitle) ownedByTitle += counterpart.season to counterpart.episode
-                matches += Match(entry.season to entry.episode, counterpart, byTitle)
+                val byTitle = remapped != null && title != null && title == remapped.title?.let(MdbListEpisodeMappingService::usefulTitle)
+                val counterpart = when {
+                    byTitle -> remapped
+                    entry.airDate in sourceDates -> targetByDate[entry.airDate] ?: remapped
+                    else -> remapped
+                } ?: continue
+                val byIdentity = byTitle || (counterpart.airDate != null && counterpart.airDate == entry.airDate && entry.airDate in sourceDates)
+                if (byIdentity) ownedByIdentity += counterpart.season to counterpart.episode
+                matches += Match(entry.season to entry.episode, counterpart, byIdentity)
             }
             val result = LinkedHashMap<Pair<Int, Int>, EpisodeMappingEntry>(matches.size)
             for (match in matches) {
                 val counterpartKey = match.counterpart.season to match.counterpart.episode
-                // A positional match on an episode that another episode owns by title is no match.
-                if (!match.byTitle && counterpartKey in ownedByTitle) continue
+                // A positional match on an episode that another episode owns by title or date is no match.
+                if (!match.byIdentity && counterpartKey in ownedByIdentity) continue
                 result[match.key] = match.counterpart
             }
             return result

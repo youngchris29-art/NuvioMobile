@@ -64,6 +64,9 @@ class MdbListTrackingProgressProvider internal constructor(
     ): List<WatchProgressEntry> {
         if (entries.none { it.parentMetaId == contentId && it.seasonNumber != null && it.episodeNumber != null }) return entries
         val mapping = episodeMapping(contentId)?.takeIf { it.remaps } ?: return entries
+        // The dropped seasons are taken from the projection and translated afresh, whether the
+        // row came out raw or already remapped: the same answer either way (Codex r6 #4).
+        val excluded = mapping.addonSeasonsOf(sync.currentProjection().droppedSeasons(contentId))
         return entries.mapNotNull { entry ->
             if (entry.parentMetaId != contentId) return@mapNotNull entry
             val season = entry.seasonNumber ?: return@mapNotNull entry
@@ -71,7 +74,8 @@ class MdbListTrackingProgressProvider internal constructor(
             val tmdb = parseMdbListEpisodeKey(entry.trackingEpisodeKey) ?: (season to episode)
             // A TMDB episode the add-on does not have seeds nothing (Codex r5 #4), as in snapshots.
             val addon = mapping.toAddon(tmdb.first, tmdb.second) ?: return@mapNotNull null
-            if (addon.season == season && addon.episode == episode) entry else entry.withAddonEpisode(addon, mapping)
+            val moved = if (addon.season == season && addon.episode == episode) entry else entry.withAddonEpisode(addon, mapping)
+            if (moved.excludedNextUpSeasons == excluded) moved else moved.copy(excludedNextUpSeasons = excluded)
         }
     }
 

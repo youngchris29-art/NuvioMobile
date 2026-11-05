@@ -56,6 +56,9 @@ internal class MdbListProgressProjection private constructor(
 
     fun isHidden(contentId: String, season: Int? = null): Boolean = isDropped(droppedById, contentId, season)
 
+    /** The TMDB seasons of [contentId] the user dropped (whole-show drops excluded; those hide the show). */
+    fun droppedSeasons(contentId: String): Set<Int> = droppedById[contentId].orEmpty().filterNotNullTo(HashSet())
+
     fun canonicalContentId(contentId: String): String? =
         runCatching {
             val ids = parseTrackingExternalIds(contentId).toMdbListIds() ?: return null
@@ -319,7 +322,7 @@ internal fun WatchProgressEntry.withAddonEpisode(addon: EpisodeMappingEntry, map
     episodeNumber = addon.episode,
     videoId = addon.videoId ?: buildPlaybackVideoId(parentMetaId, addon.season, addon.episode),
     episodeTitle = episodeTitle ?: addon.title,
-    excludedNextUpSeasons = excludedNextUpSeasons.flatMapTo(HashSet()) { tmdbSeason -> mapping.addonSeasonsOf(tmdbSeason) },
+    excludedNextUpSeasons = mapping.addonSeasonsOf(excludedNextUpSeasons),
 )
 
 internal val MdbListItemType.contentType: String

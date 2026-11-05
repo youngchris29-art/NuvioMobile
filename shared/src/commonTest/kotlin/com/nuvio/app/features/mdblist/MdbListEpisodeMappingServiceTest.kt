@@ -447,6 +447,57 @@ class MdbListEpisodeMappingServiceTest {
         assertEquals(2 to 13, service.toMdbListNumbering(episodeReference(2, 13), mediaIndex = null)?.episode?.let { it.season to it.number })
     }
 
+    // ── Codex r6 ────────────────────────────────────────────────────────────────────────────
+
+    @Test
+    fun `equal counts with an add-on that numbers season 2 from 13 still remap`() = runTest {
+        // r6 #1: twelve episodes on both sides, but the add-on's are E13..E24 and TMDB's E1..E12.
+        val addon = MdbListTestAddonEpisodes(seasons = listOf(12, 12), firstEpisode = mapOf(2 to 13))
+        val tmdb = MdbListTestTmdbSeasons(seasons = listOf(12, 12))
+        val mapping = mdbListTestEpisodeMappings(addon, tmdb).resolve("tt1", 1)!!
+        assertTrue(mapping.remaps)
+        assertEquals(listOf("counts:1", "season:1:1", "season:1:2"), tmdb.calls)
+        assertEquals(2 to 1, mapping.toTmdb(2, 13)?.let { it.season to it.episode })
+        assertEquals(2 to 13, mapping.toAddon(2, 1)?.let { it.season to it.episode })
+        assertEquals(1 to 5, mapping.toTmdb(1, 5)?.let { it.season to it.episode })
+        // Contiguous identical numbering keeps the cheap path.
+        val plain = MdbListTestTmdbSeasons(seasons = listOf(12, 12))
+        assertFalse(mdbListTestEpisodeMappings(MdbListTestAddonEpisodes(seasons = listOf(12, 12)), plain).resolve("tt1", 1)!!.remaps)
+        assertEquals(listOf("counts:1"), plain.calls)
+    }
+
+    @Test
+    fun `specials keep their coordinates on a show that remaps`() = runTest {
+        // r6 #2: neither list carries season 0.
+        val mapping = splitAnimeMapping()
+        assertEquals(0 to 3, mapping.toTmdb(0, 3)?.let { it.season to it.episode })
+        assertEquals(0 to 3, mapping.toAddon(0, 3)?.let { it.season to it.episode })
+        val service = splitAnimeMappings()
+        val special = episodeReference(0, 3)
+        assertSame(special, service.toMdbListNumbering(special, mediaIndex = null))
+        assertEquals(setOf(0), mapping.addonSeasonsOf(setOf(0)))
+    }
+
+    @Test
+    fun `matching air dates stand in for localized titles before the positional fallback`() = runTest {
+        // r6 #3: TMDB A, B, Recap, C vs the add-on's A, B, C with other-language titles and the same air dates.
+        val tmdb = MdbListTestTmdbSeasons(
+            seasons = listOf(4),
+            titles = mapOf(1 to 1 to "A", 1 to 2 to "B", 1 to 3 to "Recap", 1 to 4 to "C"),
+            airDates = mapOf(1 to 1 to "2026-01-01", 1 to 2 to "2026-01-08", 1 to 3 to "2026-01-15", 1 to 4 to "2026-01-22"),
+        )
+        val addon = MdbListTestAddonEpisodes(
+            seasons = listOf(3),
+            titles = mapOf(1 to 1 to "Un", 1 to 2 to "Deux", 1 to 3 to "Trois"),
+            airDates = mapOf(1 to 1 to "2026-01-01", 1 to 2 to "2026-01-08", 1 to 3 to "2026-01-22"),
+        )
+        val mapping = mdbListTestEpisodeMappings(addon, tmdb).resolve("tt1", 1)!!
+        assertTrue(mapping.remaps)
+        assertEquals(1 to 4, mapping.toTmdb(1, 3)?.let { it.season to it.episode })
+        assertEquals(1 to 3, mapping.toAddon(1, 4)?.let { it.season to it.episode })
+        assertNull(mapping.toAddon(1, 3)) // the recap has no counterpart by title, date or free position
+    }
+
     private fun episodeReference(season: Int, episode: Int) = buildTrackingMediaReference(
         contentType = "series", parentMetaId = "tt1", videoId = "tt1:$season:$episode",
         seasonNumber = season, episodeNumber = episode,

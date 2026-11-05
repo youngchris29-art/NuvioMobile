@@ -422,6 +422,49 @@ class MdbListEpisodeRemapAdaptersTest {
     }
 
     @Test
+    fun `a raw seed that keeps its coordinates still gets its dropped seasons translated`() = runTest {
+        // r6 #4: 48 vs 24+24, TMDB season 1 dropped; raw S1E1 stays S1E1 but must exclude add-on seasons 1 and 2.
+        val h = MdbListSyncTestHarness(backgroundScope)
+        h.seed(h.snapshot().copy(
+            watched = listOf(mdbListTestEpisode(1, 1)),
+            dropped = listOf(MdbListDroppedRecord(mdbListTestMovie().media.ids, season = 1)),
+        ))
+        h.repository.ensureLoaded()
+        val mappings = splitAnimeMappings()
+        val provider = MdbListTrackingProgressProvider(h.repository, MdbListScrobbleService(h.http.api, h.repository), mappings, h.http.store, h.activeProfile, {})
+        val raw = provider.snapshot().entries.single()
+        assertEquals(setOf(1), raw.excludedNextUpSeasons)
+        val prepared = provider.prepareNextUpProgressEntries(listOf(raw), "tt1").single()
+        assertEquals(1 to 1, prepared.seasonNumber to prepared.episodeNumber)
+        assertEquals(setOf(1, 2), prepared.excludedNextUpSeasons)
+        // Preparing an already remapped row gives the same answer.
+        val remapped = provider.snapshot().entries.single()
+        assertEquals(setOf(1, 2), remapped.excludedNextUpSeasons)
+        assertEquals(remapped, provider.prepareNextUpProgressEntries(listOf(remapped), "tt1").single())
+    }
+
+    @Test
+    fun `specials of a remapping show keep their rows and marks`() = runTest {
+        // r6 #2 at the ports.
+        val h = MdbListSyncTestHarness(backgroundScope)
+        h.seed(h.snapshot().copy(watched = listOf(mdbListTestEpisode(0, 2), mdbListTestEpisode(1, 35))))
+        h.repository.ensureLoaded()
+        val mappings = splitAnimeMappings()
+        val provider = MdbListTrackingProgressProvider(h.repository, MdbListScrobbleService(h.http.api, h.repository), mappings, h.http.store, h.activeProfile, {})
+        val watched = MdbListWatchedSyncAdapter(h.repository, MdbListHistoryService(h.http.api, h.repository), mappings, h.http.store, h.activeProfile)
+        assertTrue(mappings.resolve("tt1", 1)!!.remaps)
+        assertEquals(setOf(0 to 2, 2 to 11), watched.pull(1, 100).map { it.season!! to it.episode!! }.toSet())
+        assertTrue(watchedItemKey("series", "tt1", 0, 2) in watched.pullExtraWatchedKeys(1))
+        // Specials never seed next-up (the projection's own rule), so only the remapped S2E11 seed is there.
+        assertEquals(setOf(2 to 11), provider.snapshot().entries.map { it.seasonNumber to it.episodeNumber }.toSet())
+        h.http.reply(body = """{"action":"pause","progress":50,"paused_at":"$MDBLIST_TEST_TIME"}""")
+        MdbListTrackingWrites(h.repository, MdbListHistoryService(h.http.api, h.repository), MdbListScrobbleService(h.http.api, h.repository), mappings)
+            .scrobble(1, TrackingScrobbleAction.PAUSE, TrackingScrobbleEvent(episodeReference(0, 2), 50.0))
+        val show = mdbListResponseElement(h.http.engine.requests.single().body).objectValue().objectValue("show")!!
+        assertEquals(0 to 2, show.text("season")?.toInt() to show.text("episode")?.toInt())
+    }
+
+    @Test
     fun `seeds sharing a timestamp keep their own TMDB episode across snapshots`() = runTest {
         // r2 #6: a bulk import marks TMDB S2E1 and S2E7 at the same time; add-on 30 + 18 vs TMDB 24 + 24
         // shows TMDB S2E7 as the add-on's S2E1, the same numbers the raw S2E1 row had.
