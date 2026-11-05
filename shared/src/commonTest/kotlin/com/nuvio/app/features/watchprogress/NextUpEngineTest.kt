@@ -193,6 +193,28 @@ class NextUpEngineTest {
     }
 
     @Test
+    fun droppingAndRestoringASeasonReResolvesTheCachedNextUp() = runTest {
+        // Codex r14 on the MDBList remap: the seed's exclusions are part of stage 1 and of the resolve key.
+        val fakes = Fakes().apply { metaById["tt1"] = series("tt1", aired, aired, aired, aired, aired, aired) }
+        val engine = engine(fakes, this)
+        val done = progress("tt1", 3, t0, completed = true)
+
+        assertEquals(listOf("tt1:1:4"), engine.resolve({ inputs(listOf(done)) }, 20).map { it.videoId })
+        assertEquals(1, fakes.fetches)
+        // The provider's dropped season now covers S1E4: the cached answer is not reused.
+        val dropped = done.copy(excludedNextUpEpisodeKeys = setOf(nextUpEpisodeKey(1, 4)))
+        assertEquals(listOf("tt1:1:5"), engine.resolve({ inputs(listOf(dropped)) }, 20).map { it.videoId })
+        assertEquals(2, engine.stageOneBuilds)
+        assertEquals(2, fakes.fetches)
+        // Restored: S1E4 again, resolved afresh rather than from the dropped answer.
+        assertEquals(listOf("tt1:1:4"), engine.resolve({ inputs(listOf(done)) }, 20).map { it.videoId })
+        assertEquals(3, engine.stageOneBuilds)
+        // A whole dropped season behaves the same way.
+        val wholeSeason = done.copy(excludedNextUpSeasons = setOf(1))
+        assertEquals(emptyList(), engine.resolve({ inputs(listOf(wholeSeason)) }, 20).map { it.videoId })
+    }
+
+    @Test
     fun removingAProgressCardDismissesTheUncoveredUpNextBeforeClearing() = runTest {
         val engine = engine(Fakes(), this)
         val e4 = progress("tt1", 4, t0 + 1_000L, completed = false)

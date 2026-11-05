@@ -307,6 +307,8 @@ data class NextUpProgressSignature(
     val isCompleted: Boolean,
     /** The completion time for a finished row; 0 for any other. */
     val completedAtEpochMs: Long,
+    /** The row's dropped seasons and episodes ([nextUpExclusionsFingerprint]); a drop or restore rebuilds stage 1 (Codex r14). */
+    val exclusionsFingerprint: String = "",
 )
 
 /** Pure (unit-tested): the stage-1 signature of a progress list. */
@@ -322,6 +324,7 @@ fun nextUpProgressSignature(entries: List<WatchProgressEntry>): List<NextUpProgr
             source = entry.source,
             isCompleted = completed,
             completedAtEpochMs = if (completed) entry.lastUpdatedEpochMs else 0L,
+            exclusionsFingerprint = nextUpExclusionsFingerprint(entry.excludedNextUpSeasons, entry.excludedNextUpEpisodeKeys),
         )
     }
 
