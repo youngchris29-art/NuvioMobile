@@ -190,12 +190,15 @@ internal class MdbListEpisodeMappingService(
 
     /**
      * [reference] with its episode moved from the add-on's numbering to TMDB's, which MDBList reads
-     * season and episode numbers in. References that need no remapping come back unchanged.
+     * season and episode numbers in. References that need no remapping, and those whose show could
+     * not be resolved, come back unchanged. Null when the show's mapping is known and says the
+     * add-on's episode has no TMDB counterpart (a recap the add-on lists and TMDB does not): there
+     * is nothing on MDBList to write it to, and its number there is another episode (Codex r5 #2).
      */
     suspend fun toMdbListNumbering(
         reference: TrackingMediaReference,
         mediaIndex: MdbListMediaIndex?,
-    ): TrackingMediaReference {
+    ): TrackingMediaReference? {
         if (reference.kind == TrackingMediaKind.MOVIE) return reference
         val episode = reference.episode ?: return reference
         val season = episode.season ?: return reference
@@ -204,8 +207,9 @@ internal class MdbListEpisodeMappingService(
         val ids = reference.ids.toMdbListIds()
         val known = ids?.let { mediaIndex?.resolve(MdbListItemType.SHOW, it)?.ids ?: it }
         val tmdbShowId = reference.ids.tmdb ?: known?.tmdb
-        val tmdb = resolve(catalog.contentId, tmdbShowId, known?.aliases().orEmpty())
-            ?.toTmdb(season, episode.number, catalog.videoId) ?: return reference
+        val mapping = resolve(catalog.contentId, tmdbShowId, known?.aliases().orEmpty()) ?: return reference
+        if (!mapping.remaps) return reference
+        val tmdb = mapping.toTmdb(season, episode.number, catalog.videoId) ?: return null
         if (tmdb.season == season && tmdb.episode == episode.number) return reference
         return reference.copy(episode = episode.copy(season = tmdb.season, number = tmdb.episode))
     }
@@ -299,27 +303,42 @@ internal class MdbListEpisodeMappingService(
 
         /**
          * Whether the add-on's and TMDB's episodes sit in the same seasons, judged by title and then
-         * air date: a merged two-parter or a dropped recap keeps every episode in its season (true),
-         * a moved boundary puts an episode of one side's season N in the other side's season N±1
-         * (false). Only titles and dates unique to one TMDB season count, so a recurring title
-         * ("Recap") cannot flag a move. Null when no episode could be placed at all: nothing to go by.
+         * air date. Any add-on episode placed in a different TMDB season is a moved boundary (false).
+         * True needs evidence for every season boundary next to a season whose count differs: the
+         * add-on's last episode before the boundary placed in its own TMDB season and its first
+         * episode after it placed in its own (Codex r5 #1); a single-season show needs one placed
+         * episode. Only titles and dates unique to one TMDB season count, so a recurring title
+         * ("Recap") cannot flag a move. Null when the evidence is not there: nothing to go by.
          */
         fun seasonsHoldTheSameEpisodes(addon: List<EpisodeMappingEntry>, tmdb: List<EpisodeMappingEntry>): Boolean? {
             val tmdbSeasonByTitle = uniqueSeasonBy(tmdb) { it.title?.let(::usefulTitle) }
             val tmdbSeasonByDate = uniqueSeasonBy(tmdb) { it.airDate }
-            var placed = false
+            fun placedSeason(episode: EpisodeMappingEntry): Int? =
+                episode.title?.let(::usefulTitle)?.let(tmdbSeasonByTitle::get) ?: episode.airDate?.let(tmdbSeasonByDate::get)
+
+            val placed = HashSet<EpisodeMappingEntry>()
             for (episode in addon) {
-                val byTitle = episode.title?.let(::usefulTitle)?.let(tmdbSeasonByTitle::get)
-                if (byTitle != null) {
-                    if (byTitle != episode.season) return false
-                    placed = true
-                    continue
-                }
-                val byDate = episode.airDate?.let(tmdbSeasonByDate::get) ?: continue
-                if (byDate != episode.season) return false
-                placed = true
+                val season = placedSeason(episode) ?: continue
+                if (season != episode.season) return false
+                placed += episode
             }
-            return if (placed) true else null
+            if (placed.isEmpty()) return null
+
+            val addonBySeason = addon.groupBy { it.season }.mapValues { (_, episodes) -> episodes.sortedBy { it.episode } }
+            val addonCounts = addonBySeason.mapValues { it.value.size }
+            val tmdbCounts = tmdb.groupBy { it.season }.mapValues { it.value.size }
+            val seasons = addonBySeason.keys.sorted()
+            if (seasons.size == 1) return true
+            for (index in 0 until seasons.lastIndex) {
+                val before = seasons[index]
+                val after = seasons[index + 1]
+                val boundaryMoves = addonCounts[before] != tmdbCounts[before] || addonCounts[after] != tmdbCounts[after]
+                if (!boundaryMoves) continue
+                val lastBefore = addonBySeason.getValue(before).last()
+                val firstAfter = addonBySeason.getValue(after).first()
+                if (lastBefore !in placed || firstAfter !in placed) return null
+            }
+            return true
         }
 
         private fun uniqueSeasonBy(episodes: List<EpisodeMappingEntry>, key: (EpisodeMappingEntry) -> String?): Map<String, Int> {
@@ -348,15 +367,26 @@ internal class MdbListEpisodeMapping private constructor(
     private val addonByTmdb: Map<Pair<Int, Int>, EpisodeMappingEntry>,
     private val tmdbByAddon: Map<Pair<Int, Int>, EpisodeMappingEntry>,
     private val tmdbByAddonVideoId: Map<String, EpisodeMappingEntry>,
+    /** Episodes on either side with no counterpart on the other (a recap one side skips). */
+    internal val unmatched: Int,
 ) {
     /** False when both sides split the show the same way and episodes keep their numbers. */
     val remaps: Boolean
         get() = addonByTmdb.isNotEmpty() || tmdbByAddon.isNotEmpty()
 
-    /** True when every episode maps to its own number on both sides, so nothing moves. */
+    /**
+     * True when every episode maps to its own number on both sides and no episode is left out,
+     * so nothing moves and nothing is hidden (Codex r5 #3: a TMDB-only recap keeps the mapping,
+     * else it would be shown as an add-on episode).
+     */
     val isIdentity: Boolean
-        get() = addonByTmdb.all { (tmdb, addon) -> tmdb == addon.season to addon.episode } &&
+        get() = unmatched == 0 &&
+            addonByTmdb.all { (tmdb, addon) -> tmdb == addon.season to addon.episode } &&
             tmdbByAddon.all { (addon, tmdb) -> addon == tmdb.season to tmdb.episode }
+
+    /** The add-on seasons TMDB season [tmdbSeason] maps into (several when TMDB's is longer). */
+    fun addonSeasonsOf(tmdbSeason: Int): Set<Int> =
+        addonByTmdb.entries.filter { it.key.first == tmdbSeason }.mapTo(HashSet()) { it.value.season }
 
     /**
      * The add-on's episode for TMDB [season]/[episode]. Null when nothing needs remapping
@@ -370,7 +400,7 @@ internal class MdbListEpisodeMapping private constructor(
         videoId?.takeIf(String::isNotBlank)?.let(tmdbByAddonVideoId::get) ?: tmdbByAddon[season to episode]
 
     companion object {
-        val Unchanged = MdbListEpisodeMapping(emptyMap(), emptyMap(), emptyMap())
+        val Unchanged = MdbListEpisodeMapping(emptyMap(), emptyMap(), emptyMap(), unmatched = 0)
 
         /**
          * Matches episodes season by season: within season N the add-on's and TMDB's lists are
@@ -394,8 +424,30 @@ internal class MdbListEpisodeMapping private constructor(
                 addonByTmdb += part.addonByTmdb
                 tmdbByAddon += part.tmdbByAddon
                 tmdbByAddonVideoId += part.tmdbByAddonVideoId
+                // An airing season the add-on lists further than TMDB: when everything matched in
+                // the season kept its number, the add-on's tail keeps its numbers too, so the newest
+                // episode is still written rather than held back as unmatched.
+                if (part.isIdentity || part.unmatched == part.unmatchedTail(addon, tmdb)) {
+                    val lastTmdb = tmdb.maxOf { it.episode }
+                    for (entry in addon) {
+                        val key = entry.season to entry.episode
+                        if (entry.episode <= lastTmdb || key in tmdbByAddon) continue
+                        val same = EpisodeMappingEntry(entry.season, entry.episode, entry.title, airDate = entry.airDate)
+                        tmdbByAddon[key] = same
+                        entry.videoId?.let { tmdbByAddonVideoId[it] = same }
+                    }
+                }
             }
-            return MdbListEpisodeMapping(addonByTmdb, tmdbByAddon, tmdbByAddonVideoId)
+            val unmatched = (tmdbEpisodes.size - addonByTmdb.size) + (addonEpisodes.size - tmdbByAddon.size)
+            return MdbListEpisodeMapping(addonByTmdb, tmdbByAddon, tmdbByAddonVideoId, unmatched)
+        }
+
+        /** How many of a season's unmatched episodes are the add-on's tail past TMDB's last episode. */
+        private fun MdbListEpisodeMapping.unmatchedTail(addon: List<EpisodeMappingEntry>, tmdb: List<EpisodeMappingEntry>): Int {
+            val lastTmdb = tmdb.maxOf { it.episode }
+            val matchedIdentity = tmdbByAddon.all { (k, v) -> k == v.season to v.episode } && addonByTmdb.all { (k, v) -> k == v.season to v.episode }
+            if (!matchedIdentity) return -1
+            return addon.count { it.episode > lastTmdb && (it.season to it.episode) !in tmdbByAddon }
         }
 
         /**
@@ -434,7 +486,8 @@ internal class MdbListEpisodeMapping private constructor(
                 val videoId = entry.videoId ?: continue
                 tmdbByAddon[entry.season to entry.episode]?.let { tmdbByAddonVideoId[videoId] = it }
             }
-            return MdbListEpisodeMapping(addonByTmdb, tmdbByAddon, tmdbByAddonVideoId)
+            val unmatched = (tmdbEpisodes.size - addonByTmdb.size) + (addonEpisodes.size - tmdbByAddon.size)
+            return MdbListEpisodeMapping(addonByTmdb, tmdbByAddon, tmdbByAddonVideoId, unmatched)
         }
 
         private suspend fun matchAll(

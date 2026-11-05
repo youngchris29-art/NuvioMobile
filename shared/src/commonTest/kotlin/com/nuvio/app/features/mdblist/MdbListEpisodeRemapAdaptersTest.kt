@@ -361,6 +361,67 @@ class MdbListEpisodeRemapAdaptersTest {
     }
 
     @Test
+    fun `writes for an add-on episode MDBList has no counterpart for are skipped`() = runTest {
+        // r5 #2 at the ports: add-on A, B, Recap, C vs TMDB A, B, C.
+        val h = MdbListSyncTestHarness(backgroundScope)
+        val mappings = mdbListTestEpisodeMappings(
+            MdbListTestAddonEpisodes(seasons = listOf(4), titles = mapOf(1 to 1 to "A", 1 to 2 to "B", 1 to 3 to "Recap", 1 to 4 to "C")),
+            MdbListTestTmdbSeasons(seasons = listOf(3), titles = mapOf(1 to 1 to "A", 1 to 2 to "B", 1 to 3 to "C"), lookup = mapOf("tt1" to 1)),
+        )
+        val writer = MdbListTrackingWrites(h.repository, MdbListHistoryService(h.http.api, h.repository), MdbListScrobbleService(h.http.api, h.repository), mappings)
+        writer.scrobble(1, TrackingScrobbleAction.PAUSE, TrackingScrobbleEvent(episodeReference(1, 3), 50.0))
+        assertTrue(h.http.engine.requests.isEmpty())
+        val added = writer.addToHistory(1, listOf(TrackingHistoryItem(episodeReference(1, 3), 0L)))
+        assertEquals(1, added.attemptedCount)
+        assertEquals(1, added.notFoundCount)
+        assertTrue(h.http.engine.requests.isEmpty())
+        val watched = MdbListWatchedSyncAdapter(h.repository, MdbListHistoryService(h.http.api, h.repository), mappings, h.http.store, h.activeProfile)
+        watched.push(1, listOf(WatchedItem("tt1", "series", "Show", season = 1, episode = 3, videoId = "tt1:1:3", markedAtEpochMs = 1L)))
+        assertTrue(h.http.engine.requests.isEmpty())
+        // The episode after it is written as TMDB's S1E3.
+        h.http.reply(body = """{"action":"pause","progress":50,"paused_at":"$MDBLIST_TEST_TIME"}""")
+        writer.scrobble(1, TrackingScrobbleAction.PAUSE, TrackingScrobbleEvent(episodeReference(1, 4), 50.0))
+        val show = mdbListResponseElement(h.http.engine.requests.single().body).objectValue().objectValue("show")!!
+        assertEquals(1 to 3, show.text("season")?.toInt() to show.text("episode")?.toInt())
+    }
+
+    @Test
+    fun `a raw seed for a TMDB episode the add-on does not have is dropped when prepared`() = runTest {
+        // r5 #4: TMDB A, B, Recap, C vs add-on A, B, C; the recap was watched before the mapping resolved.
+        val h = MdbListSyncTestHarness(backgroundScope)
+        h.seed(h.snapshot().copy(watched = listOf(mdbListTestEpisode(1, 3), mdbListTestEpisode(1, 4))))
+        h.repository.ensureLoaded()
+        val mappings = mdbListTestEpisodeMappings(
+            MdbListTestAddonEpisodes(seasons = listOf(3), titles = mapOf(1 to 1 to "A", 1 to 2 to "B", 1 to 3 to "C")),
+            MdbListTestTmdbSeasons(seasons = listOf(4), titles = mapOf(1 to 1 to "A", 1 to 2 to "B", 1 to 3 to "Recap", 1 to 4 to "C"), lookup = mapOf("tt1" to 1)),
+        )
+        val provider = MdbListTrackingProgressProvider(h.repository, MdbListScrobbleService(h.http.api, h.repository), mappings, h.http.store, h.activeProfile, {})
+        val raw = provider.snapshot().entries
+        assertEquals(setOf(1 to 3, 1 to 4), raw.map { it.seasonNumber to it.episodeNumber }.toSet())
+        val prepared = provider.prepareNextUpProgressEntries(raw, "tt1")
+        assertEquals(listOf(1 to 3), prepared.map { it.seasonNumber to it.episodeNumber })
+        assertEquals("mdblist:tt1:1:4", prepared.single().trackingEpisodeKey)
+    }
+
+    @Test
+    fun `a dropped TMDB season excludes every add-on season it maps into`() = runTest {
+        // r5 #5: TMDB's one season of 48 is the add-on's two seasons; dropping it drops both.
+        val h = MdbListSyncTestHarness(backgroundScope)
+        h.seed(h.snapshot().copy(
+            watched = listOf(mdbListTestEpisode(1, 35)),
+            dropped = listOf(MdbListDroppedRecord(mdbListTestMovie().media.ids, season = 1)),
+        ))
+        h.repository.ensureLoaded()
+        val mappings = splitAnimeMappings()
+        val provider = MdbListTrackingProgressProvider(h.repository, MdbListScrobbleService(h.http.api, h.repository), mappings, h.http.store, h.activeProfile, {})
+        assertEquals(setOf(1), provider.snapshot().entries.single().excludedNextUpSeasons)
+        assertTrue(mappings.resolve("tt1", 1)!!.remaps)
+        val remapped = provider.snapshot().entries.single()
+        assertEquals(2 to 11, remapped.seasonNumber to remapped.episodeNumber)
+        assertEquals(setOf(1, 2), remapped.excludedNextUpSeasons)
+    }
+
+    @Test
     fun `seeds sharing a timestamp keep their own TMDB episode across snapshots`() = runTest {
         // r2 #6: a bulk import marks TMDB S2E1 and S2E7 at the same time; add-on 30 + 18 vs TMDB 24 + 24
         // shows TMDB S2E7 as the add-on's S2E1, the same numbers the raw S2E1 row had.

@@ -60,9 +60,9 @@ class MdbListEpisodeMappingServiceTest {
         val tmdb = MdbListTestTmdbSeasons(seasons = listOf(48), lookup = mapOf("tt1" to 1))
         val service = mdbListTestEpisodeMappings(MdbListTestAddonEpisodes(seasons = listOf(24, 24)), tmdb)
         val mapped = service.toMdbListNumbering(episodeReference(2, 11), mediaIndex = null)
-        assertEquals(1, mapped.episode?.season)
-        assertEquals(35, mapped.episode?.number)
-        assertEquals("tt1:2:11", mapped.catalog?.videoId)
+        assertEquals(1, mapped!!.episode?.season)
+        assertEquals(35, mapped!!.episode?.number)
+        assertEquals("tt1:2:11", mapped!!.catalog?.videoId)
         assertTrue(service.cached("tt1")!!.remaps)
         // The TMDB id came from the imdb lookup, once.
         assertEquals(listOf("find:tt1:", "counts:1", "season:1:1"), tmdb.calls)
@@ -74,7 +74,7 @@ class MdbListEpisodeMappingServiceTest {
         val service = mdbListTestEpisodeMappings(MdbListTestAddonEpisodes(seasons = listOf(24, 24)), tmdb)
         val index = MdbListMediaIndex.watchedOnly(listOf(mdbListTestEpisode(1, 1)))
         val mapped = service.toMdbListNumbering(episodeReference(2, 11), mediaIndex = index)
-        assertEquals(1 to 35, mapped.episode?.let { it.season to it.number })
+        assertEquals(1 to 35, mapped!!.episode?.let { it.season to it.number })
         assertEquals(listOf("counts:1", "season:1:1"), tmdb.calls)
     }
 
@@ -161,9 +161,15 @@ class MdbListEpisodeMappingServiceTest {
         // r1 #2: an airing season the add-on lists in part moves no episode.
         val tmdb = MdbListTestTmdbSeasons(seasons = listOf(24, 24))
         val service = mdbListTestEpisodeMappings(MdbListTestAddonEpisodes(seasons = listOf(24, 12)), tmdb)
-        assertFalse(service.resolve("tt1", 1)!!.remaps)
+        val mapping = service.resolve("tt1", 1)!!
         // r4 #1: the seasons are loaded and the episodes checked even when only the last differs.
         assertEquals(listOf("counts:1", "season:1:1", "season:1:2"), tmdb.calls)
+        // r5 #3: TMDB's twelve unaired episodes have no add-on counterpart, so the mapping is kept;
+        // the add-on's episodes keep their numbers.
+        assertTrue(mapping.remaps)
+        assertEquals(2 to 12, mapping.toTmdb(2, 12)?.let { it.season to it.episode })
+        assertEquals(2 to 1, mapping.toAddon(2, 1)?.let { it.season to it.episode })
+        assertNull(mapping.toAddon(2, 20))
     }
 
     @Test
@@ -211,7 +217,7 @@ class MdbListEpisodeMappingServiceTest {
         runCurrent()
         addon.gate!!.complete(Unit)
         val mapped = writer.await()
-        assertEquals(1 to 35, mapped.episode?.let { it.season to it.number })
+        assertEquals(1 to 35, mapped!!.episode?.let { it.season to it.number })
         assertEquals(2, addon.calls.size)
         assertTrue(service.cached("tt1")!!.remaps)
     }
@@ -290,7 +296,13 @@ class MdbListEpisodeMappingServiceTest {
         val addon = MdbListTestAddonEpisodes(seasons = listOf(12, 12), titles = buildMap {
             (1..12).forEach { put(1 to it, "One $it") }; (1..12).forEach { put(2 to it, "Two $it") }
         })
-        assertFalse(mdbListTestEpisodeMappings(addon, tmdb).resolve("tt1", 1)!!.remaps)
+        val mapping = mdbListTestEpisodeMappings(addon, tmdb).resolve("tt1", 1)!!
+        // r5 #3: every matched episode keeps its number, but TMDB's recap has no add-on counterpart,
+        // so the mapping is kept and the recap maps to nothing instead of being shown as an episode.
+        assertTrue(mapping.remaps)
+        assertEquals(1 to 12, mapping.toTmdb(1, 12)?.let { it.season to it.episode })
+        assertEquals(2 to 3, mapping.toAddon(2, 3)?.let { it.season to it.episode })
+        assertNull(mapping.toAddon(1, 13))
     }
 
     @Test
@@ -306,12 +318,15 @@ class MdbListEpisodeMappingServiceTest {
             MdbListTestTmdbSeasons(seasons = listOf(13, 12), titles = generic, airDates = dates(listOf(13, 12), 1)),
         ).resolve("tt1", 1)!!
         assertTrue(moved.remaps)
-        // Nothing to go by: the numbers are kept, as upstream does.
+        // Nothing to go by: the numbers are kept, as upstream does; TMDB's thirteenth episode of
+        // season 1 has no add-on counterpart, so the mapping stays to hide it (r5 #3).
         val unknown = mdbListTestEpisodeMappings(
             MdbListTestAddonEpisodes(seasons = listOf(12, 13), titles = generic),
             MdbListTestTmdbSeasons(seasons = listOf(13, 12), titles = generic),
         ).resolve("tt1", 1)!!
-        assertFalse(unknown.remaps)
+        assertEquals(2 to 1, unknown.toTmdb(2, 1)?.let { it.season to it.episode })
+        assertEquals(2 to 13, unknown.toTmdb(2, 13)?.let { it.season to it.episode })
+        assertNull(unknown.toAddon(1, 13))
     }
 
     @Test
@@ -331,7 +346,7 @@ class MdbListEpisodeMappingServiceTest {
         gate.complete(Unit)
         assertFalse(owner.await()!!.remaps)
         val reference = episodeReference(2, 11)
-        assertEquals(2 to 11, writer.await().episode?.let { it.season to it.number })
+        assertEquals(2 to 11, writer.await()!!.episode?.let { it.season to it.number })
         assertSame(reference, service.toMdbListNumbering(reference, mediaIndex = null))
         assertEquals(2, addon.calls.size)
         assertFalse(service.cached("tt1")!!.remaps)
@@ -386,6 +401,50 @@ class MdbListEpisodeMappingServiceTest {
         assertFalse(service.resolve("tt1", 1)!!.remaps) // the second load, under the new source
         assertEquals(2, addon.calls.size)
         assertFalse(service.cached("tt1")!!.remaps)
+    }
+
+    // ── Codex r5 ────────────────────────────────────────────────────────────────────────────
+
+    @Test
+    fun `one shared title is not evidence for a moved boundary`() = runTest {
+        // r5 #1: add-on 12 + 36 vs TMDB 24 + 24 with only the pilot titled; the count fallback decides.
+        val addon = MdbListTestAddonEpisodes(seasons = listOf(12, 36), titles = mapOf(1 to 1 to "Pilot"))
+        val tmdb = MdbListTestTmdbSeasons(seasons = listOf(24, 24), titles = mapOf(1 to 1 to "Pilot"))
+        val mapping = mdbListTestEpisodeMappings(addon, tmdb).resolve("tt1", 1)!!
+        assertEquals(1 to 13, mapping.toTmdb(2, 1)?.let { it.season to it.episode })
+    }
+
+    @Test
+    fun `titles on both sides of a boundary are evidence that the seasons hold the same episodes`() = runTest {
+        // add-on 12 + 36 vs TMDB 24 + 24, where the add-on's S1E12 and S2E1 are TMDB's S1E12 and S2E1 by title.
+        val addon = MdbListTestAddonEpisodes(seasons = listOf(12, 36), titles = mapOf(1 to 12 to "Twelve", 2 to 1 to "Opener"))
+        val tmdb = MdbListTestTmdbSeasons(seasons = listOf(24, 24), titles = mapOf(1 to 12 to "Twelve", 2 to 1 to "Opener"))
+        val mapping = mdbListTestEpisodeMappings(addon, tmdb).resolve("tt1", 1)!!
+        assertEquals(2 to 1, mapping.toTmdb(2, 1)?.let { it.season to it.episode })
+        assertEquals(1 to 12, mapping.toTmdb(1, 12)?.let { it.season to it.episode })
+    }
+
+    @Test
+    fun `an add-on episode with no TMDB counterpart is not written`() = runTest {
+        // r5 #2: add-on A, B, Recap, C vs TMDB A, B, C; the recap must not go out as TMDB S1E3 (C).
+        val addon = MdbListTestAddonEpisodes(seasons = listOf(4), titles = mapOf(1 to 1 to "A", 1 to 2 to "B", 1 to 3 to "Recap", 1 to 4 to "C"))
+        val tmdb = MdbListTestTmdbSeasons(seasons = listOf(3), titles = mapOf(1 to 1 to "A", 1 to 2 to "B", 1 to 3 to "C"), lookup = mapOf("tt1" to 1))
+        val service = mdbListTestEpisodeMappings(addon, tmdb)
+        assertNull(service.toMdbListNumbering(episodeReference(1, 3), mediaIndex = null))
+        assertEquals(1 to 3, service.toMdbListNumbering(episodeReference(1, 4), mediaIndex = null)?.episode?.let { it.season to it.number })
+        // An unresolved show still passes through unchanged.
+        val unresolved = mdbListTestEpisodeMappings(MdbListTestAddonEpisodes(), tmdb)
+        val reference = episodeReference(1, 3)
+        assertSame(reference, unresolved.toMdbListNumbering(reference, mediaIndex = null))
+    }
+
+    @Test
+    fun `an airing season the add-on lists further than TMDB keeps the newest episode's number`() = runTest {
+        // The add-on has S2E13 before TMDB does; everything before it matched in place, so it is written as S2E13.
+        val addon = MdbListTestAddonEpisodes(seasons = listOf(24, 13))
+        val tmdb = MdbListTestTmdbSeasons(seasons = listOf(24, 12), lookup = mapOf("tt1" to 1))
+        val service = mdbListTestEpisodeMappings(addon, tmdb)
+        assertEquals(2 to 13, service.toMdbListNumbering(episodeReference(2, 13), mediaIndex = null)?.episode?.let { it.season to it.number })
     }
 
     private fun episodeReference(season: Int, episode: Int) = buildTrackingMediaReference(

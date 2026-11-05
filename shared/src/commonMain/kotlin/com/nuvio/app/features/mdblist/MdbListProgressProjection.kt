@@ -87,7 +87,7 @@ internal class MdbListProgressProjection private constructor(
             val season = entry.seasonNumber ?: return@mapNotNull entry
             val episode = entry.episodeNumber ?: return@mapNotNull entry
             val mapping = mappingFor(entry.parentMetaId)?.takeIf { it.remaps } ?: return@mapNotNull entry
-            mapping.toAddon(season, episode)?.let(entry::withAddonEpisode)
+            mapping.toAddon(season, episode)?.let { entry.withAddonEpisode(it, mapping) }
         }
 
     /** [watchedItems] with each episode moved to the add-on's numbering; unmatched episodes are left out. */
@@ -309,12 +309,17 @@ internal fun parseMdbListEpisodeKey(key: String?): Pair<Int, Int>? {
     return season to episode
 }
 
-/** [this] moved to the add-on's episode [addon]; the video id follows so local playback rows match. */
-internal fun WatchProgressEntry.withAddonEpisode(addon: EpisodeMappingEntry): WatchProgressEntry = copy(
+/**
+ * [this] moved to the add-on's episode [addon]; the video id follows so local playback rows match,
+ * and the dropped seasons move with it: a TMDB season the user dropped excludes every add-on
+ * season it maps into, several when TMDB's is the longer (Codex r5 #5).
+ */
+internal fun WatchProgressEntry.withAddonEpisode(addon: EpisodeMappingEntry, mapping: MdbListEpisodeMapping): WatchProgressEntry = copy(
     seasonNumber = addon.season,
     episodeNumber = addon.episode,
     videoId = addon.videoId ?: buildPlaybackVideoId(parentMetaId, addon.season, addon.episode),
     episodeTitle = episodeTitle ?: addon.title,
+    excludedNextUpSeasons = excludedNextUpSeasons.flatMapTo(HashSet()) { tmdbSeason -> mapping.addonSeasonsOf(tmdbSeason) },
 )
 
 internal val MdbListItemType.contentType: String

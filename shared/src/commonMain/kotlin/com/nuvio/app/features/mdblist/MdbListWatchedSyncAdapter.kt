@@ -64,7 +64,9 @@ class MdbListWatchedSyncAdapter internal constructor(
             log.i { "Skipped ${items.size - pushable.size} of ${items.size} MDBList history items: whole-series marks" }
         }
         if (pushable.isEmpty()) return
-        val result = history.add(scope, pushable.map { TrackingHistoryItem(it.mdbListReference(), it.markedAtEpochMs) })
+        val references = pushable.mapNotNull { item -> item.mdbListReference()?.let { TrackingHistoryItem(it, item.markedAtEpochMs) } }
+        if (references.isEmpty()) return
+        val result = history.add(scope, references)
         check(result.isComplete) { "MDBList could not match ${result.notFoundCount} watched items" }
     }
 
@@ -75,7 +77,9 @@ class MdbListWatchedSyncAdapter internal constructor(
             log.i { "Skipped ${items.size - removable.size} of ${items.size} MDBList history removals: whole-series marks" }
         }
         if (removable.isEmpty()) return
-        val result = history.remove(scope, removable.map { it.mdbListReference() })
+        val references = removable.mapNotNull { it.mdbListReference() }
+        if (references.isEmpty()) return
+        val result = history.remove(scope, references)
         check(result.isComplete) { "MDBList could not match ${result.notFoundCount} watched items" }
     }
 
@@ -84,9 +88,10 @@ class MdbListWatchedSyncAdapter internal constructor(
      * its tracking key, whichever numbering it was handed out in (Codex r2 #1). An MDBList item
      * without a key was pulled by a build before the key existed and persisted as TMDB numbers it
      * (Codex r4 #3), so its own coordinates are the identity. Only an item the app built from the
-     * add-on's episode list (no provider id) is translated.
+     * add-on's episode list (no provider id) is translated; null when that episode has no TMDB
+     * counterpart, which MDBList cannot hold and the caller skips (Codex r5 #2).
      */
-    private suspend fun WatchedItem.mdbListReference(): TrackingMediaReference {
+    private suspend fun WatchedItem.mdbListReference(): TrackingMediaReference? {
         val tmdb = parseMdbListEpisodeKey(trackingEpisodeKey)
             ?: (season to episode).takeIf { trackingProviderId == MDBLIST_PROVIDER_STORAGE_ID && season != null && episode != null }
         if (tmdb != null) {
@@ -99,6 +104,7 @@ class MdbListWatchedSyncAdapter internal constructor(
         if (reference.episode == null) return reference
         sync.ensureLoaded()
         return episodeMappings.toMdbListNumbering(reference, sync.currentProjection().mediaIndex)
+            ?: null.also { log.i { "Skipped MDBList history for ${videoId ?: id}: the add-on's episode has no TMDB counterpart" } }
     }
 
     private fun scope(profileId: Int) = sync.currentScope().also {
