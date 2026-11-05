@@ -62,6 +62,13 @@ data class WatchProgressEntry(
     /** Stable server/storage identity. [videoId] remains the playback identity. */
     val progressKey: String? = null,
     val excludedNextUpSeasons: Set<Int> = emptySet(),
+    /**
+     * The tracking provider's own identity of the episode this row stands for, carried for
+     * providers that number episodes differently from the add-on the row is shown in: MDBList
+     * writes `mdblist:<show key>:<TMDB season>:<TMDB episode>`, see `MdbListProgressProjection`.
+     * Null for local rows and providers whose numbering is the add-on's.
+     */
+    val trackingEpisodeKey: String? = null,
 ) : TrackingAttributedItem {
     override val trackingContentId: String
         get() = parentMetaId

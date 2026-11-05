@@ -1,5 +1,6 @@
 package com.nuvio.app.features.mdblist
 
+import com.nuvio.app.features.tmdb.TmdbSeasonEpisode
 import com.nuvio.app.features.tmdb.TmdbSeasonListSource
 import com.nuvio.app.features.tracking.AddonEpisodeListSource
 import com.nuvio.app.features.trakt.EpisodeMappingEntry
@@ -11,6 +12,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlin.time.TimeSource
 
 internal const val MDBLIST_TEST_TIME = "2026-09-06T00:00:00Z"
 
@@ -108,6 +110,7 @@ internal fun mdbListTestPlayback(progress: Float = 40f, timestamp: String = MDBL
 internal class MdbListTestAddonEpisodes(
     var seasons: List<Int> = emptyList(),
     var titles: Map<Pair<Int, Int>, String> = emptyMap(),
+    var airDates: Map<Pair<Int, Int>, String> = emptyMap(),
 ) : AddonEpisodeListSource {
     val calls = mutableListOf<Pair<String, String>>()
     /** The add-on set / metadata language stamp; bump it to invalidate what was built on it. */
@@ -121,7 +124,7 @@ internal class MdbListTestAddonEpisodes(
         return seasons.flatMapIndexed { index, count ->
             val season = index + 1
             (1..count).map { episode ->
-                EpisodeMappingEntry(season, episode, titles[season to episode], "$contentId:$season:$episode")
+                EpisodeMappingEntry(season, episode, titles[season to episode], "$contentId:$season:$episode", airDates[season to episode])
             }
         }
     }
@@ -131,6 +134,7 @@ internal class MdbListTestAddonEpisodes(
 internal class MdbListTestTmdbSeasons(
     var seasons: List<Int> = emptyList(),
     var titles: Map<Pair<Int, Int>, String> = emptyMap(),
+    var airDates: Map<Pair<Int, Int>, String> = emptyMap(),
     var tmdbShowId: Int = 1,
     var lookup: Map<String, Int> = emptyMap(),
     /** Seasons whose episode request fails (null), as a TMDB outage would. */
@@ -144,11 +148,11 @@ internal class MdbListTestTmdbSeasons(
         if (tmdbShowId != this.tmdbShowId) return null
         return seasons.mapIndexed { index, count -> index + 1 to count }.toMap()
     }
-    override suspend fun seasonEpisodes(tmdbShowId: Int, season: Int): List<Pair<Int, String?>>? {
+    override suspend fun seasonEpisodes(tmdbShowId: Int, season: Int): List<TmdbSeasonEpisode>? {
         calls += "season:$tmdbShowId:$season"
         if (season in failingSeasons) return null
         val count = (seasons.getOrNull(season - 1) ?: return emptyList()) - (shortSeasons[season] ?: 0)
-        return (1..count).map { it to titles[season to it] }
+        return (1..count).map { TmdbSeasonEpisode(it, titles[season to it], airDates[season to it]) }
     }
     override suspend fun findTmdbShowId(imdbId: String?, tvdbId: String?): Int? {
         calls += "find:${imdbId ?: ""}:${tvdbId ?: ""}"
@@ -161,4 +165,5 @@ internal fun mdbListTestEpisodeMappings(
     addon: MdbListTestAddonEpisodes = MdbListTestAddonEpisodes(),
     tmdb: MdbListTestTmdbSeasons = MdbListTestTmdbSeasons(),
     scope: CoroutineScope? = null,
-) = MdbListEpisodeMappingService(addon, tmdb, scope)
+    timeSource: TimeSource = TimeSource.Monotonic,
+) = MdbListEpisodeMappingService(addon, tmdb, scope, timeSource)

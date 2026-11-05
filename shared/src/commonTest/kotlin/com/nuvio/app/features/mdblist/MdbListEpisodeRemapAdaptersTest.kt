@@ -215,6 +215,74 @@ class MdbListEpisodeRemapAdaptersTest {
         assertEquals(setOf(2 to 11), provider.snapshot().entries.map { it.seasonNumber to it.episodeNumber }.toSet())
     }
 
+    @Test
+    fun `a watched row pulled before the mapping resolved deletes its own TMDB episode afterwards`() = runTest {
+        // r2 #1: add-on 30 + 18 vs TMDB 24 + 24; TMDB S2E5 pulled raw must not become TMDB S2E11 on delete.
+        val h = MdbListSyncTestHarness(backgroundScope)
+        h.seed(h.snapshot().copy(watched = listOf(mdbListTestEpisode(2, 5))))
+        h.repository.ensureLoaded()
+        val mappings = mdbListTestEpisodeMappings(
+            MdbListTestAddonEpisodes(seasons = listOf(30, 18)),
+            MdbListTestTmdbSeasons(seasons = listOf(24, 24), lookup = mapOf("tt1" to 1)),
+        )
+        val watched = MdbListWatchedSyncAdapter(h.repository, MdbListHistoryService(h.http.api, h.repository), mappings, h.http.store, h.activeProfile)
+
+        val pulled = watched.pull(1, 100).single()
+        assertEquals(2 to 5, pulled.season to pulled.episode)
+        assertEquals("mdblist:tt1:2:5", pulled.trackingEpisodeKey)
+        assertTrue(mappings.resolve("tt1", 1)!!.remaps)
+
+        h.http.reply(body = """{"deleted":{"episodes":1}}""")
+        watched.delete(1, listOf(pulled))
+        val show = mdbListResponseElement(h.http.engine.requests.single().body).objectValue().arrayValue("shows").single().objectValue()
+        val season = show.arrayValue("seasons").single().objectValue()
+        assertEquals(2 to 5, season.text("number")?.toInt() to season.arrayValue("episodes").single().objectValue().text("number")?.toInt())
+
+        // A row pulled after the mapping landed shows the add-on's numbers and still names TMDB's episode.
+        h.seed(h.snapshot().copy(watched = listOf(mdbListTestEpisode(2, 6))))
+        h.repository.refresh(com.nuvio.app.features.tracking.TrackingRefreshIntent.USER_INITIATED)
+        val remapped = watched.pull(1, 100).lastOrNull { it.trackingEpisodeKey == "mdblist:tt1:2:6" }
+        if (remapped != null) {
+            assertEquals(1 to 30, remapped.season to remapped.episode)
+            h.http.reply(body = """{"updated":{"episodes":1}}""")
+            watched.push(1, listOf(remapped))
+            val pushed = mdbListResponseElement(h.http.engine.requests.last().body).objectValue().arrayValue("shows").single().objectValue()
+            val pushedSeason = pushed.arrayValue("seasons").single().objectValue()
+            assertEquals(2 to 6, pushedSeason.text("number")?.toInt() to pushedSeason.arrayValue("episodes").single().objectValue().text("number")?.toInt())
+        }
+        // An item the app built from the add-on's episode list is translated as before.
+        h.http.reply(body = """{"updated":{"episodes":1}}""")
+        watched.push(1, listOf(WatchedItem("tt1", "series", "Show", season = 2, episode = 5, videoId = "tt1:2:5", markedAtEpochMs = 1L)))
+        val built = mdbListResponseElement(h.http.engine.requests.last().body).objectValue().arrayValue("shows").single().objectValue()
+        val builtSeason = built.arrayValue("seasons").single().objectValue()
+        assertEquals(2 to 11, builtSeason.text("number")?.toInt() to builtSeason.arrayValue("episodes").single().objectValue().text("number")?.toInt())
+    }
+
+    @Test
+    fun `seeds sharing a timestamp keep their own TMDB episode across snapshots`() = runTest {
+        // r2 #6: a bulk import marks TMDB S2E1 and S2E7 at the same time; add-on 30 + 18 vs TMDB 24 + 24
+        // shows TMDB S2E7 as the add-on's S2E1, the same numbers the raw S2E1 row had.
+        val h = MdbListSyncTestHarness(backgroundScope)
+        h.seed(h.snapshot().copy(watched = listOf(mdbListTestEpisode(2, 1), mdbListTestEpisode(2, 7))))
+        h.repository.ensureLoaded()
+        val mappings = mdbListTestEpisodeMappings(
+            MdbListTestAddonEpisodes(seasons = listOf(30, 18)),
+            MdbListTestTmdbSeasons(seasons = listOf(24, 24), lookup = mapOf("tt1" to 1)),
+        )
+        val provider = MdbListTrackingProgressProvider(h.repository, MdbListScrobbleService(h.http.api, h.repository), mappings, h.http.store, h.activeProfile, {})
+        val raw = provider.snapshot().entries
+        assertTrue(mappings.resolve("tt1", 1)!!.remaps)
+        val remapped = provider.snapshot().entries
+        assertEquals(setOf(1 to 25, 2 to 1), remapped.map { it.seasonNumber to it.episodeNumber }.toSet())
+
+        val rawFirst = raw.single { it.episodeNumber == 1 }
+        val prepared = provider.prepareNextUpProgressEntries(listOf(rawFirst), "tt1").single()
+        assertEquals(1 to 25, prepared.seasonNumber to prepared.episodeNumber)
+        val remappedSeventh = remapped.single { it.trackingEpisodeKey == "mdblist:tt1:2:7" }
+        assertEquals(2 to 1, remappedSeventh.seasonNumber to remappedSeventh.episodeNumber)
+        assertEquals(listOf(remappedSeventh), provider.prepareNextUpProgressEntries(listOf(remappedSeventh), "tt1"))
+    }
+
     private fun episodeReference(season: Int, episode: Int) = buildTrackingMediaReference(
         contentType = "series", parentMetaId = "tt1", videoId = "tt1:$season:$episode",
         seasonNumber = season, episodeNumber = episode,

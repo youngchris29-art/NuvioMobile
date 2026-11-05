@@ -6,10 +6,8 @@ import com.nuvio.app.features.tracking.TrackingProviderId
 import com.nuvio.app.features.tracking.TrackingRefreshIntent
 import com.nuvio.app.features.tracking.parseTrackingExternalIds
 import com.nuvio.app.features.watchprogress.WatchProgressEntry
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.update
 
 class MdbListTrackingProgressProvider internal constructor(
     private val sync: MdbListSyncRepository,
@@ -24,22 +22,6 @@ class MdbListTrackingProgressProvider internal constructor(
     override val ownsCompletedHistoryProjection = true
     override fun showIdSiblings() = sync.currentProjection().showIdSiblings
 
-    /**
-     * Which TMDB episode each row handed out by [snapshot] stands for, by the row as the
-     * repositories hand it back. A row leaves here in TMDB's numbering while the show's mapping is
-     * still loading and in the add-on's once it is cached; [removeProgress] and
-     * [prepareNextUpProgressEntries] cannot tell the two apart from the numbers alone (Codex r1 #7).
-     */
-    private data class HandedOutRow(
-        val parentMetaId: String,
-        val videoId: String,
-        val season: Int,
-        val episode: Int,
-        val lastUpdatedEpochMs: Long,
-    )
-
-    private val handedOut = MutableStateFlow<Map<HandedOutRow, Pair<Int, Int>>>(emptyMap())
-
     override fun ensureLoaded() = ensureAccountLoaded()
 
     override suspend fun refresh(force: Boolean, sourceChanged: Boolean) {
@@ -50,10 +32,8 @@ class MdbListTrackingProgressProvider internal constructor(
     override fun snapshot(): TrackingProgressSnapshot {
         val projection = sync.currentProjection()
         val state = sync.state.value.takeIf { it.scope == runCatching { sync.currentScope() }.getOrNull() }
-        val entries = projection.entriesInAddonNumbering { contentId -> cachedMappingOrResolveLater(projection, contentId) }
-        rememberHandedOut(projection, entries)
         return TrackingProgressSnapshot(
-            entries = entries,
+            entries = projection.entriesInAddonNumbering { contentId -> cachedMappingOrResolveLater(projection, contentId) },
             hiddenContentIds = projection.hiddenContentIds,
             hasLoadedRemoteProgress = state?.hasLoaded == true,
             errorMessage = state?.error?.localizedMdbListMessage(),
@@ -63,10 +43,9 @@ class MdbListTrackingProgressProvider internal constructor(
     override suspend fun removeProgress(entries: Collection<WatchProgressEntry>) {
         val scope = sync.currentScope()
         entries.distinctBy { Triple(it.parentMetaId, it.seasonNumber, it.episodeNumber) }.forEach { entry ->
-            // MDBList holds TMDB's numbering: the row remembers which episode it stood for when it
-            // was handed out; a row this process never handed out (persisted by an earlier launch)
-            // is taken for the add-on's numbering when the show remaps.
-            val tmdb = tmdbCoordinatesOf(entry) ?: if (entry.seasonNumber != null && entry.episodeNumber != null) {
+            // MDBList holds TMDB's numbering: the row's tracking key names the episode whichever
+            // numbering the row shows; a row without one (built elsewhere) is taken for the add-on's.
+            val tmdb = parseMdbListEpisodeKey(entry.trackingEpisodeKey) ?: if (entry.seasonNumber != null && entry.episodeNumber != null) {
                 episodeMapping(entry.parentMetaId)?.toTmdb(entry.seasonNumber, entry.episodeNumber, entry.videoId)
                     ?.let { it.season to it.episode }
             } else null
@@ -89,9 +68,9 @@ class MdbListTrackingProgressProvider internal constructor(
             if (entry.parentMetaId != contentId) return@map entry
             val season = entry.seasonNumber ?: return@map entry
             val episode = entry.episodeNumber ?: return@map entry
-            val tmdb = tmdbCoordinatesOf(entry) ?: (season to episode)
-            if (tmdb != season to episode) return@map entry // already in the add-on's numbering
-            mapping.toAddon(tmdb.first, tmdb.second)?.let(entry::withAddonEpisode) ?: entry
+            val tmdb = parseMdbListEpisodeKey(entry.trackingEpisodeKey) ?: (season to episode)
+            val addon = mapping.toAddon(tmdb.first, tmdb.second) ?: return@map entry
+            if (addon.season == season && addon.episode == episode) entry else entry.withAddonEpisode(addon)
         }
     }
 
@@ -130,35 +109,4 @@ class MdbListTrackingProgressProvider internal constructor(
         return null
     }
 
-    private fun rememberHandedOut(projection: MdbListProgressProjection, entries: List<WatchProgressEntry>) {
-        val raw = (projection.progress + projection.nextUpSeeds)
-        if (raw.size != entries.size) return
-        val rows = HashMap<HandedOutRow, Pair<Int, Int>>(entries.size)
-        for (index in entries.indices) {
-            val entry = entries[index]
-            val original = raw[index]
-            val season = original.seasonNumber ?: continue
-            val episode = original.episodeNumber ?: continue
-            rows[entry.handedOutRow(entry.seasonNumber ?: season, entry.episodeNumber ?: episode)] = season to episode
-        }
-        if (rows.isEmpty()) return
-        handedOut.update { previous ->
-            // Rows from earlier snapshots stay known (the repositories hand them back later); a
-            // runaway table starts over from this snapshot.
-            if (previous.size > HANDED_OUT_LIMIT) rows else previous + rows
-        }
-    }
-
-    private fun tmdbCoordinatesOf(entry: WatchProgressEntry): Pair<Int, Int>? {
-        val season = entry.seasonNumber ?: return null
-        val episode = entry.episodeNumber ?: return null
-        return handedOut.value[entry.handedOutRow(season, episode)]
-    }
-
-    private fun WatchProgressEntry.handedOutRow(season: Int, episode: Int) =
-        HandedOutRow(parentMetaId, videoId, season, episode, lastUpdatedEpochMs)
-
-    private companion object {
-        const val HANDED_OUT_LIMIT = 4_000
-    }
 }

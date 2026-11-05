@@ -1304,15 +1304,19 @@ object TmdbMetadataService {
         }.toMap()
     }
 
-    /** Episode numbers and titles of one season from `tv/{id}/season/{n}`; null when the request failed. */
-    internal suspend fun fetchSeasonEpisodeTitles(tmdbShowId: Int, season: Int): List<Pair<Int, String?>>? {
+    /** The episodes of one season from `tv/{id}/season/{n}`; null when the request failed. */
+    internal suspend fun fetchSeasonEpisodeTitles(tmdbShowId: Int, season: Int): List<TmdbSeasonEpisode>? {
         val details = fetch<TmdbSeasonDetailsResponse>(
             endpoint = "tv/$tmdbShowId/season/$season",
             query = mapOf("language" to SEASON_LIST_LANGUAGE),
         ) ?: return null
         return details.episodes.mapNotNull { episode ->
             val number = episode.episodeNumber?.takeIf { it > 0 } ?: return@mapNotNull null
-            number to episode.name?.trim()?.takeIf(String::isNotBlank)
+            TmdbSeasonEpisode(
+                number = number,
+                title = episode.name?.trim()?.takeIf(String::isNotBlank),
+                airDate = episode.airDate?.trim()?.takeIf(String::isNotBlank),
+            )
         }
     }
 
@@ -1594,12 +1598,15 @@ private const val SEASON_LIST_LANGUAGE = "en-US"
  * episodes as TMDB does, so a show the add-on splits into seasons differently is matched against
  * TMDB's own list. Interface so tests can fake the network; [TmdbSeasonListService] is production.
  */
+/** One episode of a TMDB season list: its number, title and `YYYY-MM-DD` air date when known. */
+internal data class TmdbSeasonEpisode(val number: Int, val title: String? = null, val airDate: String? = null)
+
 internal interface TmdbSeasonListSource {
     /** Episode count per season (specials excluded), or null when TMDB cannot be reached. */
     suspend fun seasonEpisodeCounts(tmdbShowId: Int): Map<Int, Int>?
 
-    /** `(episode number, title)` of every episode in [season]; null when TMDB could not be reached. */
-    suspend fun seasonEpisodes(tmdbShowId: Int, season: Int): List<Pair<Int, String?>>?
+    /** Every episode in [season]; null when TMDB could not be reached. */
+    suspend fun seasonEpisodes(tmdbShowId: Int, season: Int): List<TmdbSeasonEpisode>?
 
     /** The TMDB id of the show behind [imdbId] / [tvdbId], or null when unknown. */
     suspend fun findTmdbShowId(imdbId: String?, tvdbId: String?): Int?
@@ -1609,7 +1616,7 @@ internal object TmdbSeasonListService : TmdbSeasonListSource {
     override suspend fun seasonEpisodeCounts(tmdbShowId: Int): Map<Int, Int>? =
         TmdbMetadataService.fetchSeasonEpisodeCounts(tmdbShowId)
 
-    override suspend fun seasonEpisodes(tmdbShowId: Int, season: Int): List<Pair<Int, String?>>? =
+    override suspend fun seasonEpisodes(tmdbShowId: Int, season: Int): List<TmdbSeasonEpisode>? =
         TmdbMetadataService.fetchSeasonEpisodeTitles(tmdbShowId, season)
 
     override suspend fun findTmdbShowId(imdbId: String?, tvdbId: String?): Int? {

@@ -152,6 +152,7 @@ internal class MdbListProgressProjection private constructor(
                         trackingProviderId = "mdblist",
                         trackingProviderItemId = record.media.ids.mdblist?.let { "mdblist:$it" },
                         trackingSourceUrl = record.media.sourceUrl(record.type),
+                        trackingEpisodeKey = mdbListEpisodeKey(record.media, record.season, record.episode),
                     )
                 }.sortedByDescending(WatchedItem::markedAtEpochMs)
             val watchedKeys = snapshot.watched.flatMapTo(linkedSetOf()) { record ->
@@ -273,12 +274,34 @@ internal class MdbListProgressProjection private constructor(
                 trackingProviderItemId = media.ids.mdblist?.let { "mdblist:$it" },
                 trackingSourceUrl = media.sourceUrl(type),
                 excludedNextUpSeasons = droppedById[media.ids.contentId].orEmpty().filterNotNull().toSet(),
+                trackingEpisodeKey = mdbListEpisodeKey(media, season, episode),
             )
         }
 
         private fun videoId(media: MdbListMedia, season: Int?, episode: Int?): String =
             com.nuvio.app.features.watchprogress.buildPlaybackVideoId(media.ids.contentId, season, episode)
     }
+}
+
+/**
+ * The MDBList identity of an episode row, carried on [WatchProgressEntry.trackingEpisodeKey] and
+ * [WatchedItem.trackingEpisodeKey]: `mdblist:<show key>:<TMDB season>:<TMDB episode>`. The row's
+ * own season and episode may be the add-on's (after a remap) or TMDB's (before the show's mapping
+ * is known); the key says which TMDB episode it is either way (Codex r2 #1, #6).
+ */
+internal fun mdbListEpisodeKey(media: MdbListMedia, season: Int?, episode: Int?): String? {
+    if (season == null || episode == null) return null
+    return "mdblist:${media.ids.key}:$season:$episode"
+}
+
+/** The TMDB `season to episode` an [mdbListEpisodeKey] names, or null for any other key. */
+internal fun parseMdbListEpisodeKey(key: String?): Pair<Int, Int>? {
+    if (key == null || !key.startsWith("mdblist:")) return null
+    val parts = key.split(':')
+    if (parts.size < 4) return null
+    val season = parts[parts.lastIndex - 1].toIntOrNull() ?: return null
+    val episode = parts[parts.lastIndex].toIntOrNull() ?: return null
+    return season to episode
 }
 
 /** [this] moved to the add-on's episode [addon]; the video id follows so local playback rows match. */

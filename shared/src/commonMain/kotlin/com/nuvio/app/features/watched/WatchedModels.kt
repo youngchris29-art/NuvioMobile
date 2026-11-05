@@ -21,6 +21,12 @@ data class WatchedItem(
     override val trackingProviderItemId: String? = null,
     override val trackingSourceUrl: String? = null,
     val markedAtEpochMs: Long,
+    /**
+     * The tracking provider's own identity of this episode, for providers that number episodes
+     * differently from the add-on the item is shown in (MDBList: `mdblist:<show key>:<TMDB
+     * season>:<TMDB episode>`, see `MdbListProgressProjection`). Null for items the app built.
+     */
+    val trackingEpisodeKey: String? = null,
 ) : TrackingAttributedItem {
     override val trackingContentId: String
         get() = id

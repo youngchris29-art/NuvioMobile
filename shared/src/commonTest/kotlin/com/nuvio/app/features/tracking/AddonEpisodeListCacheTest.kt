@@ -9,6 +9,7 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.TestTimeSource
 
@@ -68,6 +69,41 @@ class AddonEpisodeListCacheTest {
         assertEquals(2, fetches)
         clock += 60.minutes
         assertEquals(list, cache.episodes("tt1", "series"))
+        assertEquals(2, fetches)
+    }
+
+    @Test
+    fun `a fetch that straddles an add-on change is done again and not joined by the new generation`() = runTest {
+        // r2 #3
+        val gate = CompletableDeferred<Unit>()
+        var generation = 0
+        var fetches = 0
+        val old = listOf(EpisodeMappingEntry(1, 1, videoId = "old"))
+        val cache = AddonEpisodeListCache(fetch = { _, _ -> fetches++; if (fetches == 1) { gate.await(); old } else list }, generation = { generation })
+        val owner = async { cache.episodes("tt1", "series") }
+        runCurrent()
+        generation = 1
+        val newcomer = async { cache.episodes("tt1", "series") }
+        runCurrent()
+        assertEquals(2, fetches) // the newcomer started its own fetch instead of joining the old one
+        gate.complete(Unit)
+        assertEquals(list, owner.await()) // the owner dropped the old list and fetched again
+        assertEquals(list, newcomer.await())
+        assertEquals(list, cache.episodes("tt1", "series"))
+    }
+
+    @Test
+    fun `a successful list is fetched again once it has aged`() = runTest {
+        // r2 #8
+        val clock = TestTimeSource()
+        var fetches = 0
+        val cache = AddonEpisodeListCache(fetch = { _, _ -> fetches++; list }, generation = { 0 }, listTtl = 6.hours, timeSource = clock)
+        cache.episodes("tt1", "series")
+        clock += 5.hours
+        cache.episodes("tt1", "series")
+        assertEquals(1, fetches)
+        clock += 1.hours
+        cache.episodes("tt1", "series")
         assertEquals(2, fetches)
     }
 

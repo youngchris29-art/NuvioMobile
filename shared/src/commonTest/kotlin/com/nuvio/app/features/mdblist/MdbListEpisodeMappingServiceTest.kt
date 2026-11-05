@@ -9,6 +9,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlin.time.Duration.Companion.hours
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -92,7 +93,8 @@ class MdbListEpisodeMappingServiceTest {
         val reference = episodeReference(2, 1)
         assertSame(reference, service.toMdbListNumbering(reference, mediaIndex = null))
         assertFalse(service.cached("tt1")!!.remaps)
-        assertEquals(listOf("find:tt1:", "counts:1"), tmdb.calls)
+        // The seasons are loaded to check the episodes' identities (Codex r2 #2); untitled, they keep their numbers.
+        assertEquals(listOf("find:tt1:", "counts:1", "season:1:1", "season:1:2"), tmdb.calls)
     }
 
     @Test
@@ -178,15 +180,19 @@ class MdbListEpisodeMappingServiceTest {
     }
 
     @Test
-    fun `a source change during a load hands the result back but does not cache it`() = runTest {
+    fun `a source change during a load is loaded again under the new source`() = runTest {
+        // r1 #3 / r2 #4: the result built on the old list is dropped, not handed back.
         val addon = MdbListTestAddonEpisodes(seasons = listOf(24, 24)).apply { gate = CompletableDeferred() }
         val service = mdbListTestEpisodeMappings(addon, MdbListTestTmdbSeasons(seasons = listOf(48)))
         val loading = async { service.resolve("tt1", 1) }
         runCurrent()
+        val gate = addon.gate!!
+        addon.gate = null
         addon.generation = 1
-        addon.gate!!.complete(Unit)
+        gate.complete(Unit)
         assertTrue(loading.await()!!.remaps)
-        assertNull(service.cached("tt1"))
+        assertEquals(2, addon.calls.size)
+        assertTrue(service.cached("tt1")!!.remaps)
     }
 
     @Test
@@ -216,6 +222,116 @@ class MdbListEpisodeMappingServiceTest {
         assertSame(mapping, service.cached("imdb:tt1"))
         assertSame(mapping, service.cached("tmdb:1"))
         assertNull(service.cached("tt2"))
+    }
+
+    // ── Codex r2 ────────────────────────────────────────────────────────────────────────────
+
+    @Test
+    fun `a boundary moved by one episode remaps when the titles say so`() = runTest {
+        // r2 #2: add-on 12 + 13 vs TMDB 13 + 12; the add-on's S2E1 is TMDB's S1E13 by title.
+        fun titles(counts: List<Int>, offset: Int) = buildMap {
+            var n = offset
+            counts.forEachIndexed { index, count -> (1..count).forEach { put(index + 1 to it, "Chapter ${n++}") } }
+        }
+        val addon = MdbListTestAddonEpisodes(seasons = listOf(12, 13), titles = titles(listOf(12, 13), 1))
+        val tmdb = MdbListTestTmdbSeasons(seasons = listOf(13, 12), titles = titles(listOf(13, 12), 1))
+        val mapping = mdbListTestEpisodeMappings(addon, tmdb).resolve("tt1", 1)!!
+        assertTrue(mapping.remaps)
+        assertEquals(1 to 13, mapping.toTmdb(2, 1)?.let { it.season to it.episode })
+        assertEquals(2 to 1, mapping.toAddon(1, 13)?.let { it.season to it.episode })
+    }
+
+    @Test
+    fun `a merged two-parter keeps the numbers when the titles say the seasons hold the same episodes`() = runTest {
+        // r2 #2: the add-on merges TMDB's S1E3 and S1E4; every add-on title is one of TMDB's season-1 titles.
+        val tmdb = MdbListTestTmdbSeasons(seasons = listOf(13, 12), titles = buildMap {
+            (1..13).forEach { put(1 to it, "One $it") }; (1..12).forEach { put(2 to it, "Two $it") }
+        })
+        val addon = MdbListTestAddonEpisodes(seasons = listOf(12, 12), titles = buildMap {
+            put(1 to 1, "One 1"); put(1 to 2, "One 2"); put(1 to 3, "One 3")
+            (4..12).forEach { put(1 to it, "One ${it + 1}") }
+            (1..12).forEach { put(2 to it, "Two $it") }
+        })
+        assertFalse(mdbListTestEpisodeMappings(addon, tmdb).resolve("tt1", 1)!!.remaps)
+    }
+
+    @Test
+    fun `air dates decide a small count difference when titles are generic`() = runTest {
+        fun dates(counts: List<Int>, from: Int) = buildMap {
+            var day = from
+            counts.forEachIndexed { index, count -> (1..count).forEach { put(index + 1 to it, "2026-01-${(day++).toString().padStart(2, '0')}") } }
+        }
+        val generic = buildMap { (1..2).forEach { s -> (1..13).forEach { put(s to it, "Episode $it") } } }
+        // Moved boundary: the add-on's S2E1 aired on TMDB's S1E13 day.
+        val moved = mdbListTestEpisodeMappings(
+            MdbListTestAddonEpisodes(seasons = listOf(12, 13), titles = generic, airDates = dates(listOf(12, 13), 1)),
+            MdbListTestTmdbSeasons(seasons = listOf(13, 12), titles = generic, airDates = dates(listOf(13, 12), 1)),
+        ).resolve("tt1", 1)!!
+        assertTrue(moved.remaps)
+        // Nothing to go by: the numbers are kept, as upstream does.
+        val unknown = mdbListTestEpisodeMappings(
+            MdbListTestAddonEpisodes(seasons = listOf(12, 13), titles = generic),
+            MdbListTestTmdbSeasons(seasons = listOf(13, 12), titles = generic),
+        ).resolve("tt1", 1)!!
+        assertFalse(unknown.remaps)
+    }
+
+    @Test
+    fun `a load that straddles an add-on change is dropped and done again for owner and writer`() = runTest {
+        // r2 #4: the add-on set changes while the show loads; the writer must see the new list's mapping.
+        val addon = MdbListTestAddonEpisodes(seasons = listOf(24, 24)).apply { gate = CompletableDeferred() }
+        val tmdb = MdbListTestTmdbSeasons(seasons = listOf(48), lookup = mapOf("tt1" to 1))
+        val service = mdbListTestEpisodeMappings(addon, tmdb)
+        val owner = async { service.resolve("tt1", 1) }
+        runCurrent()
+        val writer = async { service.toMdbListNumbering(episodeReference(2, 11), mediaIndex = null) }
+        runCurrent()
+        val gate = addon.gate!!
+        addon.gate = null
+        addon.generation = 1
+        addon.seasons = listOf(48) // the new add-on numbers the show as TMDB does
+        gate.complete(Unit)
+        assertFalse(owner.await()!!.remaps)
+        val reference = episodeReference(2, 11)
+        assertEquals(2 to 11, writer.await().episode?.let { it.season to it.number })
+        assertSame(reference, service.toMdbListNumbering(reference, mediaIndex = null))
+        assertEquals(2, addon.calls.size)
+        assertFalse(service.cached("tt1")!!.remaps)
+    }
+
+    @Test
+    fun `clearing the cache during a load drops that load and later callers start afresh`() = runTest {
+        // r2 #5: a profile switch while a show loads; the new profile's caller must not join or inherit it.
+        val addon = MdbListTestAddonEpisodes(seasons = listOf(24, 24)).apply { gate = CompletableDeferred() }
+        val service = mdbListTestEpisodeMappings(addon, MdbListTestTmdbSeasons(seasons = listOf(48)))
+        val old = async { service.resolve("tt1", 1) }
+        runCurrent()
+        service.clearCache()
+        val fresh = async { service.resolve("tt1", 1) }
+        runCurrent()
+        assertEquals(2, addon.calls.size) // the new-epoch caller did not join the old load
+        addon.gate!!.complete(Unit)
+        assertTrue(old.await()!!.remaps)
+        assertTrue(fresh.await()!!.remaps)
+        assertTrue(service.cached("tt1")!!.remaps)
+    }
+
+    @Test
+    fun `a show that grows a season is mapped again once the mapping has aged`() = runTest {
+        // r2 #8: one add-on season vs one TMDB season → Unchanged; later the add-on starts a second season.
+        val clock = kotlin.time.TestTimeSource()
+        val addon = MdbListTestAddonEpisodes(seasons = listOf(24))
+        val tmdb = MdbListTestTmdbSeasons(seasons = listOf(24))
+        val service = mdbListTestEpisodeMappings(addon, tmdb, timeSource = clock)
+        assertFalse(service.resolve("tt1", 1)!!.remaps)
+        addon.seasons = listOf(24, 10)
+        tmdb.seasons = listOf(34)
+        assertFalse(service.resolve("tt1", 1)!!.remaps) // still fresh: the cached answer stands
+        clock += 6.hours
+        assertFalse(service.cached("tt1")!!.remaps) // the old answer is still served while…
+        assertTrue(service.resolve("tt1", 1)!!.remaps) // …an explicit resolve reloads it
+        assertTrue(service.cached("tt1")!!.remaps)
+        assertEquals(1 to 25, service.cached("tt1")!!.toTmdb(2, 1)?.let { it.season to it.episode })
     }
 
     private fun episodeReference(season: Int, episode: Int) = buildTrackingMediaReference(

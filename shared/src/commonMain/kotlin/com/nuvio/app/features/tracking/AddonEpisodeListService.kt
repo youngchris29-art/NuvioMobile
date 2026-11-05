@@ -10,6 +10,8 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Mutex
@@ -19,6 +21,7 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.TimeMark
 import kotlin.time.TimeSource
@@ -128,6 +131,7 @@ internal object AddonEpisodeListService : AddonEpisodeListSource {
                     episode = episode,
                     title = video.title.takeIf { it.isNotBlank() },
                     videoId = video.id.takeIf { it.isNotBlank() },
+                    airDate = video.released?.trim()?.take(10)?.takeIf { it.length == 10 },
                 )
             }
             .distinctBy { it.videoId ?: "${it.season}:${it.episode}" }
@@ -137,28 +141,32 @@ internal object AddonEpisodeListService : AddonEpisodeListSource {
 
 /**
  * The cache and in-flight dedup behind [AddonEpisodeListService], separate so tests can drive it
- * with a fake [fetch]. One fetch per show at a time: later callers await the owner's result, and
- * when the owner is cancelled they fetch themselves instead of reading its cancellation as a
- * result (Codex r1 #5). An empty list — the add-on had nothing, or the attempts timed out while the
- * metadata providers were still starting — is kept only for [emptyResultTtl], so the show is tried
- * again (Codex r1 #6). Lists are tagged with [generation] and a tag that no longer matches is a
- * miss (Codex r1 #3).
+ * with a fake [fetch]. One fetch per show and generation at a time: later callers under the same
+ * generation await the owner's result; when the owner is cancelled, or the generation moved while
+ * it ran, they fetch for themselves instead of inheriting an outcome that is not theirs (Codex r1
+ * #5, r2 #3). A list is kept for [listTtl] (so an airing show's new season is seen) and an empty
+ * one — the add-on had nothing, or the attempts timed out while the metadata providers were still
+ * starting — only for [emptyResultTtl] (Codex r1 #6, r2 #8). Lists carry the [generation] they
+ * were fetched under and a tag that no longer matches is a miss (Codex r1 #3). The cache itself is
+ * an immutable map swapped atomically, so clearing needs no lock (Codex r2 #7).
  */
 internal class AddonEpisodeListCache(
     private val fetch: suspend (contentId: String, contentType: String) -> List<EpisodeMappingEntry>,
     private val generation: () -> Any,
     private val emptyResultTtl: Duration = 5.minutes,
+    private val listTtl: Duration = 6.hours,
     private val timeSource: TimeSource = TimeSource.Monotonic,
 ) : AddonEpisodeListSource {
     private val log = Logger.withTag("AddonEpisodeList")
 
     private class Cached(val episodes: List<EpisodeMappingEntry>, val generation: Any, val fetchedAt: TimeMark)
+    private class Outcome(val episodes: List<EpisodeMappingEntry>, val stale: Boolean)
 
-    private val cacheMutex = Mutex()
-    private val episodesCache = mutableMapOf<String, Cached>()
-    // In-flight dedup: prevents multiple concurrent coroutines from fetching
-    // the same show's addon episodes simultaneously.
-    private val episodesInFlight = mutableMapOf<String, CompletableDeferred<List<EpisodeMappingEntry>>>()
+    private val cache = MutableStateFlow<Map<String, Cached>>(emptyMap())
+    private val inFlightMutex = Mutex()
+    // In-flight dedup, keyed by show, type and generation: prevents multiple concurrent coroutines
+    // from fetching the same show's addon episodes simultaneously.
+    private val inFlight = mutableMapOf<String, CompletableDeferred<Outcome>>()
 
     var fetchCalls = 0L
     var fetchMisses = 0L
@@ -188,76 +196,76 @@ internal class AddonEpisodeListCache(
     override suspend fun episodes(contentId: String, contentType: String): List<EpisodeMappingEntry> {
         fetchCalls++
         val cacheKey = cacheKey(contentId, contentType)
-        val currentGeneration = generation()
-
-        while (true) {
+        repeat(MAX_ATTEMPTS) {
             currentCoroutineContext().ensureActive()
-            // Fast path: a current cache entry.
-            cacheMutex.withLock { current(cacheKey, currentGeneration)?.let { return it } }
+            val currentGeneration = generation()
+            current(cacheKey, currentGeneration)?.let { return it }
 
-            // Dedup: if another coroutine is already fetching this show, await its result; when
-            // that fetch is cancelled, try again as the owner instead of inheriting its outcome.
-            val deferred = CompletableDeferred<List<EpisodeMappingEntry>>()
-            val existing = cacheMutex.withLock {
+            val flightKey = "$cacheKey|$currentGeneration"
+            val deferred = CompletableDeferred<Outcome>()
+            val existing = inFlightMutex.withLock {
                 current(cacheKey, currentGeneration)?.let { return it }
-                episodesInFlight[cacheKey] ?: run {
-                    episodesInFlight[cacheKey] = deferred
+                inFlight[flightKey] ?: run {
+                    inFlight[flightKey] = deferred
                     null
                 }
             }
             if (existing != null) {
-                try {
-                    return existing.await()
-                } catch (error: CancellationException) {
+                val outcome = try {
+                    existing.await()
+                } catch (_: CancellationException) {
                     currentCoroutineContext().ensureActive()
-                    continue
+                    return@repeat
                 } catch (_: Exception) {
                     return emptyList()
                 }
+                if (!outcome.stale) return outcome.episodes
+                return@repeat
             }
 
             fetchMisses++
-            return try {
+            val outcome = try {
                 val episodes = fetch(contentId, contentType)
-                cacheMutex.withLock {
-                    episodesCache[cacheKey] = Cached(episodes, currentGeneration, timeSource.markNow())
+                val stale = generation() != currentGeneration
+                if (!stale) {
+                    cache.update { it + (cacheKey to Cached(episodes, currentGeneration, timeSource.markNow())) }
                 }
-                deferred.complete(episodes)
-                episodes
+                Outcome(episodes, stale).also(deferred::complete)
             } catch (error: CancellationException) {
                 deferred.cancel(error)
                 throw error
             } catch (error: Exception) {
                 log.w { "addon episodes failed for $contentId ($contentType): ${error.message}" }
                 deferred.completeExceptionally(error)
-                emptyList()
+                return emptyList()
             } finally {
                 withContext(NonCancellable) {
-                    cacheMutex.withLock {
-                        if (episodesInFlight[cacheKey] === deferred) episodesInFlight.remove(cacheKey)
-                    }
+                    inFlightMutex.withLock { if (inFlight[flightKey] === deferred) inFlight.remove(flightKey) }
                 }
             }
+            if (!outcome.stale) return outcome.episodes
+            // The add-ons or the metadata language changed while the list loaded: fetch it again.
         }
+        return emptyList()
     }
 
     fun clear() {
-        episodesCache.clear()
+        cache.value = emptyMap()
     }
 
     private fun current(cacheKey: String, generation: Any): List<EpisodeMappingEntry>? {
-        val cached = episodesCache[cacheKey] ?: return null
-        if (cached.generation != generation) {
-            episodesCache.remove(cacheKey)
-            return null
-        }
-        if (cached.episodes.isEmpty() && cached.fetchedAt.elapsedNow() >= emptyResultTtl) {
-            episodesCache.remove(cacheKey)
-            return null
-        }
+        val cached = cache.value[cacheKey] ?: return null
+        if (cached.generation != generation) return null
+        val ttl = if (cached.episodes.isEmpty()) emptyResultTtl else listTtl
+        if (cached.fetchedAt.elapsedNow() >= ttl) return null
         return cached.episodes
     }
 
     private fun cacheKey(contentId: String, contentType: String): String =
         "${contentType.trim().lowercase()}|${contentId.trim()}"
+
+    private companion object {
+        /** Fetches that straddle a generation change are retried this often before giving up. */
+        const val MAX_ATTEMPTS = 3
+    }
 }

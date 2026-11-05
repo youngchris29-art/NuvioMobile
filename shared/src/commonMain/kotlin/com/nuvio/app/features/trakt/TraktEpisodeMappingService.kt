@@ -540,6 +540,8 @@ data class EpisodeMappingEntry(
     val episode: Int,
     val title: String? = null,
     val videoId: String? = null,
+    /** `YYYY-MM-DD` when the source lists one; a second identity signal beside the title. */
+    val airDate: String? = null,
 )
 
 // ── Trakt API DTOs for seasons endpoint ─────────────────────────────────

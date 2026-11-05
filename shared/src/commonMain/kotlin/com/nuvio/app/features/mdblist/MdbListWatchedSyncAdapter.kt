@@ -64,7 +64,7 @@ class MdbListWatchedSyncAdapter internal constructor(
             log.i { "Skipped ${items.size - pushable.size} of ${items.size} MDBList history items: whole-series marks" }
         }
         if (pushable.isEmpty()) return
-        val result = history.add(scope, pushable.map { TrackingHistoryItem(it.reference().inMdbListNumbering(), it.markedAtEpochMs) })
+        val result = history.add(scope, pushable.map { TrackingHistoryItem(it.mdbListReference(), it.markedAtEpochMs) })
         check(result.isComplete) { "MDBList could not match ${result.notFoundCount} watched items" }
     }
 
@@ -75,14 +75,26 @@ class MdbListWatchedSyncAdapter internal constructor(
             log.i { "Skipped ${items.size - removable.size} of ${items.size} MDBList history removals: whole-series marks" }
         }
         if (removable.isEmpty()) return
-        val result = history.remove(scope, removable.map { it.reference().inMdbListNumbering() })
+        val result = history.remove(scope, removable.map { it.mdbListReference() })
         check(result.isComplete) { "MDBList could not match ${result.notFoundCount} watched items" }
     }
 
-    private suspend fun TrackingMediaReference.inMdbListNumbering(): TrackingMediaReference {
-        if (episode == null) return this
+    /**
+     * The item as MDBList numbers it. An item that came out of [pull] names its TMDB episode in
+     * its tracking key, whichever numbering it was handed out in (Codex r2 #1); one the app built
+     * from the add-on's episode list is translated.
+     */
+    private suspend fun WatchedItem.mdbListReference(): TrackingMediaReference {
+        parseMdbListEpisodeKey(trackingEpisodeKey)?.let { (season, episode) ->
+            return buildTrackingMediaReference(
+                contentType = type, parentMetaId = id, videoId = videoId, title = name, releaseInfo = releaseInfo,
+                seasonNumber = season, episodeNumber = episode,
+            )
+        }
+        val reference = reference()
+        if (reference.episode == null) return reference
         sync.ensureLoaded()
-        return episodeMappings.toMdbListNumbering(this, sync.currentProjection().mediaIndex)
+        return episodeMappings.toMdbListNumbering(reference, sync.currentProjection().mediaIndex)
     }
 
     private fun scope(profileId: Int) = sync.currentScope().also {
