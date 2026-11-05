@@ -138,9 +138,11 @@ object MdbListTracker : TrackingAuthProvider {
             TrackingCapability.LIBRARY_READ, TrackingCapability.LIBRARY_WRITE,
         ),
     )
-    val writes = MdbListTrackingWrites(sync, history, scrobble)
-    val progressProvider = MdbListTrackingProgressProvider(sync, scrobble, store, activeProfile, ::ensureLoaded)
-    val watchedProvider = MdbListWatchedSyncAdapter(sync, history, store, activeProfile)
+    // Upstream facf25ec3: add-on ↔ TMDB episode numbering for shows the add-on splits differently.
+    internal val episodeMappings = MdbListEpisodeMappingService(scope = coroutineScope)
+    val writes = MdbListTrackingWrites(sync, history, scrobble, episodeMappings)
+    val progressProvider = MdbListTrackingProgressProvider(sync, scrobble, episodeMappings, store, activeProfile, ::ensureLoaded)
+    val watchedProvider = MdbListWatchedSyncAdapter(sync, history, episodeMappings, store, activeProfile)
     val libraryProvider = MdbListTrackingLibraryProvider(library, sync, ::ensureLoaded)
 
     /** Swift-facing account state for the tvOS account card; see [MdbListAccountUiState]. */

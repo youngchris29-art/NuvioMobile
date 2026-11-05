@@ -1,8 +1,11 @@
 package com.nuvio.app.features.mdblist
 
+import com.nuvio.app.features.tracking.parseTrackingExternalIds
+import com.nuvio.app.features.trakt.EpisodeMappingEntry
 import com.nuvio.app.features.watched.WatchedItem
 import com.nuvio.app.features.watched.watchedItemKeys
 import com.nuvio.app.features.watchprogress.WatchProgressEntry
+import com.nuvio.app.features.watchprogress.buildPlaybackVideoId
 
 /**
  * Read model derived from an [MdbListSyncSnapshot]. A scrobble only rewrites the playback list, so
@@ -55,9 +58,70 @@ internal class MdbListProgressProjection private constructor(
 
     fun canonicalContentId(contentId: String): String? =
         runCatching {
-            val ids = com.nuvio.app.features.tracking.parseTrackingExternalIds(contentId).toMdbListIds() ?: return null
+            val ids = parseTrackingExternalIds(contentId).toMdbListIds() ?: return null
             mediaIndex.resolve(MdbListItemType.SHOW, ids).ids.contentId
         }.getOrNull()
+
+    /** The TMDB show id MDBList reported for [contentId], when the history or playback holds one. */
+    fun tmdbShowId(contentId: String): Long? =
+        parseTrackingExternalIds(contentId).toMdbListIds()?.let { mediaIndex.resolve(MdbListItemType.SHOW, it).ids.tmdb }
+
+    // ── Add-on numbering (upstream facf25ec3) ──────────────────────────────────────────────────
+    // MDBList numbers episodes as TMDB does; the add-on an episode plays from may split the show
+    // into seasons differently. These views hand out the projection's episode rows in the add-on's
+    // numbering through [mappingFor], the mapping already resolved for a show (null: unresolved
+    // or no remap needed, so the row keeps its numbers).
+
+    /** [progress] and [nextUpSeeds] with each episode moved to the add-on's numbering. */
+    fun entriesInAddonNumbering(mappingFor: (contentId: String) -> MdbListEpisodeMapping?): List<WatchProgressEntry> =
+        (progress + nextUpSeeds).map { entry ->
+            val season = entry.seasonNumber ?: return@map entry
+            val episode = entry.episodeNumber ?: return@map entry
+            val addon = mappingFor(entry.parentMetaId)?.toAddon(season, episode) ?: return@map entry
+            entry.withAddonEpisode(addon)
+        }
+
+    /** [watchedItems] with each episode moved to the add-on's numbering. */
+    fun watchedItemsInAddonNumbering(mappingFor: (contentId: String) -> MdbListEpisodeMapping?): List<WatchedItem> =
+        watchedItems.map { item ->
+            val season = item.season ?: return@map item
+            val episode = item.episode ?: return@map item
+            val addon = mappingFor(item.id)?.toAddon(season, episode) ?: return@map item
+            item.copy(
+                season = addon.season,
+                episode = addon.episode,
+                videoId = addon.videoId ?: buildPlaybackVideoId(item.id, addon.season, addon.episode),
+            )
+        }
+
+    /**
+     * [watchedKeys] with every remapped show's episode keys in the add-on's numbering. The TMDB
+     * keys of a remapped show are dropped, not kept: TMDB S1E35 would otherwise tick the add-on's
+     * own S1E35, a different episode.
+     */
+    fun watchedKeysInAddonNumbering(mappingFor: (contentId: String) -> MdbListEpisodeMapping?): Set<String> {
+        val remapped = watched.asSequence()
+            .filter { it.type == MdbListItemType.EPISODE && it.season != null && it.episode != null }
+            .mapNotNull { record -> mappingFor(record.media.ids.contentId)?.takeIf { it.remaps }?.let { record to it } }
+            .toList()
+        if (remapped.isEmpty()) return watchedKeys
+        val keys = linkedSetOf<String>()
+        val remappedRecords = remapped.mapTo(HashSet()) { it.first }
+        for (record in watched) {
+            if (record.type !in setOf(MdbListItemType.MOVIE, MdbListItemType.EPISODE)) continue
+            if (record in remappedRecords) continue
+            record.media.ids.aliases().flatMapTo(keys) { id ->
+                watchedItemKeys(record.type.contentType, id, record.season, record.episode)
+            }
+        }
+        for ((record, mapping) in remapped) {
+            val addon = mapping.toAddon(record.season!!, record.episode!!) ?: continue
+            record.media.ids.aliases().flatMapTo(keys) { id ->
+                watchedItemKeys(record.type.contentType, id, addon.season, addon.episode)
+            }
+        }
+        return keys
+    }
 
     companion object {
         const val COMPLETION_PERCENT = 80f
@@ -211,6 +275,14 @@ internal class MdbListProgressProjection private constructor(
             com.nuvio.app.features.watchprogress.buildPlaybackVideoId(media.ids.contentId, season, episode)
     }
 }
+
+/** [this] moved to the add-on's episode [addon]; the video id follows so local playback rows match. */
+internal fun WatchProgressEntry.withAddonEpisode(addon: EpisodeMappingEntry): WatchProgressEntry = copy(
+    seasonNumber = addon.season,
+    episodeNumber = addon.episode,
+    videoId = addon.videoId ?: buildPlaybackVideoId(parentMetaId, addon.season, addon.episode),
+    episodeTitle = episodeTitle ?: addon.title,
+)
 
 internal val MdbListItemType.contentType: String
     get() = if (this == MdbListItemType.MOVIE) "movie" else "series"

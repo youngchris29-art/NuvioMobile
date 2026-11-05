@@ -20,8 +20,8 @@ class MdbListTrackingAdaptersTest {
         h.seed(h.snapshot().copy(watched = listOf(mdbListTestEpisode())))
         h.repository.ensureLoaded()
         val scrobble = MdbListScrobbleService(h.http.api, h.repository)
-        val progress = MdbListTrackingProgressProvider(h.repository, scrobble, h.http.store, h.activeProfile, {})
-        val watched = MdbListWatchedSyncAdapter(h.repository, MdbListHistoryService(h.http.api, h.repository), h.http.store, h.activeProfile)
+        val progress = MdbListTrackingProgressProvider(h.repository, scrobble, mdbListTestEpisodeMappings(), h.http.store, h.activeProfile, {})
+        val watched = MdbListWatchedSyncAdapter(h.repository, MdbListHistoryService(h.http.api, h.repository), mdbListTestEpisodeMappings(), h.http.store, h.activeProfile)
         assertTrue(progress.snapshot().entries.single().isCompleted)
         assertTrue(progress.ownsCompletedHistoryProjection)
         assertEquals(setOf("tt1", "imdb:tt1", "tmdb:1"), progress.showIdSiblings()["tt1"])
@@ -36,7 +36,7 @@ class MdbListTrackingAdaptersTest {
     fun sharedScrobblerUsesSeekPolicyAndRejectsWrongProfileBeforeWriting() = runTest {
         val h = MdbListSyncTestHarness(backgroundScope)
         val writer = MdbListTrackingWrites(h.repository, MdbListHistoryService(h.http.api, h.repository),
-            MdbListScrobbleService(h.http.api, h.repository))
+            MdbListScrobbleService(h.http.api, h.repository), mdbListTestEpisodeMappings())
         assertEquals(TrackingSeekScrobblePolicy.STOP_AND_RESTART, writer.seekScrobblePolicy)
         val event = TrackingScrobbleEvent(TrackingMediaReference(TrackingMediaKind.MOVIE, ids = TrackingExternalIds(tmdb = 1)), 50.45989227294922)
         expectMdbListFailure<CancellationException> { writer.scrobble(2, TrackingScrobbleAction.PAUSE, event) }

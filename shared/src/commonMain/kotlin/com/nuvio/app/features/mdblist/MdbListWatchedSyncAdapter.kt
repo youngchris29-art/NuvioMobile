@@ -2,6 +2,7 @@ package com.nuvio.app.features.mdblist
 
 import co.touchlab.kermit.Logger
 import com.nuvio.app.features.tracking.TrackingHistoryItem
+import com.nuvio.app.features.tracking.TrackingMediaReference
 import com.nuvio.app.features.tracking.TrackingProviderId
 import com.nuvio.app.features.tracking.TrackingRefreshIntent
 import com.nuvio.app.features.tracking.TrackingWatchedProvider
@@ -14,15 +15,22 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 
-class MdbListWatchedSyncAdapter(
+/**
+ * MDBList's watched-history port. Episodes cross it in the add-on's numbering on both sides
+ * (upstream facf25ec3): pulls move a remapped show's TMDB season/episode to the add-on's through
+ * the mappings [MdbListTrackingProgressProvider.refreshEpisodeProgress] resolves when a detail
+ * screen opens, and pushes translate back to TMDB's before the write.
+ */
+class MdbListWatchedSyncAdapter internal constructor(
     private val sync: MdbListSyncRepository,
     private val history: MdbListHistoryService,
+    private val episodeMappings: MdbListEpisodeMappingService,
     auth: MdbListAuthStore,
     private val activeProfile: StateFlow<Int>,
 ) : TrackingWatchedProvider {
     private val log = Logger.withTag("MdbListWatched")
     override val providerId = TrackingProviderId.MDBLIST
-    private val changes = combine(sync.state, auth.state, activeProfile) { _, _, _ -> Unit }
+    private val changes = combine(sync.state, auth.state, activeProfile, episodeMappings.changes) { _, _, _, _ -> Unit }
 
     override suspend fun pull(profileId: Int, pageSize: Int): List<WatchedItem> {
         val scope = scope(profileId)
@@ -30,16 +38,16 @@ class MdbListWatchedSyncAdapter(
         if (sync.currentScope() != scope) throw CancellationException("MDBList account changed")
         val state = sync.state.value
         if (!state.hasLoaded && state.error != null) throw MdbListApiException(code = "sync_unavailable")
-        return sync.currentProjection().watchedItems
+        return sync.currentProjection().watchedItemsInAddonNumbering(episodeMappings::cached)
     }
 
     override suspend fun pullExtraWatchedKeys(profileId: Int): Set<String> {
         scope(profileId)
-        return sync.currentProjection().watchedKeys
+        return sync.currentProjection().watchedKeysInAddonNumbering(episodeMappings::cached)
     }
 
     override fun observeExtraWatchedKeys(profileId: Int) = combine(changes, activeProfile) { _, active ->
-        if (profileId == active) sync.currentProjection().watchedKeys else emptySet()
+        if (profileId == active) sync.currentProjection().watchedKeysInAddonNumbering(episodeMappings::cached) else emptySet()
     }.distinctUntilChanged()
 
     // Fork: whole-series guard on both sides (upstream MDBList has none). A mark without episode
@@ -56,7 +64,7 @@ class MdbListWatchedSyncAdapter(
             log.i { "Skipped ${items.size - pushable.size} of ${items.size} MDBList history items: whole-series marks" }
         }
         if (pushable.isEmpty()) return
-        val result = history.add(scope, pushable.map { TrackingHistoryItem(it.reference(), it.markedAtEpochMs) })
+        val result = history.add(scope, pushable.map { TrackingHistoryItem(it.reference().inMdbListNumbering(), it.markedAtEpochMs) })
         check(result.isComplete) { "MDBList could not match ${result.notFoundCount} watched items" }
     }
 
@@ -67,8 +75,14 @@ class MdbListWatchedSyncAdapter(
             log.i { "Skipped ${items.size - removable.size} of ${items.size} MDBList history removals: whole-series marks" }
         }
         if (removable.isEmpty()) return
-        val result = history.remove(scope, removable.map { it.reference() })
+        val result = history.remove(scope, removable.map { it.reference().inMdbListNumbering() })
         check(result.isComplete) { "MDBList could not match ${result.notFoundCount} watched items" }
+    }
+
+    private suspend fun TrackingMediaReference.inMdbListNumbering(): TrackingMediaReference {
+        if (episode == null) return this
+        sync.ensureLoaded()
+        return episodeMappings.toMdbListNumbering(this, sync.currentProjection().mediaIndex)
     }
 
     private fun scope(profileId: Int) = sync.currentScope().also {

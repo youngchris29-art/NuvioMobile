@@ -26,7 +26,7 @@ class MdbListHistoryPushGuardTest {
     )
 
     private fun adapter(h: MdbListSyncTestHarness) = MdbListWatchedSyncAdapter(
-        h.repository, MdbListHistoryService(h.http.api, h.repository), h.http.store, h.activeProfile
+        h.repository, MdbListHistoryService(h.http.api, h.repository), mdbListTestEpisodeMappings(), h.http.store, h.activeProfile
     )
 
     @Test

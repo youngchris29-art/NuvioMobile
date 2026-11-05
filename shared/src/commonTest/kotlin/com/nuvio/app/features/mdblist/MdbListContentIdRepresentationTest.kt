@@ -15,7 +15,7 @@ import kotlin.test.assertTrue
  */
 class MdbListContentIdRepresentationTest {
     private fun provider(h: MdbListSyncTestHarness) = MdbListTrackingProgressProvider(
-        h.repository, MdbListScrobbleService(h.http.api, h.repository), h.http.store, h.activeProfile, {}
+        h.repository, MdbListScrobbleService(h.http.api, h.repository), mdbListTestEpisodeMappings(), h.http.store, h.activeProfile, {}
     )
 
     private fun episode(showId: String, lastUpdatedEpochMs: Long) = WatchProgressEntry(
