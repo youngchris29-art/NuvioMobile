@@ -1,5 +1,6 @@
 package com.nuvio.app.features.mdblist
 
+import com.nuvio.app.features.tracking.TrackingEpisode
 import com.nuvio.app.features.tracking.TrackingHistoryItem
 import com.nuvio.app.features.tracking.TrackingExternalIds
 import com.nuvio.app.features.tracking.TrackingMediaKind
@@ -124,8 +125,55 @@ class MdbListHistoryServiceTest {
     }
 
     private fun service(harness: MdbListSyncTestHarness) = MdbListHistoryService(harness.http.api, harness.repository)
+    @Test
+    fun `an episode echoed in another numbering confirms the write and asks for a snapshot`() = runTest {
+        // MDBList accepted the TMDB-numbered S1E59 (counts say so) but echoes the play in its own
+        // season numbering; the echo pairs with no requested item and must not fail the mutation.
+        val harness = MdbListSyncTestHarness(backgroundScope)
+        harness.http.reply(body = """{"updated":{"episodes":1},"plays":[{"type":"episode","show":{"ids":{"imdb":"tt1"}},"season":2,"number":1,"watched_at":"2026-09-06T00:00:00Z","added":true}]}""")
+
+        val result = service(harness).add(harness.repository.currentScope(), listOf(episodeItem(season = 1, number = 59)))
+
+        assertTrue(result.isComplete)
+        assertEquals(0, result.notFoundCount)
+        val saved = harness.repository.currentSnapshot()?.watched?.single()
+        assertEquals(1, saved?.season)
+        assertEquals(59, saved?.episode)
+        assertTrue(MdbListSyncBucket.WATCHED in harness.repository.currentSnapshot()!!.invalidatedBuckets)
+    }
+
+    @Test
+    fun `a malformed echoed play is skipped when the counts confirm the write`() = runTest {
+        val harness = MdbListSyncTestHarness(backgroundScope)
+        harness.http.reply(body = """{"updated":{"movies":1},"plays":[{"type":"bogus","watched_at":"2026-09-06T00:00:00Z"}]}""")
+
+        val result = service(harness).add(harness.repository.currentScope(), listOf(item(1)))
+
+        assertTrue(result.isComplete)
+        assertEquals(listOf("tt1"), harness.repository.currentSnapshot()?.watched?.map { it.media.ids.imdb })
+        assertTrue(MdbListSyncBucket.WATCHED in harness.repository.currentSnapshot()!!.invalidatedBuckets)
+    }
+
+    @Test
+    fun `an unusable echo cannot fabricate a mark the counts do not confirm`() = runTest {
+        val harness = MdbListSyncTestHarness(backgroundScope)
+        harness.http.reply(body = """{"updated":{"movies":0},"plays":[{"type":"movie","ids":{"imdb":"tt9"},"watched_at":"2026-09-06T00:00:00Z"}]}""")
+
+        val result = service(harness).add(harness.repository.currentScope(), listOf(item(1)))
+
+        assertFalse(result.isComplete)
+        assertEquals(1, result.notFoundCount)
+        assertTrue(harness.repository.currentSnapshot()?.watched?.isEmpty() == true)
+        assertTrue(MdbListSyncBucket.WATCHED in harness.repository.currentSnapshot()!!.invalidatedBuckets)
+    }
+
     private fun item(id: Long) = TrackingHistoryItem(
         TrackingMediaReference(TrackingMediaKind.MOVIE, "Movie $id", ids = TrackingExternalIds(imdb = "tt$id")),
+        mdbListTimestamp(MDBLIST_TEST_TIME)
+    )
+
+    private fun episodeItem(season: Int, number: Int) = TrackingHistoryItem(
+        TrackingMediaReference(TrackingMediaKind.SHOW, "Show", ids = TrackingExternalIds(imdb = "tt1"), episode = TrackingEpisode(season, number)),
         mdbListTimestamp(MDBLIST_TEST_TIME)
     )
 }

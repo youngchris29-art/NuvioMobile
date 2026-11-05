@@ -1,11 +1,14 @@
 package com.nuvio.app.features.mdblist
 
+import co.touchlab.kermit.Logger
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
 internal data class MdbListHistoryChange(val target: MdbListMutationTarget, val watchedAt: String?)
+
+private val log = Logger.withTag("MdbListHistory")
 
 internal fun mdbListHistoryPayload(changes: List<MdbListHistoryChange>): String = buildJsonObject {
     val groups = changes.groupBy { change ->
@@ -64,35 +67,57 @@ internal fun decodeMdbListHistoryReceipt(
     val complete = failures == 0 && errors == 0 && changes.groupingBy { it.target.type }.eachCount().all { (type, requested) ->
         (counts.integer("${type.name.lowercase()}s") ?: 0) >= requested
     }
-    val plays = if (remove) emptyList() else payload.arrayValue("plays").map { element -> decodePlay(element.objectValue(), changes) }
-    val confirmed = if (plays.isNotEmpty()) plays else if (complete && !remove) {
-        changes.filter { it.target.type != MdbListItemType.SHOW }.map { it.target.watched(requireNotNull(it.watchedAt)) }
-    } else emptyList()
+    // An echoed play MDBList reports in a shape or numbering the matcher cannot pair with a requested
+    // target (an episode echoed in MDBList's own season numbering, a malformed row) is skipped, not a
+    // failure: the write already succeeded (2xx with counts), so failing the whole mutation here would
+    // leave the mark dirty forever. The skipped plays are logged, the counts decide confirmation as
+    // they already do for receipts without plays, and a snapshot refresh reconciles MDBList's view.
+    val echoed = if (remove) emptyList() else payload.arrayValue("plays").map { element -> decodePlay(element.objectValue(), changes) }
+    val plays = echoed.filterNotNull()
+    val skippedPlays = echoed.size - plays.size
+    val confirmed = when {
+        plays.isNotEmpty() && skippedPlays == 0 -> plays
+        complete && !remove -> changes.filter { it.target.type != MdbListItemType.SHOW }.map { it.target.watched(requireNotNull(it.watchedAt)) }
+        else -> plays
+    }
     val hasExpansion = changes.any { it.target.type == MdbListItemType.SHOW }
     return MdbListHistoryReceipt(
         confirmed = confirmed,
         complete = complete,
-        needsSnapshot = !complete || hasExpansion || confirmed.size != changes.size && !remove,
+        needsSnapshot = !complete || hasExpansion || skippedPlays > 0 || confirmed.size != changes.size && !remove,
         notFoundCount = if (complete) 0 else maxOf(failures, errors, changes.size - confirmed.size, 1)
     )
 }
 
-private fun decodePlay(row: JsonObject, changes: List<MdbListHistoryChange>): MdbListWatchedRecord {
+/** The echoed play paired with the change that requested it, or null when MDBList's echo cannot be used. */
+private fun decodePlay(row: JsonObject, changes: List<MdbListHistoryChange>): MdbListWatchedRecord? {
     val type = when (row.text("type")) {
         "movie" -> MdbListItemType.MOVIE
         "episode" -> MdbListItemType.EPISODE
-        else -> throw MdbListDecodingException()
+        else -> return skipPlay(row, "unknown type")
     }
-    val ids = decodeMdbListIds(if (type == MdbListItemType.MOVIE) row else row.objectValue("show") ?: throw MdbListDecodingException())
-    val season = if (type == MdbListItemType.EPISODE) row.integer("season")?.takeIf { it >= 0 } ?: throw MdbListDecodingException() else null
-    val episode = if (type == MdbListItemType.EPISODE) row.integer("number", "episode")?.takeIf { it > 0 } ?: throw MdbListDecodingException() else null
+    val idsRow = if (type == MdbListItemType.MOVIE) row else row.objectValue("show") ?: return skipPlay(row, "episode without a show")
+    val ids = decodeMdbListIds(idsRow)
+    val season = if (type == MdbListItemType.EPISODE) row.integer("season")?.takeIf { it >= 0 } ?: return skipPlay(row, "episode without a season") else null
+    val episode = if (type == MdbListItemType.EPISODE) row.integer("number", "episode")?.takeIf { it > 0 } ?: return skipPlay(row, "episode without a number") else null
+    val watchedAt = row.timestamp("watched_at") ?: return skipPlay(row, "no watched_at")
     val record = MdbListWatchedRecord(
-        type, MdbListMedia(ids), row.timestamp("watched_at") ?: throw MdbListDecodingException(), season, episode,
+        type, MdbListMedia(ids), watchedAt, season, episode,
         episodeTmdbId = row.objectValue("ids")?.number("tmdb").takeIf { type == MdbListItemType.EPISODE },
         episodeTvdbId = row.objectValue("ids")?.number("tvdb").takeIf { type == MdbListItemType.EPISODE }
     )
     val requested = changes.firstOrNull { it.target.matches(record) }?.target
         ?: changes.firstOrNull { it.target.type == MdbListItemType.SHOW && it.target.media.ids.matches(ids) }?.target
-        ?: throw MdbListDecodingException()
+        ?: return skipPlay(row, "matches no requested item")
     return record.copy(media = record.media.merged(requested.media), episodeTitle = requested.episodeTitle)
+}
+
+private fun skipPlay(row: JsonObject, reason: String): MdbListWatchedRecord? {
+    val show = row.objectValue("show")
+    log.i {
+        "Skipped an echoed MDBList play ($reason): type=${row.text("type")} " +
+            "show=${show?.text("imdb") ?: show?.objectValue("ids")?.text("imdb") ?: show?.objectValue("ids")?.number("tmdb")?.let { "tmdb:$it" }} " +
+            "season=${row.integer("season")} number=${row.integer("number", "episode")} keys=${row.keys.sorted()}"
+    }
+    return null
 }
