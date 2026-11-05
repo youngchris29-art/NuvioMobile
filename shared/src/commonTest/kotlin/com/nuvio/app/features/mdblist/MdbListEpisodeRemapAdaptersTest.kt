@@ -259,6 +259,50 @@ class MdbListEpisodeRemapAdaptersTest {
     }
 
     @Test
+    fun `a pulled row still names its TMDB episode after a restart`() = runTest {
+        // r3 #1: the key rides the stored payload's compacted entries.
+        val h = MdbListSyncTestHarness(backgroundScope)
+        h.seed(h.snapshot().copy(watched = listOf(mdbListTestEpisode(2, 5))))
+        h.repository.ensureLoaded()
+        val mappings = mdbListTestEpisodeMappings(
+            MdbListTestAddonEpisodes(seasons = listOf(30, 18)),
+            MdbListTestTmdbSeasons(seasons = listOf(24, 24), lookup = mapOf("tt1" to 1)),
+        )
+        val watched = MdbListWatchedSyncAdapter(h.repository, MdbListHistoryService(h.http.api, h.repository), mappings, h.http.store, h.activeProfile)
+        val pulled = watched.pull(1, 100)
+        val restored = com.nuvio.app.features.watched.expandProviderWatchedItems(
+            com.nuvio.app.features.watched.compactProviderWatchedItems(pulled),
+        ).single()
+        assertEquals("mdblist:tt1:2:5", restored.trackingEpisodeKey)
+        assertTrue(mappings.resolve("tt1", 1)!!.remaps)
+        h.http.reply(body = """{"deleted":{"episodes":1}}""")
+        watched.delete(1, listOf(restored))
+        val show = mdbListResponseElement(h.http.engine.requests.single().body).objectValue().arrayValue("shows").single().objectValue()
+        val season = show.arrayValue("seasons").single().objectValue()
+        assertEquals(2 to 5, season.text("number")?.toInt() to season.arrayValue("episodes").single().objectValue().text("number")?.toInt())
+    }
+
+    @Test
+    fun `a snapshot schedules a reload of a mapping that has aged`() = runTest {
+        // r3 #4: the old answer is served while the show's new season is picked up in the background.
+        val clock = kotlin.time.TestTimeSource()
+        val h = MdbListSyncTestHarness(backgroundScope)
+        h.seed(h.snapshot().copy(watched = listOf(mdbListTestEpisode(1, 30))))
+        h.repository.ensureLoaded()
+        val addon = MdbListTestAddonEpisodes(seasons = listOf(34))
+        val tmdb = MdbListTestTmdbSeasons(seasons = listOf(34))
+        val mappings = mdbListTestEpisodeMappings(addon, tmdb, backgroundScope, clock)
+        val provider = MdbListTrackingProgressProvider(h.repository, MdbListScrobbleService(h.http.api, h.repository), mappings, h.http.store, h.activeProfile, {})
+        assertFalse(mappings.resolve("tt1", 1)!!.remaps)
+        addon.seasons = listOf(24, 10) // the add-on now splits the show
+        clock += kotlin.time.Duration.parse("6h")
+        assertEquals(1 to 30, provider.snapshot().entries.single().let { it.seasonNumber to it.episodeNumber })
+        runCurrent()
+        assertTrue(mappings.cached("tt1")!!.remaps)
+        assertEquals(2 to 6, provider.snapshot().entries.single().let { it.seasonNumber to it.episodeNumber })
+    }
+
+    @Test
     fun `seeds sharing a timestamp keep their own TMDB episode across snapshots`() = runTest {
         // r2 #6: a bulk import marks TMDB S2E1 and S2E7 at the same time; add-on 30 + 18 vs TMDB 24 + 24
         // shows TMDB S2E7 as the add-on's S2E1, the same numbers the raw S2E1 row had.

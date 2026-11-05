@@ -28,7 +28,7 @@ final class PlaybackProgressRecorderTests: XCTestCase {
             pauseDescription: nil, lastSourceUrl: nil, isCompleted: completed,
             progressPercent: percent.map { KotlinFloat(float: $0) }, source: "local",
             trackingProviderId: nil, trackingProviderItemId: nil, trackingSourceUrl: nil,
-            progressKey: nil, excludedNextUpSeasons: []
+            progressKey: nil, excludedNextUpSeasons: [], trackingEpisodeKey: nil
         )
     }
 

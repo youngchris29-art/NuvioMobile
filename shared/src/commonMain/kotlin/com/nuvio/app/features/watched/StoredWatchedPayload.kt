@@ -8,6 +8,8 @@ internal data class StoredWatchedItemEntry(
     val episode: Int? = null,
     val videoId: String? = null,
     val markedAtEpochMs: Long = 0L,
+    /** [WatchedItem.trackingEpisodeKey]: the provider's own episode identity survives a restart. */
+    val trackingEpisodeKey: String? = null,
 )
 
 @Serializable
@@ -83,6 +85,7 @@ internal fun compactProviderWatchedItems(items: Collection<WatchedItem>): List<S
                             episode = item.episode,
                             videoId = item.videoId,
                             markedAtEpochMs = item.markedAtEpochMs,
+                            trackingEpisodeKey = item.trackingEpisodeKey,
                         )
                     }
                     .sortedWith(
@@ -113,6 +116,7 @@ internal fun expandProviderWatchedItems(groups: Collection<StoredWatchedItemGrou
                 trackingProviderItemId = group.trackingProviderItemId,
                 trackingSourceUrl = group.trackingSourceUrl,
                 markedAtEpochMs = entry.markedAtEpochMs,
+                trackingEpisodeKey = entry.trackingEpisodeKey,
             )
         }
     }

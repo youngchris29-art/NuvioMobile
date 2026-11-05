@@ -63,7 +63,8 @@ internal class MdbListEpisodeMappingService(
     private val log = Logger.withTag("MdbListEpMap")
 
     private class Resolved(val mapping: MdbListEpisodeMapping, val generation: Any, val epoch: Long, val resolvedAt: TimeMark)
-    private class Outcome(val mapping: MdbListEpisodeMapping?, val stale: Boolean)
+    /** A load's result with the sources it was made under; a receiver uses it only while those are current. */
+    private class Outcome(val mapping: MdbListEpisodeMapping?, val generation: Any, val epoch: Long)
 
     private val resolved = MutableStateFlow<Map<String, Resolved>>(emptyMap())
     private val inFlightMutex = Mutex()
@@ -128,35 +129,44 @@ internal class MdbListEpisodeMappingService(
                     currentCoroutineContext().ensureActive()
                     return@repeat
                 }
-                if (!outcome.stale) return outcome.mapping
+                if (outcome.isCurrent()) return outcome.mapping
                 return@repeat
             }
             val outcome = try {
                 val mapping = load(key, tmdbShowId)
-                // A mapping built on a list that is no longer current, or for a profile that is
-                // no longer active, is neither kept nor handed to anyone (Codex r2 #4).
-                val stale = generation != addonEpisodes.generation() || currentEpoch != epoch.value
-                if (mapping != null && !stale) {
-                    val entry = Resolved(mapping, generation, currentEpoch, timeSource.markNow())
-                    resolved.update { current -> current + (aliases + key).associateWith { entry } }
+                // Published under the mutex: a source or profile change lands either before this
+                // check (the mapping is not kept) or after it (every receiver checks again before
+                // using the outcome, Codex r2 #4, r3 #5). A newer entry is never overwritten.
+                if (mapping != null) {
+                    inFlightMutex.withLock {
+                        if (generation == addonEpisodes.generation() && currentEpoch == epoch.value) {
+                            val entry = Resolved(mapping, generation, currentEpoch, timeSource.markNow())
+                            resolved.update { current ->
+                                current + (aliases + key).filter { alias -> current[alias]?.let { it.epoch > currentEpoch } != true }
+                                    .associateWith { entry }
+                            }
+                        }
+                    }
                 }
-                Outcome(mapping, stale).also(deferred::complete)
+                Outcome(mapping, generation, currentEpoch).also(deferred::complete)
             } catch (error: CancellationException) {
                 deferred.cancel(error)
                 throw error
             } catch (error: Exception) {
                 log.w { "episode mapping failed for $key: ${error.message}" }
-                deferred.complete(Outcome(null, stale = false))
+                deferred.complete(Outcome(null, generation, currentEpoch))
                 return null
             } finally {
                 withContext(NonCancellable) {
                     inFlightMutex.withLock { if (inFlight[flightKey] === deferred) inFlight.remove(flightKey) }
                 }
             }
-            if (!outcome.stale) return outcome.mapping
+            if (outcome.isCurrent()) return outcome.mapping
         }
         return null
     }
+
+    private fun Outcome.isCurrent(): Boolean = generation == addonEpisodes.generation() && epoch == this@MdbListEpisodeMappingService.epoch.value
 
     /**
      * Resolves [contentId]'s mapping on [scope] unless it is cached and fresh, in flight, or failed
@@ -245,7 +255,15 @@ internal class MdbListEpisodeMappingService(
         val tmdbList = tmdbEpisodes.filterNotNull().flatten()
         if (tmdbList.isEmpty()) return null
         if (TraktEpisodeMappingService.hasSameSeasonStructure(addon, tmdbList)) return MdbListEpisodeMapping.Unchanged
-        if (nearlySameSeasons && seasonsHoldTheSameEpisodes(addon, tmdbList)) return MdbListEpisodeMapping.Unchanged
+        if (nearlySameSeasons && seasonsHoldTheSameEpisodes(addon, tmdbList)) {
+            // The seasons hold the same episodes but one side merged or dropped one, so the
+            // episodes after it in that season are off by one: matched within each season, by
+            // title and then position, while every other season stays as it is (Codex r3 #2).
+            val withinSeasons = MdbListEpisodeMapping.buildWithinSeasons(addon, tmdbList)
+            if (withinSeasons.isIdentity) return MdbListEpisodeMapping.Unchanged
+            log.d { "remapping $contentId within seasons: addon=${addon.seasonCounts()} tmdb=${tmdbList.seasonCounts()}" }
+            return withinSeasons
+        }
         log.d { "remapping $contentId: addon=${addon.seasonCounts()} tmdb=${tmdbList.seasonCounts()}" }
         return MdbListEpisodeMapping.build(addon, tmdbList)
     }
@@ -331,6 +349,11 @@ internal class MdbListEpisodeMapping private constructor(
     val remaps: Boolean
         get() = addonByTmdb.isNotEmpty() || tmdbByAddon.isNotEmpty()
 
+    /** True when every episode maps to its own number on both sides, so nothing moves. */
+    val isIdentity: Boolean
+        get() = addonByTmdb.all { (tmdb, addon) -> tmdb == addon.season to addon.episode } &&
+            tmdbByAddon.all { (addon, tmdb) -> addon == tmdb.season to tmdb.episode }
+
     /** The add-on's episode for TMDB [season]/[episode], or null when nothing needs remapping. */
     fun toAddon(season: Int, episode: Int): EpisodeMappingEntry? = addonByTmdb[season to episode]
 
@@ -340,6 +363,32 @@ internal class MdbListEpisodeMapping private constructor(
 
     companion object {
         val Unchanged = MdbListEpisodeMapping(emptyMap(), emptyMap(), emptyMap())
+
+        /**
+         * Matches episodes season by season: within season N the add-on's and TMDB's lists are
+         * remapped by title then position, as [build] does for the whole show, and nothing crosses
+         * a season. For shows whose seasons hold the same episodes with one merged or dropped.
+         */
+        suspend fun buildWithinSeasons(
+            addonEpisodes: List<EpisodeMappingEntry>,
+            tmdbEpisodes: List<EpisodeMappingEntry>,
+        ): MdbListEpisodeMapping {
+            val addonBySeason = addonEpisodes.groupBy { it.season }
+            val tmdbBySeason = tmdbEpisodes.groupBy { it.season }
+            val addonByTmdb = HashMap<Pair<Int, Int>, EpisodeMappingEntry>(tmdbEpisodes.size)
+            val tmdbByAddon = HashMap<Pair<Int, Int>, EpisodeMappingEntry>(addonEpisodes.size)
+            val tmdbByAddonVideoId = HashMap<String, EpisodeMappingEntry>(addonEpisodes.size)
+            for (season in (addonBySeason.keys + tmdbBySeason.keys).sorted()) {
+                val addon = addonBySeason[season].orEmpty()
+                val tmdb = tmdbBySeason[season].orEmpty()
+                if (addon.isEmpty() || tmdb.isEmpty()) continue
+                val part = build(addon, tmdb)
+                addonByTmdb += part.addonByTmdb
+                tmdbByAddon += part.tmdbByAddon
+                tmdbByAddonVideoId += part.tmdbByAddonVideoId
+            }
+            return MdbListEpisodeMapping(addonByTmdb, tmdbByAddon, tmdbByAddonVideoId)
+        }
 
         suspend fun build(
             addonEpisodes: List<EpisodeMappingEntry>,

@@ -8,6 +8,24 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class StoredWatchedPayloadTest {
+    @Test
+    fun providerEpisodeKey_survivesCompactionAndJson() {
+        // Codex r3 #1 on the MDBList episode remap: the provider's own episode identity is stored.
+        val item = WatchedItem(
+            id = "tt1", type = "series", name = "Show", season = 2, episode = 5, videoId = "tt1:2:5",
+            trackingProviderId = "mdblist", markedAtEpochMs = 1L, trackingEpisodeKey = "mdblist:tt1:2:5",
+        )
+        val groups = compactProviderWatchedItems(listOf(item, item.copy(episode = 6, videoId = "tt1:2:6", trackingEpisodeKey = null)))
+        val json = Json.encodeToString(groups)
+        val restored = expandProviderWatchedItems(Json.decodeFromString<List<StoredWatchedItemGroup>>(json))
+        assertEquals(listOf("mdblist:tt1:2:5", null), restored.sortedBy { it.episode }.map { it.trackingEpisodeKey })
+        // Payloads written before the field existed still decode.
+        val legacy = Json.decodeFromString<List<StoredWatchedItemGroup>>(
+            """[{"id":"tt1","type":"series","name":"Show","entries":[{"season":2,"episode":5,"markedAtEpochMs":1}]}]""",
+        )
+        assertEquals(null, expandProviderWatchedItems(legacy).single().trackingEpisodeKey)
+    }
+
     private val json = Json {
         ignoreUnknownKeys = true
         encodeDefaults = true

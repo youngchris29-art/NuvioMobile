@@ -4,6 +4,7 @@ import com.nuvio.app.features.tracking.TrackingExternalIds
 import com.nuvio.app.features.tracking.TrackingMediaKind
 import com.nuvio.app.features.tracking.TrackingMediaReference
 import com.nuvio.app.features.tracking.buildTrackingMediaReference
+import com.nuvio.app.features.trakt.EpisodeMappingEntry
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
@@ -252,6 +253,28 @@ class MdbListEpisodeMappingServiceTest {
             (4..12).forEach { put(1 to it, "One ${it + 1}") }
             (1..12).forEach { put(2 to it, "Two $it") }
         })
+        val mapping = mdbListTestEpisodeMappings(addon, tmdb).resolve("tt1", 1)!!
+        // r3 #2: the episodes after the merged one are off by one within season 1; season 2 is untouched.
+        assertTrue(mapping.remaps)
+        assertEquals(1 to 3, mapping.toTmdb(1, 3)?.let { it.season to it.episode })
+        assertEquals(1 to 5, mapping.toTmdb(1, 4)?.let { it.season to it.episode })
+        assertEquals(1 to 13, mapping.toTmdb(1, 12)?.let { it.season to it.episode })
+        assertEquals(1 to 12, mapping.toAddon(1, 13)?.let { it.season to it.episode })
+        assertEquals(1 to 4, mapping.toAddon(1, 5)?.let { it.season to it.episode })
+        assertEquals(1 to 4, mapping.toAddon(1, 4)?.let { it.season to it.episode }) // the merged two-parter covers it
+        assertEquals(2 to 5, mapping.toTmdb(2, 5)?.let { it.season to it.episode })
+        assertEquals(2 to 12, mapping.toAddon(2, 12)?.let { it.season to it.episode })
+    }
+
+    @Test
+    fun `seasons that hold the same episodes in the same places stay unchanged after the identity check`() = runTest {
+        // A dropped untitled recap at the end of season 1: every titled episode keeps its number.
+        val tmdb = MdbListTestTmdbSeasons(seasons = listOf(13, 12), titles = buildMap {
+            (1..12).forEach { put(1 to it, "One $it") }; put(1 to 13, "Recap"); (1..12).forEach { put(2 to it, "Two $it") }
+        })
+        val addon = MdbListTestAddonEpisodes(seasons = listOf(12, 12), titles = buildMap {
+            (1..12).forEach { put(1 to it, "One $it") }; (1..12).forEach { put(2 to it, "Two $it") }
+        })
         assertFalse(mdbListTestEpisodeMappings(addon, tmdb).resolve("tt1", 1)!!.remaps)
     }
 
@@ -332,6 +355,22 @@ class MdbListEpisodeMappingServiceTest {
         assertTrue(service.resolve("tt1", 1)!!.remaps) // …an explicit resolve reloads it
         assertTrue(service.cached("tt1")!!.remaps)
         assertEquals(1 to 25, service.cached("tt1")!!.toTmdb(2, 1)?.let { it.season to it.episode })
+    }
+
+    @Test
+    fun `a source change that lands as the load returns is neither kept nor handed out`() = runTest {
+        // r3 #5: the add-on fake bumps its generation inside the fetch, after the list is read.
+        val addon = object : MdbListTestAddonEpisodes(seasons = listOf(24, 24)) {
+            override suspend fun episodes(contentId: String, contentType: String): List<EpisodeMappingEntry> {
+                val list = super.episodes(contentId, contentType)
+                if (calls.size == 1) { generation = 1; seasons = listOf(48) }
+                return list
+            }
+        }
+        val service = mdbListTestEpisodeMappings(addon, MdbListTestTmdbSeasons(seasons = listOf(48)))
+        assertFalse(service.resolve("tt1", 1)!!.remaps) // the second load, under the new source
+        assertEquals(2, addon.calls.size)
+        assertFalse(service.cached("tt1")!!.remaps)
     }
 
     private fun episodeReference(season: Int, episode: Int) = buildTrackingMediaReference(

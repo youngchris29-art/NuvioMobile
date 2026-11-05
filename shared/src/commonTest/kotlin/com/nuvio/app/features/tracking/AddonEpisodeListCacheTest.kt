@@ -22,7 +22,7 @@ class AddonEpisodeListCacheTest {
     fun `a tracker waiting on a fetch another tracker cancelled fetches for itself`() = runTest {
         val gate = CompletableDeferred<Unit>()
         var fetches = 0
-        val cache = AddonEpisodeListCache(fetch = { _, _ -> fetches++; gate.await(); list }, generation = { 0 })
+        val cache = AddonEpisodeListCache(fetch = { _, _, _ -> fetches++; gate.await(); list }, generation = { 0 })
         val trakt = launch { cache.episodes("tt1", "series") }
         runCurrent()
         val mdblist = async { cache.episodes("tt1", "series") }
@@ -40,7 +40,7 @@ class AddonEpisodeListCacheTest {
     fun `a cancelled waiter leaves the owner's fetch alone`() = runTest {
         val gate = CompletableDeferred<Unit>()
         var fetches = 0
-        val cache = AddonEpisodeListCache(fetch = { _, _ -> fetches++; gate.await(); list }, generation = { 0 })
+        val cache = AddonEpisodeListCache(fetch = { _, _, _ -> fetches++; gate.await(); list }, generation = { 0 })
         val owner = async { cache.episodes("tt1", "series") }
         runCurrent()
         val waiter = async { cache.episodes("tt1", "series") }
@@ -59,7 +59,7 @@ class AddonEpisodeListCacheTest {
         val clock = TestTimeSource()
         var answer = emptyList<EpisodeMappingEntry>()
         var fetches = 0
-        val cache = AddonEpisodeListCache(fetch = { _, _ -> fetches++; answer }, generation = { 0 }, emptyResultTtl = 5.minutes, timeSource = clock)
+        val cache = AddonEpisodeListCache(fetch = { _, _, _ -> fetches++; answer }, generation = { 0 }, emptyResultTtl = 5.minutes, timeSource = clock)
         assertTrue(cache.episodes("tt1", "series").isEmpty())
         answer = list
         assertTrue(cache.episodes("tt1", "series").isEmpty())
@@ -79,7 +79,7 @@ class AddonEpisodeListCacheTest {
         var generation = 0
         var fetches = 0
         val old = listOf(EpisodeMappingEntry(1, 1, videoId = "old"))
-        val cache = AddonEpisodeListCache(fetch = { _, _ -> fetches++; if (fetches == 1) { gate.await(); old } else list }, generation = { generation })
+        val cache = AddonEpisodeListCache(fetch = { _, _, _ -> fetches++; if (fetches == 1) { gate.await(); old } else list }, generation = { generation })
         val owner = async { cache.episodes("tt1", "series") }
         runCurrent()
         generation = 1
@@ -97,7 +97,7 @@ class AddonEpisodeListCacheTest {
         // r2 #8
         val clock = TestTimeSource()
         var fetches = 0
-        val cache = AddonEpisodeListCache(fetch = { _, _ -> fetches++; list }, generation = { 0 }, listTtl = 6.hours, timeSource = clock)
+        val cache = AddonEpisodeListCache(fetch = { _, _, _ -> fetches++; list }, generation = { 0 }, listTtl = 6.hours, timeSource = clock)
         cache.episodes("tt1", "series")
         clock += 5.hours
         cache.episodes("tt1", "series")
@@ -108,10 +108,44 @@ class AddonEpisodeListCacheTest {
     }
 
     @Test
+    fun `an aged list is fetched again with refresh so the source does not answer from its own cache`() = runTest {
+        // r3 #3
+        val clock = TestTimeSource()
+        val refreshes = mutableListOf<Boolean>()
+        val cache = AddonEpisodeListCache(fetch = { _, _, refresh -> refreshes += refresh; list }, generation = { 0 }, listTtl = 6.hours, timeSource = clock)
+        cache.episodes("tt1", "series")
+        clock += 6.hours
+        cache.episodes("tt1", "series")
+        assertEquals(listOf(false, true), refreshes)
+        // An empty list that aged out is a plain fetch: there is nothing stale to bypass.
+        var answer = emptyList<EpisodeMappingEntry>()
+        val empties = mutableListOf<Boolean>()
+        val cache2 = AddonEpisodeListCache(fetch = { _, _, refresh -> empties += refresh; answer }, generation = { 0 }, emptyResultTtl = 5.minutes, timeSource = clock)
+        cache2.episodes("tt1", "series")
+        clock += 5.minutes
+        answer = list
+        cache2.episodes("tt1", "series")
+        assertEquals(listOf(false, false), empties)
+    }
+
+    @Test
+    fun `a generation change that lands as the fetch returns is not published`() = runTest {
+        // r3 #5: the change happens after the fetch body and before publication.
+        var generation = 0
+        var fetches = 0
+        val old = listOf(EpisodeMappingEntry(1, 1, videoId = "old"))
+        val cache = AddonEpisodeListCache(fetch = { _, _, _ -> fetches++; if (fetches == 1) { generation = 1; old } else list }, generation = { generation })
+        assertEquals(list, cache.episodes("tt1", "series"))
+        assertEquals(2, fetches)
+        assertEquals(list, cache.episodes("tt1", "series"))
+        assertEquals(2, fetches)
+    }
+
+    @Test
     fun `a list from an older add-on set is fetched again`() = runTest {
         var generation = 0
         var fetches = 0
-        val cache = AddonEpisodeListCache(fetch = { _, _ -> fetches++; list }, generation = { generation })
+        val cache = AddonEpisodeListCache(fetch = { _, _, _ -> fetches++; list }, generation = { generation })
         cache.episodes("tt1", "series")
         cache.episodes("tt1", "series")
         assertEquals(1, fetches)

@@ -278,9 +278,22 @@ object MetaDetailsRepository {
     // permanently caching every item they touch. The default preserves existing behavior for
     // every current caller; ported now so shared/ stays in sync for when either bulk feature
     // lands here.
-    suspend fun fetch(type: String, id: String, cacheResult: Boolean = true): MetaDetails? {
+    suspend fun fetch(type: String, id: String, cacheResult: Boolean = true): MetaDetails? =
+        fetch(type = type, id = id, cacheResult = cacheResult, refresh = false)
+
+    /**
+     * Fork (Codex r3 #3 on the MDBList episode remap): [fetch] past the cached base meta, which is
+     * replaced in place (the entry's meta-screen state is kept). The episode lists the trackers
+     * remap against expire on their own clock; without this an airing show's new episodes never
+     * reached them while this cache held the old meta. A separate entry point, not a defaulted
+     * parameter: Swift calls `fetch(type:id:cacheResult:)` and Kotlin defaults do not reach it.
+     */
+    suspend fun refetch(type: String, id: String): MetaDetails? =
+        fetch(type = type, id = id, cacheResult = true, refresh = true)
+
+    private suspend fun fetch(type: String, id: String, cacheResult: Boolean, refresh: Boolean): MetaDetails? {
         val requestKey = MetaRequestResolution.requestKey(type, id)
-        cachedMetaByRequestKey[requestKey]?.let { return it.baseMeta }
+        if (!refresh) cachedMetaByRequestKey[requestKey]?.let { return it.baseMeta }
         val generation = cacheGeneration
 
         val metaLookupId = resolveMetaLookupId(itemId = id, itemType = type)
@@ -292,7 +305,7 @@ object MetaDetailsRepository {
             }
             if (result != null) {
                 if (cacheResult) {
-                    putCache(requestKey, generation) { CachedMetaEntry(baseMeta = result) }
+                    putCache(requestKey, generation) { existing -> existing?.copy(baseMeta = result) ?: CachedMetaEntry(baseMeta = result) }
                 }
                 return result
             }
@@ -300,7 +313,7 @@ object MetaDetailsRepository {
 
         return tryFetchTmdbFallbackMeta(type = type, id = id)?.also { result ->
             if (cacheResult) {
-                putCache(requestKey, generation) { CachedMetaEntry(baseMeta = result) }
+                putCache(requestKey, generation) { existing -> existing?.copy(baseMeta = result) ?: CachedMetaEntry(baseMeta = result) }
             }
         }
     }

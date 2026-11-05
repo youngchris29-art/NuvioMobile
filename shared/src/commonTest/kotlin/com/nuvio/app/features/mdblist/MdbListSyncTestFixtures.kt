@@ -107,7 +107,7 @@ internal fun mdbListTestPlayback(progress: Float = 40f, timestamp: String = MDBL
  * Fake add-on side of the episode remap: one show, [seasons] episodes per season, video ids
  * `<contentId>:<season>:<episode>`, titles from [titles] (`season to episode` → title).
  */
-internal class MdbListTestAddonEpisodes(
+internal open class MdbListTestAddonEpisodes(
     var seasons: List<Int> = emptyList(),
     var titles: Map<Pair<Int, Int>, String> = emptyMap(),
     var airDates: Map<Pair<Int, Int>, String> = emptyMap(),

@@ -52,7 +52,7 @@ internal object AddonEpisodeListService : AddonEpisodeListSource {
     private const val FETCH_TIMEOUT_MS = 3_500L
 
     private val cache = AddonEpisodeListCache(
-        fetch = { contentId, contentType -> fetchAddonEpisodes(contentId, contentType) },
+        fetch = { contentId, contentType, refresh -> fetchAddonEpisodes(contentId, contentType, refresh) },
         generation = {
             // The enabled add-ons that can serve metadata, in order, plus the explicit invalidations
             // (TMDB language or enrichment changes, which re-title the add-on's episodes).
@@ -91,7 +91,8 @@ internal object AddonEpisodeListService : AddonEpisodeListSource {
 
     fun clearCache() = invalidate()
 
-    private suspend fun fetchAddonEpisodes(contentId: String, contentType: String): List<EpisodeMappingEntry> {
+    /** [refresh]: the cached list aged out, so the meta behind it is fetched again too (Codex r3 #3). */
+    private suspend fun fetchAddonEpisodes(contentId: String, contentType: String, refresh: Boolean): List<EpisodeMappingEntry> {
         val typeCandidates = buildList {
             val normalized = contentType.lowercase()
             if (normalized.isNotBlank()) add(normalized)
@@ -111,7 +112,8 @@ internal object AddonEpisodeListService : AddonEpisodeListSource {
         for (type in typeCandidates) {
             for (candidateId in idCandidates) {
                 val meta = withTimeoutOrNull(FETCH_TIMEOUT_MS) {
-                    MetaDetailsRepository.fetch(type = type, id = candidateId)
+                    if (refresh) MetaDetailsRepository.refetch(type = type, id = candidateId)
+                    else MetaDetailsRepository.fetch(type = type, id = candidateId)
                 } ?: continue
                 val episodes = meta.videos.toEpisodeMappingEntries()
                 if (episodes.isNotEmpty()) return episodes
@@ -151,7 +153,8 @@ internal object AddonEpisodeListService : AddonEpisodeListSource {
  * an immutable map swapped atomically, so clearing needs no lock (Codex r2 #7).
  */
 internal class AddonEpisodeListCache(
-    private val fetch: suspend (contentId: String, contentType: String) -> List<EpisodeMappingEntry>,
+    /** `refresh` is true when a list this cache held has aged out: the source must not answer from its own cache. */
+    private val fetch: suspend (contentId: String, contentType: String, refresh: Boolean) -> List<EpisodeMappingEntry>,
     private val generation: () -> Any,
     private val emptyResultTtl: Duration = 5.minutes,
     private val listTtl: Duration = 6.hours,
@@ -160,7 +163,8 @@ internal class AddonEpisodeListCache(
     private val log = Logger.withTag("AddonEpisodeList")
 
     private class Cached(val episodes: List<EpisodeMappingEntry>, val generation: Any, val fetchedAt: TimeMark)
-    private class Outcome(val episodes: List<EpisodeMappingEntry>, val stale: Boolean)
+    /** A fetch's result and the generation it was made under; a receiver uses it only while that is current. */
+    private class Outcome(val episodes: List<EpisodeMappingEntry>, val generation: Any)
 
     private val cache = MutableStateFlow<Map<String, Cached>>(emptyMap())
     private val inFlightMutex = Mutex()
@@ -203,12 +207,13 @@ internal class AddonEpisodeListCache(
 
             val flightKey = "$cacheKey|$currentGeneration"
             val deferred = CompletableDeferred<Outcome>()
-            val existing = inFlightMutex.withLock {
+            val (existing, refresh) = inFlightMutex.withLock {
                 current(cacheKey, currentGeneration)?.let { return it }
-                inFlight[flightKey] ?: run {
+                val flight = inFlight[flightKey] ?: run {
                     inFlight[flightKey] = deferred
                     null
                 }
+                flight to (cache.value[cacheKey]?.episodes?.isNotEmpty() == true)
             }
             if (existing != null) {
                 val outcome = try {
@@ -219,18 +224,23 @@ internal class AddonEpisodeListCache(
                 } catch (_: Exception) {
                     return emptyList()
                 }
-                if (!outcome.stale) return outcome.episodes
+                // Checked where it is used, not where it was produced (Codex r2 #3, r3 #5).
+                if (outcome.generation == generation()) return outcome.episodes
                 return@repeat
             }
 
             fetchMisses++
             val outcome = try {
-                val episodes = fetch(contentId, contentType)
-                val stale = generation() != currentGeneration
-                if (!stale) {
-                    cache.update { it + (cacheKey to Cached(episodes, currentGeneration, timeSource.markNow())) }
+                val episodes = fetch(contentId, contentType, refresh)
+                // Published under the mutex, so a generation change is either before this check
+                // (the list is not kept) or after it (the receivers' own check rejects it).
+                inFlightMutex.withLock {
+                    if (generation() == currentGeneration) {
+                        val fetched = Cached(episodes, currentGeneration, timeSource.markNow())
+                        cache.update { it + (cacheKey to fetched) }
+                    }
                 }
-                Outcome(episodes, stale).also(deferred::complete)
+                Outcome(episodes, currentGeneration).also(deferred::complete)
             } catch (error: CancellationException) {
                 deferred.cancel(error)
                 throw error
@@ -243,7 +253,7 @@ internal class AddonEpisodeListCache(
                     inFlightMutex.withLock { if (inFlight[flightKey] === deferred) inFlight.remove(flightKey) }
                 }
             }
-            if (!outcome.stale) return outcome.episodes
+            if (outcome.generation == generation()) return outcome.episodes
             // The add-ons or the metadata language changed while the list loaded: fetch it again.
         }
         return emptyList()

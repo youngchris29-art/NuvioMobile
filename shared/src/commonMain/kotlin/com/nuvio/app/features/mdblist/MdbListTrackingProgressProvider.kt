@@ -101,12 +101,17 @@ class MdbListTrackingProgressProvider internal constructor(
         return episodeMappings.resolve(contentId, projection.tmdbShowId(contentId), projection.showAliases(contentId))
     }
 
+    /**
+     * The show's cached mapping for this snapshot, scheduling a background resolve for shows that
+     * have none or whose mapping has aged (the service's own freshness check keeps that cheap, so an
+     * airing show's new season is picked up, Codex r3 #4). [changes] ticks when one lands.
+     */
     private fun cachedMappingOrResolveLater(projection: MdbListProgressProjection, contentId: String): MdbListEpisodeMapping? {
-        episodeMappings.cached(contentId)?.let { return it }
+        val cached = episodeMappings.cached(contentId)
         if (parseTrackingExternalIds(contentId).toMdbListIds() != null) {
             episodeMappings.resolveInBackground(contentId, projection.tmdbShowId(contentId), projection.showAliases(contentId))
         }
-        return null
+        return cached
     }
 
 }
