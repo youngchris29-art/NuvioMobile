@@ -216,6 +216,13 @@ object SubtitleRepository {
         hashJob?.cancel()
         hashAttemptKey = attemptKey
         hashJob = scope.launch {
+            // Review r4 (Opus stand-in): no subtitle-capable add-on, no hash — the two range GETs
+            // would compete with the player for the stream host, and the re-query would find
+            // nothing to ask. Waits for the add-on repository the way runFetch does.
+            if (!subtitleAddonPresent()) {
+                log.d { "No subtitle-capable addon for $key — skipping the video hash" }
+                return@launch
+            }
             val hashStart = TimeSource.Monotonic.markNow()
             val result = OpenSubtitlesHasher.compute(sourceUrl, sourceHeaders)
             if (result == null) {
@@ -236,6 +243,19 @@ object SubtitleRepository {
                     fetchAddonSubtitles(type, videoId, enriched)
                 }
             }
+        }
+    }
+
+    /** True once the add-on repository is ready (bounded wait) and an enabled add-on declares a `subtitles` resource. */
+    private suspend fun subtitleAddonPresent(): Boolean {
+        withTimeoutOrNull(ADDON_READY_TIMEOUT_MS) {
+            AddonRepository.initializedState.first { it }
+            AddonRepository.uiState.first { state ->
+                state.addons.enabledAddons().none { it.manifest == null && it.isRefreshing }
+            }
+        }
+        return AddonRepository.uiState.value.addons.enabledAddons().any { addon ->
+            addon.manifest?.resources?.any { it.name.isSubtitleResourceName() } == true
         }
     }
 
