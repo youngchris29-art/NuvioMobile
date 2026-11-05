@@ -303,6 +303,64 @@ class MdbListEpisodeRemapAdaptersTest {
     }
 
     @Test
+    fun `a TMDB episode the add-on does not have is left out rather than shown as another episode`() = runTest {
+        // r4 #2: TMDB A, B, Recap, C vs add-on A, B, C; the recap is watched on MDBList.
+        val h = MdbListSyncTestHarness(backgroundScope)
+        h.seed(h.snapshot().copy(
+            watched = listOf(mdbListTestEpisode(1, 3), mdbListTestEpisode(1, 4)),
+            playback = listOf(mdbListTestPlayback().copy(type = MdbListItemType.EPISODE, season = 1, episode = 3)),
+        ))
+        h.repository.ensureLoaded()
+        val mappings = mdbListTestEpisodeMappings(
+            MdbListTestAddonEpisodes(seasons = listOf(3), titles = mapOf(1 to 1 to "A", 1 to 2 to "B", 1 to 3 to "C")),
+            MdbListTestTmdbSeasons(seasons = listOf(4), titles = mapOf(1 to 1 to "A", 1 to 2 to "B", 1 to 3 to "Recap", 1 to 4 to "C"), lookup = mapOf("tt1" to 1)),
+        )
+        val provider = MdbListTrackingProgressProvider(h.repository, MdbListScrobbleService(h.http.api, h.repository), mappings, h.http.store, h.activeProfile, {})
+        val watched = MdbListWatchedSyncAdapter(h.repository, MdbListHistoryService(h.http.api, h.repository), mappings, h.http.store, h.activeProfile)
+        assertTrue(mappings.resolve("tt1", 1)!!.remaps)
+
+        val items = watched.pull(1, 100)
+        assertEquals(listOf(1 to 3), items.map { it.season!! to it.episode!! }) // TMDB S1E4 "C"; the recap is gone
+        assertEquals("mdblist:tt1:1:4", items.single().trackingEpisodeKey)
+        val keys = watched.pullExtraWatchedKeys(1)
+        assertTrue(watchedItemKey("series", "tt1", 1, 3) in keys)
+        assertFalse(watchedItemKey("series", "tt1", 1, 4) in keys)
+        // The recap's playback row and its next-up seed are left out too; the "C" seed is S1E3.
+        assertEquals(listOf(1 to 3), provider.snapshot().entries.map { it.seasonNumber to it.episodeNumber })
+    }
+
+    @Test
+    fun `a legacy MDBList row without a key is deleted by its own coordinates`() = runTest {
+        // r4 #3: pulled by a build before the key existed, persisted in TMDB numbering, restored, unmarked.
+        val h = MdbListSyncTestHarness(backgroundScope)
+        h.seed(h.snapshot().copy(watched = listOf(mdbListTestEpisode(2, 5))))
+        h.repository.ensureLoaded()
+        val mappings = mdbListTestEpisodeMappings(
+            MdbListTestAddonEpisodes(seasons = listOf(30, 18)),
+            MdbListTestTmdbSeasons(seasons = listOf(24, 24), lookup = mapOf("tt1" to 1)),
+        )
+        val watched = MdbListWatchedSyncAdapter(h.repository, MdbListHistoryService(h.http.api, h.repository), mappings, h.http.store, h.activeProfile)
+        val legacy = com.nuvio.app.features.watched.expandProviderWatchedItems(
+            com.nuvio.app.features.watched.compactProviderWatchedItems(listOf(
+                WatchedItem("tt1", "series", "Show", season = 2, episode = 5, videoId = "tt1:2:5", trackingProviderId = "mdblist", markedAtEpochMs = 1L),
+            )),
+        ).single()
+        assertEquals(null, legacy.trackingEpisodeKey)
+        assertTrue(mappings.resolve("tt1", 1)!!.remaps)
+        h.http.reply(body = """{"deleted":{"episodes":1}}""")
+        watched.delete(1, listOf(legacy))
+        val show = mdbListResponseElement(h.http.engine.requests.single().body).objectValue().arrayValue("shows").single().objectValue()
+        val season = show.arrayValue("seasons").single().objectValue()
+        assertEquals(2 to 5, season.text("number")?.toInt() to season.arrayValue("episodes").single().objectValue().text("number")?.toInt())
+        // A row the app built (no provider id) is still translated.
+        h.http.reply(body = """{"deleted":{"episodes":1}}""")
+        watched.delete(1, listOf(WatchedItem("tt1", "series", "Show", season = 2, episode = 5, videoId = "tt1:2:5", markedAtEpochMs = 1L)))
+        val built = mdbListResponseElement(h.http.engine.requests.last().body).objectValue().arrayValue("shows").single().objectValue()
+        val builtSeason = built.arrayValue("seasons").single().objectValue()
+        assertEquals(2 to 11, builtSeason.text("number")?.toInt() to builtSeason.arrayValue("episodes").single().objectValue().text("number")?.toInt())
+    }
+
+    @Test
     fun `seeds sharing a timestamp keep their own TMDB episode across snapshots`() = runTest {
         // r2 #6: a bulk import marks TMDB S2E1 and S2E7 at the same time; add-on 30 + 18 vs TMDB 24 + 24
         // shows TMDB S2E7 as the add-on's S2E1, the same numbers the raw S2E1 row had.

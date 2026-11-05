@@ -77,21 +77,26 @@ internal class MdbListProgressProjection private constructor(
     // numbering through [mappingFor], the mapping already resolved for a show (null: unresolved
     // or no remap needed, so the row keeps its numbers).
 
-    /** [progress] and [nextUpSeeds] with each episode moved to the add-on's numbering. */
+    /**
+     * [progress] and [nextUpSeeds] with each episode moved to the add-on's numbering. A row of a
+     * remapping show whose TMDB episode has no counterpart in the add-on's list is left out: shown
+     * with TMDB's numbers it would read as a different episode (Codex r4 #2).
+     */
     fun entriesInAddonNumbering(mappingFor: (contentId: String) -> MdbListEpisodeMapping?): List<WatchProgressEntry> =
-        (progress + nextUpSeeds).map { entry ->
-            val season = entry.seasonNumber ?: return@map entry
-            val episode = entry.episodeNumber ?: return@map entry
-            val addon = mappingFor(entry.parentMetaId)?.toAddon(season, episode) ?: return@map entry
-            entry.withAddonEpisode(addon)
+        (progress + nextUpSeeds).mapNotNull { entry ->
+            val season = entry.seasonNumber ?: return@mapNotNull entry
+            val episode = entry.episodeNumber ?: return@mapNotNull entry
+            val mapping = mappingFor(entry.parentMetaId)?.takeIf { it.remaps } ?: return@mapNotNull entry
+            mapping.toAddon(season, episode)?.let(entry::withAddonEpisode)
         }
 
-    /** [watchedItems] with each episode moved to the add-on's numbering. */
+    /** [watchedItems] with each episode moved to the add-on's numbering; unmatched episodes are left out. */
     fun watchedItemsInAddonNumbering(mappingFor: (contentId: String) -> MdbListEpisodeMapping?): List<WatchedItem> =
-        watchedItems.map { item ->
-            val season = item.season ?: return@map item
-            val episode = item.episode ?: return@map item
-            val addon = mappingFor(item.id)?.toAddon(season, episode) ?: return@map item
+        watchedItems.mapNotNull { item ->
+            val season = item.season ?: return@mapNotNull item
+            val episode = item.episode ?: return@mapNotNull item
+            val mapping = mappingFor(item.id)?.takeIf { it.remaps } ?: return@mapNotNull item
+            val addon = mapping.toAddon(season, episode) ?: return@mapNotNull null
             item.copy(
                 season = addon.season,
                 episode = addon.episode,

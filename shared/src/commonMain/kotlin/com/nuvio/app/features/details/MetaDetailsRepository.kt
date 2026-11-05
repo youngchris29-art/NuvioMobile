@@ -262,14 +262,17 @@ object MetaDetailsRepository {
      * generation-checked write.
      */
     fun clear() {
-        // The add-on episode lists the tracker remaps were built from these metas (titles follow
-        // the metadata language), so they go with them.
-        AddonEpisodeListService.invalidate()
         scope.launch(Dispatchers.Main.immediate) {
             activeRequestKey = null
             cacheGeneration++
             cachedMetaByRequestKey.clear()
             _uiState.value = MetaDetailsUiState()
+            // The add-on episode lists the trackers remap were built from these metas (titles
+            // follow the metadata language), so they go with them: after the clear, on the same
+            // hop, so a list fetched under the new generation can never read the old meta
+            // (Codex r4 #5). A list fetched under the old generation in the meantime is dropped
+            // by the generation change.
+            AddonEpisodeListService.invalidate()
         }
     }
 

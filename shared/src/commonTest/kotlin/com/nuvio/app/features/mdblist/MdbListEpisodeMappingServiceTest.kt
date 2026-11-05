@@ -50,8 +50,9 @@ class MdbListEpisodeMappingServiceTest {
         val mapping = mdbListTestEpisodeMappings(addon, tmdb).resolve("tt1", 1)!!
         assertEquals(2 to 2, mapping.toAddon(1, 5)?.let { it.season to it.episode })
         assertEquals(1 to 5, mapping.toTmdb(2, 2)?.let { it.season to it.episode })
-        // The recap has no add-on episode with its title, so it falls back to its position.
-        assertEquals(2 to 1, mapping.toAddon(1, 3)?.let { it.season to it.episode })
+        // The recap has no add-on episode with its title, and its position is the add-on's "Fourth",
+        // which TMDB S1E4 owns by title: the recap maps to nothing (Codex r4 #2).
+        assertNull(mapping.toAddon(1, 3))
     }
 
     @Test
@@ -156,12 +157,13 @@ class MdbListEpisodeMappingServiceTest {
     }
 
     @Test
-    fun `a longer last season keeps the numbers without loading the seasons`() = runTest {
-        // r1 #2: nothing comes after the last season, so an airing season the add-on lists in part moves no episode.
+    fun `a longer last season keeps the numbers`() = runTest {
+        // r1 #2: an airing season the add-on lists in part moves no episode.
         val tmdb = MdbListTestTmdbSeasons(seasons = listOf(24, 24))
         val service = mdbListTestEpisodeMappings(MdbListTestAddonEpisodes(seasons = listOf(24, 12)), tmdb)
         assertFalse(service.resolve("tt1", 1)!!.remaps)
-        assertEquals(listOf("counts:1"), tmdb.calls)
+        // r4 #1: the seasons are loaded and the episodes checked even when only the last differs.
+        assertEquals(listOf("counts:1", "season:1:1", "season:1:2"), tmdb.calls)
     }
 
     @Test
@@ -261,9 +263,22 @@ class MdbListEpisodeMappingServiceTest {
         assertEquals(1 to 13, mapping.toTmdb(1, 12)?.let { it.season to it.episode })
         assertEquals(1 to 12, mapping.toAddon(1, 13)?.let { it.season to it.episode })
         assertEquals(1 to 4, mapping.toAddon(1, 5)?.let { it.season to it.episode })
-        assertEquals(1 to 4, mapping.toAddon(1, 4)?.let { it.season to it.episode }) // the merged two-parter covers it
+        assertNull(mapping.toAddon(1, 4)) // r4 #2: TMDB's "One 4" has no add-on episode; add-on S1E4 is "One 5"
         assertEquals(2 to 5, mapping.toTmdb(2, 5)?.let { it.season to it.episode })
         assertEquals(2 to 12, mapping.toAddon(2, 12)?.let { it.season to it.episode })
+    }
+
+    @Test
+    fun `a single-season show whose add-on skips a recap is matched by title`() = runTest {
+        // r4 #1: TMDB A, B, Recap, C; the add-on has A, B, C.
+        val tmdb = MdbListTestTmdbSeasons(seasons = listOf(4), titles = mapOf(1 to 1 to "A", 1 to 2 to "B", 1 to 3 to "Recap", 1 to 4 to "C"))
+        val addon = MdbListTestAddonEpisodes(seasons = listOf(3), titles = mapOf(1 to 1 to "A", 1 to 2 to "B", 1 to 3 to "C"))
+        val mapping = mdbListTestEpisodeMappings(addon, tmdb).resolve("tt1", 1)!!
+        assertTrue(mapping.remaps)
+        assertEquals(1 to 4, mapping.toTmdb(1, 3)?.let { it.season to it.episode })
+        assertEquals(1 to 3, mapping.toAddon(1, 4)?.let { it.season to it.episode })
+        assertEquals(1 to 2, mapping.toAddon(1, 2)?.let { it.season to it.episode })
+        assertNull(mapping.toAddon(1, 3)) // the recap has no add-on counterpart
     }
 
     @Test

@@ -81,14 +81,18 @@ class MdbListWatchedSyncAdapter internal constructor(
 
     /**
      * The item as MDBList numbers it. An item that came out of [pull] names its TMDB episode in
-     * its tracking key, whichever numbering it was handed out in (Codex r2 #1); one the app built
-     * from the add-on's episode list is translated.
+     * its tracking key, whichever numbering it was handed out in (Codex r2 #1). An MDBList item
+     * without a key was pulled by a build before the key existed and persisted as TMDB numbers it
+     * (Codex r4 #3), so its own coordinates are the identity. Only an item the app built from the
+     * add-on's episode list (no provider id) is translated.
      */
     private suspend fun WatchedItem.mdbListReference(): TrackingMediaReference {
-        parseMdbListEpisodeKey(trackingEpisodeKey)?.let { (season, episode) ->
+        val tmdb = parseMdbListEpisodeKey(trackingEpisodeKey)
+            ?: (season to episode).takeIf { trackingProviderId == MDBLIST_PROVIDER_STORAGE_ID && season != null && episode != null }
+        if (tmdb != null) {
             return buildTrackingMediaReference(
                 contentType = type, parentMetaId = id, videoId = videoId, title = name, releaseInfo = releaseInfo,
-                seasonNumber = season, episodeNumber = episode,
+                seasonNumber = tmdb.first, episodeNumber = tmdb.second,
             )
         }
         val reference = reference()
@@ -99,6 +103,11 @@ class MdbListWatchedSyncAdapter internal constructor(
 
     private fun scope(profileId: Int) = sync.currentScope().also {
         if (it.profileId != profileId) throw CancellationException("MDBList profile changed")
+    }
+
+    private companion object {
+        /** [WatchedItem.trackingProviderId] of every item the projection builds. */
+        const val MDBLIST_PROVIDER_STORAGE_ID = "mdblist"
     }
 
     private fun WatchedItem.reference() = buildTrackingMediaReference(

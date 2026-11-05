@@ -213,7 +213,9 @@ internal class AddonEpisodeListCache(
                     inFlight[flightKey] = deferred
                     null
                 }
-                flight to (cache.value[cacheKey]?.episodes?.isNotEmpty() == true)
+                // An aged entry, empty or not, means the source may hold the same stale meta
+                // (MetaDetailsRepository caches a meta with no videos too, Codex r4 #4).
+                flight to (cache.value[cacheKey] != null)
             }
             if (existing != null) {
                 val outcome = try {

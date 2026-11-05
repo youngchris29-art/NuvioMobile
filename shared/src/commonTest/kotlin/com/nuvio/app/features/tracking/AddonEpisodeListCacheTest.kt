@@ -125,7 +125,24 @@ class AddonEpisodeListCacheTest {
         clock += 5.minutes
         answer = list
         cache2.episodes("tt1", "series")
-        assertEquals(listOf(false, false), empties)
+        // r4 #4: an aged empty list is fetched with refresh too, past a source that memoised the empty answer.
+        assertEquals(listOf(false, true), empties)
+    }
+
+    @Test
+    fun `an empty answer a source memoised is bypassed once the empty list ages out`() = runTest {
+        // r4 #4: the source (MetaDetailsRepository in production) caches a meta with no videos.
+        val clock = TestTimeSource()
+        var upstream = emptyList<EpisodeMappingEntry>()
+        var memo: List<EpisodeMappingEntry>? = null
+        val cache = AddonEpisodeListCache(
+            fetch = { _, _, refresh -> if (refresh || memo == null) memo = upstream; memo!! },
+            generation = { 0 }, emptyResultTtl = 5.minutes, timeSource = clock,
+        )
+        assertTrue(cache.episodes("tt1", "series").isEmpty())
+        upstream = list
+        clock += 5.minutes
+        assertEquals(list, cache.episodes("tt1", "series"))
     }
 
     @Test
