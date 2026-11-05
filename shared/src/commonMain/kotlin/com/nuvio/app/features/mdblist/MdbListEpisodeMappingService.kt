@@ -76,6 +76,12 @@ internal class MdbListEpisodeMappingService(
     private val backgroundFailedAt = mutableMapOf<String, TimeMark>()
     /** Bumped by [clearCache]: loads and cache entries from an earlier epoch are not this profile's. */
     private val epoch = MutableStateFlow(0L)
+    // Shows whose last reload failed, answered from the cache until RELOAD_RETRY_INTERVAL has
+    // passed. An immutable map swapped atomically: read without a lock from any thread.
+    private val reloadFailedAt = MutableStateFlow<Map<String, TimeMark>>(emptyMap())
+
+    private fun reloadFailedRecently(key: String): Boolean =
+        reloadFailedAt.value[key]?.let { it.elapsedNow() < RELOAD_RETRY_INTERVAL } == true
 
     /** Emits whenever a show's mapping resolves or the cache is cleared. */
     val changes: Flow<Unit> = resolved.map { }
@@ -122,13 +128,13 @@ internal class MdbListEpisodeMappingService(
         var forced = reload
         repeat(MAX_ATTEMPTS) {
             currentCoroutineContext().ensureActive()
-            if (!forced) entry(key)?.takeIf { it.isFresh() }?.let { return it.mapping }
+            if (!forced) entry(key)?.takeIf { it.isFresh() || reloadFailedRecently(key) }?.let { return it.mapping }
             val generation = addonEpisodes.generation()
             val currentEpoch = epoch.value
             val flightKey = "$key|$generation|$currentEpoch"
             val deferred = CompletableDeferred<Outcome>()
             val existing = inFlightMutex.withLock {
-                if (!forced) entry(key)?.takeIf { it.isFresh() }?.let { return it.mapping }
+                if (!forced) entry(key)?.takeIf { it.isFresh() || reloadFailedRecently(key) }?.let { return it.mapping }
                 inFlight[flightKey] ?: run {
                     inFlight[flightKey] = deferred
                     null
@@ -149,30 +155,35 @@ internal class MdbListEpisodeMappingService(
                 return@repeat
             }
             val outcome = try {
-                val mapping = load(key, tmdbShowId, refreshLists) ?: entry(key)?.mapping
+                val loaded = runCatching { load(key, tmdbShowId, refreshLists) }
+                    .onFailure { if (it is CancellationException) throw it }
+                    .onFailure { log.w { "episode mapping failed for $key: ${it.message}" } }
+                    .getOrNull()
                 // Published under the mutex: a source or profile change lands either before this
                 // check (the mapping is not kept) or after it (every receiver checks again before
-                // using the outcome, Codex r2 #4, r3 #5). A newer entry is never overwritten.
-                if (mapping != null) {
-                    inFlightMutex.withLock {
+                // using the outcome, Codex r2 #4, r3 #5). A newer entry is never overwritten. A
+                // load that failed leaves the cached entry as it is, old timestamp included, so it
+                // is tried again after [RELOAD_RETRY_INTERVAL] rather than in six hours (Codex r8 #3).
+                val mapping = inFlightMutex.withLock {
+                    if (loaded == null) {
+                        reloadFailedAt.update { it + (key to timeSource.markNow()) }
+                        entry(key)?.mapping
+                    } else {
+                        reloadFailedAt.update { it - key }
                         if (generation == addonEpisodes.generation() && currentEpoch == epoch.value) {
-                            val entry = Resolved(mapping, generation, currentEpoch, timeSource.markNow())
+                            val entry = Resolved(loaded, generation, currentEpoch, timeSource.markNow())
                             resolved.update { current ->
                                 current + (aliases + key).filter { alias -> current[alias]?.let { it.epoch > currentEpoch } != true }
                                     .associateWith { entry }
                             }
                         }
+                        loaded
                     }
                 }
                 Outcome(mapping, generation, currentEpoch).also(deferred::complete)
             } catch (error: CancellationException) {
                 deferred.cancel(error)
                 throw error
-            } catch (error: Exception) {
-                log.w { "episode mapping failed for $key: ${error.message}" }
-                val known = entry(key)?.mapping
-                deferred.complete(Outcome(known, generation, currentEpoch))
-                return known
             } finally {
                 withContext(NonCancellable) {
                     inFlightMutex.withLock { if (inFlight[flightKey] === deferred) inFlight.remove(flightKey) }
@@ -192,7 +203,7 @@ internal class MdbListEpisodeMappingService(
     fun resolveInBackground(contentId: String, tmdbShowId: Long? = null, aliases: Set<String> = emptySet()) {
         val scope = scope ?: return
         val key = contentId.trim().takeIf(String::isNotBlank) ?: return
-        if (entry(key)?.isFresh() == true) return
+        entry(key)?.let { if (it.isFresh() || reloadFailedRecently(key)) return }
         scope.launch {
             val skip = inFlightMutex.withLock {
                 inFlight.keys.any { it.startsWith("$key|") } ||
@@ -200,7 +211,7 @@ internal class MdbListEpisodeMappingService(
             }
             if (skip) return@launch
             if (resolve(key, tmdbShowId, aliases) == null) {
-                inFlightMutex.withLock { backgroundFailedAt[key] = TimeSource.Monotonic.markNow() }
+                inFlightMutex.withLock { backgroundFailedAt[key] = timeSource.markNow() }
             }
         }
     }
@@ -226,16 +237,16 @@ internal class MdbListEpisodeMappingService(
         val tmdbShowId = reference.ids.tmdb ?: known?.tmdb
         val aliases = known?.aliases().orEmpty()
         var mapping = resolve(catalog.contentId, tmdbShowId, aliases) ?: return reference
-        if (!mapping.remaps) return reference
-        var tmdb = mapping.toTmdb(season, episode.number, catalog.videoId)
-        if (tmdb == null && shouldRefreshFor(catalog.contentId, season, episode.number)) {
-            // The lists may predate this episode (the add-on got it first, or TMDB has just added
-            // it): load both again before calling it unmatched, once an hour per episode (Codex r7 #2).
+        // The lists may predate this episode (the add-on got it first, or TMDB has just added it,
+        // or both lists ended before it while nothing moved): load both again before trusting or
+        // dismissing its numbers, once an hour per episode (Codex r7 #2, r8 #1).
+        val outsideTheLists = if (mapping.remaps) mapping.toTmdb(season, episode.number, catalog.videoId) == null
+        else !mapping.covers(season, episode.number)
+        if (outsideTheLists && shouldRefreshFor(catalog.contentId, season, episode.number)) {
             mapping = resolve(catalog.contentId, tmdbShowId, aliases, reload = true) ?: return reference
-            if (!mapping.remaps) return reference
-            tmdb = mapping.toTmdb(season, episode.number, catalog.videoId)
         }
-        if (tmdb == null) return null
+        if (!mapping.remaps) return reference
+        val tmdb = mapping.toTmdb(season, episode.number, catalog.videoId) ?: return null
         if (tmdb.season == season && tmdb.episode == episode.number) return reference
         return reference.copy(episode = episode.copy(season = tmdb.season, number = tmdb.episode))
     }
@@ -274,7 +285,7 @@ internal class MdbListEpisodeMappingService(
         val sameSeasons = seasons.keys == addonCounts.keys
         // The cheap path needs the add-on's numbers to be the 1..n TMDB uses, not just n of them
         // (Codex r6 #1): an add-on numbering season 2 as E13..E24 has twelve too.
-        if (sameSeasons && addonCounts == seasons && addon.isNumberedContiguously()) return MdbListEpisodeMapping.Unchanged
+        if (sameSeasons && addonCounts == seasons && addon.isNumberedContiguously()) return MdbListEpisodeMapping.unchanged(addon)
 
         val tmdbEpisodes = coroutineScope {
             val semaphore = Semaphore(TMDB_SEASON_REQUEST_CONCURRENCY)
@@ -297,7 +308,7 @@ internal class MdbListEpisodeMappingService(
         if (tmdbEpisodes.any { it == null }) return null
         val tmdbList = tmdbEpisodes.filterNotNull().flatten()
         if (tmdbList.isEmpty()) return null
-        if (addon.coordinates() == tmdbList.coordinates()) return MdbListEpisodeMapping.Unchanged
+        if (addon.coordinates() == tmdbList.coordinates()) return MdbListEpisodeMapping.unchanged(addon)
         val withinSeasons = sameSeasons && when (seasonsHoldTheSameEpisodes(addon, tmdbList)) {
             true -> true
             false -> false
@@ -307,7 +318,7 @@ internal class MdbListEpisodeMappingService(
         }
         if (withinSeasons) {
             val mapping = MdbListEpisodeMapping.buildWithinSeasons(addon, tmdbList)
-            if (mapping.isIdentity) return MdbListEpisodeMapping.Unchanged
+            if (mapping.isIdentity) return MdbListEpisodeMapping.unchanged(addon)
             log.d { "remapping $contentId within seasons: addon=$addonCounts tmdb=$seasons" }
             return mapping
         }
@@ -338,6 +349,8 @@ internal class MdbListEpisodeMappingService(
         /** Loads that straddle a source change or profile switch are retried this often before giving up. */
         const val MAX_ATTEMPTS = 3
         val BACKGROUND_RETRY_INTERVAL = 10.minutes
+        /** How long a show whose reload failed is answered from its cached mapping before trying again. */
+        val RELOAD_RETRY_INTERVAL = 10.minutes
         /** How often a write for an episode the lists do not have may reload them. */
         val UNMATCHED_REFRESH_INTERVAL = 1.hours
         val MOVIE_CONTENT_TYPES = setOf("movie", "film")
@@ -418,7 +431,16 @@ internal class MdbListEpisodeMapping private constructor(
     private val tmdbByAddonVideoId: Map<String, EpisodeMappingEntry>,
     /** Episodes on either side with no counterpart on the other (a recap one side skips). */
     internal val unmatched: Int,
+    /** The add-on's coordinates the lists held when an unchanged mapping was made; null: all of them. */
+    private val covered: Set<Pair<Int, Int>>?,
 ) {
+    /**
+     * Whether the add-on's [season]/[episode] was in the lists this mapping was built from. An
+     * unchanged mapping answers false for an episode past them (the add-on's new S2E1 while both
+     * lists ended at S1E24), so a write reloads the lists before trusting the numbers (Codex r8 #1).
+     */
+    fun covers(season: Int, episode: Int): Boolean =
+        season == SPECIALS_SEASON || covered == null || (season to episode) in covered || (season to episode) in tmdbByAddon
     /** False when both sides split the show the same way and episodes keep their numbers. */
     val remaps: Boolean
         get() = addonByTmdb.isNotEmpty() || tmdbByAddon.isNotEmpty()
@@ -456,7 +478,12 @@ internal class MdbListEpisodeMapping private constructor(
     }
 
     companion object {
-        val Unchanged = MdbListEpisodeMapping(emptyMap(), emptyMap(), emptyMap(), unmatched = 0)
+        /** Nothing moves and every coordinate counts as known; [unchanged] records what the lists held. */
+        val Unchanged = MdbListEpisodeMapping(emptyMap(), emptyMap(), emptyMap(), unmatched = 0, covered = null)
+
+        /** An unchanged mapping that remembers the add-on's coordinates, so a later episode is noticed. */
+        fun unchanged(addonEpisodes: List<EpisodeMappingEntry>): MdbListEpisodeMapping =
+            MdbListEpisodeMapping(emptyMap(), emptyMap(), emptyMap(), unmatched = 0, covered = addonEpisodes.mapTo(HashSet()) { it.season to it.episode })
 
         /**
          * Season 0: neither list carries specials (both drop season ≤ 0), so they are never
@@ -501,7 +528,7 @@ internal class MdbListEpisodeMapping private constructor(
                 }
             }
             val unmatched = (tmdbEpisodes.size - addonByTmdb.size) + (addonEpisodes.size - tmdbByAddon.size)
-            return MdbListEpisodeMapping(addonByTmdb, tmdbByAddon, tmdbByAddonVideoId, unmatched)
+            return MdbListEpisodeMapping(addonByTmdb, tmdbByAddon, tmdbByAddonVideoId, unmatched, covered = null)
         }
 
         /** How many of a season's unmatched episodes are the add-on's tail past TMDB's last episode. */
@@ -549,7 +576,7 @@ internal class MdbListEpisodeMapping private constructor(
                 tmdbByAddon[entry.season to entry.episode]?.let { tmdbByAddonVideoId[videoId] = it }
             }
             val unmatched = (tmdbEpisodes.size - addonByTmdb.size) + (addonEpisodes.size - tmdbByAddon.size)
-            return MdbListEpisodeMapping(addonByTmdb, tmdbByAddon, tmdbByAddonVideoId, unmatched)
+            return MdbListEpisodeMapping(addonByTmdb, tmdbByAddon, tmdbByAddonVideoId, unmatched, covered = null)
         }
 
         private suspend fun matchAll(
