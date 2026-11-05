@@ -66,6 +66,11 @@ fun shouldPreferResume(
 ): Boolean = resumeRecord != null &&
     (latestCompletedEpisode == null || resumeRecord.lastUpdatedEpochMs > latestCompletedEpisode.markedAtEpochMs)
 
+/**
+ * [isExcluded]: episodes next-up must not offer (a tracker's dropped season). The completed seed
+ * is located on the full list first, so a seed inside the excluded part still leads to the first
+ * retained episode after it rather than shifting the positional fallback (Codex r12).
+ */
 fun nextReleasedEpisodeAfter(
     content: WatchingContentRef,
     episodes: List<WatchingReleasedEpisode>,
@@ -73,6 +78,7 @@ fun nextReleasedEpisodeAfter(
     episodeNumber: Int?,
     todayIsoDate: String,
     showUnairedNextUp: Boolean = false,
+    isExcluded: (WatchingReleasedEpisode) -> Boolean = { false },
 ): WatchingReleasedEpisode? {
     val sortedEpisodes = episodes.sortedWith(
         compareBy<WatchingReleasedEpisode>({ normalizeSeasonNumber(it.seasonNumber) }, { it.episodeNumber ?: 0 }),
@@ -102,6 +108,7 @@ fun nextReleasedEpisodeAfter(
     val watchedEpisodeSeason = sortedEpisodes[watchedIndex].seasonNumber
     val candidates = sortedEpisodes
         .drop(watchedIndex + 1)
+        .filterNot(isExcluded)
         .filter { episode ->
             shouldSurfaceNextEpisode(
                 watchedSeasonNumber = watchedEpisodeSeason,
@@ -125,6 +132,7 @@ fun decideSeriesPrimaryAction(
     showUnairedNextUp: Boolean = false,
     defaultVideoId: String? = null,
     allowRewatch: Boolean = false,
+    isExcluded: (WatchingReleasedEpisode) -> Boolean = { false },
 ): WatchingSeriesPrimaryAction? {
     val resumeRecord = resumeProgressForSeries(
         content = content,
@@ -149,6 +157,7 @@ fun decideSeriesPrimaryAction(
             episodeNumber = latestCompletedEpisode.episodeNumber,
             todayIsoDate = todayIsoDate,
             showUnairedNextUp = showUnairedNextUp,
+            isExcluded = isExcluded,
         )
     } else {
         null
@@ -158,6 +167,7 @@ fun decideSeriesPrimaryAction(
 
     val playbackEpisode = nextEpisode ?: run {
         val sorted = episodes
+            .filterNot(isExcluded)
             .sortedWith(compareBy<WatchingReleasedEpisode>({ normalizeSeasonNumber(it.seasonNumber) }, { it.episodeNumber ?: 0 }))
         val released = sorted.filter { episode ->
             isReleasedBy(

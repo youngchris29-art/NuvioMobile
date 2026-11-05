@@ -3,6 +3,7 @@ package com.nuvio.app.features.mdblist
 import com.nuvio.app.features.tracking.TrackingHistoryItem
 import com.nuvio.app.features.tracking.TrackingScrobbleAction
 import com.nuvio.app.features.tracking.TrackingScrobbleEvent
+import com.nuvio.app.features.details.seriesPrimaryAction
 import com.nuvio.app.features.tracking.buildTrackingMediaReference
 import com.nuvio.app.features.watched.WatchedItem
 import com.nuvio.app.features.watched.watchedItemKey
@@ -463,17 +464,41 @@ class MdbListEpisodeRemapAdaptersTest {
         assertEquals(setOf(2), seed.excludedNextUpSeasons)
         assertEquals((25..30).map { "1:$it" }.toSet(), seed.excludedNextUpEpisodeKeys)
         assertEquals(seed, provider.prepareNextUpProgressEntries(listOf(seed), "tt1").single())
-        // The resolver still offers S1E11 and leaves out S1E25 and season 2.
-        val videos = (1..30).map { com.nuvio.app.features.details.MetaVideo(id = "tt1:1:$it", title = "E$it", season = 1, episode = it) } +
-            (1..18).map { com.nuvio.app.features.details.MetaVideo(id = "tt1:2:$it", title = "E$it", season = 2, episode = it) }
-        val offered = videos.filterNot { video ->
-            video.season in seed.excludedNextUpSeasons ||
-                com.nuvio.app.features.watchprogress.nextUpEpisodeKey(video.season!!, video.episode!!) in seed.excludedNextUpEpisodeKeys
-        }.map { it.season!! to it.episode!! }
-        assertTrue(1 to 11 in offered)
-        assertFalse(1 to 25 in offered)
-        assertFalse(2 to 1 in offered)
+        // The resolver offers S1E11 next and never S1E25 or season 2.
+        val meta = com.nuvio.app.features.details.MetaDetails(id = "tt1", type = "series", name = "Show", videos = addonVideos())
+        val action = meta.seriesPrimaryAction(listOf(seed), emptyList(), "2026-09-06")
+        assertEquals(1 to 11, action?.seasonNumber to action?.episodeNumber)
     }
+
+    @Test
+    fun `a completed seed inside the dropped part still leads to the first retained episode after it`() = runTest {
+        // r12: TMDB 24+24 vs add-on 30+18, watched TMDB S1E10 (= add-on S1E10), then TMDB season 1 dropped:
+        // add-on S1E1..24 are excluded, the seed included; next-up must be S1E25, not a shifted episode.
+        val h = MdbListSyncTestHarness(backgroundScope)
+        h.seed(h.snapshot().copy(
+            watched = listOf(mdbListTestEpisode(1, 10)),
+            dropped = listOf(MdbListDroppedRecord(mdbListTestMovie().media.ids, season = 1)),
+        ))
+        h.repository.ensureLoaded()
+        val mappings = mdbListTestEpisodeMappings(
+            MdbListTestAddonEpisodes(seasons = listOf(30, 18)),
+            MdbListTestTmdbSeasons(seasons = listOf(24, 24), lookup = mapOf("tt1" to 1)),
+        )
+        val provider = MdbListTrackingProgressProvider(h.repository, MdbListScrobbleService(h.http.api, h.repository), mappings, h.http.store, h.activeProfile, {})
+        assertTrue(mappings.resolve("tt1", 1)!!.remaps)
+        val seed = provider.snapshot().entries.single()
+        assertEquals(1 to 10, seed.seasonNumber to seed.episodeNumber)
+        assertEquals((1..24).map { "1:$it" }.toSet(), seed.excludedNextUpEpisodeKeys)
+        val meta = com.nuvio.app.features.details.MetaDetails(id = "tt1", type = "series", name = "Show", videos = addonVideos())
+        val action = meta.seriesPrimaryAction(listOf(seed), emptyList(), "2026-09-06")
+        assertEquals(1 to 25, action?.seasonNumber to action?.episodeNumber)
+        // A whole dropped season behaves the same: watched S2E3 of a show with TMDB season 2 dropped offers nothing after it...
+        val whole = seed.copy(seasonNumber = 2, episodeNumber = 3, excludedNextUpSeasons = setOf(2), excludedNextUpEpisodeKeys = emptySet())
+        assertEquals(null, meta.seriesPrimaryAction(listOf(whole), emptyList(), "2026-09-06"))
+    }
+
+    private fun addonVideos() = (1..30).map { com.nuvio.app.features.details.MetaVideo(id = "tt1:1:$it", title = "E$it", season = 1, episode = it, released = "2026-01-01") } +
+        (1..18).map { com.nuvio.app.features.details.MetaVideo(id = "tt1:2:$it", title = "E$it", season = 2, episode = it, released = "2026-01-01") }
 
     @Test
     fun `specials of a remapping show keep their rows and marks`() = runTest {

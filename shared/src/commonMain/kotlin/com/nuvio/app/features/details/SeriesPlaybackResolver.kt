@@ -168,12 +168,7 @@ fun MetaDetails.seriesPrimaryAction(
 ): SeriesPrimaryAction? =
     decideSeriesPrimaryAction(
         content = content,
-        episodes = videos.filterNot { video ->
-            entries.any { entry -> entry.parentMetaId == content.id && entry.parentMetaType.equals(content.type, true) &&
-                (video.season in entry.excludedNextUpSeasons ||
-                    (video.season != null && video.episode != null &&
-                        nextUpEpisodeKey(video.season, video.episode) in entry.excludedNextUpEpisodeKeys)) }
-        }.map(MetaVideo::toDomainReleasedEpisode),
+        episodes = videos.map(MetaVideo::toDomainReleasedEpisode),
         progressRecords = entries.map(WatchProgressEntry::toDomainProgressRecord),
         watchedRecords = watchedItems.map(WatchedItem::toDomainWatchedRecord),
         todayIsoDate = todayIsoDate,
@@ -181,6 +176,14 @@ fun MetaDetails.seriesPrimaryAction(
         showUnairedNextUp = showUnairedNextUp,
         defaultVideoId = defaultVideoId,
         allowRewatch = allowRewatch,
+        // Dropped seasons and episodes are left out of what next-up offers, not of the list the
+        // completed seed is located on (Codex r12).
+        isExcluded = { episode ->
+            entries.any { entry -> entry.parentMetaId == content.id && entry.parentMetaType.equals(content.type, true) &&
+                (episode.seasonNumber in entry.excludedNextUpSeasons ||
+                    (episode.seasonNumber != null && episode.episodeNumber != null &&
+                        nextUpEpisodeKey(episode.seasonNumber, episode.episodeNumber) in entry.excludedNextUpEpisodeKeys)) }
+        },
     )?.toLegacySeriesPrimaryAction()
 
 fun MetaVideo.playLabel(): String =
