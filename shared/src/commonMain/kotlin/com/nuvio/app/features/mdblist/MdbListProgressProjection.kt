@@ -314,15 +314,16 @@ internal fun parseMdbListEpisodeKey(key: String?): Pair<Int, Int>? {
 
 /**
  * [this] moved to the add-on's episode [addon]; the video id follows so local playback rows match,
- * and the dropped seasons move with it: a TMDB season the user dropped excludes every add-on
- * season it maps into, several when TMDB's is the longer (Codex r5 #5).
+ * and the dropped seasons move with it: a TMDB season the user dropped excludes the add-on
+ * seasons it covers whole and the single episodes it only partly covers (Codex r5 #5, r11).
  */
 internal fun WatchProgressEntry.withAddonEpisode(addon: EpisodeMappingEntry, mapping: MdbListEpisodeMapping): WatchProgressEntry = copy(
     seasonNumber = addon.season,
     episodeNumber = addon.episode,
     videoId = addon.videoId ?: buildPlaybackVideoId(parentMetaId, addon.season, addon.episode),
     episodeTitle = episodeTitle ?: addon.title,
-    excludedNextUpSeasons = mapping.addonSeasonsOf(excludedNextUpSeasons),
+    excludedNextUpSeasons = mapping.addonExclusionsOf(excludedNextUpSeasons).seasons,
+    excludedNextUpEpisodeKeys = mapping.addonExclusionsOf(excludedNextUpSeasons).episodeKeys,
 )
 
 internal val MdbListItemType.contentType: String

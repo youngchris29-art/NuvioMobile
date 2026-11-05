@@ -69,6 +69,12 @@ data class WatchProgressEntry(
      * Null for local rows and providers whose numbering is the add-on's.
      */
     val trackingEpisodeKey: String? = null,
+    /**
+     * Episodes next-up must not offer, as `season:episode` keys ([nextUpEpisodeKey]), beside the
+     * whole seasons in [excludedNextUpSeasons]: a tracking provider's dropped season that covers
+     * only part of an add-on season lands here (MDBList, see `MdbListProgressProjection`).
+     */
+    val excludedNextUpEpisodeKeys: Set<String> = emptySet(),
 ) : TrackingAttributedItem {
     override val trackingContentId: String
         get() = parentMetaId
@@ -380,6 +386,9 @@ fun buildContinueWatchingEpisodeSubtitle(
     val title = episodeTitle.orEmpty()
     return listOfNotNull(episodeCode, title.takeIf { it.isNotBlank() }).joinToString(" • ")
 }
+
+/** The key [WatchProgressEntry.excludedNextUpEpisodeKeys] holds for an episode. */
+fun nextUpEpisodeKey(season: Int, episode: Int): String = "$season:$episode"
 
 fun buildPlaybackVideoId(
     parentMetaId: String,

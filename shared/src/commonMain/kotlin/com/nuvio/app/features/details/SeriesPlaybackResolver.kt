@@ -3,6 +3,7 @@ package com.nuvio.app.features.details
 import com.nuvio.app.features.watched.WatchedItem
 import com.nuvio.app.features.watched.normalizeWatchedMarkedAtEpochMs
 import com.nuvio.app.features.watchprogress.WatchProgressEntry
+import com.nuvio.app.features.watchprogress.nextUpEpisodeKey
 import com.nuvio.app.features.watching.domain.WatchingCompletedEpisode
 import com.nuvio.app.features.watching.domain.WatchingContentRef
 import com.nuvio.app.features.watching.domain.WatchingProgressRecord
@@ -169,7 +170,9 @@ fun MetaDetails.seriesPrimaryAction(
         content = content,
         episodes = videos.filterNot { video ->
             entries.any { entry -> entry.parentMetaId == content.id && entry.parentMetaType.equals(content.type, true) &&
-                video.season in entry.excludedNextUpSeasons }
+                (video.season in entry.excludedNextUpSeasons ||
+                    (video.season != null && video.episode != null &&
+                        nextUpEpisodeKey(video.season, video.episode) in entry.excludedNextUpEpisodeKeys)) }
         }.map(MetaVideo::toDomainReleasedEpisode),
         progressRecords = entries.map(WatchProgressEntry::toDomainProgressRecord),
         watchedRecords = watchedItems.map(WatchedItem::toDomainWatchedRecord),

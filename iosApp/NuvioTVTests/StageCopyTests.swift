@@ -54,7 +54,7 @@ final class StageCopyTests: XCTestCase {
             pauseDescription: pauseDescription, lastSourceUrl: nil, isCompleted: false,
             progressPercent: nil, source: "local",
             trackingProviderId: nil, trackingProviderItemId: nil, trackingSourceUrl: nil,
-            progressKey: nil, excludedNextUpSeasons: [], trackingEpisodeKey: nil
+            progressKey: nil, excludedNextUpSeasons: [], trackingEpisodeKey: nil, excludedNextUpEpisodeKeys: []
         )
     }
 

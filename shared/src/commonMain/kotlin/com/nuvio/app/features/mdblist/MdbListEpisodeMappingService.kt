@@ -10,6 +10,7 @@ import com.nuvio.app.features.tracking.TrackingMediaReference
 import com.nuvio.app.features.tracking.parseTrackingExternalIds
 import com.nuvio.app.features.trakt.EpisodeMappingEntry
 import com.nuvio.app.features.trakt.TraktEpisodeMappingService
+import com.nuvio.app.features.watchprogress.nextUpEpisodeKey
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -515,13 +516,29 @@ internal class MdbListEpisodeMapping private constructor(
             addonByTmdb.all { (tmdb, addon) -> tmdb == addon.season to addon.episode } &&
             tmdbByAddon.all { (addon, tmdb) -> addon == tmdb.season to tmdb.episode }
 
-    /** The add-on seasons TMDB season [tmdbSeason] maps into (several when TMDB's is longer). */
-    fun addonSeasonsOf(tmdbSeason: Int): Set<Int> =
-        if (tmdbSeason == SPECIALS_SEASON) setOf(tmdbSeason)
-        else addonByTmdb.entries.filter { it.key.first == tmdbSeason }.mapTo(HashSet()) { it.value.season }
+    /** What next-up must leave out for dropped TMDB seasons: whole add-on seasons, and single episodes. */
+    class Exclusions(val seasons: Set<Int>, val episodeKeys: Set<String>)
 
-    /** [tmdbSeasons] as the add-on seasons they cover; what [addonSeasonsOf] gives for each. */
-    fun addonSeasonsOf(tmdbSeasons: Set<Int>): Set<Int> = tmdbSeasons.flatMapTo(HashSet(), ::addonSeasonsOf)
+    /**
+     * The add-on episodes that map into the dropped [tmdbSeasons]. An add-on season every mapped
+     * episode of which lands in a dropped TMDB season is excluded whole (a TMDB season split in
+     * two add-on seasons, or season-aligned shows); one that only partly overlaps a dropped TMDB
+     * season keeps its other episodes (Codex r11): TMDB 24+24 vs add-on 30+18 with TMDB season 2
+     * dropped leaves out add-on S1E25..30 and all of S2, and still offers S1E1..24.
+     */
+    fun addonExclusionsOf(tmdbSeasons: Set<Int>): Exclusions {
+        if (tmdbSeasons.isEmpty()) return Exclusions(emptySet(), emptySet())
+        val seasons = HashSet<Int>()
+        val episodeKeys = HashSet<String>()
+        if (SPECIALS_SEASON in tmdbSeasons) seasons += SPECIALS_SEASON
+        val dropped = addonByTmdb.entries.filter { it.key.first in tmdbSeasons }.map { it.value }
+        for ((addonSeason, episodes) in dropped.groupBy { it.season }) {
+            val wholeSeason = tmdbByAddon.keys.filter { it.first == addonSeason }.all { addon -> tmdbByAddon.getValue(addon).season in tmdbSeasons }
+            if (wholeSeason) seasons += addonSeason
+            else episodes.mapTo(episodeKeys) { nextUpEpisodeKey(it.season, it.episode) }
+        }
+        return Exclusions(seasons, episodeKeys)
+    }
 
     /**
      * The add-on's episode for TMDB [season]/[episode]. Null when nothing needs remapping

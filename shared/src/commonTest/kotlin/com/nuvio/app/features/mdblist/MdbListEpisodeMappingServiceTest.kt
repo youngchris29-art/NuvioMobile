@@ -477,7 +477,26 @@ class MdbListEpisodeMappingServiceTest {
         val service = splitAnimeMappings()
         val special = episodeReference(0, 3)
         assertSame(special, service.toMdbListNumbering(special, mediaIndex = null))
-        assertEquals(setOf(0), mapping.addonSeasonsOf(setOf(0)))
+        assertEquals(setOf(0), mapping.addonExclusionsOf(setOf(0)).seasons)
+    }
+
+    @Test
+    fun `a dropped TMDB season excludes whole add-on seasons it covers and single episodes it only touches`() = runTest {
+        // r11: TMDB 24+24 vs add-on 30+18.
+        val mapping = mdbListTestEpisodeMappings(
+            MdbListTestAddonEpisodes(seasons = listOf(30, 18)),
+            MdbListTestTmdbSeasons(seasons = listOf(24, 24)),
+        ).resolve("tt1", 1)!!
+        val droppedSecond = mapping.addonExclusionsOf(setOf(2))
+        assertEquals(setOf(2), droppedSecond.seasons)
+        assertEquals((25..30).map { "1:$it" }.toSet(), droppedSecond.episodeKeys)
+        val droppedFirst = mapping.addonExclusionsOf(setOf(1))
+        assertEquals(emptySet(), droppedFirst.seasons)
+        assertEquals((1..24).map { "1:$it" }.toSet(), droppedFirst.episodeKeys)
+        // Season-aligned: one TMDB season split in two add-on seasons is excluded whole.
+        val split = splitAnimeMapping().addonExclusionsOf(setOf(1))
+        assertEquals(setOf(1, 2), split.seasons)
+        assertEquals(emptySet(), split.episodeKeys)
     }
 
     @Test

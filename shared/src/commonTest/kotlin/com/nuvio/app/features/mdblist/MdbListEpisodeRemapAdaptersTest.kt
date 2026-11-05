@@ -444,6 +444,38 @@ class MdbListEpisodeRemapAdaptersTest {
     }
 
     @Test
+    fun `a partly covered add-on season keeps its other episodes for next-up`() = runTest {
+        // r11: TMDB 24+24 vs add-on 30+18, TMDB season 2 dropped; watched TMDB S1E10 = add-on S1E10.
+        val h = MdbListSyncTestHarness(backgroundScope)
+        h.seed(h.snapshot().copy(
+            watched = listOf(mdbListTestEpisode(1, 10)),
+            dropped = listOf(MdbListDroppedRecord(mdbListTestMovie().media.ids, season = 2)),
+        ))
+        h.repository.ensureLoaded()
+        val mappings = mdbListTestEpisodeMappings(
+            MdbListTestAddonEpisodes(seasons = listOf(30, 18)),
+            MdbListTestTmdbSeasons(seasons = listOf(24, 24), lookup = mapOf("tt1" to 1)),
+        )
+        val provider = MdbListTrackingProgressProvider(h.repository, MdbListScrobbleService(h.http.api, h.repository), mappings, h.http.store, h.activeProfile, {})
+        assertTrue(mappings.resolve("tt1", 1)!!.remaps)
+        val seed = provider.snapshot().entries.single()
+        assertEquals(1 to 10, seed.seasonNumber to seed.episodeNumber)
+        assertEquals(setOf(2), seed.excludedNextUpSeasons)
+        assertEquals((25..30).map { "1:$it" }.toSet(), seed.excludedNextUpEpisodeKeys)
+        assertEquals(seed, provider.prepareNextUpProgressEntries(listOf(seed), "tt1").single())
+        // The resolver still offers S1E11 and leaves out S1E25 and season 2.
+        val videos = (1..30).map { com.nuvio.app.features.details.MetaVideo(id = "tt1:1:$it", title = "E$it", season = 1, episode = it) } +
+            (1..18).map { com.nuvio.app.features.details.MetaVideo(id = "tt1:2:$it", title = "E$it", season = 2, episode = it) }
+        val offered = videos.filterNot { video ->
+            video.season in seed.excludedNextUpSeasons ||
+                com.nuvio.app.features.watchprogress.nextUpEpisodeKey(video.season!!, video.episode!!) in seed.excludedNextUpEpisodeKeys
+        }.map { it.season!! to it.episode!! }
+        assertTrue(1 to 11 in offered)
+        assertFalse(1 to 25 in offered)
+        assertFalse(2 to 1 in offered)
+    }
+
+    @Test
     fun `specials of a remapping show keep their rows and marks`() = runTest {
         // r6 #2 at the ports.
         val h = MdbListSyncTestHarness(backgroundScope)
