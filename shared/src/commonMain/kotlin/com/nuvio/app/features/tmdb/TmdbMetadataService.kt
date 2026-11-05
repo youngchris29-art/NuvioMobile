@@ -1304,12 +1304,12 @@ object TmdbMetadataService {
         }.toMap()
     }
 
-    /** Episode numbers and titles of one season from `tv/{id}/season/{n}`; empty when unavailable. */
-    internal suspend fun fetchSeasonEpisodeTitles(tmdbShowId: Int, season: Int): List<Pair<Int, String?>> {
+    /** Episode numbers and titles of one season from `tv/{id}/season/{n}`; null when the request failed. */
+    internal suspend fun fetchSeasonEpisodeTitles(tmdbShowId: Int, season: Int): List<Pair<Int, String?>>? {
         val details = fetch<TmdbSeasonDetailsResponse>(
             endpoint = "tv/$tmdbShowId/season/$season",
             query = mapOf("language" to SEASON_LIST_LANGUAGE),
-        ) ?: return emptyList()
+        ) ?: return null
         return details.episodes.mapNotNull { episode ->
             val number = episode.episodeNumber?.takeIf { it > 0 } ?: return@mapNotNull null
             number to episode.name?.trim()?.takeIf(String::isNotBlank)
@@ -1598,8 +1598,8 @@ internal interface TmdbSeasonListSource {
     /** Episode count per season (specials excluded), or null when TMDB cannot be reached. */
     suspend fun seasonEpisodeCounts(tmdbShowId: Int): Map<Int, Int>?
 
-    /** `(episode number, title)` of every episode in [season]; empty when unavailable. */
-    suspend fun seasonEpisodes(tmdbShowId: Int, season: Int): List<Pair<Int, String?>>
+    /** `(episode number, title)` of every episode in [season]; null when TMDB could not be reached. */
+    suspend fun seasonEpisodes(tmdbShowId: Int, season: Int): List<Pair<Int, String?>>?
 
     /** The TMDB id of the show behind [imdbId] / [tvdbId], or null when unknown. */
     suspend fun findTmdbShowId(imdbId: String?, tvdbId: String?): Int?
@@ -1609,7 +1609,7 @@ internal object TmdbSeasonListService : TmdbSeasonListSource {
     override suspend fun seasonEpisodeCounts(tmdbShowId: Int): Map<Int, Int>? =
         TmdbMetadataService.fetchSeasonEpisodeCounts(tmdbShowId)
 
-    override suspend fun seasonEpisodes(tmdbShowId: Int, season: Int): List<Pair<Int, String?>> =
+    override suspend fun seasonEpisodes(tmdbShowId: Int, season: Int): List<Pair<Int, String?>>? =
         TmdbMetadataService.fetchSeasonEpisodeTitles(tmdbShowId, season)
 
     override suspend fun findTmdbShowId(imdbId: String?, tvdbId: String?): Int? {

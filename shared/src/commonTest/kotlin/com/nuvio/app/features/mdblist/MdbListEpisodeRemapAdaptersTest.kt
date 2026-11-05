@@ -156,6 +156,65 @@ class MdbListEpisodeRemapAdaptersTest {
         assertEquals(null, mappings.cached("kitsu:1"))
     }
 
+    @Test
+    fun `rows handed out in TMDB numbering are removed and prepared as such after the mapping lands`() = runTest {
+        // r1 #7: add-on 30 + 18 vs TMDB 24 + 24. TMDB S2E5 is the add-on's S1E29, while the add-on's own
+        // S2E5 is TMDB S2E11: a row that left in TMDB numbering must not be read as the add-on's.
+        val h = MdbListSyncTestHarness(backgroundScope)
+        h.seed(h.snapshot().copy(
+            watched = listOf(mdbListTestEpisode(2, 6)),
+            playback = listOf(
+                mdbListTestPlayback().copy(type = MdbListItemType.EPISODE, season = 2, episode = 5),
+                mdbListTestPlayback().copy(id = 8, type = MdbListItemType.EPISODE, season = 2, episode = 7),
+            ),
+        ))
+        h.repository.ensureLoaded()
+        val mappings = mdbListTestEpisodeMappings(
+            MdbListTestAddonEpisodes(seasons = listOf(30, 18)),
+            MdbListTestTmdbSeasons(seasons = listOf(24, 24), lookup = mapOf("tt1" to 1)),
+        )
+        val provider = MdbListTrackingProgressProvider(h.repository, MdbListScrobbleService(h.http.api, h.repository), mappings, h.http.store, h.activeProfile, {})
+
+        val raw = provider.snapshot().entries
+        assertEquals(setOf(2 to 5, 2 to 6, 2 to 7), raw.map { it.seasonNumber to it.episodeNumber }.toSet())
+        // The mapping lands between that snapshot and the operations on its rows.
+        assertTrue(mappings.resolve("tt1", 1)!!.remaps)
+
+        val prepared = provider.prepareNextUpProgressEntries(raw.filter { it.source == "mdblist_history" }, "tt1")
+        assertEquals(1 to 30, prepared.single().let { it.seasonNumber to it.episodeNumber })
+
+        h.http.reply(body = """{"action":"clear","deleted":true}""")
+        provider.removeProgress(raw.filter { it.episodeNumber == 5 })
+        val show = mdbListResponseElement(h.http.engine.requests.single().body).objectValue().objectValue("show")!!
+        assertEquals(2 to 5, show.text("season")?.toInt() to show.text("episode")?.toInt())
+
+        // Rows handed out after the mapping landed are in the add-on's numbering and stay there.
+        val remapped = provider.snapshot().entries
+        assertEquals(setOf(1 to 30, 2 to 1), remapped.map { it.seasonNumber to it.episodeNumber }.toSet()) // TMDB S2E7 is the 31st episode: add-on S2E1
+        assertEquals(remapped, provider.prepareNextUpProgressEntries(remapped, "tt1"))
+        h.http.reply(body = """{"action":"clear","deleted":true}""")
+        provider.removeProgress(remapped.filter { it.source == "mdblist_playback" })
+        val again = mdbListResponseElement(h.http.engine.requests.last().body).objectValue().objectValue("show")!!
+        assertEquals(2 to 7, again.text("season")?.toInt() to again.text("episode")?.toInt())
+        assertTrue(h.repository.currentSnapshot()!!.playback.isEmpty())
+    }
+
+    @Test
+    fun `a mapping the detail screen resolved under the TMDB id reaches records filed under the IMDb id`() = runTest {
+        // r1 #8
+        val h = MdbListSyncTestHarness(backgroundScope)
+        h.seed(h.snapshot().copy(watched = listOf(mdbListTestEpisode(1, 35))))
+        h.repository.ensureLoaded()
+        val mappings = splitAnimeMappings()
+        val provider = MdbListTrackingProgressProvider(h.repository, MdbListScrobbleService(h.http.api, h.repository), mappings, h.http.store, h.activeProfile, {})
+        val watched = MdbListWatchedSyncAdapter(h.repository, MdbListHistoryService(h.http.api, h.repository), mappings, h.http.store, h.activeProfile)
+
+        provider.refreshEpisodeProgress("tmdb:1", forceRefresh = false)
+        assertTrue(mappings.cached("tt1")!!.remaps)
+        assertEquals(listOf(2 to 11), watched.pull(1, 100).map { it.season!! to it.episode!! })
+        assertEquals(setOf(2 to 11), provider.snapshot().entries.map { it.seasonNumber to it.episodeNumber }.toSet())
+    }
+
     private fun episodeReference(season: Int, episode: Int) = buildTrackingMediaReference(
         contentType = "series", parentMetaId = "tt1", videoId = "tt1:$season:$episode",
         seasonNumber = season, episodeNumber = episode,

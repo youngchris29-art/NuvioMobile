@@ -207,6 +207,8 @@ object MdbListTracker : TrackingAuthProvider {
         account.stopPolling()
         activeProfile.value = profileId
         store.selectProfile(profileId)
+        // Another profile may read the same show from other add-ons (Codex r1 #3).
+        episodeMappings.clearCache()
         authenticated.value = isActiveAndAuthenticated(store.state.value)
     }
 
@@ -214,6 +216,7 @@ object MdbListTracker : TrackingAuthProvider {
     override fun clearLocalState() {
         account.stopPolling()
         store.clearAllProfiles()
+        episodeMappings.clearCache()
         // Fork: upstream also calls PlatformMdbListSyncStorage.clearAll() here. In the fork the
         // disk payload is erased by the account wipe (AccountDataStores "PlatformMdbListSyncStorage");
         // the sync repository and library service drop their in-memory state themselves when the

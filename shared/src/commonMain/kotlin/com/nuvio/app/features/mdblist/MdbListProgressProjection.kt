@@ -63,8 +63,13 @@ internal class MdbListProgressProjection private constructor(
         }.getOrNull()
 
     /** The TMDB show id MDBList reported for [contentId], when the history or playback holds one. */
-    fun tmdbShowId(contentId: String): Long? =
-        parseTrackingExternalIds(contentId).toMdbListIds()?.let { mediaIndex.resolve(MdbListItemType.SHOW, it).ids.tmdb }
+    fun tmdbShowId(contentId: String): Long? = showIds(contentId)?.tmdb
+
+    /** Every id MDBList files the show behind [contentId] under, merged with [contentId]'s own. */
+    fun showAliases(contentId: String): Set<String> = showIds(contentId)?.aliases().orEmpty()
+
+    private fun showIds(contentId: String): MdbListIds? =
+        parseTrackingExternalIds(contentId).toMdbListIds()?.let { mediaIndex.resolve(MdbListItemType.SHOW, it).ids }
 
     // ── Add-on numbering (upstream facf25ec3) ──────────────────────────────────────────────────
     // MDBList numbers episodes as TMDB does; the add-on an episode plays from may split the show

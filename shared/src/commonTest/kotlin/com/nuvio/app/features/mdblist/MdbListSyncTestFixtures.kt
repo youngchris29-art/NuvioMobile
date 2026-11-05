@@ -5,6 +5,7 @@ import com.nuvio.app.features.tracking.AddonEpisodeListSource
 import com.nuvio.app.features.trakt.EpisodeMappingEntry
 import io.ktor.utils.io.errors.IOException
 import kotlin.coroutines.ContinuationInterceptor
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -109,8 +110,14 @@ internal class MdbListTestAddonEpisodes(
     var titles: Map<Pair<Int, Int>, String> = emptyMap(),
 ) : AddonEpisodeListSource {
     val calls = mutableListOf<Pair<String, String>>()
+    /** The add-on set / metadata language stamp; bump it to invalidate what was built on it. */
+    var generation: Any = 0
+    /** When set, every fetch suspends on it first (cancellation and generation-change tests). */
+    var gate: CompletableDeferred<Unit>? = null
+    override fun generation(): Any = generation
     override suspend fun episodes(contentId: String, contentType: String): List<EpisodeMappingEntry> {
         calls += contentId to contentType
+        gate?.await()
         return seasons.flatMapIndexed { index, count ->
             val season = index + 1
             (1..count).map { episode ->
@@ -126,6 +133,10 @@ internal class MdbListTestTmdbSeasons(
     var titles: Map<Pair<Int, Int>, String> = emptyMap(),
     var tmdbShowId: Int = 1,
     var lookup: Map<String, Int> = emptyMap(),
+    /** Seasons whose episode request fails (null), as a TMDB outage would. */
+    var failingSeasons: Set<Int> = emptySet(),
+    /** Seasons whose episode list comes back with this many episodes fewer than advertised. */
+    var shortSeasons: Map<Int, Int> = emptyMap(),
 ) : TmdbSeasonListSource {
     val calls = mutableListOf<String>()
     override suspend fun seasonEpisodeCounts(tmdbShowId: Int): Map<Int, Int>? {
@@ -133,9 +144,10 @@ internal class MdbListTestTmdbSeasons(
         if (tmdbShowId != this.tmdbShowId) return null
         return seasons.mapIndexed { index, count -> index + 1 to count }.toMap()
     }
-    override suspend fun seasonEpisodes(tmdbShowId: Int, season: Int): List<Pair<Int, String?>> {
+    override suspend fun seasonEpisodes(tmdbShowId: Int, season: Int): List<Pair<Int, String?>>? {
         calls += "season:$tmdbShowId:$season"
-        val count = seasons.getOrNull(season - 1) ?: return emptyList()
+        if (season in failingSeasons) return null
+        val count = (seasons.getOrNull(season - 1) ?: return emptyList()) - (shortSeasons[season] ?: 0)
         return (1..count).map { it to titles[season to it] }
     }
     override suspend fun findTmdbShowId(imdbId: String?, tvdbId: String?): Int? {

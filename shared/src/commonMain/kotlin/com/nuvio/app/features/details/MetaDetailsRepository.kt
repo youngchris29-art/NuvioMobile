@@ -28,6 +28,7 @@ import com.nuvio.app.features.trakt.TraktRelatedRepository
 import com.nuvio.app.features.trakt.TraktSettingsRepository
 import com.nuvio.app.features.trakt.shouldUseTraktMoreLikeThis
 import com.nuvio.app.features.watchprogress.CurrentDateProvider
+import com.nuvio.app.features.tracking.AddonEpisodeListService
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -261,6 +262,9 @@ object MetaDetailsRepository {
      * generation-checked write.
      */
     fun clear() {
+        // The add-on episode lists the tracker remaps were built from these metas (titles follow
+        // the metadata language), so they go with them.
+        AddonEpisodeListService.invalidate()
         scope.launch(Dispatchers.Main.immediate) {
             activeRequestKey = null
             cacheGeneration++
