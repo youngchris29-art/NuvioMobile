@@ -247,6 +247,20 @@ class ContinueWatchingNextUpTest {
     }
 
     @Test
+    fun seedCandidatesCarryTheEntrysExclusionsIntoTheirKey() {
+        // Codex r13: Home cached S1E25 after S1E24; the user drops TMDB season 2 and S1E25 is now excluded.
+        val before = progress("tt1", 1, 24, t0, completed = true)
+        val after = before.copy(excludedNextUpSeasons = setOf(2), excludedNextUpEpisodeKeys = (25..30).map { "1:$it" }.toSet())
+        val seedBefore = buildNextUpSeedCandidates(listOf(before), emptyList(), { true }, preferFurthestEpisode = true).single()
+        val seedAfter = buildNextUpSeedCandidates(listOf(after), emptyList(), { true }, preferFurthestEpisode = true).single()
+        assertEquals(seedBefore.copy(exclusionsFingerprint = seedAfter.exclusionsFingerprint), seedAfter)
+        assertNotEquals(
+            nextUpResolveKey(seedBefore, 1, "MDBLIST", true, false, "2026-10-23"),
+            nextUpResolveKey(seedAfter, 1, "MDBLIST", true, false, "2026-10-23"),
+        )
+    }
+
+    @Test
     fun resolveKeyChangesWithEveryInputThatChangesTheAnswer() {
         val seed = ContinueWatchingNextUpSeed("series", "tt1", 1, 3, t0)
         val base = nextUpResolveKey(seed, 1, "NUVIO_SYNC", preferFurthestEpisode = true, showUnairedNextUp = true, todayIsoDate = "2026-10-23")
@@ -258,8 +272,15 @@ class ContinueWatchingNextUpTest {
             nextUpResolveKey(seed, 1, "NUVIO_SYNC", true, false, "2026-10-23"),
             nextUpResolveKey(seed, 1, "NUVIO_SYNC", true, true, "2026-10-24"),
             nextUpResolveKey(seed, 2, "NUVIO_SYNC", true, true, "2026-10-23"),
+            // Codex r13 on the MDBList remap: a dropped season or episode changes the answer too.
+            nextUpResolveKey(seed.copy(exclusionsFingerprint = nextUpExclusionsFingerprint(setOf(2), emptySet())), 1, "NUVIO_SYNC", true, true, "2026-10-23"),
+            nextUpResolveKey(seed.copy(exclusionsFingerprint = nextUpExclusionsFingerprint(emptySet(), setOf("1:25"))), 1, "NUVIO_SYNC", true, true, "2026-10-23"),
         )
         variants.forEach { assertNotEquals(base, it) }
+        assertNotEquals(
+            nextUpResolveKey(seed.copy(exclusionsFingerprint = nextUpExclusionsFingerprint(setOf(2), emptySet())), 1, "NUVIO_SYNC", true, true, "2026-10-23"),
+            nextUpResolveKey(seed.copy(exclusionsFingerprint = nextUpExclusionsFingerprint(emptySet(), setOf("1:25"))), 1, "NUVIO_SYNC", true, true, "2026-10-23"),
+        )
         // Re-finishing the same episode later re-dates the card but does not refetch it.
         assertEquals(base, nextUpResolveKey(seed.copy(markedAtEpochMs = t0 + 1), 1, "NUVIO_SYNC", true, true, "2026-10-23"))
     }

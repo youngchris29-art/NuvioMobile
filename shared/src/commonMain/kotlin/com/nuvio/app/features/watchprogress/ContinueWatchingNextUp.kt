@@ -177,7 +177,18 @@ data class ContinueWatchingNextUpSeed(
     val seasonNumber: Int,
     val episodeNumber: Int,
     val markedAtEpochMs: Long,
+    /**
+     * The seasons and episodes next-up must leave out for this show, as the seed's entry carried
+     * them ([WatchProgressEntry.excludedNextUpSeasons], [WatchProgressEntry.excludedNextUpEpisodeKeys]),
+     * in one stable string: part of the resolve key, so a cached answer is not reused once the
+     * user drops or restores a season (Codex r13).
+     */
+    val exclusionsFingerprint: String = "",
 )
+
+internal fun nextUpExclusionsFingerprint(seasons: Set<Int>, episodeKeys: Set<String>): String =
+    if (seasons.isEmpty() && episodeKeys.isEmpty()) ""
+    else seasons.sorted().joinToString(",") + "/" + episodeKeys.sorted().joinToString(",")
 
 val WatchProgressEntry.isContinueWatchingNextUp: Boolean
     get() = source == WatchProgressSourceNextUp
@@ -222,7 +233,10 @@ fun buildNextUpSeedCandidates(
             if (!entry.parentMetaType.isSeriesTypeForContinueWatching()) return@forEach
             if (isMalformedNextUpSeedContentId(entry.parentMetaId)) return@forEach
             if (!isProgressSeed(entry)) return@forEach
-            add(ContinueWatchingNextUpSeed(entry.parentMetaType, entry.parentMetaId, season, episode, entry.lastUpdatedEpochMs))
+            add(ContinueWatchingNextUpSeed(
+                entry.parentMetaType, entry.parentMetaId, season, episode, entry.lastUpdatedEpochMs,
+                exclusionsFingerprint = nextUpExclusionsFingerprint(entry.excludedNextUpSeasons, entry.excludedNextUpEpisodeKeys),
+            ))
         }
         watchedItems.forEach { item ->
             val season = item.season ?: return@forEach
@@ -429,6 +443,7 @@ internal fun nextUpResolveKey(
     if (preferFurthestEpisode) "furthest" else "latest",
     if (showUnairedNextUp) "unaired" else "aired",
     todayIsoDate,
+    seed.exclusionsFingerprint,
 ).joinToString("|", prefix = "p$profileId|")
 
 /**
