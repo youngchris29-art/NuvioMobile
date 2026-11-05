@@ -167,6 +167,45 @@ class MdbListHistoryServiceTest {
         assertTrue(MdbListSyncBucket.WATCHED in harness.repository.currentSnapshot()!!.invalidatedBuckets)
     }
 
+    @Test
+    fun `a batch keeps the echoes that paired and trusts the counts for the rest`() = runTest {
+        val harness = MdbListSyncTestHarness(backgroundScope)
+        harness.http.reply(body = """{"updated":{"movies":2},"plays":[{"type":"movie","ids":{"imdb":"tt1","mdblist":"m1"},"watched_at":"2026-09-06T00:00:00Z"},{"type":"movie","ids":{"imdb":"tt9"},"watched_at":"2026-09-06T00:00:00Z"}]}""")
+
+        val result = service(harness).add(harness.repository.currentScope(), listOf(item(1), item(2)))
+
+        assertTrue(result.isComplete)
+        val watched = harness.repository.currentSnapshot()?.watched.orEmpty()
+        assertEquals(setOf("tt1", "tt2"), watched.map { it.media.ids.imdb }.toSet())
+        assertEquals("m1", watched.single { it.media.ids.imdb == "tt1" }.media.ids.mdblist)
+        assertTrue(MdbListSyncBucket.WATCHED in harness.repository.currentSnapshot()!!.invalidatedBuckets)
+    }
+
+    @Test
+    fun `incomplete counts project only the echoes that paired`() = runTest {
+        val harness = MdbListSyncTestHarness(backgroundScope)
+        harness.http.reply(body = """{"updated":{"movies":1},"plays":[{"type":"movie","ids":{"imdb":"tt1"},"watched_at":"2026-09-06T00:00:00Z"},{"type":"movie","ids":{"imdb":"tt9"},"watched_at":"2026-09-06T00:00:00Z"}]}""")
+
+        val result = service(harness).add(harness.repository.currentScope(), listOf(item(1), item(2)))
+
+        assertFalse(result.isComplete)
+        assertEquals(1, result.notFoundCount)
+        assertEquals(listOf("tt1"), harness.repository.currentSnapshot()?.watched?.map { it.media.ids.imdb })
+        assertTrue(MdbListSyncBucket.WATCHED in harness.repository.currentSnapshot()!!.invalidatedBuckets)
+    }
+
+    @Test
+    fun `an echoed play without usable ids or dates is skipped like any other`() = runTest {
+        val harness = MdbListSyncTestHarness(backgroundScope)
+        harness.http.reply(body = """{"updated":{"movies":1},"plays":[{"type":"movie","ids":{"imdb":"not-an-id"},"watched_at":"yesterday"},"garbage",{"type":"season","show":"tt1"}]}""")
+
+        val result = service(harness).add(harness.repository.currentScope(), listOf(item(1)))
+
+        assertTrue(result.isComplete)
+        assertEquals(listOf("tt1"), harness.repository.currentSnapshot()?.watched?.map { it.media.ids.imdb })
+        assertTrue(MdbListSyncBucket.WATCHED in harness.repository.currentSnapshot()!!.invalidatedBuckets)
+    }
+
     private fun item(id: Long) = TrackingHistoryItem(
         TrackingMediaReference(TrackingMediaKind.MOVIE, "Movie $id", ids = TrackingExternalIds(imdb = "tt$id")),
         mdbListTimestamp(MDBLIST_TEST_TIME)

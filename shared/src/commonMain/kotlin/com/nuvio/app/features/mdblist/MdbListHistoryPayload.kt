@@ -72,12 +72,23 @@ internal fun decodeMdbListHistoryReceipt(
     // failure: the write already succeeded (2xx with counts), so failing the whole mutation here would
     // leave the mark dirty forever. The skipped plays are logged, the counts decide confirmation as
     // they already do for receipts without plays, and a snapshot refresh reconciles MDBList's view.
-    val echoed = if (remove) emptyList() else payload.arrayValue("plays").map { element -> decodePlay(element.objectValue(), changes) }
+    val echoed = if (remove) emptyList() else payload.arrayValue("plays").map { element ->
+        try {
+            decodePlay(element.objectValue(), changes)
+        } catch (e: MdbListDecodingException) {
+            // Malformed ids, timestamps or nesting inside one echoed play: skip that play alone.
+            log.i { "Skipped an undecodable echoed MDBList play" }
+            null
+        }
+    }
     val plays = echoed.filterNotNull()
     val skippedPlays = echoed.size - plays.size
     val confirmed = when {
         plays.isNotEmpty() && skippedPlays == 0 -> plays
-        complete && !remove -> changes.filter { it.target.type != MdbListItemType.SHOW }.map { it.target.watched(requireNotNull(it.watchedAt)) }
+        // Keep what did pair, and trust the counts for the requested items no echo paired with.
+        complete && !remove -> plays + changes
+            .filter { change -> change.target.type != MdbListItemType.SHOW && plays.none { change.target.matches(it) } }
+            .map { it.target.watched(requireNotNull(it.watchedAt)) }
         else -> plays
     }
     val hasExpansion = changes.any { it.target.type == MdbListItemType.SHOW }
@@ -112,12 +123,14 @@ private fun decodePlay(row: JsonObject, changes: List<MdbListHistoryChange>): Md
     return record.copy(media = record.media.merged(requested.media), episodeTitle = requested.episodeTitle)
 }
 
+/** Logs an echoed play the receipt cannot use (ids, coordinates and key names only) and never throws. */
 private fun skipPlay(row: JsonObject, reason: String): MdbListWatchedRecord? {
-    val show = row.objectValue("show")
     log.i {
-        "Skipped an echoed MDBList play ($reason): type=${row.text("type")} " +
-            "show=${show?.text("imdb") ?: show?.objectValue("ids")?.text("imdb") ?: show?.objectValue("ids")?.number("tmdb")?.let { "tmdb:$it" }} " +
-            "season=${row.integer("season")} number=${row.integer("number", "episode")} keys=${row.keys.sorted()}"
+        val show = row["show"] as? JsonObject
+        val ids = show?.get("ids") as? JsonObject
+        "Skipped an echoed MDBList play ($reason): type=${row["type"]} " +
+            "show=${ids?.get("imdb") ?: show?.get("imdb") ?: ids?.get("tmdb")?.let { "tmdb:$it" }} " +
+            "season=${row["season"]} number=${row["number"] ?: row["episode"]} keys=${row.keys.sorted()}"
     }
     return null
 }
