@@ -77,15 +77,14 @@ internal fun decodeMdbListHistoryReceipt(
             decodePlay(element.objectValue(), changes)
         } catch (e: MdbListDecodingException) {
             // Malformed ids, timestamps or nesting inside one echoed play: skip that play alone.
-            log.i { "Skipped an undecodable echoed MDBList play" }
+            log.i { "Skipped an undecodable echoed MDBList play: keys=${(element as? JsonObject)?.keys?.sorted()}" }
             null
         }
     }
     val plays = echoed.filterNotNull()
     val skippedPlays = echoed.size - plays.size
     val confirmed = when {
-        plays.isNotEmpty() && skippedPlays == 0 -> plays
-        // Keep what did pair, and trust the counts for the requested items no echo paired with.
+        // Complete counts back every requested item, echoed or not: keep what paired, add the rest.
         complete && !remove -> plays + changes
             .filter { change -> change.target.type != MdbListItemType.SHOW && plays.none { change.target.matches(it) } }
             .map { it.target.watched(requireNotNull(it.watchedAt)) }
