@@ -659,6 +659,66 @@ class MdbListEpisodeMappingServiceTest {
         assertEquals(3, addon.calls.size)
     }
 
+    // ── Codex r10 ───────────────────────────────────────────────────────────────────────────
+
+    @Test
+    fun `a show whose later reload failed retries every episode once the backoff passes`() = runTest {
+        // r10 #1: S2E1 reloaded fine but stayed unmatched (hourly marker); the S2E2 reload failed; TMDB recovers.
+        val clock = kotlin.time.TestTimeSource()
+        val addon = MdbListTestAddonEpisodes(seasons = listOf(24))
+        val tmdb = MdbListTestTmdbSeasons(seasons = listOf(24), lookup = mapOf("tt1" to 1))
+        val service = mdbListTestEpisodeMappings(addon, tmdb, timeSource = clock)
+        assertFalse(service.resolve("tt1", 1)!!.remaps)
+        addon.seasons = listOf(24, 1)
+        assertNull(service.toMdbListNumbering(episodeReference(2, 1), mediaIndex = null)) // reloaded, still unmatched
+        assertEquals(2, addon.calls.size)
+        addon.seasons = listOf(24, 2)
+        tmdb.tmdbShowId = 2
+        assertNull(service.toMdbListNumbering(episodeReference(2, 2), mediaIndex = null)) // the reload failed
+        assertEquals(3, addon.calls.size)
+        tmdb.tmdbShowId = 1
+        tmdb.seasons = listOf(26)
+        clock += 10.minutes
+        // S2E1's earlier marker does not stand: the show reloads and both episodes map.
+        assertEquals(1 to 25, service.toMdbListNumbering(episodeReference(2, 1), mediaIndex = null)!!.episode?.let { it.season to it.number })
+        assertEquals(4, addon.calls.size)
+        assertEquals(1 to 26, service.toMdbListNumbering(episodeReference(2, 2), mediaIndex = null)!!.episode?.let { it.season to it.number })
+        assertEquals(4, addon.calls.size)
+        // A plain resolve after the failure's backoff loads again too, fresh entry or not.
+        val plainAddon = MdbListTestAddonEpisodes(seasons = listOf(24, 24))
+        val plainTmdb = MdbListTestTmdbSeasons(seasons = listOf(48))
+        val plain = mdbListTestEpisodeMappings(plainAddon, plainTmdb, timeSource = clock)
+        assertTrue(plain.resolve("tt1", 1)!!.remaps)
+        plainTmdb.tmdbShowId = 2
+        plain.resolve("tt1", 1, emptySet(), reload = true)
+        assertEquals(2, plainAddon.calls.size)
+        clock += 10.minutes
+        plainTmdb.tmdbShowId = 1
+        plain.resolve("tt1", 1)
+        assertEquals(3, plainAddon.calls.size)
+    }
+
+    @Test
+    fun `a writer whose joined reload was cancelled reloads itself rather than taking the stale mapping`() = runTest {
+        // r10 #2: two new episodes, two writers; the first owns the show reload and is cancelled.
+        val addon = MdbListTestAddonEpisodes(seasons = listOf(24))
+        val tmdb = MdbListTestTmdbSeasons(seasons = listOf(24), lookup = mapOf("tt1" to 1))
+        val service = mdbListTestEpisodeMappings(addon, tmdb)
+        assertFalse(service.resolve("tt1", 1)!!.remaps)
+        addon.seasons = listOf(24, 2)
+        tmdb.seasons = listOf(26)
+        addon.gate = CompletableDeferred()
+        val first = launch { service.toMdbListNumbering(episodeReference(2, 1), mediaIndex = null) }
+        runCurrent()
+        val second = async { service.toMdbListNumbering(episodeReference(2, 2), mediaIndex = null) }
+        runCurrent()
+        first.cancel()
+        runCurrent()
+        addon.gate!!.complete(Unit)
+        assertEquals(1 to 26, second.await()!!.episode?.let { it.season to it.number })
+        assertTrue(service.cached("tt1")!!.remaps)
+    }
+
     private fun episodeReference(season: Int, episode: Int) = buildTrackingMediaReference(
         contentType = "series", parentMetaId = "tt1", videoId = "tt1:$season:$episode",
         seasonNumber = season, episodeNumber = episode,

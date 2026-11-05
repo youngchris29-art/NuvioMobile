@@ -83,6 +83,14 @@ internal class MdbListEpisodeMappingService(
     private fun reloadFailedRecently(key: String): Boolean =
         reloadFailedAt.value[key]?.let { it.elapsedNow() < RELOAD_RETRY_INTERVAL } == true
 
+    /**
+     * Whether a non-forced resolve answers from the cache: while the entry is fresh and no reload
+     * failed, or during the backoff after one failed. A failed reload whose backoff has passed
+     * loads again however fresh the entry is (Codex r10 #1).
+     */
+    private fun Resolved.servesNow(key: String): Boolean =
+        reloadFailedAt.value[key]?.let { it.elapsedNow() < RELOAD_RETRY_INTERVAL } ?: isFresh()
+
     /** Emits whenever a show's mapping resolves or the cache is cleared. */
     val changes: Flow<Unit> = resolved.map { }
 
@@ -118,7 +126,7 @@ internal class MdbListEpisodeMappingService(
      * leaves a still-valid cached mapping in place and answers with it (Codex r7 #1): the last
      * known structure beats the add-on's raw numbers for a show known to remap.
      */
-    private suspend fun resolve(
+    internal suspend fun resolve(
         contentId: String,
         tmdbShowId: Long?,
         aliases: Set<String>,
@@ -128,20 +136,22 @@ internal class MdbListEpisodeMappingService(
         var forced = reload
         repeat(MAX_ATTEMPTS) {
             currentCoroutineContext().ensureActive()
-            if (!forced) entry(key)?.takeIf { it.isFresh() || reloadFailedRecently(key) }?.let { return it.mapping }
+            if (!forced) entry(key)?.takeIf { it.servesNow(key) }?.let { return it.mapping }
             val generation = addonEpisodes.generation()
             val currentEpoch = epoch.value
-            val flightKey = "$key|$generation|$currentEpoch"
+            // A forced load (past the add-on list cache) never joins a plain one, whose lists may
+            // be the ones that lack the episode; and a joiner stays forced if the load it joined is
+            // cancelled (Codex r10 #2).
+            val refreshLists = forced
+            val flightKey = "$key|$generation|$currentEpoch|$refreshLists"
             val deferred = CompletableDeferred<Outcome>()
             val existing = inFlightMutex.withLock {
-                if (!forced) entry(key)?.takeIf { it.isFresh() || reloadFailedRecently(key) }?.let { return it.mapping }
+                if (!forced) entry(key)?.takeIf { it.servesNow(key) }?.let { return it.mapping }
                 inFlight[flightKey] ?: run {
                     inFlight[flightKey] = deferred
                     null
                 }
             }
-            val refreshLists = forced
-            forced = false
             if (existing != null) {
                 // Another caller is loading this show. Its cancellation is not an answer: a writer
                 // that read it as "no mapping" would send the add-on's numbers (Codex r1 #4).
@@ -167,6 +177,9 @@ internal class MdbListEpisodeMappingService(
                 val mapping = inFlightMutex.withLock {
                     if (loaded == null) {
                         reloadFailedAt.update { it + (key to timeSource.markNow()) }
+                        // An episode's earlier reload no longer stands for the show: once the
+                        // backoff passes every episode of it may reload again (Codex r10 #1).
+                        episodeRefreshedAt.keys.removeAll { it.startsWith("$key|") }
                         entry(key)?.mapping
                     } else {
                         reloadFailedAt.update { it - key }
@@ -190,6 +203,7 @@ internal class MdbListEpisodeMappingService(
                 }
             }
             if (outcome.isCurrent()) return outcome.mapping
+            forced = false // the lists were reloaded; a retry after a source change may use the cache
         }
         return null
     }
@@ -203,7 +217,7 @@ internal class MdbListEpisodeMappingService(
     fun resolveInBackground(contentId: String, tmdbShowId: Long? = null, aliases: Set<String> = emptySet()) {
         val scope = scope ?: return
         val key = contentId.trim().takeIf(String::isNotBlank) ?: return
-        entry(key)?.let { if (it.isFresh() || reloadFailedRecently(key)) return }
+        entry(key)?.let { if (it.servesNow(key)) return }
         scope.launch {
             val skip = inFlightMutex.withLock {
                 inFlight.keys.any { it.startsWith("$key|") } ||
