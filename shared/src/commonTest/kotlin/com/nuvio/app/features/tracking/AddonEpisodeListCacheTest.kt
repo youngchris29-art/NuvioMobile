@@ -159,6 +159,20 @@ class AddonEpisodeListCacheTest {
     }
 
     @Test
+    fun `a forced refresh fetches past a current list and replaces it`() = runTest {
+        // r7 #2
+        var answer = list
+        val refreshes = mutableListOf<Boolean>()
+        val cache = AddonEpisodeListCache(fetch = { _, _, refresh -> refreshes += refresh; answer }, generation = { 0 })
+        assertEquals(list, cache.episodes("tt1", "series"))
+        answer = list + EpisodeMappingEntry(1, 2, videoId = "tt1:1:2")
+        assertEquals(list, cache.episodes("tt1", "series"))
+        assertEquals(answer, cache.episodes("tt1", "series", refresh = true))
+        assertEquals(answer, cache.episodes("tt1", "series"))
+        assertEquals(listOf(false, true), refreshes)
+    }
+
+    @Test
     fun `a list from an older add-on set is fetched again`() = runTest {
         var generation = 0
         var fetches = 0

@@ -11,6 +11,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.time.Duration.Companion.hours
+import kotlin.time.Duration.Companion.minutes
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -391,8 +392,8 @@ class MdbListEpisodeMappingServiceTest {
     fun `a source change that lands as the load returns is neither kept nor handed out`() = runTest {
         // r3 #5: the add-on fake bumps its generation inside the fetch, after the list is read.
         val addon = object : MdbListTestAddonEpisodes(seasons = listOf(24, 24)) {
-            override suspend fun episodes(contentId: String, contentType: String): List<EpisodeMappingEntry> {
-                val list = super.episodes(contentId, contentType)
+            override suspend fun episodes(contentId: String, contentType: String, refresh: Boolean): List<EpisodeMappingEntry> {
+                val list = super.episodes(contentId, contentType, refresh)
                 if (calls.size == 1) { generation = 1; seasons = listOf(48) }
                 return list
             }
@@ -496,6 +497,50 @@ class MdbListEpisodeMappingServiceTest {
         assertEquals(1 to 4, mapping.toTmdb(1, 3)?.let { it.season to it.episode })
         assertEquals(1 to 3, mapping.toAddon(1, 4)?.let { it.season to it.episode })
         assertNull(mapping.toAddon(1, 3)) // the recap has no counterpart by title, date or free position
+    }
+
+    // ── Codex r7 ────────────────────────────────────────────────────────────────────────────
+
+    @Test
+    fun `a failed refresh keeps writing through the last known split mapping`() = runTest {
+        // r7 #1: TMDB is down after the mapping aged; add-on S2E11 must still go out as TMDB S1E35.
+        val clock = kotlin.time.TestTimeSource()
+        val addon = MdbListTestAddonEpisodes(seasons = listOf(24, 24))
+        val tmdb = MdbListTestTmdbSeasons(seasons = listOf(48), lookup = mapOf("tt1" to 1))
+        val service = mdbListTestEpisodeMappings(addon, tmdb, timeSource = clock)
+        assertTrue(service.resolve("tt1", 1)!!.remaps)
+        clock += 6.hours
+        tmdb.tmdbShowId = 2 // every TMDB request now answers nothing
+        val mapped = service.toMdbListNumbering(episodeReference(2, 11), mediaIndex = null)
+        assertEquals(1 to 35, mapped!!.episode?.let { it.season to it.number })
+        assertTrue(service.cached("tt1")!!.remaps)
+        assertTrue(service.resolve("tt1", 1)!!.remaps)
+        // With no mapping ever resolved, the reference passes through as the add-on numbers it.
+        val never = mdbListTestEpisodeMappings(MdbListTestAddonEpisodes(seasons = listOf(24, 24)), MdbListTestTmdbSeasons(seasons = listOf(48), tmdbShowId = 2))
+        val reference = episodeReference(2, 11)
+        assertSame(reference, never.toMdbListNumbering(reference, mediaIndex = null))
+    }
+
+    @Test
+    fun `an episode the lists did not have reloads them once before counting as unmatched`() = runTest {
+        // r7 #2: the add-on lists S2E1 while TMDB has 24 episodes; TMDB adds the 25th within the TTL.
+        val clock = kotlin.time.TestTimeSource()
+        val addon = MdbListTestAddonEpisodes(seasons = listOf(24, 1))
+        val tmdb = MdbListTestTmdbSeasons(seasons = listOf(24), lookup = mapOf("tt1" to 1))
+        val service = mdbListTestEpisodeMappings(addon, tmdb, timeSource = clock)
+        assertNull(service.toMdbListNumbering(episodeReference(2, 1), mediaIndex = null))
+        assertEquals(listOf(false, true), addon.refreshes) // the first load, then the reload past the caches
+        clock += 10.minutes
+        tmdb.seasons = listOf(25)
+        assertNull(service.toMdbListNumbering(episodeReference(2, 1), mediaIndex = null)) // within the hour: no reload
+        assertEquals(2, addon.calls.size)
+        clock += 1.hours
+        val mapped = service.toMdbListNumbering(episodeReference(2, 1), mediaIndex = null)
+        assertEquals(1 to 25, mapped!!.episode?.let { it.season to it.number })
+        assertEquals(3, addon.calls.size)
+        // Mapped now: no further reloads for it.
+        assertEquals(1 to 25, service.toMdbListNumbering(episodeReference(2, 1), mediaIndex = null)!!.episode?.let { it.season to it.number })
+        assertEquals(3, addon.calls.size)
     }
 
     private fun episodeReference(season: Int, episode: Int) = buildTrackingMediaReference(

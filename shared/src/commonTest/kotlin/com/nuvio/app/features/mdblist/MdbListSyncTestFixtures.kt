@@ -120,8 +120,10 @@ internal open class MdbListTestAddonEpisodes(
     /** When set, every fetch suspends on it first (cancellation and generation-change tests). */
     var gate: CompletableDeferred<Unit>? = null
     override fun generation(): Any = generation
-    override suspend fun episodes(contentId: String, contentType: String): List<EpisodeMappingEntry> {
+    val refreshes = mutableListOf<Boolean>()
+    override suspend fun episodes(contentId: String, contentType: String, refresh: Boolean): List<EpisodeMappingEntry> {
         calls += contentId to contentType
+        refreshes += refresh
         gate?.await()
         return seasons.flatMapIndexed { index, count ->
             val season = index + 1

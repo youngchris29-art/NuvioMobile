@@ -32,7 +32,8 @@ import kotlin.time.TimeSource
  * The seam the mapping services depend on; [AddonEpisodeListService] is the production source.
  */
 internal interface AddonEpisodeListSource {
-    suspend fun episodes(contentId: String, contentType: String): List<EpisodeMappingEntry>
+    /** [refresh]: fetch past every cache, a list that is current included (an episode just appeared). */
+    suspend fun episodes(contentId: String, contentType: String, refresh: Boolean = false): List<EpisodeMappingEntry>
 
     /**
      * Identifies the metadata source the lists come from: changes when the enabled add-ons or the
@@ -78,8 +79,8 @@ internal object AddonEpisodeListService : AddonEpisodeListSource {
      */
     suspend fun prefetch(contentIds: List<String>, concurrency: Int = 8) = cache.prefetch(contentIds, concurrency)
 
-    override suspend fun episodes(contentId: String, contentType: String): List<EpisodeMappingEntry> =
-        cache.episodes(contentId, contentType)
+    override suspend fun episodes(contentId: String, contentType: String, refresh: Boolean): List<EpisodeMappingEntry> =
+        cache.episodes(contentId, contentType, refresh)
 
     override fun generation(): Any = cache.generation()
 
@@ -197,26 +198,29 @@ internal class AddonEpisodeListCache(
 
     override fun generation(): Any = generation.invoke()
 
-    override suspend fun episodes(contentId: String, contentType: String): List<EpisodeMappingEntry> {
+    override suspend fun episodes(contentId: String, contentType: String, refresh: Boolean): List<EpisodeMappingEntry> {
         fetchCalls++
         val cacheKey = cacheKey(contentId, contentType)
+        var bypassCurrent = refresh
         repeat(MAX_ATTEMPTS) {
             currentCoroutineContext().ensureActive()
             val currentGeneration = generation()
-            current(cacheKey, currentGeneration)?.let { return it }
+            if (!bypassCurrent) current(cacheKey, currentGeneration)?.let { return it }
 
             val flightKey = "$cacheKey|$currentGeneration"
             val deferred = CompletableDeferred<Outcome>()
-            val (existing, refresh) = inFlightMutex.withLock {
-                current(cacheKey, currentGeneration)?.let { return it }
+            val (existing, refreshSource) = inFlightMutex.withLock {
+                if (!bypassCurrent) current(cacheKey, currentGeneration)?.let { return it }
                 val flight = inFlight[flightKey] ?: run {
                     inFlight[flightKey] = deferred
                     null
                 }
                 // An aged entry, empty or not, means the source may hold the same stale meta
                 // (MetaDetailsRepository caches a meta with no videos too, Codex r4 #4).
-                flight to (cache.value[cacheKey] != null)
+                flight to (bypassCurrent || cache.value[cacheKey] != null)
             }
+            // A forced refresh fetches once; a retry after a generation change may use the cache.
+            bypassCurrent = false
             if (existing != null) {
                 val outcome = try {
                     existing.await()
@@ -233,7 +237,7 @@ internal class AddonEpisodeListCache(
 
             fetchMisses++
             val outcome = try {
-                val episodes = fetch(contentId, contentType, refresh)
+                val episodes = fetch(contentId, contentType, refreshSource)
                 // Published under the mutex, so a generation change is either before this check
                 // (the list is not kept) or after it (the receivers' own check rejects it).
                 inFlightMutex.withLock {
