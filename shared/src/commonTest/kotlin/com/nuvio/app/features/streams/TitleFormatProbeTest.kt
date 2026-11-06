@@ -732,6 +732,20 @@ class TitleFormatProbeTest {
     }
 
     @Test
+    fun changingTheStreamTemplatesMissesTheCache() = runTest {
+        val rig = rig("a1")
+        rig.engine.start(movie)
+        settle()
+        assertEquals(1, rig.fetcher.fetched.size)
+
+        rig.settings = DebridSettings(streamNameTemplate = "{stream.title}")
+        rig.engine.start(movie)
+        settle()
+
+        assertEquals(2, rig.fetcher.fetched.size)
+    }
+
+    @Test
     fun changingThePluginScrapersMissesTheCache() = runTest {
         val rig = rig("a1")
         rig.plugins = listOf("https://repo.example.com#p1")

@@ -546,6 +546,9 @@ internal class TitleFormatProbeEngine(
                 settings.providerApiKeys,
                 settings.streamCachedOnly,
                 DebridStreamMetadata.effectivePreferences(settings),
+                // The picker fold parses presented streams, whose text these templates rewrite.
+                settings.streamNameTemplate,
+                settings.streamDescriptionTemplate,
             ).toString()
             // SHA-256, not hashCode(): two accounts' keys must not collide into one cache entry.
             return "${request.key}:${ProfilePinCrypto.sha256Hex(fingerprint).take(16)}"

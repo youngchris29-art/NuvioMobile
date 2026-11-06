@@ -110,4 +110,15 @@ class TitleFormatProbeCacheTest {
         assertEquals(TitleFormatSource.PROBE, cache.get("k")?.source)
         assertEquals(TitleFormatSource.PICKER, cache.record("k", listOf(UHD_4K), TitleFormatSource.PICKER).source)
     }
+
+    @Test
+    fun aLaterAnswerDoesNotRenewTheExpiryOfBadgesItLacks() {
+        var now = 0L
+        val cache = TitleFormatProbeCache(clock = { now })
+        cache.record("k", listOf(TitleFormatBadge.UHD_4K), TitleFormatSource.PROBE)
+        now = TitleFormatProbeCache.POSITIVE_TTL_MS - 1
+        cache.record("k", emptyList(), TitleFormatSource.PICKER)
+        now = TitleFormatProbeCache.POSITIVE_TTL_MS
+        kotlin.test.assertNull(cache.get("k"), "the 4K seen six hours ago is not kept alive by a later answer")
+    }
 }

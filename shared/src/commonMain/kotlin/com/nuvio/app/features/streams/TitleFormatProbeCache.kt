@@ -5,7 +5,8 @@ package com.nuvio.app.features.streams
  * persisted: a stale "4K" across launches would mislead more than a short re-probe costs.
  *
  * A non-empty entry lives [positiveTtlMs] (6 h), an empty one [emptyTtlMs] (30 min). Recording into
- * a live entry merges (badges only grow) and restarts its TTL. Not thread-safe: the probe engine
+ * a live entry merges (badges only grow); its TTL restarts only when the new answer holds every
+ * merged badge, so an answer that lacks a badge never keeps that badge alive. Not thread-safe: the probe engine
  * calls it under its own lock.
  */
 internal class TitleFormatProbeCache(
@@ -40,7 +41,11 @@ internal class TitleFormatProbeCache(
         val merged = previous?.let { TitleFormatBadges.merge(it.badges, badges) } ?: badges
         val mergedSource = if (previous?.source == TitleFormatSource.PICKER) TitleFormatSource.PICKER else source
         val ttl = if (merged.isEmpty()) emptyTtlMs else positiveTtlMs
-        val entry = Entry(badges = merged, source = mergedSource, expiresAtMs = clock() + ttl)
+        // A fresh TTL only when this answer saw every badge the entry keeps; otherwise a badge it
+        // lacks would be renewed by an answer that no longer has it.
+        val renew = previous == null || badges.containsAll(merged)
+        val expiresAtMs = if (renew) clock() + ttl else previous.expiresAtMs
+        val entry = Entry(badges = merged, source = mergedSource, expiresAtMs = expiresAtMs)
         entries.remove(key)
         entries[key] = entry
         while (entries.size > capacity) {
