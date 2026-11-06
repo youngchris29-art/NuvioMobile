@@ -56,7 +56,7 @@ struct PersonDetailView: View {
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, Theme.Spacing.xl)
                     } else if model.failed {
-                        Text("Couldn\u{2019}t load details for \(personName). A TMDB API key is required for cast profiles.")
+                        Text("Couldn\u{2019}t load this person\u{2019}s details. Try again later.")
                             .font(Theme.Font.body)
                             .foregroundStyle(Theme.Palette.textSecondary)
                             .frame(maxWidth: 900, alignment: .leading)

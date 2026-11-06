@@ -14507,36 +14507,36 @@
         }
       }
     },
-    "Couldn’t load details for %@. A TMDB API key is required for cast profiles.": {
+    "Couldn’t load this person’s details. Try again later.": {
       "localizations": {
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Couldn’t load details for %@. A TMDB API key is required for cast profiles."
+            "value": "Die Details dieser Person konnten nicht geladen werden. Versuche es später erneut."
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Couldn’t load details for %@. A TMDB API key is required for cast profiles."
+            "value": "No se pudieron cargar los detalles de esta persona. Inténtalo de nuevo más tarde."
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Impossible de charger les détails de %@. Une clé API TMDB est requise pour les fiches de casting."
+            "value": "Impossible de charger les détails de cette personne. Réessayez plus tard."
           }
         },
         "it": {
           "stringUnit": {
             "state": "translated",
-            "value": "Impossibile caricare i dettagli per %@. È necessaria una chiave API TMDB per i profili del cast."
+            "value": "Impossibile caricare i dettagli di questa persona. Riprova più tardi."
           }
         },
         "vi": {
           "stringUnit": {
             "state": "translated",
-            "value": "Không tải được chi tiết cho %@. Cần API key TMDB để xem hồ sơ diễn viên."
+            "value": "Không tải được thông tin chi tiết về người này. Vui lòng thử lại sau."
           }
         }
       }
