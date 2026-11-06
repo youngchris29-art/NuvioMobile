@@ -222,7 +222,7 @@ object StreamAutoPlaySelector {
     /**
      * Direction C (D2): "Cached Sources Only" - a link the active debrid service already has cached:
      * positive cache evidence on the active resolver (a direct-debrid result or a cache-checked
-     * torrent), or an add-on's already-resolved http link it marks cached ("[TB+]", a bolt) whose
+     * torrent, also once the background preparer resolved it), or an add-on's already-resolved http link it marks cached ("[TB+]", a bolt) whose
      * tag names the active service or none ([DebridStreamPresentation.isAddonMarkedCachedFor]).
      * An unmarked plain HTTP link never qualifies. Swift
      * `FirstPlayAutoPlayController.Policy.isCachedDebridLink` calls this, so the walk, the Best
@@ -234,8 +234,17 @@ object StreamAutoPlaySelector {
         activeResolverProviderId: String?,
     ): Boolean = debridEnabled && (
         (stream.isAddonDebridCandidate && stream.isReadyDebridAutoPlay(activeResolverProviderId)) ||
+            stream.isPreparedCachedTorrent(activeResolverProviderId) ||
             DebridStreamPresentation.isAddonMarkedCachedFor(stream, activeResolverProviderId)
         )
+
+    // A cache-checked torrent the background preparer already resolved: it now carries the debrid
+    // URL, so it is no longer a debrid candidate, but its CACHED status for the provider stays.
+    // Only the local cache check sets that status, and only on an installed add-on's torrent that
+    // had no URL, so a status beside a URL means a prepared link.
+    private fun StreamItem.isPreparedCachedTorrent(activeResolverProviderId: String?): Boolean =
+        isInstalledAddonStream && playableDirectUrl != null && isCachedDebridTorrentStream &&
+            debridCacheStatus?.providerId.matchesResolver(activeResolverProviderId)
 
     private fun StreamItem.isAutoPlayable(
         debridEnabled: Boolean,

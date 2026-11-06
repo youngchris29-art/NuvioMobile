@@ -1458,12 +1458,20 @@ final class NextEpisodeEngine: ObservableObject {
                                                  cachedOnly: settings.streamAutoPlayCachedOnly)
         let debrid = cachedOnly ? DebridSettingsRepository.shared.snapshot() : nil
         let active: String? = debrid?.activeResolverProviderId
-        return allStreams(groups).filter { stream in
+        return Self.selectable(allStreams(groups), rejected: rejected, cachedOnly: cachedOnly,
+                               debridEnabled: debrid?.canResolvePlayableLinks ?? false,
+                               activeResolverProviderId: active)
+    }
+
+    /// The pure half of `selectableStreams`: drop recently failed links, then (cached-only in
+    /// effect) every link the shared cached rule refuses. A torrent the background preparer
+    /// already resolved (it now carries a URL) keeps its CACHED status and stays selectable.
+    nonisolated static func selectable(_ streams: [StreamItem], rejected: Set<String>, cachedOnly: Bool,
+                                       debridEnabled: Bool, activeResolverProviderId: String?) -> [StreamItem] {
+        streams.filter { stream in
             if !rejected.isEmpty, rejected.contains(stream.playbackStreamKey) { return false }
-            guard let debrid else { return true }
-            return Self.isCachedOnlyEligible(stream, cachedOnly: true,
-                                             debridEnabled: debrid.canResolvePlayableLinks,
-                                             activeResolverProviderId: active)
+            return isCachedOnlyEligible(stream, cachedOnly: cachedOnly, debridEnabled: debridEnabled,
+                                        activeResolverProviderId: activeResolverProviderId)
         }
     }
 

@@ -153,6 +153,24 @@ class StreamBestPickTest {
     }
 
     @Test
+    fun aPreparedCachedTorrentStaysCachedUnderCachedOnly() {
+        val sel = StreamAutoPlaySelector
+        // The background preparer resolved it: it carries the debrid URL and keeps its status.
+        val prepared = cachedTorrent("2160p").copy(url = "https://torbox.example/dl/abc.mkv")
+        assertFalse(prepared.isAddonDebridCandidate, "no longer a debrid candidate once it has a URL")
+        assertTrue(sel.isCachedDebridLink(prepared, true, "torbox"))
+        assertTrue(sel.isCachedDebridLink(prepared, true, null), "no active resolver matches")
+        assertFalse(sel.isCachedDebridLink(prepared, true, "premiumize"))
+        assertFalse(sel.isCachedDebridLink(prepared, false, "torbox"))
+        assertFalse(sel.isCachedDebridLink(uncachedTorrent("2160p").copy(url = "https://torbox.example/dl/u.mkv"), true, "torbox"))
+        assertFalse(
+            sel.isCachedDebridLink(prepared.copy(addonId = "plugin:scraper"), true, "torbox"),
+            "only an installed add-on's torrent carries a local cache status",
+        )
+        assertEquals(listOf(0), pick(listOf(prepared, plain("2160p")), cachedOnly = true).ranked)
+    }
+
+    @Test
     fun aCometBoltTagNamesItsService() {
         val sel = StreamAutoPlaySelector
         // The Comet row from StreamFactsParserTest.cometRow.

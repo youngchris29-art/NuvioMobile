@@ -151,6 +151,32 @@ final class NextEpisodeEngineTests: XCTestCase {
                                                              activeResolverProviderId: "torbox"))
     }
 
+    func testUpNextCachedOnlyKeepsAPreparedCachedTorrent() {
+        // Codex r6: the background preparer gave the cached torrent a URL; it must stay selectable.
+        let status = StreamDebridCacheStatus(providerId: "torbox", providerName: "TorBox", state: .cached,
+                                             cachedName: nil, cachedSize: nil)
+        let prepared = StreamItem(
+            name: "2160p", title: nil, description: nil, url: "https://torbox.example/dl/abc.mkv", infoHash: "feedface",
+            fileIdx: nil, externalUrl: nil, ytId: nil, sources: [], sourceName: nil, addonName: "Torrentio",
+            addonId: "addon:t", addonLogo: nil, streamType: nil,
+            behaviorHints: StreamBehaviorHints(bingeGroup: nil, notWebReady: false, videoHash: nil, videoSize: nil,
+                                               filename: nil, proxyHeaders: nil, audioDelayMs: nil),
+            clientResolve: nil, debridCacheStatus: status, externalSubtitles: [], badges: []
+        )
+        let plain = stream(url: "https://cdn.example.com/plain.mkv")
+        XCTAssertTrue(NextEpisodeEngine.isAutoPlayCandidate(prepared, resolvesThroughDebrid: { _ in false }))
+
+        let torbox = NextEpisodeEngine.selectable([prepared, plain], rejected: [], cachedOnly: true,
+                                                  debridEnabled: true, activeResolverProviderId: "torbox")
+        XCTAssertEqual(torbox.map(\.url), [prepared.url], "the prepared cached torrent is the only pick")
+        let premiumize = NextEpisodeEngine.selectable([prepared, plain], rejected: [], cachedOnly: true,
+                                                      debridEnabled: true, activeResolverProviderId: "premiumize")
+        XCTAssertTrue(premiumize.isEmpty, "cached on another service than the active one")
+        let off = NextEpisodeEngine.selectable([prepared, plain], rejected: [], cachedOnly: false,
+                                               debridEnabled: true, activeResolverProviderId: "torbox")
+        XCTAssertEqual(off.count, 2)
+    }
+
     // MARK: - BUG-228: binge-group-only needs a binge group
 
     /// The defaults (MANUAL, prefer binge group on, next-episode toggle off) restrict the pick to
