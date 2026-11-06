@@ -192,30 +192,8 @@ object StreamsRepository {
             return
         }
 
-        // BUG-74: each addon is asked with the id IT accepts. `videoId` first (so a tmdb-only or
-        // prefix-less addon keeps working exactly as before), then the resolved IMDb id if this is
-        // the second pass. Before this, one id was used for the whole fan-out and every addon that
-        // disagreed with its namespace was dropped without a word.
-        val streamAddons = installedAddons
-            .mapNotNull { addon ->
-                val manifest = addon.manifest ?: return@mapNotNull null
-                val streamResources = manifest.resources.filter { resource ->
-                    resource.name == "stream" && resource.types.contains(type)
-                }
-                val requestId = when {
-                    streamResources.any { StreamVideoIdRemap.accepts(it.idPrefixes, videoId) } -> videoId
-                    imdbVideoId != null &&
-                        streamResources.any { StreamVideoIdRemap.accepts(it.idPrefixes, imdbVideoId) } -> imdbVideoId
-                    else -> return@mapNotNull null
-                }
-
-                InstalledStreamAddonTarget(
-                    addonName = addon.displayTitle.ifBlank { manifest.name },
-                    addonId = addon.streamAddonInstanceId(manifest.id),
-                    manifest = manifest,
-                    videoId = requestId,
-                )
-            }
+        // BUG-74: per-addon request id selection lives in streamAddonTargets().
+        val streamAddons = streamAddonTargets(installedAddons, type, videoId, imdbVideoId)
 
         log.d { "Found ${streamAddons.size} addons for stream type=$type id=$videoId" }
         // Name BOTH ids on the second pass. The first version of this line printed only the
