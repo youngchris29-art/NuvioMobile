@@ -192,8 +192,35 @@ private struct DetailTopScrim: View {
     /// D: Apple-style runs the scrim bezel to bezel (it left a seam at x = 80 / 1840 while only
     /// the top safe area was ignored). Cinematic and Classic keep the top-only behaviour.
     var spansBezels: Bool = false
+    /// The compact logo's `inRows` half while it is mounted (Cinematic and Apple-style), nil when it
+    /// is not. While the logo shows, a soft dark fade sits behind it so it never reads over the
+    /// captions of the row beneath (`DetailCompactLogoBand.fadeHeight`).
+    var compactLogoInRows: Bool? = nil
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var logoShown: Bool {
+        guard let compactLogoInRows else { return false }
+        return DetailCompactLogoBand.shows(inRows: compactLogoInRows, heroGone: model.heroGone,
+                                           bandBlocked: model.logoBandBlocked)
+    }
 
     var body: some View {
+        ZStack(alignment: .top) {
+            scrim
+            if compactLogoInRows != nil {
+                LinearGradient(colors: [Color.black.opacity(DetailCompactLogoBand.fadeOpacity), .clear],
+                               startPoint: .top, endPoint: .bottom)
+                    .frame(height: DetailCompactLogoBand.fadeHeight)
+                    .frame(maxWidth: .infinity)
+                    .ignoresSafeArea(edges: spansBezels ? [.top, .horizontal] : .top)
+                    .allowsHitTesting(false)
+                    .opacity(logoShown ? 1 : 0)
+                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: logoShown)
+            }
+        }
+    }
+
+    private var scrim: some View {
         LinearGradient(colors: [Color.black.opacity(0.96), Color.black.opacity(0.6), .clear],
                        startPoint: .top, endPoint: .bottom)
             .frame(height: DetailRowAnchor.topScrimHeight)
@@ -877,7 +904,9 @@ struct DetailView: View {
             .scrollEdgeEffectHidden(!DetailDim.edgeEffectShown, for: .top)
             // BUG-96: fades whatever of the previous row sits above the anchored rest.
             .overlay(alignment: .top) {
-                DetailTopScrim(model: dimModel, spansBezels: pageInsets.ignoresSideSafeArea)
+                DetailTopScrim(model: dimModel, spansBezels: pageInsets.ignoresSideSafeArea,
+                               compactLogoInRows: detailLayout == .cinematic && !DetailBug153Knobs.noCompactLogo
+                                   ? compactLogoInRows : nil)
             }
             // FEAT-60 (Steven rc3, the Apple TV app and Fusion): once focus leaves the Cinematic
             // hero, a small title logo fades in at the top so the page still names what it is.

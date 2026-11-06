@@ -24,6 +24,10 @@ nonisolated enum DetailCompactLogoBand {
     static let topPadding: CGFloat = 36
     /// The logo's slot height (`DetailCompactLogo.slotHeight`).
     static let slotHeight: CGFloat = 72
+    /// The dark fade behind the shown logo (`DetailTopScrim`): black at `fadeOpacity` at the top
+    /// edge to clear, tall enough for the logo's whole slot plus a 24 pt margin.
+    static let fadeOpacity: Double = 0.7
+    static var fadeHeight: CGFloat { topPadding + slotHeight + 24 }
     /// The band, in screen points from the scroll view's top edge: 36…108. Its bottom is
     /// `DetailRowAnchor.screenRest`, where an anchored row's top rests.
     static var bandTop: CGFloat { topPadding }

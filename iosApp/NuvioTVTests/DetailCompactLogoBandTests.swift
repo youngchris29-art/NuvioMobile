@@ -135,6 +135,13 @@ final class DetailCompactLogoBandTests: XCTestCase {
         XCTAssertFalse(Band.settlesOnLayout(scrolling: true, focusInRows: true, downSettlePending: false))
     }
 
+    /// The fade behind the shown logo covers the logo's slot plus a margin.
+    func testLogoFadeCoversTheSlotWithAMargin() {
+        XCTAssertEqual(Band.fadeHeight, 132)
+        XCTAssertGreaterThan(Band.fadeHeight, Band.bandBottom)
+        XCTAssertEqual(Band.fadeOpacity, 0.7)
+    }
+
     func testShowsTruthTable() {
         XCTAssertTrue(Band.shows(inRows: true, heroGone: true, bandBlocked: false))
         XCTAssertFalse(Band.shows(inRows: true, heroGone: true, bandBlocked: true))
