@@ -173,6 +173,10 @@ struct DetailCinematicHero<Actions: View>: View {
     /// D9: the action row sits inside the text column; the credits are right-aligned and bottom-
     /// aligned to it. The column takes priority so it always gets its full 680 pt before the
     /// credits block claims what is left.
+    /// The 680 pt cap is on the TEXT only; the action row takes its ideal width. Inside the cap the
+    /// fixed-size icon buttons took every point and the shortfall fell on Play's text, the row's
+    /// only flexible view: with Start Over in the row (a saved position) Play was squeezed to a
+    /// label-less tall pill or a circle (device pass, 2026-11-06). At 900 pt it still fitted.
     private var content: some View {
         HStack(alignment: .bottom, spacing: Theme.Spacing.xl) {
             VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
@@ -183,9 +187,10 @@ struct DetailCinematicHero<Actions: View>: View {
                     if ratingsGateOn { ratingsSlot }
                     if synopsisSlotVisible { synopsisSlot }
                 }
+                .frame(maxWidth: DetailCinematicLayout.textColumnMaxWidth, alignment: .leading)
                 actions()
+                    .fixedSize(horizontal: true, vertical: false)
             }
-            .frame(maxWidth: DetailCinematicLayout.textColumnMaxWidth, alignment: .leading)
             .layoutPriority(1)
             if !credits.isEmpty {
                 creditsBlock
