@@ -44,7 +44,7 @@ nonisolated enum DetailHeroSynopsis {
         season: Int? = nil,
         episode: Int? = nil
     ) -> Result? {
-        let showText: String? = (showOverview?.isEmpty == false) ? showOverview : nil
+        let showText: String? = nonBlank(showOverview)
         if isSeries, aboutShowsOverview || showText == nil, !episodeSpoilerHidden,
            let episodeText = nonBlank(playTargetEpisodeOverview) {
             return Result(text: episodeText, isEpisode: true, season: season, episode: episode)

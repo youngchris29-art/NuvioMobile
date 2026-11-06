@@ -93,6 +93,19 @@ final class DetailHeroSynopsisTests: XCTestCase {
                        episodeText)
     }
 
+    /// A whitespace-only show overview counts as none: the hero shows the episode text, not blanks.
+    func testSeriesWithAboutHiddenAndBlankShowOverviewShowsTheEpisodeOverview() {
+        for blank in ["", "   ", "\n\t "] {
+            let result = DetailHeroSynopsis.resolve(isSeries: true, showOverview: blank,
+                                                    playTargetEpisodeOverview: episodeText, episodeSpoilerHidden: false,
+                                                    aboutShowsOverview: false, season: 1, episode: 2)
+            XCTAssertEqual(result, .init(text: episodeText, isEpisode: true, season: 1, episode: 2),
+                           "show overview \(blank.debugDescription)")
+        }
+        XCTAssertNil(DetailHeroSynopsis.text(isSeries: false, showOverview: "  ",
+                                             playTargetEpisodeOverview: nil, episodeSpoilerHidden: false))
+    }
+
     func testEpisodeTextShowsEvenWhenTheShowHasNoOverview() {
         XCTAssertEqual(DetailHeroSynopsis.text(isSeries: true, showOverview: nil,
                                                playTargetEpisodeOverview: episodeText, episodeSpoilerHidden: false),
