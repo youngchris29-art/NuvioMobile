@@ -7,14 +7,55 @@ import CoreGraphics
 nonisolated enum DetailGeometry {
     // MARK: Page
 
-    /// Cinematic page side inset (leading and trailing). Was 60 (`Theme.Spacing.screen`).
-    /// `DetailView` still pads the page with `Theme.Spacing.screen` on every side; it must read
-    /// this token for the Cinematic horizontal padding.
-    static let pageSideInset: CGFloat = 80
+    /// Cinematic page side inset (leading and trailing), inside the tvOS horizontal safe area:
+    /// 80 + 60 = 140 pt from the bezel, as before the Apple-style pass (== `Theme.Spacing.screen`).
+    static let pageSideInset: CGFloat = 60
+    /// Apple-style page side inset, measured from the BEZEL: the scroll content ignores the
+    /// horizontal safe area (so focus halos and shelves bleed to the screen edge unclipped) and
+    /// pads itself this far instead, which puts every row 80 pt in, as in the Apple TV app.
+    static let appleStylePageSideInset: CGFloat = 80
     /// Cinematic page top and bottom inset. Unchanged at 60 (== `Theme.Spacing.screen`).
     static let pageVerticalInset: CGFloat = 60
     /// Gap between the page's rows. == `Theme.Spacing.lg + Theme.Spacing.sm`.
     static let pageRowSpacing: CGFloat = 36
+
+    /// The page's horizontal placement per layout (`DetailView`'s scroll content).
+    struct PageInsets: Equatable {
+        let leading: CGFloat
+        let trailing: CGFloat
+        /// The scroll content ignores the horizontal safe area (Apple-style only).
+        let ignoresSideSafeArea: Bool
+    }
+
+    /// - Parameters:
+    ///   - appleStyle: the user's choice is Apple-style (`DetailLayout.appleStyle`).
+    ///   - cinematicBase: the visual base is Cinematic (Cinematic and Apple-style); false = Classic.
+    ///   - screenPadding: Classic's padding (`Theme.Spacing.screen`, 60).
+    ///   - railLeadingExtra: the rail's extra leading safe area (`\.railLeadingInset`; 0 unless the
+    ///     rail is Always Visible in Centre). Apple-style ignores the safe area, so it adds this
+    ///     back itself and never slides under the rail.
+    static func pageInsets(appleStyle: Bool, cinematicBase: Bool, screenPadding: CGFloat,
+                           railLeadingExtra: CGFloat) -> PageInsets {
+        if appleStyle {
+            return PageInsets(leading: appleStylePageSideInset + railLeadingExtra,
+                              trailing: appleStylePageSideInset, ignoresSideSafeArea: true)
+        }
+        let side = cinematicBase ? pageSideInset : screenPadding
+        return PageInsets(leading: side, trailing: side, ignoresSideSafeArea: false)
+    }
+
+    /// The rows' distance to the visible screen edges for their edge fade, from the host's value
+    /// (`\.rowEdgeMargins`, measured for content padded `screenPadding` inside the safe area).
+    /// Inside the safe area the page's own inset replaces `screenPadding`; Apple-style's content
+    /// ignores the side safe area and pads from the bezel, so its margin is its padding:
+    /// host − `screenPadding` (the host's leading already carries the rail extra).
+    static func rowEdgeMargins(host: (leading: CGFloat, trailing: CGFloat), insets: PageInsets,
+                               screenPadding: CGFloat) -> (leading: CGFloat, trailing: CGFloat) {
+        if insets.ignoresSideSafeArea {
+            return (host.leading - screenPadding, host.trailing - screenPadding)
+        }
+        return (host.leading + insets.leading - screenPadding, host.trailing + insets.trailing - screenPadding)
+    }
 
     // MARK: Hero
 

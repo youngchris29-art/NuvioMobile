@@ -30,7 +30,8 @@ final class DetailCinematicLayoutTests: XCTestCase {
     }
 
     func testDetailGeometryTokens() {
-        XCTAssertEqual(DetailGeometry.pageSideInset, 80)
+        XCTAssertEqual(DetailGeometry.pageSideInset, 60)
+        XCTAssertEqual(DetailGeometry.appleStylePageSideInset, 80)
         XCTAssertEqual(DetailGeometry.pageVerticalInset, 60)
         XCTAssertEqual(DetailGeometry.heroTextColumnMaxWidth, 680)
         XCTAssertEqual(DetailGeometry.creditsMaxWidth, 640)
@@ -38,6 +39,36 @@ final class DetailCinematicLayoutTests: XCTestCase {
         XCTAssertEqual(DetailGeometry.wideCardGap, 40)
         XCTAssertEqual(DetailGeometry.personCardWidth, 260)
         XCTAssertEqual(DetailCinematicLayout.textColumnMaxWidth, DetailGeometry.heroTextColumnMaxWidth)
+    }
+
+    // MARK: - Page side insets (D)
+
+    /// Cinematic is back to 60 inside the safe area (140 from the bezel), Classic keeps 60, and
+    /// Apple-style ignores the side safe area and sits 80 from the bezel (plus the rail's extra).
+    func testPageInsetsPerLayout() {
+        let cinematic = DetailGeometry.pageInsets(appleStyle: false, cinematicBase: true, screenPadding: 60, railLeadingExtra: 36)
+        XCTAssertEqual(cinematic, .init(leading: 60, trailing: 60, ignoresSideSafeArea: false))
+        let classic = DetailGeometry.pageInsets(appleStyle: false, cinematicBase: false, screenPadding: 60, railLeadingExtra: 0)
+        XCTAssertEqual(classic, .init(leading: 60, trailing: 60, ignoresSideSafeArea: false))
+        let apple = DetailGeometry.pageInsets(appleStyle: true, cinematicBase: true, screenPadding: 60, railLeadingExtra: 0)
+        XCTAssertEqual(apple, .init(leading: 80, trailing: 80, ignoresSideSafeArea: true))
+        let appleRail = DetailGeometry.pageInsets(appleStyle: true, cinematicBase: true, screenPadding: 60, railLeadingExtra: 36)
+        XCTAssertEqual(appleRail.leading, 116)
+        XCTAssertEqual(appleRail.trailing, 80)
+    }
+
+    /// Edge-fade margins: Cinematic and Classic keep the host's value exactly (as before the
+    /// Apple-style pass); Apple-style's margin is its bezel padding.
+    func testRowEdgeMarginsPerLayout() {
+        let host: (leading: CGFloat, trailing: CGFloat) = (176, 140)
+        let cinematic = DetailGeometry.pageInsets(appleStyle: false, cinematicBase: true, screenPadding: 60, railLeadingExtra: 36)
+        let c = DetailGeometry.rowEdgeMargins(host: host, insets: cinematic, screenPadding: 60)
+        XCTAssertEqual(c.leading, 176)
+        XCTAssertEqual(c.trailing, 140)
+        let apple = DetailGeometry.pageInsets(appleStyle: true, cinematicBase: true, screenPadding: 60, railLeadingExtra: 36)
+        let a = DetailGeometry.rowEdgeMargins(host: host, insets: apple, screenPadding: 60)
+        XCTAssertEqual(a.leading, apple.leading)
+        XCTAssertEqual(a.trailing, apple.trailing)
     }
 
     /// Correction F16: the nonisolated mirrors must match the `Theme` tokens they copy.

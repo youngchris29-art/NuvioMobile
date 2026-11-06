@@ -27,7 +27,7 @@ nonisolated enum DetailCinematicLayout {
     static let peekBand: CGFloat = DetailGeometry.peekBand
     static let heroMinimumHeight: CGFloat = DetailGeometry.heroMinimumHeight
     /// The page's vertical padding (still == `Theme.Spacing.screen`, pinned by a unit test). Only the
-    /// vertical part feeds the hero height; the side inset is `DetailGeometry.pageSideInset` (80).
+    /// vertical part feeds the hero height; the side inset is `DetailGeometry.pageInsets` (Cinematic 60 inside the safe area).
     static let screenPadding: CGFloat = DetailGeometry.pageVerticalInset
     /// == `Theme.Spacing.lg + Theme.Spacing.sm` (the page VStack's spacing); pinned by a unit test.
     static let pageRowSpacing: CGFloat = DetailGeometry.pageRowSpacing

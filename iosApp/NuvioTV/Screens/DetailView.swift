@@ -189,13 +189,16 @@ private final class ScrollDimModel: ObservableObject {
 /// Observes the dim model itself so `DetailView.body` keeps not re-rendering per dim step (BUG-41).
 private struct DetailTopScrim: View {
     @ObservedObject var model: ScrollDimModel
+    /// D: Apple-style runs the scrim bezel to bezel (it left a seam at x = 80 / 1840 while only
+    /// the top safe area was ignored). Cinematic and Classic keep the top-only behaviour.
+    var spansBezels: Bool = false
 
     var body: some View {
         LinearGradient(colors: [Color.black.opacity(0.96), Color.black.opacity(0.6), .clear],
                        startPoint: .top, endPoint: .bottom)
             .frame(height: DetailRowAnchor.topScrimHeight)
             .frame(maxWidth: .infinity)
-            .ignoresSafeArea(edges: .top)
+            .ignoresSafeArea(edges: spansBezels ? [.top, .horizontal] : .top)
             .allowsHitTesting(false)
             // BUG-178: ramps with the dim (`DetailDim.topScrimOpacity`) instead of on/off, so it
             // fades with the page on the way back up rather than riding it as a solid band. The
@@ -694,6 +697,8 @@ struct DetailView: View {
     @State private var userMovedInHero = false
     /// A2: the rows' edge-fade margins as the host sets them; the page adds its wider side inset.
     @Environment(\.rowEdgeMargins) private var rowEdgeMargins
+    /// D: the rail's extra leading safe area, added back by Apple-style's bezel-measured inset.
+    @Environment(\.railLeadingInset) private var railLeadingInset
     /// BUG-96 (Codex r1 P2): the anchor scroll is not animated under Reduce Motion.
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// BUG-96: each row's top in the scroll content's coordinate space (layout-only changes).
@@ -837,16 +842,19 @@ struct DetailView: View {
                         detailSection(section, pending: availability.state(section) == .pending)
                     }
                 }
-                // A2: Cinematic (and Apple-style) pads the sides with `DetailGeometry.pageSideInset`;
-                // top and bottom keep `Theme.Spacing.screen`, and Classic keeps it on every side.
-                .padding(EdgeInsets(top: Theme.Spacing.screen, leading: pageSideInset,
-                                    bottom: Theme.Spacing.screen, trailing: pageSideInset))
-                // The rows' edge fade measures from their frame to the bezel: add the extra inset.
-                .environment(\.rowEdgeMargins, RowEdgeMargins(leading: rowEdgeMargins.leading + pageSideInset - Theme.Spacing.screen,
-                                                               trailing: rowEdgeMargins.trailing + pageSideInset - Theme.Spacing.screen))
+                // A2/D: the side insets per layout (`DetailGeometry.pageInsets`): Cinematic and
+                // Classic 60 inside the safe area, Apple-style 80 from the bezel. Top and bottom keep
+                // `Theme.Spacing.screen`.
+                .padding(EdgeInsets(top: Theme.Spacing.screen, leading: pageInsets.leading,
+                                    bottom: Theme.Spacing.screen, trailing: pageInsets.trailing))
+                // The rows' edge fade measures from their frame to the bezel.
+                .environment(\.rowEdgeMargins, pageRowEdgeMargins)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .coordinateSpace(name: DetailRowAnchor.contentSpace)
             }
+            // D: Apple-style's content spans the bezels (halos and shelves unclipped) and pads
+            // itself from them; Cinematic and Classic stay inside the safe area (empty edge set).
+            .ignoresSafeArea(edges: pageInsets.ignoresSideSafeArea ? .horizontal : [])
             .scrollPosition($detailScrollPosition)
             // BUG-178 (Steven rc7: scrolling back up, "the shadow that appears going down moves up
             // with" the page): the tvOS 26 system top scroll-edge effect draws its own soft shadow
@@ -856,7 +864,9 @@ struct DetailView: View {
             // `-debug.detailEdgeEffectShown YES` puts it back.
             .scrollEdgeEffectHidden(!DetailDim.edgeEffectShown, for: .top)
             // BUG-96: fades whatever of the previous row sits above the anchored rest.
-            .overlay(alignment: .top) { DetailTopScrim(model: dimModel) }
+            .overlay(alignment: .top) {
+                DetailTopScrim(model: dimModel, spansBezels: pageInsets.ignoresSideSafeArea)
+            }
             // FEAT-60 (Steven rc3, the Apple TV app and Fusion): once focus leaves the Cinematic
             // hero, a small title logo fades in at the top so the page still names what it is.
             .overlay(alignment: .top) {
@@ -1525,9 +1535,17 @@ struct DetailView: View {
         if let meta = model.meta { return EpisodesSection.isSeriesLike(meta) }
         return preview.type == "series"
     }
-    /// A2: Cinematic's side inset (Apple-style draws Cinematic); Classic keeps `Theme.Spacing.screen`.
-    private var pageSideInset: CGFloat {
-        detailLayout == .cinematic ? DetailGeometry.pageSideInset : Theme.Spacing.screen
+    /// A2/D: the page's horizontal placement (`DetailGeometry.pageInsets`).
+    private var pageInsets: DetailGeometry.PageInsets {
+        DetailGeometry.pageInsets(appleStyle: detailLayoutChoice == .appleStyle,
+                                  cinematicBase: detailLayout == .cinematic,
+                                  screenPadding: Theme.Spacing.screen,
+                                  railLeadingExtra: railLeadingInset)
+    }
+    private var pageRowEdgeMargins: RowEdgeMargins {
+        let m = DetailGeometry.rowEdgeMargins(host: (rowEdgeMargins.leading, rowEdgeMargins.trailing),
+                                              insets: pageInsets, screenPadding: Theme.Spacing.screen)
+        return RowEdgeMargins(leading: m.leading, trailing: m.trailing)
     }
     /// A2: Apple-style's Trailers/Bonus partition of the title's videos (`DetailTrailerPartition`).
     private var trailerSplit: (trailers: [MetaTrailer], bonus: [MetaTrailer]) {
