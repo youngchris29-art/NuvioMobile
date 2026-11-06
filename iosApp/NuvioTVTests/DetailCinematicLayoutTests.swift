@@ -201,6 +201,24 @@ final class DetailCinematicLayoutTests: XCTestCase {
         XCTAssertEqual(DetailCredits.make(cast: ["", " ", "A"], director: [], writer: [], isSeries: false).castNames, "A")
     }
 
+    /// A4.4: a series with `creators` names them on the "Created by" line (and skips them as
+    /// prepended cast); without creators it falls back to `director`; films ignore creators.
+    func testCreditsUseCreatorsForSeries() {
+        let series = DetailCredits.make(cast: ["C1", "C2", "A", "B"], director: ["D"], writer: [], isSeries: true,
+                                        creators: ["C1", "C2", "C3"])
+        XCTAssertEqual(series.crewLabel, .createdBy)
+        XCTAssertEqual(series.crewNames, "C1, C2")
+        XCTAssertEqual(series.castNames, "A, B")
+
+        let fallback = DetailCredits.make(cast: ["A"], director: ["D"], writer: [], isSeries: true, creators: [" "])
+        XCTAssertEqual(fallback.crewLabel, .createdBy)
+        XCTAssertEqual(fallback.crewNames, "D")
+
+        let film = DetailCredits.make(cast: ["A"], director: ["D"], writer: [], isSeries: false, creators: ["C1"])
+        XCTAssertEqual(film.crewLabel, .directedBy)
+        XCTAssertEqual(film.crewNames, "D")
+    }
+
     // MARK: - Meta line
 
     func testMetaLineParts() {

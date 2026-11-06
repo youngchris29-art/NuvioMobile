@@ -210,19 +210,23 @@ nonisolated enum DetailCredits {
     /// "With" = the first three cast names after the LEADING run of crew names that TMDB prepends
     /// to `cast` (review r1 #6: the skip stops at the first non-crew name, so an actor who also
     /// directs or writes keeps their billing further down the list).
-    /// The crew line = the first two directors; series read "Created by", because TMDB maps a show's
-    /// `createdBy` into `director` and `MetaDetails` has no creator field (P1 §M conflict 2).
-    static func make(cast: [String], director: [String], writer: [String], isSeries: Bool) -> DetailCreditsText {
+    /// The crew line = the first two directors; series read "Created by". A4.4: a series with
+    /// `creators` (TMDB `created_by`, `MetaDetails.creators`) names them; without, the line falls
+    /// back to the first two of `director`, as before (TMDB maps a show's `createdBy` into it).
+    /// Films ignore `creators` and stay "Directed by".
+    static func make(cast: [String], director: [String], writer: [String], isSeries: Bool,
+                     creators: [String] = []) -> DetailCreditsText {
         func clean(_ names: [String]) -> [String] {
             names.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
         }
         let directors = clean(director)
-        let crew = Set(directors + clean(writer))
+        let seriesCreators = isSeries ? clean(creators) : []
+        let crew = Set(directors + clean(writer) + seriesCreators)
         // Each crew name is skipped once: a director who also stars right after the prepended
         // block (["Eastwood", "Eastwood", …]) keeps the actor entry.
         var skipped = Set<String>()
         let castNames = clean(cast).drop(while: { crew.contains($0) && skipped.insert($0).inserted }).prefix(3)
-        let crewNames = directors.prefix(2)
+        let crewNames = (seriesCreators.isEmpty ? directors : seriesCreators).prefix(2)
         return DetailCreditsText(
             castNames: castNames.isEmpty ? nil : castNames.joined(separator: ", "),
             crewLabel: crewNames.isEmpty ? nil : (isSeries ? .createdBy : .directedBy),

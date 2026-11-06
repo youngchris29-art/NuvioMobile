@@ -624,8 +624,9 @@ struct DetailView: View {
     /// Which cast card holds focus — feeds `cardFocusButtonStyle(stillFocused:)`'s generic
     /// still ring in no-zoom mode (CastCard has no border treatment of its own; Codex
     /// 2026-08-29 rounds 3-4).
-    @FocusState private var focusedCastIndex: Int?
-    /// BUG-111: which company/studio chip holds focus — mirrors `focusedCastIndex` exactly.
+    /// A4.4: keyed by `DetailCreditItem.key` (stable across reloads), no longer the card's index.
+    @FocusState private var focusedCastKey: String?
+    /// BUG-111: which company/studio chip holds focus — mirrors the cast row's focus state.
     /// `CompanyChip` has no border treatment of its own either, so it reads this same row-owned
     /// `FocusState` for its `stillFocused`/ring/lift truth instead of installing a second
     /// `.focused` binding of its own (the same collision `focusedFolderId` avoids — see
@@ -655,10 +656,10 @@ struct DetailView: View {
 
     /// BUG-108: ring mode's lift is SwiftUI's own scale, so the raised avatar's platter+shadow can
     /// draw under its unfocused neighbours. On the `LazyHStack`'s child, not inside the label.
-    private func liftedCastZIndex(_ index: Int) -> Double {
+    private func liftedCastZIndex(_ key: String) -> Double {
         let raises = CardFocusMode.resolve(accentFocusRing: accentFocusRing,
                                            noZoomOnFocus: noZoomOnFocus).raisesFocusedCard
-        return raises && focusedCastIndex == index ? 1 : 0
+        return raises && focusedCastKey == key ? 1 : 0
     }
     /// BUG-111: `liftedCastZIndex`'s twin for the company/studio row. BUG-200: read off the chip's
     /// own lift (`PlainLabelRing.smallLabelLift`), which is SwiftUI's scale in the default cell too.
@@ -1548,7 +1549,7 @@ struct DetailView: View {
         // No "resolved" flag exists for the two late fetches: empty reads as empty (A2 spec §4.4).
         set(.parentalGuide, sectionParentalGuide, !model.parentalWarnings.isEmpty, false)
         set(.episodes, isSeries, model.meta.map { EpisodesSection.isSeriesLike($0) } ?? false, loadingMeta)
-        set(.castAndCrew, sectionCast, !(model.meta?.cast ?? []).isEmpty, loadingMeta)
+        set(.castAndCrew, sectionCast, !creditRowItems.isEmpty, loadingMeta)
         set(.collection, sectionCollection, !(model.meta?.collectionItems ?? []).isEmpty, loadingMeta)
         let hasTrailers = appleStyle ? !split.trailers.isEmpty : !(model.meta?.trailers ?? []).isEmpty
         set(.trailers, sectionTrailers, hasTrailers, loadingMeta)
@@ -1933,7 +1934,8 @@ struct DetailView: View {
                         episodeRatings: model.episodeRatings,
                         episodeRatingsVisibility: model.episodeRatingsVisibility,
                         watchedEpisodeKeys: model.watchedEpisodeKeys,
-                        onPostPlayTitle: { postPlayRoute = TitleRoute(preview: $0) }
+                        onPostPlayTitle: { postPlayRoute = TitleRoute(preview: $0) },
+                        appleStyle: detailLayoutChoice == .appleStyle
                     )
                     // A discrete focus region: vertical D-pad moves must land here instead of
                     // geometrically skipping from the info/network chips down to the cast row.
@@ -2029,7 +2031,8 @@ struct DetailView: View {
                 cast: (model.meta?.cast ?? []).map { $0.name },
                 director: model.meta?.director ?? [],
                 writer: model.meta?.writer ?? [],
-                isSeries: isSeries
+                isSeries: isSeries,
+                creators: (model.meta?.creators ?? []).map { $0.name }
             ),
             showSynopsisSheet: $showSynopsisSheet,
             heroFocus: $heroFocus,
@@ -2795,14 +2798,14 @@ struct DetailView: View {
     private func applyDetailFocusRung(row: DetailRowID, key: String, force: Bool, via: String) {
         switch row {
         case .cast:
-            let current = focusedCastIndex.map(String.init)
-            guard let index = Int(key),
-                  DetailFocusRestore.shouldApply(force: force, current: current, target: key) else {
+            // A4.4: the card's stable key (`DetailCreditItem.key`), applied as is.
+            let current = focusedCastKey
+            guard DetailFocusRestore.shouldApply(force: force, current: current, target: key) else {
                 logPopRungSkipped(row: row, key: key, force: force, via: via, current: current)
                 return
             }
             logPopRung("applied", row: row, key: key, force: force, via: via)
-            focusedCastIndex = index
+            focusedCastKey = key
         case .logos:
             let current = focusedCompanyIndex.map(String.init)
             guard let index = Int(key),
@@ -2838,7 +2841,7 @@ struct DetailView: View {
     /// label's `detailFocusProbeKey` is never written in Release).
     private var popProbeFocusedKey: String {
         switch focusedRow {
-        case .cast: focusedCastIndex.map(String.init) ?? "-"
+        case .cast: focusedCastKey ?? "-"
         case .logos: focusedCompanyIndex.map(String.init) ?? "-"
         case .collection, .moreLikeThis: (focusMemory.row == focusedRow ? focusMemory.key : nil) ?? "-"
         default: "-"
@@ -2997,25 +3000,41 @@ struct DetailView: View {
                           action: { if primary { playLabelSize = $0 } })
     }
 
+    /// A4.4 (C10): the Cast row's cards, cast then crew (`DetailCreditRow`), every layout.
+    private var creditRowItems: [DetailCreditItem] {
+        DetailCreditRow.items(cast: model.meta?.cast ?? [], crew: model.meta?.crew ?? [])
+    }
+
     @ViewBuilder
     private var castRow: some View {
-        let cast = model.meta?.cast ?? []
-        if !cast.isEmpty {
+        let items = creditRowItems
+        if !items.isEmpty {
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                Text("Cast")
+                // A4.4: Apple-style names the row for both halves; Cinematic and Classic keep "Cast".
+                Group {
+                    if detailLayoutChoice == .appleStyle {
+                        Text("Cast & Crew")
+                    } else {
+                        Text("Cast")
+                    }
+                }
                     .font(Theme.Font.sectionTitle)
                     .foregroundStyle(Theme.Palette.textPrimary)
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(spacing: Theme.Spacing.lg) {
-                        ForEach(Array(cast.enumerated()), id: \.offset) { index, person in
-                            // Cast members carry a TMDB id only when TMDB enrichment is on; make those
+                        // A4.4: identity and focus by the card's stable key, not its index, so a
+                        // reload that adds crew or reorders cast keeps the remembered card.
+                        ForEach(items) { item in
+                            let person = MetaPerson(name: item.name, role: item.subtitle, photo: item.photo,
+                                                    tmdbId: item.tmdbId.map { KotlinInt(int: Int32(truncatingIfNeeded: $0)) })
+                            // Cast and crew carry a TMDB id only when TMDB enrichment is on; make those
                             // tappable to a person page, leave the rest as plain (non-focusable) cards.
-                            if let personId = person.tmdbId?.value {
-                                NavigationLink(value: PersonRoute(id: personId, name: person.name)) {
+                            if let personId = item.tmdbId {
+                                NavigationLink(value: PersonRoute(id: personId, name: item.name)) {
                                     // stillFocused: CastCard draws its own no-zoom still ring on
                                     // the avatar circle (Codex 2026-08-29 rounds 3-5) — focus
                                     // truth from the row's FocusState, not a second binding.
-                                    CastCard(person: person, stillFocused: focusedCastIndex == index)
+                                    CastCard(person: person, stillFocused: focusedCastKey == item.key)
                                 }
                                 // Card-like navigation element: joins the no-zoom sweep so the
                                 // setting stills every card on the page, not most (Codex 2026-08-29).
@@ -3032,8 +3051,8 @@ struct DetailView: View {
                                 // and the lifted photo lost its circle (sim, 2026-10-21). The ring
                                 // and still styles are custom and ignore it.
                                 .buttonBorderShape(.circle)
-                                .focused($focusedCastIndex, equals: index)
-                                .zIndex(liftedCastZIndex(index))
+                                .focused($focusedCastKey, equals: item.key)
+                                .zIndex(liftedCastZIndex(item.key))
                             } else {
                                 CastCard(person: person)
                             }
@@ -3041,8 +3060,8 @@ struct DetailView: View {
                     }
                     .padding(.vertical, Theme.Spacing.xs)
                 }
-                // BUG-187: remember the card a push to a person page leaves from.
-                .onChange(of: focusedCastIndex) { _, index in noteDetailFocus(.cast, index.map(String.init)) }
+                // BUG-187: remember the card a push to a person page leaves from (A4.4: its key).
+                .onChange(of: focusedCastKey) { _, key in noteDetailFocus(.cast, key) }
                 .scrollClipDisabled()
                 // beta.19-rc1 verdict (F, FEAT-54): the Appearance "Row Edge Fade" setting reaches
                 // the Detail rows too (Cast, More Like This, Collection, Trailers & Extras and the
