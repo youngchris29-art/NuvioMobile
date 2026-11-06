@@ -455,6 +455,8 @@ internal class TitleFormatProbeEngine(
     /** Folds the picker's presented, listable streams into every tracked request it is showing. */
     private fun fold(state: StreamsUiState) {
         synchronized(lock) {
+            // The picker closed or began a new load: its next settled answer is a fresh one.
+            if (state.requestToken == null || state.isAnyLoading) lastRecordedPickerLoad = null
             tracked.values.forEach { foldInto(it, state, configChecked = false) }
         }
     }

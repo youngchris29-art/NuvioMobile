@@ -800,6 +800,30 @@ class TitleFormatProbeTest {
     }
 
     @Test
+    fun aFreshPickerLoadWithTheSameStreamsIsCachedAgain() = runTest {
+        val rig = rig("a1")
+        rig.engine.watch(movie)
+        val loaded = pickerState(token(manual = true), stream("picker", fourKDv))
+        rig.picker.value = loaded
+        runCurrent()
+        rig.picker.value = StreamsUiState() // closed
+        runCurrent()
+
+        rig.now += TitleFormatProbeCache.POSITIVE_TTL_MS
+        rig.picker.value = loaded.copy(isAnyLoading = true) // reopened: a new load, same streams
+        runCurrent()
+        rig.picker.value = loaded
+        runCurrent()
+        rig.picker.value = StreamsUiState()
+        runCurrent()
+
+        rig.engine.start(movie)
+        settle()
+        assertEquals(0, rig.fetcher.fetched.size, "the fresh load was cached")
+        assertEquals(listOf(UHD_4K, DOLBY_VISION), rig.badges())
+    }
+
+    @Test
     fun changingThePluginScrapersMissesTheCache() = runTest {
         val rig = rig("a1")
         rig.plugins = listOf("https://repo.example.com#p1")
