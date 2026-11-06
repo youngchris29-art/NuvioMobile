@@ -622,10 +622,10 @@ final class StreamsViewModel: ObservableObject {
     }
 
     /// Empty state when "Cached Sources Only" hid every link: the add-ons sent sources, none of
-    /// them marked cached.
+    /// them marked cached. `count` holds only rows the other source filters would keep, so the
+    /// hint's promise holds. One catalog key with a plural variation: the whole sentence localizes.
     static func describeCachedOnlyHidden(count: Int) -> (String, String?) {
-        let sourceWord = count == 1 ? "source" : "sources"
-        let reason = String(localized: "\(count) uncached \(sourceWord) hidden by Cached Sources Only.")
+        let reason = String(localized: "\(count) uncached sources hidden by Cached Sources Only.")
         let hint = String(localized: "Turn it off in Settings \u{2192} Sources to see them.")
         return (reason, hint)
     }

@@ -350,8 +350,9 @@ data class AddonStreamGroup(
     val isLoading: Boolean = false,
     val error: String? = null,
     /**
-     * tvOS Cached Sources Only: how many of this add-on's streams the filter hid (links the
-     * add-on does not mark cached). Lets the picker say why an add-on's list is empty.
+     * tvOS Cached Sources Only: how many of this add-on's streams that filter alone hid (links
+     * the add-on does not mark cached that the other source filters would keep, so turning the
+     * setting off shows exactly these). Lets the picker say why an add-on's list is empty.
      */
     val cachedOnlyHiddenCount: Int = 0,
 ) {

@@ -20225,22 +20225,148 @@
         }
       }
     },
-    "%lld uncached %@ hidden by Cached Sources Only.": {
+    "%lld uncached sources hidden by Cached Sources Only.": {
       "localizations": {
+        "de": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld nicht gecachte Quelle durch Nur Quellen aus dem Cache ausgeblendet."
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld nicht gecachte Quellen durch Nur Quellen aus dem Cache ausgeblendet."
+                }
+              }
+            }
+          }
+        },
         "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%lld uncached %@ hidden by Cached Sources Only."
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld uncached source hidden by Cached Sources Only."
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld uncached sources hidden by Cached Sources Only."
+                }
+              }
+            }
+          }
+        },
+        "es": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld fuente sin caché oculta por Solo fuentes en caché."
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld fuentes sin caché ocultas por Solo fuentes en caché."
+                }
+              }
+            }
+          }
+        },
+        "fr": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld source hors cache masquée par Sources en cache uniquement."
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld sources hors cache masquées par Sources en cache uniquement."
+                }
+              }
+            }
+          }
+        },
+        "it": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld fonte non in cache nascosta da Solo fonti in cache."
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld fonti non in cache nascoste da Solo fonti in cache."
+                }
+              }
+            }
+          }
+        },
+        "vi": {
+          "variations": {
+            "plural": {
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Đã ẩn %lld nguồn chưa lưu đệm do Chỉ nguồn đã lưu đệm."
+                }
+              }
+            }
           }
         }
       }
     },
     "Turn it off in Settings → Sources to see them.": {
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deaktiviere die Option unter Einstellungen → Quellen, um sie zu sehen."
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "Turn it off in Settings → Sources to see them."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desactívala en Configuración → Fuentes para verlas."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Désactivez-la dans Paramètres → Sources pour les voir."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disattivala in Impostazioni → Sorgenti per vederle."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tắt tùy chọn này trong Cài đặt → Nguồn để xem chúng."
           }
         }
       }

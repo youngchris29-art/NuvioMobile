@@ -344,6 +344,63 @@ class DebridStreamPresentationAllStreamsTest {
     }
 
     @Test
+    fun `an explicit uncached status in the description beats a cached marker in the name`() {
+        fun marker(name: String, description: String? = null) =
+            with(DebridStreamPresentation) { textRow("x", name = name, description = description).addonCachedMarker }
+        val uncached = DebridStreamPresentation.AddonCachedMarker.UNCACHED
+        val cached = DebridStreamPresentation.AddonCachedMarker.CACHED
+
+        // Conflicting markers: a bolt in the name, a status in the description.
+        assertEquals(uncached, marker("4K \u26A1", "\uD83D\uDD34 NOT CACHED"))
+        assertEquals(uncached, marker("4K \u26A1", "\uD83C\uDFAC Animals (2026)\n\u274C Uncached\n\u2601\uFE0F TorBox"))
+        assertEquals(uncached, marker("4K \u26A1", "Animals (2026)\nNot cached"))
+        assertEquals(uncached, marker("[TB+] 4K", "TorBox (not cached)"))
+        assertEquals(uncached, marker("[TB+] 4K", "TorBox \u00B7 UNCACHED"))
+        // Titles that only contain the words stay titles.
+        assertEquals(cached, marker("4K \u26A1", "\uD83C\uDFAC Not Cached Yet (2024)"))
+        assertEquals(cached, marker("4K \u26A1", "\uD83C\uDFAC Uncached\n1080p"), "a title line behind a film emoji")
+        assertEquals(cached, marker("4K \u26A1", "\uD83C\uDFAC Instant Family (2018)"))
+    }
+
+    @Test
+    fun `only service download tags are uncached markers`() {
+        fun marker(name: String, description: String? = null) =
+            with(DebridStreamPresentation) { textRow("x", name = name, description = description).addonCachedMarker }
+
+        assertEquals(DebridStreamPresentation.AddonCachedMarker.UNCACHED, marker("[RD download] Torrentio"))
+        assertEquals(DebridStreamPresentation.AddonCachedMarker.UNCACHED, marker("[AD download] Torrentio"))
+        assertEquals(DebridStreamPresentation.AddonCachedMarker.UNCACHED, marker("[TB download] Torrentio"))
+        // A release description's own bracket is not a service tag.
+        assertEquals(
+            DebridStreamPresentation.AddonCachedMarker.CACHED,
+            marker("[TB+] Torrentio\n4k", "Movie.2160p [Digital Download] WEB-DL"),
+        )
+        assertEquals(DebridStreamPresentation.AddonCachedMarker.UNKNOWN, marker("[Free Download] 1080p"))
+    }
+
+    @Test
+    fun `cached only counts only rows the other filters would keep`() {
+        val cached1080 = textRow("cached-1080", name = "[TB+] Torrentio 1080p")
+        val unmarked2160 = textRow("plain-2160", name = "Scraper 2160p")
+        val unmarked720 = textRow("plain-720", name = "Scraper 720p")
+        val uncached720 = textRow("download-720", name = "[TB download] Torrentio 720p")
+
+        val group = presentGroup(
+            listOf(cached1080, unmarked2160, unmarked720, uncached720),
+            debridSettings(
+                resolver = true,
+                streamCachedOnly = true,
+                streamMinimumQuality = DebridStreamMinimumQuality.P1080,
+            ),
+            allStreams = true,
+        )
+
+        assertEquals(listOf("cached-1080"), group.streams.filenames())
+        // Turning Cached Sources Only off would show the 2160p row; the 720p rows stay below the minimum.
+        assertEquals(1, group.cachedOnlyHiddenCount)
+    }
+
+    @Test
     fun `without cached only the same fixture keeps plain links and unverified torrents`() {
         val streams = cachedOnlyFixture()
 

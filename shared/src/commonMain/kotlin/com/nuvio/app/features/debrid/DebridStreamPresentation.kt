@@ -24,9 +24,9 @@ object DebridStreamPresentation {
      *    streams (cached torrents and direct debrid links) plus installed-add-on passthrough
      *    streams that are a direct http(s) link the add-on itself marks cached (see
      *    [AddonCachedMarker]: AIOStreams, Torrentio and Comet in debrid mode send already-resolved
-     *    links whose cached state is only in the text). Every other passthrough stream is dropped
-     *    and counted in [AddonStreamGroup.cachedOnlyHiddenCount]. Without a resolver the flag is
-     *    ignored.
+     *    links whose cached state is only in the text). Every other passthrough stream is dropped;
+     *    [AddonStreamGroup.cachedOnlyHiddenCount] counts the dropped ones the other passthrough
+     *    filters would have kept. Without a resolver the flag is ignored.
      */
     fun apply(
         groups: List<AddonStreamGroup>,
@@ -92,8 +92,11 @@ object DebridStreamPresentation {
         settings: DebridSettings,
     ): Pair<List<StreamItem>, Int> {
         if (!settings.streamCachedOnly) return streams to 0
-        val kept = streams.filter { stream -> stream.isAddonMarkedCachedDirectLink }
-        return kept to (streams.size - kept.size)
+        val (kept, dropped) = streams.partition { stream -> stream.isAddonMarkedCachedDirectLink }
+        // Count only what Cached Sources Only alone removed: a dropped row the other passthrough
+        // filters (minimum resolution, excluded qualities ...) would also remove stays hidden when
+        // the setting is turned off, so the picker must not promise it.
+        return kept to applyPassthroughPreferences(dropped, settings).size
     }
 
     // allStreams only: the same filters and sort as [applyPreferences], for streams that are not
@@ -171,17 +174,47 @@ object DebridStreamPresentation {
      * that already resolved the link through the user's debrid service (AIOStreams, and Torrentio /
      * Comet / MediaFusion in debrid mode) send a plain http(s) `url`, so the only cache signal is
      * a marker. Cached: a lightning bolt, a known service tag with a plus ("[RD+]", "[AD+]",
-     * "[TB+]" ...), "instant play" or "[cached]". Uncached: an hourglass, "[uncached]", a
-     * "[RD download]" tag, or "uncached" / "not cached" in the name. An uncached marker wins; no marker at all is [UNKNOWN].
+     * "[TB+]" ...), "instant play" or "[cached]". Uncached: an hourglass, "[uncached]", a known
+     * service download tag ("[RD download]", "[TB download]" ...), "uncached" / "not cached"
+     * anywhere in the name, or an explicit uncached status in the title / description (see
+     * [uncachedStatusRegex]). An uncached marker wins over any cached one; no marker at all is
+     * [UNKNOWN].
      */
     enum class AddonCachedMarker { CACHED, UNCACHED, UNKNOWN }
 
+    // Debrid service short tags as add-ons print them: "[RD+]" cached, "[RD download]" not.
+    private const val SERVICE_TAGS = "RD|AD|PM|TB|DL|ED|OC|PKP|DBD|EN|PP"
+    private const val UNCACHED_WORDS = "uncached|not cached"
+
+    // Status emoji an add-on puts in front of a cache status ("🔴 NOT CACHED", "❌ Uncached").
+    // Alternation, not a character class: two of them are outside the BMP.
+    private const val STATUS_EMOJI = "\uD83D\uDD34|\u274C|\u23F3|\u26D4|\uD83D\uDEAB|\u2716"
+
     // Phrases and tags only: a bare "instant" / "cached" word would match movie titles in the
-    // description ("Instant Family"). The loose "uncached" / "not cached" words count in the name only.
-    private val uncachedMarkerRegex = Regex("⏳|\\[uncached\\]|download\\]", RegexOption.IGNORE_CASE)
-    private val uncachedNameRegex = Regex("\\buncached\\b|\\bnot cached\\b", RegexOption.IGNORE_CASE)
+    // description ("Instant Family"). The loose "uncached" / "not cached" words count anywhere
+    // in the name only.
+    private val uncachedMarkerRegex = Regex(
+        "\u23F3|\\[uncached\\]|\\[(?:$SERVICE_TAGS)\\s+download\\]",
+        RegexOption.IGNORE_CASE,
+    )
+    private val uncachedNameRegex = Regex("\\b(?:$UNCACHED_WORDS)\\b", RegexOption.IGNORE_CASE)
+
+    // Title / description: the uncached words count only in a status form, never as a loose word
+    // (a "🎬 Uncached (2018)" title line must not hide the row):
+    //  - the phrase is the whole line, optionally behind a status emoji ("Not cached", "❌ Uncached.");
+    //  - it follows a status emoji anywhere on a line ("🔴 NOT CACHED · TorBox");
+    //  - it is bracketed ("(not cached)", "[Uncached]").
+    private val uncachedStatusRegex = Regex(
+        "^[ \\t]*(?:(?:$STATUS_EMOJI)\uFE0F?[ \\t]*)?(?:$UNCACHED_WORDS)[ \\t]*[.!]?[ \\t]*$" +
+            "|(?:$STATUS_EMOJI)\uFE0F?[ \\t]*(?:$UNCACHED_WORDS)\\b" +
+            "|[\\[(][ \\t]*(?:$UNCACHED_WORDS)[ \\t]*[\\])]",
+        setOf(RegexOption.IGNORE_CASE, RegexOption.MULTILINE),
+    )
+
+    // All-caps status words ("NOT CACHED", "UNCACHED") are a status, not a title: case-sensitive.
+    private val uncachedUpperStatusRegex = Regex("\\b(?:UNCACHED|NOT CACHED)\\b")
     private val cachedMarkerRegex = Regex(
-        "⚡|\\binstant play\\b|\\[cached\\]|\\[(RD|AD|PM|TB|DL|ED|OC|PKP|DBD|EN|PP)\\+\\]",
+        "\u26A1|\\binstant play\\b|\\[cached\\]|\\[(?:$SERVICE_TAGS)\\+\\]",
         RegexOption.IGNORE_CASE,
     )
 
@@ -190,7 +223,9 @@ object DebridStreamPresentation {
             val text = listOfNotNull(name, title, description).joinToString("\n")
             return when {
                 uncachedMarkerRegex.containsMatchIn(text) ||
-                    uncachedNameRegex.containsMatchIn(name.orEmpty()) -> AddonCachedMarker.UNCACHED
+                    uncachedNameRegex.containsMatchIn(name.orEmpty()) ||
+                    uncachedStatusRegex.containsMatchIn(text) ||
+                    uncachedUpperStatusRegex.containsMatchIn(text) -> AddonCachedMarker.UNCACHED
                 cachedMarkerRegex.containsMatchIn(text) -> AddonCachedMarker.CACHED
                 else -> AddonCachedMarker.UNKNOWN
             }

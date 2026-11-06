@@ -118,6 +118,24 @@ final class StreamsViewModelFilterTests: XCTestCase {
         XCTAssertNotNil(hint)
     }
 
+    func testCachedOnlyReasonLocalizesTheWholeSentenceWithItsPlural() throws {
+        // One catalog key with a plural variation, so the count word is translated with the rest.
+        let path = try XCTUnwrap(Bundle.main.path(forResource: "de", ofType: "lproj"))
+        let german = try XCTUnwrap(Bundle(path: path))
+        XCTAssertEqual(
+            String(localized: "\(1) uncached sources hidden by Cached Sources Only.", bundle: german),
+            "1 nicht gecachte Quelle durch Nur Quellen aus dem Cache ausgeblendet."
+        )
+        XCTAssertEqual(
+            String(localized: "\(4) uncached sources hidden by Cached Sources Only.", bundle: german),
+            "4 nicht gecachte Quellen durch Nur Quellen aus dem Cache ausgeblendet."
+        )
+        XCTAssertEqual(
+            String(localized: "Turn it off in Settings \u{2192} Sources to see them.", bundle: german),
+            "Deaktiviere die Option unter Einstellungen \u{2192} Quellen, um sie zu sehen."
+        )
+    }
+
     func testTheReloadFrameHasNoReason() {
         // A reload first emits an empty, non-loading state (no groups, no reason): not a verdict.
         let vm = StreamsViewModel(type: "movie", videoId: "tt1")
