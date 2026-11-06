@@ -3,8 +3,9 @@ import XCTest
 
 /// A4.4 (C10): the Cast row continues into crew; cards keep a stable focus key.
 final class DetailCreditRowTests: XCTestCase {
-    private func cast(_ name: String, _ role: String?, id: Int? = nil, photo: String? = nil) -> DetailCastCredit {
-        DetailCastCredit(name: name, role: role, photo: photo, tmdbId: id)
+    private func cast(_ name: String, _ role: String?, id: Int? = nil, photo: String? = nil,
+                      marked: DetailCreditCategory? = nil) -> DetailCastCredit {
+        DetailCastCredit(name: name, role: role, photo: photo, tmdbId: id, creditCategory: marked)
     }
 
     private func crew(_ name: String, _ job: String, _ category: DetailCreditCategory, id: Int? = nil) -> DetailCrewCredit {
@@ -100,18 +101,55 @@ final class DetailCreditRowTests: XCTestCase {
         XCTAssertEqual(items.map(\.name), ["Actor A", "Actor X", "Actor B", "Dir D", "Producer P"])
     }
 
-    /// Crew is capped per category, so part of a prepended block can lack a crew card; the block
-    /// still groups together once one of its entries is corroborated.
-    func testLeadingPseudoBlockGroupsWhenPartlyCorroborated() {
+    /// Unmarked cast (add-on or older cached meta) only groups crew-backed entries: an unbacked
+    /// "Writer" is an actor there, with no inferred block.
+    func testUnmarkedCastGroupsOnlyCrewBackedEntries() {
         let items = DetailCreditRow.items(
             cast: [cast("Writer W", "Writer", id: 10), cast("Writer V", "Writer", id: 12), cast("Actor A", "Hero", id: 1)],
             crew: [crew("Writer W", "Writer", .writer, id: 10)]
         )
-        XCTAssertEqual(items.map(\.name), ["Actor A", "Writer W", "Writer V"])
+        XCTAssertEqual(items.map(\.name), ["Writer V", "Actor A", "Writer W"])
     }
 
-    /// The inferred block is one category: a lead actor credited as "Director" right after a backed
-    /// creator stays with the actors, while a backed director in the same run still groups.
+    // MARK: Producer marker (`MetaPerson.creditCategory`)
+
+    /// A wholly unbacked marked writer block (crew dropped "Staff Writer", or the category cap is
+    /// full) still follows the actors.
+    func testMarkedWriterBlockGroupsWithoutCrew() {
+        let items = DetailCreditRow.items(
+            cast: [cast("Stu Staff", "Writer", id: 12, marked: .writer), cast("Wes W", "Writer", id: 13, marked: .writer),
+                   cast("Actor A", "Hero", id: 1)],
+            crew: [crew("Pat P", "Producer", .producer, id: 11)]
+        )
+        XCTAssertEqual(items.map(\.name), ["Actor A", "Stu Staff", "Wes W", "Pat P"])
+        XCTAssertEqual(items.map(\.kind), [.cast, .cast, .cast, .crew(.producer)])
+    }
+
+    /// With markers present they are the only signal: an actor credited as "Director" right after a
+    /// real prepended director stays with the actors, and one who also directs keeps both cards.
+    func testMarkedCastLeavesUnmarkedDirectorRolesWithActors() {
+        let items = DetailCreditRow.items(
+            cast: [cast("Dir D", "Director", id: 5, marked: .director), cast("Actor X", "Director", id: 8),
+                   cast("Clint E", "Director", id: 7), cast("Actor A", "Hero", id: 1)],
+            crew: [crew("Dir D", "Director", .director, id: 5), crew("Clint E", "Director", .director, id: 7)]
+        )
+        XCTAssertEqual(items.map(\.name), ["Actor X", "Clint E", "Actor A", "Dir D", "Clint E"])
+        XCTAssertEqual(items.map(\.kind), [.cast, .cast, .cast, .cast, .crew(.director)])
+    }
+
+    /// A marked entry hides the same person's crew card in its category only.
+    func testMarkedEntryHidesOnlyItsCategoryCrewCard() {
+        let items = DetailCreditRow.items(
+            cast: [cast("Dir D", "Director", id: 5, marked: .director), cast("Actor A", "Hero", id: 1)],
+            crew: [crew("Dir D", "Director", .director, id: 5), crew("Dir D", "Writer", .writer, id: 5)]
+        )
+        XCTAssertEqual(items.map(\.name), ["Actor A", "Dir D", "Dir D"])
+        XCTAssertEqual(items.map(\.subtitle), ["Hero", "Director", "Writer"])
+        XCTAssertEqual(items[2].kind, .crew(.writer))
+    }
+
+    /// Unmarked fallback: a lead actor credited as "Director" right after a backed creator stays with
+    /// the actors, while a backed director still groups.
     func testLeadingBlockStopsAtAnotherCategory() {
         let items = DetailCreditRow.items(
             cast: [cast("Creator C", "Creator", id: 9), cast("Actor X", "Director", id: 8),
@@ -140,11 +178,11 @@ final class DetailCreditRowTests: XCTestCase {
     }
 
     /// Severance's shape (TMDB tv/95396): `created_by` Dan Erickson is prepended to cast as "Creator"
-    /// and listed in `creators`, while `crew` carries him only as Writer and Executive Producer. The
-    /// creators list backs the pseudo entry: actors, then Dan Erickson · Creator, then the crew.
+    /// (marked `.creator`) and listed in `creators`, while `crew` carries him only as Writer and
+    /// Executive Producer: actors, then Dan Erickson · Creator, then the crew.
     func testCreatorsListBacksPrependedCreator() {
         let items = DetailCreditRow.items(
-            cast: [cast("Dan Erickson", "Creator", id: 3442409), cast("Adam Scott", "Mark Scout", id: 1),
+            cast: [cast("Dan Erickson", "Creator", id: 3442409, marked: .creator), cast("Adam Scott", "Mark Scout", id: 1),
                    cast("Britt Lower", "Helly Riggs", id: 2), cast("Ben Stiller", "Kier Eagan (voice) (uncredited)", id: 7399)],
             crew: [crew("Ben Stiller", "Director", .director, id: 7399), crew("Dan Erickson", "Writer", .writer, id: 3442409),
                    crew("Ben Stiller", "Executive Producer", .producer, id: 7399),

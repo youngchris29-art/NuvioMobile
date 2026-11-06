@@ -12,6 +12,35 @@ import kotlin.test.assertTrue
 class TmdbDetailCrewTest {
 
     @Test
+    fun prependedCrewEntriesCarryTheirCreditCategory() {
+        val series = tmdbDetailPeopleFromJson(
+            mediaType = "tv",
+            detailsJson = """{"name": "Show", "created_by": [{"id": 10, "name": "Casey Creator"}]}""",
+            creditsJson = """
+                {
+                  "cast": [{"id": 50, "name": "Actor A", "roles": [{"character": "Director", "episode_count": 9}]}],
+                  "crew": [{"id": 11, "name": "Wes Writer", "jobs": [{"job": "Writer", "episode_count": 4}], "department": "Writing"}]
+                }
+            """.trimIndent(),
+        )
+        assertEquals(listOf("Casey Creator", "Actor A"), series.map { it.name })
+        assertEquals(listOf(MetaCrewCategory.CREATOR, null), series.map { it.creditCategory })
+
+        val film = tmdbDetailPeopleFromJson(
+            mediaType = "movie",
+            detailsJson = """{"title": "Film"}""",
+            creditsJson = """
+                {
+                  "cast": [{"id": 50, "name": "Actor A", "character": "Writer"}],
+                  "crew": [{"id": 12, "name": "Stu Staff", "job": "Staff Writer", "department": "Writing"}]
+                }
+            """.trimIndent(),
+        )
+        assertEquals(listOf("Stu Staff", "Actor A"), film.map { it.name })
+        assertEquals(listOf(MetaCrewCategory.WRITER, null), film.map { it.creditCategory })
+    }
+
+    @Test
     fun movieCreditsCrewIsFilteredOrderedAndDeduped() {
         val (creators, crew) = tmdbDetailCrewFromJson(
             mediaType = "movie",

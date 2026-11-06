@@ -1922,6 +1922,7 @@ private fun buildPeople(
                 role = resourceString("Creator", StringKey.person_role_creator),
                 photo = buildImageUrl(creator.profilePath, "w500"),
                 tmdbId = creator.id,
+                creditCategory = MetaCrewCategory.CREATOR,
             )
         }
     } else {
@@ -1943,6 +1944,7 @@ private fun buildPeople(
                 role = resourceString("Director", StringKey.person_role_director),
                 photo = buildImageUrl(crew.profilePath, "w500"),
                 tmdbId = crew.id,
+                creditCategory = MetaCrewCategory.DIRECTOR,
             )
         }
 
@@ -1964,6 +1966,7 @@ private fun buildPeople(
                 role = resourceString("Writer", StringKey.person_role_writer),
                 photo = buildImageUrl(crew.profilePath, "w500"),
                 tmdbId = crew.id,
+                creditCategory = MetaCrewCategory.WRITER,
             )
         }
 
@@ -2145,6 +2148,25 @@ internal fun tmdbDetailCrewFromJson(
         crew = buildCrewCandidates(credits, mediaType, preferredLanguage, emptyMap()),
     )
     return creators to crew
+}
+
+/**
+ * Test seam for the detail cast path: the same JSON inputs as [tmdbDetailCrewFromJson], returning
+ * `cast` as the enrichment builds it (the prepended crew entries carry [MetaPerson.creditCategory]).
+ */
+internal fun tmdbDetailPeopleFromJson(
+    mediaType: String,
+    detailsJson: String,
+    creditsJson: String,
+    preferredLanguage: String = "en-US",
+): List<MetaPerson> {
+    val details = detailCrewJson.decodeFromString<TmdbDetailsResponse>(detailsJson)
+    val credits = if (mediaType == "tv") {
+        detailCrewJson.decodeFromString<TmdbAggregateCreditsResponse>(creditsJson).toStandard()
+    } else {
+        detailCrewJson.decodeFromString<TmdbCreditsResponse>(creditsJson)
+    }
+    return buildPeople(details, credits, mediaType, preferredLanguage, emptyMap())
 }
 
 private fun List<MetaPerson>.dedupePeople(): List<MetaPerson> {

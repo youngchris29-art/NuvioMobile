@@ -10,12 +10,14 @@ nonisolated enum DetailCreditCategory: Equatable, Sendable {
     case producer
 }
 
-/// One cast credit as the row reads it (`MetaPerson`'s fields).
+/// One cast credit as the row reads it (`MetaPerson`'s fields). `creditCategory` is set only on
+/// the crew entries TMDB enrichment prepends to `cast` (`MetaPerson.creditCategory`).
 nonisolated struct DetailCastCredit: Equatable, Sendable {
     let name: String
     let role: String?
     let photo: String?
     let tmdbId: Int?
+    var creditCategory: DetailCreditCategory? = nil
 }
 
 /// One crew credit as the row reads it (`MetaCrewMember`'s fields). `creditKey` is Kotlin's
@@ -62,12 +64,12 @@ nonisolated struct DetailCreditItem: Identifiable, Equatable, Sendable {
 /// `created_by`) join the crew as creator credits ahead of it, deduped by `creditKey` and person,
 /// so they back a prepended "Creator" entry and give a Creator card even when `crew` has none.
 ///
-/// A cast entry whose role is a job word is only a pseudo-entry with corroboration: a crew credit
-/// for the same person (TMDB id, else name) under that job or category, or a place in the leading
-/// run of entries of the first entry's category (the prepended block: creators, directors or
-/// writers, never a mix) when another entry of that run is corroborated (crew is capped per
-/// category, so a fifth prepended director has no crew card). An actor whose
-/// character is merely "Director" stays with the actors.
+/// Which cast entries are pseudo-entries: when any entry carries `creditCategory` (TMDB-built
+/// cast), exactly the marked ones, whatever their role text or crew. An actor whose character is
+/// "Director" is never marked, so it stays with the actors; a prepended writer whose job the crew
+/// list drops ("Staff Writer") or caps away still groups. Cast without any marker (add-on or
+/// older cached meta) falls back to corroboration: a role that is a job word plus a crew credit
+/// for the same person (TMDB id, else name) under that job or category; anything else is an actor.
 nonisolated enum DetailCreditRow {
     static func items(
         cast: [DetailCastCredit],
@@ -91,7 +93,6 @@ nonisolated enum DetailCreditRow {
         }
         let creatorLabels = pseudoLabels(.creator)
         let otherPseudoLabels = pseudoLabels(.director).union(pseudoLabels(.writer))
-        let categoryLabels: [Set<String>] = [creatorLabels, pseudoLabels(.director), pseudoLabels(.writer)]
 
         // Creators first, then crew, deduped by `creditKey` (and a creator once per person), each
         // with the role words a pseudo-cast entry for it carries.
@@ -118,26 +119,38 @@ nonisolated enum DetailCreditRow {
                               crewId: candidate.member.tmdbId, crewName: candidate.name)
         }
 
-        let roles = cast.map { $0.role.map(normalized) ?? "" }
-        let corroborated = cast.map { person in crewCandidates.contains { corroborates($0, person) } }
-        // The prepended block is one category (creators, directors or writers): the first entry's.
-        // An entry of another category right after it is not part of the block.
-        let blockLabels = roles.first.flatMap { role in categoryLabels.first { $0.contains(role) } } ?? []
-        let leadingRun = roles.prefix { blockLabels.contains($0) }.count
-        let leadingRunCorroborated = corroborated.prefix(leadingRun).contains(true)
+        // A marked entry hides the crew card of the same person in its category; an unmarked,
+        // corroborated one (fallback) hides the crew card that corroborates it.
+        func hides(_ candidate: (member: DetailCrewCredit, name: String, labels: Set<String>),
+                   _ person: DetailCastCredit) -> Bool {
+            guard let category = person.creditCategory else { return corroborates(candidate, person) }
+            return candidate.member.category == category
+                && samePerson(castId: person.tmdbId, castName: person.name,
+                              crewId: candidate.member.tmdbId, crewName: candidate.name)
+        }
+        let marked = cast.contains { $0.creditCategory != nil }
         var actors: [DetailCastCredit] = []
         var pseudoCreators: [DetailCastCredit] = []
         var otherPseudo: [DetailCastCredit] = []
         var pseudoCast: [DetailCastCredit] = []
-        for (index, person) in cast.enumerated() {
-            let isPseudo = corroborated[index] || (index < leadingRun && leadingRunCorroborated)
-            if isPseudo && creatorLabels.contains(roles[index]) {
+        for person in cast {
+            let group: DetailCreditCategory?
+            if marked {
+                group = person.creditCategory
+            } else if crewCandidates.contains(where: { corroborates($0, person) }) {
+                let role = person.role.map(normalized) ?? ""
+                group = creatorLabels.contains(role) ? .creator : (otherPseudoLabels.contains(role) ? .director : nil)
+            } else {
+                group = nil
+            }
+            switch group {
+            case .creator:
                 pseudoCreators.append(person)
                 pseudoCast.append(person)
-            } else if isPseudo && otherPseudoLabels.contains(roles[index]) {
+            case .director, .writer, .producer:
                 otherPseudo.append(person)
                 pseudoCast.append(person)
-            } else {
+            case nil:
                 actors.append(person)
             }
         }
@@ -145,7 +158,7 @@ nonisolated enum DetailCreditRow {
         var creatorCrew: [DetailCrewCredit] = []
         var otherCrew: [DetailCrewCredit] = []
         for candidate in crewCandidates {
-            if pseudoCast.contains(where: { corroborates(candidate, $0) }) { continue }
+            if pseudoCast.contains(where: { hides(candidate, $0) }) { continue }
             let member = DetailCrewCredit(name: candidate.name, job: candidate.member.job,
                                           category: candidate.member.category, photo: candidate.member.photo,
                                           tmdbId: candidate.member.tmdbId, creditKey: candidate.member.creditKey)
@@ -256,8 +269,11 @@ nonisolated enum DetailCreditRow {
                              creditKey: member.creditKey)
         }
         return items(
-            cast: cast.map { DetailCastCredit(name: $0.name, role: $0.role, photo: $0.photo,
-                                              tmdbId: $0.tmdbId?.value) },
+            cast: cast.map { person in
+                DetailCastCredit(name: person.name, role: person.role, photo: person.photo,
+                                 tmdbId: person.tmdbId?.value,
+                                 creditCategory: person.creditCategory.map { category(of: $0) })
+            },
             crew: crew.map(credit),
             creators: creators.map(credit),
             pseudoRoleLabels: { sharedPseudoRoleLabels($0) }

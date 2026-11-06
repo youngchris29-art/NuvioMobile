@@ -91,7 +91,8 @@ nonisolated enum SearchResultsAdapter {
                 name: person.name,
                 role: person.knownForDepartment,
                 photo: person.profileUrl,
-                tmdbId: KotlinInt(int: person.tmdbId)
+                tmdbId: KotlinInt(int: person.tmdbId),
+                creditCategory: nil
             )
         }
     }

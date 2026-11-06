@@ -90,6 +90,13 @@ data class MetaPerson(
     val role: String? = null,
     val photo: String? = null,
     val tmdbId: Int? = null,
+    /**
+     * Set only on the crew entries TMDB enrichment prepends to `cast` (creators for series,
+     * directors for films, else writers; [role] then holds the localized job word). Null for
+     * actors and for every other producer (add-on meta), so the detail row never has to infer
+     * a pseudo-cast entry from its role text.
+     */
+    val creditCategory: MetaCrewCategory? = null,
 )
 
 data class MetaCompany(

@@ -3205,7 +3205,8 @@ struct DetailView: View {
                         // reload that adds crew or reorders cast keeps the remembered card.
                         ForEach(items) { item in
                             let person = MetaPerson(name: item.name, role: item.subtitle, photo: item.photo,
-                                                    tmdbId: item.tmdbId.map { KotlinInt(int: Int32(truncatingIfNeeded: $0)) })
+                                                    tmdbId: item.tmdbId.map { KotlinInt(int: Int32(truncatingIfNeeded: $0)) },
+                                                    creditCategory: nil)
                             // Cast and crew carry a TMDB id only when TMDB enrichment is on; make those
                             // tappable to a person page, leave the rest as plain (non-focusable) cards.
                             if let personId = item.tmdbId {
