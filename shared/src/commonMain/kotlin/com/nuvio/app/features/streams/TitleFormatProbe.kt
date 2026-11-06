@@ -21,7 +21,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -136,8 +135,13 @@ internal fun presentForBadges(group: AddonStreamGroup, settings: DebridSettings)
         .filter { StreamListability.isListable(it, settings.canResolvePlayableLinks) }
     // The presenter's name/description templates can rewrite a managed stream's text (and drop a
     // "DV" or "CAM" in it); facts are read from the add-on's own stream that survived presentation.
+    // Only an unambiguous match is used: when two originals share the playback fields, the
+    // presented stream is kept as is, so a filtered-out sibling's format is never advertised.
     val originals = group.streams.groupBy { it.presentationIdentity() }
-    return presented.map { stream -> originals[stream.presentationIdentity()]?.firstOrNull() ?: stream }
+    return presented.map { stream ->
+        val matches = originals[stream.presentationIdentity()].orEmpty()
+        if (stream in matches) stream else matches.singleOrNull() ?: stream
+    }
 }
 
 /** A stream without the two fields `DebridStreamFormatter` rewrites. */
@@ -174,7 +178,7 @@ internal class TitleFormatProbeEngine(
     private val scope: CoroutineScope,
     private val settings: () -> DebridSettings,
     private val installedAddons: () -> List<ManagedAddon>,
-    private val pickerState: Flow<StreamsUiState>,
+    private val pickerState: StateFlow<StreamsUiState>,
 ) {
     /**
      * A request the engine answers for. [cacheKey] is null for embedded streams (never cached).
@@ -224,6 +228,9 @@ internal class TitleFormatProbeEngine(
             }
             val entry = Tracked(request, cacheKey, canResolve)
             track(entry)
+            // The collector folds only new emissions: a picker that settled on this request before
+            // it was tracked (opened during the dwell) is folded here, under the same lock.
+            foldInto(entry, pickerState.value)
 
             if (cacheKey == null) {
                 entry.answered = true
@@ -386,24 +393,28 @@ internal class TitleFormatProbeEngine(
 
     /** Folds the picker's presented, listable streams into every tracked request it is showing. */
     private fun fold(state: StreamsUiState) {
-        val token = state.requestToken ?: return
-        val settled = !state.isAnyLoading
         synchronized(lock) {
-            tracked.values.filter { it.request.matchesPickerToken(token) }.forEach { entry ->
-                val badges = TitleFormatBadges.aggregateStreams(
-                    state.groups.flatMap { it.streams }.filter { StreamListability.isListable(it, entry.canResolve) },
-                )
-                if (badges.isEmpty() && !settled) return@forEach
-                // Like the probe: an empty answer is cached only if some source actually answered,
-                // and only once the picker settled (a partial answer would suppress a full probe).
-                val answered = badges.isNotEmpty() || state.groups.any { it.error.isNullOrBlank() }
-                if (entry.cacheKey != null && answered && settled) {
-                    cache.record(entry.cacheKey, badges, TitleFormatSource.PICKER)
-                }
-                publish(entry.request.key) {
-                    it.copy(badges = TitleFormatBadges.merge(it.badges, badges), source = TitleFormatSource.PICKER)
-                }
-            }
+            tracked.values.forEach { foldInto(it, state) }
+        }
+    }
+
+    /** Call under [lock]. Folds [state] into [entry] when the picker is showing its request. */
+    private fun foldInto(entry: Tracked, state: StreamsUiState) {
+        val token = state.requestToken ?: return
+        if (!entry.request.matchesPickerToken(token)) return
+        val settled = !state.isAnyLoading
+        val badges = TitleFormatBadges.aggregateStreams(
+            state.groups.flatMap { it.streams }.filter { StreamListability.isListable(it, entry.canResolve) },
+        )
+        if (badges.isEmpty() && !settled) return
+        // Like the probe: an empty answer is cached only if some source actually answered,
+        // and only once the picker settled (a partial answer would suppress a full probe).
+        val answered = badges.isNotEmpty() || state.groups.any { it.error.isNullOrBlank() }
+        if (entry.cacheKey != null && answered && settled) {
+            cache.record(entry.cacheKey, badges, TitleFormatSource.PICKER)
+        }
+        publish(entry.request.key) {
+            it.copy(badges = TitleFormatBadges.merge(it.badges, badges), source = TitleFormatSource.PICKER)
         }
     }
 

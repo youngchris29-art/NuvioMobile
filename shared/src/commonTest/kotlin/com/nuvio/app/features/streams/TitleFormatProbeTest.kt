@@ -326,6 +326,25 @@ class TitleFormatProbeTest {
         assertEquals(listOf(UHD_4K, DOLBY_VISION, DOLBY_ATMOS, DTS_X), rig.badges())
     }
 
+    @Test
+    fun aFilteredOutSiblingWithTheSamePlaybackFieldsIsNeverAdvertised() {
+        val saved = StreamPresentationPlatform.filtersApplyToAllStreams
+        StreamPresentationPlatform.filtersApplyToAllStreams = true
+        try {
+            val dv = stream("a1", fourKDv)
+            val plain = dv.copy(name = "Movie.2024.1080p.WEB-DL-GRP")
+            val group = AddonStreamGroup(addonName = "a1", addonId = "addon:a1", streams = listOf(dv, plain), isLoading = false)
+            val settings = DebridSettings(streamDolbyVisionFilter = com.nuvio.app.features.debrid.DebridStreamFeatureFilter.EXCLUDE)
+
+            val presented = presentForBadges(group, settings)
+
+            assertEquals(listOf(plain), presented)
+            assertEquals(emptyList(), TitleFormatBadges.aggregateStreams(presented))
+        } finally {
+            StreamPresentationPlatform.filtersApplyToAllStreams = saved
+        }
+    }
+
     // --- cache ------------------------------------------------------------------------------
 
     @Test
@@ -547,6 +566,24 @@ class TitleFormatProbeTest {
         rig.engine.start(movie)
         runCurrent()
         assertEquals(fetchesBefore + 1, rig.fetcher.fetched.size, "a partial picker answer must not be a cache hit")
+    }
+
+    @Test
+    fun aPickerThatSettledBeforeStartIsFolded() = runTest {
+        val rig = rig("a1")
+        val other = TitleFormatRequest(type = "movie", videoId = "tt9999999", season = null, episode = null)
+        rig.engine.start(other) // the fold collector is already running
+        settle()
+        rig.picker.value = pickerState(token(manual = true), stream("picker", fourKDv))
+        runCurrent()
+        assertEquals(emptyList(), rig.badges())
+
+        rig.fetcher.behavior = { CompletableDeferred<List<StreamItem>>().await() }
+        rig.engine.start(movie)
+        runCurrent()
+
+        assertEquals(listOf(UHD_4K, DOLBY_VISION), rig.badges())
+        assertEquals(TitleFormatSource.PICKER, rig.engine.state(movie).source)
     }
 
     @Test
