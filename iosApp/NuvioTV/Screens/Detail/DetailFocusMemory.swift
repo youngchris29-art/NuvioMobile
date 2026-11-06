@@ -12,7 +12,9 @@ import UIKit
 /// arms it when the page disappears and takes the armed target when it appears again.
 @MainActor
 final class DetailFocusMemory {
-    /// The remembered row and card key (the cast/studio index, or the item id), nil when none.
+    /// The remembered row and card key, nil when none: the Cast row's stable `DetailCreditItem.key`
+    /// (A4.4: `cast:tmdb:<id>|<role>` or the crew `creditKey`, never an index, so a row that gains
+    /// crew or reorders keeps the card), the studio index, or the item id.
     private(set) var row: DetailRowID?
     private(set) var key: String?
     private var armed = false

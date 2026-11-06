@@ -158,14 +158,15 @@ struct DetailCinematicHero<Actions: View>: View {
         .accessibilityIdentifier("detail_hero")
         .fullScreenCover(isPresented: $showSynopsisSheet) {
             DetailSynopsisSheet(title: title, logoURL: logoURL, overview: overview ?? "",
-                                backdropURL: backdropURL, backdropFallbackURL: backdropFallbackURL)
+                                backdropURL: backdropURL, backdropFallbackURL: backdropFallbackURL,
+                                info: meta)
         }
     }
 
     // MARK: - Layout
 
     /// D9: the action row sits inside the text column; the credits are right-aligned and bottom-
-    /// aligned to it. The column takes priority so it always gets its full 900 pt before the
+    /// aligned to it. The column takes priority so it always gets its full 680 pt before the
     /// credits block claims what is left.
     private var content: some View {
         HStack(alignment: .bottom, spacing: Theme.Spacing.xl) {

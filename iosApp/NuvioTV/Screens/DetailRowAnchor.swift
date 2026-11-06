@@ -89,9 +89,9 @@ enum DetailRowAnchor {
     static func firstItemLead(for row: DetailRowID, layout: DetailLayout) -> CGFloat? {
         let headingBlock = Theme.Font.sectionTitleLineHeight + Theme.Spacing.md
         switch row {
-        case .logos: return layout == .cinematic ? 0 : nil
+        case .logos: return layout.visualBase == .cinematic ? 0 : nil
         case .cast: return headingBlock + 8
-        case .collection, .trailers: return headingBlock + 16
+        case .collection, .trailers, .bonus: return headingBlock + 16
         default: return nil
         }
     }
@@ -342,6 +342,8 @@ enum DetailRowAnchor {
 /// Comments it takes the normal anchor path. In Cinematic, `focusedRow == nil` means the hero.
 enum DetailRowID: Hashable {
     case logos, parental, episodes, cast, collection, trailers, moreLikeThis, comments, about
+    /// A2: Apple-style's Bonus row (the non-trailer videos). Same tile geometry as `.trailers`.
+    case bonus
 }
 
 /// One `onScrollGeometryChange` callback's content offset, timestamped at the moment it fired.

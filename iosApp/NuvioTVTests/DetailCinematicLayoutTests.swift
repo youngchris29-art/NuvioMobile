@@ -19,7 +19,7 @@ final class DetailCinematicLayoutTests: XCTestCase {
     }
 
     func testSlotConstants() {
-        XCTAssertEqual(DetailCinematicLayout.textColumnMaxWidth, 900)
+        XCTAssertEqual(DetailCinematicLayout.textColumnMaxWidth, 680)
         XCTAssertEqual(DetailCinematicLayout.creditsMaxWidth, 640)
         XCTAssertEqual(DetailCinematicLayout.logoSlotHeight, 180)
         XCTAssertEqual(DetailCinematicLayout.logoMaxWidth, 600)
@@ -27,6 +27,17 @@ final class DetailCinematicLayoutTests: XCTestCase {
         XCTAssertEqual(DetailCinematicLayout.ratingsSlotHeight, 44)
         XCTAssertEqual(DetailCinematicLayout.peekBand, 140)
         XCTAssertEqual(DetailCinematicLayout.heroMinimumHeight, 520)
+    }
+
+    func testDetailGeometryTokens() {
+        XCTAssertEqual(DetailGeometry.pageSideInset, 80)
+        XCTAssertEqual(DetailGeometry.pageVerticalInset, 60)
+        XCTAssertEqual(DetailGeometry.heroTextColumnMaxWidth, 680)
+        XCTAssertEqual(DetailGeometry.creditsMaxWidth, 640)
+        XCTAssertEqual(DetailGeometry.wideCardWidth, 410)
+        XCTAssertEqual(DetailGeometry.wideCardGap, 40)
+        XCTAssertEqual(DetailGeometry.personCardWidth, 260)
+        XCTAssertEqual(DetailCinematicLayout.textColumnMaxWidth, DetailGeometry.heroTextColumnMaxWidth)
     }
 
     /// Correction F16: the nonisolated mirrors must match the `Theme` tokens they copy.
@@ -188,6 +199,24 @@ final class DetailCinematicLayoutTests: XCTestCase {
         XCTAssertNil(empty.crewLabel)
 
         XCTAssertEqual(DetailCredits.make(cast: ["", " ", "A"], director: [], writer: [], isSeries: false).castNames, "A")
+    }
+
+    /// A4.4: a series with `creators` names them on the "Created by" line (and skips them as
+    /// prepended cast); without creators it falls back to `director`; films ignore creators.
+    func testCreditsUseCreatorsForSeries() {
+        let series = DetailCredits.make(cast: ["C1", "C2", "A", "B"], director: ["D"], writer: [], isSeries: true,
+                                        creators: ["C1", "C2", "C3"])
+        XCTAssertEqual(series.crewLabel, .createdBy)
+        XCTAssertEqual(series.crewNames, "C1, C2")
+        XCTAssertEqual(series.castNames, "A, B")
+
+        let fallback = DetailCredits.make(cast: ["A"], director: ["D"], writer: [], isSeries: true, creators: [" "])
+        XCTAssertEqual(fallback.crewLabel, .createdBy)
+        XCTAssertEqual(fallback.crewNames, "D")
+
+        let film = DetailCredits.make(cast: ["A"], director: ["D"], writer: [], isSeries: false, creators: ["C1"])
+        XCTAssertEqual(film.crewLabel, .directedBy)
+        XCTAssertEqual(film.crewNames, "D")
     }
 
     // MARK: - Meta line

@@ -15,6 +15,9 @@ struct DetailPageSettingsPane: View {
     @AppStorage("detail_action_icons_only") private var iconOnlyButtons = false
     @AppStorage("detail_poster_backdrop") private var posterBackdrop = true
     @AppStorage("detail_trailer_autoplay") private var trailerAutoplay = true
+    /// A2.4 (D2): Apple-style's own full-screen auto-play (never set = off). The toggle below shows
+    /// and writes the key of the selected layout (`DetailTrailerFullScreenAutoPlay`).
+    @AppStorage(DetailSettingsKeys.trailerFullScreenAutoPlay) private var trailerFullScreenAutoPlay: Bool?
     @AppStorage("detail_trailer_background") private var trailerBackground = true
     /// 0 = play forever.
     @AppStorage("detail_trailer_duration") private var trailerDuration = 0
@@ -57,7 +60,14 @@ struct DetailPageSettingsPane: View {
         switch layout {
         case .cinematic: return String(localized: "Cinematic")
         case .classic: return String(localized: "Classic")
+        case .appleStyle: return String(localized: "Apple-style")
         }
+    }
+
+    /// A2.4: the full-screen auto-play the Detail page applies for the selected layout.
+    private var effectiveTrailerAutoplay: Bool {
+        DetailTrailerFullScreenAutoPlay.isOn(layout: DetailLayout.resolve(layoutRaw),
+                                             stored: trailerFullScreenAutoPlay, legacy: trailerAutoplay)
     }
 
     var body: some View {
@@ -92,7 +102,16 @@ struct DetailPageSettingsPane: View {
                 SettingsToggleRow(
                     title: String(localized: "Auto-Play Trailer on Detail"),
                     subtitle: String(localized: "Play the trailer full screen shortly after opening a title"),
-                    isOn: $trailerAutoplay,
+                    isOn: Binding(
+                        get: { effectiveTrailerAutoplay },
+                        set: { newValue in
+                            if DetailLayout.resolve(layoutRaw) == .appleStyle {
+                                trailerFullScreenAutoPlay = newValue
+                            } else {
+                                trailerAutoplay = newValue
+                            }
+                        }
+                    ),
                     descriptionID: .detailTrailerAutoplay
                 )
                 SettingsToggleRow(
@@ -103,7 +122,7 @@ struct DetailPageSettingsPane: View {
                 )
                 // FEAT-87: gates both trailers above, so it shows while either is on. "Start Delay",
                 // not Home's "Trailer Start Delay" (different options and clock, own key).
-                if trailerAutoplay || trailerBackground {
+                if effectiveTrailerAutoplay || trailerBackground {
                     SettingsPickerRow(
                         title: String(localized: "Start Delay"),
                         subtitle: String(localized: "How long a title page waits before a trailer starts"),
