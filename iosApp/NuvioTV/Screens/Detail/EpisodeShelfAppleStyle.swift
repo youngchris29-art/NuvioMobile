@@ -224,6 +224,14 @@ nonisolated struct SeasonTabBrowse: Equatable {
         return season
     }
 
+    /// Focus moved between tabs (`old` → `new`). When it ENTERS the row from outside (`old` nil)
+    /// on a tab other than the viewed season's, the tab it must move to instead (the viewed one);
+    /// nil otherwise. Entering never switches the shelf: Apple TV lands on the selected season.
+    static func entryTab(from old: Int?, to new: Int?, viewed: Int?) -> Int? {
+        guard old == nil, let new, let viewed, new != viewed else { return nil }
+        return viewed
+    }
+
     mutating func remember(episodeId: String, season: Int) {
         if remembered[season] != episodeId { remembered[season] = episodeId }
     }

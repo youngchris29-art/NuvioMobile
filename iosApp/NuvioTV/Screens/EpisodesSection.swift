@@ -388,8 +388,21 @@ struct EpisodesSection: View {
                 .padding(.vertical, 4)
             }
             .focusSection()
-            .onChange(of: focusedSeasonTab) { _, season in
-                seasonTabFocusChanged(season, viewed: selectedSeason ?? seasons.first)
+            // Focus entering the row (Down from the hero, Up from the shelf) lands on the viewed
+            // season's tab, as in the Apple TV app, not on the tab nearest the previous focus.
+            .defaultFocus($focusedSeasonTab, current, priority: .userInitiated)
+            .onChange(of: focusedSeasonTab) { old, season in
+                let viewed = selectedSeason ?? seasons.first
+                // Backstop for the default above: an entry that still lands on another tab is moved
+                // to the viewed one before its debounce can switch the shelf.
+                if let target = SeasonTabBrowse.entryTab(from: old, to: season, viewed: viewed) {
+                    seasonSwitchTask?.cancel()
+                    seasonSwitchTask = nil
+                    _ = seasonBrowse.state.focus(on: target, viewed: viewed)
+                    focusedSeasonTab = target
+                    return
+                }
+                seasonTabFocusChanged(season, viewed: viewed)
             }
 
             if let airedLabel {

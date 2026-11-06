@@ -181,4 +181,33 @@ final class EpisodeSeasonTabsTests: XCTestCase {
         _ = browse.leave(entry: { _ in nil })
         XCTAssertEqual(browse.remembered, [1: "s1e5"])
     }
+
+    // MARK: - Entering the tab row
+
+    /// Down from the hero lands on the nearest tab (Specials); focus moves to the viewed season.
+    func testEntryOnAnotherTabMovesToViewedSeason() {
+        XCTAssertEqual(SeasonTabBrowse.entryTab(from: nil, to: 0, viewed: 1), 1)
+    }
+
+    func testEntryOnViewedTabStays() {
+        XCTAssertNil(SeasonTabBrowse.entryTab(from: nil, to: 2, viewed: 2))
+    }
+
+    /// Moving along the row is browsing, never redirected.
+    func testMovesWithinRowAreNotRedirected() {
+        XCTAssertNil(SeasonTabBrowse.entryTab(from: 1, to: 2, viewed: 1))
+    }
+
+    func testLeavingOrUnknownViewedIsNotRedirected() {
+        XCTAssertNil(SeasonTabBrowse.entryTab(from: 1, to: nil, viewed: 1))
+        XCTAssertNil(SeasonTabBrowse.entryTab(from: nil, to: 2, viewed: nil))
+    }
+
+    /// The redirect's own `focus(on: viewed)` schedules no switch, so the shelf stays put.
+    func testEntryRedirectSchedulesNoSwitch() {
+        var browse = SeasonTabBrowse()
+        let target = SeasonTabBrowse.entryTab(from: nil, to: 0, viewed: 1)!
+        XCTAssertNil(browse.focus(on: target, viewed: 1))
+        XCTAssertNil(browse.pending)
+    }
 }
