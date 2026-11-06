@@ -537,6 +537,8 @@ struct DetailView: View {
     @State private var showSynopsisSheet = false
     /// The About section's full show overview (Select on a truncated About), in the same overlay.
     @State private var showAboutOverviewSheet = false
+    /// Apple-style: reserved slots held after their data answered empty (`DetailSlotHold`).
+    @State private var slotHold = DetailSlotHoldBox()
     /// FEAT-35 Start Over (movies): the next stream-picker presentation starts from 0. Reset when
     /// the cover goes away, like `forceManualPlay`. Series carry it on `SeriesPlayRoute`.
     @State private var startOverMovie = false
@@ -836,12 +838,20 @@ struct DetailView: View {
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: Theme.Spacing.lg + Theme.Spacing.sm) {
                     let availability = sectionAvailability
+                    // Apple-style: a reserved slot whose data answered empty stays while focus is
+                    // below it (`DetailSlotHold`).
+                    let held = slotHold.resolve(
+                        order: DetailSectionOrder.preset(layout: detailLayoutChoice, isSeries: isSeries),
+                        availability: availability,
+                        focused: DetailSection.section(for: focusedRow),
+                        reservesSlots: DetailSectionOrder.reservesPendingSlots(detailLayoutChoice))
                     heroBlock
                     // A2: one typed, ordered list per layout (`DetailSectionOrder`). BUG-96: every
                     // row below the top block is anchored inside `detailSection(_:pending:)` — see
                     // `DetailRowAnchor`.
                     ForEach(orderedSections(availability), id: \.self) { section in
-                        detailSection(section, pending: availability.state(section) == .pending)
+                        detailSection(section, pending: availability.state(section) == .pending
+                                          || held.contains(section))
                     }
                 }
                 // A2/D: the side insets per layout (`DetailGeometry.pageInsets`): Cinematic and
@@ -1587,7 +1597,7 @@ struct DetailView: View {
     private var sectionRows: [DetailSection] { orderedSections(sectionAvailability) }
     private func orderedSections(_ availability: DetailSectionAvailability) -> [DetailSection] {
         DetailSectionOrder.sections(layout: detailLayoutChoice, isSeries: isSeries,
-                                    availability: availability).filter { $0 != .hero }
+                                    availability: availability, held: slotHold.held).filter { $0 != .hero }
     }
     private var title: String { model.meta?.name ?? preview.name }
     // Kotlin `description` collides with NSObject.description, so KMP exposes it as `description_`.

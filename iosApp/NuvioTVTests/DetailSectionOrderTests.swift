@@ -217,4 +217,89 @@ final class DetailSectionOrderTests: XCTestCase {
         XCTAssertEqual(DetailRowAnchor.firstItemLead(for: .bonus, layout: .cinematic),
                        DetailRowAnchor.firstItemLead(for: .trailers, layout: .cinematic))
     }
+
+    // MARK: - Held slots (DetailSlotHold)
+
+    private var seriesOrder: [DetailSection] { DetailSectionOrder.preset(layout: .appleStyle, isSeries: true) }
+
+    private func availability(moreLikeThis: DetailSectionState) -> DetailSectionAvailability {
+        DetailSectionAvailability(states: [.episodes: .ready, .trailers: .ready, .moreLikeThis: moreLikeThis,
+                                           .castAndCrew: .ready, .collection: .ready])
+    }
+
+    /// Pending → empty while focus is in Cast & Crew (below the slot): the slot stays, and keeps
+    /// staying as focus moves further down; it goes once focus is back at or above it.
+    func testEmptyAfterPendingHeldWhileFocusBelow() {
+        var hold = DetailSlotHold()
+        XCTAssertEqual(hold.update(order: seriesOrder, availability: availability(moreLikeThis: .pending),
+                                   focused: .castAndCrew, reservesSlots: true), [])
+        XCTAssertEqual(hold.update(order: seriesOrder, availability: availability(moreLikeThis: .empty),
+                                   focused: .castAndCrew, reservesSlots: true), [.moreLikeThis])
+        XCTAssertEqual(hold.update(order: seriesOrder, availability: availability(moreLikeThis: .empty),
+                                   focused: .collection, reservesSlots: true), [.moreLikeThis])
+        // Focus back up to Trailers (above the slot): released, and for good.
+        XCTAssertEqual(hold.update(order: seriesOrder, availability: availability(moreLikeThis: .empty),
+                                   focused: .trailers, reservesSlots: true), [])
+        XCTAssertEqual(hold.update(order: seriesOrder, availability: availability(moreLikeThis: .empty),
+                                   focused: .castAndCrew, reservesSlots: true), [])
+        // The page's list keeps the held section only while held.
+        let held = DetailSectionOrder.sections(layout: .appleStyle, isSeries: true,
+                                               availability: availability(moreLikeThis: .empty),
+                                               held: [.moreLikeThis])
+        XCTAssertTrue(held.contains(.moreLikeThis))
+        XCTAssertFalse(DetailSectionOrder.sections(layout: .appleStyle, isSeries: true,
+                                                   availability: availability(moreLikeThis: .empty))
+            .contains(.moreLikeThis))
+    }
+
+    /// Pending → empty with focus above the slot (hero, or a row above): dropped at once.
+    func testEmptyAfterPendingDropsWithFocusAbove() {
+        for focused: DetailSection? in [nil, .episodes, .trailers, .bonus] {
+            var hold = DetailSlotHold()
+            _ = hold.update(order: seriesOrder, availability: availability(moreLikeThis: .pending),
+                            focused: focused, reservesSlots: true)
+            XCTAssertEqual(hold.update(order: seriesOrder, availability: availability(moreLikeThis: .empty),
+                                       focused: focused, reservesSlots: true), [], "\(String(describing: focused))")
+            XCTAssertTrue(hold.reserved.isEmpty)
+        }
+    }
+
+    /// Focus ON the slot's own row cannot happen (the slot is not focusable), but at its index it
+    /// counts as "at", so it drops.
+    func testFocusAtTheSlotDrops() {
+        var hold = DetailSlotHold()
+        _ = hold.update(order: seriesOrder, availability: availability(moreLikeThis: .pending),
+                        focused: .moreLikeThis, reservesSlots: true)
+        XCTAssertEqual(hold.update(order: seriesOrder, availability: availability(moreLikeThis: .empty),
+                                   focused: .moreLikeThis, reservesSlots: true), [])
+    }
+
+    /// Data that arrives renders for real; nothing is held.
+    func testReadyReleasesTheReservation() {
+        var hold = DetailSlotHold()
+        _ = hold.update(order: seriesOrder, availability: availability(moreLikeThis: .pending),
+                        focused: .castAndCrew, reservesSlots: true)
+        XCTAssertEqual(hold.update(order: seriesOrder, availability: availability(moreLikeThis: .ready),
+                                   focused: .castAndCrew, reservesSlots: true), [])
+        XCTAssertTrue(hold.reserved.isEmpty)
+    }
+
+    /// Cinematic and Classic never reserve, so nothing is held.
+    func testNoHoldWithoutReservation() {
+        var hold = DetailSlotHold()
+        let order = DetailSectionOrder.preset(layout: .cinematic, isSeries: true)
+        _ = hold.update(order: order, availability: availability(moreLikeThis: .pending),
+                        focused: .castAndCrew, reservesSlots: false)
+        XCTAssertEqual(hold.update(order: order, availability: availability(moreLikeThis: .empty),
+                                   focused: .castAndCrew, reservesSlots: false), [])
+        XCTAssertFalse(DetailSectionOrder.sections(layout: .cinematic, isSeries: true,
+                                                   availability: availability(moreLikeThis: .empty),
+                                                   held: [.moreLikeThis]).contains(.moreLikeThis))
+    }
+
+    func testSectionForRow() {
+        XCTAssertNil(DetailSection.section(for: nil))
+        XCTAssertEqual(DetailSection.section(for: .cast), .castAndCrew)
+        XCTAssertEqual(DetailSection.section(for: .moreLikeThis), .moreLikeThis)
+    }
 }

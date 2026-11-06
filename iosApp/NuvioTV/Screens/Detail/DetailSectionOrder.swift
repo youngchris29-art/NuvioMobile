@@ -26,6 +26,13 @@ nonisolated enum DetailSection: String, CaseIterable, Sendable {
     /// `DetailAboutSection` (Cinematic and Apple-style).
     case about
 
+    /// The section a focused row belongs to (nil = no row, i.e. the hero).
+    @MainActor
+    static func section(for row: DetailRowID?) -> DetailSection? {
+        guard let row else { return nil }
+        return allCases.first { $0.rowID == row }
+    }
+
     /// The scroll / focus / offsets key. nil for the hero (focus in the hero is `focusedRow == nil`).
     /// Main-actor like `DetailRowID` itself (default isolation); the page and the tests are too.
     @MainActor
@@ -108,16 +115,79 @@ nonisolated enum DetailSectionOrder {
 
     /// The ordered sections to render: `.hidden` and `.empty` dropped; `.pending` kept only where
     /// the layout reserves slots. Always starts with `.hero`.
+    /// `held`: sections whose reserved slot is kept though their data answered empty
+    /// (`DetailSlotHold`); they render as the same empty slot.
     static func sections(layout: DetailLayout, isSeries: Bool,
-                         availability: DetailSectionAvailability) -> [DetailSection] {
+                         availability: DetailSectionAvailability,
+                         held: Set<DetailSection> = []) -> [DetailSection] {
         let keepPending = reservesPendingSlots(layout)
         return preset(layout: layout, isSeries: isSeries).filter { section in
             switch availability.state(section) {
             case .ready: return true
             case .pending: return keepPending
-            case .hidden, .empty: return false
+            case .empty: return keepPending && held.contains(section)
+            case .hidden: return false
             }
         }
+    }
+}
+
+/// Apple-style: a slot reserved for a pending section (More Like This) that then answers EMPTY
+/// (or times out) must not vanish while focus sits in a row below it, or every row under it jumps
+/// up by the slot's height mid-focus, the very jump the reservation prevents. Once reserved in a
+/// page visit, the slot is held as the same non-focusable space while focus is below it, and
+/// released for good once focus is at or above it (hero included). Leaving the page drops it
+/// (the hold lives in the page's `@State`). A section whose data arrives is released too: it
+/// renders for real. Cinematic and Classic never reserve, so nothing is ever held there.
+nonisolated struct DetailSlotHold: Equatable {
+    /// Sections whose slot has been reserved this visit and not yet released.
+    private(set) var reserved: Set<DetailSection> = []
+
+    /// - Parameters:
+    ///   - order: the layout's preset (`DetailSectionOrder.preset`), hero first.
+    ///   - focused: the section holding focus; nil = the hero.
+    /// - Returns: the sections to keep as empty slots now.
+    mutating func update(order: [DetailSection], availability: DetailSectionAvailability,
+                         focused: DetailSection?, reservesSlots: Bool) -> Set<DetailSection> {
+        guard reservesSlots else {
+            reserved = []
+            return []
+        }
+        for section in order where availability.state(section) == .pending {
+            reserved.insert(section)
+        }
+        let focusIndex = focused.flatMap { order.firstIndex(of: $0) } ?? 0
+        var held: Set<DetailSection> = []
+        for section in reserved {
+            guard let index = order.firstIndex(of: section) else {
+                reserved.remove(section)
+                continue
+            }
+            switch availability.state(section) {
+            case .pending:
+                continue
+            case .empty where focusIndex > index:
+                held.insert(section)
+            case .ready, .empty, .hidden:
+                reserved.remove(section)
+            }
+        }
+        return held
+    }
+}
+
+/// `DetailView`'s holder for `DetailSlotHold`: a reference in `@State`, updated once per body
+/// evaluation (focus changes re-run the body), so it never invalidates the view itself.
+final class DetailSlotHoldBox {
+    var hold = DetailSlotHold()
+    /// The last `update` result, read by the page's other section-list consumers.
+    private(set) var held: Set<DetailSection> = []
+
+    func resolve(order: [DetailSection], availability: DetailSectionAvailability,
+                 focused: DetailSection?, reservesSlots: Bool) -> Set<DetailSection> {
+        held = hold.update(order: order, availability: availability, focused: focused,
+                           reservesSlots: reservesSlots)
+        return held
     }
 }
 
