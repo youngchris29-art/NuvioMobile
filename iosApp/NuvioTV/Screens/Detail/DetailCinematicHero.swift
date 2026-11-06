@@ -158,7 +158,8 @@ struct DetailCinematicHero<Actions: View>: View {
         .accessibilityIdentifier("detail_hero")
         .fullScreenCover(isPresented: $showSynopsisSheet) {
             DetailSynopsisSheet(title: title, logoURL: logoURL, overview: overview ?? "",
-                                backdropURL: backdropURL, backdropFallbackURL: backdropFallbackURL)
+                                backdropURL: backdropURL, backdropFallbackURL: backdropFallbackURL,
+                                info: meta)
         }
     }
 

@@ -7145,6 +7145,40 @@
         }
       }
     },
+    "Apple-style": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Apple-Stil"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Estilo Apple"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Style Apple"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stile Apple"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kiểu Apple"
+          }
+        }
+      }
+    },
     "Applies to every add-on's sources on this Apple TV.": {
       "localizations": {
         "de": {
@@ -8333,6 +8367,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "A–Z"
+          }
+        }
+      }
+    },
+    "Bonus": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bonus"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Extras"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bonus"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Contenuti extra"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nội dung bổ sung"
           }
         }
       }
@@ -10181,6 +10249,40 @@
         }
       }
     },
+    "Cast & Crew": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Besetzung & Crew"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reparto y equipo"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Casting et équipe"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cast e troupe"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diễn viên & đoàn làm phim"
+          }
+        }
+      }
+    },
     "Cast avatars": {
       "localizations": {
         "de": {
@@ -11685,36 +11787,36 @@
         }
       }
     },
-    "Cinematic puts the title over a full-width backdrop. Classic keeps the earlier page layout. Default: Cinematic.": {
+    "Cinematic puts the title over a full-width backdrop. Apple-style uses the same look with the Apple TV app's row order, text under each episode and season tabs that switch as you move. Classic keeps the earlier page layout. Default: Cinematic.": {
       "localizations": {
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "„Filmisch“ legt den Titel über ein Hintergrundbild in voller Breite. „Klassisch“ behält das frühere Seitenlayout bei. Standard: Filmisch."
+            "value": "„Filmisch“ legt den Titel über ein Hintergrundbild in voller Breite. „Apple-Stil“ nutzt dasselbe Aussehen mit der Zeilenreihenfolge der Apple TV App, Text unter jeder Folge und Staffel-Tabs, die beim Navigieren wechseln. „Klassisch“ behält das frühere Seitenlayout bei. Standard: Filmisch."
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Cinematográfico coloca el título sobre un fondo de ancho completo. Clásico mantiene el diseño de página anterior. Por defecto: Cinematográfico."
+            "value": "Cinematográfico coloca el título sobre un fondo de ancho completo. Estilo Apple usa el mismo aspecto con el orden de filas de la app Apple TV, texto bajo cada episodio y pestañas de temporada que cambian al moverte. Clásico mantiene el diseño de página anterior. Por defecto: Cinematográfico."
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Cinématique place le titre sur un fond pleine largeur. Classique conserve la mise en page précédente. Par défaut : Cinématique."
+            "value": "Cinématique place le titre sur un fond pleine largeur. Style Apple reprend le même rendu avec l’ordre des rangées de l’app Apple TV, du texte sous chaque épisode et des onglets de saison qui changent au fil de la navigation. Classique conserve la mise en page précédente. Par défaut : Cinématique."
           }
         },
         "it": {
           "stringUnit": {
             "state": "translated",
-            "value": "Cinematografico mette il titolo su uno sfondo a tutta larghezza. Classico mantiene il layout precedente. Predefinito: Cinematografico."
+            "value": "Cinematografico mette il titolo su uno sfondo a tutta larghezza. Stile Apple usa lo stesso aspetto con l’ordine delle righe dell’app Apple TV, il testo sotto ogni episodio e le schede delle stagioni che cambiano mentre ti muovi. Classico mantiene il layout precedente. Predefinito: Cinematografico."
           }
         },
         "vi": {
           "stringUnit": {
             "state": "translated",
-            "value": "Điện ảnh đặt tiêu đề lên ảnh nền toàn chiều rộng. Cổ điển giữ bố cục trang như trước. Mặc định: Điện ảnh."
+            "value": "Điện ảnh đặt tiêu đề lên ảnh nền toàn chiều rộng. Kiểu Apple dùng cùng giao diện với thứ tự hàng của ứng dụng Apple TV, chữ dưới mỗi tập và các tab mùa đổi theo khi bạn di chuyển. Cổ điển giữ bố cục trang như trước. Mặc định: Điện ảnh."
           }
         }
       }
@@ -18506,6 +18608,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Nhập URL backend do quản trị viên máy chủ của bạn cung cấp. Nuvio đọc /.well-known/nuvio trên máy chủ đó để khám phá cài đặt của nó."
+          }
+        }
+      }
+    },
+    "Episode %lld": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Folge %lld"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Episodio %lld"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Épisode %lld"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Episodio %lld"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tập %lld"
           }
         }
       }
@@ -32936,6 +33072,40 @@
         }
       }
     },
+    "Plays the trailer full screen shortly after you open a title. On by default; in Apple-style it is off by default and the trailer goes full screen only when you choose Watch Trailer.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Spielt den Trailer kurz nach dem Öffnen eines Titels im Vollbild ab. Standardmäßig an; im Apple-Stil ist die Funktion standardmäßig aus, und der Trailer läuft nur im Vollbild, wenn du „Trailer ansehen“ wählst."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reproduce el tráiler a pantalla completa poco después de abrir un título. Activado por defecto; en Estilo Apple está desactivado por defecto y el tráiler solo se ve a pantalla completa cuando eliges Ver tráiler."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lance la bande-annonce en plein écran peu après l’ouverture d’un titre. Activé par défaut ; en Style Apple, il est désactivé par défaut et la bande-annonce ne passe en plein écran que lorsque tu choisis Regarder la bande-annonce."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Riproduce il trailer a schermo intero poco dopo l’apertura di un titolo. Attivo per impostazione predefinita; in Stile Apple è disattivato per impostazione predefinita e il trailer va a schermo intero solo quando scegli Guarda trailer."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Phát trailer toàn màn hình ngay sau khi bạn mở một tiêu đề. Mặc định bật; ở Kiểu Apple, mặc định tắt và trailer chỉ chiếu toàn màn hình khi bạn chọn Xem trailer."
+          }
+        }
+      }
+    },
     "Plays TrueHD and DTS:X with height channels when your receiver supports it. Off by default.": {
       "localizations": {
         "de": {
@@ -34424,40 +34594,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Phát bản xem trước trailer tắt tiếng sau khi bạn dừng lại trên poster một lúc. Mặc định tắt."
-          }
-        }
-      }
-    },
-    "Plays the trailer full screen shortly after you open a title. On by default.": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Spielt den Trailer kurz nach dem Öffnen eines Titels im Vollbild ab. Standardmäßig ein."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Reproduce el tráiler a pantalla completa poco después de abrir un título. Activado por defecto."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Lit la bande-annonce en plein écran peu après l’ouverture d’un titre. Activé par défaut."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Riproduce il trailer a schermo intero poco dopo l’apertura di un titolo. Attivato per impostazione predefinita."
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Phát trailer toàn màn hình ngay sau khi bạn mở một tiêu đề. Mặc định bật."
           }
         }
       }

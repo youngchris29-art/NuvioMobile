@@ -1556,7 +1556,7 @@ struct DetailView: View {
         set(.bonus, sectionTrailers && appleStyle, !split.bonus.isEmpty, loadingMeta)
         set(.moreLikeThis, sectionMoreLikeThis, !(model.meta?.moreLikeThis ?? []).isEmpty, loadingMeta || enriching)
         set(.comments, sectionComments, !model.comments.isEmpty, false)
-        set(.about, sectionAbout && detailLayout == .cinematic, !aboutRows.isEmpty, loadingMeta)
+        set(.about, sectionAbout && detailLayout == .cinematic, DetailAboutOverview.hasContent(rows: aboutRows, overview: overview), loadingMeta)
         return DetailSectionAvailability(states: states)
     }
     /// A2: the rows below the hero, in the layout's order (`DetailSectionOrder`).
@@ -1974,7 +1974,7 @@ struct DetailView: View {
             case .about:
                 // FEAT-35 (P1 §G): Cinematic's last row. Takes the normal anchor path (it is
                 // not a Comments-style bail).
-                DetailAboutSection(rows: aboutRows, isFocused: focusedRow == .about)
+                DetailAboutSection(rows: aboutRows, overview: overview, isFocused: focusedRow == .about)
                     .detailRowAnchored(.about, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
             }
         }
