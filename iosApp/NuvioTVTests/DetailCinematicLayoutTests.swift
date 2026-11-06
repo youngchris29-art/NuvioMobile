@@ -19,7 +19,7 @@ final class DetailCinematicLayoutTests: XCTestCase {
     }
 
     func testSlotConstants() {
-        XCTAssertEqual(DetailCinematicLayout.textColumnMaxWidth, 900)
+        XCTAssertEqual(DetailCinematicLayout.textColumnMaxWidth, 680)
         XCTAssertEqual(DetailCinematicLayout.creditsMaxWidth, 640)
         XCTAssertEqual(DetailCinematicLayout.logoSlotHeight, 180)
         XCTAssertEqual(DetailCinematicLayout.logoMaxWidth, 600)
@@ -27,6 +27,17 @@ final class DetailCinematicLayoutTests: XCTestCase {
         XCTAssertEqual(DetailCinematicLayout.ratingsSlotHeight, 44)
         XCTAssertEqual(DetailCinematicLayout.peekBand, 140)
         XCTAssertEqual(DetailCinematicLayout.heroMinimumHeight, 520)
+    }
+
+    func testDetailGeometryTokens() {
+        XCTAssertEqual(DetailGeometry.pageSideInset, 80)
+        XCTAssertEqual(DetailGeometry.pageVerticalInset, 60)
+        XCTAssertEqual(DetailGeometry.heroTextColumnMaxWidth, 680)
+        XCTAssertEqual(DetailGeometry.creditsMaxWidth, 640)
+        XCTAssertEqual(DetailGeometry.wideCardWidth, 410)
+        XCTAssertEqual(DetailGeometry.wideCardGap, 40)
+        XCTAssertEqual(DetailGeometry.personCardWidth, 260)
+        XCTAssertEqual(DetailCinematicLayout.textColumnMaxWidth, DetailGeometry.heroTextColumnMaxWidth)
     }
 
     /// Correction F16: the nonisolated mirrors must match the `Theme` tokens they copy.

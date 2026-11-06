@@ -11,25 +11,26 @@ import SharedCore
 /// after first paint (correction F3), so every slot that can fill in late has a constant here.
 nonisolated enum DetailCinematicLayout {
     /// Left text column: logo, meta line, ratings, synopsis and the action row.
-    static let textColumnMaxWidth: CGFloat = 900
+    static let textColumnMaxWidth: CGFloat = DetailGeometry.heroTextColumnMaxWidth
     /// Right-aligned credits block beside the action row.
-    static let creditsMaxWidth: CGFloat = 640
+    static let creditsMaxWidth: CGFloat = DetailGeometry.creditsMaxWidth
     /// The logo slot never changes height: the logo (or the title fallback) sits bottom-leading in
     /// it, so a logo landing late never moves the text below it (Plex's logo-shift bug).
-    static let logoSlotHeight: CGFloat = 180
-    static let logoMaxWidth: CGFloat = 600
+    static let logoSlotHeight: CGFloat = DetailGeometry.logoSlotHeight
+    static let logoMaxWidth: CGFloat = DetailGeometry.logoMaxWidth
     /// Correction F3: the meta line is a fixed slot too, sized for one `metaStrong` line plus the
     /// stroked age chip. No spinner inside it in Cinematic.
-    static let metaLineHeight: CGFloat = 40
+    static let metaLineHeight: CGFloat = DetailGeometry.metaLineHeight
     /// The MDBList strip's reserved slot (present only while the strip is gated on).
-    static let ratingsSlotHeight: CGFloat = 44
+    static let ratingsSlotHeight: CGFloat = DetailGeometry.ratingsSlotHeight
     /// How much of the first row shows under the hero on landing.
-    static let peekBand: CGFloat = 140
-    static let heroMinimumHeight: CGFloat = 520
-    /// == `Theme.Spacing.screen` (the page VStack's padding); pinned by a unit test.
-    static let screenPadding: CGFloat = 60
+    static let peekBand: CGFloat = DetailGeometry.peekBand
+    static let heroMinimumHeight: CGFloat = DetailGeometry.heroMinimumHeight
+    /// The page's vertical padding (still == `Theme.Spacing.screen`, pinned by a unit test). Only the
+    /// vertical part feeds the hero height; the side inset is `DetailGeometry.pageSideInset` (80).
+    static let screenPadding: CGFloat = DetailGeometry.pageVerticalInset
     /// == `Theme.Spacing.lg + Theme.Spacing.sm` (the page VStack's spacing); pinned by a unit test.
-    static let pageRowSpacing: CGFloat = 36
+    static let pageRowSpacing: CGFloat = DetailGeometry.pageRowSpacing
 
     /// Correction F5: driven by `.containerRelativeFrame(.vertical)`, so `containerHeight` is the
     /// scroll view's container height as SwiftUI reports it to that modifier. The hero fills it
