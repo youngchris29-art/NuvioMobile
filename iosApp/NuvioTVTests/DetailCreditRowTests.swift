@@ -136,4 +136,51 @@ final class DetailCreditRowTests: XCTestCase {
         XCTAssertEqual(DetailCreditRow.englishPseudoRoleLabels(.writer), ["Writer"])
         XCTAssertEqual(DetailCreditRow.englishPseudoRoleLabels(.producer), [])
     }
+
+    // MARK: - Crew job labels
+
+    private static let mappedJobs = ["Director", "Writer", "Screenplay", "Story", "Novel", "Characters",
+                                     "Creator", "Producer", "Executive Producer", "Original Music Composer",
+                                     "Director of Photography", "Editor", "Casting"]
+
+    /// The common TMDB jobs map to their catalog labels (English, the test run's language, is the
+    /// key itself), whatever the case or surrounding spaces.
+    func testCommonJobsMapToLocalizedLabels() {
+        for job in Self.mappedJobs {
+            XCTAssertEqual(DetailCreditRow.jobLabel(job), job)
+            XCTAssertEqual(DetailCreditRow.jobLabel("  \(job.uppercased()) "), job, job)
+        }
+    }
+
+    /// Every mapped job has a French entry in the catalog (the build carries fr.lproj).
+    func testMappedJobsAreTranslated() throws {
+        let path = try XCTUnwrap(Bundle.main.path(forResource: "fr", ofType: "lproj"))
+        let fr = try XCTUnwrap(Bundle(path: path))
+        for job in Self.mappedJobs {
+            let value = fr.localizedString(forKey: job, value: "\u{1}", table: nil)
+            XCTAssertNotEqual(value, "\u{1}", "\(job) missing from the fr catalog")
+        }
+        XCTAssertEqual(fr.localizedString(forKey: "Screenplay", value: nil, table: nil), "Scénario")
+    }
+
+    /// Anything else is shown as TMDB sent it, trimmed.
+    func testUnknownJobFallsBackToRawJob() {
+        XCTAssertEqual(DetailCreditRow.jobLabel(" Visual Effects Supervisor "), "Visual Effects Supervisor")
+        XCTAssertEqual(DetailCreditRow.jobLabel("Gaffer"), "Gaffer")
+        XCTAssertEqual(DetailCreditRow.jobLabel(""), "")
+    }
+
+    /// The card shows the label; the key (and dedup) keep the raw job.
+    func testCrewSubtitleUsesLabelAndKeyKeepsRawJob() {
+        let items = DetailCreditRow.items(
+            cast: [],
+            crew: [crew("Cam C", "Director of Photography", .producer, id: 20),
+                   crew("Cam C", "Director of Photography", .producer, id: 20),
+                   crew("Grip G", "Key Grip", .producer, id: 21)]
+        )
+        XCTAssertEqual(items.count, 2)
+        XCTAssertEqual(items[0].subtitle, DetailCreditRow.jobLabel("Director of Photography"))
+        XCTAssertEqual(items[0].key, "tmdb:20|director_of_photography")
+        XCTAssertEqual(items[1].subtitle, "Key Grip")
+    }
 }

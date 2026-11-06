@@ -41,7 +41,8 @@ nonisolated struct DetailCreditItem: Identifiable, Equatable, Sendable {
     let key: String
     let kind: Kind
     let name: String
-    /// The role line: the character for cast, the provider's job ("Director", "Screenplay") for crew.
+    /// The role line: the character for cast, the job for crew, in the device language for the
+    /// common TMDB jobs (`DetailCreditRow.jobLabel`), else the provider's own job string.
     let subtitle: String?
     let photo: String?
     /// Only cards with a TMDB id open a person page.
@@ -93,7 +94,9 @@ nonisolated enum DetailCreditRow {
                 return samePerson(castId: person.tmdbId, castName: person.name, crewId: member.tmdbId, crewName: name)
             }
             if shownAsPseudoCast { continue }
-            let job = trimmed(member.job)
+            // Display only: the raw job stays the credit's identity (`creditKey`) and the pseudo-cast
+            // match above.
+            let job = jobLabel(member.job)
             result.append(DetailCreditItem(
                 key: uniqueKey(focusKey(member.creditKey)),
                 kind: .crew(member.category), name: name, subtitle: job.isEmpty ? nil : job,
@@ -101,6 +104,30 @@ nonisolated enum DetailCreditRow {
             ))
         }
         return result
+    }
+
+    /// A crew card's role line. TMDB sends its job names in English whatever the request
+    /// language ("Director of Photography"), so the common ones are mapped to localized labels
+    /// (matched case-insensitively, surrounding whitespace ignored); any other job is shown as sent,
+    /// trimmed. Display only: identity and deduplication use the raw job.
+    static func jobLabel(_ job: String) -> String {
+        let raw = trimmed(job)
+        switch raw.lowercased() {
+        case "director": return String(localized: "Director")
+        case "writer": return String(localized: "Writer")
+        case "screenplay": return String(localized: "Screenplay")
+        case "story": return String(localized: "Story")
+        case "novel": return String(localized: "Novel")
+        case "characters": return String(localized: "Characters")
+        case "creator": return String(localized: "Creator")
+        case "producer": return String(localized: "Producer")
+        case "executive producer": return String(localized: "Executive Producer")
+        case "original music composer": return String(localized: "Original Music Composer")
+        case "director of photography": return String(localized: "Director of Photography")
+        case "editor": return String(localized: "Editor")
+        case "casting": return String(localized: "Casting")
+        default: return raw
+        }
     }
 
     /// The stable key of a cast card: `cast:tmdb:<id>|<role>` or `cast:name:<name>|<role>`,
