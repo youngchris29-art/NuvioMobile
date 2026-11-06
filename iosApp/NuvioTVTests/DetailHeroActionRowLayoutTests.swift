@@ -153,6 +153,7 @@ final class DetailHeroActionRowLayoutTests: XCTestCase {
                 logoURL: nil,
                 meta: DetailMetaLineModel(year: "2008", runtime: "47m", genres: ["Drama", "Crime"],
                                           ageRating: "TV-MA", imdbRating: "9.5"),
+                formatRequest: nil,
                 ratings: [],
                 ratingsGateOn: false,
                 ratingsSectionOn: true,
