@@ -19,7 +19,7 @@ final class DetailSynopsisOverlayTests: XCTestCase {
 
     func testInfoPartsNilInfoIsEmpty() {
         XCTAssertEqual(DetailSynopsisOverlay.infoParts(nil), [])
-        XCTAssertNil(DetailSynopsisOverlay.imdbScore(nil))
+        XCTAssertNil(DetailSynopsisOverlay.imdbScore(nil, ratingsOn: true))
     }
 
     func testInfoPartsSkipBlankValues() {
@@ -34,10 +34,15 @@ final class DetailSynopsisOverlayTests: XCTestCase {
     }
 
     func testImdbScoreOneDecimalAndBlank() {
-        XCTAssertEqual(DetailSynopsisOverlay.imdbScore(info(imdbRating: "8.04")), "8.0")
-        XCTAssertEqual(DetailSynopsisOverlay.imdbScore(info(imdbRating: "7")), "7.0")
-        XCTAssertNil(DetailSynopsisOverlay.imdbScore(info(imdbRating: " ")))
-        XCTAssertNil(DetailSynopsisOverlay.imdbScore(info(imdbRating: nil)))
+        XCTAssertEqual(DetailSynopsisOverlay.imdbScore(info(imdbRating: "8.04"), ratingsOn: true), "8.0")
+        XCTAssertEqual(DetailSynopsisOverlay.imdbScore(info(imdbRating: "7"), ratingsOn: true), "7.0")
+        XCTAssertNil(DetailSynopsisOverlay.imdbScore(info(imdbRating: " "), ratingsOn: true))
+        XCTAssertNil(DetailSynopsisOverlay.imdbScore(info(imdbRating: nil), ratingsOn: true))
+    }
+
+    /// Ratings section off: the overlay hides the score, like the hero's IMDb star (D10).
+    func testImdbScoreHiddenWhenRatingsOff() {
+        XCTAssertNil(DetailSynopsisOverlay.imdbScore(info(imdbRating: "8.04"), ratingsOn: false))
     }
 
     // MARK: - Text box height

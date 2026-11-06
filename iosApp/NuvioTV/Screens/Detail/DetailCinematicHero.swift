@@ -159,7 +159,7 @@ struct DetailCinematicHero<Actions: View>: View {
         .fullScreenCover(isPresented: $showSynopsisSheet) {
             DetailSynopsisSheet(title: title, logoURL: logoURL, overview: overview ?? "",
                                 backdropURL: backdropURL, backdropFallbackURL: backdropFallbackURL,
-                                info: meta)
+                                info: meta, ratingsOn: ratingsSectionOn)
         }
     }
 

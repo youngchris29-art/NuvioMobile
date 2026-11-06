@@ -25,9 +25,10 @@ nonisolated enum DetailSynopsisOverlay {
         return parts
     }
 
-    /// The IMDb score for the info line (one decimal), nil when blank.
-    static func imdbScore(_ info: DetailMetaLineModel?) -> String? {
-        guard let raw = info?.imdbRating else { return nil }
+    /// The IMDb score for the info line (one decimal), nil when blank or when the Ratings section
+    /// toggle is off (`ratingsOn`, the same toggle that hides the hero's IMDb star, D10).
+    static func imdbScore(_ info: DetailMetaLineModel?, ratingsOn: Bool) -> String? {
+        guard ratingsOn, let raw = info?.imdbRating else { return nil }
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : RatingFormat.oneDecimal(trimmed)
     }
@@ -74,6 +75,10 @@ struct DetailSynopsisSheet: View {
     /// A4.2: the hero's meta line facts (year, runtime, genres, age rating, IMDb). Nil (the
     /// biography, or a presenter that has not passed it) draws no info line.
     var info: DetailMetaLineModel? = nil
+    /// The Ratings section toggle (`DetailCinematicHero.ratingsSectionOn`): off hides the info
+    /// line's IMDb score, as it hides the hero's star. Off by default, so a presenter that does not
+    /// pass it never shows an ungated score.
+    var ratingsOn: Bool = false
 
     @State private var position = ScrollPosition()
     @State private var offset: CGFloat = 0
@@ -169,7 +174,7 @@ struct DetailSynopsisSheet: View {
     @ViewBuilder
     private var infoLine: some View {
         let parts = DetailSynopsisOverlay.infoParts(info)
-        let score = DetailSynopsisOverlay.imdbScore(info)
+        let score = DetailSynopsisOverlay.imdbScore(info, ratingsOn: ratingsOn)
         if !parts.isEmpty || score != nil {
             HStack(spacing: Theme.Spacing.md) {
                 if !parts.isEmpty {
