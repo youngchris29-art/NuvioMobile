@@ -717,6 +717,21 @@ class TitleFormatProbeTest {
     }
 
     @Test
+    fun embeddedStreamsArrivingAfterAProbeReplaceItsBadges() = runTest {
+        val rig = rig("a1")
+        rig.fetcher.behavior = { listOf(stream("a1", fourKDv)) }
+        rig.engine.start(movie)
+        settle()
+        assertEquals(listOf(UHD_4K, DOLBY_VISION), rig.badges())
+
+        rig.fetcher.embedded[movie.videoId] = listOf(stream("embedded", "Movie.2024.1080p.WEB-DL-GRP"))
+        rig.engine.start(movie)
+        settle()
+
+        assertEquals(emptyList(), rig.badges())
+    }
+
+    @Test
     fun changingThePluginScrapersMissesTheCache() = runTest {
         val rig = rig("a1")
         rig.plugins = listOf("https://repo.example.com#p1")

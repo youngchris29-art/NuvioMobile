@@ -2095,9 +2095,11 @@ struct DetailView: View {
     /// targets (`model.seriesAction`, resolved by the same `playTargetIndex` rule as `heroSynopsis`),
     /// typed and numbered exactly as the series picker route is (`meta.type`, `action.videoId`,
     /// the action's season/episode), so the picker's live fold matches by request token. Nil until
-    /// `seriesAction` and `meta` are known: no S1E1 fallback.
+    /// `meta` (and for a series `seriesAction`) is known: no S1E1 fallback, and a movie's embedded
+    /// streams (which replace the add-on fan-out, as in the picker) are known before any probe.
     private var formatRequest: TitleFormatRequest? {
         if !isSeries {
+            guard model.meta != nil else { return nil }
             return TitleFormatRequest(type: preview.type, videoId: streamVideoId, season: nil, episode: nil)
         }
         guard let action = model.seriesAction, let meta = model.meta else { return nil }

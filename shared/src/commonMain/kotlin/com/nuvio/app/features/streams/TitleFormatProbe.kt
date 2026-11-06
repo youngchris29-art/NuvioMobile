@@ -182,7 +182,7 @@ internal class TitleFormatProbeEngine(
     private val settings: () -> DebridSettings,
     private val installedAddons: () -> List<ManagedAddon>,
     private val pickerState: StateFlow<StreamsUiState>,
-    /** The enabled plugin scrapers for a type (`repositoryUrl#id`): the picker fold caches their streams. */
+    /** The enabled plugin scrapers for a type (`repositoryUrl#id@version`): the picker fold caches their streams. */
     private val pluginScrapers: (type: String) -> List<String> = { emptyList() },
 ) {
     /**
@@ -578,7 +578,7 @@ object TitleFormatProbe {
         pickerState = StreamsRepository.uiState,
         pluginScrapers = { type ->
             if (FeaturePolicyProvider.policy.pluginsEnabled) {
-                PluginScraperHostProvider.host.getEnabledScrapersForType(type).map { "${it.repositoryUrl}#${it.id}" }
+                PluginScraperHostProvider.host.getEnabledScrapersForType(type).map { "${it.repositoryUrl}#${it.id}@${it.version}" }
             } else {
                 emptyList()
             }
