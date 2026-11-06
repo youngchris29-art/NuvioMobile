@@ -72,4 +72,17 @@ final class DetailSynopsisOverlayTests: XCTestCase {
         XCTAssertFalse(DetailAboutOverview.hasContent(rows: [], overview: " "))
         XCTAssertTrue(DetailAboutOverview.hasContent(rows: [DetailAboutRow(label: "Country", value: "US")], overview: nil))
     }
+
+    // MARK: - About overview cap
+
+    /// The cap keeps About on one screen; only real overflow counts as truncated.
+    func testAboutOverviewTruncation() {
+        XCTAssertEqual(DetailAboutOverview.lineCap, 6)
+        XCTAssertTrue(DetailAboutOverview.isTruncated(fullHeight: 400, cappedHeight: 240))
+        XCTAssertFalse(DetailAboutOverview.isTruncated(fullHeight: 240.6, cappedHeight: 240))
+        XCTAssertFalse(DetailAboutOverview.isTruncated(fullHeight: 120, cappedHeight: 120))
+        // Before measurement nothing is truncated (Select stays inert).
+        XCTAssertFalse(DetailAboutOverview.isTruncated(fullHeight: 0, cappedHeight: 0))
+        XCTAssertFalse(DetailAboutOverview.isTruncated(fullHeight: 400, cappedHeight: 0))
+    }
 }

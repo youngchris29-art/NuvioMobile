@@ -93,23 +93,50 @@ nonisolated enum DetailAboutOverview {
     static func hasContent(rows: [DetailAboutRow], overview: String?) -> Bool {
         !rows.isEmpty || text(overview) != nil
     }
+
+    /// The overview's line cap. About is ONE focus target, so whatever runs past the viewport could
+    /// never be reached. Worst realistic case on a 1080 pt screen: the row anchors 72 pt from the
+    /// top and keeps the 60 pt bottom margin (948 left); the title and its gap take ~64, the grid's
+    /// nine rows (Created by … Ratings) at a caption1 line plus spacing ~300, with two values
+    /// wrapping ~360, the platter's padding 32 and the overview gap 24. That leaves ~460 pt, about
+    /// eleven body lines; six keeps the whole section on one screen with room for Larger Text.
+    static let lineCap = 6
+
+    /// Sub-point rounding between the capped and the full measurement must not read as truncation.
+    static let truncationTolerance: CGFloat = 1
+
+    /// The capped paragraph hides text: Select on About then opens the full overview.
+    static func isTruncated(fullHeight: CGFloat, cappedHeight: CGFloat) -> Bool {
+        guard fullHeight > 0, cappedHeight > 0 else { return false }
+        return fullHeight > cappedHeight + truncationTolerance
+    }
 }
 
 /// Title "About", the title's overview, then a two-column label/value grid. The text is not
-/// focusable; the overview and grid together are ONE inert focus target (`.focusable()` with no
-/// action — Select does nothing, Menu still pops), so Down from the row above has somewhere to land
+/// focusable; the overview and grid together are ONE focus target (`.focusable()`; Select does
+/// nothing unless the overview is truncated, see below; Menu still pops), so Down from the row above has somewhere to land
 /// and the page scrolls the section into view. Same pattern as the Person page's BUG-34 top block,
 /// including its platter.
 ///
-/// A4.2: the overview is drawn in full (no line cap). A capped paragraph would need a "more" control
-/// that opens the full text in a cover, and every cover the page puts over itself is owned by
-/// `DetailView` (`DetailTrailerGate`), so it is not added from here.
+/// The overview is capped at `DetailAboutOverview.lineCap` lines so the one focus target always
+/// fits on screen. When the cap hides text, Select on the target calls `onOpenOverview`, and
+/// `DetailView` (which owns every cover the page puts over itself, `DetailTrailerGate`) presents the
+/// full text in the synopsis overlay. Untruncated, the target stays inert as before.
 struct DetailAboutSection: View {
     let rows: [DetailAboutRow]
     /// A4.2: the show's / movie's own overview (`DetailView.overview`). Nil or blank: no paragraph.
     var overview: String? = nil
     /// `DetailView` passes `focusedRow == .about`.
     let isFocused: Bool
+    /// Opens the full overview; called on Select only while the paragraph is truncated.
+    var onOpenOverview: (() -> Void)? = nil
+
+    /// The paragraph's height at the cap and in full (a hidden probe, same width and font).
+    @State private var cappedOverviewHeight: CGFloat = 0
+    @State private var fullOverviewHeight: CGFloat = 0
+    private var overviewTruncated: Bool {
+        DetailAboutOverview.isTruncated(fullHeight: fullOverviewHeight, cappedHeight: cappedOverviewHeight)
+    }
 
     /// Review r1 #7: the platter snaps instead of fading under Reduce Motion.
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -132,8 +159,26 @@ struct DetailAboutSection: View {
                             .font(Theme.Font.body)
                             .foregroundStyle(Theme.Palette.textPrimary)
                             .multilineTextAlignment(.leading)
+                            .lineLimit(DetailAboutOverview.lineCap)
+                            .truncationMode(.tail)
                             .frame(maxWidth: Self.overviewMaxWidth, alignment: .leading)
                             .fixedSize(horizontal: false, vertical: true)
+                            .onGeometryChange(for: CGFloat.self, of: { $0.size.height.rounded(.up) }) { height in
+                                if cappedOverviewHeight != height { cappedOverviewHeight = height }
+                            }
+                            .background(alignment: .topLeading) {
+                                // Hidden probe: the same paragraph uncapped.
+                                Text(overviewText)
+                                    .font(Theme.Font.body)
+                                    .multilineTextAlignment(.leading)
+                                    .frame(maxWidth: Self.overviewMaxWidth, alignment: .leading)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .hidden()
+                                    .onGeometryChange(for: CGFloat.self, of: { $0.size.height.rounded(.up) }) { height in
+                                        if fullOverviewHeight != height { fullOverviewHeight = height }
+                                    }
+                                    .accessibilityHidden(true)
+                            }
                     }
                     if !rows.isEmpty {
                         grid
@@ -141,6 +186,12 @@ struct DetailAboutSection: View {
                 }
                 .background { platter }
                 .focusable()
+                // Select (tvOS delivers the focused view's primary press as a tap) opens the full
+                // overview only while the cap hides text; otherwise it does nothing, as before. The
+                // gesture is always attached so the target's identity never changes under focus.
+                .onTapGesture {
+                    if overviewTruncated { onOpenOverview?() }
+                }
                 .accessibilityElement(children: .combine)
                 .accessibilityIdentifier("detail_about")
                 .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: isFocused)
@@ -181,3 +232,4 @@ struct DetailAboutSection: View {
             .padding(-Theme.Spacing.md)
     }
 }
+

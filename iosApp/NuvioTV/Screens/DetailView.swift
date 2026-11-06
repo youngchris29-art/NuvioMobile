@@ -535,6 +535,8 @@ struct DetailView: View {
     /// FEAT-35 (D3, correction F8): the full-synopsis cover, opened from the Cinematic teaser. Lives
     /// here, not in the hero, because it also pauses the background trailer (`isTrailerActive`).
     @State private var showSynopsisSheet = false
+    /// The About section's full show overview (Select on a truncated About), in the same overlay.
+    @State private var showAboutOverviewSheet = false
     /// FEAT-35 Start Over (movies): the next stream-picker presentation starts from 0. Reset when
     /// the cover goes away, like `forceManualPlay`. Series carry it on `SeriesPlayRoute`.
     @State private var startOverMovie = false
@@ -1630,7 +1632,7 @@ struct DetailView: View {
             filmPickerShown: showStreams,
             seriesPlayShown: seriesPlay != nil,
             fullScreenTrailerShown: model.trailerPlayback != nil,
-            synopsisSheetShown: showSynopsisSheet,
+            synopsisSheetShown: showSynopsisSheet || showAboutOverviewSheet,
             // Review r1 P2-2: the sheet's action clears `showShuffleSheet` before `onDismiss` sets
             // `seriesPlay`, so the pending route keeps the gate shut across the dismissal.
             shuffleSheetShown: showShuffleSheet || pendingShuffleRoute != nil))
@@ -1996,8 +1998,23 @@ struct DetailView: View {
             case .about:
                 // FEAT-35 (P1 §G): Cinematic's last row. Takes the normal anchor path (it is
                 // not a Comments-style bail).
-                DetailAboutSection(rows: aboutRows, overview: overview, isFocused: focusedRow == .about)
+                // Select on a truncated About opens the full show overview in the hero's overlay
+                // (same backdrop, info line and Ratings gate), owned here like every page cover.
+                DetailAboutSection(rows: aboutRows, overview: overview, isFocused: focusedRow == .about,
+                                   onOpenOverview: {
+                                       userInteracted = true
+                                       withdrawTrailerBridgeIfLeaving()
+                                       showAboutOverviewSheet = true
+                                   })
                     .detailRowAnchored(.about, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
+                    .fullScreenCover(isPresented: $showAboutOverviewSheet) {
+                        DetailSynopsisSheet(title: title, logoURL: logoUrl, overview: overview ?? "",
+                                            backdropURL: backgroundUrl.map(DetailBackdropURL.upgraded),
+                                            backdropFallbackURL: backgroundUrl.flatMap {
+                                                DetailBackdropURL.upgraded($0) == $0 ? nil : $0
+                                            },
+                                            info: heroMetaLine, ratingsOn: sectionRatings)
+                    }
             }
         }
     }
@@ -2026,6 +2043,16 @@ struct DetailView: View {
         )
     }
 
+    /// The hero's meta line facts, shared with the About overview's overlay.
+    private var heroMetaLine: DetailMetaLineModel {
+        let year: String? = model.meta?.releaseInfo ?? preview.releaseInfo
+        let runtime: String? = model.meta?.runtime
+        let ageRating: String? = model.meta?.ageRating
+        let imdbRating: String? = model.meta?.imdbRating ?? preview.imdbRating
+        return DetailMetaLineModel(year: year, runtime: runtime, genres: genres,
+                                   ageRating: ageRating, imdbRating: imdbRating)
+    }
+
     /// FEAT-35 "Cinematic Clean": see `DetailCinematicHero`. The action row is `actionRow` itself,
     /// so every closure, label and identifier is shared with Classic.
     private var cinematicHero: some View {
@@ -2034,18 +2061,13 @@ struct DetailView: View {
         // so it never appears after first paint.
         let ratingsGateOn = DetailRatings.reservesSlot(sectionRatings: sectionRatings,
                                                        mdbListActive: model.mdbListRatingsActive)
-        let year: String? = model.meta?.releaseInfo ?? preview.releaseInfo
-        let runtime: String? = model.meta?.runtime
-        let ageRating: String? = model.meta?.ageRating
-        let imdbRating: String? = model.meta?.imdbRating ?? preview.imdbRating
         let synopsis: String? = heroSynopsis
         return DetailCinematicHero(
             title: title,
             logoURL: logoUrl,
             backdropURL: backgroundUrl.map(DetailBackdropURL.upgraded),
             backdropFallbackURL: backgroundUrl.flatMap { DetailBackdropURL.upgraded($0) == $0 ? nil : $0 },
-            meta: DetailMetaLineModel(year: year, runtime: runtime, genres: genres,
-                                      ageRating: ageRating, imdbRating: imdbRating),
+            meta: heroMetaLine,
             ratings: ratings,
             ratingsGateOn: ratingsGateOn,
             ratingsSectionOn: sectionRatings,
