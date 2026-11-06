@@ -6,6 +6,10 @@ import SharedCore
 /// episodes order by number, then release, then title. Tapping an episode opens the stream picker
 /// with that episode's playback videoId. A fixed-height panel under the shelf shows the focused
 /// episode's synopsis, so browsing left/right never reflows the sections below.
+///
+/// A3 (Apple-style, `appleStyle: true`): compact text season tabs that switch the shelf when focus
+/// lands on them (debounced, `SeasonTabBrowse`), a fixed-height text block under every card
+/// (`EpisodeCardText`) and no shared panel. Cinematic and Classic pass nothing and are unchanged.
 struct EpisodesSection: View {
     let meta: MetaDetails
     /// IMDb ratings keyed "season:episode" (from `DetailViewModel.episodeRatings`); empty = no badges.
@@ -20,6 +24,8 @@ struct EpisodesSection: View {
     /// P5 B22: a post-play More Like This pick from an episode's player; called from the picker
     /// cover's `onDismiss` so the host pushes only after the cover is gone.
     var onPostPlayTitle: ((MetaPreview) -> Void)? = nil
+    /// A3: the Apple-style Detail layout (`DetailLayout.appleStyle`). Off = today's section.
+    var appleStyle: Bool = false
 
     @AppStorage(EpisodeSpoilerRules.defaultsKey) private var hideSpoilers = false
     @State private var selectedSeason: Int?
@@ -44,6 +50,17 @@ struct EpisodesSection: View {
     /// re-runs on every Left/Right (the `focusedEpisodeId` FocusState lives here), and regrouping
     /// re-sorted every episode with Kotlin reads in the comparator on each press.
     @State private var groupingCache = EpisodeGroupingCache()
+    /// A3.2: viewed-season browsing (debounce tickets, per-season remembered episode). Only
+    /// `selectedSeason` (the viewed season) ever changes from it; see `SeasonTabBrowse`. A reference
+    /// in `@State`, like the caches above: recording the focused card on every Left/Right must not
+    /// invalidate the section again (BUG-153).
+    @State private var seasonBrowse = SeasonTabBrowseBox()
+    /// A3.2: the sleeping debounce for the last tab focus; cancelled by the next one.
+    @State private var seasonSwitchTask: Task<Void, Never>?
+    /// A3.2: which text season tab holds focus (Apple-style only).
+    @FocusState private var focusedSeasonTab: Int?
+    /// A3.1: formatted air dates for the per-card text block (Apple-style only).
+    @State private var airDateCache = EpisodeAirDateCache()
 
     private func airedUnwatchedCount(season: Int?, episodes: [MetaVideo]) -> Int {
         airedCountCache.count(
@@ -82,9 +99,22 @@ struct EpisodesSection: View {
         // unwatched episode of the season (Apple TV app behaviour), else the first episode. Before,
         // Down from the season row landed on whichever card sat nearest, usually E1.
         let nextUpId = episodes.first(where: { !isWatched($0) })?.id ?? episodes.first?.id
+        // A3.2: Apple-style enters a season it has seen before on the remembered episode; first
+        // entry (and every other layout) is next-up.
+        let entryId = appleStyle
+            ? seasonBrowse.state.entryEpisode(season: current, nextUpId: nextUpId,
+                                        isListed: { id in episodes.contains { $0.id == id } })
+            : nextUpId
+        let showsSeasonTabs = appleStyle && seasons.count > 1
 
         return VStack(alignment: .leading, spacing: 20) {
-            if seasons.count > 1 {
+            if showsSeasonTabs {
+                seasonTabRow(seasons: seasons, current: current,
+                             releasedSeasons: grouping.releasedSeasons,
+                             airedLabel: hideSpoilers ? EpisodeSpoilerRules.airedUnwatchedLabel(
+                                count: airedUnwatchedCount(season: current, episodes: episodes),
+                                settingOn: hideSpoilers) : nil)
+            } else if seasons.count > 1 {
                 // FEAT-24 (u/mrStevenx3, p4afwfo): season POSTERS instead of "Season 1 / Season 2"
                 // text, "comme le fait l'application mobile Nuvio". The data was already here —
                 // `MetaVideo.seasonPoster` is filled by the TMDB season fetch (`useSeasonPosters`,
@@ -140,16 +170,19 @@ struct EpisodesSection: View {
             // hierarchy. It now labels the shelf it belongs to, directly under the selector. Was
             // also a raw `Text("Episodes")` — the one unlocalized string on this screen (his
             // French locale showed "Episodes", not "Épisodes").
-            HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.md) {
-                Text(String(localized: "Episodes")).font(Theme.Font.screenTitle)
-                if hideSpoilers, let label = EpisodeSpoilerRules.airedUnwatchedLabel(
-                    count: airedUnwatchedCount(season: current, episodes: episodes),
-                    settingOn: hideSpoilers
-                ) {
-                    Text(label)
-                        .font(Theme.Font.meta)
-                        .foregroundStyle(Theme.Palette.textSecondary)
-                        .accessibilityIdentifier("episodes_aired_unwatched")
+            // A3.2: with tabs, the tab row is the shelf's heading (and carries the aired count).
+            if !showsSeasonTabs {
+                HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.md) {
+                    Text(String(localized: "Episodes")).font(Theme.Font.screenTitle)
+                    if hideSpoilers, let label = EpisodeSpoilerRules.airedUnwatchedLabel(
+                        count: airedUnwatchedCount(season: current, episodes: episodes),
+                        settingOn: hideSpoilers
+                    ) {
+                        Text(label)
+                            .font(Theme.Font.meta)
+                            .foregroundStyle(Theme.Palette.textSecondary)
+                            .accessibilityIdentifier("episodes_aired_unwatched")
+                    }
                 }
             }
 
@@ -163,10 +196,12 @@ struct EpisodesSection: View {
                                 EpisodeThumbCard(
                                     episode: episode,
                                     fallbackImage: meta.background ?? meta.poster,
-                                    rating: rating(for: episode),
+                                    // A3.1: Apple-style draws the rating in the text block instead.
+                                    rating: appleStyle ? nil : rating(for: episode),
                                     isWatched: isWatched(episode),
                                     hidesSpoiler: EpisodeSpoilerRules.hidesSpoilers(
-                                        settingOn: hideSpoilers, isWatched: isWatched(episode))
+                                        settingOn: hideSpoilers, isWatched: isWatched(episode)),
+                                    textBlock: appleStyle ? cardText(for: episode) : nil
                                 )
                             }
                             // BUG-177 (Steven rc7): EpisodeThumbCard owns its ring-mode lift now
@@ -184,6 +219,11 @@ struct EpisodesSection: View {
                                                      willAct: { armHeldEpisode(episode.id) })
                             }
                             .id(episode.id)
+                            .modifier(EpisodeCardIdentifier(identifier: appleStyle
+                                ? EpisodeCardText.cardIdentifier(season: episode.season?.value,
+                                                                 episode: episode.episode?.value,
+                                                                 fallbackId: episode.id)
+                                : nil))
                             // BUG-177: the lifted card draws over its right neighbour.
                             // BUG-153 (Batch M): only when SwiftUI draws the lift.
                             .zIndex(DetailTileFocus.raisedZIndex(
@@ -203,14 +243,15 @@ struct EpisodesSection: View {
                 .onChange(of: current) { _, _ in
                     // A new season can be shorter than the old scroll offset; snap to its next-up
                     // episode (the first one when all are watched) without animating through the
-                    // intermediate layout.
-                    guard let target = nextUpId else { return }
+                    // intermediate layout. A3.2: Apple-style returns to a revisited season's
+                    // remembered episode instead (`entryId` is `nextUpId` everywhere else).
+                    guard let target = entryId else { return }
                     var tx = Transaction()
                     tx.disablesAnimations = true
                     withTransaction(tx) { proxy.scrollTo(target, anchor: .leading) }
                 }
                 .onAppear {
-                    guard let target = nextUpId, target != episodes.first?.id else { return }
+                    guard let target = entryId, target != episodes.first?.id else { return }
                     // One runloop later: a scrollTo during the first appear can no-op before the
                     // row has a content size.
                     DispatchQueue.main.async {
@@ -223,10 +264,12 @@ struct EpisodesSection: View {
                     // Watched state often lands after the first render (review r1 P2). Only move
                     // a shelf the user isn't on — nor one whose card just ran a hold-menu action
                     // and is about to take focus back (FEAT-83, `heldEpisodeId`).
-                    guard focusedEpisodeId == nil, heldEpisodeId == nil, let target else { return }
+                    // A3.2: Apple-style keeps a revisited season on its remembered episode.
+                    let goal: String? = appleStyle ? entryId : target
+                    guard focusedEpisodeId == nil, heldEpisodeId == nil, let goal else { return }
                     var tx = Transaction()
                     tx.disablesAnimations = true
-                    withTransaction(tx) { proxy.scrollTo(target, anchor: .leading) }
+                    withTransaction(tx) { proxy.scrollTo(goal, anchor: .leading) }
                 }
             }
             // `.userInitiated`: the default priority only applies to programmatic focus and first
@@ -234,16 +277,26 @@ struct EpisodesSection: View {
             // also lands on next-up rather than the last-visited card, as in the Apple TV app.
             // FEAT-83: while a hold-menu action is settling, the acted-on card is the default, so
             // focus coming back from the menu is never redirected to a next-up that just moved.
-            .defaultFocus($focusedEpisodeId, heldEpisodeId ?? nextUpId, priority: .userInitiated)
+            .defaultFocus($focusedEpisodeId, heldEpisodeId ?? entryId, priority: .userInitiated)
             .focusSection()
-            .onChange(of: focusedEpisodeId) { _, _ in
+            // A3.2: Menu on an episode card goes to the viewed season's tab first; Menu on the tabs
+            // (no handler there) leaves Detail as before. nil everywhere else: no handler.
+            .onExitCommand(perform: showsSeasonTabs ? { focusedSeasonTab = current } : nil)
+            .onChange(of: focusedEpisodeId) { _, newValue in
                 // FEAT-83: focus moved after the action (back to the held card, on along the
                 // shelf, or anywhere else): the hold is over. Any change, not only a return to
                 // the shelf (review r1 P3-2).
                 if heldEpisodeId != nil { heldEpisodeId = nil }
+                // A3.2: per-season remembered episode (Apple-style only).
+                if appleStyle, let newValue, let current {
+                    seasonBrowse.state.remember(episodeId: newValue, season: current)
+                }
             }
 
-            focusedOverviewPanel(episodes: episodes)
+            // A3.1: Apple-style puts the text under each card and drops the shared panel.
+            if !appleStyle {
+                focusedOverviewPanel(episodes: episodes)
+            }
         }
         .fullScreenCover(item: $episodeForStreams, onDismiss: {
             guard let pick = postPlayPending else { return }
@@ -276,6 +329,99 @@ struct EpisodesSection: View {
                 onOpenTitle: onPostPlayTitle == nil ? nil : { postPlayPending = $0 }
             )
         }
+    }
+
+    // MARK: - A3 Apple-style
+
+    /// A3.2 (C1): compact text tabs, one per season (Specials last). Focus landing on a tab switches
+    /// the shelf after `SeasonTabBrowse.debounce`; Select switches at once. Only the viewed season
+    /// (`selectedSeason`) changes: the hero and Play read `DetailViewModel`, never this section.
+    @ViewBuilder
+    private func seasonTabRow(seasons: [Int], current: Int?, releasedSeasons: Set<Int>,
+                              airedLabel: String?) -> some View {
+        HStack(alignment: .center, spacing: Theme.Spacing.lg) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: Theme.Spacing.xs) {
+                    ForEach(EpisodeSeasonTabs.tabs(for: seasons), id: \.season) { tab in
+                        Button {
+                            selectSeasonTab(tab.season)
+                        } label: {
+                            Text(tab.label)
+                                .font(Theme.Font.metaStrong)
+                                .lineLimit(1)
+                                .padding(.horizontal, Theme.Spacing.md)
+                                .padding(.vertical, Theme.Spacing.xs)
+                        }
+                        .buttonStyle(.chip(selected: tab.season == current))
+                        .focused($focusedSeasonTab, equals: tab.season)
+                        // FEAT-83: the same season hold menu as the chips and posters.
+                        .contextMenu {
+                            if releasedSeasons.contains(tab.season) {
+                                SeasonHoldMenuItems(meta: meta, season: tab.season,
+                                                    watchedEpisodeKeys: watchedEpisodeKeys)
+                            }
+                        }
+                        .accessibilityIdentifier(tab.accessibilityIdentifier)
+                        .accessibilityAddTraits(tab.season == current ? .isSelected : [])
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+            .focusSection()
+            .onChange(of: focusedSeasonTab) { _, season in
+                seasonTabFocusChanged(season, viewed: selectedSeason ?? seasons.first)
+            }
+
+            if let airedLabel {
+                Text(airedLabel)
+                    .font(Theme.Font.meta)
+                    .foregroundStyle(Theme.Palette.textSecondary)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .accessibilityIdentifier("episodes_aired_unwatched")
+            }
+        }
+    }
+
+    /// A3.2: focus moved onto a tab (debounced switch) or off the row. Leaving drops a switch that
+    /// has not settled yet, so focus enters the shelf that is on screen: swapping the shelf under
+    /// focus that is already moving into it could strand focus on a card that is gone.
+    private func seasonTabFocusChanged(_ season: Int?, viewed: Int?) {
+        seasonSwitchTask?.cancel()
+        seasonSwitchTask = nil
+        guard let season else {
+            seasonBrowse.state.cancel()
+            return
+        }
+        guard let ticket = seasonBrowse.state.focus(on: season, viewed: viewed) else { return }
+        seasonSwitchTask = Task { @MainActor in
+            try? await Task.sleep(for: SeasonTabBrowse.debounce)
+            guard !Task.isCancelled else { return }
+            if let settled = seasonBrowse.state.settle(ticket: ticket) { selectedSeason = settled }
+        }
+    }
+
+    /// A3.2: Select on a tab switches at once (no debounce wait).
+    private func selectSeasonTab(_ season: Int) {
+        seasonSwitchTask?.cancel()
+        seasonSwitchTask = nil
+        _ = seasonBrowse.state.flush()
+        if selectedSeason != season { selectedSeason = season }
+    }
+
+    /// A3.1: the text block's content for one card (spoiler rule shared with the still's blur).
+    private func cardText(for episode: MetaVideo) -> EpisodeCardText.Content {
+        let overview: String? = episode.overview
+        let released: String? = episode.released
+        return EpisodeCardText.make(
+            episodeNumber: episode.episode?.value,
+            title: episode.title,
+            overview: overview,
+            airDate: airDateCache.airDate(released),
+            runtimeMinutes: episode.runtime?.value,
+            rating: rating(for: episode),
+            hidesSpoiler: EpisodeSpoilerRules.hidesSpoilers(settingOn: hideSpoilers, isWatched: isWatched(episode))
+        )
     }
 
     /// Fixed-height synopsis for the focused episode (falls back to the season's first episode so
@@ -365,7 +511,7 @@ struct EpisodesSection: View {
     }
 
     fileprivate static func seasonLabel(_ season: Int) -> String {
-        season <= 0 ? String(localized: "Specials") : String(localized: "Season \(season)")
+        EpisodeSeasonTabs.label(season)
     }
 
     /// FEAT-24: first non-blank `seasonPoster` among each season's episodes (mobile's rule), then —
@@ -636,6 +782,9 @@ private struct EpisodeThumbCard: View {
     var isWatched: Bool = false
     /// "Hide Episode Spoilers": blur the still until the episode is watched.
     var hidesSpoiler: Bool = false
+    /// A3.1: Apple-style text block (number, title, two-line overview, date, rating) in place of
+    /// the one-line heading; nil = the heading (Cinematic, Classic).
+    var textBlock: EpisodeCardText.Content? = nil
 
     @Environment(\.isFocused) private var isFocused
     // BUG-32: shared corner token, not the hardcoded Theme.Radius.card.
@@ -709,20 +858,27 @@ private struct EpisodeThumbCard: View {
                                  size: CGSize(width: Theme.Size.episodeWidth, height: Theme.Size.episodeHeight),
                                  tintSource: thumbnailURL)
 
-            Text(heading)
-                .font(Theme.Font.cardTitle)
-                .foregroundStyle(isFocused ? Theme.Palette.textPrimary : Theme.Palette.textSecondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .padding(.horizontal, Theme.Spacing.xs)
-                .frame(width: Theme.Size.episodeWidth, alignment: .leading)
-                // UX-15 class: keep the artwork↔title gap constant under the system lift.
-                .modifier(CardCaptionFocusDrop(
-                    mode: CardFocusMode.resolve(accentFocusRing: focusAppearance.accentFocusRing,
-                                                noZoomOnFocus: focusAppearance.noZoomOnFocus),
-                    isFocused: isFocused,
-                    artworkHeight: Theme.Size.episodeHeight
-                ))
+            Group {
+                if let textBlock {
+                    EpisodeCardTextBlock(content: textBlock, isFocused: isFocused)
+                } else {
+                    Text(heading)
+                        .font(Theme.Font.cardTitle)
+                        .foregroundStyle(isFocused ? Theme.Palette.textPrimary : Theme.Palette.textSecondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .padding(.horizontal, Theme.Spacing.xs)
+                        .frame(width: Theme.Size.episodeWidth, alignment: .leading)
+                }
+            }
+            // UX-15 class: keep the artwork↔title gap constant under the system lift (the
+            // Apple-style text block drops with it as one piece).
+            .modifier(CardCaptionFocusDrop(
+                mode: CardFocusMode.resolve(accentFocusRing: focusAppearance.accentFocusRing,
+                                            noZoomOnFocus: focusAppearance.noZoomOnFocus),
+                isFocused: isFocused,
+                artworkHeight: Theme.Size.episodeHeight
+            ))
         }
         // BUG-177: Reduce Motion gate — see `TrailerThumbCard`. BUG-153 (Batch M): also nil in
         // ring mode under the `debug.detailTileRingNoAnim` knob.
@@ -764,6 +920,98 @@ private struct EpisodeThumbCard: View {
             return String(localized: "E\(e) \u{00B7} \(episode.title)")
         }
         return episode.title
+    }
+}
+
+/// A3.1 (C2): the Apple-style text under one episode card. Every row has a fixed slot and the block
+/// a fixed height (`EpisodeCardTextLayout`), so cards in the shelf line up whatever data each has.
+/// The overview and the placeholder share one two-line slot; the still's blur is driven by the same
+/// `hidesSpoiler` value (`EpisodeThumbCard.hidesSpoiler`), so text and still hide together.
+private struct EpisodeCardTextBlock: View {
+    let content: EpisodeCardText.Content
+    let isFocused: Bool
+
+    var body: some View {
+        // Every row is drawn in a caption2-sized token (`caption`, `cardTitle`), so one measured
+        // line height (Larger Text and the Open Sans face included) sizes all of them.
+        let line = Theme.Font.uiFont(for: .caption2).lineHeight
+        let lineSlot = line.rounded(.up)
+        VStack(alignment: .leading, spacing: EpisodeCardTextLayout.rowSpacing) {
+            Text(content.numberLabel ?? "")
+                .font(Theme.Font.caption)
+                .foregroundStyle(Theme.Palette.textSecondary)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, minHeight: lineSlot, maxHeight: lineSlot, alignment: .leading)
+                .accessibilityIdentifier("episode_text_number")
+
+            Text(content.title)
+                .font(Theme.Font.cardTitle.weight(.semibold))
+                .foregroundStyle(isFocused ? Theme.Palette.textPrimary : Theme.Palette.textSecondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, minHeight: lineSlot, maxHeight: lineSlot, alignment: .leading)
+                .accessibilityIdentifier("episode_text_title")
+
+            let overviewSlot = EpisodeCardTextLayout.overviewHeight(overviewLine: line)
+            Group {
+                if content.overviewHidden {
+                    Text(String(localized: "Synopsis hidden until watched"))
+                        .font(Theme.Font.caption)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                        .lineLimit(EpisodeCardTextLayout.overviewLineLimit)
+                        .accessibilityIdentifier("episode_synopsis_hidden")
+                } else if let overview = content.overview {
+                    Text(overview)
+                        .font(Theme.Font.caption)
+                        .foregroundStyle(Theme.Palette.textPrimary.opacity(0.9))
+                        .lineLimit(EpisodeCardTextLayout.overviewLineLimit)
+                        .truncationMode(.tail)
+                        .accessibilityIdentifier("episode_text_overview")
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: overviewSlot, maxHeight: overviewSlot, alignment: .topLeading)
+
+            HStack(spacing: Theme.Spacing.xs) {
+                if let metaLine = content.metaLine {
+                    Text(metaLine)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                if let ratingText = content.ratingText {
+                    HStack(spacing: Theme.Spacing.xxs) {
+                        Image(systemName: "star.fill")
+                            .foregroundStyle(Theme.Palette.star)
+                        Text(ratingText)
+                    }
+                    .fixedSize()
+                    .accessibilityIdentifier("episode_text_rating")
+                }
+            }
+            .font(Theme.Font.caption)
+            .foregroundStyle(Theme.Palette.textSecondary)
+            .frame(maxWidth: .infinity, minHeight: lineSlot, maxHeight: lineSlot, alignment: .leading)
+            .accessibilityIdentifier("episode_text_meta")
+        }
+        .padding(.horizontal, Theme.Spacing.xs)
+        .frame(width: Theme.Size.episodeWidth,
+               height: EpisodeCardTextLayout.blockHeight(numberLine: lineSlot, titleLine: lineSlot,
+                                                         overviewLine: line, metaLine: lineSlot),
+               alignment: .topLeading)
+    }
+}
+
+/// A3: the Apple-style card's `episode_card_<s>_<e>` identifier; nil adds none, so the other
+/// layouts' accessibility tree is unchanged.
+private struct EpisodeCardIdentifier: ViewModifier {
+    let identifier: String?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let identifier {
+            content.accessibilityIdentifier(identifier)
+        } else {
+            content
+        }
     }
 }
 
