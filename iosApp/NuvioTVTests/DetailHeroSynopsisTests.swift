@@ -111,4 +111,38 @@ final class DetailHeroSynopsisTests: XCTestCase {
                                                playTargetEpisodeOverview: episodeText, episodeSpoilerHidden: false),
                        episodeText)
     }
+
+    // MARK: - Play target lookup (the shared `nextUpVideoFor` rule)
+
+    private let refs: [DetailHeroSynopsis.EpisodeRef] = [
+        .init(id: "tt1:1:1", season: 1, episode: 1),
+        .init(id: "tt1:1:2", season: 1, episode: 2),
+        .init(id: "addon-special-xyz", season: nil, episode: nil),
+    ]
+
+    func testPlayTargetByNumbersFirst() {
+        XCTAssertEqual(DetailHeroSynopsis.playTargetIndex(refs, contentId: "tt1", season: 1, episode: 2,
+                                                          videoId: "addon-special-xyz"), 1)
+    }
+
+    /// An action with missing numbers is found by its video id.
+    func testPlayTargetWithoutNumbersFoundByVideoId() {
+        XCTAssertEqual(DetailHeroSynopsis.playTargetIndex(refs, contentId: "tt1", season: nil, episode: nil,
+                                                          videoId: "addon-special-xyz"), 2)
+    }
+
+    /// Numbers that match nothing fall through to the id, including the "content:s:e" playback id.
+    func testPlayTargetFallsBackToPlaybackVideoId() {
+        let others: [DetailHeroSynopsis.EpisodeRef] = [.init(id: "ep-a", season: 2, episode: 3)]
+        XCTAssertEqual(DetailHeroSynopsis.playTargetIndex(others, contentId: "tt9", season: 5, episode: 5,
+                                                          videoId: "tt9:2:3"), 0)
+        XCTAssertNil(DetailHeroSynopsis.playTargetIndex(others, contentId: "tt9", season: nil, episode: nil,
+                                                        videoId: "nope"))
+    }
+
+    func testPlaybackVideoIdMatchesKotlinRule() {
+        XCTAssertEqual(DetailHeroSynopsis.playbackVideoId(contentId: "tt1", ref: .init(id: "x", season: 1, episode: 2)), "tt1:1:2")
+        XCTAssertEqual(DetailHeroSynopsis.playbackVideoId(contentId: "tt1", ref: .init(id: "x", season: nil, episode: 2)), "x")
+        XCTAssertEqual(DetailHeroSynopsis.playbackVideoId(contentId: "tt1", ref: .init(id: " ", season: nil, episode: nil)), "tt1")
+    }
 }

@@ -2025,9 +2025,18 @@ struct DetailView: View {
     /// the hero keeps the show overview (About is where it moved).
     private var heroSynopsis: String? {
         var target: MetaVideo? = nil
-        if isSeries, let action = model.seriesAction, let meta = model.meta,
-           let s = action.seasonNumber?.value, let e = action.episodeNumber?.value {
-            target = meta.videos.first { $0.season?.value == s && $0.episode?.value == e }
+        if isSeries, let action = model.seriesAction, let meta = model.meta {
+            // The shared `nextUpVideoFor` rule: numbers first, then the action's video id (a Play
+            // target with missing numbers is picked by id).
+            let videos = meta.videos
+            let refs = videos.map {
+                DetailHeroSynopsis.EpisodeRef(id: $0.id, season: $0.season?.value, episode: $0.episode?.value)
+            }
+            if let index = DetailHeroSynopsis.playTargetIndex(
+                refs, contentId: meta.id, season: action.seasonNumber?.value,
+                episode: action.episodeNumber?.value, videoId: action.videoId) {
+                target = videos[index]
+            }
         }
         let targetOverview: String? = target?.overview
         let watched: Bool = target.map { video in

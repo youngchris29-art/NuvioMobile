@@ -67,6 +67,34 @@ nonisolated enum DetailHeroSynopsis {
                 aboutShowsOverview: aboutShowsOverview)?.text
     }
 
+    /// One episode as the Play-target lookup reads it (`MetaVideo`'s id and numbers).
+    struct EpisodeRef: Equatable {
+        let id: String
+        let season: Int?
+        let episode: Int?
+    }
+
+    /// The episode the Play/Resume action targets, as the shared `nextUpVideoFor` finds it: by
+    /// season and episode when the action has both, else (or when no episode matches) the first
+    /// whose own id, or its playback id (`buildPlaybackVideoId`: "content:s:e" with both numbers,
+    /// else its own id, else the content id), equals the action's `videoId`.
+    static func playTargetIndex(_ episodes: [EpisodeRef], contentId: String, season: Int?, episode: Int?,
+                                videoId: String) -> Int? {
+        if let season, let episode,
+           let index = episodes.firstIndex(where: { $0.season == season && $0.episode == episode }) {
+            return index
+        }
+        return episodes.firstIndex { ref in
+            ref.id == videoId || playbackVideoId(contentId: contentId, ref: ref) == videoId
+        }
+    }
+
+    /// Kotlin's `buildPlaybackVideoId(parentMetaId:seasonNumber:episodeNumber:fallbackVideoId:)`.
+    static func playbackVideoId(contentId: String, ref: EpisodeRef) -> String {
+        if let season = ref.season, let episode = ref.episode { return "\(contentId):\(season):\(episode)" }
+        return ref.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? contentId : ref.id
+    }
+
     private static func nonBlank(_ value: String?) -> String? {
         guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         return value
