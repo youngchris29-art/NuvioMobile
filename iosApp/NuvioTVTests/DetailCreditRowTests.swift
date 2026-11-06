@@ -139,7 +139,7 @@ final class DetailCreditRowTests: XCTestCase {
 
     // MARK: - Crew job labels
 
-    private static let mappedJobs = ["Director", "Writer", "Screenplay", "Story", "Novel", "Characters",
+    private static let mappedJobs = ["Director", "Writer", "Screenplay", "Teleplay", "Story", "Novel", "Characters",
                                      "Creator", "Producer", "Executive Producer", "Original Music Composer",
                                      "Director of Photography", "Editor", "Casting"]
 

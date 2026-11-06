@@ -116,6 +116,7 @@ nonisolated enum DetailCreditRow {
         case "director": return String(localized: "Director")
         case "writer": return String(localized: "Writer")
         case "screenplay": return String(localized: "Screenplay")
+        case "teleplay": return String(localized: "Teleplay")
         case "story": return String(localized: "Story")
         case "novel": return String(localized: "Novel")
         case "characters": return String(localized: "Characters")
