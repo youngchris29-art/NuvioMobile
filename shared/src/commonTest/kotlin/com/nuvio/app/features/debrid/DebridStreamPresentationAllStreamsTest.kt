@@ -275,6 +275,75 @@ class DebridStreamPresentationAllStreamsTest {
     }
 
     @Test
+    fun `cached only keeps add-on links marked cached in their text and drops uncached ones`() {
+        val aioCached = textRow(
+            "aio-cached", name = "4K \u2B50\u2B50\u2B50\u2B50 \u26A1",
+            description = "\uD83C\uDFAC Animals (2026)\n\uD83D\uDFE2 INSTANT PLAY\n\u2601\uFE0F TorBox",
+        )
+        val aioUncached = textRow("aio-uncached", name = "4K \u23F3", description = "\u23F3 Not cached\n\u2601\uFE0F TorBox")
+        val torrentioCached = textRow("torrentio-cached", name = "[RD+] Torrentio\n4k")
+        val torrentioDownload = textRow("torrentio-download", name = "[RD download] Torrentio\n4k")
+        val plainLink = textRow("plain", name = "Some Scraper 1080p")
+        val titledRow = textRow("titled", name = "1080p", description = "\uD83C\uDFAC Instant Family (2018)")
+        val pluginRow = textRow("plugin", name = "4K \u26A1", addonId = "plugin:scraper")
+
+        val group = presentGroup(
+            listOf(aioCached, aioUncached, torrentioCached, torrentioDownload, plainLink, titledRow, pluginRow),
+            debridSettings(resolver = true, streamCachedOnly = true),
+            allStreams = true,
+        )
+
+        assertEquals(listOf("aio-cached", "torrentio-cached"), group.streams.filenames())
+        assertEquals(5, group.cachedOnlyHiddenCount)
+    }
+
+    @Test
+    fun `cached only counts hidden links next to managed debrid streams and when off counts none`() {
+        val streams = cachedOnlyFixture()
+        val on = presentGroup(
+            streams.all,
+            debridSettings(resolver = true, streamCachedOnly = true),
+            allStreams = true,
+        )
+        // The plain link and the unverified torrent are the passthrough rows; both are dropped.
+        assertEquals(2, on.cachedOnlyHiddenCount)
+        assertEquals(listOf(streams.cachedTorrent, streams.directDebrid).filenames(), on.streams.filenames())
+
+        val off = presentGroup(
+            streams.all,
+            debridSettings(resolver = true, streamCachedOnly = false),
+            allStreams = true,
+        )
+        assertEquals(0, off.cachedOnlyHiddenCount)
+    }
+
+    @Test
+    fun `addon cached marker rules`() {
+        fun marker(name: String, description: String? = null) =
+            with(DebridStreamPresentation) { textRow("x", name = name, description = description).addonCachedMarker }
+
+        assertEquals(DebridStreamPresentation.AddonCachedMarker.CACHED, marker("[TB+] Torrentio"))
+        assertEquals(DebridStreamPresentation.AddonCachedMarker.CACHED, marker("x", "\uD83D\uDFE2 INSTANT PLAY"))
+        assertEquals(DebridStreamPresentation.AddonCachedMarker.CACHED, marker("[Cached] 1080p"))
+        assertEquals(DebridStreamPresentation.AddonCachedMarker.UNCACHED, marker("uncached 1080p"))
+        assertEquals(DebridStreamPresentation.AddonCachedMarker.UNCACHED, marker("\u26A1 x", "\u23F3"))
+        assertEquals(DebridStreamPresentation.AddonCachedMarker.UNKNOWN, marker("1080p WEB-DL"))
+        // Audio / quality tags with a plus are not service tags.
+        assertEquals(DebridStreamPresentation.AddonCachedMarker.UNKNOWN, marker("[DD+] 1080p"))
+        assertEquals(DebridStreamPresentation.AddonCachedMarker.UNKNOWN, marker("[HD+] 1080p"))
+        // A movie title in the description is not a marker.
+        assertEquals(
+            DebridStreamPresentation.AddonCachedMarker.UNKNOWN,
+            marker("1080p", "\uD83C\uDFAC Instant Family (2018)"),
+        )
+        assertEquals(
+            DebridStreamPresentation.AddonCachedMarker.CACHED,
+            marker("[RD+] 1080p", "\uD83C\uDFAC Uncached (2018)"),
+            "uncached in the description is a title, not a marker",
+        )
+    }
+
+    @Test
     fun `without cached only the same fixture keeps plain links and unverified torrents`() {
         val streams = cachedOnlyFixture()
 
@@ -401,6 +470,22 @@ class DebridStreamPresentationAllStreamsTest {
             addonName = "Addon",
             addonId = addonId,
             behaviorHints = StreamBehaviorHints(filename = filename, videoSize = size),
+        )
+
+    /** An installed add-on's resolved http link whose cached state is only in its text. */
+    private fun textRow(
+        filename: String,
+        name: String,
+        description: String? = null,
+        addonId: String = "addon:test",
+    ): StreamItem =
+        StreamItem(
+            name = name,
+            description = description,
+            url = "https://example.test/$filename",
+            addonName = "Addon",
+            addonId = addonId,
+            behaviorHints = StreamBehaviorHints(filename = filename),
         )
 
     private fun torrent(filename: String, state: StreamDebridCacheState): StreamItem =

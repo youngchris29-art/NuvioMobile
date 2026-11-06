@@ -20,9 +20,13 @@ object DebridStreamPresentation {
      *    still passes the minimum-resolution filter (the debrid branch keeps dropping it).
      *  - The per-group result limits ([DebridStreamPreferences.maxResults] and the per-resolution /
      *    per-quality caps) are NOT applied to passthrough streams; sorting is.
-     *  - [DebridSettings.streamCachedOnly], with a resolver configured, keeps only managed debrid
-     *    streams (cached torrents and direct debrid links) and drops every passthrough stream.
-     *    Without a resolver the flag is ignored.
+     *  - [DebridSettings.streamCachedOnly], with a resolver configured, keeps managed debrid
+     *    streams (cached torrents and direct debrid links) plus installed-add-on passthrough
+     *    streams that are a direct http(s) link the add-on itself marks cached (see
+     *    [AddonCachedMarker]: AIOStreams, Torrentio and Comet in debrid mode send already-resolved
+     *    links whose cached state is only in the text). Every other passthrough stream is dropped
+     *    and counted in [AddonStreamGroup.cachedOnlyHiddenCount]. Without a resolver the flag is
+     *    ignored.
      */
     fun apply(
         groups: List<AddonStreamGroup>,
@@ -44,8 +48,11 @@ object DebridStreamPresentation {
                 .filterNot { stream -> stream.isUncachedDebridStream }
             val debridStreams = visibleStreams.filter { stream -> stream.isManagedDebridStream }
             if (debridStreams.isEmpty()) {
+                if (!allStreams) return@map group.copy(streams = visibleStreams)
+                val (kept, hidden) = splitCachedOnly(visibleStreams, settings)
                 return@map group.copy(
-                    streams = if (allStreams) presentPassthroughStreams(visibleStreams, settings) else visibleStreams,
+                    streams = applyPassthroughPreferences(kept, settings),
+                    cachedOnlyHiddenCount = hidden,
                 )
             }
 
@@ -60,23 +67,34 @@ object DebridStreamPresentation {
                     }
                 }
             val passthroughStreams = visibleStreams.filterNot { stream -> stream.isManagedDebridStream }
+            val (keptPassthrough, hiddenCount) = if (allStreams) {
+                splitCachedOnly(passthroughStreams, settings)
+            } else {
+                passthroughStreams to 0
+            }
             val presentedPassthroughStreams = if (allStreams) {
-                presentPassthroughStreams(passthroughStreams, settings)
+                applyPassthroughPreferences(keptPassthrough, settings)
             } else {
                 passthroughStreams
             }
 
-            group.copy(streams = presentedDebridStreams + presentedPassthroughStreams)
+            group.copy(
+                streams = presentedDebridStreams + presentedPassthroughStreams,
+                cachedOnlyHiddenCount = hiddenCount,
+            )
         }
     }
 
-    // allStreams only, resolver present: Cached Sources Only drops every passthrough stream (the
-    // caller has already split out the managed ones), otherwise the passthrough preferences apply.
-    private fun presentPassthroughStreams(
+    // allStreams only, resolver present: with Cached Sources Only, a passthrough stream survives
+    // only when it is a direct link its add-on marks cached; the rest is dropped and counted.
+    private fun splitCachedOnly(
         streams: List<StreamItem>,
         settings: DebridSettings,
-    ): List<StreamItem> =
-        if (settings.streamCachedOnly) emptyList() else applyPassthroughPreferences(streams, settings)
+    ): Pair<List<StreamItem>, Int> {
+        if (!settings.streamCachedOnly) return streams to 0
+        val kept = streams.filter { stream -> stream.isAddonMarkedCachedDirectLink }
+        return kept to (streams.size - kept.size)
+    }
 
     // allStreams only: the same filters and sort as [applyPreferences], for streams that are not
     // managed debrid streams. No limits (no per-add-on cap was asked for) and no debrid formatting.
@@ -147,6 +165,42 @@ object DebridStreamPresentation {
                     status.state == StreamDebridCacheState.CACHED
             ))
         }
+
+    /**
+     * Cached state an add-on states in a stream's own text (name / title / description). Add-ons
+     * that already resolved the link through the user's debrid service (AIOStreams, and Torrentio /
+     * Comet / MediaFusion in debrid mode) send a plain http(s) `url`, so the only cache signal is
+     * a marker. Cached: a lightning bolt, a known service tag with a plus ("[RD+]", "[AD+]",
+     * "[TB+]" ...), "instant play" or "[cached]". Uncached: an hourglass, "[uncached]", a
+     * "[RD download]" tag, or "uncached" / "not cached" in the name. An uncached marker wins; no marker at all is [UNKNOWN].
+     */
+    enum class AddonCachedMarker { CACHED, UNCACHED, UNKNOWN }
+
+    // Phrases and tags only: a bare "instant" / "cached" word would match movie titles in the
+    // description ("Instant Family"). The loose "uncached" / "not cached" words count in the name only.
+    private val uncachedMarkerRegex = Regex("⏳|\\[uncached\\]|download\\]", RegexOption.IGNORE_CASE)
+    private val uncachedNameRegex = Regex("\\buncached\\b|\\bnot cached\\b", RegexOption.IGNORE_CASE)
+    private val cachedMarkerRegex = Regex(
+        "⚡|\\binstant play\\b|\\[cached\\]|\\[(RD|AD|PM|TB|DL|ED|OC|PKP|DBD|EN|PP)\\+\\]",
+        RegexOption.IGNORE_CASE,
+    )
+
+    val StreamItem.addonCachedMarker: AddonCachedMarker
+        get() {
+            val text = listOfNotNull(name, title, description).joinToString("\n")
+            return when {
+                uncachedMarkerRegex.containsMatchIn(text) ||
+                    uncachedNameRegex.containsMatchIn(name.orEmpty()) -> AddonCachedMarker.UNCACHED
+                cachedMarkerRegex.containsMatchIn(text) -> AddonCachedMarker.CACHED
+                else -> AddonCachedMarker.UNKNOWN
+            }
+        }
+
+    /** Installed-add-on stream with a playable http(s) link and a cached marker (no uncached one). */
+    val StreamItem.isAddonMarkedCachedDirectLink: Boolean
+        get() = isInstalledAddonStream &&
+            playableDirectUrl?.let { it.startsWith("http://", ignoreCase = true) || it.startsWith("https://", ignoreCase = true) } == true &&
+            addonCachedMarker == AddonCachedMarker.CACHED
 
     private val StreamItem.isUncachedDebridStream: Boolean
         get() = isInstalledAddonStream &&

@@ -349,7 +349,22 @@ data class AddonStreamGroup(
     val streams: List<StreamItem>,
     val isLoading: Boolean = false,
     val error: String? = null,
-)
+    /**
+     * tvOS Cached Sources Only: how many of this add-on's streams the filter hid (links the
+     * add-on does not mark cached). Lets the picker say why an add-on's list is empty.
+     */
+    val cachedOnlyHiddenCount: Int = 0,
+) {
+    // Keeps the five-argument form the tvOS tests and bridge code construct with: Kotlin/Native
+    // exports no default values to Swift.
+    constructor(
+        addonName: String,
+        addonId: String,
+        streams: List<StreamItem>,
+        isLoading: Boolean,
+        error: String?,
+    ) : this(addonName, addonId, streams, isLoading, error, 0)
+}
 
 enum class StreamsEmptyStateReason {
     NoAddonsInstalled,

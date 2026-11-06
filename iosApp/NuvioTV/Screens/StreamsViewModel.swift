@@ -447,7 +447,12 @@ final class StreamsViewModel: ObservableObject {
         // `hasOutcome` (review r2): a reload first emits an empty, non-loading state for a frame;
         // no reason for that one, it is not a verdict.
         if next.isEmpty && !loading && progress.hasOutcome {
-            if let filter, let chip = chips.first(where: { $0.id == filter }) {
+            // Cached Sources Only hid links the add-ons did not mark cached: say so before any
+            // generic reason, or the empty screen gives no hint the setting is the cause.
+            let cachedOnlyHidden = state.filteredGroups.reduce(0) { $0 + Int($1.cachedOnlyHiddenCount) }
+            if cachedOnlyHidden > 0 {
+                (reason, hint) = Self.describeCachedOnlyHidden(count: cachedOnlyHidden)
+            } else if let filter, let chip = chips.first(where: { $0.id == filter }) {
                 // P2 (review r1): one add-on is selected and it has nothing listable: say so about
                 // THAT add-on, never the whole fan-out's counts or debrid hints.
                 (reason, hint) = Self.describeFilteredSource(chip)
@@ -614,6 +619,15 @@ final class StreamsViewModel: ObservableObject {
         }
         let reason = String(localized: "Found \(rawCount) \(rawCount == 1 ? "stream" : "streams"), but none could be resolved to a playable link.")
         return (reason, nil)
+    }
+
+    /// Empty state when "Cached Sources Only" hid every link: the add-ons sent sources, none of
+    /// them marked cached.
+    static func describeCachedOnlyHidden(count: Int) -> (String, String?) {
+        let sourceWord = count == 1 ? "source" : "sources"
+        let reason = String(localized: "\(count) uncached \(sourceWord) hidden by Cached Sources Only.")
+        let hint = String(localized: "Turn it off in Settings \u{2192} Sources to see them.")
+        return (reason, hint)
     }
 
     /// P2: the empty state for one selected add-on: its failure (the shared `error` as the hint),

@@ -514,6 +514,7 @@ object PlayerStreamsRepository {
                                     if (group.addonId != completion.addonId) {
                                         group
                                     } else {
+                                        var cachedOnlyHidden = group.cachedOnlyHiddenCount
                                         val mergedStreams = if (completion.streams.isEmpty()) {
                                             group.streams
                                         } else if (rawPluginStreams != null) {
@@ -522,11 +523,13 @@ object PlayerStreamsRepository {
                                             // of this group so far, not from group.streams: those were already
                                             // presented on the previous completion.
                                             val merged = rawPluginStreams.sortedForGroupedDisplay()
-                                            DebridStreamPresentation.apply(
+                                            val presented = DebridStreamPresentation.apply(
                                                 groups = listOf(group.copy(streams = merged)),
                                                 settings = debridSettings,
                                                 allStreams = true,
-                                            ).firstOrNull()?.streams ?: merged
+                                            ).firstOrNull()
+                                            cachedOnlyHidden = presented?.cachedOnlyHiddenCount ?: 0
+                                            presented?.streams ?: merged
                                         } else {
                                             (group.streams + completion.streams).sortedForGroupedDisplay()
                                         }
@@ -538,6 +541,7 @@ object PlayerStreamsRepository {
                                         }
                                         group.copy(
                                             streams = mergedStreams,
+                                            cachedOnlyHiddenCount = cachedOnlyHidden,
                                             isLoading = stillLoading,
                                             error = finalError,
                                         )

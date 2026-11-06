@@ -99,6 +99,25 @@ final class StreamsViewModelFilterTests: XCTestCase {
         XCTAssertNil(vm.emptyReasonHint)
     }
 
+    func testCachedOnlyHidingEverythingExplainsItself() {
+        let hidden = AddonStreamGroup(
+            addonName: "AIO", addonId: "addon:aio", streams: [], isLoading: false, error: nil,
+            cachedOnlyHiddenCount: 3
+        )
+        let vm = StreamsViewModel(type: "movie", videoId: "tt1")
+        vm.apply(state([hidden], filter: nil, loading: false))
+
+        XCTAssertEqual(vm.groups, [])
+        XCTAssertEqual(vm.emptyReason, "3 uncached sources hidden by Cached Sources Only.")
+        XCTAssertEqual(vm.emptyReasonHint, "Turn it off in Settings \u{2192} Sources to see them.")
+    }
+
+    func testCachedOnlyReasonIsSingularForOne() {
+        let (reason, hint) = StreamsViewModel.describeCachedOnlyHidden(count: 1)
+        XCTAssertEqual(reason, "1 uncached source hidden by Cached Sources Only.")
+        XCTAssertNotNil(hint)
+    }
+
     func testTheReloadFrameHasNoReason() {
         // A reload first emits an empty, non-loading state (no groups, no reason): not a verdict.
         let vm = StreamsViewModel(type: "movie", videoId: "tt1")

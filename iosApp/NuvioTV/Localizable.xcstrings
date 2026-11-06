@@ -20225,6 +20225,26 @@
         }
       }
     },
+    "%lld uncached %@ hidden by Cached Sources Only.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld uncached %@ hidden by Cached Sources Only."
+          }
+        }
+      }
+    },
+    "Turn it off in Settings → Sources to see them.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Turn it off in Settings → Sources to see them."
+          }
+        }
+      }
+    },
     "Found %lld %@, but none could be resolved to a playable link.": {
       "localizations": {
         "de": {
