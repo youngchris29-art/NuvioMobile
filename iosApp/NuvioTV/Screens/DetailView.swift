@@ -2139,6 +2139,7 @@ struct DetailView: View {
             backdropFallbackURL: backgroundUrl.flatMap { DetailBackdropURL.upgraded($0) == $0 ? nil : $0 },
             meta: heroMetaLine,
             formatRequest: formatRequest,
+            formatReady: !model.isLoading,
             ratings: ratings,
             ratingsGateOn: ratingsGateOn,
             ratingsSectionOn: sectionRatings,
@@ -2241,7 +2242,7 @@ struct DetailView: View {
             VStack(alignment: .leading, spacing: Theme.Spacing.lg + Theme.Spacing.sm) {
                 header
                 metaLine
-                DetailFormatBadgeRow(request: formatRequest)
+                DetailFormatBadgeRow(request: formatRequest, ready: !model.isLoading)
                 actionRow
                 if !genres.isEmpty {
                     Text(genres.joined(separator: " \u{2022} "))

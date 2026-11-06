@@ -75,6 +75,8 @@ struct DetailCinematicHero<Actions: View>: View {
     let meta: DetailMetaLineModel
     /// The format badge row's request (nil until the Play target is known).
     let formatRequest: TitleFormatRequest?
+    /// The page's metadata has loaded (the probe waits until it has).
+    var formatReady: Bool = true
     let ratings: [DetailRatingEntry]
     /// The ratings strip's slot is laid out (reserved, possibly still empty) only while this is on:
     /// the Ratings section toggle and the MDBList gate, both known before first paint
@@ -177,7 +179,7 @@ struct DetailCinematicHero<Actions: View>: View {
                 VStack(alignment: .leading, spacing: Theme.Spacing.md) {
                     logoSlot
                     metaLine
-                    DetailFormatBadgeRow(request: formatRequest)
+                    DetailFormatBadgeRow(request: formatRequest, ready: formatReady)
                     if ratingsGateOn { ratingsSlot }
                     if synopsisSlotVisible { synopsisSlot }
                 }

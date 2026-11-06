@@ -6,6 +6,9 @@ import SwiftUI
 /// Never focusable: plain text, no buttons.
 struct DetailFormatBadgeRow: View {
     let request: TitleFormatRequest?
+    /// False while the page's metadata (re)loads: the probe waits, since embedded streams replace
+    /// the add-on fan-out and are only known once it has loaded. The slot stays laid out.
+    var ready: Bool = true
 
     @AppStorage(DetailSettingsKeys.formatBadges) private var enabled = true
     @StateObject private var model = DetailFormatBadgesModel()
@@ -18,8 +21,8 @@ struct DetailFormatBadgeRow: View {
                 EmptyView()
             }
         }
-        .task(id: DetailFormatBadgesModel.taskID(request: request, enabled: enabled)) {
-            await model.run(request: request, enabled: enabled)
+        .task(id: DetailFormatBadgesModel.taskID(request: request, enabled: enabled, ready: ready)) {
+            await model.run(request: request, enabled: enabled, ready: ready)
         }
         .onDisappear { model.disappear() }
     }

@@ -204,6 +204,17 @@ final class DetailFormatBadgesModelTests: XCTestCase {
         await task2.value
     }
 
+    func testNotReadyShowsKnownBadgesButNeverStarts() async {
+        let source = FakeSource()
+        source.cached = [.uhd4k]
+        let model = makeModel(source)
+        await model.run(request: request(), enabled: true, ready: false)
+        XCTAssertTrue(source.started.isEmpty)
+        XCTAssertEqual(labels(model), [TitleFormatBadge.uhd4k.label])
+        XCTAssertNotEqual(DetailFormatBadgesModel.taskID(request: request(), enabled: true, ready: false),
+                          DetailFormatBadgesModel.taskID(request: request(), enabled: true, ready: true))
+    }
+
     func testTaskIDDiffersForSettingAndKey() {
         let a = request("tt1")
         let b = request("tt2")

@@ -76,14 +76,16 @@ final class DetailFormatBadgesModel: ObservableObject {
         self.dwell = dwell
     }
 
-    static func taskID(request: TitleFormatRequest?, enabled: Bool) -> String {
-        "\(enabled ? "on" : "off")|\(request?.key ?? "-")"
+    static func taskID(request: TitleFormatRequest?, enabled: Bool, ready: Bool = true) -> String {
+        "\(enabled ? "on" : "off")|\(ready ? "ready" : "wait")|\(request?.key ?? "-")"
     }
 
     /// Call from `.task(id: DetailFormatBadgesModel.taskID(request:enabled:))`. Tracks the request
     /// for the picker fold and shows any cached state at once, waits the dwell (returns without starting if cancelled during it), starts the
     /// probe and follows its state until the task is cancelled. Off or no request: clears, no start.
-    func run(request: TitleFormatRequest?, enabled: Bool) async {
+    /// Not `ready` (the page's metadata is (re)loading, so a title's embedded streams are not known
+    /// yet): shows what is known, stops any started probe and waits for the ready run.
+    func run(request: TitleFormatRequest?, enabled: Bool, ready: Bool = true) async {
         guard enabled, let request else {
             stopStarted()
             shownKey = nil
@@ -91,6 +93,12 @@ final class DetailFormatBadgesModel: ObservableObject {
             return
         }
         if let started, started.key != request.key { stopStarted() }
+        guard ready else {
+            stopStarted()
+            shownKey = request.key
+            replace(with: source.snapshot(for: request))
+            return
+        }
         // Tracked at once, so a picker opened during the dwell still folds into this request.
         source.watch(request)
         // The probe's snapshot is authoritative here (it already holds every badge of its
