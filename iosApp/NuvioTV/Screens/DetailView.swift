@@ -510,6 +510,9 @@ struct DetailView: View {
     @AppStorage(DetailSettingsKeys.sectionMoreLikeThis) private var sectionMoreLikeThis = true
     @AppStorage(DetailSettingsKeys.sectionComments) private var sectionComments = true
     @AppStorage(DetailSettingsKeys.sectionAbout) private var sectionAbout = true
+    /// C5 (A1.3): the episode shelf's "Hide Episode Spoilers" setting; the Cinematic hero must not
+    /// reveal an episode synopsis the shelf hides.
+    @AppStorage(EpisodeSpoilerRules.defaultsKey) private var hideEpisodeSpoilers = false
     /// FEAT-35 (W2-A): the Cinematic hero's laid-out height, for the dim ramp only. Written by a
     /// rare `onGeometryChange` on the hero (rounded, and only when it changes — about once per visit,
     /// the BUG-41 rule), never per scroll frame. Classic never reads it (`DetailDim.rampDistance`
@@ -1905,6 +1908,28 @@ struct DetailView: View {
         }
     }
 
+    /// C5 (A1.3): the Cinematic hero's synopsis (and its full-synopsis cover): for a series, the
+    /// overview of the episode Play/Resume targets (`model.seriesAction`), else the show overview.
+    /// See `DetailHeroSynopsis`. Classic and every other consumer keep `overview`.
+    private var heroSynopsis: String? {
+        var target: MetaVideo? = nil
+        if isSeries, let action = model.seriesAction, let meta = model.meta,
+           let s = action.seasonNumber?.value, let e = action.episodeNumber?.value {
+            target = meta.videos.first { $0.season?.value == s && $0.episode?.value == e }
+        }
+        let targetOverview: String? = target?.overview
+        let watched: Bool = target.map { video in
+            TitleHoldMenuPolicy.episodeKey(season: video.season?.value, episode: video.episode?.value)
+                .map { model.watchedEpisodeKeys.contains($0) } ?? false
+        } ?? false
+        return DetailHeroSynopsis.text(
+            isSeries: isSeries,
+            showOverview: overview,
+            playTargetEpisodeOverview: targetOverview,
+            episodeSpoilerHidden: EpisodeSpoilerRules.hidesSpoilers(settingOn: hideEpisodeSpoilers, isWatched: watched)
+        )
+    }
+
     /// FEAT-35 "Cinematic Clean": see `DetailCinematicHero`. The action row is `actionRow` itself,
     /// so every closure, label and identifier is shared with Classic.
     private var cinematicHero: some View {
@@ -1917,6 +1942,7 @@ struct DetailView: View {
         let runtime: String? = model.meta?.runtime
         let ageRating: String? = model.meta?.ageRating
         let imdbRating: String? = model.meta?.imdbRating ?? preview.imdbRating
+        let synopsis: String? = heroSynopsis
         return DetailCinematicHero(
             title: title,
             logoURL: logoUrl,
@@ -1927,8 +1953,8 @@ struct DetailView: View {
             ratings: ratings,
             ratingsGateOn: ratingsGateOn,
             ratingsSectionOn: sectionRatings,
-            overview: overview,
-            synopsisSlotVisible: !(model.meta != nil && (overview ?? "").isEmpty),
+            overview: synopsis,
+            synopsisSlotVisible: !(model.meta != nil && (synopsis ?? "").isEmpty),
             credits: DetailCredits.make(
                 cast: (model.meta?.cast ?? []).map { $0.name },
                 director: model.meta?.director ?? [],
