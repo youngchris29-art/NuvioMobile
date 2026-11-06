@@ -469,6 +469,12 @@ internal class TitleFormatProbeEngine(
             state.groups.flatMap { it.streams }.filter { StreamListability.isListable(it, entry.canResolve) },
         )
         if (badges.isEmpty() && !settled) return
+        // The entry's earlier answer expired from the cache: start a new generation, so the
+        // picker's answer is not merged into (and re-cached with) the expired badges.
+        if (entry.answered && entry.cacheKey != null && cache.get(entry.cacheKey) == null) {
+            resetState(entry.request.key)
+            entry.answered = false
+        }
         // Like the probe: an empty answer is cached only if some source actually answered,
         // and only once the picker settled (a partial answer would suppress a full probe).
         val answered = badges.isNotEmpty() || state.groups.any { it.error.isNullOrBlank() }

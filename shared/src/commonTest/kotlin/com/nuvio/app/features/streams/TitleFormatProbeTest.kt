@@ -694,6 +694,29 @@ class TitleFormatProbeTest {
     }
 
     @Test
+    fun aPickerAnswerAfterExpiryStartsAFreshGeneration() = runTest {
+        val rig = rig("a1")
+        rig.fetcher.behavior = { listOf(stream("a1", fourKDv)) }
+        rig.engine.start(movie)
+        settle()
+        val firstGeneration = rig.engine.state(movie).generation
+
+        rig.now += TitleFormatProbeCache.POSITIVE_TTL_MS
+        rig.engine.watch(movie)
+        rig.picker.value = pickerState(token(manual = true), stream("picker", "Movie.2024.1080p.WEB-DL-GRP"))
+        runCurrent()
+
+        assertEquals(emptyList(), rig.badges())
+        assertTrue(rig.engine.state(movie).generation != firstGeneration)
+        rig.picker.value = StreamsUiState()
+        runCurrent()
+        rig.engine.start(movie) // the picker's fresh empty answer is the hit, with no 4K
+        settle()
+        assertEquals(1, rig.fetcher.fetched.size)
+        assertEquals(emptyList(), rig.badges())
+    }
+
+    @Test
     fun changingThePluginScrapersMissesTheCache() = runTest {
         val rig = rig("a1")
         rig.plugins = listOf("https://repo.example.com#p1")
