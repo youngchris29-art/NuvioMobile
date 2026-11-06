@@ -10,6 +10,9 @@ import Foundation
 ///   is no target yet, the episode has no overview (empty or whitespace counts as none), or the
 ///   "Hide Episode Spoilers" setting would hide that episode's synopsis on the episode shelf
 ///   (`EpisodeSpoilerRules.hidesSpoilers`): the hero never reveals what the shelf hides.
+/// - Series with the About section off (`aboutShowsOverview` false): the show overview. The About
+///   section is where the show overview moved; with it hidden the hero keeps it, so the page never
+///   loses the show's description (a show with no overview still gets the episode's).
 ///
 /// Pure (no SharedCore, no Theme) so it stays `nonisolated` and unit-testable.
 nonisolated enum DetailHeroSynopsis {
@@ -30,18 +33,23 @@ nonisolated enum DetailHeroSynopsis {
     ///     nil when there is no target yet (or the target is not in the episode list).
     ///   - episodeSpoilerHidden: the episode shelf would hide this episode's synopsis
     ///     (`EpisodeSpoilerRules.hidesSpoilers(settingOn:isWatched:)`).
+    ///   - aboutShowsOverview: the About section is on in this layout, so it carries the show
+    ///     overview (`DetailAboutSection`). False keeps the show overview in the hero.
     static func resolve(
         isSeries: Bool,
         showOverview: String?,
         playTargetEpisodeOverview: String?,
         episodeSpoilerHidden: Bool,
+        aboutShowsOverview: Bool = true,
         season: Int? = nil,
         episode: Int? = nil
     ) -> Result? {
-        if isSeries, !episodeSpoilerHidden, let episodeText = nonBlank(playTargetEpisodeOverview) {
+        let showText: String? = (showOverview?.isEmpty == false) ? showOverview : nil
+        if isSeries, aboutShowsOverview || showText == nil, !episodeSpoilerHidden,
+           let episodeText = nonBlank(playTargetEpisodeOverview) {
             return Result(text: episodeText, isEpisode: true, season: season, episode: episode)
         }
-        guard let showOverview, !showOverview.isEmpty else { return nil }
+        guard let showOverview = showText else { return nil }
         return Result(text: showOverview, isEpisode: false, season: nil, episode: nil)
     }
 
@@ -50,11 +58,13 @@ nonisolated enum DetailHeroSynopsis {
         isSeries: Bool,
         showOverview: String?,
         playTargetEpisodeOverview: String?,
-        episodeSpoilerHidden: Bool
+        episodeSpoilerHidden: Bool,
+        aboutShowsOverview: Bool = true
     ) -> String? {
         resolve(isSeries: isSeries, showOverview: showOverview,
                 playTargetEpisodeOverview: playTargetEpisodeOverview,
-                episodeSpoilerHidden: episodeSpoilerHidden)?.text
+                episodeSpoilerHidden: episodeSpoilerHidden,
+                aboutShowsOverview: aboutShowsOverview)?.text
     }
 
     private static func nonBlank(_ value: String?) -> String? {

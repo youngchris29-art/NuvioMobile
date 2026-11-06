@@ -1556,9 +1556,13 @@ struct DetailView: View {
         set(.bonus, sectionTrailers && appleStyle, !split.bonus.isEmpty, loadingMeta)
         set(.moreLikeThis, sectionMoreLikeThis, !(model.meta?.moreLikeThis ?? []).isEmpty, loadingMeta || enriching)
         set(.comments, sectionComments, !model.comments.isEmpty, false)
-        set(.about, sectionAbout && detailLayout == .cinematic, DetailAboutOverview.hasContent(rows: aboutRows, overview: overview), loadingMeta)
+        set(.about, aboutSectionEnabled, DetailAboutOverview.hasContent(rows: aboutRows, overview: overview), loadingMeta)
         return DetailSectionAvailability(states: states)
     }
+    /// The About section is on and the layout has it (Cinematic and Apple-style, whose visual base
+    /// is Cinematic; never Classic). It carries the show overview whenever there is one
+    /// (`DetailAboutOverview.hasContent`), so the hero reads this too (`heroSynopsis`).
+    private var aboutSectionEnabled: Bool { sectionAbout && detailLayout == .cinematic }
     /// A2: the rows below the hero, in the layout's order (`DetailSectionOrder`).
     private var sectionRows: [DetailSection] { orderedSections(sectionAvailability) }
     private func orderedSections(_ availability: DetailSectionAvailability) -> [DetailSection] {
@@ -1982,7 +1986,8 @@ struct DetailView: View {
 
     /// C5 (A1.3): the Cinematic hero's synopsis (and its full-synopsis cover): for a series, the
     /// overview of the episode Play/Resume targets (`model.seriesAction`), else the show overview.
-    /// See `DetailHeroSynopsis`. Classic and every other consumer keep `overview`.
+    /// See `DetailHeroSynopsis`. Classic and every other consumer keep `overview`. With About off,
+    /// the hero keeps the show overview (About is where it moved).
     private var heroSynopsis: String? {
         var target: MetaVideo? = nil
         if isSeries, let action = model.seriesAction, let meta = model.meta,
@@ -1998,7 +2003,8 @@ struct DetailView: View {
             isSeries: isSeries,
             showOverview: overview,
             playTargetEpisodeOverview: targetOverview,
-            episodeSpoilerHidden: EpisodeSpoilerRules.hidesSpoilers(settingOn: hideEpisodeSpoilers, isWatched: watched)
+            episodeSpoilerHidden: EpisodeSpoilerRules.hidesSpoilers(settingOn: hideEpisodeSpoilers, isWatched: watched),
+            aboutShowsOverview: aboutSectionEnabled
         )
     }
 

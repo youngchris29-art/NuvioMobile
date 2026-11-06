@@ -73,6 +73,26 @@ final class DetailHeroSynopsisTests: XCTestCase {
                                              playTargetEpisodeOverview: nil, episodeSpoilerHidden: false))
     }
 
+    /// About off: the show overview has nowhere else on the page, so the hero keeps it.
+    func testSeriesWithAboutHiddenShowsTheShowOverview() {
+        let result = DetailHeroSynopsis.resolve(isSeries: true, showOverview: show,
+                                                playTargetEpisodeOverview: episodeText, episodeSpoilerHidden: false,
+                                                aboutShowsOverview: false, season: 2, episode: 3)
+        XCTAssertEqual(result, .init(text: show, isEpisode: false, season: nil, episode: nil))
+        XCTAssertEqual(DetailHeroSynopsis.text(isSeries: true, showOverview: show,
+                                               playTargetEpisodeOverview: episodeText, episodeSpoilerHidden: false,
+                                               aboutShowsOverview: false),
+                       show)
+    }
+
+    /// About off but the show has no overview: the episode text is still better than nothing.
+    func testSeriesWithAboutHiddenAndNoShowOverviewShowsTheEpisodeOverview() {
+        XCTAssertEqual(DetailHeroSynopsis.text(isSeries: true, showOverview: nil,
+                                               playTargetEpisodeOverview: episodeText, episodeSpoilerHidden: false,
+                                               aboutShowsOverview: false),
+                       episodeText)
+    }
+
     func testEpisodeTextShowsEvenWhenTheShowHasNoOverview() {
         XCTAssertEqual(DetailHeroSynopsis.text(isSeries: true, showOverview: nil,
                                                playTargetEpisodeOverview: episodeText, episodeSpoilerHidden: false),
