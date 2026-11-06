@@ -153,6 +153,35 @@ class StreamBestPickTest {
     }
 
     @Test
+    fun aCometBoltTagNamesItsService() {
+        val sel = StreamAutoPlaySelector
+        // The Comet row from StreamFactsParserTest.cometRow.
+        val comet = StreamItem(
+            name = "[TB\u26A1] Comet\n2160p",
+            description = "\uD83D\uDCC4 Animals.2026.2160p.NF.WEB-DL.DDP5.1.Atmos.DV.HDR.H.265-XEBEC\n" +
+                "\uD83D\uDCF9 hevc \u2022 DV \u2022 HDR | \uD83D\uDD0A Atmos \u2022 Dolby Digital Plus \u2022 5.1\n" +
+                "\u2B50 WEB-DL | \uD83C\uDFF7\uFE0F XEBEC\n" +
+                "\uD83D\uDCBE 12.2 GB \uD83D\uDD0E StremThru",
+            url = "https://comet.example/playback/torbox/xyz",
+            addonName = "Comet",
+            addonId = "addon:comet.elfhosted.com",
+        )
+        assertEquals("torbox", with(com.nuvio.app.features.debrid.DebridStreamPresentation) { comet.addonMarkedCachedService })
+        assertTrue(sel.isCachedDebridLink(comet, true, "torbox"))
+        assertFalse(sel.isCachedDebridLink(comet, true, "premiumize"))
+        // The bolt alone marks it cached; an hourglass tag is uncached whatever the service.
+        assertEquals(
+            com.nuvio.app.features.debrid.DebridStreamPresentation.AddonCachedMarker.CACHED,
+            with(com.nuvio.app.features.debrid.DebridStreamPresentation) { marked("[RD\u26A1] Comet 2160p").addonCachedMarker },
+        )
+        assertEquals(
+            com.nuvio.app.features.debrid.DebridStreamPresentation.AddonCachedMarker.UNCACHED,
+            with(com.nuvio.app.features.debrid.DebridStreamPresentation) { marked("[TB\u23F3] Comet 2160p").addonCachedMarker },
+        )
+        assertFalse(sel.isCachedDebridLink(marked("[TB\u23F3] Comet 2160p"), true, "torbox"))
+    }
+
+    @Test
     fun aMarkedCachedLinkRanksAsCachedSoSizeBreaksTheTie() {
         val torrent = torrent("Movie 2160p HDR", StreamDebridCacheState.CACHED, size = 10 * gb)
         val link = marked("[TB+] Torrentio Movie 2160p HDR", size = 40 * gb)

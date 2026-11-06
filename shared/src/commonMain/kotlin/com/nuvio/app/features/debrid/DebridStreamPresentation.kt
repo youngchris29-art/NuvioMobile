@@ -253,7 +253,10 @@ object DebridStreamPresentation {
             }
         }
 
-    private val cachedServiceTagRegex = Regex("\\[($SERVICE_TAGS)\\+\\]", RegexOption.IGNORE_CASE)
+    // "[TB+]" (Torrentio) or "[TB⚡]" (Comet): the cached tag names the service. The uncached
+    // side needs no service: "[TB⏳]" is already uncached by its hourglass.
+    private val cachedServiceTagRegex =
+        Regex("\\[($SERVICE_TAGS)(?:\\+|\u26A1\uFE0F?)\\]", RegexOption.IGNORE_CASE)
 
     /** A debrid service an add-on can name: its id, its short tag and a whole-word name pattern. */
     private class NamedService(val id: String, val tag: String?, namePattern: String) {
@@ -307,7 +310,7 @@ object DebridStreamPresentation {
     /**
      * The debrid service an add-on-marked cached link names, as a provider id ("torbox") or, for a
      * service the app has no provider for, a fixed id ("debridlink"; an unlisted tag lowercased).
-     * In order: a "[XX+]" tag anywhere; a service name anywhere in the `name` field (whole word);
+     * In order: a "[XX+]" / "[XX⚡]" tag anywhere; a service name anywhere in the `name` field (whole word);
      * a service line in the title / description (see [serviceNamedIn]; title lines are skipped).
      * Null when nothing names one (a bolt or "instant play" only).
      */
