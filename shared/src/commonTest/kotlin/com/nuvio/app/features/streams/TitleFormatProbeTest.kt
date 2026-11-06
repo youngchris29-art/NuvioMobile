@@ -746,6 +746,23 @@ class TitleFormatProbeTest {
     }
 
     @Test
+    fun watchingAnEmbeddedTitleAfterADebridChangeResetsIt() = runTest {
+        val rig = rig("a1")
+        rig.settings = DebridSettings(enabled = true, providerApiKeys = mapOf(DebridProviders.TORBOX_ID to "key"))
+        rig.fetcher.embedded[movie.videoId] = listOf(stream("embedded", fourKDv))
+        rig.engine.start(movie)
+        settle()
+        val before = rig.engine.state(movie).generation
+        assertEquals(listOf(UHD_4K, DOLBY_VISION), rig.badges())
+
+        rig.settings = DebridSettings()
+        rig.engine.watch(movie)
+
+        assertTrue(rig.engine.state(movie).generation != before)
+        assertEquals(emptyList(), rig.badges())
+    }
+
+    @Test
     fun changingThePluginScrapersMissesTheCache() = runTest {
         val rig = rig("a1")
         rig.plugins = listOf("https://repo.example.com#p1")

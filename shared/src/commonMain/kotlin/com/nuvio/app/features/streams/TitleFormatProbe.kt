@@ -240,7 +240,10 @@ internal class TitleFormatProbeEngine(
         val cacheKey = if (embedded.isEmpty()) currentCacheKey(request, currentSettings) else null
         synchronized(lock) {
             val previous = tracked[request.key]
-            if (previous != null && previous.cacheKey == cacheKey) {
+            // Embedded streams have no cache key; their listability still follows the debrid flag.
+            val sameConfig = previous != null && previous.cacheKey == cacheKey &&
+                (cacheKey != null || previous.canResolve == currentSettings.canResolvePlayableLinks)
+            if (previous != null && sameConfig) {
                 foldInto(previous, pickerState.value, configChecked = true)
                 return
             }
