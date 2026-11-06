@@ -18,8 +18,13 @@ import XCTest
 ///
 /// FA87 has no stream source, so Play reads "Playback unavailable" and is disabled: default focus
 /// lands on Mark Watched, and "the hero action row" below means whichever of Play / Watched / the
-/// other action buttons holds focus. A missing fixture (no second season, or the page never opens)
-/// XCTSkips with its reason; nothing here passes silently.
+/// other action buttons holds focus. A missing fixture (the page or its metadata never loads, or no
+/// second season) XCTSkips with its reason; a page that loaded its metadata but shows no season tabs
+/// FAILS. Nothing here passes silently.
+///
+/// The profile is persistent, so Season 1's first episode may be watched: the shelf enters on the
+/// season's first unwatched episode. The legs read the focused `episode_card_<s>_<e>` at runtime
+/// instead of assuming episode 1.
 final class DetailAppleSeasonTabsUITests: XCTestCase {
 
     let remote = XCUIRemote.shared
@@ -74,12 +79,28 @@ final class DetailAppleSeasonTabsUITests: XCTestCase {
         Self.heroActionIDs.first { element(app, $0).exists && element(app, $0).hasFocus }
     }
 
+    /// Episode cards on the shelf, all seasons or one (`episode_card_<season>_…`).
+    private func episodeCards(_ app: XCUIApplication, season: Int? = nil) -> XCUIElementQuery {
+        let prefix = season.map { "episode_card_\($0)_" } ?? "episode_card_"
+        return app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", prefix))
+    }
+
+    /// The identifier of the episode card holding focus, if any.
+    private func focusedEpisodeCard(_ app: XCUIApplication) -> String? {
+        episodeCards(app).allElementsBoundByIndex.first { $0.hasFocus }?.identifier
+    }
+
+    private func waitForCard(_ app: XCUIApplication, season: Int, timeout: TimeInterval) -> Bool {
+        episodeCards(app, season: season).firstMatch.waitForExistence(timeout: timeout)
+    }
+
     private func focusedSummary(_ app: XCUIApplication) -> String {
         var focused: [String] = []
-        for id in Self.heroActionIDs + ["season_tab_1", "season_tab_2", "season_tab_0",
-                                         "episode_card_1_1", "episode_card_2_1"] where element(app, id).exists && element(app, id).hasFocus {
+        for id in Self.heroActionIDs + ["season_tab_1", "season_tab_2", "season_tab_0"]
+        where element(app, id).exists && element(app, id).hasFocus {
             focused.append(id)
         }
+        if let card = focusedEpisodeCard(app) { focused.append(card) }
         return "focused=[\(focused.joined(separator: ","))] row=\(focusRow(app))"
     }
 
@@ -87,6 +108,7 @@ final class DetailAppleSeasonTabsUITests: XCTestCase {
     private func launchToSeasonTabs() throws -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments += ["-detail_layout", "apple", "-detail_trailer_autoplay", "NO",
+                                "-detail_trailer_fullscreen_autoplay", "NO",
                                 "-debug.tmdbEnabledOverride", "YES", "-debug.rememberLastProfile", "YES",
                                 "-debug.detailFocusProbe", "YES",
                                 "-debug.openDeepLink", "nuviotv://title?id=tt11280740&type=series&name=Severance"]
@@ -96,16 +118,33 @@ final class DetailAppleSeasonTabsUITests: XCTestCase {
         if chris.waitForExistence(timeout: 6) {
             DetailEntryRoute.selectChrisTile(self, app, timeout: 5)
         }
+        // Fixture availability first: the Detail hero mounted and the title's metadata loaded (the
+        // meta line or the synopsis teaser). Only a missing fixture skips.
+        let hero = element(app, "detail_hero")
+        guard hero.waitForExistence(timeout: 60) else {
+            shot("seasontabs_no_page")
+            throw XCTSkip("Severance's Detail page never opened within 60 s (deep link or profile step unavailable)")
+        }
         var waited: TimeInterval = 0
-        while !element(app, "season_tab_1").exists, waited < 60 {
+        func metaLoaded() -> Bool { element(app, "detail_meta_line").exists || element(app, "detail_synopsis_teaser").exists }
+        while !metaLoaded(), waited < 45 {
+            pause(1)
+            waited += 1
+        }
+        guard metaLoaded() else {
+            shot("seasontabs_no_meta")
+            throw XCTSkip("Severance's Detail opened but its metadata never loaded within 45 s (no network or meta source)")
+        }
+        // The page and its metadata are there: missing season tabs are a failure, not a skip.
+        waited = 0
+        while !element(app, "season_tab_1").exists, waited < 30 {
             pause(1)
             waited += 1
         }
         pause(2)
         shot("seasontabs_opened")
-        guard element(app, "season_tab_1").exists else {
-            throw XCTSkip("Severance's Detail never showed season_tab_1 within 60 s (title/metadata unavailable, or not the Apple-style layout)")
-        }
+        XCTAssertTrue(element(app, "season_tab_1").exists,
+                      "Severance's Detail loaded its metadata but showed no season tabs (season_tab_1) within 30 s")
         guard element(app, "season_tab_2").exists else {
             throw XCTSkip("Severance shows no Season 2 tab: the fixture metadata lacks a second season")
         }
@@ -161,14 +200,14 @@ final class DetailAppleSeasonTabsUITests: XCTestCase {
         XCTAssertTrue(element(app, "season_tab_1").hasFocus, "should start on Season 1; \(focusedSummary(app))")
         let before = heroSnapshot(app)
         note("hero before", "play='\(before.play)' synopsis='\(before.synopsis.prefix(80))'")
-        XCTAssertTrue(element(app, "episode_card_1_1").exists, "Season 1's first episode card should be on the shelf before the switch")
+        XCTAssertTrue(waitForCard(app, season: 1, timeout: 3), "Season 1's episode cards should be on the shelf before the switch")
 
         press(.right, gap: 0.6)
         shot("switched_season2")
         note("after Right", focusedSummary(app))
         XCTAssertTrue(element(app, "season_tab_2").hasFocus, "Right should move focus to the Season 2 tab; \(focusedSummary(app))")
-        XCTAssertTrue(element(app, "episode_card_2_1").waitForExistence(timeout: 3), "the shelf should show Season 2's first episode (episode_card_2_1) after the switch")
-        XCTAssertFalse(element(app, "episode_card_1_1").exists, "Season 1's episode cards should be gone once the shelf shows Season 2")
+        XCTAssertTrue(waitForCard(app, season: 2, timeout: 3), "the shelf should show Season 2's episode cards (episode_card_2_*) after the switch")
+        XCTAssertFalse(episodeCards(app, season: 1).firstMatch.exists, "Season 1's episode cards should be gone once the shelf shows Season 2")
 
         let after = heroSnapshot(app)
         note("hero after", "play='\(after.play)' synopsis='\(after.synopsis.prefix(80))'")
@@ -177,7 +216,8 @@ final class DetailAppleSeasonTabsUITests: XCTestCase {
     }
 
     /// Right then Down with no wait: the Down must commit the pending season switch and enter
-    /// Season 2's shelf on its first episode, not Season 1's (the debounce has not fired yet).
+    /// Season 2's shelf, not Season 1's (the debounce has not fired yet). The entry card is the
+    /// season's first unwatched episode, so any Season 2 card counts.
     func testFastRightDownLandsInNewSeason() throws {
         let app = try launchToSeasonTabs()
         XCTAssertTrue(walkDownToTabs(app), "could not reach the season tabs; \(focusedSummary(app))")
@@ -188,10 +228,11 @@ final class DetailAppleSeasonTabsUITests: XCTestCase {
         pause(1.0)
         shot("fast_right_down")
         note("after Right+Down", focusedSummary(app))
-        XCTAssertTrue(element(app, "episode_card_2_1").waitForExistence(timeout: 3), "Season 2's shelf should be showing")
-        XCTAssertFalse(element(app, "episode_card_1_1").exists, "Season 1's shelf must not still be showing")
+        XCTAssertTrue(waitForCard(app, season: 2, timeout: 3), "Season 2's shelf should be showing")
+        XCTAssertFalse(episodeCards(app, season: 1).firstMatch.exists, "Season 1's shelf must not still be showing")
         XCTAssertEqual(focusRow(app), "episodes", "focus should be in the Episodes section; \(focusedSummary(app))")
-        XCTAssertTrue(element(app, "episode_card_2_1").hasFocus, "focus should be on Season 2's first episode; \(focusedSummary(app))")
+        let card = focusedEpisodeCard(app)
+        XCTAssertTrue(card?.hasPrefix("episode_card_2_") == true, "focus should be on a Season 2 episode card; \(focusedSummary(app))")
     }
 
     /// Shared tail of the Menu legs: `from` already holds focus. First Menu returns focus to the hero
@@ -230,7 +271,10 @@ final class DetailAppleSeasonTabsUITests: XCTestCase {
         pause(0.6)
         note("in shelf", focusedSummary(app))
         XCTAssertEqual(focusRow(app), "episodes", "Down from the tabs should enter the Episodes section; \(focusedSummary(app))")
-        XCTAssertTrue(element(app, "episode_card_1_1").hasFocus, "Down from the Season 1 tab should land on its first episode; \(focusedSummary(app))")
+        // The entry card is Season 1's first unwatched episode (persistent profile), read at runtime.
+        let card = focusedEpisodeCard(app)
+        note("entry card", card ?? "<none>")
+        XCTAssertTrue(card?.hasPrefix("episode_card_1_") == true, "Down from the Season 1 tab should land on one of its episodes; \(focusedSummary(app))")
         assertMenuReturnsToHeroThenLeaves(app, from: "episode")
     }
 
