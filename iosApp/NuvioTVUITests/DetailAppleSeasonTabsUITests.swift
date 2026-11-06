@@ -18,9 +18,10 @@ import XCTest
 ///
 /// FA87 has no stream source, so Play reads "Playback unavailable" and is disabled: default focus
 /// lands on Mark Watched, and "the hero action row" below means whichever of Play / Watched / the
-/// other action buttons holds focus. A missing fixture (the page or its metadata never loads, or no
-/// second season) XCTSkips with its reason; a page that loaded its metadata but shows no season tabs
-/// FAILS. Nothing here passes silently.
+/// other action buttons holds focus. A missing fixture (the Detail hero or its metadata never loads,
+/// read from the probe's `meta=1` token, set once `model.meta` is non-nil) XCTSkips with its reason;
+/// once the fixture is loaded, missing season tabs (Season 2 included) or no hero focus on entry
+/// FAIL. Nothing here passes silently.
 ///
 /// The profile is persistent, so Season 1's first episode may be watched: the shelf enters on the
 /// season's first unwatched episode. The legs read the focused `episode_card_<s>_<e>` at runtime
@@ -104,6 +105,14 @@ final class DetailAppleSeasonTabsUITests: XCTestCase {
         return "focused=[\(focused.joined(separator: ","))] row=\(focusRow(app))"
     }
 
+    /// `debug_detail_focus`'s `meta=` token is `1` once the page's `model.meta` is loaded (the
+    /// hero's meta-line and synopsis slots, and a preview synopsis, show before that).
+    private func metaLoaded(_ app: XCUIApplication) -> Bool {
+        let label = app.staticTexts["debug_detail_focus"]
+        guard label.exists else { return false }
+        return label.label.split(separator: " ").contains("meta=1")
+    }
+
     /// Launches into Severance's Detail (Apple-style layout) and waits for the season tabs.
     private func launchToSeasonTabs() throws -> XCUIApplication {
         let app = XCUIApplication()
@@ -118,24 +127,23 @@ final class DetailAppleSeasonTabsUITests: XCTestCase {
         if chris.waitForExistence(timeout: 6) {
             DetailEntryRoute.selectChrisTile(self, app, timeout: 5)
         }
-        // Fixture availability first: the Detail hero mounted and the title's metadata loaded (the
-        // meta line or the synopsis teaser). Only a missing fixture skips.
+        // Fixture availability first: the Detail hero mounted and the title's metadata loaded
+        // (`model.meta`, through the probe). Only a missing fixture skips.
         let hero = element(app, "detail_hero")
         guard hero.waitForExistence(timeout: 60) else {
             shot("seasontabs_no_page")
             throw XCTSkip("Severance's Detail page never opened within 60 s (deep link or profile step unavailable)")
         }
         var waited: TimeInterval = 0
-        func metaLoaded() -> Bool { element(app, "detail_meta_line").exists || element(app, "detail_synopsis_teaser").exists }
-        while !metaLoaded(), waited < 45 {
+        while !metaLoaded(app), waited < 45 {
             pause(1)
             waited += 1
         }
-        guard metaLoaded() else {
+        guard metaLoaded(app) else {
             shot("seasontabs_no_meta")
             throw XCTSkip("Severance's Detail opened but its metadata never loaded within 45 s (no network or meta source)")
         }
-        // The page and its metadata are there: missing season tabs are a failure, not a skip.
+        // The page and its metadata are there: missing season tabs (any of them) are a failure.
         waited = 0
         while !element(app, "season_tab_1").exists, waited < 30 {
             pause(1)
@@ -145,9 +153,8 @@ final class DetailAppleSeasonTabsUITests: XCTestCase {
         shot("seasontabs_opened")
         XCTAssertTrue(element(app, "season_tab_1").exists,
                       "Severance's Detail loaded its metadata but showed no season tabs (season_tab_1) within 30 s")
-        guard element(app, "season_tab_2").exists else {
-            throw XCTSkip("Severance shows no Season 2 tab: the fixture metadata lacks a second season")
-        }
+        XCTAssertTrue(element(app, "season_tab_2").exists,
+                      "Severance's Detail loaded its metadata but shows no Season 2 tab (season_tab_2)")
         XCTAssertTrue(element(app, "season_tab_0").exists, "Severance should list Specials (season_tab_0) after the numbered seasons")
         return app
     }
@@ -177,7 +184,8 @@ final class DetailAppleSeasonTabsUITests: XCTestCase {
         let app = try launchToSeasonTabs()
         guard let start = focusedHeroAction(app) else {
             shot("down_no_hero_focus")
-            throw XCTSkip("no hero action button reports focus on entry (\(focusedSummary(app))); cannot start from the hero")
+            XCTFail("no hero action button reports focus on entry; \(focusedSummary(app))")
+            return
         }
         note("start", "hero focus on \(start); \(focusedSummary(app))")
         XCTAssertEqual(focusRow(app), "-", "the page should start with focus in the hero")

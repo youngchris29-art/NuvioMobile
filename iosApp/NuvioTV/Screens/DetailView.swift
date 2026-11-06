@@ -1197,9 +1197,11 @@ struct DetailView: View {
                 .opacity(0.011)
                 .accessibilityIdentifier("debug_bridge")
             // BUG-187 probe (launch argument `-debug.detailFocusProbe YES`): the focused row and the
-            // last remembered card key, read by the cast/More Like This Back UI leg.
+            // last remembered card key, read by the cast/More Like This Back UI leg. `meta=1` once
+            // `model.meta` is loaded (the season-tabs leg's fixture check; the hero's slots and a
+            // preview synopsis show before it).
             if DetailFocusProbe.enabled {
-                Text(verbatim: "debug_detail_focus row=\(focusedRow.map { "\($0)" } ?? "-") idx=\(detailFocusProbeKey) moves=\(focusMemory.popMoves) held=\(focusMemory.heldFocusChange == nil ? 0 : 1) landed=\(focusMemory.popLandedAt.map { Int(($0 - focusMemory.popStartedAt) * 1000) } ?? -1)")
+                Text(verbatim: "debug_detail_focus row=\(focusedRow.map { "\($0)" } ?? "-") idx=\(detailFocusProbeKey) moves=\(focusMemory.popMoves) held=\(focusMemory.heldFocusChange == nil ? 0 : 1) landed=\(focusMemory.popLandedAt.map { Int(($0 - focusMemory.popStartedAt) * 1000) } ?? -1) meta=\(model.meta == nil ? 0 : 1)")
                     .font(.system(size: 8))
                     .opacity(0.011)
                     .accessibilityIdentifier("debug_detail_focus")
