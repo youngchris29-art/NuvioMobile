@@ -548,6 +548,10 @@ struct DetailView: View {
     /// only on change (BUG-41).
     @State private var playLabelSize: CGSize = .zero
     @State private var playButtonSize: CGSize = .zero
+    /// The tallest icon-only secondary's padded label (whole points, grows only). With Corners =
+    /// Rounded or Round, Play and every secondary take this as their label's minimum height so
+    /// the capsules and circles stand equally tall (`DetailActionSquare.matchedLabelHeight`).
+    @State private var secondaryLabelHeight: CGFloat = 0
 
     /// FEAT-8: true once `trailerDurationSeconds` has elapsed for the current background trailer —
     /// fades the background player back out to the still backdrop without ever touching
@@ -3100,6 +3104,13 @@ struct DetailView: View {
                                          iconOnly: usesIconOnlyLabel(primary: false), side: side) else { return nil }
         return DetailActionSquare.labelSize(side: side, playLabel: playLabelSize, playButton: playButtonSize)
     }
+    /// Rounded / Round: the shared minimum label height (nil in Square, which cuts the secondaries
+    /// to Play's height instead, and until a secondary has been measured).
+    private var matchedLabelHeight: CGFloat? {
+        DetailActionSquare.matchedLabelHeight(
+            isSquare: DetailActionShape.isSquare(cornerRadius: posterStyle.cornerRadius),
+            tallestSecondaryLabel: secondaryLabelHeight)
+    }
     private func actionButtonPadding<Content: View>(_ content: Content, horizontal: CGFloat, primary: Bool = false) -> some View {
         Group {
             if usesIconOnlyLabel(primary: primary) {
@@ -3109,11 +3120,17 @@ struct DetailView: View {
                 // on hardware: the style drew its platter outside the frame, so the squares
                 // overlapped their gaps and sat shorter than Play.
                 content.padding(Theme.Spacing.md)
+                    // Read before any frame below, so it is the label's natural height.
+                    .onGeometryChange(for: CGFloat.self, of: { primary ? 0 : $0.size.height.rounded() },
+                                      action: { if !primary, $0 > secondaryLabelHeight { secondaryLabelHeight = $0 } })
                     .modifier(DetailActionSquareLabel(size: primary ? nil : squareLabelSize))
+                    .frame(minHeight: matchedLabelHeight)
             } else {
                 content
                     .padding(.horizontal, horizontal)
                     .padding(.vertical, Theme.Spacing.xxs + 2)
+                    // Rounded / Round: Play's text label is as tall as the icon buttons beside it.
+                    .frame(minHeight: primary ? matchedLabelHeight : nil)
             }
         }
         // FEAT-82 (wave3 UI leg, 2026-10-22): Play's padded label is measured in BOTH branches.

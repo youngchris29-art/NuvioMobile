@@ -40,6 +40,14 @@ nonisolated enum DetailActionSquare {
         return CGSize(width: max((side - across).rounded(), 1), height: max((side - down).rounded(), 1))
     }
 
+    /// Rounded and Round: Play (a text label, shorter) and the icon-only secondaries share one label
+    /// height, the tallest secondary's, so Play is as tall as the round buttons beside it. nil in
+    /// Square (the squares are cut to Play instead) and before any secondary is measured.
+    static func matchedLabelHeight(isSquare: Bool, tallestSecondaryLabel: CGFloat) -> CGFloat? {
+        guard !isSquare, tallestSecondaryLabel > 1 else { return nil }
+        return tallestSecondaryLabel
+    }
+
     /// A measured size in whole points (both sides rounded), so a geometry read writes only on a
     /// real change (BUG-41).
     static func whole(_ size: CGSize) -> CGSize {

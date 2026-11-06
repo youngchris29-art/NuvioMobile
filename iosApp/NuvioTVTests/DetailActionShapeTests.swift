@@ -26,6 +26,13 @@ final class DetailActionSquareTests: XCTestCase {
         XCTAssertEqual(DetailActionSquare.side(playHeight: 72.6), 73)
     }
 
+    func testMatchedLabelHeightOnlyForRoundedCorners() {
+        XCTAssertEqual(DetailActionSquare.matchedLabelHeight(isSquare: false, tallestSecondaryLabel: 56), 56)
+        XCTAssertNil(DetailActionSquare.matchedLabelHeight(isSquare: true, tallestSecondaryLabel: 56), "Square keeps its own sizing")
+        XCTAssertNil(DetailActionSquare.matchedLabelHeight(isSquare: false, tallestSecondaryLabel: 0), "nothing measured yet")
+        XCTAssertNil(DetailActionSquare.matchedLabelHeight(isSquare: false, tallestSecondaryLabel: 1))
+    }
+
     func testOnlySquareIconButtonsApply() {
         XCTAssertTrue(DetailActionSquare.applies(isSquare: true, iconOnly: true, side: 72))
         XCTAssertFalse(DetailActionSquare.applies(isSquare: false, iconOnly: true, side: 72), "Rounded / Round keep capsules")
