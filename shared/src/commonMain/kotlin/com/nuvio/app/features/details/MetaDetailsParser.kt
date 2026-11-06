@@ -28,6 +28,8 @@ object MetaDetailsParser {
             ?: throw MissingMetaObjectException()
         val links = meta.links()
         val videos = meta.videos()
+        val directors = meta.directors(links)
+        val writers = meta.writers(links)
 
         return MetaDetails(
             id = meta.requiredString("id"),
@@ -45,8 +47,8 @@ object MetaDetailsParser {
             ageRating = meta.ageRating(),
             runtime = meta.string("runtime"),
             genres = meta.stringList("genres"),
-            director = meta.directors(links),
-            writer = meta.writers(links),
+            director = directors,
+            writer = writers,
             cast = meta.cast(links),
             country = meta.string("country"),
             awards = meta.string("awards"),
@@ -58,6 +60,7 @@ object MetaDetailsParser {
             links = links,
             seasonPosters = meta.seasonPosters(videos),
             videos = videos,
+            crew = addonMetaCrew(directors = directors, writers = writers),
         )
     }
 
