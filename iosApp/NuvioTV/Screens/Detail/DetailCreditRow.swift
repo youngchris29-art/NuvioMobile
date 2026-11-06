@@ -58,7 +58,9 @@ nonisolated struct DetailCreditItem: Identifiable, Equatable, Sendable {
 ///
 /// Order: actors, then the creator(s) (pseudo-cast creators and creator crew), then the other
 /// pseudo-cast entries (directors, writers), then the remaining crew (Kotlin's `buildMetaCrew`
-/// order). Order within each group is the order given.
+/// order). Order within each group is the order given. `creators` (`MetaDetails.creators`, TMDB
+/// `created_by`) join the crew as creator credits ahead of it, deduped by `creditKey` and person,
+/// so they back a prepended "Creator" entry and give a Creator card even when `crew` has none.
 ///
 /// A cast entry whose role is a job word is only a pseudo-entry with corroboration: a crew credit
 /// for the same person (TMDB id, else name) under that job or category, or a place in the leading
@@ -70,6 +72,7 @@ nonisolated enum DetailCreditRow {
     static func items(
         cast: [DetailCastCredit],
         crew: [DetailCrewCredit],
+        creators: [DetailCrewCredit] = [],
         pseudoRoleLabels: (DetailCreditCategory) -> [String] = { DetailCreditRow.englishPseudoRoleLabels($0) }
     ) -> [DetailCreditItem] {
         var usedKeys = Set<String>()
@@ -90,12 +93,21 @@ nonisolated enum DetailCreditRow {
         let otherPseudoLabels = pseudoLabels(.director).union(pseudoLabels(.writer))
         let categoryLabels: [Set<String>] = [creatorLabels, pseudoLabels(.director), pseudoLabels(.writer)]
 
-        // Crew deduped by `creditKey`, each with the role words a pseudo-cast entry for it carries.
+        // Creators first, then crew, deduped by `creditKey` (and a creator once per person), each
+        // with the role words a pseudo-cast entry for it carries.
+        let creatorCredits = creators.map { member in
+            DetailCrewCredit(name: member.name, job: member.job, category: .creator, photo: member.photo,
+                             tmdbId: member.tmdbId, creditKey: member.creditKey)
+        }
         var seenCredits = Set<String>()
         var crewCandidates: [(member: DetailCrewCredit, name: String, labels: Set<String>)] = []
-        for member in crew {
+        for member in creatorCredits + crew {
             let name = trimmed(member.name)
             guard !name.isEmpty, seenCredits.insert(member.creditKey).inserted else { continue }
+            if member.category == .creator, crewCandidates.contains(where: {
+                $0.member.category == .creator
+                    && samePerson(castId: $0.member.tmdbId, castName: $0.name, crewId: member.tmdbId, crewName: name)
+            }) { continue }
             let labels = Set(([member.job] + pseudoRoleLabels(member.category)).map(normalized).filter { !$0.isEmpty })
             crewCandidates.append((member, name, labels))
         }
@@ -237,15 +249,17 @@ nonisolated enum DetailCreditRow {
     }
 
     /// The Kotlin model's credits as the row's inputs.
-    static func items(cast: [MetaPerson], crew: [MetaCrewMember]) -> [DetailCreditItem] {
-        items(
+    static func items(cast: [MetaPerson], crew: [MetaCrewMember], creators: [MetaCrewMember] = []) -> [DetailCreditItem] {
+        func credit(_ member: MetaCrewMember) -> DetailCrewCredit {
+            DetailCrewCredit(name: member.name, job: member.job, category: category(of: member.category),
+                             photo: member.photo, tmdbId: member.tmdbId?.value,
+                             creditKey: member.creditKey)
+        }
+        return items(
             cast: cast.map { DetailCastCredit(name: $0.name, role: $0.role, photo: $0.photo,
                                               tmdbId: $0.tmdbId?.value) },
-            crew: crew.map { member in
-                DetailCrewCredit(name: member.name, job: member.job, category: category(of: member.category),
-                                 photo: member.photo, tmdbId: member.tmdbId?.value,
-                                 creditKey: member.creditKey)
-            },
+            crew: crew.map(credit),
+            creators: creators.map(credit),
             pseudoRoleLabels: { sharedPseudoRoleLabels($0) }
         )
     }

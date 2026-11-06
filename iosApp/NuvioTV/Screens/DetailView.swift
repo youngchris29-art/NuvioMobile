@@ -3173,7 +3173,8 @@ struct DetailView: View {
 
     /// A4.4 (C10): the Cast row's cards, cast then crew (`DetailCreditRow`), every layout.
     private var creditRowItems: [DetailCreditItem] {
-        DetailCreditRow.items(cast: model.meta?.cast ?? [], crew: model.meta?.crew ?? [])
+        DetailCreditRow.items(cast: model.meta?.cast ?? [], crew: model.meta?.crew ?? [],
+                              creators: model.meta?.creators ?? [])
     }
 
     /// Cast & Crew avatar diameter: Apple-style's person card is `DetailGeometry.personCardWidth` wide

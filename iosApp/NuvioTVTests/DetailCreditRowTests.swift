@@ -139,6 +139,54 @@ final class DetailCreditRowTests: XCTestCase {
         XCTAssertEqual(items[1].key, "tmdb:9|creator", "the creator crew card keeps its creditKey identity")
     }
 
+    /// Severance's shape (TMDB tv/95396): `created_by` Dan Erickson is prepended to cast as "Creator"
+    /// and listed in `creators`, while `crew` carries him only as Writer and Executive Producer. The
+    /// creators list backs the pseudo entry: actors, then Dan Erickson · Creator, then the crew.
+    func testCreatorsListBacksPrependedCreator() {
+        let items = DetailCreditRow.items(
+            cast: [cast("Dan Erickson", "Creator", id: 3442409), cast("Adam Scott", "Mark Scout", id: 1),
+                   cast("Britt Lower", "Helly Riggs", id: 2), cast("Ben Stiller", "Kier Eagan (voice) (uncredited)", id: 7399)],
+            crew: [crew("Ben Stiller", "Director", .director, id: 7399), crew("Dan Erickson", "Writer", .writer, id: 3442409),
+                   crew("Ben Stiller", "Executive Producer", .producer, id: 7399),
+                   crew("Dan Erickson", "Executive Producer", .producer, id: 3442409)],
+            creators: [crew("Dan Erickson", "Creator", .creator, id: 3442409)]
+        )
+        XCTAssertEqual(items.map(\.name), ["Adam Scott", "Britt Lower", "Ben Stiller", "Dan Erickson",
+                                           "Ben Stiller", "Dan Erickson", "Ben Stiller", "Dan Erickson"])
+        XCTAssertEqual(items[3].subtitle, "Creator")
+        XCTAssertEqual(items[3].kind, .cast)
+        XCTAssertEqual(items.filter { $0.subtitle == "Creator" }.count, 1)
+    }
+
+    /// A creator only in `creators` (not prepended, not in crew) still gets a Creator card, after
+    /// the actors and ahead of the other crew.
+    func testCreatorsListWithoutPrependedEntryGivesCreatorCard() {
+        let items = DetailCreditRow.items(
+            cast: [cast("Adam Scott", "Mark Scout", id: 1)],
+            crew: [crew("Ben Stiller", "Director", .director, id: 7399), crew("Dan Erickson", "Writer", .writer, id: 3442409)],
+            creators: [crew("Dan Erickson", "Creator", .creator, id: 3442409)]
+        )
+        XCTAssertEqual(items.map(\.name), ["Adam Scott", "Dan Erickson", "Ben Stiller", "Dan Erickson"])
+        XCTAssertEqual(items[1].kind, .crew(.creator))
+        XCTAssertEqual(items[1].key, "tmdb:3442409|creator")
+    }
+
+    /// `creators` and a creator-category crew credit for the same person give one card.
+    func testCreatorsListAndCreatorCrewAreOneCard() {
+        let prepended = DetailCreditRow.items(
+            cast: [cast("Dan Erickson", "Creator", id: 3442409), cast("Adam Scott", "Mark Scout", id: 1)],
+            crew: [crew("Dan Erickson", "Creator", .creator, id: 3442409), crew("Ben Stiller", "Director", .director, id: 7399)],
+            creators: [crew("Dan Erickson", "Creator", .creator, id: 3442409)]
+        )
+        XCTAssertEqual(prepended.map(\.name), ["Adam Scott", "Dan Erickson", "Ben Stiller"])
+        let crewOnly = DetailCreditRow.items(
+            cast: [cast("Adam Scott", "Mark Scout", id: 1)],
+            crew: [crew("Dan Erickson", "Creator", .creator, id: 3442409)],
+            creators: [crew("Dan Erickson", "Creator", .creator, id: 3442409)]
+        )
+        XCTAssertEqual(crewOnly.map(\.name), ["Adam Scott", "Dan Erickson"])
+    }
+
     /// Without ids (add-on data), the same name counts as the same person.
     func testNameMatchWithoutIds() {
         let items = DetailCreditRow.items(
