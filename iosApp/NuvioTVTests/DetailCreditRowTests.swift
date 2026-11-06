@@ -73,6 +73,55 @@ final class DetailCreditRowTests: XCTestCase {
         XCTAssertEqual(items.map(\.name), ["Actor A", "Actor B", "Creator C", "Dir D", "Writer W"])
     }
 
+    /// An actor whose character is merely "Director", with no directing credit, stays in actor order
+    /// (also when listed first, where a prepended block would sit).
+    func testActorCreditedAsDirectorStaysWithActors() {
+        let middle = DetailCreditRow.items(
+            cast: [cast("Actor A", "Hero", id: 1), cast("Actor X", "Director", id: 8), cast("Actor B", "Villain", id: 2)],
+            crew: [crew("Writer W", "Writer", .writer, id: 10)]
+        )
+        XCTAssertEqual(middle.map(\.name), ["Actor A", "Actor X", "Actor B", "Writer W"])
+        let first = DetailCreditRow.items(
+            cast: [cast("Actor X", "Director", id: 8), cast("Actor A", "Hero", id: 1)],
+            crew: [crew("Dir D", "Director", .director, id: 5)]
+        )
+        XCTAssertEqual(first.map(\.name), ["Actor X", "Actor A", "Dir D"])
+        XCTAssertEqual(first.map(\.kind), [.cast, .cast, .crew(.director)])
+    }
+
+    /// A real pseudo "Director" that matches crew still groups after the actors, while an actor
+    /// credited as "Director" in the same cast keeps its place among them.
+    func testCorroboratedPseudoDirectorGroupsWithCrew() {
+        let items = DetailCreditRow.items(
+            cast: [cast("Dir D", "Director", id: 5), cast("Actor A", "Hero", id: 1),
+                   cast("Actor X", "Director", id: 8), cast("Actor B", "Villain", id: 2)],
+            crew: [crew("Dir D", "Director", .director, id: 5), crew("Producer P", "Producer", .producer, id: 11)]
+        )
+        XCTAssertEqual(items.map(\.name), ["Actor A", "Actor X", "Actor B", "Dir D", "Producer P"])
+    }
+
+    /// Crew is capped per category, so part of a prepended block can lack a crew card; the block
+    /// still groups together once one of its entries is corroborated.
+    func testLeadingPseudoBlockGroupsWhenPartlyCorroborated() {
+        let items = DetailCreditRow.items(
+            cast: [cast("Writer W", "Writer", id: 10), cast("Writer V", "Writer", id: 12), cast("Actor A", "Hero", id: 1)],
+            crew: [crew("Writer W", "Writer", .writer, id: 10)]
+        )
+        XCTAssertEqual(items.map(\.name), ["Actor A", "Writer W", "Writer V"])
+    }
+
+    /// A creator supplied only through crew lands with the creators, before a prepended writer.
+    func testCrewOnlyCreatorPrecedesPrependedWriter() {
+        let items = DetailCreditRow.items(
+            cast: [cast("Writer W", "Writer", id: 10), cast("Actor A", "Hero", id: 1)],
+            crew: [crew("Writer W", "Writer", .writer, id: 10), crew("Creator C", "Creator", .creator, id: 9),
+                   crew("Producer P", "Producer", .producer, id: 11)]
+        )
+        XCTAssertEqual(items.map(\.name), ["Actor A", "Creator C", "Writer W", "Producer P"])
+        XCTAssertEqual(items.map(\.kind), [.cast, .crew(.creator), .cast, .crew(.producer)])
+        XCTAssertEqual(items[1].key, "tmdb:9|creator", "the creator crew card keeps its creditKey identity")
+    }
+
     /// Without ids (add-on data), the same name counts as the same person.
     func testNameMatchWithoutIds() {
         let items = DetailCreditRow.items(

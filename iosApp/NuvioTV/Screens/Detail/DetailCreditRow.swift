@@ -51,18 +51,26 @@ nonisolated struct DetailCreditItem: Identifiable, Equatable, Sendable {
     var id: String { key }
 }
 
-/// A4.4 (C10): the Cast row continues into crew. Cast first, in order, then crew (creators,
-/// directors, writers, producers: Kotlin's `buildMetaCrew` order). TMDB enrichment still prepends
-/// the creators (series) or directors (films), else writers, to `cast` as pseudo-cast entries
-/// whose role is the localized job word ("Director"); a crew credit for a person already shown
-/// that way is skipped, so the director never appears twice. Crew is also deduped by `creditKey`.
+/// A4.4 (C10): the Cast row continues into crew. TMDB enrichment still prepends the creators
+/// (series) or directors (films), else writers, to `cast` as pseudo-cast entries whose role is the
+/// localized job word ("Director"); a crew credit for a person already shown that way is skipped,
+/// so the director never appears twice. Crew is also deduped by `creditKey`.
+///
+/// Order: actors, then the creator(s) (pseudo-cast creators and creator crew), then the other
+/// pseudo-cast entries (directors, writers), then the remaining crew (Kotlin's `buildMetaCrew`
+/// order). Order within each group is the order given.
+///
+/// A cast entry whose role is a job word is only a pseudo-entry with corroboration: a crew credit
+/// for the same person (TMDB id, else name) under that job or category, or a place in the leading
+/// run of job-word entries (the prepended block) when another entry of that run is corroborated
+/// (crew is capped per category, so a fifth prepended director has no crew card). An actor whose
+/// character is merely "Director" stays with the actors.
 nonisolated enum DetailCreditRow {
     static func items(
         cast: [DetailCastCredit],
         crew: [DetailCrewCredit],
         pseudoRoleLabels: (DetailCreditCategory) -> [String] = { DetailCreditRow.englishPseudoRoleLabels($0) }
     ) -> [DetailCreditItem] {
-        var result: [DetailCreditItem] = []
         var usedKeys = Set<String>()
         func uniqueKey(_ base: String) -> String {
             var key = base
@@ -74,55 +82,89 @@ nonisolated enum DetailCreditRow {
             return key
         }
 
-        // Actors first, then the creator(s), then the other pseudo-cast entries (directors, writers);
-        // the rest of the crew follows below. Order within each group is the order given.
         func pseudoLabels(_ category: DetailCreditCategory) -> Set<String> {
             Set(pseudoRoleLabels(category).map(normalized).filter { !$0.isEmpty })
         }
         let creatorLabels = pseudoLabels(.creator)
         let otherPseudoLabels = pseudoLabels(.director).union(pseudoLabels(.writer))
-        var actors: [DetailCastCredit] = []
-        var creators: [DetailCastCredit] = []
-        var otherPseudo: [DetailCastCredit] = []
-        for person in cast {
-            let role = person.role.map(normalized) ?? ""
-            if creatorLabels.contains(role) {
-                creators.append(person)
-            } else if otherPseudoLabels.contains(role) {
-                otherPseudo.append(person)
-            } else {
-                actors.append(person)
-            }
-        }
-        for person in actors + creators + otherPseudo {
-            let name = trimmed(person.name)
-            guard !name.isEmpty else { continue }
-            let role = person.role.map(trimmed).flatMap { $0.isEmpty ? nil : $0 }
-            result.append(DetailCreditItem(
-                key: uniqueKey(castKey(name: name, role: role, tmdbId: person.tmdbId)),
-                kind: .cast, name: name, subtitle: role, photo: person.photo, tmdbId: person.tmdbId
-            ))
-        }
+        let allPseudoLabels = creatorLabels.union(otherPseudoLabels)
 
+        // Crew deduped by `creditKey`, each with the role words a pseudo-cast entry for it carries.
         var seenCredits = Set<String>()
+        var crewCandidates: [(member: DetailCrewCredit, name: String, labels: Set<String>)] = []
         for member in crew {
             let name = trimmed(member.name)
             guard !name.isEmpty, seenCredits.insert(member.creditKey).inserted else { continue }
             let labels = Set(([member.job] + pseudoRoleLabels(member.category)).map(normalized).filter { !$0.isEmpty })
-            let shownAsPseudoCast = cast.contains { person in
-                guard let role = person.role.map(normalized), labels.contains(role) else { return false }
-                return samePerson(castId: person.tmdbId, castName: person.name, crewId: member.tmdbId, crewName: name)
-            }
-            if shownAsPseudoCast { continue }
-            // Display only: the raw job stays the credit's identity (`creditKey`) and the pseudo-cast
-            // match above.
-            let job = jobLabel(member.job)
-            result.append(DetailCreditItem(
-                key: uniqueKey(focusKey(member.creditKey)),
-                kind: .crew(member.category), name: name, subtitle: job.isEmpty ? nil : job,
-                photo: member.photo, tmdbId: member.tmdbId
-            ))
+            crewCandidates.append((member, name, labels))
         }
+        func corroborates(_ candidate: (member: DetailCrewCredit, name: String, labels: Set<String>),
+                          _ person: DetailCastCredit) -> Bool {
+            guard let role = person.role.map(normalized), candidate.labels.contains(role) else { return false }
+            return samePerson(castId: person.tmdbId, castName: person.name,
+                              crewId: candidate.member.tmdbId, crewName: candidate.name)
+        }
+
+        let roles = cast.map { $0.role.map(normalized) ?? "" }
+        let corroborated = cast.map { person in crewCandidates.contains { corroborates($0, person) } }
+        let leadingRun = roles.prefix { allPseudoLabels.contains($0) }.count
+        let leadingRunCorroborated = corroborated.prefix(leadingRun).contains(true)
+        var actors: [DetailCastCredit] = []
+        var pseudoCreators: [DetailCastCredit] = []
+        var otherPseudo: [DetailCastCredit] = []
+        var pseudoCast: [DetailCastCredit] = []
+        for (index, person) in cast.enumerated() {
+            let isPseudo = corroborated[index] || (index < leadingRun && leadingRunCorroborated)
+            if isPseudo && creatorLabels.contains(roles[index]) {
+                pseudoCreators.append(person)
+                pseudoCast.append(person)
+            } else if isPseudo && otherPseudoLabels.contains(roles[index]) {
+                otherPseudo.append(person)
+                pseudoCast.append(person)
+            } else {
+                actors.append(person)
+            }
+        }
+
+        var creatorCrew: [DetailCrewCredit] = []
+        var otherCrew: [DetailCrewCredit] = []
+        for candidate in crewCandidates {
+            if pseudoCast.contains(where: { corroborates(candidate, $0) }) { continue }
+            let member = DetailCrewCredit(name: candidate.name, job: candidate.member.job,
+                                          category: candidate.member.category, photo: candidate.member.photo,
+                                          tmdbId: candidate.member.tmdbId, creditKey: candidate.member.creditKey)
+            if member.category == .creator { creatorCrew.append(member) } else { otherCrew.append(member) }
+        }
+
+        func castItems(_ people: [DetailCastCredit]) -> [DetailCreditItem] {
+            people.compactMap { person in
+                let name = trimmed(person.name)
+                guard !name.isEmpty else { return nil }
+                let role = person.role.map(trimmed).flatMap { $0.isEmpty ? nil : $0 }
+                return DetailCreditItem(
+                    key: uniqueKey(castKey(name: name, role: role, tmdbId: person.tmdbId)),
+                    kind: .cast, name: name, subtitle: role, photo: person.photo, tmdbId: person.tmdbId
+                )
+            }
+        }
+        func crewItems(_ members: [DetailCrewCredit]) -> [DetailCreditItem] {
+            members.map { member in
+                // Display only: the raw job stays the credit's identity (`creditKey`) and the
+                // pseudo-cast match above.
+                let job = jobLabel(member.job)
+                return DetailCreditItem(
+                    key: uniqueKey(focusKey(member.creditKey)),
+                    kind: .crew(member.category), name: member.name, subtitle: job.isEmpty ? nil : job,
+                    photo: member.photo, tmdbId: member.tmdbId
+                )
+            }
+        }
+        // Built in display order, so a duplicate key's `#n` suffix follows the row.
+        var result = castItems(actors)
+        result += castItems(pseudoCreators)
+        result += crewItems(creatorCrew)
+        result += castItems(otherPseudo)
+        result += crewItems(otherCrew)
         return result
     }
 
