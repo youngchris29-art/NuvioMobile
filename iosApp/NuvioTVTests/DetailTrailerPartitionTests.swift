@@ -160,4 +160,38 @@ final class DetailTrailerPartitionTests: XCTestCase {
         XCTAssertFalse(DetailTrailerPartition.isTrailer(type: nil, name: "Making of", localizedTrailer: "Bande-annonce"))
         XCTAssertFalse(DetailTrailerPartition.isTrailer(type: nil, name: "Making of", localizedTrailer: " "))
     }
+
+    /// An untyped video is a trailer when EITHER its source name or its display name says so: a
+    /// display label must not mask "Official Trailer" or the parser's localized default name.
+    /// Through the parser, English, French and Spanish.
+    func testUntypedVideoNameOrDisplayNameMakesItATrailer() throws {
+        let saved = LocalizedStrings.shared.provider
+        defer { LocalizedStrings.shared.provider = saved }
+        let payload = """
+        {"meta": {"id": "tt1", "type": "series", "name": "Show", "trailers": [
+          {"source": "a", "name": "Official Trailer", "displayName": "Season 1"},
+          {"source": "b", "displayName": "Season 2"},
+          {"source": "c", "name": "Inside the Episode", "displayName": "Season 1 Trailer"},
+          {"source": "d", "name": "Behind the Scenes", "displayName": "Season 1"},
+          {"source": "e", "type": "Featurette", "name": "Official Trailer", "displayName": "Season 1"}
+        ]}}
+        """
+        var bundles: [(String, Bundle)] = [("en", .main)]
+        for locale in ["fr", "es"] {
+            let path = try XCTUnwrap(Bundle.main.path(forResource: locale, ofType: "lproj"), locale)
+            bundles.append((locale, try XCTUnwrap(Bundle(path: path), locale)))
+        }
+        for (locale, bundle) in bundles {
+            LocalizedStrings.shared.provider = SharedStringProvider(bundle: bundle)
+            let meta = MetaDetailsParser.shared.parse(payload: payload)
+            // "b" has no source name: the parser filled the localized "Trailer" under "Season 2".
+            XCTAssertEqual(meta.trailers[1].name, DetailTrailerPartition.sharedTrailerWord(bundle: bundle), locale)
+            XCTAssertEqual(meta.trailers[1].displayName, "Season 2", locale)
+            let r = DetailTrailerPartition.split(meta.trailers,
+                                                 localizedTrailer: DetailTrailerPartition.sharedTrailerWord(bundle: bundle))
+            XCTAssertEqual(r.trailers.map(\.key), ["a", "b", "c"], locale)
+            // A provided type still decides alone ("e" is a Featurette whatever its name says).
+            XCTAssertEqual(r.bonus.map(\.key), ["d", "e"], locale)
+        }
+    }
 }

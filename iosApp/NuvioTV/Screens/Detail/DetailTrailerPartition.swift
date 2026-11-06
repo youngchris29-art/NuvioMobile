@@ -17,10 +17,20 @@ nonisolated enum DetailTrailerPartition {
         name: (T) -> String?,
         localizedTrailer: String? = nil
     ) -> (trailers: [T], bonus: [T]) {
+        split(items, type: type, names: { [name($0)] }, localizedTrailer: localizedTrailer)
+    }
+
+    /// `names`: every name the item carries; an untyped item is a trailer when ANY of them says so.
+    static func split<T>(
+        _ items: [T],
+        type: (T) -> String?,
+        names: (T) -> [String?],
+        localizedTrailer: String? = nil
+    ) -> (trailers: [T], bonus: [T]) {
         var trailers: [T] = []
         var bonus: [T] = []
         for item in items {
-            if isTrailer(type: type(item), name: name(item), localizedTrailer: localizedTrailer) {
+            if isTrailer(type: type(item), names: names(item), localizedTrailer: localizedTrailer) {
                 trailers.append(item)
             } else {
                 bonus.append(item)
@@ -34,9 +44,13 @@ nonisolated enum DetailTrailerPartition {
     /// localized "Trailer" default) is classified by name, so an untyped add-on "Behind the Scenes"
     /// lands in Bonus instead of taking a trailer slot. On an English device that default cannot
     /// be told apart from a real "Trailer" type by its text alone, hence the flag.
+    ///
+    /// Both the source `name` and the `displayName` are checked: a display label ("Season 1",
+    /// TMDB's generated season label) can sit over a name that says trailer, or over the parser's
+    /// localized "Trailer" default, and must not hide it.
     static func split(_ items: [MetaTrailer],
                       localizedTrailer: String = sharedTrailerWord) -> (trailers: [MetaTrailer], bonus: [MetaTrailer]) {
-        split(items, type: { $0.typeProvided ? $0.type : nil }, name: { $0.displayName ?? $0.name },
+        split(items, type: { $0.typeProvided ? $0.type : nil }, names: { [$0.name, $0.displayName] },
               localizedTrailer: localizedTrailer)
     }
 
@@ -54,17 +68,23 @@ nonisolated enum DetailTrailerPartition {
     }
 
     static func isTrailer(type: String?, name: String?, localizedTrailer: String? = nil) -> Bool {
+        isTrailer(type: type, names: [name], localizedTrailer: localizedTrailer)
+    }
+
+    /// A provided type decides alone. Untyped: a trailer when any name contains "trailer",
+    /// "teaser" or the localized word (the parser's default name for an untyped video), case- and
+    /// accent-insensitive.
+    static func isTrailer(type: String?, names: [String?], localizedTrailer: String? = nil) -> Bool {
         let t = (type ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let word = (localizedTrailer ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if !t.isEmpty {
             if t == "trailer" || t == "teaser" { return true }
-            let word = (localizedTrailer ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            return !word.isEmpty && t == word
+            return !word.isEmpty && t == word.lowercased()
         }
-        let n = (name ?? "").lowercased()
-        if n.contains("trailer") || n.contains("teaser") { return true }
-        // The localized word (the parser's default name for an untyped video), case- and
-        // accent-insensitive.
-        let word = (localizedTrailer ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        return !word.isEmpty && n.range(of: word, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+        return names.contains { name in
+            let n = (name ?? "").lowercased()
+            if n.contains("trailer") || n.contains("teaser") { return true }
+            return !word.isEmpty && n.range(of: word, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+        }
     }
 }
