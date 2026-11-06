@@ -119,6 +119,55 @@ class StreamBestPickTest {
         assertFalse(sel.isCachedDebridLink(plain("S"), true, "torbox"))
     }
 
+    private fun marked(name: String): StreamItem = StreamItem(
+        name = name,
+        url = "https://example.com/${name.replace(' ', '-')}.mkv",
+        addonName = "Torrentio",
+        addonId = "addon:t",
+    )
+
+    @Test
+    fun addonMarkedCachedLinksQualifyUnderCachedOnlyForTheActiveService() {
+        val sel = StreamAutoPlaySelector
+        assertTrue(sel.isCachedDebridLink(marked("[TB+] Torrentio 2160p"), true, "torbox"))
+        assertTrue(sel.isCachedDebridLink(marked("[TB+] Torrentio 2160p"), true, "TorBox"))
+        assertFalse(sel.isCachedDebridLink(marked("[RD+] Torrentio 2160p"), true, "torbox"))
+        assertFalse(sel.isCachedDebridLink(marked("[DL+] Torrentio 2160p"), true, "torbox"))
+        assertTrue(sel.isCachedDebridLink(marked("2160p \u26A1"), true, "torbox"), "a bolt names no service")
+        assertFalse(sel.isCachedDebridLink(marked("[TB download] Torrentio 2160p"), true, "torbox"))
+        assertFalse(sel.isCachedDebridLink(marked("[TB+] Torrentio 2160p"), false, "torbox"))
+    }
+
+    @Test
+    fun bestSourceCardKeepsWhatTheCachedOnlyListShows() {
+        // Both Cached Sources Only settings on: the list (Settings -> Sources) keeps the [TB+] row and
+        // the bolt row; the Best Source card must rank them, not fall back to nothing.
+        val settings = com.nuvio.app.features.debrid.DebridSettings(
+            enabled = true,
+            providerApiKeys = mapOf(com.nuvio.app.features.debrid.DebridProviders.TORBOX_ID to "key"),
+            streamCachedOnly = true,
+        )
+        val listed = com.nuvio.app.features.debrid.DebridStreamPresentation.apply(
+            listOf(
+                AddonStreamGroup(
+                    addonName = "Torrentio",
+                    addonId = "addon:t",
+                    streams = listOf(
+                        marked("[TB+] Torrentio 1080p"),
+                        marked("Plain 2160p"),
+                        marked("2160p \u26A1"),
+                    ),
+                ),
+            ),
+            settings,
+            allStreams = true,
+        ).single().streams
+        assertEquals(listOf("[TB+] Torrentio 1080p", "2160p \u26A1"), listed.map { it.name })
+
+        val result = pick(listed, active = "torbox", cachedOnly = true)
+        assertEquals(listOf(1, 0), result.ranked)
+    }
+
     @Test
     fun rejectedStreamsAreExcluded() {
         val result = pick(

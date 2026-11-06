@@ -3,6 +3,7 @@ package com.nuvio.app.features.debrid
 import com.nuvio.app.features.streams.AddonStreamGroup
 import com.nuvio.app.features.streams.StreamDebridCacheState
 import com.nuvio.app.features.streams.StreamItem
+import com.nuvio.app.features.streams.StreamListability
 import kotlinx.atomicfu.locks.SynchronizedObject
 import kotlinx.atomicfu.locks.synchronized
 
@@ -96,7 +97,10 @@ object DebridStreamPresentation {
         // Count only what Cached Sources Only alone removed: a dropped row the other passthrough
         // filters (minimum resolution, excluded qualities ...) would also remove stays hidden when
         // the setting is turned off, so the picker must not promise it.
-        return kept to applyPassthroughPreferences(dropped, settings).size
+        // The tvOS picker also never lists a row with nothing it can play (an externalUrl-only
+        // row): only rows its listability rule keeps count. A resolver is configured here.
+        val countable = dropped.filter { stream -> StreamListability.isListable(stream, debridEnabled = true) }
+        return kept to applyPassthroughPreferences(countable, settings).size
     }
 
     // allStreams only: the same filters and sort as [applyPreferences], for streams that are not
@@ -177,7 +181,7 @@ object DebridStreamPresentation {
      * "[TB+]" ...), "instant play" or "[cached]". Uncached: an hourglass, "[uncached]", a known
      * service download tag ("[RD download]", "[TB download]" ...), "uncached" / "not cached"
      * anywhere in the name, or an explicit uncached status in the title / description (see
-     * [uncachedStatusRegex]). An uncached marker wins over any cached one; no marker at all is
+     * [uncachedStatusRegex] and [hasQualifiedUncachedStatus]). An uncached marker wins over any cached one; no marker at all is
      * [UNKNOWN].
      */
     enum class AddonCachedMarker { CACHED, UNCACHED, UNKNOWN }
@@ -211,6 +215,23 @@ object DebridStreamPresentation {
         setOf(RegexOption.IGNORE_CASE, RegexOption.MULTILINE),
     )
 
+    // A qualified status ("Not cached on TorBox.", "uncached in RD", "not cached yet"): the
+    // words followed by a preposition naming where, or "yet". Title safeguards: checked line by
+    // line, skipping a line that starts with a title emoji (🎬 🎞 📺) or carries a "(2024)"
+    // year, so "🎬 Not Cached Yet (2024)" stays a title.
+    private val uncachedQualifiedRegex = Regex(
+        "\\b(?:$UNCACHED_WORDS)[ \\t]+(?:on|in|at|with|by|yet)\\b",
+        RegexOption.IGNORE_CASE,
+    )
+    private val titleLineRegex = Regex(
+        "^[ \\t]*(?:\uD83C\uDFAC|\uD83C\uDF9E|\uD83D\uDCFA)|\\((?:19|20)\\d{2}\\)",
+    )
+
+    private fun hasQualifiedUncachedStatus(text: String): Boolean =
+        text.lineSequence().any { line ->
+            !titleLineRegex.containsMatchIn(line) && uncachedQualifiedRegex.containsMatchIn(line)
+        }
+
     // All-caps status words ("NOT CACHED", "UNCACHED") are a status, not a title: case-sensitive.
     private val uncachedUpperStatusRegex = Regex("\\b(?:UNCACHED|NOT CACHED)\\b")
     private val cachedMarkerRegex = Regex(
@@ -225,11 +246,40 @@ object DebridStreamPresentation {
                 uncachedMarkerRegex.containsMatchIn(text) ||
                     uncachedNameRegex.containsMatchIn(name.orEmpty()) ||
                     uncachedStatusRegex.containsMatchIn(text) ||
+                    hasQualifiedUncachedStatus(text) ||
                     uncachedUpperStatusRegex.containsMatchIn(text) -> AddonCachedMarker.UNCACHED
                 cachedMarkerRegex.containsMatchIn(text) -> AddonCachedMarker.CACHED
                 else -> AddonCachedMarker.UNKNOWN
             }
         }
+
+    private val cachedServiceTagRegex = Regex("\\[($SERVICE_TAGS)\\+\\]", RegexOption.IGNORE_CASE)
+
+    /**
+     * The debrid service an add-on-marked cached link names in its "[XX+]" tag, as a provider id
+     * when the tag is a registered provider's short name ("[TB+]" -> "torbox"), else the bare tag
+     * lowercased ("[DL+]" -> "dl"). Null when no tag names one (a bolt or "instant play" only).
+     */
+    val StreamItem.addonMarkedCachedService: String?
+        get() {
+            val tag = listOfNotNull(name, title, description).firstNotNullOfOrNull { text ->
+                cachedServiceTagRegex.find(text)?.groupValues?.get(1)
+            } ?: return null
+            return DebridProviders.all().firstOrNull { it.shortName.equals(tag, ignoreCase = true) }?.id
+                ?: tag.lowercase()
+        }
+
+    /**
+     * Auto-play / Best Source "Cached Sources Only": an add-on-marked cached direct link counts as
+     * cached on the active service when its tag names that service or names none (the same
+     * "no provider on the link matches" rule the debrid links follow).
+     */
+    fun isAddonMarkedCachedFor(stream: StreamItem, activeResolverProviderId: String?): Boolean {
+        if (!stream.isAddonMarkedCachedDirectLink) return false
+        val active = activeResolverProviderId?.trim().orEmpty()
+        val service = stream.addonMarkedCachedService
+        return active.isBlank() || service == null || service.equals(active, ignoreCase = true)
+    }
 
     /** Installed-add-on stream with a playable http(s) link and a cached marker (no uncached one). */
     val StreamItem.isAddonMarkedCachedDirectLink: Boolean

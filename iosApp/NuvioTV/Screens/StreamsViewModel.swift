@@ -596,14 +596,10 @@ final class StreamsViewModel: ObservableObject {
     /// `autoPlayCandidates` selector and `FirstPlayAutoPlayController` walk only direct links and
     /// debrid candidates, which excludes it on purpose (the resolve costs seconds and its link
     /// expires within hours).
+    /// The rule lives in shared `StreamListability` so the Cached Sources Only hidden count uses
+    /// the same one (one bridge call per stream).
     static func isListable(stream: StreamItem, debridEnabled: Bool) -> Bool {
-        // Widen through an explicit String? — Kotlin's nullable String surfaces here as a
-        // non-optional Swift String, so direct optional-chaining/binding won't compile.
-        let direct: String? = stream.playableDirectUrl
-        if !(direct ?? "").isEmpty { return true }
-        if debridEnabled && stream.isAddonDebridCandidate { return true }
-        let youTubeId: String? = stream.youTubeIdToResolve
-        return !(youTubeId ?? "").isEmpty
+        StreamListability.shared.isListable(stream: stream, debridEnabled: debridEnabled)
     }
 
     /// Builds the reason/hint pair for the "shared found streams, but our playability filter

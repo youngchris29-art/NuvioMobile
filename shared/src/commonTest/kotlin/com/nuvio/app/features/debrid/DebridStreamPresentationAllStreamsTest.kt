@@ -363,6 +363,21 @@ class DebridStreamPresentationAllStreamsTest {
     }
 
     @Test
+    fun `a qualified uncached status outside a title line beats a cached marker`() {
+        fun marker(name: String, description: String? = null) =
+            with(DebridStreamPresentation) { textRow("x", name = name, description = description).addonCachedMarker }
+        val uncached = DebridStreamPresentation.AddonCachedMarker.UNCACHED
+        val cached = DebridStreamPresentation.AddonCachedMarker.CACHED
+
+        assertEquals(uncached, marker("4K \u26A1", "Not cached on TorBox."))
+        assertEquals(uncached, marker("4K \u26A1", "Animals 2160p\nUncached in RD, download first"))
+        assertEquals(uncached, marker("[TB+] 4K", "Size 12 GB \u00B7 not cached yet"))
+        // Title lines keep their safeguards: a film emoji or a year marks the line as a title.
+        assertEquals(cached, marker("4K \u26A1", "\uD83C\uDFAC Not Cached on Sundays"))
+        assertEquals(cached, marker("4K \u26A1", "Not Cached Yet (2024)"))
+    }
+
+    @Test
     fun `only service download tags are uncached markers`() {
         fun marker(name: String, description: String? = null) =
             with(DebridStreamPresentation) { textRow("x", name = name, description = description).addonCachedMarker }
@@ -398,6 +413,28 @@ class DebridStreamPresentationAllStreamsTest {
         assertEquals(listOf("cached-1080"), group.streams.filenames())
         // Turning Cached Sources Only off would show the 2160p row; the 720p rows stay below the minimum.
         assertEquals(1, group.cachedOnlyHiddenCount)
+    }
+
+    @Test
+    fun `cached only does not count rows the picker would never list`() {
+        val cached = textRow("cached", name = "[TB+] Torrentio 1080p")
+        val unmarked = textRow("plain", name = "Scraper 1080p")
+        val externalOnly = StreamItem(
+            name = "Open in browser 1080p",
+            externalUrl = "https://example.test/watch",
+            addonName = "Addon",
+            addonId = "addon:test",
+            behaviorHints = StreamBehaviorHints(filename = "external"),
+        )
+
+        val group = presentGroup(
+            listOf(cached, unmarked, externalOnly),
+            debridSettings(resolver = true, streamCachedOnly = true),
+            allStreams = true,
+        )
+
+        assertEquals(listOf("cached"), group.streams.filenames())
+        assertEquals(1, group.cachedOnlyHiddenCount, "the externalUrl-only row is never listed")
     }
 
     @Test

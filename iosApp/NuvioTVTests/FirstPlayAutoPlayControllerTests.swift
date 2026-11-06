@@ -513,6 +513,27 @@ final class FirstPlayAutoPlayControllerTests: XCTestCase {
                        "a plain HTTP link carries no cache evidence")
     }
 
+    func testAddonMarkedCachedLinkCountsForTheServiceItNames() {
+        // GitHub #23: Settings → Sources → Cached Sources Only lists an add-on's resolved link it
+        // marks cached; the walk must treat it the same way (one shared rule).
+        typealias Policy = FirstPlayAutoPlayController.Policy
+        let hints = StreamBehaviorHints(bingeGroup: nil, notWebReady: false, videoHash: nil, videoSize: nil,
+                                        filename: nil, proxyHeaders: nil, audioDelayMs: nil)
+        func link(_ name: String) -> StreamItem {
+            StreamItem(name: name, title: nil, description: nil, url: "https://cdn.example.com/a.mkv", infoHash: nil,
+                       fileIdx: nil, externalUrl: nil, ytId: nil, sources: [], sourceName: nil, addonName: "Torrentio",
+                       addonId: "addon:t", addonLogo: nil, streamType: nil, behaviorHints: hints, clientResolve: nil,
+                       debridCacheStatus: nil, externalSubtitles: [], badges: [])
+        }
+        XCTAssertTrue(Policy.isCachedDebridLink(link("[TB+] Torrentio 4k"), debridEnabled: true, activeResolverProviderId: "torbox"))
+        XCTAssertFalse(Policy.isCachedDebridLink(link("[RD+] Torrentio 4k"), debridEnabled: true, activeResolverProviderId: "torbox"),
+                       "cached on another service than the active one")
+        XCTAssertTrue(Policy.isCachedDebridLink(link("4K \u{26A1}"), debridEnabled: true, activeResolverProviderId: "torbox"),
+                      "a bolt names no service")
+        XCTAssertFalse(Policy.isCachedDebridLink(link("[TB download] Torrentio 4k"), debridEnabled: true, activeResolverProviderId: "torbox"))
+        XCTAssertFalse(Policy.isCachedDebridLink(link("[TB+] Torrentio 4k"), debridEnabled: false, activeResolverProviderId: "torbox"))
+    }
+
     // MARK: - Pick log (device session 2026-10-04)
 
     /// The `[AutoPlay] pick` line carries the four rank facts so a device log shows why a link won.

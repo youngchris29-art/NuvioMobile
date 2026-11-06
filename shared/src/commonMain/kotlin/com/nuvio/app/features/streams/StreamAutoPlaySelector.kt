@@ -1,6 +1,7 @@
 package com.nuvio.app.features.streams
 
 import com.nuvio.app.core.build.FeaturePolicyProvider
+import com.nuvio.app.features.debrid.DebridStreamPresentation
 
 object StreamAutoPlaySelector {
 
@@ -219,16 +220,22 @@ object StreamAutoPlaySelector {
     ): Boolean = stream.isAutoPlayable(debridEnabled, activeResolverProviderId)
 
     /**
-     * Direction C (D2): "Cached Sources Only" - a link the active debrid service already has cached.
-     * The Kotlin twin of Swift `FirstPlayAutoPlayController.Policy.isCachedDebridLink` (positive cache
-     * evidence on the active resolver; plain HTTP never qualifies).
+     * Direction C (D2): "Cached Sources Only" - a link the active debrid service already has cached:
+     * positive cache evidence on the active resolver (a direct-debrid result or a cache-checked
+     * torrent), or an add-on's already-resolved http link it marks cached ("[TB+]", a bolt) whose
+     * tag names the active service or none ([DebridStreamPresentation.isAddonMarkedCachedFor]).
+     * An unmarked plain HTTP link never qualifies. Swift
+     * `FirstPlayAutoPlayController.Policy.isCachedDebridLink` calls this, so the walk, the Best
+     * Source card and the source list share one classification.
      */
-    internal fun isCachedDebridLink(
+    fun isCachedDebridLink(
         stream: StreamItem,
         debridEnabled: Boolean,
         activeResolverProviderId: String?,
-    ): Boolean = debridEnabled && stream.isAddonDebridCandidate &&
-        stream.isReadyDebridAutoPlay(activeResolverProviderId)
+    ): Boolean = debridEnabled && (
+        (stream.isAddonDebridCandidate && stream.isReadyDebridAutoPlay(activeResolverProviderId)) ||
+            DebridStreamPresentation.isAddonMarkedCachedFor(stream, activeResolverProviderId)
+        )
 
     private fun StreamItem.isAutoPlayable(
         debridEnabled: Boolean,

@@ -417,29 +417,16 @@ final class FirstPlayAutoPlayController: ObservableObject {
             return open.first
         }
 
-        /// A link the active debrid service already has cached: a direct-debrid result the add-on
-        /// marks cached for the active resolver, or a torrent the cache check found cached on it.
-        /// The Swift twin of the shared selector's private `isReadyDebridAutoPlay`, restricted to
-        /// positive cache evidence. Plain HTTP links do not qualify (nothing says they are cached).
+        /// A link the active debrid service already has cached: a direct-debrid result or a
+        /// cache-checked torrent on the active resolver, or an add-on's resolved http link it marks
+        /// cached for that service ("[TB+]", a bolt). The shared selector owns the rule, so this
+        /// walk, the Best Source card and Settings → Sources → Cached Sources Only agree. Unmarked
+        /// plain HTTP links do not qualify (nothing says they are cached).
         static func isCachedDebridLink(_ stream: StreamItem, debridEnabled: Bool,
                                        activeResolverProviderId: String?) -> Bool {
-            guard debridEnabled, stream.isAddonDebridCandidate else { return false }
-            if stream.isDirectDebridStream {
-                let service: String? = stream.clientResolve?.service
-                return matchesResolver(service, activeResolverProviderId)
-            }
-            if stream.isCachedDebridTorrentStream {
-                let provider: String? = stream.debridCacheStatus?.providerId
-                return matchesResolver(provider, activeResolverProviderId)
-            }
-            return false
-        }
-
-        /// Shared `matchesResolver`: no active resolver, or no provider on the link, matches.
-        static func matchesResolver(_ value: String?, _ activeResolverProviderId: String?) -> Bool {
-            let active = (activeResolverProviderId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !active.isEmpty, let value else { return true }
-            return value.caseInsensitiveCompare(active) == .orderedSame
+            StreamAutoPlaySelector.shared.isCachedDebridLink(
+                stream: stream, debridEnabled: debridEnabled, activeResolverProviderId: activeResolverProviderId
+            )
         }
 
         /// Where an auto pick plays (`Event.play`).
