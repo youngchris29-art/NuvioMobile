@@ -146,11 +146,13 @@ struct TrailerThumbCard: View {
                     .padding(.horizontal, Theme.Spacing.xs)
                     .frame(width: cardSize.width, alignment: .leading)
 
-                Text(metaCaption)
-                    .font(Theme.Font.caption)
-                    .foregroundStyle(Theme.Palette.textSecondary)
-                    .lineLimit(1)
-                    .padding(.horizontal, Theme.Spacing.xs)
+                if let caption = metaCaption {
+                    Text(caption)
+                        .font(Theme.Font.caption)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                        .lineLimit(1)
+                        .padding(.horizontal, Theme.Spacing.xs)
+                }
             }
             .modifier(CardCaptionFocusDrop(
                 mode: CardFocusMode.resolve(accentFocusRing: focusAppearance.accentFocusRing,
@@ -168,9 +170,29 @@ struct TrailerThumbCard: View {
                    value: isFocused)
     }
 
-    /// "Trailer · 2024", or just the type when there's no publish year.
-    private var metaCaption: String {
-        guard let year = trailer.publishedAt?.prefix(4), !year.isEmpty else { return trailer.type }
-        return "\(trailer.type) \u{2022} \(year)"
+    /// "Trailer · 2024", or just the type when there's no publish year; the type is left out when it
+    /// only repeats the title (`TrailerCaption`), and the line with it when nothing is left.
+    private var metaCaption: String? {
+        TrailerCaption.metaLine(title: trailer.displayName ?? trailer.name, type: trailer.type,
+                                publishedAt: trailer.publishedAt)
+    }
+}
+
+/// The second caption line under a trailer card. Untitled add-on trailers are named after their
+/// type, so the card read "Trailer / Trailer": the type is dropped when it repeats the title
+/// (case-insensitive, trimmed); a year, when there is one, stays.
+nonisolated enum TrailerCaption {
+    static func metaLine(title: String, type: String, publishedAt: String?) -> String? {
+        let type = type.trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let year = publishedAt.map { String($0.trimmingCharacters(in: .whitespacesAndNewlines).prefix(4)) }
+            .flatMap { $0.isEmpty ? nil : $0 }
+        let repeatsTitle = type.isEmpty || type.caseInsensitiveCompare(title) == .orderedSame
+        switch (repeatsTitle, year) {
+        case (true, nil): return nil
+        case (true, let year?): return year
+        case (false, nil): return type
+        case (false, let year?): return "\(type) \u{2022} \(year)"
+        }
     }
 }
