@@ -3167,7 +3167,8 @@ struct DetailView: View {
                     .font(Theme.Font.sectionTitle)
                     .foregroundStyle(Theme.Palette.textPrimary)
                 ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(spacing: Theme.Spacing.lg) {
+                    // Top-aligned so an avatar with no role line below it still lines up with its neighbours.
+                    LazyHStack(alignment: .top, spacing: Theme.Spacing.lg) {
                         // A4.4: identity and focus by the card's stable key, not its index, so a
                         // reload that adds crew or reorders cast keeps the remembered card.
                         ForEach(items) { item in
