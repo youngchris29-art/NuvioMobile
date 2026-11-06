@@ -82,8 +82,8 @@ struct EpisodesSection: View {
         }
     }
 
-    var body: some View {
-        let grouping = groupingCache.resolve(meta) { meta in
+    private func resolvedGrouping() -> EpisodeGroupingCache.Grouping {
+        groupingCache.resolve(meta) { meta in
             let grouped = Self.groupedEpisodes(meta.videos)
             return EpisodeGroupingCache.Grouping(
                 grouped: grouped,
@@ -92,20 +92,32 @@ struct EpisodesSection: View {
                 releasedSeasons: Self.seasonsWithReleasedEpisodes(meta)
             )
         }
+    }
+
+    /// Where focus lands when it enters the shelf, and where the shelf scrolls to: the first
+    /// unwatched episode of the season (Apple TV app behaviour), else the first episode. Before,
+    /// Down from the season row landed on whichever card sat nearest, usually E1.
+    private func nextUpEpisodeId(_ episodes: [MetaVideo]) -> String? {
+        episodes.first(where: { !isWatched($0) })?.id ?? episodes.first?.id
+    }
+
+    /// A3.2: Apple-style enters a season it has seen before on the remembered episode; first entry
+    /// (and every other layout) is next-up.
+    private func entryEpisodeId(season: Int?, episodes: [MetaVideo]) -> String? {
+        let nextUpId = nextUpEpisodeId(episodes)
+        guard appleStyle else { return nextUpId }
+        return seasonBrowse.state.entryEpisode(season: season, nextUpId: nextUpId,
+                                               isListed: { id in episodes.contains { $0.id == id } })
+    }
+
+    var body: some View {
+        let grouping = resolvedGrouping()
         let grouped = grouping.grouped
         let seasons = grouping.seasons
         let current = selectedSeason ?? seasons.first
         let episodes = current.flatMap { grouped[$0] } ?? []
-        // Where focus lands when it enters the shelf, and where the shelf scrolls to: the first
-        // unwatched episode of the season (Apple TV app behaviour), else the first episode. Before,
-        // Down from the season row landed on whichever card sat nearest, usually E1.
-        let nextUpId = episodes.first(where: { !isWatched($0) })?.id ?? episodes.first?.id
-        // A3.2: Apple-style enters a season it has seen before on the remembered episode; first
-        // entry (and every other layout) is next-up.
-        let entryId = appleStyle
-            ? seasonBrowse.state.entryEpisode(season: current, nextUpId: nextUpId,
-                                        isListed: { id in episodes.contains { $0.id == id } })
-            : nextUpId
+        let nextUpId = nextUpEpisodeId(episodes)
+        let entryId = entryEpisodeId(season: current, episodes: episodes)
         let showsSeasonTabs = appleStyle && seasons.count > 1
 
         return VStack(alignment: .leading, spacing: 20) {
@@ -288,9 +300,16 @@ struct EpisodesSection: View {
                 // shelf, or anywhere else): the hold is over. Any change, not only a return to
                 // the shelf (review r1 P3-2).
                 if heldEpisodeId != nil { heldEpisodeId = nil }
-                // A3.2: per-season remembered episode (Apple-style only).
-                if appleStyle, let newValue, let current {
-                    seasonBrowse.state.remember(episodeId: newValue, season: current)
+                guard appleStyle, let newValue else { return }
+                // A3.2: focus reached the shelf while a tab switch was still pending (Down within
+                // the debounce; this can run before the tab row sees focus leave): commit it now,
+                // and send focus on to that season's entry instead of the old season's card.
+                commitPendingSeasonOnLeave()
+                if redirectShelfFocus(from: newValue) { return }
+                // A3.2: per-season remembered episode (Apple-style only). `selectedSeason` is read
+                // live: a commit above may have moved it past this render's `current`.
+                if let season = selectedSeason ?? current {
+                    seasonBrowse.state.remember(episodeId: newValue, season: season)
                 }
             }
 
@@ -384,14 +403,17 @@ struct EpisodesSection: View {
         }
     }
 
-    /// A3.2: focus moved onto a tab (debounced switch) or off the row. Leaving drops a switch that
-    /// has not settled yet, so focus enters the shelf that is on screen: swapping the shelf under
-    /// focus that is already moving into it could strand focus on a card that is gone.
+    /// A3.2: focus moved onto a tab (debounced switch) or off the row. Leaving with a switch that
+    /// has not settled yet commits it at once (`commitPendingSeasonOnLeave`), so Down within the
+    /// debounce enters the season the viewer tabbed to, on its entry episode. Only the viewed
+    /// season changes: the hero and Play never read it.
     private func seasonTabFocusChanged(_ season: Int?, viewed: Int?) {
         seasonSwitchTask?.cancel()
         seasonSwitchTask = nil
         guard let season else {
-            seasonBrowse.state.cancel()
+            commitPendingSeasonOnLeave()
+            // Focus may already sit on the old season's card (the shelf saw it first).
+            if let focused = focusedEpisodeId { _ = redirectShelfFocus(from: focused) }
             return
         }
         guard let ticket = seasonBrowse.state.focus(on: season, viewed: viewed) else { return }
@@ -400,6 +422,34 @@ struct EpisodesSection: View {
             guard !Task.isCancelled else { return }
             if let settled = seasonBrowse.state.settle(ticket: ticket) { selectedSeason = settled }
         }
+    }
+
+    /// A3.2: focus left the tab row: show the pending season now (if any) and arm its entry
+    /// episode for the next shelf focus. Idempotent: the tab row and the shelf both call it, in
+    /// whichever order SwiftUI delivers the two focus changes.
+    private func commitPendingSeasonOnLeave() {
+        guard seasonBrowse.state.pending != nil else { return }
+        seasonSwitchTask?.cancel()
+        seasonSwitchTask = nil
+        let grouped = resolvedGrouping().grouped
+        // Read the entry from a copy: `entryEpisodeId` reads `seasonBrowse.state`, which `leave`
+        // is mutating (an overlapping access on the box's stored property).
+        let browse = seasonBrowse.state
+        let committed = seasonBrowse.state.leave(entry: { season in
+            let episodes = grouped[season] ?? []
+            return browse.entryEpisode(season: season, nextUpId: nextUpEpisodeId(episodes),
+                                       isListed: { id in episodes.contains { $0.id == id } })
+        })
+        if let committed, selectedSeason != committed { selectedSeason = committed }
+    }
+
+    /// A3.2: after a leave commit, move shelf focus from `episodeId` (a card of the season the
+    /// viewer tabbed away from) to the committed season's entry. One runloop later, so the
+    /// rebuilt shelf has the target card. Returns whether it redirected.
+    private func redirectShelfFocus(from episodeId: String) -> Bool {
+        guard let target = seasonBrowse.state.shelfFocus(on: episodeId) else { return false }
+        DispatchQueue.main.async { focusedEpisodeId = target }
+        return true
     }
 
     /// A3.2: Select on a tab switches at once (no debounce wait).

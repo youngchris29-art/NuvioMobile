@@ -152,7 +152,10 @@ nonisolated enum EpisodeSeasonTabs {
 /// `DetailViewModel`'s progress-based play target) never move while browsing.
 ///
 /// Focus landing on a tab switches the shelf after `debounce`, so sweeping Left/Right across the
-/// tabs does not rebuild the shelf for every season passed; leaving the row first cancels it. Each focus change bumps `generation`;
+/// tabs does not rebuild the shelf for every season passed. Leaving the row before the debounce
+/// commits the pending season at once (`leave(entry:)`) and arms its entry episode, so the next
+/// shelf focus is sent there (`shelfFocus(on:)`) instead of onto a card of the season the viewer
+/// just tabbed away from. Each focus change bumps `generation`;
 /// a debounce that wakes with an older ticket is stale and does nothing (the caller also cancels
 /// its sleeping Task). Episodes for every season are already in memory (`MetaDetails.videos`), so
 /// the switch is a filter: there is no per-season fetch to cancel beyond that Task.
@@ -165,11 +168,15 @@ nonisolated struct SeasonTabBrowse: Equatable {
     private(set) var pending: Int?
     private(set) var generation = 0
     private(set) var remembered: [Int: String] = [:]
+    /// The entry episode of a season committed by `leave(entry:)`, waiting for focus to reach the
+    /// shelf; consumed by the next `shelfFocus(on:)`.
+    private(set) var armedEntry: String?
 
     /// Focus landed on `season`'s tab while the shelf shows `viewed`. Returns the ticket to pass to
     /// `settle(ticket:)` after the debounce, or nil when there is nothing to switch.
     mutating func focus(on season: Int, viewed: Int?) -> Int? {
         generation += 1
+        armedEntry = nil
         guard season != viewed else {
             pending = nil
             return nil
@@ -186,17 +193,32 @@ nonisolated struct SeasonTabBrowse: Equatable {
         return season
     }
 
-    /// Focus left the tab row before the debounce: drop the pending switch (focus enters the
-    /// shelf that is on screen). Any sleeping ticket becomes stale.
-    mutating func cancel() {
+    /// Focus left the tab row (Down into the shelf, or anywhere else) before the debounce: the
+    /// pending season to show right away, or nil when nothing was pending. `entry` gives that
+    /// season's entry episode (the shelf's own rule, `entryEpisode`), armed for `shelfFocus(on:)`.
+    /// Any sleeping ticket becomes stale.
+    mutating func leave(entry: (Int) -> String?) -> Int? {
         generation += 1
+        guard let season = pending else { return nil }
         pending = nil
+        armedEntry = entry(season)
+        return season
+    }
+
+    /// Focus landed on `episodeId` in the shelf. After a `leave(entry:)` commit, the episode focus
+    /// must move to instead (the committed season's entry), or nil to keep it. Consumes the armed
+    /// entry, so it redirects once.
+    mutating func shelfFocus(on episodeId: String) -> String? {
+        guard let target = armedEntry else { return nil }
+        armedEntry = nil
+        return target == episodeId ? nil : target
     }
 
     /// A tab was selected before the debounce: the pending season to show right away, if any.
     /// Any sleeping ticket becomes stale.
     mutating func flush() -> Int? {
         generation += 1
+        armedEntry = nil
         let season = pending
         pending = nil
         return season

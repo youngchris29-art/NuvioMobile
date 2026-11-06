@@ -2,7 +2,7 @@ import XCTest
 @testable import NuvioTV
 
 /// A3.2 (C1): the Apple-style text season tabs (order, labels) and the viewed-season browse state
-/// (debounce tickets, stale-switch cancel, per-season remembered episode).
+/// (debounce tickets, commit on leave, per-season remembered episode).
 final class EpisodeSeasonTabsTests: XCTestCase {
 
     // MARK: - Tabs
@@ -73,13 +73,58 @@ final class EpisodeSeasonTabsTests: XCTestCase {
         XCTAssertNil(browse.settle(ticket: t2))
     }
 
-    /// Leaving the tab row before the debounce: the shelf on screen stays.
-    func testCancelDropsPending() {
+    /// Season 1 → Season 2, then Down within the debounce: leaving the tab row commits Season 2 at
+    /// once, and the sleeping ticket must not switch again.
+    func testLeaveCommitsPendingAndStalesTicket() {
         var browse = SeasonTabBrowse()
         let t2 = browse.focus(on: 2, viewed: 1)!
-        browse.cancel()
+        XCTAssertEqual(browse.leave(entry: { "s\($0)e1" }), 2)
         XCTAssertNil(browse.pending)
         XCTAssertNil(browse.settle(ticket: t2))
+    }
+
+    /// After the leave commit, focus that reaches a Season 1 card is sent to Season 2's entry
+    /// episode (the shelf's entry rule: remembered, else next-up), once.
+    func testLeaveRedirectsShelfFocusToCommittedSeasonEntry() {
+        var browse = SeasonTabBrowse()
+        browse.remember(episodeId: "s2e5", season: 2)
+        _ = browse.focus(on: 2, viewed: 1)
+        let snapshot = browse
+        let committed = browse.leave(entry: { season in
+            snapshot.entryEpisode(season: season, nextUpId: "s\(season)e1", isListed: { _ in true })
+        })
+        XCTAssertEqual(committed, 2)
+        XCTAssertEqual(browse.shelfFocus(on: "s1e3"), "s2e5")
+        // Consumed: later moves along the shelf are left alone.
+        XCTAssertNil(browse.shelfFocus(on: "s2e6"))
+    }
+
+    /// Focus already on the entry episode: nothing to move.
+    func testLeaveRedirectIsNilWhenAlreadyOnEntry() {
+        var browse = SeasonTabBrowse()
+        _ = browse.focus(on: 2, viewed: 1)
+        _ = browse.leave(entry: { _ in "s2e1" })
+        XCTAssertNil(browse.shelfFocus(on: "s2e1"))
+        XCTAssertNil(browse.armedEntry)
+    }
+
+    /// Leaving after the switch settled (or from the viewed season's tab): nothing to commit, and
+    /// shelf focus stays where it lands.
+    func testLeaveWithoutPendingCommitsNothing() {
+        var browse = SeasonTabBrowse()
+        let t2 = browse.focus(on: 2, viewed: 1)!
+        _ = browse.settle(ticket: t2)
+        XCTAssertNil(browse.leave(entry: { _ in "x" }))
+        XCTAssertNil(browse.shelfFocus(on: "s2e3"))
+    }
+
+    /// Back on a tab before reaching the shelf: the armed entry is dropped.
+    func testTabFocusDisarmsEntry() {
+        var browse = SeasonTabBrowse()
+        _ = browse.focus(on: 2, viewed: 1)
+        _ = browse.leave(entry: { _ in "s2e1" })
+        _ = browse.focus(on: 2, viewed: 2)
+        XCTAssertNil(browse.shelfFocus(on: "s1e3"))
     }
 
     /// Select before the debounce: switch now, and the sleeping ticket must not switch again.
@@ -133,7 +178,7 @@ final class EpisodeSeasonTabsTests: XCTestCase {
         let t = browse.focus(on: 2, viewed: 1)!
         _ = browse.settle(ticket: t)
         _ = browse.focus(on: 1, viewed: 2)
-        browse.cancel()
+        _ = browse.leave(entry: { _ in nil })
         XCTAssertEqual(browse.remembered, [1: "s1e5"])
     }
 }
