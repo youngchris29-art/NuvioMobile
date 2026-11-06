@@ -71,6 +71,21 @@ final class DetailCinematicLayoutTests: XCTestCase {
         XCTAssertEqual(a.trailing, apple.trailing)
     }
 
+    // MARK: - Wide shelf cards (C)
+
+    @MainActor
+    func testWideCardMetricsPerLayout() {
+        let apple = DetailWideCard.metrics(appleStyle: true)
+        XCTAssertEqual(apple.width, DetailGeometry.wideCardWidth)
+        XCTAssertEqual(apple.gap, DetailGeometry.wideCardGap)
+        XCTAssertEqual(apple.height, 231) // 410 x 9/16, rounded
+        let other = DetailWideCard.metrics(appleStyle: false)
+        XCTAssertEqual(other, .init(width: Theme.Size.episodeWidth, height: Theme.Size.episodeHeight,
+                                    gap: Theme.Spacing.rowGap))
+        XCTAssertEqual(other.width, 420)
+        XCTAssertEqual(other.gap, 28)
+    }
+
     /// Correction F16: the nonisolated mirrors must match the `Theme` tokens they copy.
     @MainActor
     func testThemeMirrors() {

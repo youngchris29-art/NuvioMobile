@@ -70,7 +70,7 @@ nonisolated enum DetailGeometry {
     static let peekBand: CGFloat = 140
     static let heroMinimumHeight: CGFloat = 520
 
-    // MARK: Shelves (defined for a later pass; not yet applied)
+    // MARK: Shelves (Apple-style; `DetailWideCard`. Person cards not yet applied)
 
     static let wideCardWidth: CGFloat = 410
     static let wideCardGap: CGFloat = 40

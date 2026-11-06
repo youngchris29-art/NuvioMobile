@@ -119,6 +119,7 @@ struct EpisodesSection: View {
         let nextUpId = nextUpEpisodeId(episodes)
         let entryId = entryEpisodeId(season: current, episodes: episodes)
         let showsSeasonTabs = appleStyle && seasons.count > 1
+        let cardMetrics = DetailWideCard.metrics(appleStyle: appleStyle)
 
         return VStack(alignment: .leading, spacing: 20) {
             if showsSeasonTabs {
@@ -201,13 +202,14 @@ struct EpisodesSection: View {
 
             ScrollViewReader { proxy in
                 ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(alignment: .top, spacing: Theme.Spacing.rowGap) {
+                    LazyHStack(alignment: .top, spacing: cardMetrics.gap) {
                         ForEach(episodes, id: \.id) { episode in
                             Button {
                                 episodeForStreams = EpisodeRoute(meta: meta, episode: episode)
                             } label: {
                                 EpisodeThumbCard(
                                     episode: episode,
+                                    cardSize: cardMetrics.size,
                                     fallbackImage: meta.background ?? meta.poster,
                                     // A3.1: Apple-style draws the rating in the text block instead.
                                     rating: appleStyle ? nil : rating(for: episode),
@@ -839,6 +841,8 @@ private struct SeasonPosterRow: View {
 /// focus ring/scale/shadow language as `LandscapeCard` itself (`DetailTileFocusLift`, BUG-177).
 private struct EpisodeThumbCard: View {
     let episode: MetaVideo
+    /// The card's still size: `DetailWideCard.metrics` (Apple-style 410 wide, else 420x236).
+    var cardSize: CGSize = DetailWideCard.metrics(appleStyle: false).size
     let fallbackImage: String?
     /// IMDb rating for this episode (badge hidden when nil).
     var rating: Double? = nil
@@ -872,14 +876,14 @@ private struct EpisodeThumbCard: View {
             ZStack(alignment: .bottom) {
                 // Decoded at the card's focused size (×1.2 covers the lift), not the 1920 px default.
                 CachedAsyncImage(string: thumbnailURL,
-                                 decodeSize: .points(width: Theme.Size.episodeWidth * 1.2,
-                                                     height: Theme.Size.episodeHeight * 1.2))
+                                 decodeSize: .points(width: cardSize.width * 1.2,
+                                                     height: cardSize.height * 1.2))
                     .onImageLoaded { _ in
                         DetailTileRailTint.imageLoaded(samples: samplesDepthColor, source: thumbnailURL) { color in
                             if depthRailTint != color { depthRailTint = color }
                         }
                     }
-                    .frame(width: Theme.Size.episodeWidth, height: Theme.Size.episodeHeight)
+                    .frame(width: cardSize.width, height: cardSize.height)
                     .blur(radius: hidesSpoiler ? EpisodeSpoilerRules.stillBlurRadius : 0, opaque: true)
                     // BUG-31: episode stills are not all 16:9 (and the poster fallback never is), so
                     // the `.fill` image overflows this fixed frame and the hover lift copies the
@@ -897,7 +901,7 @@ private struct EpisodeThumbCard: View {
                     .allowsHitTesting(false)
                 }
             }
-            .frame(width: Theme.Size.episodeWidth, height: Theme.Size.episodeHeight)
+            .frame(width: cardSize.width, height: cardSize.height)
             .clipShape(shape)
             .nuvioCardDepth(shape, surface: .episodeCards,
                             railTint: DetailTileRailTint.resolved(samples: samplesDepthColor,
@@ -919,12 +923,12 @@ private struct EpisodeThumbCard: View {
             // still under "No Zoom on Focus" (which this tile used to ignore).
             // BUG-177 (Steven rc7): draws the accent ring and owns its lift in ring mode.
             .detailTileFocusLift(cornerRadius: posterStyle.cornerRadius,
-                                 size: CGSize(width: Theme.Size.episodeWidth, height: Theme.Size.episodeHeight),
+                                 size: CGSize(width: cardSize.width, height: cardSize.height),
                                  tintSource: thumbnailURL)
 
             Group {
                 if let textBlock {
-                    EpisodeCardTextBlock(content: textBlock, isFocused: isFocused)
+                    EpisodeCardTextBlock(content: textBlock, width: cardSize.width)
                 } else {
                     Text(heading)
                         .font(Theme.Font.cardTitle)
@@ -932,7 +936,7 @@ private struct EpisodeThumbCard: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .padding(.horizontal, Theme.Spacing.xs)
-                        .frame(width: Theme.Size.episodeWidth, alignment: .leading)
+                        .frame(width: cardSize.width, alignment: .leading)
                 }
             }
             // UX-15 class: keep the artwork↔title gap constant under the system lift (the
@@ -941,7 +945,7 @@ private struct EpisodeThumbCard: View {
                 mode: CardFocusMode.resolve(accentFocusRing: focusAppearance.accentFocusRing,
                                             noZoomOnFocus: focusAppearance.noZoomOnFocus),
                 isFocused: isFocused,
-                artworkHeight: Theme.Size.episodeHeight
+                artworkHeight: cardSize.height
             ))
         }
         // BUG-177: Reduce Motion gate — see `TrailerThumbCard`. BUG-153 (Batch M): also nil in
@@ -993,7 +997,7 @@ private struct EpisodeThumbCard: View {
 /// `hidesSpoiler` value (`EpisodeThumbCard.hidesSpoiler`), so text and still hide together.
 private struct EpisodeCardTextBlock: View {
     let content: EpisodeCardText.Content
-    let isFocused: Bool
+    let width: CGFloat
 
     var body: some View {
         // Every row is drawn in a caption2-sized token (`caption`, `cardTitle`), so one measured
@@ -1063,7 +1067,7 @@ private struct EpisodeCardTextBlock: View {
             .accessibilityIdentifier("episode_text_meta")
         }
         .padding(.horizontal, Theme.Spacing.xs)
-        .frame(width: Theme.Size.episodeWidth,
+        .frame(width: width,
                height: EpisodeCardTextLayout.blockHeight(numberLine: lineSlot, titleLine: lineSlot,
                                                          overviewLine: line, metaLine: lineSlot),
                alignment: .topLeading)

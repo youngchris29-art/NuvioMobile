@@ -119,6 +119,28 @@ nonisolated enum EpisodeCardTextLayout {
     }
 }
 
+/// The wide 16:9 cards of the Detail shelves (episodes, trailers, bonus). Apple-style uses the
+/// `DetailGeometry` shelf tokens (410 wide, 40 apart, Apple TV's ~410x230 at a ~450 pitch);
+/// Cinematic and Classic keep today's 420x236 cards 28 apart.
+nonisolated enum DetailWideCard {
+    struct Metrics: Equatable {
+        let width: CGFloat
+        let height: CGFloat
+        let gap: CGFloat
+        var size: CGSize { CGSize(width: width, height: height) }
+    }
+
+    static func metrics(appleStyle: Bool) -> Metrics {
+        guard appleStyle else {
+            return Metrics(width: Theme.Size.episodeWidth, height: Theme.Size.episodeHeight,
+                           gap: Theme.Spacing.rowGap)
+        }
+        return Metrics(width: DetailGeometry.wideCardWidth,
+                       height: (DetailGeometry.wideCardWidth * 9 / 16).rounded(),
+                       gap: DetailGeometry.wideCardGap)
+    }
+}
+
 /// A3.2 (C1): the compact text season tabs. Same normalization and order as
 /// `EpisodesSection.groupedEpisodes`/`seasonSortKey` (specials, season 0 or missing, sort last).
 nonisolated enum EpisodeSeasonTabs {

@@ -3354,7 +3354,8 @@ struct DetailView: View {
                               title: appleStyle ? String(localized: "Trailers") : String(localized: "Trailers & Extras"),
                               probeID: "debug_trailers",
                               resolvingTrailerId: model.resolvingTrailerId,
-                              onPlay: { model.playTrailer($0) })
+                              onPlay: { model.playTrailer($0) },
+                              cardMetrics: DetailWideCard.metrics(appleStyle: appleStyle))
         }
     }
 
@@ -3367,7 +3368,8 @@ struct DetailView: View {
                               title: String(localized: "Bonus"),
                               probeID: "debug_bonus",
                               resolvingTrailerId: model.resolvingTrailerId,
-                              onPlay: { model.playTrailer($0) })
+                              onPlay: { model.playTrailer($0) },
+                              cardMetrics: DetailWideCard.metrics(appleStyle: true))
         }
     }
 
@@ -3660,6 +3662,8 @@ private struct DetailTrailersRow: View {
     let probeID: String
     let resolvingTrailerId: String?
     let onPlay: (MetaTrailer) -> Void
+    /// Card size and gap (`DetailWideCard`): Apple-style's tokens, else today's 420/28.
+    var cardMetrics: DetailWideCard.Metrics = DetailWideCard.metrics(appleStyle: false)
 
     /// BUG-177: which Trailers & Extras card holds focus — only to raise it over its neighbours.
     @FocusState private var focusedIndex: Int?
@@ -3671,12 +3675,13 @@ private struct DetailTrailersRow: View {
                 .font(Theme.Font.sectionTitle)
                 .foregroundStyle(Theme.Palette.textPrimary)
             ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(alignment: .top, spacing: Theme.Spacing.rowGap) {
+                LazyHStack(alignment: .top, spacing: cardMetrics.gap) {
                     ForEach(Array(trailers.prefix(10).enumerated()), id: \.element.id) { index, trailer in
                         Button {
                             onPlay(trailer)
                         } label: {
-                            TrailerThumbCard(trailer: trailer, isResolving: resolvingTrailerId == trailer.id)
+                            TrailerThumbCard(trailer: trailer, isResolving: resolvingTrailerId == trailer.id,
+                                             cardSize: cardMetrics.size)
                         }
                         // BUG-177 (Steven rc7): TrailerThumbCard owns its ring-mode lift now
                         // (`DetailTileFocusLift`), so the default `.card` style takes the native
