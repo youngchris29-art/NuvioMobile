@@ -763,6 +763,23 @@ class TitleFormatProbeTest {
     }
 
     @Test
+    fun watchingAnEvictedButCachedTitleShowsItsAnswerAtOnce() = runTest {
+        val rig = rig("a1")
+        rig.fetcher.behavior = { listOf(stream("a1", fourKDv)) }
+        rig.engine.start(movie)
+        settle()
+        repeat(TitleFormatProbeEngine.MAX_TRACKED) { i ->
+            rig.engine.watch(TitleFormatRequest(type = "movie", videoId = "tt${1_000 + i}", season = null, episode = null))
+        }
+        assertEquals(emptyList(), rig.badges(), "evicted from the tracked set")
+
+        rig.engine.watch(movie)
+
+        assertEquals(listOf(UHD_4K, DOLBY_VISION), rig.badges())
+        assertEquals(1, rig.fetcher.fetched.size)
+    }
+
+    @Test
     fun changingThePluginScrapersMissesTheCache() = runTest {
         val rig = rig("a1")
         rig.plugins = listOf("https://repo.example.com#p1")

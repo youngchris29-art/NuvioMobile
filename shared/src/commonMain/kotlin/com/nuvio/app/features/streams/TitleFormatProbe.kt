@@ -251,6 +251,11 @@ internal class TitleFormatProbeEngine(
             resetState(request.key)
             val entry = Tracked(request, cacheKey, currentSettings.canResolvePlayableLinks)
             track(entry)
+            // A live cache answer (an entry that left the tracked set) shows at once, not after the dwell.
+            cacheKey?.let { cache.get(it) }?.let { hit ->
+                entry.answered = true
+                publish(request.key) { it.copy(badges = hit.badges, source = hit.source) }
+            }
             foldInto(entry, pickerState.value, configChecked = true)
         }
     }
