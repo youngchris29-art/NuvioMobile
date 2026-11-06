@@ -171,6 +171,30 @@ class StreamBestPickTest {
     }
 
     @Test
+    fun anAuthoritativeProviderBeatsAMarkerThatNamesNoService() {
+        val sel = StreamAutoPlaySelector
+        // Prepared through TorBox (its cache status says so), with a generic bolt in its name; the
+        // active resolver then changed to Premiumize.
+        val prepared = cachedTorrent("2160p \u26A1", provider = "torbox").copy(url = "https://torbox.example/dl/abc.mkv")
+        assertTrue(with(com.nuvio.app.features.debrid.DebridStreamPresentation) { prepared.isAddonMarkedCachedDirectLink })
+        assertFalse(sel.isCachedDebridLink(prepared, true, "premiumize"), "the cache status decides, not the bolt")
+        assertTrue(sel.isCachedDebridLink(prepared, true, "torbox"))
+        assertEquals(0, StreamQualityRank.key(prepared, "premiumize").cached)
+        assertEquals(1, StreamQualityRank.key(prepared, "torbox").cached)
+        assertEquals(0, StreamQualityRank.key(StreamFactsParser.parse(prepared), prepared, "premiumize").cached)
+        assertEquals(emptyList(), pick(listOf(prepared), active = "premiumize", cachedOnly = true).ranked)
+
+        // A direct-debrid result's service decides the same way.
+        val direct = directDebrid("2160p \u26A1", service = "realdebrid").copy(url = "https://rd.example/dl/x.mkv")
+        assertFalse(sel.isCachedDebridLink(direct, true, "torbox"))
+
+        // Without any provider data the marker still decides: a bolt matches any active service.
+        val marked = marked("2160p \u26A1")
+        assertTrue(sel.isCachedDebridLink(marked, true, "premiumize"))
+        assertEquals(1, StreamQualityRank.key(marked, "premiumize").cached)
+    }
+
+    @Test
     fun aCometBoltTagNamesItsService() {
         val sel = StreamAutoPlaySelector
         // The Comet row from StreamFactsParserTest.cometRow.

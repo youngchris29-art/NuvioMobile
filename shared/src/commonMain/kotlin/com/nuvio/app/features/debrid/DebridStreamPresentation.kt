@@ -331,13 +331,22 @@ object DebridStreamPresentation {
      * cached on the active service when it names that service ([addonMarkedCachedService]: a tag,
      * the name field or a service line) or names none (the same
      * "no provider on the link matches" rule the debrid links follow).
+     * Marker inference only applies when the stream carries no authoritative provider: a
+     * cache-checked or prepared torrent ([StreamItem.debridCacheStatus] provider) or a
+     * direct-debrid result ([StreamItem.clientResolve] service) is decided by that provider alone
+     * (see `StreamAutoPlaySelector.isCachedDebridLink`), whatever its text says.
      */
     fun isAddonMarkedCachedFor(stream: StreamItem, activeResolverProviderId: String?): Boolean {
+        if (stream.hasAuthoritativeDebridProvider) return false
         if (!stream.isAddonMarkedCachedDirectLink) return false
         val active = activeResolverProviderId?.trim().orEmpty()
         val service = stream.addonMarkedCachedService
         return active.isBlank() || service == null || service.equals(active, ignoreCase = true)
     }
+
+    /** The app knows which debrid service the stream belongs to, from data rather than text. */
+    val StreamItem.hasAuthoritativeDebridProvider: Boolean
+        get() = !debridCacheStatus?.providerId.isNullOrBlank() || !clientResolve?.service.isNullOrBlank()
 
     /** Installed-add-on stream with a playable http(s) link and a cached marker (no uncached one). */
     val StreamItem.isAddonMarkedCachedDirectLink: Boolean
