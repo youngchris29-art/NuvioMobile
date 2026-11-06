@@ -1997,7 +1997,10 @@ struct DetailView: View {
                         episodeRatingsVisibility: model.episodeRatingsVisibility,
                         watchedEpisodeKeys: model.watchedEpisodeKeys,
                         onPostPlayTitle: { postPlayRoute = TitleRoute(preview: $0) },
-                        appleStyle: detailLayoutChoice == .appleStyle
+                        appleStyle: detailLayoutChoice == .appleStyle,
+                        // Follow-up 1A: Menu in the Apple-style episodes section → hero Play; the
+                        // row → nil change runs the FEAT-35 hero return (scroll to the top).
+                        onMenuToHero: { heroFocus = EpisodeSectionMenu.heroTarget(playEnabled: model.isPlayEnabled) }
                     )
                     // A discrete focus region: vertical D-pad moves must land here instead of
                     // geometrically skipping from the info/network chips down to the cast row.

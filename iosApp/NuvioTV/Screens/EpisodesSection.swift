@@ -27,6 +27,9 @@ struct EpisodesSection: View {
     var onPostPlayTitle: ((MetaPreview) -> Void)? = nil
     /// A3: the Apple-style Detail layout (`DetailLayout.appleStyle`). Off = today's section.
     var appleStyle: Bool = false
+    /// Follow-up 1A: Apple-style Menu inside this section (tabs or shelf) moves focus to the hero's
+    /// Play; the host sets its hero focus. Ignored outside Apple-style (`EpisodeSectionMenu`).
+    var onMenuToHero: (() -> Void)? = nil
 
     @AppStorage(EpisodeSpoilerRules.defaultsKey) private var hideSpoilers = false
     @State private var selectedSeason: Int?
@@ -294,9 +297,8 @@ struct EpisodesSection: View {
             // focus coming back from the menu is never redirected to a next-up that just moved.
             .defaultFocus($focusedEpisodeId, heldEpisodeId ?? entryId, priority: .userInitiated)
             .focusSection()
-            // A3.2: Menu on an episode card goes to the viewed season's tab first; Menu on the tabs
-            // (no handler there) leaves Detail as before. nil everywhere else: no handler.
-            .onExitCommand(perform: showsSeasonTabs ? { focusedSeasonTab = current } : nil)
+            // Follow-up 1A: Menu on an episode card no longer stops at the season tab; the
+            // section-level handler below sends it to the hero's Play.
             .onChange(of: focusedEpisodeId) { _, newValue in
                 // FEAT-83: focus moved after the action (back to the held card, on along the
                 // shelf, or anywhere else): the hold is over. Any change, not only a return to
@@ -320,6 +322,10 @@ struct EpisodesSection: View {
                 focusedOverviewPanel(episodes: episodes)
             }
         }
+        // Follow-up 1A (Apple-style only): Menu on a season tab or an episode card → hero Play
+        // (page back at the top); the next Menu, on Play, pops Detail. One handler for the whole
+        // section, so the tabs and the shelf behave the same. nil elsewhere: no handler.
+        .onExitCommand(perform: EpisodeSectionMenu.exitHandler(appleStyle: appleStyle, toHero: onMenuToHero))
         .fullScreenCover(item: $episodeForStreams, onDismiss: {
             guard let pick = postPlayPending else { return }
             postPlayPending = nil

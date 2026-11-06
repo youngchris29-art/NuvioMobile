@@ -210,4 +210,20 @@ final class EpisodeSeasonTabsTests: XCTestCase {
         XCTAssertNil(browse.focus(on: target, viewed: 1))
         XCTAssertNil(browse.pending)
     }
+
+    // MARK: - Menu (follow-up 1A)
+
+    func testMenuGoesToHeroOnlyInAppleStyle() {
+        var fired = 0
+        let toHero = { fired += 1 }
+        XCTAssertNil(EpisodeSectionMenu.exitHandler(appleStyle: false, toHero: toHero))
+        XCTAssertNil(EpisodeSectionMenu.exitHandler(appleStyle: true, toHero: nil))
+        EpisodeSectionMenu.exitHandler(appleStyle: true, toHero: toHero)?()
+        XCTAssertEqual(fired, 1)
+    }
+
+    func testMenuTargetsPlayUnlessDisabled() {
+        XCTAssertEqual(EpisodeSectionMenu.heroTarget(playEnabled: true), .play)
+        XCTAssertEqual(EpisodeSectionMenu.heroTarget(playEnabled: false), .watched)
+    }
 }

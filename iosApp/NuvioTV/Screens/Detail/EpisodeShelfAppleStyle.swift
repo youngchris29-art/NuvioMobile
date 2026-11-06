@@ -292,3 +292,22 @@ final class EpisodeAirDateCache {
         return formatted
     }
 }
+
+/// Detail follow-up 1A (Apple-style only): Menu with focus in the episodes section (a season tab or
+/// an episode card) sends focus to the hero's Play button, and DetailView's existing hero return
+/// (`DetailRowAnchor.heroReturn` → `armHeroReturn`) scrolls the page back to the top. The second
+/// Menu, now on Play, finds no handler and pops Detail as before. Cinematic and Classic get no
+/// handler at all, so Menu there keeps leaving the page.
+nonisolated enum EpisodeSectionMenu {
+    static func exitHandler(appleStyle: Bool, toHero: (() -> Void)?) -> (() -> Void)? {
+        guard appleStyle else { return nil }
+        return toHero
+    }
+
+    /// The hero button Menu lands on: Play, or Mark Watched (always present) while Play is disabled
+    /// ("Playback unavailable"), since a disabled button cannot take focus and the Menu press would
+    /// otherwise be swallowed with focus left on the shelf.
+    static func heroTarget(playEnabled: Bool) -> DetailHeroFocus {
+        playEnabled ? .play : .watched
+    }
+}
