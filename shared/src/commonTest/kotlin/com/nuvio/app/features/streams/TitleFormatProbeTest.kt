@@ -780,6 +780,26 @@ class TitleFormatProbeTest {
     }
 
     @Test
+    fun aUiOnlyPickerEmissionDoesNotRenewTheCache() = runTest {
+        val rig = rig("a1")
+        rig.engine.watch(movie)
+        val settledEmpty = pickerState(token(manual = true), stream("picker", "Movie.2024.1080p.WEB-DL-GRP"))
+        rig.picker.value = settledEmpty
+        runCurrent()
+
+        rig.now += TitleFormatProbeCache.EMPTY_TTL_MS - 1
+        rig.picker.value = settledEmpty.copy(selectedFilter = "addon:picker") // same load, UI change only
+        runCurrent()
+        rig.now += 1
+        rig.picker.value = StreamsUiState()
+        runCurrent()
+
+        rig.engine.start(movie)
+        settle()
+        assertEquals(1, rig.fetcher.fetched.size, "the empty answer expired on its own clock")
+    }
+
+    @Test
     fun changingThePluginScrapersMissesTheCache() = runTest {
         val rig = rig("a1")
         rig.plugins = listOf("https://repo.example.com#p1")

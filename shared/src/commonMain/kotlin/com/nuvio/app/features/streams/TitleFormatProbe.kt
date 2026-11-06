@@ -203,6 +203,8 @@ internal class TitleFormatProbeEngine(
     /** By [TitleFormatRequest.key], oldest first; bounded by [MAX_TRACKED]. */
     private val tracked = LinkedHashMap<String, Tracked>()
     private var foldJob: Job? = null
+    /** The picker load (cache key, streams per group) the fold last recorded; guarded by [lock]. */
+    private var lastRecordedPickerLoad: Pair<String?, List<Pair<String, List<StreamItem>>>>? = null
     /** The last [TitleFormatState.generation] handed out; guarded by [lock]. */
     private var lastGeneration = 0
 
@@ -486,8 +488,12 @@ internal class TitleFormatProbeEngine(
         // Like the probe: an empty answer is cached only if some source actually answered,
         // and only once the picker settled (a partial answer would suppress a full probe).
         val answered = badges.isNotEmpty() || state.groups.any { it.error.isNullOrBlank() }
-        if (entry.cacheKey != null && answered && settled) {
+        // Recorded once per picker load: a UI-only emission (a filter chip, focus) or a re-fold of
+        // the same open picker must not renew the entry's TTL with streams that were not fetched again.
+        val load = entry.cacheKey to state.groups.map { it.addonId to it.streams }
+        if (entry.cacheKey != null && answered && settled && load != lastRecordedPickerLoad) {
             cache.record(entry.cacheKey, badges, TitleFormatSource.PICKER)
+            lastRecordedPickerLoad = load
             // A cached answer: once it expires, the next start resets instead of growing on it.
             entry.answered = true
         }
