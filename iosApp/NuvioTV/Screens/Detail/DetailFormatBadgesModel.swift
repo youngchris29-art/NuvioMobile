@@ -14,6 +14,8 @@ nonisolated struct DetailFormatBadgeSnapshot: Equatable, Sendable {
 /// Where `DetailFormatBadgesModel` gets its badges: `TitleFormatProbe.shared` in the app, a fake in
 /// NuvioTVTests so the dwell and gating run without the network.
 nonisolated protocol DetailFormatBadgeSource {
+    /// Tracks the request for the picker fold, with no network (called before the dwell).
+    func watch(_ request: TitleFormatRequest)
     func start(_ request: TitleFormatRequest)
     func cancel(_ request: TitleFormatRequest)
     /// What is known for the request right now (empty when nothing is).
@@ -25,6 +27,8 @@ nonisolated protocol DetailFormatBadgeSource {
 
 /// Production source: the shared probe, watched with `FlowWatcher` like `StateFlowObserver`.
 nonisolated struct TitleFormatProbeSource: DetailFormatBadgeSource {
+    func watch(_ request: TitleFormatRequest) { TitleFormatProbe.shared.watch(request: request) }
+
     func start(_ request: TitleFormatRequest) { TitleFormatProbe.shared.start(request: request) }
 
     func cancel(_ request: TitleFormatRequest) { TitleFormatProbe.shared.cancel(request: request) }
@@ -76,8 +80,8 @@ final class DetailFormatBadgesModel: ObservableObject {
         "\(enabled ? "on" : "off")|\(request?.key ?? "-")"
     }
 
-    /// Call from `.task(id: DetailFormatBadgesModel.taskID(request:enabled:))`. Shows any cached
-    /// state at once, waits the dwell (returns without starting if cancelled during it), starts the
+    /// Call from `.task(id: DetailFormatBadgesModel.taskID(request:enabled:))`. Tracks the request
+    /// for the picker fold and shows any cached state at once, waits the dwell (returns without starting if cancelled during it), starts the
     /// probe and follows its state until the task is cancelled. Off or no request: clears, no start.
     func run(request: TitleFormatRequest?, enabled: Bool) async {
         guard enabled, let request else {
@@ -87,12 +91,12 @@ final class DetailFormatBadgesModel: ObservableObject {
             return
         }
         if let started, started.key != request.key { stopStarted() }
-        if shownKey != request.key {
-            shownKey = request.key
-            replace(with: source.snapshot(for: request))
-        } else {
-            apply(source.snapshot(for: request))
-        }
+        // Tracked at once, so a picker opened during the dwell still folds into this request.
+        source.watch(request)
+        // The probe's snapshot is authoritative here (it already holds every badge of its
+        // generation, and hides an expired or other-configuration answer): replace, never merge.
+        shownKey = request.key
+        replace(with: source.snapshot(for: request))
 
         try? await Task.sleep(for: dwell)
         if Task.isCancelled { return }

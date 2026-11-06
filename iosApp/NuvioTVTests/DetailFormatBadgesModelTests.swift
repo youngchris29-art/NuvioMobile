@@ -9,11 +9,13 @@ final class DetailFormatBadgesModelTests: XCTestCase {
 
     private final class FakeSource: DetailFormatBadgeSource {
         var started: [String] = []
+        var watched: [String] = []
         var cancelled: [String] = []
         var cached: [TitleFormatBadge] = []
         var generation: Int32 = 0
         private var continuations: [String: AsyncStream<DetailFormatBadgeSnapshot>.Continuation] = [:]
 
+        func watch(_ request: TitleFormatRequest) { watched.append(request.key) }
         func start(_ request: TitleFormatRequest) { started.append(request.key) }
         func cancel(_ request: TitleFormatRequest) { cancelled.append(request.key) }
         func snapshot(for request: TitleFormatRequest) -> DetailFormatBadgeSnapshot {
@@ -71,6 +73,25 @@ final class DetailFormatBadgesModelTests: XCTestCase {
         task.cancel()
         await task.value
         XCTAssertTrue(source.started.isEmpty)
+        XCTAssertEqual(source.watched, [req.key], "tracked for the picker fold before the dwell")
+    }
+
+    func testAStaleSnapshotOnReappearanceReplacesTheShownBadges() async {
+        let source = FakeSource()
+        source.cached = [.uhd4k]
+        let model = DetailFormatBadgesModel(source: source, dwell: .seconds(5))
+        let req = request()
+        let first = Task { await model.run(request: req, enabled: true) }
+        await waitUntil("cached 4K") { !model.badges.isEmpty }
+        first.cancel()
+        await first.value
+
+        // Expired or another configuration: the probe hides the old answer, same generation.
+        source.cached = []
+        let second = Task { await model.run(request: req, enabled: true) }
+        await waitUntil("cleared") { model.badges.isEmpty }
+        second.cancel()
+        await second.value
     }
 
     func testStartsExactlyOnceAfterDwellAndFollowsEmissions() async {

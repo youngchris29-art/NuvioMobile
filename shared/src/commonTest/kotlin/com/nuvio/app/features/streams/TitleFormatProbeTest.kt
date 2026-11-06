@@ -90,6 +90,7 @@ class TitleFormatProbeTest {
         var now = 1_000_000L
         var settings = DebridSettings()
         var addons: List<ManagedAddon> = emptyList()
+        var plugins: List<String> = emptyList()
     }
 
     private fun TestScope.rig(vararg addonIds: String): Rig {
@@ -103,6 +104,7 @@ class TitleFormatProbeTest {
             settings = { rig.settings },
             installedAddons = { rig.addons },
             pickerState = picker,
+            pluginScrapers = { rig.plugins },
         )
         rig = Rig(fetcher, engine, picker)
         rig.addons = addonIds.map { addon(it) }
@@ -671,6 +673,42 @@ class TitleFormatProbeTest {
 
         rig.now += TitleFormatProbeCache.POSITIVE_TTL_MS
         assertEquals(emptyList(), rig.badges(), "expired: not shown before the next start")
+    }
+
+    @Test
+    fun aPickerOpenedDuringTheDwellIsFoldedIntoAWatchedRequest() = runTest {
+        val rig = rig("a1")
+        rig.engine.watch(movie) // Detail appeared; the dwell has not elapsed, nothing fetched
+        runCurrent()
+        rig.picker.value = pickerState(token(manual = true), stream("picker", fourKDv))
+        runCurrent()
+        rig.picker.value = StreamsUiState() // the picker closed and cleared
+        runCurrent()
+
+        assertEquals(listOf(UHD_4K, DOLBY_VISION), rig.badges())
+        assertEquals(0, rig.fetcher.fetched.size)
+        rig.engine.start(movie) // the picker's settled answer was cached
+        settle()
+        assertEquals(0, rig.fetcher.fetched.size)
+        assertEquals(listOf(UHD_4K, DOLBY_VISION), rig.badges())
+    }
+
+    @Test
+    fun changingThePluginScrapersMissesTheCache() = runTest {
+        val rig = rig("a1")
+        rig.plugins = listOf("https://repo.example.com#p1")
+        rig.engine.watch(movie)
+        rig.picker.value = pickerState(token(manual = true), stream("picker", fourKDv))
+        runCurrent()
+        rig.picker.value = StreamsUiState()
+        runCurrent()
+
+        rig.plugins = emptyList() // the plugin that supplied the 4K was disabled
+        rig.engine.start(movie)
+        settle()
+
+        assertEquals(1, rig.fetcher.fetched.size)
+        assertEquals(emptyList(), rig.badges())
     }
 
     @Test

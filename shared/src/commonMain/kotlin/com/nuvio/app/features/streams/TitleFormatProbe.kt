@@ -1,5 +1,6 @@
 package com.nuvio.app.features.streams
 
+import com.nuvio.app.core.build.FeaturePolicyProvider
 import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import com.nuvio.app.features.addons.AddonRepository
 import com.nuvio.app.features.addons.ManagedAddon
@@ -12,6 +13,7 @@ import com.nuvio.app.features.debrid.DebridStreamMetadata
 import com.nuvio.app.features.debrid.DebridStreamPresentation
 import com.nuvio.app.features.debrid.LocalDebridAvailabilityService
 import com.nuvio.app.features.details.MetaDetailsRepository
+import com.nuvio.app.features.plugins.PluginScraperHostProvider
 import com.nuvio.app.features.profiles.ProfilePinCrypto
 import com.nuvio.app.features.tmdb.TmdbService
 import kotlinx.atomicfu.locks.SynchronizedObject
@@ -180,6 +182,8 @@ internal class TitleFormatProbeEngine(
     private val settings: () -> DebridSettings,
     private val installedAddons: () -> List<ManagedAddon>,
     private val pickerState: StateFlow<StreamsUiState>,
+    /** The enabled plugin scrapers for a type (`repositoryUrl#id`): the picker fold caches their streams. */
+    private val pluginScrapers: (type: String) -> List<String> = { emptyList() },
 ) {
     /**
      * A request the engine answers for. [cacheKey] is null for embedded streams (never cached).
@@ -216,13 +220,40 @@ internal class TitleFormatProbeEngine(
             val entry = tracked[request.key] ?: return published
             (entry.cacheKey ?: return published) to entry.answered
         }
-        val currentKey = cacheKeyFor(request, installedAddons(), settings())
+        val currentKey = currentCacheKey(request)
         val stale = currentKey != entryKey || (answered && synchronized(lock) { cache.get(entryKey) } == null)
         return if (stale) TitleFormatState(generation = published.generation) else published
     }
 
     private fun rawState(request: TitleFormatRequest): TitleFormatState =
         _states.value[request.key] ?: TitleFormatState()
+
+    /**
+     * Tracks [request] for the picker fold with no network (Detail calls it at once, before the
+     * dwell), so a picker opened during the dwell still lands. Folds the picker's current state.
+     * A request tracked under another configuration is reset to a new generation.
+     */
+    fun watch(request: TitleFormatRequest) {
+        ensureFoldCollector()
+        val currentSettings = settings()
+        val embedded = fetcher.embeddedStreams(request.videoId)
+        val cacheKey = if (embedded.isEmpty()) currentCacheKey(request, currentSettings) else null
+        synchronized(lock) {
+            val previous = tracked[request.key]
+            if (previous != null && previous.cacheKey == cacheKey) {
+                foldInto(previous, pickerState.value, configChecked = true)
+                return
+            }
+            previous?.job?.cancel()
+            resetState(request.key)
+            val entry = Tracked(request, cacheKey, currentSettings.canResolvePlayableLinks)
+            track(entry)
+            foldInto(entry, pickerState.value, configChecked = true)
+        }
+    }
+
+    private fun currentCacheKey(request: TitleFormatRequest, currentSettings: DebridSettings = settings()): String =
+        cacheKeyFor(request, installedAddons(), currentSettings, pluginScrapers(request.type))
 
     /** Starts (or answers from cache) the probe for [request]. A no-op while the same probe runs. */
     fun start(request: TitleFormatRequest) {
@@ -231,7 +262,7 @@ internal class TitleFormatProbeEngine(
         val installed = installedAddons()
         val canResolve = currentSettings.canResolvePlayableLinks
         val embedded = fetcher.embeddedStreams(request.videoId)
-        val cacheKey = if (embedded.isEmpty()) cacheKeyFor(request, installed, currentSettings) else null
+        val cacheKey = if (embedded.isEmpty()) cacheKeyFor(request, installed, currentSettings, pluginScrapers(request.type)) else null
 
         val job = synchronized(lock) {
             val previous = tracked[request.key]
@@ -429,7 +460,7 @@ internal class TitleFormatProbeEngine(
         val token = state.requestToken ?: return
         if (!entry.request.matchesPickerToken(token)) return
         if (!configChecked && entry.cacheKey != null &&
-            entry.cacheKey != cacheKeyFor(entry.request, installedAddons(), settings())
+            entry.cacheKey != currentCacheKey(entry.request)
         ) {
             return
         }
@@ -486,10 +517,16 @@ internal class TitleFormatProbeEngine(
          * `type:videoId[:s:e]:<hash>` (the first 16 hex digits of a SHA-256). The hash covers the enabled stream add-ons for the type in
          * user order (order picks the first [MAX_ADDONS]; the instance id embeds the manifest URL, so a
          * config change counts), the debrid resolve flag, the active resolver, Cached Sources Only and
-         * the effective Sources filters, and the debrid API keys (two accounts on one provider can
+         * the effective Sources filters, the enabled plugin scrapers (the picker fold caches their
+         * streams), and the debrid API keys (two accounts on one provider can
          * differ in cached availability). Only the hash is kept: add-on ids and keys are secrets.
          */
-        fun cacheKeyFor(request: TitleFormatRequest, installed: List<ManagedAddon>, settings: DebridSettings): String {
+        fun cacheKeyFor(
+            request: TitleFormatRequest,
+            installed: List<ManagedAddon>,
+            settings: DebridSettings,
+            pluginScrapers: List<String> = emptyList(),
+        ): String {
             val streamAddonIds = installed.enabledAddons().mapNotNull { addon ->
                 val manifest = addon.manifest ?: return@mapNotNull null
                 val servesType = manifest.resources.any { it.name == "stream" && it.types.contains(request.type) }
@@ -497,6 +534,7 @@ internal class TitleFormatProbeEngine(
             }
             val fingerprint = listOf(
                 streamAddonIds,
+                pluginScrapers,
                 settings.canResolvePlayableLinks,
                 settings.activeResolverProviderId,
                 settings.providerApiKeys,
@@ -532,6 +570,13 @@ object TitleFormatProbe {
         settings = { DebridSettingsRepository.snapshot() },
         installedAddons = { AddonRepository.uiState.value.addons },
         pickerState = StreamsRepository.uiState,
+        pluginScrapers = { type ->
+            if (FeaturePolicyProvider.policy.pluginsEnabled) {
+                PluginScraperHostProvider.host.getEnabledScrapersForType(type).map { "${it.repositoryUrl}#${it.id}" }
+            } else {
+                emptyList()
+            }
+        },
     )
 
     /** Badge state per [TitleFormatRequest.key]. */
@@ -539,6 +584,8 @@ object TitleFormatProbe {
         get() = engine.states
 
     fun state(request: TitleFormatRequest): TitleFormatState = engine.state(request)
+
+    fun watch(request: TitleFormatRequest) = engine.watch(request)
 
     fun start(request: TitleFormatRequest) = engine.start(request)
 
