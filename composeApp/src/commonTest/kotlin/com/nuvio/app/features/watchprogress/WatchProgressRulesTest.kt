@@ -333,6 +333,72 @@ class WatchProgressRulesTest {
     }
 
     @Test
+    fun `any started position counts as in progress below two percent`() {
+        val started = entry(
+            videoId = "movie-1",
+            lastPositionMs = 10_000L,
+            durationMs = 1_000_000L,
+            progressPercent = 1f,
+        )
+
+        assertTrue(started.shouldTreatAsInProgressForContinueWatching())
+        assertTrue(started.isResumable)
+    }
+
+    @Test
+    fun `percent just under two counts as in progress without a position`() {
+        val started = entry(
+            videoId = "movie-1",
+            lastPositionMs = 0L,
+            durationMs = 0L,
+            progressPercent = 1.9999999f,
+        )
+
+        assertTrue(started.shouldTreatAsInProgressForContinueWatching())
+        assertTrue(started.isResumable)
+    }
+
+    @Test
+    fun `zero position and zero or missing percent is not in progress`() {
+        val zeroPercent = entry(
+            videoId = "movie-1",
+            lastPositionMs = 0L,
+            durationMs = 1_000_000L,
+            progressPercent = 0f,
+        )
+        val noPercent = zeroPercent.copy(progressPercent = null)
+
+        assertFalse(zeroPercent.shouldTreatAsInProgressForContinueWatching())
+        assertFalse(noPercent.shouldTreatAsInProgressForContinueWatching())
+    }
+
+    @Test
+    fun `completed entry is not in progress`() {
+        val completed = entry(
+            videoId = "movie-1",
+            lastPositionMs = 10_000L,
+            progressPercent = 1f,
+            isCompleted = true,
+        )
+
+        assertFalse(completed.shouldTreatAsInProgressForContinueWatching())
+        assertFalse(completed.isResumable)
+    }
+
+    @Test
+    fun `Trakt playback at one percent is in progress`() {
+        val playback = entry(
+            videoId = "movie-1",
+            lastPositionMs = 0L,
+            durationMs = 0L,
+            progressPercent = 1f,
+            source = WatchProgressSourceTraktPlayback,
+        )
+
+        assertTrue(playback.shouldTreatAsInProgressForContinueWatching())
+    }
+
+    @Test
     fun `Trakt playback does not replace watched history when watched timestamp is newer`() {
         val watched = entry(
             videoId = "show:1:4",
