@@ -182,7 +182,7 @@ final class DetailSectionOrderTests: XCTestCase {
 
     func testRowIDMappingIsOneToOne() {
         XCTAssertNil(DetailSection.hero.rowID)
-        let ids = DetailSection.allCases.filter { $0 != .hero }.compactMap(\.rowID)
+        let ids = DetailSection.allCases.filter { $0 != .hero }.compactMap { $0.rowID }
         XCTAssertEqual(ids.count, DetailSection.allCases.count - 1)
         XCTAssertEqual(Set(ids).count, ids.count)
         XCTAssertEqual(DetailSection.companies.rowID, .logos)

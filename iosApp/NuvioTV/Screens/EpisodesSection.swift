@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import SharedCore
 
 /// Season selector + horizontal episode thumbnail shelf for series titles. Mirrors the shared
