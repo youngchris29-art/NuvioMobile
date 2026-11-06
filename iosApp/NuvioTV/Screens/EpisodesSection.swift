@@ -1001,8 +1001,11 @@ private struct EpisodeCardTextBlock: View {
         let line = Theme.Font.uiFont(for: .caption2).lineHeight
         let lineSlot = line.rounded(.up)
         VStack(alignment: .leading, spacing: EpisodeCardTextLayout.rowSpacing) {
+            // Apple TV hierarchy: a small uppercase "EPISODE N" caption, the title in primary
+            // semibold, the overview in secondary over two lines, then date · runtime.
             Text(content.numberLabel ?? "")
                 .font(Theme.Font.caption)
+                .textCase(.uppercase)
                 .foregroundStyle(Theme.Palette.textSecondary)
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, minHeight: lineSlot, maxHeight: lineSlot, alignment: .leading)
@@ -1010,7 +1013,7 @@ private struct EpisodeCardTextBlock: View {
 
             Text(content.title)
                 .font(Theme.Font.cardTitle.weight(.semibold))
-                .foregroundStyle(isFocused ? Theme.Palette.textPrimary : Theme.Palette.textSecondary)
+                .foregroundStyle(Theme.Palette.textPrimary)
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .frame(maxWidth: .infinity, minHeight: lineSlot, maxHeight: lineSlot, alignment: .leading)
@@ -1025,11 +1028,14 @@ private struct EpisodeCardTextBlock: View {
                         .lineLimit(EpisodeCardTextLayout.overviewLineLimit)
                         .accessibilityIdentifier("episode_synopsis_hidden")
                 } else if let overview = content.overview {
+                    // Natural height (at most two lines): the slot's exact two-line height can
+                    // round a hair under what two rendered lines need, which cut it to one line.
                     Text(overview)
                         .font(Theme.Font.caption)
-                        .foregroundStyle(Theme.Palette.textPrimary.opacity(0.9))
+                        .foregroundStyle(Theme.Palette.textSecondary)
                         .lineLimit(EpisodeCardTextLayout.overviewLineLimit)
                         .truncationMode(.tail)
+                        .fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("episode_text_overview")
                 }
             }
