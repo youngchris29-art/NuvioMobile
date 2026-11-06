@@ -77,6 +77,15 @@ nonisolated struct DetailSectionAvailability: Equatable, Sendable {
         section == .hero ? .ready : (states[section] ?? .hidden)
     }
 
+    /// Whether the title's meta may still arrive: none yet AND the request has not finished with
+    /// an error. Before the first emission (not loading, no error) it counts as loading, so the
+    /// page never flashes "empty"; a failed request is finished, so its sections read empty and
+    /// Apple-style drops their placeholders instead of keeping them forever.
+    static func metaLoading(hasMeta: Bool, isLoading: Bool, failed: Bool) -> Bool {
+        guard !hasMeta else { return false }
+        return isLoading || !failed
+    }
+
     /// The common derivation: toggle off → hidden; content → ready; still loading → pending; else empty.
     static func state(enabled: Bool, hasContent: Bool, loading: Bool) -> DetailSectionState {
         guard enabled else { return .hidden }
@@ -132,44 +141,66 @@ nonisolated enum DetailSectionOrder {
     }
 }
 
-/// Apple-style: a slot reserved for a pending section (More Like This) that then answers EMPTY
-/// (or times out) must not vanish while focus sits in a row below it, or every row under it jumps
-/// up by the slot's height mid-focus, the very jump the reservation prevents. Once reserved in a
-/// page visit, the slot is held as the same non-focusable space while focus is below it, and
-/// released for good once focus is at or above it (hero included). Leaving the page drops it
-/// (the hold lives in the page's `@State`). A section whose data arrives is released too: it
-/// renders for real. Cinematic and Classic never reserve, so nothing is ever held there.
+/// Apple-style: rows must never shift under focus when a section ABOVE the focused row loses its
+/// content. One rule covers every case: any section that was on screen in this visit (its pending
+/// placeholder, or its real row) and then answers EMPTY while focus is in a row below it keeps its
+/// last on-screen height as a non-focusable empty slot. The slot goes for good once focus is at or
+/// above it (the hero included); leaving the page drops it (the hold lives in the page's
+/// `@State`). Typical case: More Like This shows TMDB's recommendations, then enrichment (Trakt,
+/// Simkl) answers with none or times out while the viewer is in Cast & Crew.
+///
+/// Focus that is OFF the page (a cover such as the synopsis overlay holds it, or focus is being
+/// restored after a pop) is neither the hero nor a row: the last on-page focus stands, so opening
+/// a cover never releases a slot under it. Cinematic and Classic never reserve, so nothing is ever
+/// held there.
 nonisolated struct DetailSlotHold: Equatable {
-    /// Sections whose slot has been reserved this visit and not yet released.
-    private(set) var reserved: Set<DetailSection> = []
+    /// Where focus is, as the page knows it.
+    enum Focus: Equatable {
+        case hero
+        case row(DetailSection)
+        /// Neither the hero nor a row holds focus (a cover, a pushed page, a restore in flight).
+        case offPage
+    }
+
+    /// Each on-screen (or held) section's last on-screen height.
+    private(set) var lastHeight: [DetailSection: CGFloat] = [:]
+    /// The last on-page focus (`offPage` keeps it).
+    private(set) var lastFocus: Focus = .hero
 
     /// - Parameters:
     ///   - order: the layout's preset (`DetailSectionOrder.preset`), hero first.
-    ///   - focused: the section holding focus; nil = the hero.
-    /// - Returns: the sections to keep as empty slots now.
-    mutating func update(order: [DetailSection], availability: DetailSectionAvailability,
-                         focused: DetailSection?, reservesSlots: Bool) -> Set<DetailSection> {
+    ///   - height: the section's on-screen height in its current state: the reservation for a
+    ///     pending placeholder, the measured row height for a ready row (nil while unmeasured; the
+    ///     last known height then stands).
+    /// - Returns: the sections to draw as empty slots now, with their heights.
+    mutating func update(order: [DetailSection], availability: DetailSectionAvailability, focus: Focus,
+                         reservesSlots: Bool,
+                         height: (DetailSection, DetailSectionState) -> CGFloat?) -> [DetailSection: CGFloat] {
         guard reservesSlots else {
-            reserved = []
-            return []
+            lastHeight = [:]
+            lastFocus = .hero
+            return [:]
         }
-        for section in order where availability.state(section) == .pending {
-            reserved.insert(section)
+        if focus != .offPage { lastFocus = focus }
+        let focusIndex: Int
+        switch lastFocus {
+        case .row(let section): focusIndex = order.firstIndex(of: section) ?? 0
+        case .hero, .offPage: focusIndex = 0
         }
-        let focusIndex = focused.flatMap { order.firstIndex(of: $0) } ?? 0
-        var held: Set<DetailSection> = []
-        for section in reserved {
-            guard let index = order.firstIndex(of: section) else {
-                reserved.remove(section)
-                continue
-            }
-            switch availability.state(section) {
-            case .pending:
-                continue
-            case .empty where focusIndex > index:
-                held.insert(section)
-            case .ready, .empty, .hidden:
-                reserved.remove(section)
+        var held: [DetailSection: CGFloat] = [:]
+        for (index, section) in order.enumerated() where section != .hero {
+            let state = availability.state(section)
+            switch state {
+            case .pending, .ready:
+                if let h = height(section, state), h > 0 { lastHeight[section] = h }
+            case .empty:
+                if let h = lastHeight[section], focusIndex > index {
+                    held[section] = h
+                } else {
+                    lastHeight[section] = nil
+                }
+            case .hidden:
+                lastHeight[section] = nil
             }
         }
         return held
@@ -177,16 +208,17 @@ nonisolated struct DetailSlotHold: Equatable {
 }
 
 /// `DetailView`'s holder for `DetailSlotHold`: a reference in `@State`, updated once per body
-/// evaluation (focus changes re-run the body), so it never invalidates the view itself.
+/// evaluation (focus and row-height changes re-run the body), so it never invalidates the view.
 final class DetailSlotHoldBox {
     var hold = DetailSlotHold()
     /// The last `update` result, read by the page's other section-list consumers.
-    private(set) var held: Set<DetailSection> = []
+    private(set) var held: [DetailSection: CGFloat] = [:]
 
-    func resolve(order: [DetailSection], availability: DetailSectionAvailability,
-                 focused: DetailSection?, reservesSlots: Bool) -> Set<DetailSection> {
-        held = hold.update(order: order, availability: availability, focused: focused,
-                           reservesSlots: reservesSlots)
+    func resolve(order: [DetailSection], availability: DetailSectionAvailability, focus: DetailSlotHold.Focus,
+                 reservesSlots: Bool,
+                 height: (DetailSection, DetailSectionState) -> CGFloat?) -> [DetailSection: CGFloat] {
+        held = hold.update(order: order, availability: availability, focus: focus,
+                           reservesSlots: reservesSlots, height: height)
         return held
     }
 }
@@ -195,19 +227,28 @@ extension DetailSectionOrder {
     /// The height a `.pending` section reserves (Apple-style only). Only More Like This can land
     /// late (the enrichment emission) while focus is below the hero; every other row's data comes
     /// with the first meta, while focus is still in the hero, so they reserve nothing. More Like
-    /// This is `DetailPosterLinkRow`'s geometry: title line, `md` gap, the mini poster inside its
-    /// `md` vertical padding, and the `PosterCard` caption (`md` gap plus one body line). Refine on
-    /// the Mac against `detailRowHeights[.moreLikeThis]` (the `debug_ux6` probe).
+    /// This is `DetailPosterLinkRow`'s geometry, read from the same tokens and setting the row uses
+    /// (`moreLikeThisHeight`): the row title line, `md` gap, the mini poster inside its `md`
+    /// vertical padding, and `PosterCard`'s caption (`md` gap plus one `cardTitle` line) only while
+    /// poster titles show (Hide Labels off, `PosterStyle.showTitle`).
     @MainActor
-    static func reservedHeight(_ section: DetailSection) -> CGFloat {
+    static func reservedHeight(_ section: DetailSection, posterTitlesShown: Bool) -> CGFloat {
         switch section {
         case .moreLikeThis:
-            return Theme.Font.sectionTitleLineHeight + Theme.Spacing.md
-                + Theme.Size.miniPosterHeight + 2 * Theme.Spacing.md
-                + Theme.Spacing.md + Theme.Font.bodyLineHeight
+            return moreLikeThisHeight(
+                sectionTitleLine: Theme.Font.sectionTitleLineHeight, gap: Theme.Spacing.md,
+                posterHeight: Theme.Size.miniPosterHeight,
+                captionLine: posterTitlesShown ? Theme.Font.uiFont(for: .caption2).lineHeight : nil)
         default:
             return 0
         }
+    }
+
+    /// `captionLine` nil: Hide Labels is on and `PosterCard` draws no caption (nor its gap).
+    nonisolated static func moreLikeThisHeight(sectionTitleLine: CGFloat, gap: CGFloat, posterHeight: CGFloat,
+                                               captionLine: CGFloat?) -> CGFloat {
+        let caption = captionLine.map { gap + $0 } ?? 0
+        return sectionTitleLine + gap + posterHeight + 2 * gap + caption
     }
 }
 

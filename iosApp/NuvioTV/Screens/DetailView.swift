@@ -537,7 +537,7 @@ struct DetailView: View {
     @State private var showSynopsisSheet = false
     /// The About section's full show overview (Select on a truncated About), in the same overlay.
     @State private var showAboutOverviewSheet = false
-    /// Apple-style: reserved slots held after their data answered empty (`DetailSlotHold`).
+    /// Apple-style: slots held after a section above focus answered empty (`DetailSlotHold`).
     @State private var slotHold = DetailSlotHoldBox()
     /// FEAT-35 Start Over (movies): the next stream-picker presentation starts from 0. Reset when
     /// the cover goes away, like `forceManualPlay`. Series carry it on `SeriesPlayRoute`.
@@ -840,18 +840,14 @@ struct DetailView: View {
                     let availability = sectionAvailability
                     // Apple-style: a reserved slot whose data answered empty stays while focus is
                     // below it (`DetailSlotHold`).
-                    let held = slotHold.resolve(
-                        order: DetailSectionOrder.preset(layout: detailLayoutChoice, isSeries: isSeries),
-                        availability: availability,
-                        focused: DetailSection.section(for: focusedRow),
-                        reservesSlots: DetailSectionOrder.reservesPendingSlots(detailLayoutChoice))
+                    let held = resolveSlotHold(availability)
                     heroBlock
                     // A2: one typed, ordered list per layout (`DetailSectionOrder`). BUG-96: every
                     // row below the top block is anchored inside `detailSection(_:pending:)` — see
                     // `DetailRowAnchor`.
                     ForEach(orderedSections(availability), id: \.self) { section in
-                        detailSection(section, pending: availability.state(section) == .pending
-                                          || held.contains(section))
+                        detailSection(section, pending: availability.state(section) == .pending,
+                                      heldHeight: held[section])
                     }
                 }
                 // A2/D: the side insets per layout (`DetailGeometry.pageInsets`): Cinematic and
@@ -1567,7 +1563,10 @@ struct DetailView: View {
     /// row builders read, so Cinematic and Classic render a row iff its toggle is on and it has
     /// content, as before.
     private var sectionAvailability: DetailSectionAvailability {
-        let loadingMeta = model.meta == nil
+        // A failed request is finished: its sections read empty, not loading forever.
+        let loadingMeta = DetailSectionAvailability.metaLoading(hasMeta: model.meta != nil,
+                                                                isLoading: model.isLoading,
+                                                                failed: model.errorMessage != nil)
         let enriching = model.meta != nil && model.isLoading
         let appleStyle = detailLayoutChoice == .appleStyle
         let split: (trailers: [MetaTrailer], bonus: [MetaTrailer]) = appleStyle ? trailerSplit : ([], [])
@@ -1593,11 +1592,36 @@ struct DetailView: View {
     /// is Cinematic; never Classic). It carries the show overview whenever there is one
     /// (`DetailAboutOverview.hasContent`), so the hero reads this too (`heroSynopsis`).
     private var aboutSectionEnabled: Bool { sectionAbout && detailLayout == .cinematic }
+    /// Apple-style: resolves `DetailSlotHold` for this body pass. Focus: a row, the hero (its own
+    /// focus state), or neither (a cover or a restore holds it: off the page).
+    private func resolveSlotHold(_ availability: DetailSectionAvailability) -> [DetailSection: CGFloat] {
+        let focus: DetailSlotHold.Focus
+        if let section = DetailSection.section(for: focusedRow) {
+            focus = .row(section)
+        } else if heroHasFocus {
+            focus = .hero
+        } else {
+            focus = .offPage
+        }
+        let titlesShown = posterStyle.showTitle
+        let heights = detailRowHeights
+        return slotHold.resolve(
+            order: DetailSectionOrder.preset(layout: detailLayoutChoice, isSeries: isSeries),
+            availability: availability, focus: focus,
+            reservesSlots: DetailSectionOrder.reservesPendingSlots(detailLayoutChoice),
+            height: { section, state in
+                switch state {
+                case .pending: return DetailSectionOrder.reservedHeight(section, posterTitlesShown: titlesShown)
+                case .ready: return section.rowID.flatMap { heights[$0] }
+                case .empty, .hidden: return nil
+                }
+            })
+    }
     /// A2: the rows below the hero, in the layout's order (`DetailSectionOrder`).
     private var sectionRows: [DetailSection] { orderedSections(sectionAvailability) }
     private func orderedSections(_ availability: DetailSectionAvailability) -> [DetailSection] {
         DetailSectionOrder.sections(layout: detailLayoutChoice, isSeries: isSeries,
-                                    availability: availability, held: slotHold.held).filter { $0 != .hero }
+                                    availability: availability, held: Set(slotHold.held.keys)).filter { $0 != .hero }
     }
     private var title: String { model.meta?.name ?? preview.name }
     // Kotlin `description` collides with NSObject.description, so KMP exposes it as `description_`.
@@ -1947,9 +1971,13 @@ struct DetailView: View {
     /// A2: one section below the hero (`DetailSectionOrder`), each call site moved as it was.
     /// A `.pending` section (Apple-style only) holds its slot unanchored until its data answers.
     @ViewBuilder
-    private func detailSection(_ section: DetailSection, pending: Bool) -> some View {
-        if pending {
-            DetailSectionSlot(height: DetailSectionOrder.reservedHeight(section))
+    private func detailSection(_ section: DetailSection, pending: Bool, heldHeight: CGFloat? = nil) -> some View {
+        if let heldHeight {
+            // Apple-style: emptied above focus; keeps its last on-screen height (`DetailSlotHold`).
+            DetailSectionSlot(height: heldHeight)
+        } else if pending {
+            DetailSectionSlot(height: DetailSectionOrder.reservedHeight(section,
+                                                                         posterTitlesShown: posterStyle.showTitle))
         } else {
             switch section {
             case .hero:
