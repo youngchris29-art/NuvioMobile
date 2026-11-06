@@ -62,8 +62,9 @@ nonisolated struct DetailCreditItem: Identifiable, Equatable, Sendable {
 ///
 /// A cast entry whose role is a job word is only a pseudo-entry with corroboration: a crew credit
 /// for the same person (TMDB id, else name) under that job or category, or a place in the leading
-/// run of job-word entries (the prepended block) when another entry of that run is corroborated
-/// (crew is capped per category, so a fifth prepended director has no crew card). An actor whose
+/// run of entries of the first entry's category (the prepended block: creators, directors or
+/// writers, never a mix) when another entry of that run is corroborated (crew is capped per
+/// category, so a fifth prepended director has no crew card). An actor whose
 /// character is merely "Director" stays with the actors.
 nonisolated enum DetailCreditRow {
     static func items(
@@ -87,7 +88,7 @@ nonisolated enum DetailCreditRow {
         }
         let creatorLabels = pseudoLabels(.creator)
         let otherPseudoLabels = pseudoLabels(.director).union(pseudoLabels(.writer))
-        let allPseudoLabels = creatorLabels.union(otherPseudoLabels)
+        let categoryLabels: [Set<String>] = [creatorLabels, pseudoLabels(.director), pseudoLabels(.writer)]
 
         // Crew deduped by `creditKey`, each with the role words a pseudo-cast entry for it carries.
         var seenCredits = Set<String>()
@@ -107,7 +108,10 @@ nonisolated enum DetailCreditRow {
 
         let roles = cast.map { $0.role.map(normalized) ?? "" }
         let corroborated = cast.map { person in crewCandidates.contains { corroborates($0, person) } }
-        let leadingRun = roles.prefix { allPseudoLabels.contains($0) }.count
+        // The prepended block is one category (creators, directors or writers): the first entry's.
+        // An entry of another category right after it is not part of the block.
+        let blockLabels = roles.first.flatMap { role in categoryLabels.first { $0.contains(role) } } ?? []
+        let leadingRun = roles.prefix { blockLabels.contains($0) }.count
         let leadingRunCorroborated = corroborated.prefix(leadingRun).contains(true)
         var actors: [DetailCastCredit] = []
         var pseudoCreators: [DetailCastCredit] = []

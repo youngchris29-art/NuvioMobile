@@ -110,6 +110,23 @@ final class DetailCreditRowTests: XCTestCase {
         XCTAssertEqual(items.map(\.name), ["Actor A", "Writer W", "Writer V"])
     }
 
+    /// The inferred block is one category: a lead actor credited as "Director" right after a backed
+    /// creator stays with the actors, while a backed director in the same run still groups.
+    func testLeadingBlockStopsAtAnotherCategory() {
+        let items = DetailCreditRow.items(
+            cast: [cast("Creator C", "Creator", id: 9), cast("Actor X", "Director", id: 8),
+                   cast("Actor A", "Hero", id: 1)],
+            crew: [crew("Creator C", "Creator", .creator, id: 9)]
+        )
+        XCTAssertEqual(items.map(\.name), ["Actor X", "Actor A", "Creator C"])
+        let backed = DetailCreditRow.items(
+            cast: [cast("Creator C", "Creator", id: 9), cast("Dir D", "Director", id: 5),
+                   cast("Actor A", "Hero", id: 1)],
+            crew: [crew("Creator C", "Creator", .creator, id: 9), crew("Dir D", "Director", .director, id: 5)]
+        )
+        XCTAssertEqual(backed.map(\.name), ["Actor A", "Creator C", "Dir D"])
+    }
+
     /// A creator supplied only through crew lands with the creators, before a prepended writer.
     func testCrewOnlyCreatorPrecedesPrependedWriter() {
         let items = DetailCreditRow.items(
