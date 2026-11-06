@@ -25,17 +25,16 @@ nonisolated enum LibraryGridPolicy {
         var isInProgress: Bool { progress != nil && !isWatched }
     }
 
-    /// Below this a position is a misclick or a probe; at or above `progressCeiling` it reads as
-    /// done. Either way no bar is drawn and the title isn't "In Progress". In practice the shared
+    /// At or above `progressCeiling` a position reads as done, so no bar is drawn and the title
+    /// isn't "In Progress". Any position above zero counts, however small. In practice the shared
     /// completion rule (`WatchProgressEntry.isEffectivelyCompleted`, from 90 %) ends bars first:
     /// the ceiling is a backstop for an entry that reports a position but no completion.
-    static let progressFloor = 0.02
     static let progressCeiling = 0.97
 
     /// The bar a card draws for a raw progress fraction, or nil for none.
     static func visibleProgress(fraction: Double, isCompleted: Bool) -> Double? {
         guard !isCompleted, fraction.isFinite else { return nil }
-        guard fraction >= progressFloor, fraction < progressCeiling else { return nil }
+        guard fraction > 0, fraction < progressCeiling else { return nil }
         return fraction
     }
 

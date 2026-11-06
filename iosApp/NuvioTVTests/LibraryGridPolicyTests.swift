@@ -16,9 +16,10 @@ final class LibraryGridPolicyTests: XCTestCase {
 
     func testVisibleProgressDropsCompletedAndTheEnds() {
         XCTAssertNil(Policy.visibleProgress(fraction: 0.5, isCompleted: true))
-        XCTAssertNil(Policy.visibleProgress(fraction: 0.01, isCompleted: false))
+        XCTAssertNil(Policy.visibleProgress(fraction: 0, isCompleted: false))
         XCTAssertNil(Policy.visibleProgress(fraction: 0.97, isCompleted: false))
         XCTAssertNil(Policy.visibleProgress(fraction: .nan, isCompleted: false))
+        XCTAssertEqual(Policy.visibleProgress(fraction: 0.01, isCompleted: false), 0.01)
         XCTAssertEqual(Policy.visibleProgress(fraction: 0.02, isCompleted: false), 0.02)
         XCTAssertEqual(Policy.visibleProgress(fraction: 0.5, isCompleted: false), 0.5)
     }
