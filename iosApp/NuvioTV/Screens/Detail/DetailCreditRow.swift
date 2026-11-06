@@ -74,7 +74,27 @@ nonisolated enum DetailCreditRow {
             return key
         }
 
+        // Actors first, then the creator(s), then the other pseudo-cast entries (directors, writers);
+        // the rest of the crew follows below. Order within each group is the order given.
+        func pseudoLabels(_ category: DetailCreditCategory) -> Set<String> {
+            Set(pseudoRoleLabels(category).map(normalized).filter { !$0.isEmpty })
+        }
+        let creatorLabels = pseudoLabels(.creator)
+        let otherPseudoLabels = pseudoLabels(.director).union(pseudoLabels(.writer))
+        var actors: [DetailCastCredit] = []
+        var creators: [DetailCastCredit] = []
+        var otherPseudo: [DetailCastCredit] = []
         for person in cast {
+            let role = person.role.map(normalized) ?? ""
+            if creatorLabels.contains(role) {
+                creators.append(person)
+            } else if otherPseudoLabels.contains(role) {
+                otherPseudo.append(person)
+            } else {
+                actors.append(person)
+            }
+        }
+        for person in actors + creators + otherPseudo {
             let name = trimmed(person.name)
             guard !name.isEmpty else { continue }
             let role = person.role.map(trimmed).flatMap { $0.isEmpty ? nil : $0 }

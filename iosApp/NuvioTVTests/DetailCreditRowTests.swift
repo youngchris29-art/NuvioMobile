@@ -30,8 +30,8 @@ final class DetailCreditRowTests: XCTestCase {
             cast: [cast("Dir D", "Director", id: 5), cast("Actor A", "Hero", id: 1)],
             crew: [crew("Dir D", "Director", .director, id: 5), crew("Writer W", "Writer", .writer, id: 10)]
         )
-        XCTAssertEqual(items.map(\.name), ["Dir D", "Actor A", "Writer W"])
-        XCTAssertEqual(items.first?.kind, .cast)
+        XCTAssertEqual(items.map(\.name), ["Actor A", "Dir D", "Writer W"])
+        XCTAssertEqual(items[1].kind, .cast)
     }
 
     /// A localized pseudo-role ("Réalisateur") matches through the labels the caller supplies.
@@ -59,7 +59,18 @@ final class DetailCreditRowTests: XCTestCase {
             cast: [cast("Creator C", "Creator", id: 9), cast("Actor A", "Hero", id: 1)],
             crew: [crew("Creator C", "Creator", .creator, id: 9), crew("Dir D", "Director", .director, id: 5)]
         )
-        XCTAssertEqual(items.map(\.name), ["Creator C", "Actor A", "Dir D"])
+        XCTAssertEqual(items.map(\.name), ["Actor A", "Creator C", "Dir D"])
+    }
+
+    /// Actors lead, then the creator(s), then the other prepended entries, then the remaining crew.
+    func testActorsThenCreatorsThenRestOfCrew() {
+        let items = DetailCreditRow.items(
+            cast: [cast("Dir D", "Director", id: 5), cast("Creator C", "Creator", id: 9),
+                   cast("Actor A", "Hero", id: 1), cast("Actor B", "Villain", id: 2)],
+            crew: [crew("Creator C", "Creator", .creator, id: 9), crew("Dir D", "Director", .director, id: 5),
+                   crew("Writer W", "Writer", .writer, id: 10)]
+        )
+        XCTAssertEqual(items.map(\.name), ["Actor A", "Actor B", "Creator C", "Dir D", "Writer W"])
     }
 
     /// Without ids (add-on data), the same name counts as the same person.
@@ -122,7 +133,7 @@ final class DetailCreditRowTests: XCTestCase {
             cast: [cast("Dir D", "Director", id: 5), cast("Actor A", "Hero", id: 1), cast("Actor B", "Villain", id: 2)],
             crew: [crew("Dir D", "Director", .director, id: 5), crew("Writer W", "Writer", .writer, id: 10)]
         )
-        XCTAssertEqual(after.firstIndex(where: { $0.key == remembered }), 2)
+        XCTAssertEqual(after.firstIndex(where: { $0.key == remembered }), 1, "actors lead; the prepended director follows them")
         XCTAssertEqual(after.first(where: { $0.key == remembered })?.name, "Actor B")
         let directorCrewKey = before[2].key
         XCTAssertNil(after.first(where: { $0.key == directorCrewKey }),
