@@ -10,15 +10,17 @@ nonisolated enum DetailTrailerPartition {
 
     /// The generic core, so the rule is testable without constructing Kotlin objects.
     /// `type` is the TMDB video type (nil/blank = unknown), `name` the display name fallback.
+    /// `localizedTrailer`: the word Kotlin fills a missing type with (see `sharedTrailerWord`).
     static func split<T>(
         _ items: [T],
         type: (T) -> String?,
-        name: (T) -> String?
+        name: (T) -> String?,
+        localizedTrailer: String? = nil
     ) -> (trailers: [T], bonus: [T]) {
         var trailers: [T] = []
         var bonus: [T] = []
         for item in items {
-            if isTrailer(type: type(item), name: name(item)) {
+            if isTrailer(type: type(item), name: name(item), localizedTrailer: localizedTrailer) {
                 trailers.append(item)
             } else {
                 bonus.append(item)
@@ -29,13 +31,23 @@ nonisolated enum DetailTrailerPartition {
     }
 
     static func split(_ items: [MetaTrailer]) -> (trailers: [MetaTrailer], bonus: [MetaTrailer]) {
-        split(items, type: { $0.type }, name: { $0.displayName ?? $0.name })
+        split(items, type: { $0.type }, name: { $0.displayName ?? $0.name }, localizedTrailer: sharedTrailerWord)
     }
 
-    static func isTrailer(type: String?, name: String?) -> Bool {
+    /// The shared module fills a video with no type with `resourceString("Trailer",
+    /// StringKey.generic_trailer)` (`MetaDetailsParser`, `TmdbMetadataService`), which the tvOS app
+    /// answers from the "Shared" catalog (`SharedStringProvider`): "Bande-annonce" on a French
+    /// device. Read the same entry the same way, so such a video still counts as a trailer.
+    static var sharedTrailerWord: String {
+        Bundle.main.localizedString(forKey: "generic_trailer", value: "Trailer", table: "Shared")
+    }
+
+    static func isTrailer(type: String?, name: String?, localizedTrailer: String? = nil) -> Bool {
         let t = (type ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if !t.isEmpty {
-            return t == "trailer" || t == "teaser"
+            if t == "trailer" || t == "teaser" { return true }
+            let word = (localizedTrailer ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return !word.isEmpty && t == word
         }
         let n = (name ?? "").lowercased()
         return n.contains("trailer") || n.contains("teaser")

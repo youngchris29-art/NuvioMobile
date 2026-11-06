@@ -470,6 +470,13 @@ struct DetailView: View {
 
     /// Tester ask: auto full-screen the hero trailer a few seconds after opening a title.
     @AppStorage("detail_trailer_autoplay") private var trailerAutoplayEnabled: Bool = true
+    /// A2.4 (D2): Apple-style's own full-screen auto-play switch; never set = off. Cinematic and
+    /// Classic keep `trailerAutoplayEnabled` (`DetailTrailerFullScreenAutoPlay`).
+    @AppStorage(DetailSettingsKeys.trailerFullScreenAutoPlay) private var trailerFullScreenAutoPlayStored: Bool?
+    private var fullScreenAutoPlayOn: Bool {
+        DetailTrailerFullScreenAutoPlay.isOn(layout: detailLayoutChoice, stored: trailerFullScreenAutoPlayStored,
+                                             legacy: trailerAutoplayEnabled)
+    }
     /// Tester ask: keep the poster visible on the right, backdrop-style, behind the description.
     @AppStorage("detail_poster_backdrop") private var posterBackdropEnabled: Bool = true
     /// UX-4b (tester ask): the muted trailer looping behind the description previously had no
@@ -493,9 +500,13 @@ struct DetailView: View {
     /// only to restore the shared `HeroTrailerAudioState` back to this default once a full-screen
     /// trailer is dismissed (see the `.fullScreenCover(item: $model.trailerPlayback` below).
     @AppStorage("trailer_audio_default_on") private var trailerAudioDefaultOn = false
-    /// FEAT-35 (D2): Cinematic (default) or Classic. Classic renders today's `topBlock`, unchanged.
+    /// FEAT-35 (D2): Cinematic (default), Classic or (D1) Apple-style. Classic renders today's
+    /// `topBlock`, unchanged.
     @AppStorage(DetailSettingsKeys.layout) private var detailLayoutRaw = DetailLayout.cinematic.rawValue
-    private var detailLayout: DetailLayout { DetailLayout.resolve(detailLayoutRaw) }
+    /// D1: the user's choice; decides the section order and the trailer policy only.
+    private var detailLayoutChoice: DetailLayout { DetailLayout.resolve(detailLayoutRaw) }
+    /// The visual layout (Apple-style draws Cinematic). Every `detailLayout == .cinematic` check reads this.
+    private var detailLayout: DetailLayout { detailLayoutChoice.visualBase }
     /// FEAT-35 section toggle "Ratings" (closes FEAT-28): the Cinematic ratings strip and the meta
     /// line's IMDb ★ (D10). Classic's chips are untouched.
     @AppStorage(DetailSettingsKeys.sectionRatings) private var sectionRatings = true
@@ -680,6 +691,8 @@ struct DetailView: View {
     /// moves the focus engine did not consume, so a press from Watched to Library never sets
     /// `userInteracted`; this catches it.
     @State private var userMovedInHero = false
+    /// A2: the rows' edge-fade margins as the host sets them; the page adds its wider side inset.
+    @Environment(\.rowEdgeMargins) private var rowEdgeMargins
     /// BUG-96 (Codex r1 P2): the anchor scroll is not animated under Reduce Motion.
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// BUG-96: each row's top in the scroll content's coordinate space (layout-only changes).
@@ -814,74 +827,22 @@ struct DetailView: View {
                 .animation(TrailerBridgeChoreography.blackoutAnimation(to: bridgePhase), value: bridgePhase)
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: Theme.Spacing.lg + Theme.Spacing.sm) {
+                    let availability = sectionAvailability
                     heroBlock
-                    // Grouped to stay under ViewBuilder's 10-subview ceiling. BUG-96: every row
-                    // below the top block is anchored — see `DetailRowAnchor`.
-                    Group {
-                        // FEAT-35 section toggles (P1 §H): every row gate applies to both layouts.
-                        if sectionStudioLogos {
-                            companyLogosRow
-                                .detailRowAnchored(.logos, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
-                        }
-                        if sectionParentalGuide {
-                            parentalGuideSection
-                                .detailRowAnchored(.parental, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
-                        }
-                    }
-                    if let meta = model.meta, EpisodesSection.isSeriesLike(meta) {
-                        EpisodesSection(
-                            meta: meta,
-                            episodeRatings: model.episodeRatings,
-                            episodeRatingsVisibility: model.episodeRatingsVisibility,
-                            watchedEpisodeKeys: model.watchedEpisodeKeys,
-                            onPostPlayTitle: { postPlayRoute = TitleRoute(preview: $0) }
-                        )
-                        // A discrete focus region: vertical D-pad moves must land here instead of
-                        // geometrically skipping from the info/network chips down to the cast row.
-                        .focusSection()
-                        .detailRowAnchored(.episodes, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
-                    }
-                    Group {
-                        if sectionCast {
-                            castRow
-                                .detailRowAnchored(.cast, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
-                        }
-                        if sectionCollection {
-                            collectionRow
-                                .detailRowAnchored(.collection, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
-                        }
-                        if sectionTrailers {
-                            trailersRow
-                                .detailRowAnchored(.trailers, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
-                        }
-                        if sectionMoreLikeThis {
-                            moreLikeThisRow
-                                .detailRowAnchored(.moreLikeThis, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
-                        }
-                        // Codex P2 review finding (BUG-99 follow-up, round 2): TRACKED but never
-                        // ANCHORED. Round-1 left this section out of `detailRowAnchored` entirely —
-                        // "a vertical list of expandable cards whose focus moves never change
-                        // `focusedRow`" — which was true only because nothing here reported focus
-                        // in the first place; that left `focusedRow` nil both here and in the top
-                        // block, indistinguishable to `DetailRowAnchor.direction`. Tracking this
-                        // section resolves that ambiguity structurally (see `DetailRowID`'s and
-                        // `direction`'s doc comments); it still must never anchor — a pending
-                        // correction could scroll back to the section top under a later comment —
-                        // so `DetailView.onChange(of: focusedRow)` bails out for `row == .comments`
-                        // before any anchor decision runs.
-                        if sectionComments {
-                            commentsSection
-                                .detailRowAnchored(.comments, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
-                        }
-                        // FEAT-35 (P1 §G): Cinematic's last row. Takes the normal anchor path (it is
-                        // not a Comments-style bail).
-                        if detailLayout == .cinematic && sectionAbout {
-                            DetailAboutSection(rows: aboutRows, isFocused: focusedRow == .about)
-                                .detailRowAnchored(.about, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
-                        }
+                    // A2: one typed, ordered list per layout (`DetailSectionOrder`). BUG-96: every
+                    // row below the top block is anchored inside `detailSection(_:pending:)` — see
+                    // `DetailRowAnchor`.
+                    ForEach(orderedSections(availability), id: \.self) { section in
+                        detailSection(section, pending: availability.state(section) == .pending)
                     }
                 }
-                .padding(Theme.Spacing.screen)
+                // A2: Cinematic (and Apple-style) pads the sides with `DetailGeometry.pageSideInset`;
+                // top and bottom keep `Theme.Spacing.screen`, and Classic keeps it on every side.
+                .padding(EdgeInsets(top: Theme.Spacing.screen, leading: pageSideInset,
+                                    bottom: Theme.Spacing.screen, trailing: pageSideInset))
+                // The rows' edge fade measures from their frame to the bezel: add the extra inset.
+                .environment(\.rowEdgeMargins, RowEdgeMargins(leading: rowEdgeMargins.leading + pageSideInset - Theme.Spacing.screen,
+                                                               trailing: rowEdgeMargins.trailing + pageSideInset - Theme.Spacing.screen))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .coordinateSpace(name: DetailRowAnchor.contentSpace)
             }
@@ -1038,7 +999,7 @@ struct DetailView: View {
             // stops firing state updates once fully dark.
             .onScrollGeometryChange(for: Double.self, of: { [dimLayout = detailLayout,
                                                               dimRamp = DetailDim.rampDistance(layout: detailLayout, heroHeight: cinematicHeroHeight,
-                                                                                     hasChipRow: sectionStudioLogos && !companyLogos.isEmpty)] geo in
+                                                                                     hasChipRow: sectionRows.first == .companies)] geo in
                 // P-2b (BUG-41 attribution knob): leg 1/3 disables the dim outright by pinning
                 // this closure's result to a constant, so `action:` fires once with 0 and never
                 // again — see `DetailScrollAB`'s doc comment.
@@ -1563,6 +1524,46 @@ struct DetailView: View {
         if let meta = model.meta { return EpisodesSection.isSeriesLike(meta) }
         return preview.type == "series"
     }
+    /// A2: Cinematic's side inset (Apple-style draws Cinematic); Classic keeps `Theme.Spacing.screen`.
+    private var pageSideInset: CGFloat {
+        detailLayout == .cinematic ? DetailGeometry.pageSideInset : Theme.Spacing.screen
+    }
+    /// A2: Apple-style's Trailers/Bonus partition of the title's videos (`DetailTrailerPartition`).
+    private var trailerSplit: (trailers: [MetaTrailer], bonus: [MetaTrailer]) {
+        DetailTrailerPartition.split(model.meta?.trailers ?? [])
+    }
+    /// A2: what each section can show right now (`DetailSectionAvailability`). Reads only what the
+    /// row builders read, so Cinematic and Classic render a row iff its toggle is on and it has
+    /// content, as before.
+    private var sectionAvailability: DetailSectionAvailability {
+        let loadingMeta = model.meta == nil
+        let enriching = model.meta != nil && model.isLoading
+        let appleStyle = detailLayoutChoice == .appleStyle
+        let split: (trailers: [MetaTrailer], bonus: [MetaTrailer]) = appleStyle ? trailerSplit : ([], [])
+        var states: [DetailSection: DetailSectionState] = [:]
+        func set(_ section: DetailSection, _ enabled: Bool, _ hasContent: Bool, _ loading: Bool) {
+            states[section] = DetailSectionAvailability.state(enabled: enabled, hasContent: hasContent, loading: loading)
+        }
+        set(.companies, sectionStudioLogos, !companyLogos.isEmpty, loadingMeta)
+        // No "resolved" flag exists for the two late fetches: empty reads as empty (A2 spec §4.4).
+        set(.parentalGuide, sectionParentalGuide, !model.parentalWarnings.isEmpty, false)
+        set(.episodes, isSeries, model.meta.map { EpisodesSection.isSeriesLike($0) } ?? false, loadingMeta)
+        set(.castAndCrew, sectionCast, !(model.meta?.cast ?? []).isEmpty, loadingMeta)
+        set(.collection, sectionCollection, !(model.meta?.collectionItems ?? []).isEmpty, loadingMeta)
+        let hasTrailers = appleStyle ? !split.trailers.isEmpty : !(model.meta?.trailers ?? []).isEmpty
+        set(.trailers, sectionTrailers, hasTrailers, loadingMeta)
+        set(.bonus, sectionTrailers && appleStyle, !split.bonus.isEmpty, loadingMeta)
+        set(.moreLikeThis, sectionMoreLikeThis, !(model.meta?.moreLikeThis ?? []).isEmpty, loadingMeta || enriching)
+        set(.comments, sectionComments, !model.comments.isEmpty, false)
+        set(.about, sectionAbout && detailLayout == .cinematic, !aboutRows.isEmpty, loadingMeta)
+        return DetailSectionAvailability(states: states)
+    }
+    /// A2: the rows below the hero, in the layout's order (`DetailSectionOrder`).
+    private var sectionRows: [DetailSection] { orderedSections(sectionAvailability) }
+    private func orderedSections(_ availability: DetailSectionAvailability) -> [DetailSection] {
+        DetailSectionOrder.sections(layout: detailLayoutChoice, isSeries: isSeries,
+                                    availability: availability).filter { $0 != .hero }
+    }
     private var title: String { model.meta?.name ?? preview.name }
     // Kotlin `description` collides with NSObject.description, so KMP exposes it as `description_`.
     private var overview: String? { model.meta?.description_ ?? preview.description_ }
@@ -1903,8 +1904,77 @@ struct DetailView: View {
         switch detailLayout {
         case .classic:
             topBlock
-        case .cinematic:
+        case .cinematic, .appleStyle:
             cinematicHero
+        }
+    }
+
+    /// A2: one section below the hero (`DetailSectionOrder`), each call site moved as it was.
+    /// A `.pending` section (Apple-style only) holds its slot unanchored until its data answers.
+    @ViewBuilder
+    private func detailSection(_ section: DetailSection, pending: Bool) -> some View {
+        if pending {
+            DetailSectionSlot(height: DetailSectionOrder.reservedHeight(section))
+        } else {
+            switch section {
+            case .hero:
+                // Not reached: the hero stays the page VStack's first child (`heroBlock`).
+                EmptyView()
+            case .companies:
+                companyLogosRow
+                    .detailRowAnchored(.logos, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
+            case .parentalGuide:
+                parentalGuideSection
+                    .detailRowAnchored(.parental, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
+            case .episodes:
+                if let meta = model.meta {
+                    EpisodesSection(
+                        meta: meta,
+                        episodeRatings: model.episodeRatings,
+                        episodeRatingsVisibility: model.episodeRatingsVisibility,
+                        watchedEpisodeKeys: model.watchedEpisodeKeys,
+                        onPostPlayTitle: { postPlayRoute = TitleRoute(preview: $0) }
+                    )
+                    // A discrete focus region: vertical D-pad moves must land here instead of
+                    // geometrically skipping from the info/network chips down to the cast row.
+                    .focusSection()
+                    .detailRowAnchored(.episodes, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
+                }
+            case .castAndCrew:
+                castRow
+                    .detailRowAnchored(.cast, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
+            case .collection:
+                collectionRow
+                    .detailRowAnchored(.collection, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
+            case .trailers:
+                trailersRow
+                    .detailRowAnchored(.trailers, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
+            case .bonus:
+                bonusRow
+                    .detailRowAnchored(.bonus, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
+            case .moreLikeThis:
+                moreLikeThisRow
+                    .detailRowAnchored(.moreLikeThis, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
+            case .comments:
+                // Codex P2 review finding (BUG-99 follow-up, round 2): TRACKED but never
+                // ANCHORED. Round-1 left this section out of `detailRowAnchored` entirely —
+                // "a vertical list of expandable cards whose focus moves never change
+                // `focusedRow`" — which was true only because nothing here reported focus
+                // in the first place; that left `focusedRow` nil both here and in the top
+                // block, indistinguishable to `DetailRowAnchor.direction`. Tracking this
+                // section resolves that ambiguity structurally (see `DetailRowID`'s and
+                // `direction`'s doc comments); it still must never anchor — a pending
+                // correction could scroll back to the section top under a later comment —
+                // so `DetailView.onChange(of: focusedRow)` bails out for `row == .comments`
+                // before any anchor decision runs.
+                commentsSection
+                    .detailRowAnchored(.comments, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
+            case .about:
+                // FEAT-35 (P1 §G): Cinematic's last row. Takes the normal anchor path (it is
+                // not a Comments-style bail).
+                DetailAboutSection(rows: aboutRows, isFocused: focusedRow == .about)
+                    .detailRowAnchored(.about, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
+            }
         }
     }
 
@@ -3231,10 +3301,28 @@ struct DetailView: View {
 
     @ViewBuilder
     private var trailersRow: some View {
-        let trailers = model.meta?.trailers ?? []
+        // A2: Apple-style shows only Trailer/Teaser videos here (the rest go to `bonusRow`);
+        // Cinematic and Classic keep the single "Trailers & Extras" row of every video.
+        let appleStyle = detailLayoutChoice == .appleStyle
+        let trailers = appleStyle ? trailerSplit.trailers : (model.meta?.trailers ?? [])
         if !trailers.isEmpty {
             // BUG-153 (Batch M): a child view, so the row's focus state re-runs only the row.
             DetailTrailersRow(trailers: trailers,
+                              title: appleStyle ? String(localized: "Trailers") : String(localized: "Trailers & Extras"),
+                              probeID: "debug_trailers",
+                              resolvingTrailerId: model.resolvingTrailerId,
+                              onPlay: { model.playTrailer($0) })
+        }
+    }
+
+    /// A2: Apple-style's Bonus row: the title's non-trailer videos (`DetailTrailerPartition`).
+    @ViewBuilder
+    private var bonusRow: some View {
+        let bonus = detailLayoutChoice == .appleStyle ? trailerSplit.bonus : []
+        if !bonus.isEmpty {
+            DetailTrailersRow(trailers: bonus,
+                              title: String(localized: "Bonus"),
+                              probeID: "debug_bonus",
                               resolvingTrailerId: model.resolvingTrailerId,
                               onPlay: { model.playTrailer($0) })
         }
@@ -3343,7 +3431,7 @@ struct DetailView: View {
     /// (Re)starts the countdown (4 s, or FEAT-87's Start Delay) once `model.trailerVideoURL` resolves. Every cancellation
     /// condition is re-checked once the timer actually fires, since a lot can change in 4 seconds.
     private func scheduleAutoPlayTrailerIfNeeded() {
-        guard trailerAutoplayEnabled, !didAutoPlayTrailer, !userInteracted,
+        guard fullScreenAutoPlayOn, !didAutoPlayTrailer, !userInteracted,
               !showStreams, seriesPlay == nil, model.trailerPlayback == nil else { return }
         autoPlayTrailerTask?.cancel()
         // FEAT-87: Start Delay on the first appearance, composed with the background clock when
@@ -3364,7 +3452,7 @@ struct DetailView: View {
         // `onMoveCommand` never sees, so the trailer went full screen under a viewer scrolling the
         // rows. Focus anywhere below the hero counts as interacting.
         guard focusedRow == nil else { return }
-        guard trailerAutoplayEnabled, !didAutoPlayTrailer, !userInteracted,
+        guard fullScreenAutoPlayOn, !didAutoPlayTrailer, !userInteracted,
               !showStreams, seriesPlay == nil, model.trailerPlayback == nil,
               let trailer = model.trailerVideoURL else { return }
         didAutoPlayTrailer = true
@@ -3522,6 +3610,11 @@ private struct DetailPosterLinkRow: View {
 /// Detail body. `.detailRowAnchored(.trailers, …)` stays on the call site.
 private struct DetailTrailersRow: View {
     let trailers: [MetaTrailer]
+    /// A2: "Trailers & Extras" (Cinematic, Classic), or Apple-style's "Trailers" / "Bonus".
+    let title: String
+    /// The DEBUG probe's identifier: `debug_trailers` on the trailers row only (the UX-10 leg reads
+    /// it), `debug_bonus` on Bonus, so no two elements share one.
+    let probeID: String
     let resolvingTrailerId: String?
     let onPlay: (MetaTrailer) -> Void
 
@@ -3531,7 +3624,7 @@ private struct DetailTrailersRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-            Text("Trailers & Extras")
+            Text(title)
                 .font(Theme.Font.sectionTitle)
                 .foregroundStyle(Theme.Palette.textPrimary)
             ScrollView(.horizontal, showsIndicators: false) {
@@ -3566,10 +3659,10 @@ private struct DetailTrailersRow: View {
             // many resolved a YouTube thumbnail, so a UITest can prove the shelf switched from
             // text rows to thumbnail cards without depending on pixel comparison.
             let rendered = Array(trailers.prefix(10))
-            Text("debug_trailers n=\(rendered.count) thumbs=\(rendered.filter { $0.thumbnailURLString != nil }.count)")
+            Text("\(probeID) n=\(rendered.count) thumbs=\(rendered.filter { $0.thumbnailURLString != nil }.count)")
                 .font(.system(size: 8))
                 .opacity(0.011)
-                .accessibilityIdentifier("debug_trailers")
+                .accessibilityIdentifier(probeID)
             #endif
         }
         .focusSection()

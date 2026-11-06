@@ -111,7 +111,7 @@ final class DetailFocusReturnTests: XCTestCase {
         for row in [DetailRowID.cast, .logos, .collection, .moreLikeThis] {
             XCTAssertTrue(DetailFocusRestore.tracks(row), "\(row)")
         }
-        for row in [DetailRowID.episodes, .trailers, .parental, .comments, .about] {
+        for row in [DetailRowID.episodes, .trailers, .bonus, .parental, .comments, .about] {
             XCTAssertFalse(DetailFocusRestore.tracks(row), "\(row)")
         }
     }

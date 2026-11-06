@@ -294,7 +294,7 @@ nonisolated enum DetailDim {
     static func rampDistance(layout: DetailLayout, heroHeight: CGFloat, hasChipRow: Bool) -> CGFloat {
         switch layout {
         case .classic: return classicRampDistance
-        case .cinematic: return max(classicRampDistance, heroHeight - (hasChipRow ? chipRowRestDrop : 0))
+        case .cinematic, .appleStyle: return max(classicRampDistance, heroHeight - (hasChipRow ? chipRowRestDrop : 0))
         }
     }
 
@@ -310,7 +310,7 @@ nonisolated enum DetailDim {
     static func scrolledDistance(layout: DetailLayout, contentOffset: CGFloat, contentInsetTop: CGFloat) -> CGFloat {
         switch layout {
         case .classic: return contentOffset - contentInsetTop
-        case .cinematic: return contentOffset + contentInsetTop
+        case .cinematic, .appleStyle: return contentOffset + contentInsetTop
         }
     }
 

@@ -78,4 +78,29 @@ final class DetailTrailerPartitionTests: XCTestCase {
         XCTAssertTrue(r.trailers.isEmpty)
         XCTAssertTrue(r.bonus.isEmpty)
     }
+
+    /// A2.4: Kotlin fills a missing type with the localized "Trailer" (`generic_trailer`, e.g.
+    /// "Bande-annonce" in French); that word counts as a trailer type, case-insensitively.
+    func testLocalizedTrailerWordCountsAsTrailer() {
+        let clips = [
+            Clip(id: 1, type: "Bande-annonce", name: "Official"),
+            Clip(id: 2, type: " bande-ANNONCE ", name: nil),
+            Clip(id: 3, type: "Featurette", name: "Trailer breakdown"),
+        ]
+        let r = DetailTrailerPartition.split(clips, type: { $0.type }, name: { $0.name },
+                                             localizedTrailer: "Bande-annonce")
+        XCTAssertEqual(r.trailers.map(\.id), [1, 2])
+        XCTAssertEqual(r.bonus.map(\.id), [3])
+        // Without the word (or with a blank one) the old rule stands.
+        XCTAssertEqual(split(clips).trailers.map(\.id), [])
+        XCTAssertFalse(DetailTrailerPartition.isTrailer(type: "Bande-annonce", name: nil, localizedTrailer: " "))
+        XCTAssertTrue(DetailTrailerPartition.isTrailer(type: "Teaser", name: nil, localizedTrailer: "Bande-annonce"))
+    }
+
+    /// The word is read from the same "Shared" catalog entry the Kotlin side reads.
+    func testSharedTrailerWordIsTheCatalogEntry() {
+        XCTAssertEqual(DetailTrailerPartition.sharedTrailerWord,
+                       Bundle.main.localizedString(forKey: "generic_trailer", value: "Trailer", table: "Shared"))
+        XCTAssertFalse(DetailTrailerPartition.sharedTrailerWord.isEmpty)
+    }
 }
