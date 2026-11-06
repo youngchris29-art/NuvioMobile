@@ -70,11 +70,18 @@ nonisolated enum DetailGeometry {
     /// The format-badge row's reserved slot (present only while the setting is on and the title has a request): one `Theme.Font.meta` line plus the 1 pt chip stroke and padding.
     static let formatBadgeRowHeight: CGFloat = 40
     static let peekBand: CGFloat = 140
+    /// Apple-style's peek: the first row's title and the top of its cards show about 60 pt under
+    /// the hero at rest (Cinematic and Classic keep `peekBand`).
+    static let appleStylePeekBand: CGFloat = 60
+    static func peekBand(appleStyle: Bool) -> CGFloat { appleStyle ? appleStylePeekBand : peekBand }
     static let heroMinimumHeight: CGFloat = 520
 
-    // MARK: Shelves (Apple-style; `DetailWideCard`. Person cards not yet applied)
+    // MARK: Shelves (Apple-style; `DetailWideCard`, `DetailPosterShelfCard`, the Cast & Crew avatar)
 
     static let wideCardWidth: CGFloat = 410
     static let wideCardGap: CGFloat = 40
     static let personCardWidth: CGFloat = 260
+    /// More Like This / collection poster cards: 260 wide, 2:3.
+    static let posterCardWidth: CGFloat = 260
+    static let posterCardHeight: CGFloat = 390
 }

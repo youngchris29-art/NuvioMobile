@@ -141,6 +141,26 @@ nonisolated enum DetailWideCard {
     }
 }
 
+/// The portrait poster cards of the More Like This and collection shelves. Apple-style: 260 wide,
+/// 2:3, 40 apart (`DetailGeometry`); Cinematic and Classic keep the 180x270 mini posters
+/// (`Theme.Size.miniPoster*`) 24 apart.
+nonisolated enum DetailPosterShelfCard {
+    struct Metrics: Equatable {
+        let width: CGFloat
+        let height: CGFloat
+        let gap: CGFloat
+    }
+
+    static func metrics(appleStyle: Bool) -> Metrics {
+        guard appleStyle else {
+            return Metrics(width: Theme.Size.miniPosterWidth, height: Theme.Size.miniPosterHeight,
+                           gap: Theme.Spacing.lg)
+        }
+        return Metrics(width: DetailGeometry.posterCardWidth, height: DetailGeometry.posterCardHeight,
+                       gap: DetailGeometry.wideCardGap)
+    }
+}
+
 /// A3.2 (C1): the compact text season tabs. Same normalization and order as
 /// `EpisodesSection.groupedEpisodes`/`seasonSortKey` (specials, season 0 or missing, sort last).
 nonisolated enum EpisodeSeasonTabs {

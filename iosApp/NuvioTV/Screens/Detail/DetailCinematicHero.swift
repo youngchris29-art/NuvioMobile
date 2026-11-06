@@ -94,6 +94,9 @@ struct DetailCinematicHero<Actions: View>: View {
     var heroFocus: FocusState<DetailHeroFocus?>.Binding
     /// Runs before the sheet opens (counts as interacting; withdraws a leaving trailer bridge).
     let onOpenSynopsis: () -> Void
+    /// How much of the first row shows under the hero (`DetailGeometry.peekBand(appleStyle:)`);
+    /// the default is Cinematic's, so only Apple-style passes a different one.
+    var peekBand: CGFloat = DetailCinematicLayout.peekBand
     @ViewBuilder let actions: () -> Actions
 
     @State private var measuredSynopsisHeight: CGFloat = 0
@@ -136,7 +139,7 @@ struct DetailCinematicHero<Actions: View>: View {
             Color.clear
                 .frame(maxWidth: .infinity)
                 .containerRelativeFrame(.vertical) { height, _ in
-                    DetailCinematicLayout.heroHeight(containerHeight: height)
+                    DetailCinematicLayout.heroHeight(containerHeight: height, peekBand: peekBand)
                 }
                 .accessibilityHidden(true)
             content

@@ -41,6 +41,19 @@ final class DetailCinematicLayoutTests: XCTestCase {
         XCTAssertEqual(DetailCinematicLayout.textColumnMaxWidth, DetailGeometry.heroTextColumnMaxWidth)
     }
 
+    /// Apple-style leaves ~60 pt of the first row under the hero; Cinematic and Classic keep 140.
+    func testApplePeekBandAndPosterShelfCards() {
+        XCTAssertEqual(DetailGeometry.peekBand(appleStyle: false), 140)
+        XCTAssertEqual(DetailGeometry.peekBand(appleStyle: true), 60)
+        XCTAssertEqual(DetailCinematicLayout.heroHeight(containerHeight: 1080), 844)
+        XCTAssertEqual(DetailCinematicLayout.heroHeight(containerHeight: 1080, peekBand: 60), 924)
+        let apple = DetailPosterShelfCard.metrics(appleStyle: true)
+        XCTAssertEqual(apple, .init(width: 260, height: 390, gap: 40))
+        XCTAssertEqual(apple.height, apple.width * 3 / 2)
+        XCTAssertEqual(DetailPosterShelfCard.metrics(appleStyle: false),
+                       .init(width: Theme.Size.miniPosterWidth, height: Theme.Size.miniPosterHeight, gap: Theme.Spacing.lg))
+    }
+
     // MARK: - Page side insets (D)
 
     /// Cinematic is back to 60 inside the safe area (140 from the bezel), Classic keeps 60, and

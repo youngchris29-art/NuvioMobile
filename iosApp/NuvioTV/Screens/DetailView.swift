@@ -2160,7 +2160,8 @@ struct DetailView: View {
             onOpenSynopsis: {
                 userInteracted = true
                 withdrawTrailerBridgeIfLeaving()
-            }
+            },
+            peekBand: DetailGeometry.peekBand(appleStyle: detailLayoutChoice == .appleStyle)
         ) {
             actionRow
         }
@@ -3127,6 +3128,12 @@ struct DetailView: View {
         DetailCreditRow.items(cast: model.meta?.cast ?? [], crew: model.meta?.crew ?? [])
     }
 
+    /// Cast & Crew avatar diameter: Apple-style's person card is `DetailGeometry.personCardWidth` wide
+    /// (the avatar plus the caption's 10 pt of slack); Cinematic and Classic keep `castAvatar`.
+    private var castAvatarSize: CGFloat {
+        detailLayoutChoice == .appleStyle ? DetailGeometry.personCardWidth - 10 : Theme.Size.castAvatar
+    }
+
     @ViewBuilder
     private var castRow: some View {
         let items = creditRowItems
@@ -3156,7 +3163,8 @@ struct DetailView: View {
                                     // stillFocused: CastCard draws its own no-zoom still ring on
                                     // the avatar circle (Codex 2026-08-29 rounds 3-5) — focus
                                     // truth from the row's FocusState, not a second binding.
-                                    CastCard(person: person, stillFocused: focusedCastKey == item.key)
+                                    CastCard(person: person, stillFocused: focusedCastKey == item.key,
+                                             avatarSize: castAvatarSize)
                                 }
                                 // Card-like navigation element: joins the no-zoom sweep so the
                                 // setting stills every card on the page, not most (Codex 2026-08-29).
@@ -3176,7 +3184,7 @@ struct DetailView: View {
                                 .focused($focusedCastKey, equals: item.key)
                                 .zIndex(liftedCastZIndex(item.key))
                             } else {
-                                CastCard(person: person)
+                                CastCard(person: person, avatarSize: castAvatarSize)
                             }
                         }
                     }
@@ -3209,7 +3217,8 @@ struct DetailView: View {
             // `DetailView` no new focus state (and no body re-run per Left/Right).
             DetailPosterLinkRow(row: .moreLikeThis, title: String(localized: "More Like This"),
                                 items: items, restore: detailFocusRestore,
-                                onFocus: { noteDetailFocus(.moreLikeThis, $0) })
+                                onFocus: { noteDetailFocus(.moreLikeThis, $0) },
+                                posterMetrics: DetailPosterShelfCard.metrics(appleStyle: detailLayoutChoice == .appleStyle))
         }
     }
 
@@ -3707,6 +3716,8 @@ private struct DetailPosterLinkRow: View {
     let restore: DetailFocusRestoreRequest
     /// BUG-194: the live pop restore's card key when it names this row, else nil (review r2: the
     let onFocus: (String?) -> Void
+    /// Poster card size and gap: `DetailPosterShelfCard`'s Apple-style tokens, else the mini posters.
+    var posterMetrics: DetailPosterShelfCard.Metrics = DetailPosterShelfCard.metrics(appleStyle: false)
 
     @FocusState private var focusedId: String?
 
@@ -3718,7 +3729,7 @@ private struct DetailPosterLinkRow: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 // BUG-106: the ring-mode lift grows a 16:9 card ≈71 pt in width, so `lg` (24)
                 // put the raised saga card onto its neighbour — see `landscapeLiftRowGap`.
-                LazyHStack(spacing: row == .collection ? Theme.Spacing.landscapeLiftRowGap : Theme.Spacing.lg) {
+                LazyHStack(spacing: row == .collection ? Theme.Spacing.landscapeLiftRowGap : posterMetrics.gap) {
                     ForEach(items, id: \.id) { item in
                         NavigationLink(value: TitleRoute(preview: item)) {
                             if row == .collection {
@@ -3728,8 +3739,8 @@ private struct DetailPosterLinkRow: View {
                                     title: item.name,
                                     imageURL: item.poster,
                                     fallbackImageURL: item.rawPosterUrl,
-                                    width: Theme.Size.miniPosterWidth,
-                                    height: Theme.Size.miniPosterHeight
+                                    width: posterMetrics.width,
+                                    height: posterMetrics.height
                                 )
                             }
                         }
@@ -3869,6 +3880,9 @@ struct CastCard: View {
     /// the generic outer-bounds ring wrapped the whole lockup — the ring belongs on the avatar
     /// circle, whose geometry only this view knows.
     var stillFocused: Bool = false
+    /// The avatar's diameter. Apple-style passes a larger one so the card is `DetailGeometry.personCardWidth`
+    /// wide; the default is today's `Theme.Size.castAvatar`, so every other caller is unchanged.
+    var avatarSize: CGFloat = Theme.Size.castAvatar
 
     @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
     /// BUG-102 (rc9): same gap as `FolderTile` — the avatar only knew the no-zoom still ring, so
@@ -3902,7 +3916,7 @@ struct CastCard: View {
                     CastCard.personFallback
                 }
             }
-            .frame(width: Theme.Size.castAvatar, height: Theme.Size.castAvatar)
+            .frame(width: avatarSize, height: avatarSize)
             .clipShape(Circle())
             .nuvioCardDepth(Circle(), surface: .cast)
             // 2026-08-30 no-zoom investigation: same overpaint/fix as TileFocusLift/FolderTile —
@@ -3911,8 +3925,8 @@ struct CastCard: View {
             // contract) so the `.overlay` below measures the avatar's TRUE, unscaled bounds. A
             // single scalar is enough — the avatar is always a perfect circle/square.
             // BUG-102: band reserved whenever a ring may draw (`ringInset`'s rule), as FolderTile.
-            .scaleEffect(reservesRingBand && Theme.Size.castAvatar > 0
-                ? max(0, Theme.Size.castAvatar - 2 * ringWidth) / Theme.Size.castAvatar
+            .scaleEffect(reservesRingBand && avatarSize > 0
+                ? max(0, avatarSize - 2 * ringWidth) / avatarSize
                 : 1)
             .overlay {
                 if let ring = PlainLabelRing.resolve(accentFocusRing: accentFocusRing,
@@ -3927,33 +3941,33 @@ struct CastCard: View {
             .modifier(CardArtworkFocusLift(
                 mode: artworkLift,
                 isFocused: stillFocused,
-                artworkHeight: Theme.Size.castAvatar,
+                artworkHeight: avatarSize,
                 // `CardArtworkFocusLift.manualScale` draws its platter as a
                 // `RoundedRectangle(cornerRadius:)` at the attached view's bounds. The bounds here
                 // are the avatar's 140×140 square, and a rounded rect of half that side IS that
                 // square's inscribed circle — so the platter and its shadow follow the photo's own
                 // edge instead of a square behind it. Derived from the constant, never literal 70.
-                cornerRadius: Theme.Size.castAvatar / 2
+                cornerRadius: avatarSize / 2
             ))
             VStack(spacing: Theme.Spacing.xs) {
                 Text(person.name)
                     .font(Theme.Font.caption)
                     .foregroundStyle(isFocused ? Theme.Palette.textPrimary : Theme.Palette.textPrimary.opacity(0.9))
                     .lineLimit(1)
-                    .frame(width: Theme.Size.castAvatar + 10)
+                    .frame(width: avatarSize + 10)
                 if let role = person.role, !role.isEmpty {
                     Text(role)
                         .font(Theme.Font.caption)
                         .foregroundStyle(Theme.Palette.textSecondary)
                         .lineLimit(1)
-                        .frame(width: Theme.Size.castAvatar + 10)
+                        .frame(width: avatarSize + 10)
                 }
             }
             // BUG-108: the avatar grows downward by the same 20pt it rises, so name+role follow it
             // together — one modifier on the pair, so the two lines can never drift apart. 0 in
             // both other modes.
             .modifier(CardCaptionFocusDrop(mode: artworkLift, isFocused: stillFocused,
-                                           artworkHeight: Theme.Size.castAvatar))
+                                           artworkHeight: avatarSize))
         }
         // BUG-108: gated on Reduce Motion now that this wraps a manual `.scaleEffect` — see
         // `CardArtworkFocusLift`, which passes a nil animation there and would be overridden here.

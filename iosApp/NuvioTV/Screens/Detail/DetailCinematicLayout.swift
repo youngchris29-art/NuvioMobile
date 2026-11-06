@@ -39,7 +39,7 @@ nonisolated enum DetailCinematicLayout {
     /// minus the page's top padding, the gap to the first row and the peek band, never below the
     /// floor. Gate 1 reads the real value off `debug_detail_hero h=`; if the peek is off, only
     /// `peekBand` should move.
-    static func heroHeight(containerHeight: CGFloat) -> CGFloat {
+    static func heroHeight(containerHeight: CGFloat, peekBand: CGFloat = DetailCinematicLayout.peekBand) -> CGFloat {
         max(heroMinimumHeight, containerHeight - screenPadding - pageRowSpacing - peekBand)
     }
 }
