@@ -3191,7 +3191,13 @@ struct DetailView: View {
                 // Home's, so the standard environment margins are right and no overrides are passed.
                 .rowEdgeEffectStyle()
             }
-            .focusSection()
+            // Follow-up 5A (device: Down from a More Like This poster right of the last Cast &
+            // Crew card skipped the row, Up from Comments likewise): the row's focus section is
+            // pinned to the full content width (`focusRow`, the BUG-117 / logos-row rule) instead
+            // of relying on the horizontal ScrollView's own width, so a vertical press from any x
+            // lands on the nearest card (or the remembered one). A row with no focusable card
+            // (no TMDB ids) has an empty section, which the engine passes over.
+            .focusRow(alignment: .leading)
         }
     }
 
@@ -3738,7 +3744,9 @@ private struct DetailPosterLinkRow: View {
             // beta.19-rc1 verdict (F, FEAT-54): row edge fade, see the Cast row.
             .rowEdgeEffectStyle()
         }
-        .focusSection()
+        // Follow-up 5A: full-width focus section, the Cast & Crew row's rule (More Like This,
+        // Collection).
+        .focusRow(alignment: .leading)
         .onChange(of: focusedId) { _, id in onFocus(id) }
         .onChange(of: restore) { _, request in
             guard request.row == row, let key = request.key,
@@ -3811,7 +3819,9 @@ private struct DetailTrailersRow: View {
                 .accessibilityIdentifier(probeID)
             #endif
         }
-        .focusSection()
+        // Follow-up 5A: full-width focus section, the Cast & Crew row's rule (Trailers, Bonus,
+        // Trailers & Extras).
+        .focusRow(alignment: .leading)
     }
 }
 
