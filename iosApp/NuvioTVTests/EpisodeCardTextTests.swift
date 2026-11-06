@@ -21,6 +21,12 @@ final class EpisodeCardTextTests: XCTestCase {
 
     // MARK: - Content
 
+    func testLiftReserveHoldsTheAppleStyleTextStill() {
+        XCTAssertEqual(EpisodeCardTextLayout.liftReserve(appleStyleText: true, zooms: true), 20)
+        XCTAssertEqual(EpisodeCardTextLayout.liftReserve(appleStyleText: true, zooms: false), 0, "No Zoom on Focus")
+        XCTAssertEqual(EpisodeCardTextLayout.liftReserve(appleStyleText: false, zooms: true), 0, "heading keeps its drop")
+    }
+
     func testFullContent() {
         let c = content()
         XCTAssertEqual(c.numberLabel, "Episode 3")

@@ -114,6 +114,17 @@ nonisolated enum EpisodeCardTextLayout {
         return (lines + spacing * 3).rounded(.up)
     }
 
+    /// How far the Apple-style text block sits below the still at rest, on top of the card's own gap.
+    /// A focused still grows by `rise` below as well as above (`CardCaptionFocusDrop`'s arithmetic),
+    /// which used to push the focused card's text down so it no longer lined up with its neighbours.
+    /// The block now stays put and the gap is reserved up front, so only the still moves. A card
+    /// that does not zoom (No Zoom on Focus) reserves nothing, and the heading line of Cinematic and
+    /// Classic keeps its drop.
+    static func liftReserve(appleStyleText: Bool, zooms: Bool,
+                            rise: CGFloat = Theme.Size.heroPinnedRowFocusLiftAllowance) -> CGFloat {
+        appleStyleText && zooms ? rise : 0
+    }
+
     static func overviewHeight(overviewLine: CGFloat) -> CGFloat {
         (overviewLine * CGFloat(overviewLineLimit)).rounded(.up)
     }

@@ -945,10 +945,15 @@ private struct EpisodeThumbCard: View {
                         .frame(width: cardSize.width, alignment: .leading)
                 }
             }
-            // UX-15 class: keep the artwork↔title gap constant under the system lift (the
-            // Apple-style text block drops with it as one piece).
+            // Apple-style: the text block never moves (the gap the lift needs is reserved above it), so
+            // every card's text lines up whichever one is focused.
+            .padding(.top, EpisodeCardTextLayout.liftReserve(appleStyleText: textBlock != nil,
+                                                             zooms: !focusAppearance.noZoomOnFocus))
+            // UX-15 class: keep the artwork↔title gap constant under the system lift (the heading
+            // line drops with it; the Apple-style text block is held still above).
             .modifier(CardCaptionFocusDrop(
-                mode: CardFocusMode.resolve(accentFocusRing: focusAppearance.accentFocusRing,
+                mode: textBlock != nil ? .still(ringed: false)
+                    : CardFocusMode.resolve(accentFocusRing: focusAppearance.accentFocusRing,
                                             noZoomOnFocus: focusAppearance.noZoomOnFocus),
                 isFocused: isFocused,
                 artworkHeight: cardSize.height
