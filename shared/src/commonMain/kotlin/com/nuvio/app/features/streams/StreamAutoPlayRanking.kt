@@ -101,12 +101,14 @@ object StreamQualityRank {
     // The cached-only rule's precedence: an authoritative provider (cache status / clientResolve
     // service) decides, marker inference only without one. So a prepared torrent cached on the
     // active provider ranks cached, one cached elsewhere gains nothing from a bolt in its name.
-    private fun Key.withAddonMarkedCached(stream: StreamItem, activeResolverProviderId: String?): Key =
-        if (cached == 0 && StreamAutoPlaySelector.isCachedDebridLink(stream, debridEnabled = true, activeResolverProviderId)) {
-            copy(cached = 1)
-        } else {
-            this
-        }
+    // Set, not raised: a link the resolver-blind key calls cached (a Real-Debrid direct result)
+    // ranks uncached when the active resolver is another service. A null resolver matches every
+    // provider, as in the rule itself.
+    private fun Key.withAddonMarkedCached(stream: StreamItem, activeResolverProviderId: String?): Key {
+        val cachedForResolver =
+            if (StreamAutoPlaySelector.isCachedDebridLink(stream, debridEnabled = true, activeResolverProviderId)) 1 else 0
+        return if (cached == cachedForResolver) this else copy(cached = cachedForResolver)
+    }
 
     /**
      * Direction C (D2): the same [Key] from already-parsed [StreamFacts], so a caller that holds the

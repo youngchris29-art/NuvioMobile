@@ -195,6 +195,41 @@ class StreamBestPickTest {
     }
 
     @Test
+    fun theResolverAwareKeySetsCachedFromTheActiveResolver() {
+        // Already cached in the resolver-blind key, but for Real-Debrid while TorBox is active.
+        val rd = directDebrid("2160p", service = "realdebrid").copy(url = "https://rd.example/dl/x.mkv")
+        val facts = StreamFactsParser.parse(rd)
+        assertEquals(1, StreamQualityRank.key(rd).cached)
+        assertEquals(1, StreamQualityRank.key(facts).cached)
+        assertEquals(0, StreamQualityRank.key(rd, "torbox").cached)
+        assertEquals(0, StreamQualityRank.key(facts, rd, "torbox").cached)
+        assertEquals(1, StreamQualityRank.key(rd, "realdebrid").cached)
+        assertEquals(1, StreamQualityRank.key(facts, rd, "realdebrid").cached)
+        assertEquals(1, StreamQualityRank.key(rd, null).cached, "no active resolver matches every provider")
+        assertEquals(1, StreamQualityRank.key(facts, rd, null).cached)
+    }
+
+    @Test
+    fun rankBestWithoutAResolverKeepsThePreparersOrder() {
+        // DirectDebridStreamPreparer ranks URL-less managed candidates without a resolver: the
+        // resolver-aware key with null must order them exactly like the resolver-blind key.
+        val candidates = listOf(
+            directDebrid("1080p", service = "realdebrid"),
+            cachedTorrent("2160p", provider = "premiumize"),
+            directDebrid("2160p HDR", service = "torbox"),
+            cachedTorrent("720p"),
+        )
+        candidates.forEach { assertEquals(StreamQualityRank.key(it), StreamQualityRank.key(it, null), it.name) }
+        val blind = candidates.sortedWith(
+            compareByDescending<StreamItem> { StreamQualityRank.key(it).resolution }
+                .thenByDescending { StreamQualityRank.key(it).dynamicRange }
+                .thenByDescending { StreamQualityRank.key(it).cached }
+                .thenByDescending { StreamQualityRank.key(it).size },
+        )
+        assertEquals(blind, StreamQualityRank.rankBest(candidates))
+    }
+
+    @Test
     fun aCometBoltTagNamesItsService() {
         val sel = StreamAutoPlaySelector
         // The Comet row from StreamFactsParserTest.cometRow.
