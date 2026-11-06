@@ -3192,8 +3192,13 @@ struct DetailView: View {
     /// A4.4 (C10): the Cast row's cards, cast then crew (`DetailCreditRow`), every layout.
     private var creditRowItems: [DetailCreditItem] {
         DetailCreditRow.items(cast: model.meta?.cast ?? [], crew: model.meta?.crew ?? [],
-                              creators: model.meta?.creators ?? [])
+                              creators: model.meta?.creators ?? [],
+                              actorLimit: detailLayoutChoice == .appleStyle ? Self.appleStyleActorLimit : nil)
     }
+
+    /// Apple-style's Cast & Crew row shows this many actors before the creator and crew cards
+    /// (Christian, 2026-11-06); Cinematic and Classic show every actor.
+    static let appleStyleActorLimit = 20
 
     /// Cast & Crew avatar diameter: Apple-style's person card is `DetailGeometry.personCardWidth` wide
     /// (the avatar plus the caption's 10 pt of slack); Cinematic and Classic keep `castAvatar`.

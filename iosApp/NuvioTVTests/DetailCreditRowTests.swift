@@ -225,6 +225,37 @@ final class DetailCreditRowTests: XCTestCase {
         XCTAssertEqual(crewOnly.map(\.name), ["Adam Scott", "Dan Erickson"])
     }
 
+    // MARK: Actor limit (Apple-style)
+
+    private func actorCast(_ count: Int) -> [DetailCastCredit] {
+        (1...count).map { cast("Actor \($0)", "Role \($0)", id: 100 + $0) }
+    }
+
+    /// `actorLimit` keeps the first N actors; the marked creator and the crew all follow, and the
+    /// kept cards' keys match the uncapped row's.
+    func testActorLimitCapsActorsOnly() {
+        let castList = [cast("Dan Erickson", "Creator", id: 3442409, marked: .creator)] + actorCast(25)
+        let crewList = [crew("Ben Stiller", "Director", .director, id: 7399), crew("Dan Erickson", "Writer", .writer, id: 3442409)]
+        let capped = DetailCreditRow.items(cast: castList, crew: crewList, actorLimit: 20)
+        let uncapped = DetailCreditRow.items(cast: castList, crew: crewList)
+        XCTAssertEqual(capped.count, 23)
+        XCTAssertEqual(capped.prefix(20).map(\.name), (1...20).map { "Actor \($0)" })
+        XCTAssertEqual(capped.suffix(3).map(\.name), ["Dan Erickson", "Ben Stiller", "Dan Erickson"])
+        XCTAssertEqual(capped[20].subtitle, "Creator")
+        XCTAssertEqual(uncapped.count, 28)
+        let uncappedKeys = Set(uncapped.map(\.key))
+        XCTAssertTrue(capped.allSatisfy { uncappedKeys.contains($0.key) }, "capping must not change any kept card's key")
+    }
+
+    /// No limit (Cinematic, Classic) or a limit above the actor count keeps every actor.
+    func testActorLimitNilOrLargeKeepsAllActors() {
+        let castList = actorCast(5)
+        let crewList = [crew("Ben Stiller", "Director", .director, id: 7399)]
+        XCTAssertEqual(DetailCreditRow.items(cast: castList, crew: crewList).count, 6)
+        XCTAssertEqual(DetailCreditRow.items(cast: castList, crew: crewList, actorLimit: 20).count, 6)
+        XCTAssertEqual(DetailCreditRow.items(cast: castList, crew: crewList, actorLimit: 0).map(\.name), ["Ben Stiller"])
+    }
+
     /// Without ids (add-on data), the same name counts as the same person.
     func testNameMatchWithoutIds() {
         let items = DetailCreditRow.items(

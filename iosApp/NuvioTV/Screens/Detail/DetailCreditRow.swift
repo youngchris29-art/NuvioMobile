@@ -60,7 +60,8 @@ nonisolated struct DetailCreditItem: Identifiable, Equatable, Sendable {
 ///
 /// Order: actors, then the creator(s) (pseudo-cast creators and creator crew), then the other
 /// pseudo-cast entries (directors, writers), then the remaining crew (Kotlin's `buildMetaCrew`
-/// order). Order within each group is the order given. `creators` (`MetaDetails.creators`, TMDB
+/// order). Order within each group is the order given; `actorLimit` (Apple-style: 20) caps the
+/// actors only. `creators` (`MetaDetails.creators`, TMDB
 /// `created_by`) join the crew as creator credits ahead of it, deduped by `creditKey` and person,
 /// so they back a prepended "Creator" entry and give a Creator card even when `crew` has none.
 ///
@@ -75,6 +76,7 @@ nonisolated enum DetailCreditRow {
         cast: [DetailCastCredit],
         crew: [DetailCrewCredit],
         creators: [DetailCrewCredit] = [],
+        actorLimit: Int? = nil,
         pseudoRoleLabels: (DetailCreditCategory) -> [String] = { DetailCreditRow.englishPseudoRoleLabels($0) }
     ) -> [DetailCreditItem] {
         var usedKeys = Set<String>()
@@ -188,8 +190,9 @@ nonisolated enum DetailCreditRow {
                 )
             }
         }
-        // Built in display order, so a duplicate key's `#n` suffix follows the row.
-        var result = castItems(actors)
+        // Built in display order, so a duplicate key's `#n` suffix follows the row. `actorLimit`
+        // keeps the first N actors only (Apple-style); pseudo-crew and crew are never capped.
+        var result = castItems(actorLimit.map { Array(actors.prefix(max(0, $0))) } ?? actors)
         result += castItems(pseudoCreators)
         result += crewItems(creatorCrew)
         result += castItems(otherPseudo)
@@ -262,7 +265,8 @@ nonisolated enum DetailCreditRow {
     }
 
     /// The Kotlin model's credits as the row's inputs.
-    static func items(cast: [MetaPerson], crew: [MetaCrewMember], creators: [MetaCrewMember] = []) -> [DetailCreditItem] {
+    static func items(cast: [MetaPerson], crew: [MetaCrewMember], creators: [MetaCrewMember] = [],
+                      actorLimit: Int? = nil) -> [DetailCreditItem] {
         func credit(_ member: MetaCrewMember) -> DetailCrewCredit {
             DetailCrewCredit(name: member.name, job: member.job, category: category(of: member.category),
                              photo: member.photo, tmdbId: member.tmdbId?.value,
@@ -276,6 +280,7 @@ nonisolated enum DetailCreditRow {
             },
             crew: crew.map(credit),
             creators: creators.map(credit),
+            actorLimit: actorLimit,
             pseudoRoleLabels: { sharedPseudoRoleLabels($0) }
         )
     }
