@@ -12,6 +12,7 @@ import com.nuvio.app.features.debrid.DebridStreamMetadata
 import com.nuvio.app.features.debrid.DebridStreamPresentation
 import com.nuvio.app.features.debrid.LocalDebridAvailabilityService
 import com.nuvio.app.features.details.MetaDetailsRepository
+import com.nuvio.app.features.profiles.ProfilePinCrypto
 import com.nuvio.app.features.tmdb.TmdbService
 import kotlinx.atomicfu.locks.SynchronizedObject
 import kotlinx.atomicfu.locks.synchronized
@@ -301,7 +302,9 @@ internal class TitleFormatProbeEngine(
                         anySucceeded = true
                         runBadges = TitleFormatBadges.merge(runBadges, badges)
                         publish(request.key) { it.copy(badges = TitleFormatBadges.merge(it.badges, badges)) }
-                        TitleFormatBadges.isComplete(state(request).badges)
+                        // This run's own answer, which is what gets cached: badges carried over
+                        // from an interrupted run must not stop the fetches short of a full answer.
+                        TitleFormatBadges.isComplete(runBadges)
                     }
                     if (complete) fetches.cancel()
                 }
@@ -412,6 +415,8 @@ internal class TitleFormatProbeEngine(
         val answered = badges.isNotEmpty() || state.groups.any { it.error.isNullOrBlank() }
         if (entry.cacheKey != null && answered && settled) {
             cache.record(entry.cacheKey, badges, TitleFormatSource.PICKER)
+            // A cached answer: once it expires, the next start resets instead of growing on it.
+            entry.answered = true
         }
         publish(entry.request.key) {
             it.copy(badges = TitleFormatBadges.merge(it.badges, badges), source = TitleFormatSource.PICKER)
@@ -450,7 +455,7 @@ internal class TitleFormatProbeEngine(
         private val urlRegex = Regex("""https?://\S+""")
 
         /**
-         * `type:videoId[:s:e]:<hash>`. The hash covers the enabled stream add-ons for the type in
+         * `type:videoId[:s:e]:<hash>` (the first 16 hex digits of a SHA-256). The hash covers the enabled stream add-ons for the type in
          * user order (order picks the first [MAX_ADDONS]; the instance id embeds the manifest URL, so a
          * config change counts), the debrid resolve flag, the active resolver, Cached Sources Only and
          * the effective Sources filters, and the debrid API keys (two accounts on one provider can
@@ -469,8 +474,9 @@ internal class TitleFormatProbeEngine(
                 settings.providerApiKeys,
                 settings.streamCachedOnly,
                 DebridStreamMetadata.effectivePreferences(settings),
-            ).hashCode()
-            return "${request.key}:${fingerprint.toUInt().toString(16)}"
+            ).toString()
+            // SHA-256, not hashCode(): two accounts' keys must not collide into one cache entry.
+            return "${request.key}:${ProfilePinCrypto.sha256Hex(fingerprint).take(16)}"
         }
 
         /** An error message with any URL in it shortened by [StreamDiagnostics.redactUrl]. */

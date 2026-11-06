@@ -424,6 +424,55 @@ class TitleFormatProbeTest {
     }
 
     @Test
+    fun anExpiredPickerAnswerAfterACancelledProbeIsNotCarriedOn() = runTest {
+        val rig = rig("a1")
+        val gate = CompletableDeferred<List<StreamItem>>()
+        rig.fetcher.behavior = { gate.await() }
+        rig.engine.start(movie)
+        runCurrent()
+        rig.engine.cancel(movie)
+        rig.picker.value = pickerState(token(manual = true), stream("picker", fourKDv))
+        runCurrent()
+        assertEquals(listOf(UHD_4K, DOLBY_VISION), rig.badges())
+        rig.picker.value = StreamsUiState()
+        runCurrent()
+
+        rig.now += TitleFormatProbeCache.POSITIVE_TTL_MS
+        rig.fetcher.behavior = { listOf(stream("a1", "Movie.2024.1080p.WEB-DL-GRP")) }
+        rig.engine.start(movie)
+        settle()
+
+        assertEquals(emptyList(), rig.badges())
+    }
+
+    @Test
+    fun badgesCarriedFromAnInterruptedRunDoNotStopTheFreshProbeEarly() = runTest {
+        val rig = rig("first", "second")
+        val gate = CompletableDeferred<List<StreamItem>>()
+        rig.fetcher.behavior = { target ->
+            if (target.addonName == "first") listOf(stream("first", "Movie.2024.2160p.WEB-DL.DV.Atmos-GRP")) else gate.await()
+        }
+        rig.engine.start(movie)
+        runCurrent()
+        rig.engine.cancel(movie) // interrupted with 4K + DV + Atmos showing, nothing cached
+
+        var secondFinished = false
+        rig.fetcher.behavior = { target ->
+            if (target.addonName == "first") {
+                listOf(stream("first", "Movie.2024.1080p.WEB-DL.DTS:X-GRP"))
+            } else {
+                delay(1_000)
+                secondFinished = true
+                listOf(stream("second", "Movie.2024.2160p.WEB-DL.DV.Atmos-GRP"))
+            }
+        }
+        rig.engine.start(movie)
+        settle()
+
+        assertTrue(secondFinished, "the run's own answer was not complete, so it kept fetching")
+    }
+
+    @Test
     fun anEmptyCacheEntryExpiresAfterThirtyMinutes() = runTest {
         val rig = rig("a1")
         rig.engine.start(movie) // the add-on answers, with nothing format-worthy
