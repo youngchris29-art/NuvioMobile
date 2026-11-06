@@ -1199,9 +1199,9 @@ struct DetailView: View {
             // BUG-187 probe (launch argument `-debug.detailFocusProbe YES`): the focused row and the
             // last remembered card key, read by the cast/More Like This Back UI leg. `meta=1` once
             // `model.meta` is loaded (the season-tabs leg's fixture check; the hero's slots and a
-            // preview synopsis show before it).
+            // preview synopsis show before it). `play=` is Play's target (`debugPlayTarget`).
             if DetailFocusProbe.enabled {
-                Text(verbatim: "debug_detail_focus row=\(focusedRow.map { "\($0)" } ?? "-") idx=\(detailFocusProbeKey) moves=\(focusMemory.popMoves) held=\(focusMemory.heldFocusChange == nil ? 0 : 1) landed=\(focusMemory.popLandedAt.map { Int(($0 - focusMemory.popStartedAt) * 1000) } ?? -1) meta=\(model.meta == nil ? 0 : 1)")
+                Text(verbatim: "debug_detail_focus row=\(focusedRow.map { "\($0)" } ?? "-") idx=\(detailFocusProbeKey) moves=\(focusMemory.popMoves) held=\(focusMemory.heldFocusChange == nil ? 0 : 1) landed=\(focusMemory.popLandedAt.map { Int(($0 - focusMemory.popStartedAt) * 1000) } ?? -1) meta=\(model.meta == nil ? 0 : 1) play=\(debugPlayTarget)")
                     .font(.system(size: 8))
                     .opacity(0.011)
                     .accessibilityIdentifier("debug_detail_focus")
@@ -2127,6 +2127,24 @@ struct DetailView: View {
             aboutShowsOverview: aboutSectionEnabled
         )
     }
+
+    #if DEBUG
+    /// The `debug_detail_focus` probe's `play=` token: the video Play / Resume would start, as
+    /// `<videoId>|s<season>e<episode>` for a series (`model.seriesAction`) or the stream video id for
+    /// a movie, whitespace folded so it stays one token; `-` before the series action is known. Set
+    /// even when Play is disabled (no stream source), so the season-tabs leg can see the target.
+    private var debugPlayTarget: String {
+        let raw: String
+        if isSeries {
+            guard let action = model.seriesAction else { return "-" }
+            raw = "\(action.videoId)|s\(action.seasonNumber.map { "\($0.intValue)" } ?? "-")e\(action.episodeNumber.map { "\($0.intValue)" } ?? "-")"
+        } else {
+            raw = streamVideoId
+        }
+        let folded = raw.split(whereSeparator: { $0.isWhitespace }).joined(separator: "_")
+        return folded.isEmpty ? "-" : folded
+    }
+    #endif
 
     /// What the format badge row asks the probe about. Movie: the title's stream video id and the
     /// type the stream picker is opened with (`preview.type`). Series: the episode Play/Resume

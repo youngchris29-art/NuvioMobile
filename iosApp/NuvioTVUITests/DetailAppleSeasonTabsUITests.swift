@@ -105,6 +105,16 @@ final class DetailAppleSeasonTabsUITests: XCTestCase {
         return "focused=[\(focused.joined(separator: ","))] row=\(focusRow(app))"
     }
 
+    /// `debug_detail_focus`'s `play=` token: Play's target (`<videoId>|s<S>e<E>`), `-` when unknown.
+    private func playTarget(_ app: XCUIApplication) -> String {
+        let label = app.staticTexts["debug_detail_focus"]
+        guard label.waitForExistence(timeout: 4) else { return "MISSING" }
+        for part in label.label.split(separator: " ") where part.hasPrefix("play=") {
+            return String(part.dropFirst(5))
+        }
+        return "?"
+    }
+
     /// `debug_detail_focus`'s `meta=` token is `1` once the page's `model.meta` is loaded (the
     /// hero's meta-line and synopsis slots, and a preview synopsis, show before that).
     private func metaLoaded(_ app: XCUIApplication) -> Bool {
@@ -199,15 +209,16 @@ final class DetailAppleSeasonTabsUITests: XCTestCase {
     }
 
     /// Right onto Season 2 switches the shelf after the debounce and leaves the hero untouched:
-    /// Play's label and the synopsis teaser read the same before and after. (Play's TARGET, the
-    /// season/episode it would start, is not visible to XCUITest; its label is the observable proxy
-    /// and covers a Resume label flipping to another episode.)
+    /// Play's label, its target (the probe's `play=` token, readable even when Play is disabled
+    /// with no stream source) and the synopsis teaser read the same before and after.
     func testSwitchingTabsKeepsHeroAndPlayTarget() throws {
         let app = try launchToSeasonTabs()
         XCTAssertTrue(walkDownToTabs(app), "could not reach the season tabs; \(focusedSummary(app))")
         XCTAssertTrue(element(app, "season_tab_1").hasFocus, "should start on Season 1; \(focusedSummary(app))")
         let before = heroSnapshot(app)
-        note("hero before", "play='\(before.play)' synopsis='\(before.synopsis.prefix(80))'")
+        let targetBefore = playTarget(app)
+        note("hero before", "play='\(before.play)' target=\(targetBefore) synopsis='\(before.synopsis.prefix(80))'")
+        XCTAssertFalse(["-", "?", "MISSING"].contains(targetBefore), "Play's target should be known before the switch (play=\(targetBefore))")
         XCTAssertTrue(waitForCard(app, season: 1, timeout: 3), "Season 1's episode cards should be on the shelf before the switch")
 
         press(.right, gap: 0.6)
@@ -218,7 +229,9 @@ final class DetailAppleSeasonTabsUITests: XCTestCase {
         XCTAssertFalse(episodeCards(app, season: 1).firstMatch.exists, "Season 1's episode cards should be gone once the shelf shows Season 2")
 
         let after = heroSnapshot(app)
-        note("hero after", "play='\(after.play)' synopsis='\(after.synopsis.prefix(80))'")
+        let targetAfter = playTarget(app)
+        note("hero after", "play='\(after.play)' target=\(targetAfter) synopsis='\(after.synopsis.prefix(80))'")
+        XCTAssertEqual(targetAfter, targetBefore, "switching season tabs changed Play's target")
         XCTAssertEqual(after.play, before.play, "switching season tabs changed the hero's Play button")
         XCTAssertEqual(after.synopsis, before.synopsis, "switching season tabs changed the hero synopsis")
     }
