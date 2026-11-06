@@ -2,6 +2,7 @@ package com.nuvio.app.features.streams
 
 import com.nuvio.app.features.debrid.DebridStreamMetadata
 import com.nuvio.app.features.debrid.DebridStreamPreferences
+import com.nuvio.app.features.debrid.DebridStreamPresentation
 import com.nuvio.app.features.debrid.DebridStreamVisualTag
 
 /**
@@ -41,7 +42,11 @@ object StreamQualityRank {
         val resolution: Int,
         /** 1 when the stream carries any HDR or Dolby Vision tag, else 0. */
         val dynamicRange: Int,
-        /** 1 for a debrid link the add-on says is cached / direct, else 0. */
+        /**
+         * 1 for a debrid link the add-on says is cached / direct, or (when the caller passes the
+         * active resolver) an add-on's resolved http link it marks cached for that service
+         * ([DebridStreamPresentation.isAddonMarkedCachedFor]), else 0.
+         */
         val cached: Int,
         /** Bytes; 0 when no size is known. */
         val size: Long,
@@ -67,6 +72,7 @@ object StreamQualityRank {
             .thenByDescending { it.second.cached }
             .thenByDescending { it.second.size }
 
+    /** [key] without add-on-marked cached evidence (no active resolver known). */
     fun key(stream: StreamItem): Key {
         val facts = DebridStreamMetadata.facts(stream, defaultPreferences)
         val isCachedDebridLink = stream.isAddonDebridCandidate &&
@@ -78,6 +84,25 @@ object StreamQualityRank {
             size = facts.size ?: 0L,
         )
     }
+
+    /**
+     * GitHub #23: [key] with the active resolver, so an add-on's resolved link it marks cached for
+     * that service ("[TB+]", "☁️ TorBox" + a bolt) ranks as cached beside managed cached links.
+     * Computed at rank time, never stored in [StreamFacts] (cached per stream, resolver-blind).
+     */
+    fun key(stream: StreamItem, activeResolverProviderId: String?): Key =
+        key(stream).withAddonMarkedCached(stream, activeResolverProviderId)
+
+    /** [key] (facts) plus the same rank-time add-on-marked cached evidence as [key] (stream, resolver). */
+    fun key(facts: StreamFacts, stream: StreamItem, activeResolverProviderId: String?): Key =
+        key(facts).withAddonMarkedCached(stream, activeResolverProviderId)
+
+    private fun Key.withAddonMarkedCached(stream: StreamItem, activeResolverProviderId: String?): Key =
+        if (cached == 0 && DebridStreamPresentation.isAddonMarkedCachedFor(stream, activeResolverProviderId)) {
+            copy(cached = 1)
+        } else {
+            this
+        }
 
     /**
      * Direction C (D2): the same [Key] from already-parsed [StreamFacts], so a caller that holds the
@@ -93,9 +118,9 @@ object StreamQualityRank {
     )
 
     /** [streams] best first. Keys are computed once per stream; full ties keep their list order. */
-    fun rankBest(streams: List<StreamItem>): List<StreamItem> {
+    fun rankBest(streams: List<StreamItem>, activeResolverProviderId: String? = null): List<StreamItem> {
         if (streams.size < 2) return streams
-        val keyed = streams.map { stream -> stream to key(stream) }
+        val keyed = streams.map { stream -> stream to key(stream, activeResolverProviderId) }
         return keyed.sortedWith(bestFirst).map { it.first }
     }
 }

@@ -141,7 +141,7 @@ object StreamAutoPlaySelector {
             // so the failover walk (`autoPlayCandidates`) is ranked too.
             StreamAutoPlayMode.FIRST_STREAM ->
                 if (ranking == StreamAutoPlayRanking.BEST_QUALITY) {
-                    StreamQualityRank.rankBest(candidateStreams)
+                    StreamQualityRank.rankBest(candidateStreams, activeResolverProviderId)
                 } else {
                     candidateStreams
                 }

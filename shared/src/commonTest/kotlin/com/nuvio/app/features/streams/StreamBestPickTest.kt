@@ -20,12 +20,18 @@ class StreamBestPickTest {
         behaviorHints = StreamBehaviorHints(videoSize = size),
     )
 
-    private fun torrent(name: String, state: StreamDebridCacheState?, provider: String = "torbox"): StreamItem =
+    private fun torrent(
+        name: String,
+        state: StreamDebridCacheState?,
+        provider: String = "torbox",
+        size: Long? = null,
+    ): StreamItem =
         StreamItem(
             name = name,
             infoHash = "0123456789abcdef0123456789abcdef01234567",
             addonName = "Torrentio",
             addonId = "addon:t",
+            behaviorHints = StreamBehaviorHints(videoSize = size),
             debridCacheStatus = state?.let {
                 StreamDebridCacheStatus(providerId = provider, providerName = provider, state = it)
             },
@@ -119,12 +125,60 @@ class StreamBestPickTest {
         assertFalse(sel.isCachedDebridLink(plain("S"), true, "torbox"))
     }
 
-    private fun marked(name: String): StreamItem = StreamItem(
+    private fun marked(name: String, description: String? = null, size: Long? = null): StreamItem = StreamItem(
         name = name,
+        description = description,
         url = "https://example.com/${name.replace(' ', '-')}.mkv",
         addonName = "Torrentio",
         addonId = "addon:t",
+        behaviorHints = StreamBehaviorHints(videoSize = size),
     )
+
+    @Test
+    fun aNamedServiceIsTheMarkedLinksServiceUnderCachedOnly() {
+        val sel = StreamAutoPlaySelector
+        // The AIOStreams format: a bolt in the name, the service on its own cloud line.
+        val aio = marked("4K \u26A1", "\uD83C\uDFAC Animals (2026)\n\uD83D\uDFE2 INSTANT PLAY\n\u2601\uFE0F TorBox")
+        assertTrue(sel.isCachedDebridLink(aio, true, "torbox"))
+        assertFalse(sel.isCachedDebridLink(aio, true, "premiumize"))
+        // A display-name spelling in the name field.
+        val rd = marked("RealDebrid 2160p \u26A1")
+        assertTrue(sel.isCachedDebridLink(rd, true, "realdebrid"))
+        assertFalse(sel.isCachedDebridLink(rd, true, "torbox"))
+        assertFalse(sel.isCachedDebridLink(marked("Real-Debrid 2160p \u26A1"), true, "torbox"))
+        assertFalse(sel.isCachedDebridLink(marked("2160p \u26A1", "4K \u00B7 \u2601\uFE0F Debrid-Link \u00B7 12 GB"), true, "torbox"))
+        // A release or film title containing a service word names no service: the bolt matches any.
+        assertTrue(sel.isCachedDebridLink(marked("2160p \u26A1", "\uD83C\uDFAC Premiumize Story (2024)"), true, "torbox"))
+        assertTrue(sel.isCachedDebridLink(marked("2160p \u26A1", "Premiumize.Story.2160p.WEB-DL.mkv"), true, "torbox"))
+    }
+
+    @Test
+    fun aMarkedCachedLinkRanksAsCachedSoSizeBreaksTheTie() {
+        val torrent = torrent("Movie 2160p HDR", StreamDebridCacheState.CACHED, size = 10 * gb)
+        val link = marked("[TB+] Torrentio Movie 2160p HDR", size = 40 * gb)
+        val streams = listOf(torrent, link)
+
+        assertEquals(listOf(link, torrent), StreamQualityRank.rankBest(streams, "torbox"))
+        assertEquals(listOf(1, 0), pick(streams, active = "torbox").ranked)
+        // Cached on another service than the active one: the managed cached torrent wins.
+        val rdTorrent = torrent("Movie 2160p HDR", StreamDebridCacheState.CACHED, provider = "realdebrid", size = 10 * gb)
+        assertEquals(listOf(rdTorrent, link), StreamQualityRank.rankBest(listOf(rdTorrent, link), "realdebrid"))
+        assertEquals(listOf(0, 1), pick(listOf(rdTorrent, link), active = "realdebrid").ranked)
+        // The walk ranks the same way.
+        val walk = StreamAutoPlaySelector.selectAutoPlayStream(
+            streams = streams,
+            mode = StreamAutoPlayMode.FIRST_STREAM,
+            regexPattern = "",
+            source = StreamAutoPlaySource.ALL_SOURCES,
+            installedAddonNames = setOf("Torrentio"),
+            selectedAddons = emptySet(),
+            selectedPlugins = emptySet(),
+            debridEnabled = true,
+            activeResolverProviderId = "torbox",
+            ranking = StreamAutoPlayRanking.BEST_QUALITY,
+        )
+        assertEquals(link, walk)
+    }
 
     @Test
     fun addonMarkedCachedLinksQualifyUnderCachedOnlyForTheActiveService() {

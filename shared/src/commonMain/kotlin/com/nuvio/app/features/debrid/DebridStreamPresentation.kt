@@ -255,23 +255,78 @@ object DebridStreamPresentation {
 
     private val cachedServiceTagRegex = Regex("\\[($SERVICE_TAGS)\\+\\]", RegexOption.IGNORE_CASE)
 
+    /** A debrid service an add-on can name: its id, its short tag and a whole-word name pattern. */
+    private class NamedService(val id: String, val tag: String?, namePattern: String) {
+        val nameRegex = Regex("\\b(?:$namePattern)\\b", RegexOption.IGNORE_CASE)
+    }
+
+    // Registered providers come from [DebridProviders] (display name, with "-" also matching a
+    // space or nothing, so "Real-Debrid" / "RealDebrid" / "Real Debrid"; plus the id). Services
+    // the app has no provider for keep a fixed id so a "[DL+]" tag and a "Debrid-Link" name agree.
+    private val namedServices: List<NamedService> =
+        DebridProviders.all().map { provider ->
+            // Display names and ids are letters, digits and "-" only; anything else is dropped.
+            val display = provider.displayName.split('-', ' ')
+                .map { part -> part.filter { it.isLetterOrDigit() } }
+                .filter { it.isNotEmpty() }
+                .joinToString("[- ]?")
+            NamedService(provider.id, provider.shortName, "$display|${provider.id.filter { it.isLetterOrDigit() }}")
+        } + listOf(
+            NamedService("debridlink", "DL", "debrid[- ]?link"),
+            NamedService("easydebrid", "ED", "easy[- ]?debrid"),
+            NamedService("offcloud", "OC", "off[- ]?cloud"),
+            NamedService("pikpak", "PKP", "pik[- ]?pak"),
+            NamedService("easynews", "EN", "easy[- ]?news"),
+        )
+
+    // A service line in a title / description: the name is the whole line behind an optional
+    // cloud emoji ("☁️ TorBox"), or follows a cloud emoji anywhere ("4K · ☁️ TorBox · 12 GB").
+    // A release name that merely contains a service word ("Premiumize.Story.2160p") is not one.
+    private val cloudEmojiRegex = Regex("\u2601\uFE0F?")
+    private val trailingCloudEmojiRegex = Regex("\u2601\uFE0F?[ \\t]*$")
+
+    private fun serviceNamedIn(text: String, anywhere: Boolean): String? {
+        for (service in namedServices) {
+            if (anywhere) {
+                if (service.nameRegex.containsMatchIn(text)) return service.id
+                continue
+            }
+            for (line in text.lineSequence()) {
+                if (titleLineRegex.containsMatchIn(line)) continue
+                val match = service.nameRegex.find(line) ?: continue
+                val before = line.substring(0, match.range.first)
+                val after = line.substring(match.range.last + 1)
+                val wholeLine = before.replace(cloudEmojiRegex, "").isBlank() && after.isBlank()
+                val afterCloud = trailingCloudEmojiRegex.containsMatchIn(before)
+                if (wholeLine || afterCloud) return service.id
+            }
+        }
+        return null
+    }
+
     /**
-     * The debrid service an add-on-marked cached link names in its "[XX+]" tag, as a provider id
-     * when the tag is a registered provider's short name ("[TB+]" -> "torbox"), else the bare tag
-     * lowercased ("[DL+]" -> "dl"). Null when no tag names one (a bolt or "instant play" only).
+     * The debrid service an add-on-marked cached link names, as a provider id ("torbox") or, for a
+     * service the app has no provider for, a fixed id ("debridlink"; an unlisted tag lowercased).
+     * In order: a "[XX+]" tag anywhere; a service name anywhere in the `name` field (whole word);
+     * a service line in the title / description (see [serviceNamedIn]; title lines are skipped).
+     * Null when nothing names one (a bolt or "instant play" only).
      */
     val StreamItem.addonMarkedCachedService: String?
         get() {
             val tag = listOfNotNull(name, title, description).firstNotNullOfOrNull { text ->
                 cachedServiceTagRegex.find(text)?.groupValues?.get(1)
-            } ?: return null
-            return DebridProviders.all().firstOrNull { it.shortName.equals(tag, ignoreCase = true) }?.id
-                ?: tag.lowercase()
+            }
+            if (tag != null) {
+                return namedServices.firstOrNull { it.tag.equals(tag, ignoreCase = true) }?.id ?: tag.lowercase()
+            }
+            name?.let { serviceNamedIn(it, anywhere = true) }?.let { return it }
+            return listOfNotNull(title, description).firstNotNullOfOrNull { serviceNamedIn(it, anywhere = false) }
         }
 
     /**
      * Auto-play / Best Source "Cached Sources Only": an add-on-marked cached direct link counts as
-     * cached on the active service when its tag names that service or names none (the same
+     * cached on the active service when it names that service ([addonMarkedCachedService]: a tag,
+     * the name field or a service line) or names none (the same
      * "no provider on the link matches" rule the debrid links follow).
      */
     fun isAddonMarkedCachedFor(stream: StreamItem, activeResolverProviderId: String?): Boolean {

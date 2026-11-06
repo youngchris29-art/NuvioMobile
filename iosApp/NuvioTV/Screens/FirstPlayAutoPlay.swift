@@ -518,7 +518,8 @@ extension FirstPlayAutoPlayController.Dependencies {
                 return FirstPlayAutoPlayController.outcome(from: result)
             },
             rankSummary: { stream in
-                let key = StreamQualityRank.shared.key(stream: stream)
+                let active: String? = DebridSettingsRepository.shared.snapshot().activeResolverProviderId
+                let key = StreamQualityRank.shared.key(stream: stream, activeResolverProviderId: active)
                 return FirstPlayAutoPlayController.Policy.rankSummary(
                     resolution: key.resolution, dynamicRange: key.dynamicRange, cached: key.cached, size: key.size
                 )

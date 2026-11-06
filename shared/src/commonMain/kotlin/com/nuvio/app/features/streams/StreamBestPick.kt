@@ -33,7 +33,9 @@ object StreamBestPick {
         }
         if (streams.isEmpty()) return StreamBestPickResult(emptyList(), null, null)
 
-        val keys = facts.map { StreamQualityRank.key(it) }
+        // Add-on-marked cached links rank as cached for the active service (rank time: the facts
+        // are cached per stream and know no resolver).
+        val keys = facts.mapIndexed { i, f -> StreamQualityRank.key(f, streams[i], activeResolverProviderId) }
         val order: Comparator<Int> =
             compareByDescending<Int> { keys[it].resolution }
                 .thenByDescending { keys[it].dynamicRange }
