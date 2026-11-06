@@ -103,6 +103,54 @@ final class NextEpisodeEngineTests: XCTestCase {
         XCTAssertTrue(NextEpisodeEngine.isListable(torrent, resolvesThroughDebrid: { _ in true }))
     }
 
+    // MARK: - Auto-play Cached Sources Only (GitHub #23, Codex r4)
+
+    func testCachedOnlyGateMatchesThePickersAutoPlayBestSourceGate() {
+        XCTAssertTrue(NextEpisodeEngine.cachedOnlyInEffect(mode: .firstStream, cachedOnly: true))
+        XCTAssertFalse(NextEpisodeEngine.cachedOnlyInEffect(mode: .firstStream, cachedOnly: false))
+        XCTAssertFalse(NextEpisodeEngine.cachedOnlyInEffect(mode: .manual, cachedOnly: true),
+                       "the forced first stream of MANUAL mode never had the toggle")
+        XCTAssertFalse(NextEpisodeEngine.cachedOnlyInEffect(mode: .regexMatch, cachedOnly: true))
+    }
+
+    func testUpNextCachedOnlyUsesTheFirstPlayWalksRule() {
+        typealias Policy = FirstPlayAutoPlayController.Policy
+        func named(_ name: String) -> StreamItem {
+            StreamItem(
+                name: name, title: nil, description: nil, url: "https://cdn.example.com/s1e2.mkv", infoHash: nil,
+                fileIdx: nil, externalUrl: nil, ytId: nil, sources: [], sourceName: nil, addonName: "Torrentio",
+                addonId: "addon:t", addonLogo: nil, streamType: nil,
+                behaviorHints: StreamBehaviorHints(bingeGroup: nil, notWebReady: false, videoHash: nil, videoSize: nil,
+                                                   filename: nil, proxyHeaders: nil, audioDelayMs: nil),
+                clientResolve: nil, debridCacheStatus: nil, externalSubtitles: [], badges: []
+            )
+        }
+        let cases: [(StreamItem, String)] = [
+            (named("[TB+] Torrentio 1080p"), "torbox"),
+            (named("[RD+] Torrentio 1080p"), "torbox"),
+            (named("1080p \u{26A1}"), "torbox"),
+            (named("[TB download] Torrentio 1080p"), "torbox"),
+            (stream(url: "https://cdn.example.com/plain.mkv"), "torbox"),
+        ]
+        for (item, active) in cases {
+            XCTAssertEqual(
+                NextEpisodeEngine.isCachedOnlyEligible(item, cachedOnly: true, debridEnabled: true,
+                                                       activeResolverProviderId: active),
+                Policy.isCachedDebridLink(item, debridEnabled: true, activeResolverProviderId: active),
+                item.name ?? ""
+            )
+        }
+        XCTAssertTrue(NextEpisodeEngine.isCachedOnlyEligible(named("[TB+] Torrentio 1080p"), cachedOnly: true,
+                                                             debridEnabled: true, activeResolverProviderId: "torbox"))
+        XCTAssertFalse(NextEpisodeEngine.isCachedOnlyEligible(stream(url: "https://cdn.example.com/plain.mkv"),
+                                                              cachedOnly: true, debridEnabled: true,
+                                                              activeResolverProviderId: "torbox"),
+                       "an unmarked plain link is not auto-played under cached-only")
+        XCTAssertTrue(NextEpisodeEngine.isCachedOnlyEligible(stream(url: "https://cdn.example.com/plain.mkv"),
+                                                             cachedOnly: false, debridEnabled: true,
+                                                             activeResolverProviderId: "torbox"))
+    }
+
     // MARK: - BUG-228: binge-group-only needs a binge group
 
     /// The defaults (MANUAL, prefer binge group on, next-episode toggle off) restrict the pick to

@@ -1443,14 +1443,46 @@ final class NextEpisodeEngine: ObservableObject {
 
     /// What `select` and the filename matches start from: `allStreams` minus the links that failed
     /// recently for the episode about to play (Orivio batch item 2: never auto-selected again,
-    /// `RejectedStreamLinks`, keyed like the picker's). The filename matches use it as is, NOT
-    /// scoped by the auto-play source / add-on / plugin filters (upstream d293973bd: same-release
-    /// reuse is not limited by those filters).
-    private func selectableStreams(_ groups: [AddonStreamGroup]) -> [StreamItem] {
+    /// `RejectedStreamLinks`, keyed like the picker's), and, with Auto-Play Best Source's "Cached
+    /// Sources Only" on, minus every link the first-play walk and the Best Source card would refuse
+    /// (`isCachedOnlyEligible`). The filename matches use it as is, NOT scoped by the auto-play
+    /// source / add-on / plugin filters (upstream d293973bd: same-release reuse is not limited by
+    /// those filters), but cached-only applies to them too: it says what auto-play may start.
+    /// Nothing left ends in the "no stream" card; the in-player source list (`listableStreams`)
+    /// still shows every link.
+    private func selectableStreams(_ groups: [AddonStreamGroup], settings: PlayerSettingsUiState) -> [StreamItem] {
         let rejected: Set<String> = nextVideo.map {
             RejectedStreamLinks.rejected(for: Self.episodeVideoId(metaId: context.parentMetaId, episode: $0))
         } ?? []
-        return allStreams(groups).filter { rejected.isEmpty || !rejected.contains($0.playbackStreamKey) }
+        let cachedOnly = Self.cachedOnlyInEffect(mode: settings.streamAutoPlayMode,
+                                                 cachedOnly: settings.streamAutoPlayCachedOnly)
+        let debrid = cachedOnly ? DebridSettingsRepository.shared.snapshot() : nil
+        let active: String? = debrid?.activeResolverProviderId
+        return allStreams(groups).filter { stream in
+            if !rejected.isEmpty, rejected.contains(stream.playbackStreamKey) { return false }
+            guard let debrid else { return true }
+            return Self.isCachedOnlyEligible(stream, cachedOnly: true,
+                                             debridEnabled: debrid.canResolvePlayableLinks,
+                                             activeResolverProviderId: active)
+        }
+    }
+
+    /// Auto-play "Cached Sources Only" counts only in the user's own Auto-Play Best Source mode
+    /// (the toggle is hidden otherwise): the gate `StreamsViewModel.liveAutoPlayCachedOnly` uses.
+    /// The mobile-parity forced first stream (MANUAL + next-episode / binge-group toggles) ignores it.
+    nonisolated static func cachedOnlyInEffect(mode: StreamAutoPlayMode, cachedOnly: Bool) -> Bool {
+        mode == StreamAutoPlayMode.firstStream && cachedOnly
+    }
+
+    /// The first-play walk's and the Best Source card's cached-only rule, from the same shared
+    /// predicate (`StreamAutoPlaySelector.isCachedDebridLink`): a cached debrid link on the active
+    /// resolver, or an add-on's resolved link it marks cached for that service.
+    nonisolated static func isCachedOnlyEligible(_ stream: StreamItem, cachedOnly: Bool, debridEnabled: Bool,
+                                                 activeResolverProviderId: String?) -> Bool {
+        guard cachedOnly else { return true }
+        return StreamAutoPlaySelector.shared.isCachedDebridLink(
+            stream: stream, debridEnabled: debridEnabled, activeResolverProviderId: activeResolverProviderId
+        )
     }
 
     /// Auto-play is in effect for the next episode: the user's own mode, or MANUAL with the
@@ -1468,7 +1500,7 @@ final class NextEpisodeEngine: ObservableObject {
               let group = context.bingeGroup, !group.isEmpty,
               let expected = expectedNextFilename() else { return nil }
         return FilenameEpisodeMatcher.shared.findMatch(
-            streams: selectableStreams(groups), expectedFilename: expected, bingeGroup: group)
+            streams: selectableStreams(groups, settings: settings), expectedFilename: expected, bingeGroup: group)
     }
 
     /// Upstream d2cc0fb8a: same binge group and the playing stream's info hash (a season pack serves
@@ -1478,7 +1510,7 @@ final class NextEpisodeEngine: ObservableObject {
               let group = context.bingeGroup, !group.isEmpty,
               let hash = playingInfoHash else { return nil }
         return FilenameEpisodeMatcher.shared.findInfoHashMatch(
-            streams: selectableStreams(groups), infoHash: hash, bingeGroup: group)
+            streams: selectableStreams(groups, settings: settings), infoHash: hash, bingeGroup: group)
     }
 
     /// Upstream `tryFilenameOnly`: the expected filename in any binge group (the add-on changed
@@ -1486,12 +1518,12 @@ final class NextEpisodeEngine: ObservableObject {
     private func filenameOnlyMatch(groups: [AddonStreamGroup], settings: PlayerSettingsUiState) -> StreamItem? {
         guard autoPlayInEffect(settings), let expected = expectedNextFilename() else { return nil }
         return FilenameEpisodeMatcher.shared.findMatch(
-            streams: selectableStreams(groups), expectedFilename: expected, bingeGroup: nil)
+            streams: selectableStreams(groups, settings: settings), expectedFilename: expected, bingeGroup: nil)
     }
 
     private func select(from groups: [AddonStreamGroup], settings: PlayerSettingsUiState, bingeGroupOnly: Bool,
                         installedAddonIds: Set<String>) -> StreamItem? {
-        let streams = selectableStreams(groups)
+        let streams = selectableStreams(groups, settings: settings)
         guard !streams.isEmpty else { return nil }
 
         // Mobile parity: in MANUAL mode, next-episode/binge settings force first-stream selection.
