@@ -11,25 +11,28 @@ import SharedCore
 /// after first paint (correction F3), so every slot that can fill in late has a constant here.
 nonisolated enum DetailCinematicLayout {
     /// Left text column: logo, meta line, ratings, synopsis and the action row.
-    static let textColumnMaxWidth: CGFloat = 900
+    static let textColumnMaxWidth: CGFloat = DetailGeometry.heroTextColumnMaxWidth
     /// Right-aligned credits block beside the action row.
-    static let creditsMaxWidth: CGFloat = 640
+    static let creditsMaxWidth: CGFloat = DetailGeometry.creditsMaxWidth
     /// The logo slot never changes height: the logo (or the title fallback) sits bottom-leading in
     /// it, so a logo landing late never moves the text below it (Plex's logo-shift bug).
-    static let logoSlotHeight: CGFloat = 180
-    static let logoMaxWidth: CGFloat = 600
+    static let logoSlotHeight: CGFloat = DetailGeometry.logoSlotHeight
+    static let logoMaxWidth: CGFloat = DetailGeometry.logoMaxWidth
     /// Correction F3: the meta line is a fixed slot too, sized for one `metaStrong` line plus the
     /// stroked age chip. No spinner inside it in Cinematic.
-    static let metaLineHeight: CGFloat = 40
+    static let metaLineHeight: CGFloat = DetailGeometry.metaLineHeight
     /// The MDBList strip's reserved slot (present only while the strip is gated on).
-    static let ratingsSlotHeight: CGFloat = 44
+    static let ratingsSlotHeight: CGFloat = DetailGeometry.ratingsSlotHeight
+    /// Fixed slot for the format-badge chips; keeps its height with 0 or 4 chips showing.
+    static let formatBadgeRowHeight: CGFloat = DetailGeometry.formatBadgeRowHeight
     /// How much of the first row shows under the hero on landing.
-    static let peekBand: CGFloat = 140
-    static let heroMinimumHeight: CGFloat = 520
-    /// == `Theme.Spacing.screen` (the page VStack's padding); pinned by a unit test.
-    static let screenPadding: CGFloat = 60
+    static let peekBand: CGFloat = DetailGeometry.peekBand
+    static let heroMinimumHeight: CGFloat = DetailGeometry.heroMinimumHeight
+    /// The page's vertical padding (still == `Theme.Spacing.screen`, pinned by a unit test). Only the
+    /// vertical part feeds the hero height; the side inset is `DetailGeometry.pageInsets` (Cinematic 60 inside the safe area).
+    static let screenPadding: CGFloat = DetailGeometry.pageVerticalInset
     /// == `Theme.Spacing.lg + Theme.Spacing.sm` (the page VStack's spacing); pinned by a unit test.
-    static let pageRowSpacing: CGFloat = 36
+    static let pageRowSpacing: CGFloat = DetailGeometry.pageRowSpacing
 
     /// Correction F5: driven by `.containerRelativeFrame(.vertical)`, so `containerHeight` is the
     /// scroll view's container height as SwiftUI reports it to that modifier. The hero fills it
@@ -209,19 +212,23 @@ nonisolated enum DetailCredits {
     /// "With" = the first three cast names after the LEADING run of crew names that TMDB prepends
     /// to `cast` (review r1 #6: the skip stops at the first non-crew name, so an actor who also
     /// directs or writes keeps their billing further down the list).
-    /// The crew line = the first two directors; series read "Created by", because TMDB maps a show's
-    /// `createdBy` into `director` and `MetaDetails` has no creator field (P1 §M conflict 2).
-    static func make(cast: [String], director: [String], writer: [String], isSeries: Bool) -> DetailCreditsText {
+    /// The crew line = the first two directors; series read "Created by". A4.4: a series with
+    /// `creators` (TMDB `created_by`, `MetaDetails.creators`) names them; without, the line falls
+    /// back to the first two of `director`, as before (TMDB maps a show's `createdBy` into it).
+    /// Films ignore `creators` and stay "Directed by".
+    static func make(cast: [String], director: [String], writer: [String], isSeries: Bool,
+                     creators: [String] = []) -> DetailCreditsText {
         func clean(_ names: [String]) -> [String] {
             names.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
         }
         let directors = clean(director)
-        let crew = Set(directors + clean(writer))
+        let seriesCreators = isSeries ? clean(creators) : []
+        let crew = Set(directors + clean(writer) + seriesCreators)
         // Each crew name is skipped once: a director who also stars right after the prepended
         // block (["Eastwood", "Eastwood", …]) keeps the actor entry.
         var skipped = Set<String>()
         let castNames = clean(cast).drop(while: { crew.contains($0) && skipped.insert($0).inserted }).prefix(3)
-        let crewNames = directors.prefix(2)
+        let crewNames = (seriesCreators.isEmpty ? directors : seriesCreators).prefix(2)
         return DetailCreditsText(
             castNames: castNames.isEmpty ? nil : castNames.joined(separator: ", "),
             crewLabel: crewNames.isEmpty ? nil : (isSeries ? .createdBy : .directedBy),
@@ -293,7 +300,7 @@ nonisolated enum DetailDim {
     static func rampDistance(layout: DetailLayout, heroHeight: CGFloat, hasChipRow: Bool) -> CGFloat {
         switch layout {
         case .classic: return classicRampDistance
-        case .cinematic: return max(classicRampDistance, heroHeight - (hasChipRow ? chipRowRestDrop : 0))
+        case .cinematic, .appleStyle: return max(classicRampDistance, heroHeight - (hasChipRow ? chipRowRestDrop : 0))
         }
     }
 
@@ -309,7 +316,7 @@ nonisolated enum DetailDim {
     static func scrolledDistance(layout: DetailLayout, contentOffset: CGFloat, contentInsetTop: CGFloat) -> CGFloat {
         switch layout {
         case .classic: return contentOffset - contentInsetTop
-        case .cinematic: return contentOffset + contentInsetTop
+        case .cinematic, .appleStyle: return contentOffset + contentInsetTop
         }
     }
 

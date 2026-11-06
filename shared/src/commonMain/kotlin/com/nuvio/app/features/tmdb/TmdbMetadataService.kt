@@ -3,6 +3,8 @@ package com.nuvio.app.features.tmdb
 import co.touchlab.kermit.Logger
 import com.nuvio.app.features.addons.httpGetText
 import com.nuvio.app.features.details.MetaCompany
+import com.nuvio.app.features.details.MetaCrewCategory
+import com.nuvio.app.features.details.MetaCrewMember
 import com.nuvio.app.features.details.MetaDetails
 import com.nuvio.app.features.details.MetaPerson
 import com.nuvio.app.features.details.MetaTrailer
@@ -10,6 +12,7 @@ import com.nuvio.app.features.details.MetaVideo
 import com.nuvio.app.features.details.MoreLikeThisSource
 import com.nuvio.app.features.details.metadataLanguagePriority
 import com.nuvio.app.features.details.PersonDetail
+import com.nuvio.app.features.details.buildMetaCrew
 import com.nuvio.app.features.home.MetaPreview
 import com.nuvio.app.features.home.PosterShape
 import kotlinx.coroutines.Dispatchers
@@ -799,6 +802,8 @@ object TmdbMetadataService {
             collectionName = enrichment.collectionName,
             collectionItems = enrichment.collectionItems,
             trailers = enrichment.trailers,
+            creators = enrichment.creators,
+            crew = enrichment.crew,
         )
 
     fun applyEnrichment(
@@ -851,6 +856,8 @@ object TmdbMetadataService {
                 director = enrichment.director.ifEmpty { updated.director },
                 writer = enrichment.writer.ifEmpty { updated.writer },
                 cast = enrichment.people.ifEmpty { updated.cast },
+                creators = enrichment.creators.ifEmpty { updated.creators },
+                crew = enrichment.crew.ifEmpty { updated.crew },
             )
         }
 
@@ -1130,6 +1137,21 @@ object TmdbMetadataService {
             preferredLanguage = normalizedLanguage,
             englishFallbackNames = englishFallbackNames,
         )
+        val creators = buildCreators(
+            details = details,
+            mediaType = mediaType,
+            preferredLanguage = normalizedLanguage,
+            englishFallbackNames = englishFallbackNames,
+        )
+        val crew = buildMetaCrew(
+            creators = creators,
+            crew = buildCrewCandidates(
+                credits = credits,
+                mediaType = mediaType,
+                preferredLanguage = normalizedLanguage,
+                englishFallbackNames = englishFallbackNames,
+            ),
+        )
         val lastAirDate = details.lastAirDate?.trim()?.takeIf(String::isNotBlank)
             ?.takeIf { mediaType == "tv" }
         val enrichment = TmdbEnrichment(
@@ -1165,6 +1187,8 @@ object TmdbMetadataService {
             },
             moreLikeThis = response.fourth.moreLikeThis,
             trailers = response.fourth.trailers,
+            creators = creators,
+            crew = crew,
         )
 
         if (!enrichment.hasContent()) return@withContext null
@@ -1670,6 +1694,10 @@ data class TmdbEnrichment(
     val collectionItems: List<MetaPreview> = emptyList(),
     val moreLikeThis: List<MetaPreview> = emptyList(),
     val trailers: List<MetaTrailer> = emptyList(),
+    /** C12: series `created_by` as crew entries (job "Creator"); empty for films. */
+    val creators: List<MetaCrewMember> = emptyList(),
+    /** C10: ordered, capped key crew (see `buildMetaCrew`). */
+    val crew: List<MetaCrewMember> = emptyList(),
 ) {
     fun hasContent(): Boolean =
         localizedTitle != null ||
@@ -1693,7 +1721,9 @@ data class TmdbEnrichment(
             networks.isNotEmpty() ||
             collectionItems.isNotEmpty() ||
             moreLikeThis.isNotEmpty() ||
-            trailers.isNotEmpty()
+            trailers.isNotEmpty() ||
+            creators.isNotEmpty() ||
+            crew.isNotEmpty()
 }
 
 data class TmdbPreviewEnrichment(
@@ -2027,6 +2057,96 @@ private fun buildWriters(
         .distinct()
 }
 
+private fun buildCreators(
+    details: TmdbDetailsResponse,
+    mediaType: String,
+    preferredLanguage: String,
+    englishFallbackNames: Map<Int, String>,
+): List<MetaCrewMember> {
+    if (mediaType != "tv") return emptyList()
+    return details.createdBy.mapNotNull { creator ->
+        val name = resolvedPersonDisplayName(
+            localizedName = creator.name,
+            originalName = creator.originalName,
+            personId = creator.id,
+            preferredLanguage = preferredLanguage,
+            englishFallbackNames = englishFallbackNames,
+        ) ?: return@mapNotNull null
+        MetaCrewMember(
+            name = name,
+            job = "Creator",
+            category = MetaCrewCategory.CREATOR,
+            photo = buildImageUrl(creator.profilePath, "w500"),
+            tmdbId = creator.id,
+        )
+    }
+}
+
+/**
+ * Crew in the detail page's categories (director, writer, producer, creator), in TMDB order for
+ * films; for series (aggregate credits) by episode count, most first, so a show's regular
+ * directors and writers come before one-episode credits. `buildMetaCrew` orders and caps them.
+ */
+private fun buildCrewCandidates(
+    credits: TmdbCreditsResponse?,
+    mediaType: String,
+    preferredLanguage: String,
+    englishFallbackNames: Map<Int, String>,
+): List<MetaCrewMember> {
+    val members = credits?.crew.orEmpty()
+    val ordered = if (mediaType == "tv") {
+        members.sortedByDescending { it.episodeCount ?: 0 }
+    } else {
+        members
+    }
+    return ordered.mapNotNull { member ->
+        val job = member.job?.trim()?.takeIf(String::isNotBlank) ?: return@mapNotNull null
+        val category = MetaCrewCategory.fromJob(job) ?: return@mapNotNull null
+        val name = resolvedPersonDisplayName(
+            localizedName = member.name,
+            originalName = member.originalName,
+            personId = member.id,
+            preferredLanguage = preferredLanguage,
+            englishFallbackNames = englishFallbackNames,
+        ) ?: return@mapNotNull null
+        MetaCrewMember(
+            name = name,
+            job = job,
+            category = category,
+            department = member.department?.trim()?.takeIf(String::isNotBlank),
+            photo = buildImageUrl(member.profilePath, "w500"),
+            tmdbId = member.id,
+        )
+    }
+}
+
+private val detailCrewJson = Json { ignoreUnknownKeys = true }
+
+/**
+ * Test seam for the detail crew path: decodes raw TMDB details + credits JSON (`aggregate_credits`
+ * for "tv", `credits` for "movie", exactly as [TmdbMetadataService] fetches them) and returns
+ * `creators` to `crew` as the enrichment builds them, with no English-name fallback.
+ */
+internal fun tmdbDetailCrewFromJson(
+    mediaType: String,
+    detailsJson: String,
+    creditsJson: String,
+    preferredLanguage: String = "en-US",
+): Pair<List<MetaCrewMember>, List<MetaCrewMember>> {
+    val details = detailCrewJson.decodeFromString<TmdbDetailsResponse>(detailsJson)
+    val credits = if (mediaType == "tv") {
+        detailCrewJson.decodeFromString<TmdbAggregateCreditsResponse>(creditsJson).toStandard()
+    } else {
+        detailCrewJson.decodeFromString<TmdbCreditsResponse>(creditsJson)
+    }
+    val creators = buildCreators(details, mediaType, preferredLanguage, emptyMap())
+    val crew = buildMetaCrew(
+        creators = creators,
+        crew = buildCrewCandidates(credits, mediaType, preferredLanguage, emptyMap()),
+    )
+    return creators to crew
+}
+
 private fun List<MetaPerson>.dedupePeople(): List<MetaPerson> {
     val merged = linkedMapOf<String, MetaPerson>()
     forEach { person ->
@@ -2198,18 +2318,20 @@ private fun TmdbVideoResult.toMetaTrailer(
     val videoKey = key?.trim().orEmpty()
     val videoName = name?.trim().takeUnless { it.isNullOrBlank() } ?: resourceString("Trailer", StringKey.generic_trailer)
     val trailerId = id?.trim().takeUnless { it.isNullOrBlank() } ?: videoKey
+    val providedType = type?.trim().takeUnless { it.isNullOrBlank() }
     return MetaTrailer(
         id = trailerId,
         key = videoKey,
         name = videoName,
         site = site?.trim().takeUnless { it.isNullOrBlank() } ?: "YouTube",
         size = size,
-        type = type?.trim().takeUnless { it.isNullOrBlank() } ?: resourceString("Trailer", StringKey.generic_trailer),
+        type = providedType ?: resourceString("Trailer", StringKey.generic_trailer),
         official = official == true,
         publishedAt = publishedAt,
         seasonNumber = seasonNumber,
         displayName = displayName,
         language = language?.trim()?.lowercase()?.takeIf { it.isNotBlank() },
+        typeProvided = providedType != null,
     )
 }
 
@@ -2257,7 +2379,9 @@ private data class TmdbAggregateCreditsResponse(
                     id = member.id,
                     name = member.name,
                     job = job.job,
+                    department = member.department,
                     profilePath = member.profilePath,
+                    episodeCount = job.episodeCount,
                 )
             }
         },
@@ -2308,7 +2432,10 @@ private data class TmdbCrewMember(
     val name: String? = null,
     @SerialName("original_name") val originalName: String? = null,
     val job: String? = null,
+    val department: String? = null,
     @SerialName("profile_path") val profilePath: String? = null,
+    /** Aggregate (series) credits only: episodes for this job; null for film credits. */
+    @SerialName("episode_count") val episodeCount: Int? = null,
 )
 
 @Serializable

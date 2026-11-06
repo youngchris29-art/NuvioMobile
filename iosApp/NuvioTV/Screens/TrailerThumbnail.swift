@@ -69,6 +69,9 @@ struct TrailerThumbCard: View {
     /// True while `DetailViewModel` is resolving a playable stream URL for this trailer (shows a
     /// spinner over the still instead of letting the press feel unresponsive).
     let isResolving: Bool
+    /// The still's size: `DetailWideCard.metrics` (Apple-style passes 410 wide; the default is
+    /// today's 420x236, so Cinematic and Classic are unchanged).
+    var cardSize: CGSize = DetailWideCard.metrics(appleStyle: false).size
 
     @Environment(\.isFocused) private var isFocused
     // BUG-32 (beta.13 review, frame-verified at t=80): shared corner token, not the hardcoded
@@ -98,7 +101,7 @@ struct TrailerThumbCard: View {
                             if depthRailTint != color { depthRailTint = color }
                         }
                     }
-                    .frame(width: Theme.Size.episodeWidth, height: Theme.Size.episodeHeight)
+                    .frame(width: cardSize.width, height: cardSize.height)
                     // hqdefault.jpg bakes in 4:3 letterbox bars top/bottom; cropping to our fixed
                     // 16:9 frame trims them the same way upstream's `ContentScale.Crop` does.
                     .clipped()
@@ -109,7 +112,7 @@ struct TrailerThumbCard: View {
                 Color.black.opacity(0.2)
                     .allowsHitTesting(false)
             }
-            .frame(width: Theme.Size.episodeWidth, height: Theme.Size.episodeHeight)
+            .frame(width: cardSize.width, height: cardSize.height)
             .clipShape(shape)
             .nuvioCardDepth(shape, surface: .trailers,
                             railTint: DetailTileRailTint.resolved(samples: samplesDepthColor,
@@ -129,7 +132,7 @@ struct TrailerThumbCard: View {
             // BUG-31: goes still under "No Zoom on Focus" (which this tile used to ignore).
             // BUG-177 (Steven rc7): draws the accent ring and owns its lift in ring mode.
             .detailTileFocusLift(cornerRadius: posterStyle.cornerRadius,
-                                 size: CGSize(width: Theme.Size.episodeWidth, height: Theme.Size.episodeHeight),
+                                 size: CGSize(width: cardSize.width, height: cardSize.height),
                                  tintSource: trailer.thumbnailURLString)
 
             // UX-15 class: both caption lines drop together under the system lift so the lifted
@@ -141,7 +144,7 @@ struct TrailerThumbCard: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .padding(.horizontal, Theme.Spacing.xs)
-                    .frame(width: Theme.Size.episodeWidth, alignment: .leading)
+                    .frame(width: cardSize.width, alignment: .leading)
 
                 Text(metaCaption)
                     .font(Theme.Font.caption)
@@ -153,10 +156,10 @@ struct TrailerThumbCard: View {
                 mode: CardFocusMode.resolve(accentFocusRing: focusAppearance.accentFocusRing,
                                             noZoomOnFocus: focusAppearance.noZoomOnFocus),
                 isFocused: isFocused,
-                artworkHeight: Theme.Size.episodeHeight
+                artworkHeight: cardSize.height
             ))
         }
-        .frame(width: Theme.Size.episodeWidth)
+        .frame(width: cardSize.width)
         // BUG-177: gated on Reduce Motion now that this wraps ring mode's manual scale (the
         // `CastCard` BUG-108 rule: a blanket animation here would undo `CardArtworkFocusLift`'s nil).
         // BUG-153 (Batch M): also nil in ring mode under the `debug.detailTileRingNoAnim` knob.

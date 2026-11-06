@@ -21,8 +21,16 @@ final class SharedStringProvider: NSObject, StringProvider {
     /// entry — NUL bytes cannot appear in real catalog values.
     private static let missing = "\u{1}nuvio.missing\u{1}"
 
+    /// The bundle the catalog is read from: the app's own; a test passes one locale's `.lproj`.
+    private let bundle: Bundle
+
+    init(bundle: Bundle = .main) {
+        self.bundle = bundle
+        super.init()
+    }
+
     func get(key: StringKey, args: KotlinArray<AnyObject>) -> String? {
-        let format = Bundle.main.localizedString(forKey: key.name, value: Self.missing, table: "Shared")
+        let format = bundle.localizedString(forKey: key.name, value: Self.missing, table: "Shared")
         guard format != Self.missing else { return nil }
         guard args.size > 0 else { return format }
 

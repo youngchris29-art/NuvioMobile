@@ -43,6 +43,14 @@ data class MetaDetails(
     /// carry no `MetaVideo.seasonPoster` (TMDB enrichment or per-video addon field) — not an override.
     val seasonPosters: Map<Int, String> = emptyMap(),
     val videos: List<MetaVideo> = emptyList(),
+    /** C12: series creators (TMDB `created_by`), job "Creator". Empty for films and add-on-only data. */
+    val creators: List<MetaCrewMember> = emptyList(),
+    /**
+     * C10: key crew for the Cast & Crew row, ordered creators, directors, writers, producers and
+     * capped at [META_CREW_LIMIT] (see [buildMetaCrew]). From TMDB credits, else the add-on's
+     * `director` / `writer` names (no ids).
+     */
+    val crew: List<MetaCrewMember> = emptyList(),
 )
 
 enum class MoreLikeThisSource {
@@ -72,6 +80,9 @@ data class MetaTrailer(
     /** BUG-63: ISO 639-1 tag of the video itself (TMDB `iso_639_1`), lowercase; null when the
      *  source (addon meta) doesn't say. Used only to *prefer* the Metadata Language at selection. */
     val language: String? = null,
+    /** False when the source sent no `type` and [type] holds the localized "Trailer" default
+     *  (`StringKey.generic_trailer`). The tvOS Trailers/Bonus split then classifies by name. */
+    val typeProvided: Boolean = true,
 )
 
 data class MetaPerson(

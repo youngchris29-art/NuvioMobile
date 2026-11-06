@@ -398,8 +398,8 @@ final class DetailRowAnchorDurationTests: XCTestCase {
     /// Cast 11, Collection 3, Trailers 3): the first item rests exactly at the engine's margin, and
     /// the row never rests higher than the original rest.
     func testMeasuredRowsPutTheirFirstItemAtTheEnginesMargin() {
-        for layout: DetailLayout in [.classic, .cinematic] {
-            for row: DetailRowID in [.cast, .collection, .trailers] {
+        for layout: DetailLayout in [.classic, .cinematic, .appleStyle] {
+            for row: DetailRowID in [.cast, .collection, .trailers, .bonus] {
                 guard let lead = DetailRowAnchor.firstItemLead(for: row, layout: layout) else {
                     return XCTFail("\(row) has no lead in \(layout)")
                 }
@@ -418,7 +418,7 @@ final class DetailRowAnchorDurationTests: XCTestCase {
 
     /// Rows not measured, and rows already clear of the margin, keep the original rest.
     func testUnmeasuredRowsKeepTheOriginalRest() {
-        for layout: DetailLayout in [.classic, .cinematic] {
+        for layout: DetailLayout in [.classic, .cinematic, .appleStyle] {
             for row: DetailRowID in [.parental, .episodes, .moreLikeThis, .comments, .about] {
                 XCTAssertNil(DetailRowAnchor.firstItemLead(for: row, layout: layout), "\(row)")
                 XCTAssertEqual(DetailRowAnchor.screenRest(for: row, layout: layout), DetailRowAnchor.screenRest, "\(row)")

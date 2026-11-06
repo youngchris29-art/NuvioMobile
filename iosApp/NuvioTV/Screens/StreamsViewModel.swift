@@ -599,7 +599,8 @@ final class StreamsViewModel: ObservableObject {
     /// The rule lives in shared `StreamListability` so the Cached Sources Only hidden count uses
     /// the same one (one bridge call per stream).
     static func isListable(stream: StreamItem, debridEnabled: Bool) -> Bool {
-        StreamListability.shared.isListable(stream: stream, debridEnabled: debridEnabled)
+        // Single source of truth in shared Kotlin (StreamListability), shared with the format-badge probe.
+        StreamListability.shared.isListable(stream: stream, debridCanResolve: debridEnabled)
     }
 
     /// Builds the reason/hint pair for the "shared found streams, but our playability filter

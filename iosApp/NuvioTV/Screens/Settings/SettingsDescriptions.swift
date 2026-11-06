@@ -113,6 +113,7 @@ enum SettingsDescriptionID: String, CaseIterable {
     case detailLayout = "detail.layout"
     case detailIconOnlyButtons = "detail.iconOnlyButtons"
     case detailPosterBackdrop = "detail.posterBackdrop"
+    case detailFormatBadges = "detail.formatBadges"
     case detailTrailerAutoplay = "detail.trailerAutoplay"
     case detailTrailerBackground = "detail.trailerBackground"
     case detailTrailerDuration = "detail.trailerDuration"
@@ -336,10 +337,11 @@ enum SettingsDescriptions {
         case .homeCatalogs: return LocalizedStringResource("Opens the list of catalogs that make up your Home rows. Switch each on or off and move them up or down to set the order.")
 
         // Detail Page
-        case .detailLayout: return LocalizedStringResource("Cinematic puts the title over a full-width backdrop. Classic keeps the earlier page layout. Default: Cinematic.")
+        case .detailLayout: return LocalizedStringResource("Cinematic puts the title over a full-width backdrop. Apple-style uses the same look with the Apple TV app's row order, text under each episode and season tabs that switch as you move. Classic keeps the earlier page layout. Default: Cinematic.")
         case .detailIconOnlyButtons: return LocalizedStringResource("Shows the Play and other action buttons as icons without text. Off by default.")
         case .detailPosterBackdrop: return LocalizedStringResource("Shows the title's poster on the right side of the page's background. On by default.")
-        case .detailTrailerAutoplay: return LocalizedStringResource("Plays the trailer full screen shortly after you open a title. On by default.")
+        case .detailFormatBadges: return LocalizedStringResource("Shows 4K, Dolby Vision, HDR and Dolby Atmos under the title when one of your add-ons has a stream in that format. Checks up to three add-ons in the background when a page opens.")
+        case .detailTrailerAutoplay: return LocalizedStringResource("Plays the trailer full screen shortly after you open a title. On by default; in Apple-style it is off by default and the trailer goes full screen only when you choose Watch Trailer.")
         case .detailTrailerBackground: return LocalizedStringResource("Plays a muted trailer behind the description on title pages. On by default.")
         case .detailTrailerStartDelay: return LocalizedStringResource("Sets how long a title page waits before a trailer starts. The background trailer waits this long, and the full-screen auto-play follows about 4 seconds after it (with the background trailer off, auto-play waits this long on its own). Pressing any direction still cancels the full-screen trailer, and coming back from another page does not wait again. Default: the background trailer starts as soon as it loads, and auto-play waits about 4 seconds.")
         case .detailTrailerDuration: return LocalizedStringResource("Sets how long the background trailer plays before it stops. Default: Always, which plays until you leave.")

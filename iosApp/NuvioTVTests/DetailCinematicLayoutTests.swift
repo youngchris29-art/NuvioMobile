@@ -19,7 +19,7 @@ final class DetailCinematicLayoutTests: XCTestCase {
     }
 
     func testSlotConstants() {
-        XCTAssertEqual(DetailCinematicLayout.textColumnMaxWidth, 900)
+        XCTAssertEqual(DetailCinematicLayout.textColumnMaxWidth, 680)
         XCTAssertEqual(DetailCinematicLayout.creditsMaxWidth, 640)
         XCTAssertEqual(DetailCinematicLayout.logoSlotHeight, 180)
         XCTAssertEqual(DetailCinematicLayout.logoMaxWidth, 600)
@@ -27,6 +27,63 @@ final class DetailCinematicLayoutTests: XCTestCase {
         XCTAssertEqual(DetailCinematicLayout.ratingsSlotHeight, 44)
         XCTAssertEqual(DetailCinematicLayout.peekBand, 140)
         XCTAssertEqual(DetailCinematicLayout.heroMinimumHeight, 520)
+    }
+
+    func testDetailGeometryTokens() {
+        XCTAssertEqual(DetailGeometry.pageSideInset, 60)
+        XCTAssertEqual(DetailGeometry.appleStylePageSideInset, 80)
+        XCTAssertEqual(DetailGeometry.pageVerticalInset, 60)
+        XCTAssertEqual(DetailGeometry.heroTextColumnMaxWidth, 680)
+        XCTAssertEqual(DetailGeometry.creditsMaxWidth, 640)
+        XCTAssertEqual(DetailGeometry.wideCardWidth, 410)
+        XCTAssertEqual(DetailGeometry.wideCardGap, 40)
+        XCTAssertEqual(DetailGeometry.personCardWidth, 260)
+        XCTAssertEqual(DetailCinematicLayout.textColumnMaxWidth, DetailGeometry.heroTextColumnMaxWidth)
+    }
+
+    // MARK: - Page side insets (D)
+
+    /// Cinematic is back to 60 inside the safe area (140 from the bezel), Classic keeps 60, and
+    /// Apple-style ignores the side safe area and sits 80 from the bezel (plus the rail's extra).
+    func testPageInsetsPerLayout() {
+        let cinematic = DetailGeometry.pageInsets(appleStyle: false, cinematicBase: true, screenPadding: 60, railLeadingExtra: 36)
+        XCTAssertEqual(cinematic, .init(leading: 60, trailing: 60, ignoresSideSafeArea: false))
+        let classic = DetailGeometry.pageInsets(appleStyle: false, cinematicBase: false, screenPadding: 60, railLeadingExtra: 0)
+        XCTAssertEqual(classic, .init(leading: 60, trailing: 60, ignoresSideSafeArea: false))
+        let apple = DetailGeometry.pageInsets(appleStyle: true, cinematicBase: true, screenPadding: 60, railLeadingExtra: 0)
+        XCTAssertEqual(apple, .init(leading: 80, trailing: 80, ignoresSideSafeArea: true))
+        let appleRail = DetailGeometry.pageInsets(appleStyle: true, cinematicBase: true, screenPadding: 60, railLeadingExtra: 36)
+        XCTAssertEqual(appleRail.leading, 116)
+        XCTAssertEqual(appleRail.trailing, 80)
+    }
+
+    /// Edge-fade margins: Cinematic and Classic keep the host's value exactly (as before the
+    /// Apple-style pass); Apple-style's margin is its bezel padding.
+    func testRowEdgeMarginsPerLayout() {
+        let host: (leading: CGFloat, trailing: CGFloat) = (176, 140)
+        let cinematic = DetailGeometry.pageInsets(appleStyle: false, cinematicBase: true, screenPadding: 60, railLeadingExtra: 36)
+        let c = DetailGeometry.rowEdgeMargins(host: host, insets: cinematic, screenPadding: 60)
+        XCTAssertEqual(c.leading, 176)
+        XCTAssertEqual(c.trailing, 140)
+        let apple = DetailGeometry.pageInsets(appleStyle: true, cinematicBase: true, screenPadding: 60, railLeadingExtra: 36)
+        let a = DetailGeometry.rowEdgeMargins(host: host, insets: apple, screenPadding: 60)
+        XCTAssertEqual(a.leading, apple.leading)
+        XCTAssertEqual(a.trailing, apple.trailing)
+    }
+
+    // MARK: - Wide shelf cards (C)
+
+    @MainActor
+    func testWideCardMetricsPerLayout() {
+        let apple = DetailWideCard.metrics(appleStyle: true)
+        XCTAssertEqual(apple.width, DetailGeometry.wideCardWidth)
+        XCTAssertEqual(apple.gap, DetailGeometry.wideCardGap)
+        XCTAssertEqual(apple.height, 231) // 410 x 9/16, rounded
+        let other = DetailWideCard.metrics(appleStyle: false)
+        XCTAssertEqual(other, .init(width: Theme.Size.episodeWidth, height: Theme.Size.episodeHeight,
+                                    gap: Theme.Spacing.rowGap))
+        XCTAssertEqual(other.width, 420)
+        XCTAssertEqual(other.gap, 28)
     }
 
     /// Correction F16: the nonisolated mirrors must match the `Theme` tokens they copy.
@@ -188,6 +245,24 @@ final class DetailCinematicLayoutTests: XCTestCase {
         XCTAssertNil(empty.crewLabel)
 
         XCTAssertEqual(DetailCredits.make(cast: ["", " ", "A"], director: [], writer: [], isSeries: false).castNames, "A")
+    }
+
+    /// A4.4: a series with `creators` names them on the "Created by" line (and skips them as
+    /// prepended cast); without creators it falls back to `director`; films ignore creators.
+    func testCreditsUseCreatorsForSeries() {
+        let series = DetailCredits.make(cast: ["C1", "C2", "A", "B"], director: ["D"], writer: [], isSeries: true,
+                                        creators: ["C1", "C2", "C3"])
+        XCTAssertEqual(series.crewLabel, .createdBy)
+        XCTAssertEqual(series.crewNames, "C1, C2")
+        XCTAssertEqual(series.castNames, "A, B")
+
+        let fallback = DetailCredits.make(cast: ["A"], director: ["D"], writer: [], isSeries: true, creators: [" "])
+        XCTAssertEqual(fallback.crewLabel, .createdBy)
+        XCTAssertEqual(fallback.crewNames, "D")
+
+        let film = DetailCredits.make(cast: ["A"], director: ["D"], writer: [], isSeries: false, creators: ["C1"])
+        XCTAssertEqual(film.crewLabel, .directedBy)
+        XCTAssertEqual(film.crewNames, "D")
     }
 
     // MARK: - Meta line

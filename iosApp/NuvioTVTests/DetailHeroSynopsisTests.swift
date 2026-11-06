@@ -1,0 +1,148 @@
+import XCTest
+@testable import NuvioTV
+
+/// C5 (A1.3): the Cinematic hero shows the Play/Resume target episode's synopsis for a series and
+/// the title's own overview for a movie; the show overview is the fallback.
+final class DetailHeroSynopsisTests: XCTestCase {
+    private let show = "A family of detectives solves crimes."
+    private let episodeText = "The detectives find a body in the lake."
+
+    func testMovieShowsItsOverview() {
+        let result = DetailHeroSynopsis.resolve(isSeries: false, showOverview: show,
+                                                playTargetEpisodeOverview: nil, episodeSpoilerHidden: false)
+        XCTAssertEqual(result, .init(text: show, isEpisode: false, season: nil, episode: nil))
+    }
+
+    func testMovieIgnoresAnyEpisodeText() {
+        XCTAssertEqual(DetailHeroSynopsis.text(isSeries: false, showOverview: show,
+                                               playTargetEpisodeOverview: episodeText, episodeSpoilerHidden: false),
+                       show)
+    }
+
+    func testSeriesWithProgressShowsTheResumeEpisodeOverview() {
+        let result = DetailHeroSynopsis.resolve(isSeries: true, showOverview: show,
+                                                playTargetEpisodeOverview: episodeText, episodeSpoilerHidden: false,
+                                                season: 2, episode: 3)
+        XCTAssertEqual(result, .init(text: episodeText, isEpisode: true, season: 2, episode: 3))
+    }
+
+    /// No progress: Play targets the first (or next) episode, whose overview the hero shows.
+    func testSeriesWithoutProgressShowsTheFirstEpisodeOverview() {
+        let pilot = "Pilot: the family moves to town."
+        XCTAssertEqual(DetailHeroSynopsis.text(isSeries: true, showOverview: show,
+                                               playTargetEpisodeOverview: pilot, episodeSpoilerHidden: false),
+                       pilot)
+    }
+
+    func testSeriesWithNoTargetYetFallsBackToTheShowOverview() {
+        let result = DetailHeroSynopsis.resolve(isSeries: true, showOverview: show,
+                                                playTargetEpisodeOverview: nil, episodeSpoilerHidden: false)
+        XCTAssertEqual(result, .init(text: show, isEpisode: false, season: nil, episode: nil))
+    }
+
+    func testEpisodeWithMissingOverviewFallsBackToTheShowOverview() {
+        for missing in ["", "   ", "\n\t "] {
+            let result = DetailHeroSynopsis.resolve(isSeries: true, showOverview: show,
+                                                    playTargetEpisodeOverview: missing, episodeSpoilerHidden: false,
+                                                    season: 1, episode: 4)
+            XCTAssertEqual(result?.text, show, "overview \(missing.debugDescription)")
+            XCTAssertEqual(result?.isEpisode, false)
+        }
+    }
+
+    func testSpoilerHiddenEpisodeFallsBackToTheShowOverview() {
+        let hidden = EpisodeSpoilerRules.hidesSpoilers(settingOn: true, isWatched: false)
+        XCTAssertTrue(hidden)
+        let result = DetailHeroSynopsis.resolve(isSeries: true, showOverview: show,
+                                                playTargetEpisodeOverview: episodeText, episodeSpoilerHidden: hidden,
+                                                season: 2, episode: 3)
+        XCTAssertEqual(result, .init(text: show, isEpisode: false, season: nil, episode: nil))
+    }
+
+    func testWatchedEpisodeIsNotSpoilerHidden() {
+        let hidden = EpisodeSpoilerRules.hidesSpoilers(settingOn: true, isWatched: true)
+        XCTAssertEqual(DetailHeroSynopsis.text(isSeries: true, showOverview: show,
+                                               playTargetEpisodeOverview: episodeText, episodeSpoilerHidden: hidden),
+                       episodeText)
+    }
+
+    func testNothingToShowIsNil() {
+        XCTAssertNil(DetailHeroSynopsis.resolve(isSeries: true, showOverview: nil,
+                                                playTargetEpisodeOverview: nil, episodeSpoilerHidden: false))
+        XCTAssertNil(DetailHeroSynopsis.text(isSeries: false, showOverview: "",
+                                             playTargetEpisodeOverview: nil, episodeSpoilerHidden: false))
+    }
+
+    /// About off: the show overview has nowhere else on the page, so the hero keeps it.
+    func testSeriesWithAboutHiddenShowsTheShowOverview() {
+        let result = DetailHeroSynopsis.resolve(isSeries: true, showOverview: show,
+                                                playTargetEpisodeOverview: episodeText, episodeSpoilerHidden: false,
+                                                aboutShowsOverview: false, season: 2, episode: 3)
+        XCTAssertEqual(result, .init(text: show, isEpisode: false, season: nil, episode: nil))
+        XCTAssertEqual(DetailHeroSynopsis.text(isSeries: true, showOverview: show,
+                                               playTargetEpisodeOverview: episodeText, episodeSpoilerHidden: false,
+                                               aboutShowsOverview: false),
+                       show)
+    }
+
+    /// About off but the show has no overview: the episode text is still better than nothing.
+    func testSeriesWithAboutHiddenAndNoShowOverviewShowsTheEpisodeOverview() {
+        XCTAssertEqual(DetailHeroSynopsis.text(isSeries: true, showOverview: nil,
+                                               playTargetEpisodeOverview: episodeText, episodeSpoilerHidden: false,
+                                               aboutShowsOverview: false),
+                       episodeText)
+    }
+
+    /// A whitespace-only show overview counts as none: the hero shows the episode text, not blanks.
+    func testSeriesWithAboutHiddenAndBlankShowOverviewShowsTheEpisodeOverview() {
+        for blank in ["", "   ", "\n\t "] {
+            let result = DetailHeroSynopsis.resolve(isSeries: true, showOverview: blank,
+                                                    playTargetEpisodeOverview: episodeText, episodeSpoilerHidden: false,
+                                                    aboutShowsOverview: false, season: 1, episode: 2)
+            XCTAssertEqual(result, .init(text: episodeText, isEpisode: true, season: 1, episode: 2),
+                           "show overview \(blank.debugDescription)")
+        }
+        XCTAssertNil(DetailHeroSynopsis.text(isSeries: false, showOverview: "  ",
+                                             playTargetEpisodeOverview: nil, episodeSpoilerHidden: false))
+    }
+
+    func testEpisodeTextShowsEvenWhenTheShowHasNoOverview() {
+        XCTAssertEqual(DetailHeroSynopsis.text(isSeries: true, showOverview: nil,
+                                               playTargetEpisodeOverview: episodeText, episodeSpoilerHidden: false),
+                       episodeText)
+    }
+
+    // MARK: - Play target lookup (the shared `nextUpVideoFor` rule)
+
+    private let refs: [DetailHeroSynopsis.EpisodeRef] = [
+        .init(id: "tt1:1:1", season: 1, episode: 1),
+        .init(id: "tt1:1:2", season: 1, episode: 2),
+        .init(id: "addon-special-xyz", season: nil, episode: nil),
+    ]
+
+    func testPlayTargetByNumbersFirst() {
+        XCTAssertEqual(DetailHeroSynopsis.playTargetIndex(refs, contentId: "tt1", season: 1, episode: 2,
+                                                          videoId: "addon-special-xyz"), 1)
+    }
+
+    /// An action with missing numbers is found by its video id.
+    func testPlayTargetWithoutNumbersFoundByVideoId() {
+        XCTAssertEqual(DetailHeroSynopsis.playTargetIndex(refs, contentId: "tt1", season: nil, episode: nil,
+                                                          videoId: "addon-special-xyz"), 2)
+    }
+
+    /// Numbers that match nothing fall through to the id, including the "content:s:e" playback id.
+    func testPlayTargetFallsBackToPlaybackVideoId() {
+        let others: [DetailHeroSynopsis.EpisodeRef] = [.init(id: "ep-a", season: 2, episode: 3)]
+        XCTAssertEqual(DetailHeroSynopsis.playTargetIndex(others, contentId: "tt9", season: 5, episode: 5,
+                                                          videoId: "tt9:2:3"), 0)
+        XCTAssertNil(DetailHeroSynopsis.playTargetIndex(others, contentId: "tt9", season: nil, episode: nil,
+                                                        videoId: "nope"))
+    }
+
+    func testPlaybackVideoIdMatchesKotlinRule() {
+        XCTAssertEqual(DetailHeroSynopsis.playbackVideoId(contentId: "tt1", ref: .init(id: "x", season: 1, episode: 2)), "tt1:1:2")
+        XCTAssertEqual(DetailHeroSynopsis.playbackVideoId(contentId: "tt1", ref: .init(id: "x", season: nil, episode: 2)), "x")
+        XCTAssertEqual(DetailHeroSynopsis.playbackVideoId(contentId: "tt1", ref: .init(id: " ", season: nil, episode: nil)), "tt1")
+    }
+}

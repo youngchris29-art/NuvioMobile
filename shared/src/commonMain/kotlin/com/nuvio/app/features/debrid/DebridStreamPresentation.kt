@@ -99,7 +99,7 @@ object DebridStreamPresentation {
         // the setting is turned off, so the picker must not promise it.
         // The tvOS picker also never lists a row with nothing it can play (an externalUrl-only
         // row): only rows its listability rule keeps count. A resolver is configured here.
-        val countable = dropped.filter { stream -> StreamListability.isListable(stream, debridEnabled = true) }
+        val countable = dropped.filter { stream -> StreamListability.isListable(stream, debridCanResolve = true) }
         return kept to applyPassthroughPreferences(countable, settings).size
     }
 

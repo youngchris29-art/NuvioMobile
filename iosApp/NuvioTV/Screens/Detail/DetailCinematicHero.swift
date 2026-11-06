@@ -1,3 +1,4 @@
+import SharedCore
 import SwiftUI
 
 /// FEAT-35: `.play` is the one focus target `DetailView` asks the engine to land on first
@@ -72,6 +73,10 @@ struct DetailCinematicHero<Actions: View>: View {
     var backdropURL: String? = nil
     var backdropFallbackURL: String? = nil
     let meta: DetailMetaLineModel
+    /// The format badge row's request (nil until the Play target is known).
+    let formatRequest: TitleFormatRequest?
+    /// The page's metadata has loaded (the probe waits until it has).
+    var formatReady: Bool = true
     let ratings: [DetailRatingEntry]
     /// The ratings strip's slot is laid out (reserved, possibly still empty) only while this is on:
     /// the Ratings section toggle and the MDBList gate, both known before first paint
@@ -158,27 +163,34 @@ struct DetailCinematicHero<Actions: View>: View {
         .accessibilityIdentifier("detail_hero")
         .fullScreenCover(isPresented: $showSynopsisSheet) {
             DetailSynopsisSheet(title: title, logoURL: logoURL, overview: overview ?? "",
-                                backdropURL: backdropURL, backdropFallbackURL: backdropFallbackURL)
+                                backdropURL: backdropURL, backdropFallbackURL: backdropFallbackURL,
+                                info: meta, ratingsOn: ratingsSectionOn)
         }
     }
 
     // MARK: - Layout
 
     /// D9: the action row sits inside the text column; the credits are right-aligned and bottom-
-    /// aligned to it. The column takes priority so it always gets its full 900 pt before the
+    /// aligned to it. The column takes priority so it always gets its full 680 pt before the
     /// credits block claims what is left.
+    /// The 680 pt cap is on the TEXT only; the action row takes its ideal width. Inside the cap the
+    /// fixed-size icon buttons took every point and the shortfall fell on Play's text, the row's
+    /// only flexible view: with Start Over in the row (a saved position) Play was squeezed to a
+    /// label-less tall pill or a circle (device pass, 2026-11-06). At 900 pt it still fitted.
     private var content: some View {
         HStack(alignment: .bottom, spacing: Theme.Spacing.xl) {
             VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
                 VStack(alignment: .leading, spacing: Theme.Spacing.md) {
                     logoSlot
                     metaLine
+                    DetailFormatBadgeRow(request: formatRequest, ready: formatReady)
                     if ratingsGateOn { ratingsSlot }
                     if synopsisSlotVisible { synopsisSlot }
                 }
+                .frame(maxWidth: DetailCinematicLayout.textColumnMaxWidth, alignment: .leading)
                 actions()
+                    .fixedSize(horizontal: true, vertical: false)
             }
-            .frame(maxWidth: DetailCinematicLayout.textColumnMaxWidth, alignment: .leading)
             .layoutPriority(1)
             if !credits.isEmpty {
                 creditsBlock

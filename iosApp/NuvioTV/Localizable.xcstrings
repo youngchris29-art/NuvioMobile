@@ -7145,6 +7145,40 @@
         }
       }
     },
+    "Apple-style": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Apple-Stil"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Estilo Apple"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Style Apple"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stile Apple"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kiểu Apple"
+          }
+        }
+      }
+    },
     "Applies to every add-on's sources on this Apple TV.": {
       "localizations": {
         "de": {
@@ -8333,6 +8367,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "A–Z"
+          }
+        }
+      }
+    },
+    "Bonus": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bonus"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Extras"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bonus"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Contenuti extra"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nội dung bổ sung"
           }
         }
       }
@@ -10181,6 +10249,40 @@
         }
       }
     },
+    "Cast & Crew": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Besetzung & Crew"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reparto y equipo"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Casting et équipe"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cast e troupe"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diễn viên & đoàn làm phim"
+          }
+        }
+      }
+    },
     "Cast avatars": {
       "localizations": {
         "de": {
@@ -10211,6 +10313,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Ảnh diễn viên"
+          }
+        }
+      }
+    },
+    "Casting": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Casting"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Casting"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Casting"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Casting"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tuyển vai"
           }
         }
       }
@@ -10551,6 +10687,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Chương"
+          }
+        }
+      }
+    },
+    "Characters": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Figuren"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Personajes"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Personnages"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Personaggi"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nhân vật"
           }
         }
       }
@@ -11685,36 +11855,36 @@
         }
       }
     },
-    "Cinematic puts the title over a full-width backdrop. Classic keeps the earlier page layout. Default: Cinematic.": {
+    "Cinematic puts the title over a full-width backdrop. Apple-style uses the same look with the Apple TV app's row order, text under each episode and season tabs that switch as you move. Classic keeps the earlier page layout. Default: Cinematic.": {
       "localizations": {
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "„Filmisch“ legt den Titel über ein Hintergrundbild in voller Breite. „Klassisch“ behält das frühere Seitenlayout bei. Standard: Filmisch."
+            "value": "„Filmisch“ legt den Titel über ein Hintergrundbild in voller Breite. „Apple-Stil“ nutzt dasselbe Aussehen mit der Zeilenreihenfolge der Apple TV App, Text unter jeder Folge und Staffel-Tabs, die beim Navigieren wechseln. „Klassisch“ behält das frühere Seitenlayout bei. Standard: Filmisch."
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Cinematográfico coloca el título sobre un fondo de ancho completo. Clásico mantiene el diseño de página anterior. Por defecto: Cinematográfico."
+            "value": "Cinematográfico coloca el título sobre un fondo de ancho completo. Estilo Apple usa el mismo aspecto con el orden de filas de la app Apple TV, texto bajo cada episodio y pestañas de temporada que cambian al moverte. Clásico mantiene el diseño de página anterior. Por defecto: Cinematográfico."
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Cinématique place le titre sur un fond pleine largeur. Classique conserve la mise en page précédente. Par défaut : Cinématique."
+            "value": "Cinématique place le titre sur un fond pleine largeur. Style Apple reprend le même rendu avec l’ordre des rangées de l’app Apple TV, du texte sous chaque épisode et des onglets de saison qui changent au fil de la navigation. Classique conserve la mise en page précédente. Par défaut : Cinématique."
           }
         },
         "it": {
           "stringUnit": {
             "state": "translated",
-            "value": "Cinematografico mette il titolo su uno sfondo a tutta larghezza. Classico mantiene il layout precedente. Predefinito: Cinematografico."
+            "value": "Cinematografico mette il titolo su uno sfondo a tutta larghezza. Stile Apple usa lo stesso aspetto con l’ordine delle righe dell’app Apple TV, il testo sotto ogni episodio e le schede delle stagioni che cambiano mentre ti muovi. Classico mantiene il layout precedente. Predefinito: Cinematografico."
           }
         },
         "vi": {
           "stringUnit": {
             "state": "translated",
-            "value": "Điện ảnh đặt tiêu đề lên ảnh nền toàn chiều rộng. Cổ điển giữ bố cục trang như trước. Mặc định: Điện ảnh."
+            "value": "Điện ảnh đặt tiêu đề lên ảnh nền toàn chiều rộng. Kiểu Apple dùng cùng giao diện với thứ tự hàng của ứng dụng Apple TV, chữ dưới mỗi tập và các tab mùa đổi theo khi bạn di chuyển. Cổ điển giữ bố cục trang như trước. Mặc định: Điện ảnh."
           }
         }
       }
@@ -14507,36 +14677,36 @@
         }
       }
     },
-    "Couldn’t load details for %@. A TMDB API key is required for cast profiles.": {
+    "Couldn’t load this person’s details. Try again later.": {
       "localizations": {
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Couldn’t load details for %@. A TMDB API key is required for cast profiles."
+            "value": "Die Details dieser Person konnten nicht geladen werden. Versuche es später erneut."
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Couldn’t load details for %@. A TMDB API key is required for cast profiles."
+            "value": "No se pudieron cargar los detalles de esta persona. Inténtalo de nuevo más tarde."
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Impossible de charger les détails de %@. Une clé API TMDB est requise pour les fiches de casting."
+            "value": "Impossible de charger les détails de cette personne. Réessayez plus tard."
           }
         },
         "it": {
           "stringUnit": {
             "state": "translated",
-            "value": "Impossibile caricare i dettagli per %@. È necessaria una chiave API TMDB per i profili del cast."
+            "value": "Impossibile caricare i dettagli di questa persona. Riprova più tardi."
           }
         },
         "vi": {
           "stringUnit": {
             "state": "translated",
-            "value": "Không tải được chi tiết cho %@. Cần API key TMDB để xem hồ sơ diễn viên."
+            "value": "Không tải được thông tin chi tiết về người này. Vui lòng thử lại sau."
           }
         }
       }
@@ -15183,6 +15353,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Tạo bởi %@"
+          }
+        }
+      }
+    },
+    "Creator": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Creator"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Creador"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Créateur"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Creatore"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nhà sáng tạo"
           }
         }
       }
@@ -16588,6 +16792,40 @@
         }
       }
     },
+    "Director of Photography": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kamera"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Director de fotografía"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Directeur de la photographie"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Direttore della fotografia"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đạo diễn hình ảnh"
+          }
+        }
+      }
+    },
     "Dolby Atmos passthrough is off while this is on": {
       "localizations": {
         "de": {
@@ -17864,6 +18102,40 @@
         }
       }
     },
+    "Editor": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Schnitt"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Montaje"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Montage"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Montaggio"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dựng phim"
+          }
+        }
+      }
+    },
     "Email": {
       "localizations": {
         "de": {
@@ -18510,6 +18782,40 @@
         }
       }
     },
+    "Episode %lld": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Folge %lld"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Episodio %lld"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Épisode %lld"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Episodio %lld"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tập %lld"
+          }
+        }
+      }
+    },
     "Episode Ratings": {
       "localizations": {
         "de": {
@@ -19016,6 +19322,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "ID nhà cung cấp xem bị loại trừ"
+          }
+        }
+      }
+    },
+    "Executive Producer": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ausführender Produzent"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Productor ejecutivo"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Producteur exécutif"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Produttore esecutivo"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nhà sản xuất điều hành"
           }
         }
       }
@@ -22997,6 +23337,127 @@
           "stringUnit": {
             "state": "translated",
             "value": "SAU %lld NGÀY"
+          }
+        }
+      }
+    },
+    "Available in %@": {
+      "comment": "Accessibility label for the format badge row on the Detail page. %@ is a localized list of formats, like \"4K, Dolby Vision and Dolby Atmos\".",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verfügbar in %@"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Available in %@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disponible en %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disponible en %@"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disponibile in %@"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Có sẵn ở %@"
+          }
+        }
+      }
+    },
+    "Format Badges": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Format-Badges"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Format Badges"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Insignias de formato"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Badges de format"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Badge formato"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Huy hiệu định dạng"
+          }
+        }
+      }
+    },
+    "Shows 4K, Dolby Vision, HDR and Dolby Atmos under the title when one of your add-ons has a stream in that format. Checks up to three add-ons in the background when a page opens.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zeigt 4K, Dolby Vision, HDR und Dolby Atmos unter dem Titel, wenn eines deiner Add-ons einen Stream in diesem Format hat. Prüft im Hintergrund bis zu drei Add-ons, wenn eine Seite geöffnet wird."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Shows 4K, Dolby Vision, HDR and Dolby Atmos under the title when one of your add-ons has a stream in that format. Checks up to three add-ons in the background when a page opens."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Muestra 4K, Dolby Vision, HDR y Dolby Atmos debajo del título cuando uno de tus complementos tiene un stream en ese formato. Comprueba hasta tres complementos en segundo plano al abrir una página."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Affiche 4K, Dolby Vision, HDR et Dolby Atmos sous le titre lorsqu'un de vos addons propose un flux dans ce format. Vérifie jusqu'à trois addons en arrière-plan à l'ouverture d'une page."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostra 4K, Dolby Vision, HDR e Dolby Atmos sotto il titolo quando uno dei tuoi add-on ha uno stream in quel formato. Controlla fino a tre add-on in background all'apertura di una pagina."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hiện 4K, Dolby Vision, HDR và Dolby Atmos dưới tiêu đề khi một trong các addon của bạn có luồng ở định dạng đó. Kiểm tra tối đa ba addon ở nền khi mở một trang."
           }
         }
       }
@@ -29835,6 +30296,40 @@
         }
       }
     },
+    "Novel": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Romanvorlage"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Novela"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Roman"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Romanzo"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tiểu thuyết"
+          }
+        }
+      }
+    },
     "Nudity": {
       "localizations": {
         "de": {
@@ -32905,6 +33400,40 @@
         }
       }
     },
+    "Original Music Composer": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Filmmusik"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Música original"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Musique originale"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Musiche originali"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nhạc gốc"
+          }
+        }
+      }
+    },
     "Other": {
       "extractionState": "manual",
       "localizations": {
@@ -33078,6 +33607,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Chọn bố trí loa mà bộ thu AV và loa của bạn dùng cho kênh độ cao. Mặc định 7.1.4."
+          }
+        }
+      }
+    },
+    "Plays the trailer full screen shortly after you open a title. On by default; in Apple-style it is off by default and the trailer goes full screen only when you choose Watch Trailer.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Spielt den Trailer kurz nach dem Öffnen eines Titels im Vollbild ab. Standardmäßig an; im Apple-Stil ist die Funktion standardmäßig aus, und der Trailer läuft nur im Vollbild, wenn du „Trailer ansehen“ wählst."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reproduce el tráiler a pantalla completa poco después de abrir un título. Activado por defecto; en Estilo Apple está desactivado por defecto y el tráiler solo se ve a pantalla completa cuando eliges Ver tráiler."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lance la bande-annonce en plein écran peu après l’ouverture d’un titre. Activé par défaut ; en Style Apple, il est désactivé par défaut et la bande-annonce ne passe en plein écran que lorsque tu choisis Regarder la bande-annonce."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Riproduce il trailer a schermo intero poco dopo l’apertura di un titolo. Attivo per impostazione predefinita; in Stile Apple è disattivato per impostazione predefinita e il trailer va a schermo intero solo quando scegli Guarda trailer."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Phát trailer toàn màn hình ngay sau khi bạn mở một tiêu đề. Mặc định bật; ở Kiểu Apple, mặc định tắt và trailer chỉ chiếu toàn màn hình khi bạn chọn Xem trailer."
           }
         }
       }
@@ -34574,40 +35137,6 @@
         }
       }
     },
-    "Plays the trailer full screen shortly after you open a title. On by default.": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Spielt den Trailer kurz nach dem Öffnen eines Titels im Vollbild ab. Standardmäßig ein."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Reproduce el tráiler a pantalla completa poco después de abrir un título. Activado por defecto."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Lit la bande-annonce en plein écran peu après l’ouverture d’un titre. Activé par défaut."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Riproduce il trailer a schermo intero poco dopo l’apertura di un titolo. Attivato per impostazione predefinita."
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Phát trailer toàn màn hình ngay sau khi bạn mở một tiêu đề. Mặc định bật."
-          }
-        }
-      }
-    },
     "Plugins": {
       "localizations": {
         "de": {
@@ -35693,6 +36222,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Chương trước/sau"
+          }
+        }
+      }
+    },
+    "Producer": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Produzent"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Productor"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Producteur"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Produttore"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nhà sản xuất"
           }
         }
       }
@@ -39994,6 +40557,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Khoa học viễn tưởng"
+          }
+        }
+      }
+    },
+    "Screenplay": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Drehbuch"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Guion"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scénario"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sceneggiatura"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kịch bản"
           }
         }
       }
@@ -46849,6 +47446,40 @@
         }
       }
     },
+    "Story": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Story"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Historia"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Histoire"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Soggetto"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cốt truyện"
+          }
+        }
+      }
+    },
     "Stream Badges": {
       "localizations": {
         "de": {
@@ -48315,6 +48946,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Hệ thống"
+          }
+        }
+      }
+    },
+    "Teleplay": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fernsehdrehbuch"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Guion para televisión"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scénario TV"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sceneggiatura TV"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kịch bản truyền hình"
           }
         }
       }
@@ -55654,6 +56319,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Với %@"
+          }
+        }
+      }
+    },
+    "Writer": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Drehbuchautor"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Guionista"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scénariste"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sceneggiatore"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Biên kịch"
           }
         }
       }

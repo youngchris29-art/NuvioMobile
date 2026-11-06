@@ -367,20 +367,6 @@ data class AddonStreamGroup(
     ) : this(addonName, addonId, streams, isLoading, error, 0)
 }
 
-/**
- * Whether the tvOS stream picker lists a stream at all: a direct link, an installed add-on's
- * torrent / clientResolve result the in-app debrid connection resolves at click time (only with
- * [debridEnabled]), or a YouTube id the device resolves when the row is picked. Swift
- * `StreamsViewModel.isListable` calls this; [com.nuvio.app.features.debrid.DebridStreamPresentation]
- * uses it so the Cached Sources Only hidden count never promises a row the picker would drop.
- */
-object StreamListability {
-    fun isListable(stream: StreamItem, debridEnabled: Boolean): Boolean =
-        !stream.playableDirectUrl.isNullOrEmpty() ||
-            (debridEnabled && stream.isAddonDebridCandidate) ||
-            !stream.youTubeIdToResolve.isNullOrEmpty()
-}
-
 enum class StreamsEmptyStateReason {
     NoAddonsInstalled,
     NoCompatibleAddons,

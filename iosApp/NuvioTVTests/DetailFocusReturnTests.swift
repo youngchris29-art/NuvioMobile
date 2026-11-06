@@ -5,6 +5,11 @@ import XCTest
 /// rule that keeps the rows mounted across the reload, and the fallback restore's memory box.
 @MainActor
 final class DetailFocusReturnTests: XCTestCase {
+    /// A4.4: the Cast row remembers a card by its stable `DetailCreditItem.key`, not its index.
+    static let castCard = DetailCreditRow.castKey(name: "Robert Downey Jr.", role: "Tony Stark", tmdbId: 3223)
+    static let otherCastCard = DetailCreditRow.castKey(name: "Gwyneth Paltrow", role: "Pepper Potts", tmdbId: 12052)
+    static let crewCard = DetailCreditRow.focusKey("tmdb:15277|executive producer")
+
     // MARK: DetailMetaAdoption
 
     /// The pop's reload emits `isLoading` with no meta first; a page that has one keeps it.
@@ -33,12 +38,12 @@ final class DetailFocusReturnTests: XCTestCase {
     /// Push from a cast card (focus goes nil on the way out), pop: the card is the target, once.
     func testPushFromACardArmsItOnce() {
         let memory = DetailFocusMemory()
-        memory.note(row: .cast, key: "3")
+        memory.note(row: .cast, key: Self.castCard)
         memory.note(row: .cast, key: nil)
         memory.arm()
         let target = memory.takeArmedTarget()
         XCTAssertEqual(target?.row, .cast)
-        XCTAssertEqual(target?.key, "3")
+        XCTAssertEqual(target?.key, Self.castCard)
         XCTAssertNil(memory.takeArmedTarget(), "a later appearance without a new push restores nothing")
     }
 
@@ -55,14 +60,14 @@ final class DetailFocusReturnTests: XCTestCase {
     /// that report must not disarm or forget the card.
     func testClearWhileHiddenKeepsTheArmedCard() {
         let memory = DetailFocusMemory()
-        memory.note(row: .cast, key: "3")
+        memory.note(row: .cast, key: Self.castCard)
         memory.arm()
         XCTAssertFalse(memory.pageVisible)
         memory.clear()
         let target = memory.takeArmedTarget()
         XCTAssertTrue(memory.pageVisible)
         XCTAssertEqual(target?.row, .cast)
-        XCTAssertEqual(target?.key, "3")
+        XCTAssertEqual(target?.key, Self.castCard)
     }
 
     /// Once the page is visible again, a move to the hero forgets the card as before.
@@ -82,7 +87,7 @@ final class DetailFocusReturnTests: XCTestCase {
         memory.arm()
         XCTAssertNil(memory.takeArmedTarget())
         XCTAssertTrue(memory.pageVisible)
-        memory.note(row: .cast, key: "0")
+        memory.note(row: .cast, key: Self.otherCastCard)
         memory.clear()
         memory.arm()
         XCTAssertNil(memory.takeArmedTarget())
@@ -111,7 +116,7 @@ final class DetailFocusReturnTests: XCTestCase {
         for row in [DetailRowID.cast, .logos, .collection, .moreLikeThis] {
             XCTAssertTrue(DetailFocusRestore.tracks(row), "\(row)")
         }
-        for row in [DetailRowID.episodes, .trailers, .parental, .comments, .about] {
+        for row in [DetailRowID.episodes, .trailers, .bonus, .parental, .comments, .about] {
             XCTAssertFalse(DetailFocusRestore.tracks(row), "\(row)")
         }
     }
@@ -136,21 +141,21 @@ final class DetailFocusReturnTests: XCTestCase {
 
     /// Focus on the hero holds, the target row AND card lands, viewer input releases.
     func testPopGateHoldsUntilTheCardLands() {
-        let target: (row: DetailRowID, key: String) = (.cast, "3")
+        let target: (row: DetailRowID, key: String) = (.cast, Self.castCard)
         XCTAssertEqual(DetailPopGate.decide(focusedRow: nil, focusedKey: nil, target: target, viewerInput: false, regrabs: 0, clockLive: false), .hold)
-        XCTAssertEqual(DetailPopGate.decide(focusedRow: .cast, focusedKey: "1", target: target, viewerInput: false, regrabs: 0, clockLive: false), .hold,
+        XCTAssertEqual(DetailPopGate.decide(focusedRow: .cast, focusedKey: Self.otherCastCard, target: target, viewerInput: false, regrabs: 0, clockLive: false), .hold,
                        "right row, wrong card is not a landing")
-        XCTAssertEqual(DetailPopGate.decide(focusedRow: .moreLikeThis, focusedKey: "3", target: target, viewerInput: false, regrabs: 0, clockLive: false), .hold,
+        XCTAssertEqual(DetailPopGate.decide(focusedRow: .moreLikeThis, focusedKey: Self.castCard, target: target, viewerInput: false, regrabs: 0, clockLive: false), .hold,
                        "right key, wrong row is not a landing")
-        XCTAssertEqual(DetailPopGate.decide(focusedRow: .cast, focusedKey: "3", target: target, viewerInput: false, regrabs: 0, clockLive: false), .landed)
-        XCTAssertEqual(DetailPopGate.decide(focusedRow: .cast, focusedKey: "3", target: target, viewerInput: true, regrabs: 0, clockLive: false), .release)
+        XCTAssertEqual(DetailPopGate.decide(focusedRow: .cast, focusedKey: Self.castCard, target: target, viewerInput: false, regrabs: 0, clockLive: false), .landed)
+        XCTAssertEqual(DetailPopGate.decide(focusedRow: .cast, focusedKey: Self.castCard, target: target, viewerInput: true, regrabs: 0, clockLive: false), .release)
         XCTAssertEqual(DetailPopGate.decide(focusedRow: nil, focusedKey: nil, target: target, viewerInput: true, regrabs: 0, clockLive: false), .release)
     }
 
     /// The decision is a pure function of row, card and input: call order changes nothing.
     func testPopGateIgnoresTimestamps() {
-        let target: (row: DetailRowID, key: String) = (.cast, "3")
-        let inputs: [(DetailRowID?, String?, Bool)] = [(nil, nil, false), (.cast, "3", false), (.cast, "2", false), (.cast, "3", true)]
+        let target: (row: DetailRowID, key: String) = (.cast, Self.castCard)
+        let inputs: [(DetailRowID?, String?, Bool)] = [(nil, nil, false), (.cast, Self.castCard, false), (.cast, Self.crewCard, false), (.cast, Self.castCard, true)]
         let forward = inputs.map { DetailPopGate.decide(focusedRow: $0.0, focusedKey: $0.1, target: target, viewerInput: $0.2, regrabs: 0, clockLive: false) }
         let backward = inputs.reversed().map { DetailPopGate.decide(focusedRow: $0.0, focusedKey: $0.1, target: target, viewerInput: $0.2, regrabs: 0, clockLive: false) }
         XCTAssertEqual(forward, backward.reversed())
@@ -160,7 +165,7 @@ final class DetailFocusReturnTests: XCTestCase {
     // `endRestore` hands it over exactly once.
     func testHeldFocusChangeKeepsFirstOldAndLatestNew() {
         let memory = DetailFocusMemory()
-        memory.goLive((.cast, "3"), startedAt: 10)
+        memory.goLive((.cast, Self.castCard), startedAt: 10)
         memory.holdFocusChange(old: .about, new: nil)
         memory.holdFocusChange(old: nil, new: .logos)
         XCTAssertEqual(memory.heldFocusChange?.old, .about)
@@ -174,7 +179,7 @@ final class DetailFocusReturnTests: XCTestCase {
 
     func testLandingDropsTheHeldChangeSoALaterHoldStartsFresh() {
         let memory = DetailFocusMemory()
-        memory.goLive((.cast, "3"), startedAt: 10)
+        memory.goLive((.cast, Self.castCard), startedAt: 10)
         memory.holdFocusChange(old: .about, new: nil)
         memory.dropHeldFocusChange()
         XCTAssertNil(memory.heldFocusChange)
@@ -187,9 +192,9 @@ final class DetailFocusReturnTests: XCTestCase {
     func testMemoryLiveStateFollowsGoLiveAndEnd() {
         let memory = DetailFocusMemory()
         XCTAssertFalse(memory.restoreLive)
-        memory.goLive((.cast, "3"))
+        memory.goLive((.cast, Self.castCard))
         XCTAssertTrue(memory.restoreLive)
-        XCTAssertEqual(memory.liveTarget?.key, "3")
+        XCTAssertEqual(memory.liveTarget?.key, Self.castCard)
         memory.endRestore()
         XCTAssertFalse(memory.restoreLive)
         XCTAssertNil(memory.liveTarget)

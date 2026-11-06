@@ -22,6 +22,26 @@ nonisolated enum DetailSettingsKeys {
     static let hideEpisodeSpoilers = "detail_hide_episode_spoilers"
     /// FEAT-87: `DetailTrailerStartDelay.rawValue`; unknown or missing → `.standard`.
     static let trailerStartDelay = "detail_trailer_start_delay"
+    /// The full-screen trailer auto-play for Cinematic and Classic (default on). Older than FEAT-35;
+    /// DetailView and the Settings pane still spell the literal in their `@AppStorage`.
+    static let trailerAutoplay = "detail_trailer_autoplay"
+    /// A2.4 (D2): Apple-style's full-screen trailer auto-play. Missing → off. Cinematic and Classic
+    /// keep reading `detail_trailer_autoplay` (default on), so their behaviour is unchanged.
+    static let trailerFullScreenAutoPlay = "detail_trailer_fullscreen_autoplay"
+    /// Format badges row under the Detail title; default on.
+    static let formatBadges = "detail_format_badges"
+}
+
+/// A2.4 (D2): which key decides the full-screen trailer auto-play, and its default, per layout.
+/// `layout` is the user's choice (`DetailLayout`), never its `visualBase`.
+nonisolated enum DetailTrailerFullScreenAutoPlay {
+    static func layoutDefault(_ layout: DetailLayout) -> Bool { layout != .appleStyle }
+
+    /// `stored`: `detail_trailer_fullscreen_autoplay` (Apple-style only). `legacy`:
+    /// `detail_trailer_autoplay` (Cinematic and Classic).
+    static func isOn(layout: DetailLayout, stored: Bool?, legacy: Bool) -> Bool {
+        layout == .appleStyle ? (stored ?? layoutDefault(.appleStyle)) : legacy
+    }
 }
 
 /// FEAT-87 (GitHub #13): Settings › Detail Page › Trailers › Start Delay. Device-local like the
@@ -90,13 +110,26 @@ nonisolated enum DetailTrailerStartDelay: String, CaseIterable, Sendable {
 }
 
 /// D2: Cinematic is the default; Classic keeps today's page for one or two betas, then goes.
+/// D1 (2026-11-06): Apple-style draws Cinematic's hero and visuals with the Apple TV section order
+/// and no full-screen trailer takeover by default.
 nonisolated enum DetailLayout: String, CaseIterable {
     case cinematic
     case classic
+    /// Appended: picker order and the existing raw values stay unchanged. `-detail_layout apple`.
+    case appleStyle = "apple"
 
     /// Anything that is not a known raw value (an empty string, a typo from a launch argument)
     /// resolves to the default rather than to a blank page.
     static func resolve(_ raw: String) -> DetailLayout {
         DetailLayout(rawValue: raw) ?? .cinematic
+    }
+
+    /// The layout whose hero, scrims, dim ramp, compact logo and action row this one draws.
+    /// Apple-style reuses Cinematic's visuals; only the section order and the trailer policy differ.
+    var visualBase: DetailLayout {
+        switch self {
+        case .cinematic, .appleStyle: return .cinematic
+        case .classic: return .classic
+        }
     }
 }

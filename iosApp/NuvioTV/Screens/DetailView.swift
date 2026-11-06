@@ -189,13 +189,16 @@ private final class ScrollDimModel: ObservableObject {
 /// Observes the dim model itself so `DetailView.body` keeps not re-rendering per dim step (BUG-41).
 private struct DetailTopScrim: View {
     @ObservedObject var model: ScrollDimModel
+    /// D: Apple-style runs the scrim bezel to bezel (it left a seam at x = 80 / 1840 while only
+    /// the top safe area was ignored). Cinematic and Classic keep the top-only behaviour.
+    var spansBezels: Bool = false
 
     var body: some View {
         LinearGradient(colors: [Color.black.opacity(0.96), Color.black.opacity(0.6), .clear],
                        startPoint: .top, endPoint: .bottom)
             .frame(height: DetailRowAnchor.topScrimHeight)
             .frame(maxWidth: .infinity)
-            .ignoresSafeArea(edges: .top)
+            .ignoresSafeArea(edges: spansBezels ? [.top, .horizontal] : .top)
             .allowsHitTesting(false)
             // BUG-178: ramps with the dim (`DetailDim.topScrimOpacity`) instead of on/off, so it
             // fades with the page on the way back up rather than riding it as a solid band. The
@@ -470,6 +473,13 @@ struct DetailView: View {
 
     /// Tester ask: auto full-screen the hero trailer a few seconds after opening a title.
     @AppStorage("detail_trailer_autoplay") private var trailerAutoplayEnabled: Bool = true
+    /// A2.4 (D2): Apple-style's own full-screen auto-play switch; never set = off. Cinematic and
+    /// Classic keep `trailerAutoplayEnabled` (`DetailTrailerFullScreenAutoPlay`).
+    @AppStorage(DetailSettingsKeys.trailerFullScreenAutoPlay) private var trailerFullScreenAutoPlayStored: Bool?
+    private var fullScreenAutoPlayOn: Bool {
+        DetailTrailerFullScreenAutoPlay.isOn(layout: detailLayoutChoice, stored: trailerFullScreenAutoPlayStored,
+                                             legacy: trailerAutoplayEnabled)
+    }
     /// Tester ask: keep the poster visible on the right, backdrop-style, behind the description.
     @AppStorage("detail_poster_backdrop") private var posterBackdropEnabled: Bool = true
     /// UX-4b (tester ask): the muted trailer looping behind the description previously had no
@@ -493,9 +503,13 @@ struct DetailView: View {
     /// only to restore the shared `HeroTrailerAudioState` back to this default once a full-screen
     /// trailer is dismissed (see the `.fullScreenCover(item: $model.trailerPlayback` below).
     @AppStorage("trailer_audio_default_on") private var trailerAudioDefaultOn = false
-    /// FEAT-35 (D2): Cinematic (default) or Classic. Classic renders today's `topBlock`, unchanged.
+    /// FEAT-35 (D2): Cinematic (default), Classic or (D1) Apple-style. Classic renders today's
+    /// `topBlock`, unchanged.
     @AppStorage(DetailSettingsKeys.layout) private var detailLayoutRaw = DetailLayout.cinematic.rawValue
-    private var detailLayout: DetailLayout { DetailLayout.resolve(detailLayoutRaw) }
+    /// D1: the user's choice; decides the section order and the trailer policy only.
+    private var detailLayoutChoice: DetailLayout { DetailLayout.resolve(detailLayoutRaw) }
+    /// The visual layout (Apple-style draws Cinematic). Every `detailLayout == .cinematic` check reads this.
+    private var detailLayout: DetailLayout { detailLayoutChoice.visualBase }
     /// FEAT-35 section toggle "Ratings" (closes FEAT-28): the Cinematic ratings strip and the meta
     /// line's IMDb ★ (D10). Classic's chips are untouched.
     @AppStorage(DetailSettingsKeys.sectionRatings) private var sectionRatings = true
@@ -510,6 +524,9 @@ struct DetailView: View {
     @AppStorage(DetailSettingsKeys.sectionMoreLikeThis) private var sectionMoreLikeThis = true
     @AppStorage(DetailSettingsKeys.sectionComments) private var sectionComments = true
     @AppStorage(DetailSettingsKeys.sectionAbout) private var sectionAbout = true
+    /// C5 (A1.3): the episode shelf's "Hide Episode Spoilers" setting; the Cinematic hero must not
+    /// reveal an episode synopsis the shelf hides.
+    @AppStorage(EpisodeSpoilerRules.defaultsKey) private var hideEpisodeSpoilers = false
     /// FEAT-35 (W2-A): the Cinematic hero's laid-out height, for the dim ramp only. Written by a
     /// rare `onGeometryChange` on the hero (rounded, and only when it changes — about once per visit,
     /// the BUG-41 rule), never per scroll frame. Classic never reads it (`DetailDim.rampDistance`
@@ -518,6 +535,10 @@ struct DetailView: View {
     /// FEAT-35 (D3, correction F8): the full-synopsis cover, opened from the Cinematic teaser. Lives
     /// here, not in the hero, because it also pauses the background trailer (`isTrailerActive`).
     @State private var showSynopsisSheet = false
+    /// The About section's full show overview (Select on a truncated About), in the same overlay.
+    @State private var showAboutOverviewSheet = false
+    /// Apple-style: slots held after a section above focus answered empty (`DetailSlotHold`).
+    @State private var slotHold = DetailSlotHoldBox()
     /// FEAT-35 Start Over (movies): the next stream-picker presentation starts from 0. Reset when
     /// the cover goes away, like `forceManualPlay`. Series carry it on `SeriesPlayRoute`.
     @State private var startOverMovie = false
@@ -610,8 +631,9 @@ struct DetailView: View {
     /// Which cast card holds focus — feeds `cardFocusButtonStyle(stillFocused:)`'s generic
     /// still ring in no-zoom mode (CastCard has no border treatment of its own; Codex
     /// 2026-08-29 rounds 3-4).
-    @FocusState private var focusedCastIndex: Int?
-    /// BUG-111: which company/studio chip holds focus — mirrors `focusedCastIndex` exactly.
+    /// A4.4: keyed by `DetailCreditItem.key` (stable across reloads), no longer the card's index.
+    @FocusState private var focusedCastKey: String?
+    /// BUG-111: which company/studio chip holds focus — mirrors the cast row's focus state.
     /// `CompanyChip` has no border treatment of its own either, so it reads this same row-owned
     /// `FocusState` for its `stillFocused`/ring/lift truth instead of installing a second
     /// `.focused` binding of its own (the same collision `focusedFolderId` avoids — see
@@ -641,10 +663,10 @@ struct DetailView: View {
 
     /// BUG-108: ring mode's lift is SwiftUI's own scale, so the raised avatar's platter+shadow can
     /// draw under its unfocused neighbours. On the `LazyHStack`'s child, not inside the label.
-    private func liftedCastZIndex(_ index: Int) -> Double {
+    private func liftedCastZIndex(_ key: String) -> Double {
         let raises = CardFocusMode.resolve(accentFocusRing: accentFocusRing,
                                            noZoomOnFocus: noZoomOnFocus).raisesFocusedCard
-        return raises && focusedCastIndex == index ? 1 : 0
+        return raises && focusedCastKey == key ? 1 : 0
     }
     /// BUG-111: `liftedCastZIndex`'s twin for the company/studio row. BUG-200: read off the chip's
     /// own lift (`PlainLabelRing.smallLabelLift`), which is SwiftUI's scale in the default cell too.
@@ -677,6 +699,10 @@ struct DetailView: View {
     /// moves the focus engine did not consume, so a press from Watched to Library never sets
     /// `userInteracted`; this catches it.
     @State private var userMovedInHero = false
+    /// A2: the rows' edge-fade margins as the host sets them; the page adds its wider side inset.
+    @Environment(\.rowEdgeMargins) private var rowEdgeMargins
+    /// D: the rail's extra leading safe area, added back by Apple-style's bezel-measured inset.
+    @Environment(\.railLeadingInset) private var railLeadingInset
     /// BUG-96 (Codex r1 P2): the anchor scroll is not animated under Reduce Motion.
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// BUG-96: each row's top in the scroll content's coordinate space (layout-only changes).
@@ -811,77 +837,32 @@ struct DetailView: View {
                 .animation(TrailerBridgeChoreography.blackoutAnimation(to: bridgePhase), value: bridgePhase)
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: Theme.Spacing.lg + Theme.Spacing.sm) {
+                    let availability = sectionAvailability
+                    // Apple-style: a reserved slot whose data answered empty stays while focus is
+                    // below it (`DetailSlotHold`).
+                    let held = resolveSlotHold(availability)
                     heroBlock
-                    // Grouped to stay under ViewBuilder's 10-subview ceiling. BUG-96: every row
-                    // below the top block is anchored — see `DetailRowAnchor`.
-                    Group {
-                        // FEAT-35 section toggles (P1 §H): every row gate applies to both layouts.
-                        if sectionStudioLogos {
-                            companyLogosRow
-                                .detailRowAnchored(.logos, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
-                        }
-                        if sectionParentalGuide {
-                            parentalGuideSection
-                                .detailRowAnchored(.parental, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
-                        }
-                    }
-                    if let meta = model.meta, EpisodesSection.isSeriesLike(meta) {
-                        EpisodesSection(
-                            meta: meta,
-                            episodeRatings: model.episodeRatings,
-                            episodeRatingsVisibility: model.episodeRatingsVisibility,
-                            watchedEpisodeKeys: model.watchedEpisodeKeys,
-                            onPostPlayTitle: { postPlayRoute = TitleRoute(preview: $0) }
-                        )
-                        // A discrete focus region: vertical D-pad moves must land here instead of
-                        // geometrically skipping from the info/network chips down to the cast row.
-                        .focusSection()
-                        .detailRowAnchored(.episodes, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
-                    }
-                    Group {
-                        if sectionCast {
-                            castRow
-                                .detailRowAnchored(.cast, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
-                        }
-                        if sectionCollection {
-                            collectionRow
-                                .detailRowAnchored(.collection, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
-                        }
-                        if sectionTrailers {
-                            trailersRow
-                                .detailRowAnchored(.trailers, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
-                        }
-                        if sectionMoreLikeThis {
-                            moreLikeThisRow
-                                .detailRowAnchored(.moreLikeThis, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
-                        }
-                        // Codex P2 review finding (BUG-99 follow-up, round 2): TRACKED but never
-                        // ANCHORED. Round-1 left this section out of `detailRowAnchored` entirely —
-                        // "a vertical list of expandable cards whose focus moves never change
-                        // `focusedRow`" — which was true only because nothing here reported focus
-                        // in the first place; that left `focusedRow` nil both here and in the top
-                        // block, indistinguishable to `DetailRowAnchor.direction`. Tracking this
-                        // section resolves that ambiguity structurally (see `DetailRowID`'s and
-                        // `direction`'s doc comments); it still must never anchor — a pending
-                        // correction could scroll back to the section top under a later comment —
-                        // so `DetailView.onChange(of: focusedRow)` bails out for `row == .comments`
-                        // before any anchor decision runs.
-                        if sectionComments {
-                            commentsSection
-                                .detailRowAnchored(.comments, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
-                        }
-                        // FEAT-35 (P1 §G): Cinematic's last row. Takes the normal anchor path (it is
-                        // not a Comments-style bail).
-                        if detailLayout == .cinematic && sectionAbout {
-                            DetailAboutSection(rows: aboutRows, isFocused: focusedRow == .about)
-                                .detailRowAnchored(.about, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
-                        }
+                    // A2: one typed, ordered list per layout (`DetailSectionOrder`). BUG-96: every
+                    // row below the top block is anchored inside `detailSection(_:pending:)` — see
+                    // `DetailRowAnchor`.
+                    ForEach(orderedSections(availability), id: \.self) { section in
+                        detailSection(section, pending: availability.state(section) == .pending,
+                                      heldHeight: held[section])
                     }
                 }
-                .padding(Theme.Spacing.screen)
+                // A2/D: the side insets per layout (`DetailGeometry.pageInsets`): Cinematic and
+                // Classic 60 inside the safe area, Apple-style 80 from the bezel. Top and bottom keep
+                // `Theme.Spacing.screen`.
+                .padding(EdgeInsets(top: Theme.Spacing.screen, leading: pageInsets.leading,
+                                    bottom: Theme.Spacing.screen, trailing: pageInsets.trailing))
+                // The rows' edge fade measures from their frame to the bezel.
+                .environment(\.rowEdgeMargins, pageRowEdgeMargins)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .coordinateSpace(name: DetailRowAnchor.contentSpace)
             }
+            // D: Apple-style's content spans the bezels (halos and shelves unclipped) and pads
+            // itself from them; Cinematic and Classic stay inside the safe area (empty edge set).
+            .ignoresSafeArea(edges: pageInsets.ignoresSideSafeArea ? .horizontal : [])
             .scrollPosition($detailScrollPosition)
             // BUG-178 (Steven rc7: scrolling back up, "the shadow that appears going down moves up
             // with" the page): the tvOS 26 system top scroll-edge effect draws its own soft shadow
@@ -891,7 +872,9 @@ struct DetailView: View {
             // `-debug.detailEdgeEffectShown YES` puts it back.
             .scrollEdgeEffectHidden(!DetailDim.edgeEffectShown, for: .top)
             // BUG-96: fades whatever of the previous row sits above the anchored rest.
-            .overlay(alignment: .top) { DetailTopScrim(model: dimModel) }
+            .overlay(alignment: .top) {
+                DetailTopScrim(model: dimModel, spansBezels: pageInsets.ignoresSideSafeArea)
+            }
             // FEAT-60 (Steven rc3, the Apple TV app and Fusion): once focus leaves the Cinematic
             // hero, a small title logo fades in at the top so the page still names what it is.
             .overlay(alignment: .top) {
@@ -1035,7 +1018,7 @@ struct DetailView: View {
             // stops firing state updates once fully dark.
             .onScrollGeometryChange(for: Double.self, of: { [dimLayout = detailLayout,
                                                               dimRamp = DetailDim.rampDistance(layout: detailLayout, heroHeight: cinematicHeroHeight,
-                                                                                     hasChipRow: sectionStudioLogos && !companyLogos.isEmpty)] geo in
+                                                                                     hasChipRow: sectionRows.first == .companies)] geo in
                 // P-2b (BUG-41 attribution knob): leg 1/3 disables the dim outright by pinning
                 // this closure's result to a constant, so `action:` fires once with 0 and never
                 // again — see `DetailScrollAB`'s doc comment.
@@ -1560,6 +1543,86 @@ struct DetailView: View {
         if let meta = model.meta { return EpisodesSection.isSeriesLike(meta) }
         return preview.type == "series"
     }
+    /// A2/D: the page's horizontal placement (`DetailGeometry.pageInsets`).
+    private var pageInsets: DetailGeometry.PageInsets {
+        DetailGeometry.pageInsets(appleStyle: detailLayoutChoice == .appleStyle,
+                                  cinematicBase: detailLayout == .cinematic,
+                                  screenPadding: Theme.Spacing.screen,
+                                  railLeadingExtra: railLeadingInset)
+    }
+    private var pageRowEdgeMargins: RowEdgeMargins {
+        let m = DetailGeometry.rowEdgeMargins(host: (rowEdgeMargins.leading, rowEdgeMargins.trailing),
+                                              insets: pageInsets, screenPadding: Theme.Spacing.screen)
+        return RowEdgeMargins(leading: m.leading, trailing: m.trailing)
+    }
+    /// A2: Apple-style's Trailers/Bonus partition of the title's videos (`DetailTrailerPartition`).
+    private var trailerSplit: (trailers: [MetaTrailer], bonus: [MetaTrailer]) {
+        DetailTrailerPartition.split(model.meta?.trailers ?? [])
+    }
+    /// A2: what each section can show right now (`DetailSectionAvailability`). Reads only what the
+    /// row builders read, so Cinematic and Classic render a row iff its toggle is on and it has
+    /// content, as before.
+    private var sectionAvailability: DetailSectionAvailability {
+        // A failed request is finished: its sections read empty, not loading forever.
+        let loadingMeta = DetailSectionAvailability.metaLoading(hasMeta: model.meta != nil,
+                                                                isLoading: model.isLoading,
+                                                                failed: model.errorMessage != nil)
+        let enriching = model.meta != nil && model.isLoading
+        let appleStyle = detailLayoutChoice == .appleStyle
+        let split: (trailers: [MetaTrailer], bonus: [MetaTrailer]) = appleStyle ? trailerSplit : ([], [])
+        var states: [DetailSection: DetailSectionState] = [:]
+        func set(_ section: DetailSection, _ enabled: Bool, _ hasContent: Bool, _ loading: Bool) {
+            states[section] = DetailSectionAvailability.state(enabled: enabled, hasContent: hasContent, loading: loading)
+        }
+        set(.companies, sectionStudioLogos, !companyLogos.isEmpty, loadingMeta)
+        // No "resolved" flag exists for the two late fetches: empty reads as empty (A2 spec §4.4).
+        set(.parentalGuide, sectionParentalGuide, !model.parentalWarnings.isEmpty, false)
+        set(.episodes, isSeries, model.meta.map { EpisodesSection.isSeriesLike($0) } ?? false, loadingMeta)
+        set(.castAndCrew, sectionCast, !creditRowItems.isEmpty, loadingMeta)
+        set(.collection, sectionCollection, !(model.meta?.collectionItems ?? []).isEmpty, loadingMeta)
+        let hasTrailers = appleStyle ? !split.trailers.isEmpty : !(model.meta?.trailers ?? []).isEmpty
+        set(.trailers, sectionTrailers, hasTrailers, loadingMeta)
+        set(.bonus, sectionTrailers && appleStyle, !split.bonus.isEmpty, loadingMeta)
+        set(.moreLikeThis, sectionMoreLikeThis, !(model.meta?.moreLikeThis ?? []).isEmpty, loadingMeta || enriching)
+        set(.comments, sectionComments, !model.comments.isEmpty, false)
+        set(.about, aboutSectionEnabled, DetailAboutOverview.hasContent(rows: aboutRows, overview: overview), loadingMeta)
+        return DetailSectionAvailability(states: states)
+    }
+    /// The About section is on and the layout has it (Cinematic and Apple-style, whose visual base
+    /// is Cinematic; never Classic). It carries the show overview whenever there is one
+    /// (`DetailAboutOverview.hasContent`), so the hero reads this too (`heroSynopsis`).
+    private var aboutSectionEnabled: Bool { sectionAbout && detailLayout == .cinematic }
+    /// Apple-style: resolves `DetailSlotHold` for this body pass. Focus: a row, the hero (its own
+    /// focus state), or neither (a cover or a restore holds it: off the page).
+    private func resolveSlotHold(_ availability: DetailSectionAvailability) -> [DetailSection: CGFloat] {
+        let focus: DetailSlotHold.Focus
+        if let section = DetailSection.section(for: focusedRow) {
+            focus = .row(section)
+        } else if heroHasFocus {
+            focus = .hero
+        } else {
+            focus = .offPage
+        }
+        let titlesShown = posterStyle.showTitle
+        let heights = detailRowHeights
+        return slotHold.resolve(
+            order: DetailSectionOrder.preset(layout: detailLayoutChoice, isSeries: isSeries),
+            availability: availability, focus: focus,
+            reservesSlots: DetailSectionOrder.reservesPendingSlots(detailLayoutChoice),
+            height: { section, state in
+                switch state {
+                case .pending: return DetailSectionOrder.reservedHeight(section, posterTitlesShown: titlesShown)
+                case .ready: return section.rowID.flatMap { heights[$0] }
+                case .empty, .hidden: return nil
+                }
+            })
+    }
+    /// A2: the rows below the hero, in the layout's order (`DetailSectionOrder`).
+    private var sectionRows: [DetailSection] { orderedSections(sectionAvailability) }
+    private func orderedSections(_ availability: DetailSectionAvailability) -> [DetailSection] {
+        DetailSectionOrder.sections(layout: detailLayoutChoice, isSeries: isSeries,
+                                    availability: availability, held: Set(slotHold.held.keys)).filter { $0 != .hero }
+    }
     private var title: String { model.meta?.name ?? preview.name }
     // Kotlin `description` collides with NSObject.description, so KMP exposes it as `description_`.
     private var overview: String? { model.meta?.description_ ?? preview.description_ }
@@ -1603,7 +1666,7 @@ struct DetailView: View {
             filmPickerShown: showStreams,
             seriesPlayShown: seriesPlay != nil,
             fullScreenTrailerShown: model.trailerPlayback != nil,
-            synopsisSheetShown: showSynopsisSheet,
+            synopsisSheetShown: showSynopsisSheet || showAboutOverviewSheet,
             // Review r1 P2-2: the sheet's action clears `showShuffleSheet` before `onDismiss` sets
             // `seriesPlay`, so the pending route keeps the gate shut across the dismissal.
             shuffleSheetShown: showShuffleSheet || pendingShuffleRoute != nil))
@@ -1900,9 +1963,164 @@ struct DetailView: View {
         switch detailLayout {
         case .classic:
             topBlock
-        case .cinematic:
+        case .cinematic, .appleStyle:
             cinematicHero
         }
+    }
+
+    /// A2: one section below the hero (`DetailSectionOrder`), each call site moved as it was.
+    /// A `.pending` section (Apple-style only) holds its slot unanchored until its data answers.
+    @ViewBuilder
+    private func detailSection(_ section: DetailSection, pending: Bool, heldHeight: CGFloat? = nil) -> some View {
+        if let heldHeight {
+            // Apple-style: emptied above focus; keeps its last on-screen height (`DetailSlotHold`).
+            DetailSectionSlot(height: heldHeight)
+        } else if pending {
+            DetailSectionSlot(height: DetailSectionOrder.reservedHeight(section,
+                                                                         posterTitlesShown: posterStyle.showTitle))
+        } else {
+            switch section {
+            case .hero:
+                // Not reached: the hero stays the page VStack's first child (`heroBlock`).
+                EmptyView()
+            case .companies:
+                companyLogosRow
+                    .detailRowAnchored(.logos, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
+            case .parentalGuide:
+                parentalGuideSection
+                    .detailRowAnchored(.parental, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
+            case .episodes:
+                if let meta = model.meta {
+                    EpisodesSection(
+                        meta: meta,
+                        episodeRatings: model.episodeRatings,
+                        episodeRatingsVisibility: model.episodeRatingsVisibility,
+                        watchedEpisodeKeys: model.watchedEpisodeKeys,
+                        onPostPlayTitle: { postPlayRoute = TitleRoute(preview: $0) },
+                        appleStyle: detailLayoutChoice == .appleStyle
+                    )
+                    // A discrete focus region: vertical D-pad moves must land here instead of
+                    // geometrically skipping from the info/network chips down to the cast row.
+                    .focusSection()
+                    .detailRowAnchored(.episodes, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
+                }
+            case .castAndCrew:
+                castRow
+                    .detailRowAnchored(.cast, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
+            case .collection:
+                collectionRow
+                    .detailRowAnchored(.collection, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
+            case .trailers:
+                trailersRow
+                    .detailRowAnchored(.trailers, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
+            case .bonus:
+                bonusRow
+                    .detailRowAnchored(.bonus, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
+            case .moreLikeThis:
+                moreLikeThisRow
+                    .detailRowAnchored(.moreLikeThis, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
+            case .comments:
+                // Codex P2 review finding (BUG-99 follow-up, round 2): TRACKED but never
+                // ANCHORED. Round-1 left this section out of `detailRowAnchored` entirely —
+                // "a vertical list of expandable cards whose focus moves never change
+                // `focusedRow`" — which was true only because nothing here reported focus
+                // in the first place; that left `focusedRow` nil both here and in the top
+                // block, indistinguishable to `DetailRowAnchor.direction`. Tracking this
+                // section resolves that ambiguity structurally (see `DetailRowID`'s and
+                // `direction`'s doc comments); it still must never anchor — a pending
+                // correction could scroll back to the section top under a later comment —
+                // so `DetailView.onChange(of: focusedRow)` bails out for `row == .comments`
+                // before any anchor decision runs.
+                commentsSection
+                    .detailRowAnchored(.comments, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
+            case .about:
+                // FEAT-35 (P1 §G): Cinematic's last row. Takes the normal anchor path (it is
+                // not a Comments-style bail).
+                // Select on a truncated About opens the full show overview in the hero's overlay
+                // (same backdrop, info line and Ratings gate), owned here like every page cover.
+                DetailAboutSection(rows: aboutRows, overview: overview, isFocused: focusedRow == .about,
+                                   onOpenOverview: {
+                                       userInteracted = true
+                                       withdrawTrailerBridgeIfLeaving()
+                                       showAboutOverviewSheet = true
+                                   })
+                    .detailRowAnchored(.about, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
+                    .fullScreenCover(isPresented: $showAboutOverviewSheet) {
+                        DetailSynopsisSheet(title: title, logoURL: logoUrl, overview: overview ?? "",
+                                            backdropURL: backgroundUrl.map(DetailBackdropURL.upgraded),
+                                            backdropFallbackURL: backgroundUrl.flatMap {
+                                                DetailBackdropURL.upgraded($0) == $0 ? nil : $0
+                                            },
+                                            info: heroMetaLine, ratingsOn: sectionRatings)
+                    }
+            }
+        }
+    }
+
+    /// C5 (A1.3): the Cinematic hero's synopsis (and its full-synopsis cover): for a series, the
+    /// overview of the episode Play/Resume targets (`model.seriesAction`), else the show overview.
+    /// See `DetailHeroSynopsis`. Classic and every other consumer keep `overview`. With About off,
+    /// the hero keeps the show overview (About is where it moved).
+    private var heroSynopsis: String? {
+        var target: MetaVideo? = nil
+        if isSeries, let action = model.seriesAction, let meta = model.meta {
+            // The shared `nextUpVideoFor` rule: numbers first, then the action's video id (a Play
+            // target with missing numbers is picked by id).
+            let videos = meta.videos
+            let refs = videos.map {
+                DetailHeroSynopsis.EpisodeRef(id: $0.id, season: $0.season?.value, episode: $0.episode?.value)
+            }
+            if let index = DetailHeroSynopsis.playTargetIndex(
+                refs, contentId: meta.id, season: action.seasonNumber?.value,
+                episode: action.episodeNumber?.value, videoId: action.videoId) {
+                target = videos[index]
+            }
+        }
+        let targetOverview: String? = target?.overview
+        let watched: Bool = target.map { video in
+            TitleHoldMenuPolicy.episodeKey(season: video.season?.value, episode: video.episode?.value)
+                .map { model.watchedEpisodeKeys.contains($0) } ?? false
+        } ?? false
+        return DetailHeroSynopsis.text(
+            isSeries: isSeries,
+            showOverview: overview,
+            playTargetEpisodeOverview: targetOverview,
+            episodeSpoilerHidden: EpisodeSpoilerRules.hidesSpoilers(settingOn: hideEpisodeSpoilers, isWatched: watched),
+            aboutShowsOverview: aboutSectionEnabled
+        )
+    }
+
+    /// What the format badge row asks the probe about. Movie: the title's stream video id and the
+    /// type the stream picker is opened with (`preview.type`). Series: the episode Play/Resume
+    /// targets (`model.seriesAction`, resolved by the same `playTargetIndex` rule as `heroSynopsis`),
+    /// typed and numbered exactly as the series picker route is (`meta.type`, `action.videoId`,
+    /// the action's season/episode), so the picker's live fold matches by request token. Nil until
+    /// `meta` (and for a series `seriesAction`) is known: no S1E1 fallback, and a movie's embedded
+    /// streams (which replace the add-on fan-out, as in the picker) are known before any probe.
+    private var formatRequest: TitleFormatRequest? {
+        if !isSeries {
+            guard model.meta != nil else { return nil }
+            return TitleFormatRequest(type: preview.type, videoId: streamVideoId, season: nil, episode: nil)
+        }
+        guard let action = model.seriesAction, let meta = model.meta else { return nil }
+        let season = action.seasonNumber?.value
+        let episode = action.episodeNumber?.value
+        return TitleFormatRequest(
+            type: meta.type,
+            videoId: action.videoId,
+            season: season.map { KotlinInt(int: Int32($0)) },
+            episode: episode.map { KotlinInt(int: Int32($0)) }
+        )
+    }
+
+    /// The hero's meta line facts, shared with the About overview's overlay.
+    private var heroMetaLine: DetailMetaLineModel {
+        let year: String? = model.meta?.releaseInfo ?? preview.releaseInfo
+        let runtime: String? = model.meta?.runtime
+        let ageRating: String? = model.meta?.ageRating
+        let imdbRating: String? = model.meta?.imdbRating ?? preview.imdbRating
+        return DetailMetaLineModel(year: year, runtime: runtime, genres: genres,
+                                   ageRating: ageRating, imdbRating: imdbRating)
     }
 
     /// FEAT-35 "Cinematic Clean": see `DetailCinematicHero`. The action row is `actionRow` itself,
@@ -1913,27 +2131,26 @@ struct DetailView: View {
         // so it never appears after first paint.
         let ratingsGateOn = DetailRatings.reservesSlot(sectionRatings: sectionRatings,
                                                        mdbListActive: model.mdbListRatingsActive)
-        let year: String? = model.meta?.releaseInfo ?? preview.releaseInfo
-        let runtime: String? = model.meta?.runtime
-        let ageRating: String? = model.meta?.ageRating
-        let imdbRating: String? = model.meta?.imdbRating ?? preview.imdbRating
+        let synopsis: String? = heroSynopsis
         return DetailCinematicHero(
             title: title,
             logoURL: logoUrl,
             backdropURL: backgroundUrl.map(DetailBackdropURL.upgraded),
             backdropFallbackURL: backgroundUrl.flatMap { DetailBackdropURL.upgraded($0) == $0 ? nil : $0 },
-            meta: DetailMetaLineModel(year: year, runtime: runtime, genres: genres,
-                                      ageRating: ageRating, imdbRating: imdbRating),
+            meta: heroMetaLine,
+            formatRequest: formatRequest,
+            formatReady: !model.isLoading,
             ratings: ratings,
             ratingsGateOn: ratingsGateOn,
             ratingsSectionOn: sectionRatings,
-            overview: overview,
-            synopsisSlotVisible: !(model.meta != nil && (overview ?? "").isEmpty),
+            overview: synopsis,
+            synopsisSlotVisible: !(model.meta != nil && (synopsis ?? "").isEmpty),
             credits: DetailCredits.make(
                 cast: (model.meta?.cast ?? []).map { $0.name },
                 director: model.meta?.director ?? [],
                 writer: model.meta?.writer ?? [],
-                isSeries: isSeries
+                isSeries: isSeries,
+                creators: (model.meta?.creators ?? []).map { $0.name }
             ),
             showSynopsisSheet: $showSynopsisSheet,
             heroFocus: $heroFocus,
@@ -2025,6 +2242,7 @@ struct DetailView: View {
             VStack(alignment: .leading, spacing: Theme.Spacing.lg + Theme.Spacing.sm) {
                 header
                 metaLine
+                DetailFormatBadgeRow(request: formatRequest, ready: !model.isLoading)
                 actionRow
                 if !genres.isEmpty {
                     Text(genres.joined(separator: " \u{2022} "))
@@ -2699,14 +2917,14 @@ struct DetailView: View {
     private func applyDetailFocusRung(row: DetailRowID, key: String, force: Bool, via: String) {
         switch row {
         case .cast:
-            let current = focusedCastIndex.map(String.init)
-            guard let index = Int(key),
-                  DetailFocusRestore.shouldApply(force: force, current: current, target: key) else {
+            // A4.4: the card's stable key (`DetailCreditItem.key`), applied as is.
+            let current = focusedCastKey
+            guard DetailFocusRestore.shouldApply(force: force, current: current, target: key) else {
                 logPopRungSkipped(row: row, key: key, force: force, via: via, current: current)
                 return
             }
             logPopRung("applied", row: row, key: key, force: force, via: via)
-            focusedCastIndex = index
+            focusedCastKey = key
         case .logos:
             let current = focusedCompanyIndex.map(String.init)
             guard let index = Int(key),
@@ -2742,7 +2960,7 @@ struct DetailView: View {
     /// label's `detailFocusProbeKey` is never written in Release).
     private var popProbeFocusedKey: String {
         switch focusedRow {
-        case .cast: focusedCastIndex.map(String.init) ?? "-"
+        case .cast: focusedCastKey ?? "-"
         case .logos: focusedCompanyIndex.map(String.init) ?? "-"
         case .collection, .moreLikeThis: (focusMemory.row == focusedRow ? focusMemory.key : nil) ?? "-"
         default: "-"
@@ -2901,25 +3119,41 @@ struct DetailView: View {
                           action: { if primary { playLabelSize = $0 } })
     }
 
+    /// A4.4 (C10): the Cast row's cards, cast then crew (`DetailCreditRow`), every layout.
+    private var creditRowItems: [DetailCreditItem] {
+        DetailCreditRow.items(cast: model.meta?.cast ?? [], crew: model.meta?.crew ?? [])
+    }
+
     @ViewBuilder
     private var castRow: some View {
-        let cast = model.meta?.cast ?? []
-        if !cast.isEmpty {
+        let items = creditRowItems
+        if !items.isEmpty {
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                Text("Cast")
+                // A4.4: Apple-style names the row for both halves; Cinematic and Classic keep "Cast".
+                Group {
+                    if detailLayoutChoice == .appleStyle {
+                        Text("Cast & Crew")
+                    } else {
+                        Text("Cast")
+                    }
+                }
                     .font(Theme.Font.sectionTitle)
                     .foregroundStyle(Theme.Palette.textPrimary)
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(spacing: Theme.Spacing.lg) {
-                        ForEach(Array(cast.enumerated()), id: \.offset) { index, person in
-                            // Cast members carry a TMDB id only when TMDB enrichment is on; make those
+                        // A4.4: identity and focus by the card's stable key, not its index, so a
+                        // reload that adds crew or reorders cast keeps the remembered card.
+                        ForEach(items) { item in
+                            let person = MetaPerson(name: item.name, role: item.subtitle, photo: item.photo,
+                                                    tmdbId: item.tmdbId.map { KotlinInt(int: Int32(truncatingIfNeeded: $0)) })
+                            // Cast and crew carry a TMDB id only when TMDB enrichment is on; make those
                             // tappable to a person page, leave the rest as plain (non-focusable) cards.
-                            if let personId = person.tmdbId?.value {
-                                NavigationLink(value: PersonRoute(id: personId, name: person.name)) {
+                            if let personId = item.tmdbId {
+                                NavigationLink(value: PersonRoute(id: personId, name: item.name)) {
                                     // stillFocused: CastCard draws its own no-zoom still ring on
                                     // the avatar circle (Codex 2026-08-29 rounds 3-5) — focus
                                     // truth from the row's FocusState, not a second binding.
-                                    CastCard(person: person, stillFocused: focusedCastIndex == index)
+                                    CastCard(person: person, stillFocused: focusedCastKey == item.key)
                                 }
                                 // Card-like navigation element: joins the no-zoom sweep so the
                                 // setting stills every card on the page, not most (Codex 2026-08-29).
@@ -2936,8 +3170,8 @@ struct DetailView: View {
                                 // and the lifted photo lost its circle (sim, 2026-10-21). The ring
                                 // and still styles are custom and ignore it.
                                 .buttonBorderShape(.circle)
-                                .focused($focusedCastIndex, equals: index)
-                                .zIndex(liftedCastZIndex(index))
+                                .focused($focusedCastKey, equals: item.key)
+                                .zIndex(liftedCastZIndex(item.key))
                             } else {
                                 CastCard(person: person)
                             }
@@ -2945,8 +3179,8 @@ struct DetailView: View {
                     }
                     .padding(.vertical, Theme.Spacing.xs)
                 }
-                // BUG-187: remember the card a push to a person page leaves from.
-                .onChange(of: focusedCastIndex) { _, index in noteDetailFocus(.cast, index.map(String.init)) }
+                // BUG-187: remember the card a push to a person page leaves from (A4.4: its key).
+                .onChange(of: focusedCastKey) { _, key in noteDetailFocus(.cast, key) }
                 .scrollClipDisabled()
                 // beta.19-rc1 verdict (F, FEAT-54): the Appearance "Row Edge Fade" setting reaches
                 // the Detail rows too (Cast, More Like This, Collection, Trailers & Extras and the
@@ -3205,12 +3439,32 @@ struct DetailView: View {
 
     @ViewBuilder
     private var trailersRow: some View {
-        let trailers = model.meta?.trailers ?? []
+        // A2: Apple-style shows only Trailer/Teaser videos here (the rest go to `bonusRow`);
+        // Cinematic and Classic keep the single "Trailers & Extras" row of every video.
+        let appleStyle = detailLayoutChoice == .appleStyle
+        let trailers = appleStyle ? trailerSplit.trailers : (model.meta?.trailers ?? [])
         if !trailers.isEmpty {
             // BUG-153 (Batch M): a child view, so the row's focus state re-runs only the row.
             DetailTrailersRow(trailers: trailers,
+                              title: appleStyle ? String(localized: "Trailers") : String(localized: "Trailers & Extras"),
+                              probeID: "debug_trailers",
                               resolvingTrailerId: model.resolvingTrailerId,
-                              onPlay: { model.playTrailer($0) })
+                              onPlay: { model.playTrailer($0) },
+                              cardMetrics: DetailWideCard.metrics(appleStyle: appleStyle))
+        }
+    }
+
+    /// A2: Apple-style's Bonus row: the title's non-trailer videos (`DetailTrailerPartition`).
+    @ViewBuilder
+    private var bonusRow: some View {
+        let bonus = detailLayoutChoice == .appleStyle ? trailerSplit.bonus : []
+        if !bonus.isEmpty {
+            DetailTrailersRow(trailers: bonus,
+                              title: String(localized: "Bonus"),
+                              probeID: "debug_bonus",
+                              resolvingTrailerId: model.resolvingTrailerId,
+                              onPlay: { model.playTrailer($0) },
+                              cardMetrics: DetailWideCard.metrics(appleStyle: true))
         }
     }
 
@@ -3317,7 +3571,7 @@ struct DetailView: View {
     /// (Re)starts the countdown (4 s, or FEAT-87's Start Delay) once `model.trailerVideoURL` resolves. Every cancellation
     /// condition is re-checked once the timer actually fires, since a lot can change in 4 seconds.
     private func scheduleAutoPlayTrailerIfNeeded() {
-        guard trailerAutoplayEnabled, !didAutoPlayTrailer, !userInteracted,
+        guard fullScreenAutoPlayOn, !didAutoPlayTrailer, !userInteracted,
               !showStreams, seriesPlay == nil, model.trailerPlayback == nil else { return }
         autoPlayTrailerTask?.cancel()
         // FEAT-87: Start Delay on the first appearance, composed with the background clock when
@@ -3338,7 +3592,7 @@ struct DetailView: View {
         // `onMoveCommand` never sees, so the trailer went full screen under a viewer scrolling the
         // rows. Focus anywhere below the hero counts as interacting.
         guard focusedRow == nil else { return }
-        guard trailerAutoplayEnabled, !didAutoPlayTrailer, !userInteracted,
+        guard fullScreenAutoPlayOn, !didAutoPlayTrailer, !userInteracted,
               !showStreams, seriesPlay == nil, model.trailerPlayback == nil,
               let trailer = model.trailerVideoURL else { return }
         didAutoPlayTrailer = true
@@ -3496,8 +3750,15 @@ private struct DetailPosterLinkRow: View {
 /// Detail body. `.detailRowAnchored(.trailers, …)` stays on the call site.
 private struct DetailTrailersRow: View {
     let trailers: [MetaTrailer]
+    /// A2: "Trailers & Extras" (Cinematic, Classic), or Apple-style's "Trailers" / "Bonus".
+    let title: String
+    /// The DEBUG probe's identifier: `debug_trailers` on the trailers row only (the UX-10 leg reads
+    /// it), `debug_bonus` on Bonus, so no two elements share one.
+    let probeID: String
     let resolvingTrailerId: String?
     let onPlay: (MetaTrailer) -> Void
+    /// Card size and gap (`DetailWideCard`): Apple-style's tokens, else today's 420/28.
+    var cardMetrics: DetailWideCard.Metrics = DetailWideCard.metrics(appleStyle: false)
 
     /// BUG-177: which Trailers & Extras card holds focus — only to raise it over its neighbours.
     @FocusState private var focusedIndex: Int?
@@ -3505,16 +3766,17 @@ private struct DetailTrailersRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-            Text("Trailers & Extras")
+            Text(title)
                 .font(Theme.Font.sectionTitle)
                 .foregroundStyle(Theme.Palette.textPrimary)
             ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(alignment: .top, spacing: Theme.Spacing.rowGap) {
+                LazyHStack(alignment: .top, spacing: cardMetrics.gap) {
                     ForEach(Array(trailers.prefix(10).enumerated()), id: \.element.id) { index, trailer in
                         Button {
                             onPlay(trailer)
                         } label: {
-                            TrailerThumbCard(trailer: trailer, isResolving: resolvingTrailerId == trailer.id)
+                            TrailerThumbCard(trailer: trailer, isResolving: resolvingTrailerId == trailer.id,
+                                             cardSize: cardMetrics.size)
                         }
                         // BUG-177 (Steven rc7): TrailerThumbCard owns its ring-mode lift now
                         // (`DetailTileFocusLift`), so the default `.card` style takes the native
@@ -3540,10 +3802,10 @@ private struct DetailTrailersRow: View {
             // many resolved a YouTube thumbnail, so a UITest can prove the shelf switched from
             // text rows to thumbnail cards without depending on pixel comparison.
             let rendered = Array(trailers.prefix(10))
-            Text("debug_trailers n=\(rendered.count) thumbs=\(rendered.filter { $0.thumbnailURLString != nil }.count)")
+            Text("\(probeID) n=\(rendered.count) thumbs=\(rendered.filter { $0.thumbnailURLString != nil }.count)")
                 .font(.system(size: 8))
                 .opacity(0.011)
-                .accessibilityIdentifier("debug_trailers")
+                .accessibilityIdentifier(probeID)
             #endif
         }
         .focusSection()
