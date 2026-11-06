@@ -23,6 +23,8 @@ nonisolated enum DetailCinematicLayout {
     static let metaLineHeight: CGFloat = DetailGeometry.metaLineHeight
     /// The MDBList strip's reserved slot (present only while the strip is gated on).
     static let ratingsSlotHeight: CGFloat = DetailGeometry.ratingsSlotHeight
+    /// Fixed slot for the format-badge chips; keeps its height with 0 or 4 chips showing.
+    static let formatBadgeRowHeight: CGFloat = DetailGeometry.formatBadgeRowHeight
     /// How much of the first row shows under the hero on landing.
     static let peekBand: CGFloat = DetailGeometry.peekBand
     static let heroMinimumHeight: CGFloat = DetailGeometry.heroMinimumHeight

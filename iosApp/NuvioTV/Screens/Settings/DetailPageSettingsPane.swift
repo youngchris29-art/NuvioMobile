@@ -14,6 +14,7 @@ struct DetailPageSettingsPane: View {
     @AppStorage(DetailSettingsKeys.layout) private var layoutRaw = DetailLayout.cinematic.rawValue
     @AppStorage("detail_action_icons_only") private var iconOnlyButtons = false
     @AppStorage("detail_poster_backdrop") private var posterBackdrop = true
+    @AppStorage(DetailSettingsKeys.formatBadges) private var formatBadges = true
     @AppStorage("detail_trailer_autoplay") private var trailerAutoplay = true
     /// A2.4 (D2): Apple-style's own full-screen auto-play (never set = off). The toggle below shows
     /// and writes the key of the selected layout (`DetailTrailerFullScreenAutoPlay`).
@@ -95,6 +96,12 @@ struct DetailPageSettingsPane: View {
                     subtitle: String(localized: "Show the title's poster on the right side of detail pages"),
                     isOn: $posterBackdrop,
                     descriptionID: .detailPosterBackdrop
+                )
+                SettingsToggleRow(
+                    title: String(localized: "Format Badges"),
+                    subtitle: String(localized: "Shows 4K, Dolby Vision, HDR and Dolby Atmos under the title when one of your add-ons has a stream in that format. Checks up to three add-ons in the background when a page opens."),
+                    isOn: $formatBadges,
+                    descriptionID: .detailFormatBadges
                 )
             }
 

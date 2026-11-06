@@ -1,3 +1,4 @@
+import SharedCore
 import SwiftUI
 
 /// FEAT-35: `.play` is the one focus target `DetailView` asks the engine to land on first
@@ -72,6 +73,8 @@ struct DetailCinematicHero<Actions: View>: View {
     var backdropURL: String? = nil
     var backdropFallbackURL: String? = nil
     let meta: DetailMetaLineModel
+    /// The format badge row's request (nil until the Play target is known).
+    let formatRequest: TitleFormatRequest?
     let ratings: [DetailRatingEntry]
     /// The ratings strip's slot is laid out (reserved, possibly still empty) only while this is on:
     /// the Ratings section toggle and the MDBList gate, both known before first paint
@@ -174,6 +177,7 @@ struct DetailCinematicHero<Actions: View>: View {
                 VStack(alignment: .leading, spacing: Theme.Spacing.md) {
                     logoSlot
                     metaLine
+                    DetailFormatBadgeRow(request: formatRequest)
                     if ratingsGateOn { ratingsSlot }
                     if synopsisSlotVisible { synopsisSlot }
                 }

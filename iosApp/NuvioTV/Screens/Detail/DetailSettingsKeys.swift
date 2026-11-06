@@ -28,6 +28,8 @@ nonisolated enum DetailSettingsKeys {
     /// A2.4 (D2): Apple-style's full-screen trailer auto-play. Missing → off. Cinematic and Classic
     /// keep reading `detail_trailer_autoplay` (default on), so their behaviour is unchanged.
     static let trailerFullScreenAutoPlay = "detail_trailer_fullscreen_autoplay"
+    /// Format badges row under the Detail title; default on.
+    static let formatBadges = "detail_format_badges"
 }
 
 /// A2.4 (D2): which key decides the full-screen trailer auto-play, and its default, per layout.

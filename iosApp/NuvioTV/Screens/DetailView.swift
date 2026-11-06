@@ -2090,6 +2090,27 @@ struct DetailView: View {
         )
     }
 
+    /// What the format badge row asks the probe about. Movie: the title's stream video id and the
+    /// type the stream picker is opened with (`preview.type`). Series: the episode Play/Resume
+    /// targets (`model.seriesAction`, resolved by the same `playTargetIndex` rule as `heroSynopsis`),
+    /// typed and numbered exactly as the series picker route is (`meta.type`, `action.videoId`,
+    /// the action's season/episode), so the picker's live fold matches by request token. Nil until
+    /// `seriesAction` and `meta` are known: no S1E1 fallback.
+    private var formatRequest: TitleFormatRequest? {
+        if !isSeries {
+            return TitleFormatRequest(type: preview.type, videoId: streamVideoId, season: nil, episode: nil)
+        }
+        guard let action = model.seriesAction, let meta = model.meta else { return nil }
+        let season = action.seasonNumber?.value
+        let episode = action.episodeNumber?.value
+        return TitleFormatRequest(
+            type: meta.type,
+            videoId: action.videoId,
+            season: season.map { KotlinInt(int: Int32($0)) },
+            episode: episode.map { KotlinInt(int: Int32($0)) }
+        )
+    }
+
     /// The hero's meta line facts, shared with the About overview's overlay.
     private var heroMetaLine: DetailMetaLineModel {
         let year: String? = model.meta?.releaseInfo ?? preview.releaseInfo
@@ -2115,6 +2136,7 @@ struct DetailView: View {
             backdropURL: backgroundUrl.map(DetailBackdropURL.upgraded),
             backdropFallbackURL: backgroundUrl.flatMap { DetailBackdropURL.upgraded($0) == $0 ? nil : $0 },
             meta: heroMetaLine,
+            formatRequest: formatRequest,
             ratings: ratings,
             ratingsGateOn: ratingsGateOn,
             ratingsSectionOn: sectionRatings,

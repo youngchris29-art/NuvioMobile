@@ -67,6 +67,8 @@ nonisolated enum DetailGeometry {
     static let logoMaxWidth: CGFloat = 600
     static let metaLineHeight: CGFloat = 40
     static let ratingsSlotHeight: CGFloat = 44
+    /// The format-badge row's reserved slot (present only while the setting is on and the title has a request): one `Theme.Font.meta` line plus the 1 pt chip stroke and padding.
+    static let formatBadgeRowHeight: CGFloat = 40
     static let peekBand: CGFloat = 140
     static let heroMinimumHeight: CGFloat = 520
 

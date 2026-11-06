@@ -16,7 +16,6 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.TestScope
-import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -110,6 +109,16 @@ class TitleFormatProbeTest {
         return rig
     }
 
+    /**
+     * Runs everything the engine launched on `backgroundScope`, including virtual-time delays and
+     * timeouts. `advanceUntilIdle()` ignores background work (its idle check is non-strict), so it
+     * would return before the probe even started.
+     */
+    private fun TestScope.settle() {
+        testScheduler.advanceTimeBy(TitleFormatProbeEngine.PROBE_TIMEOUT_MS + 1)
+        testScheduler.runCurrent()
+    }
+
     private fun Rig.badges(request: TitleFormatRequest = movie) = engine.state(request).badges
 
     // --- targeting --------------------------------------------------------------------------
@@ -118,7 +127,7 @@ class TitleFormatProbeTest {
     fun onlyTheFirstThreeMatchingAddonsAreAsked() = runTest {
         val rig = rig("a1", "a2", "a3", "a4", "a5")
         rig.engine.start(movie)
-        advanceUntilIdle()
+        settle()
 
         assertEquals(setOf("a1", "a2", "a3"), rig.fetcher.fetched.map { it.first }.toSet())
         assertEquals(3, rig.fetcher.fetched.size)
@@ -133,7 +142,7 @@ class TitleFormatProbeTest {
             addon("a1"), addon("a2"), addon("a3"), addon("a4"),
         )
         rig.engine.start(movie)
-        advanceUntilIdle()
+        settle()
 
         assertEquals(setOf("a1", "a2", "a3"), rig.fetcher.fetched.map { it.first }.toSet())
     }
@@ -146,7 +155,7 @@ class TitleFormatProbeTest {
         val tmdbRequest = TitleFormatRequest("movie", "tmdb:603", null, null)
 
         rig.engine.start(tmdbRequest)
-        advanceUntilIdle()
+        settle()
 
         assertEquals(listOf(603), rig.fetcher.imdbCalls)
         assertEquals(
@@ -162,7 +171,7 @@ class TitleFormatProbeTest {
         rig.fetcher.imdb = null
 
         rig.engine.start(TitleFormatRequest("movie", "tmdb:603", null, null))
-        advanceUntilIdle()
+        settle()
 
         assertEquals(listOf("open" to "tmdb:603"), rig.fetcher.fetched)
     }
@@ -171,7 +180,7 @@ class TitleFormatProbeTest {
     fun imdbIdRequestNeverCallsTmdb() = runTest {
         val rig = rig("a1")
         rig.engine.start(movie)
-        advanceUntilIdle()
+        settle()
         assertTrue(rig.fetcher.imdbCalls.isEmpty())
     }
 
@@ -187,7 +196,7 @@ class TitleFormatProbeTest {
         rig.engine.start(movie)
         assertTrue(rig.engine.state(movie).isProbing)
 
-        advanceUntilIdle()
+        settle()
         val state = rig.engine.state(movie)
         assertEquals(listOf(UHD_4K, DOLBY_VISION, DOLBY_ATMOS), state.badges)
         assertFalse(state.isProbing)
@@ -206,7 +215,7 @@ class TitleFormatProbeTest {
             }
         }
         rig.engine.start(movie)
-        advanceUntilIdle()
+        settle()
 
         val state = rig.engine.state(movie)
         assertEquals(listOf(UHD_4K, DOLBY_VISION), state.badges)
@@ -221,7 +230,7 @@ class TitleFormatProbeTest {
             listOf(stream("good", fourKDv))
         }
         rig.engine.start(movie)
-        advanceUntilIdle()
+        settle()
         assertEquals(listOf(UHD_4K, DOLBY_VISION), rig.badges())
     }
 
@@ -230,7 +239,7 @@ class TitleFormatProbeTest {
         val rig = rig("a1")
         rig.fetcher.embedded[movie.videoId] = listOf(stream("embedded", fourKDv))
         rig.engine.start(movie)
-        advanceUntilIdle()
+        settle()
 
         assertTrue(rig.fetcher.fetched.isEmpty())
         assertEquals(listOf(UHD_4K, DOLBY_VISION), rig.badges())
@@ -289,7 +298,7 @@ class TitleFormatProbeTest {
             }
         }
         rig.engine.start(movie)
-        advanceUntilIdle()
+        settle()
 
         assertEquals(listOf(UHD_4K, DOLBY_VISION, DOLBY_ATMOS, DTS_X), rig.badges())
         assertTrue(secondCancelled)
@@ -311,7 +320,7 @@ class TitleFormatProbeTest {
             }
         }
         rig.engine.start(movie)
-        advanceUntilIdle()
+        settle()
 
         assertTrue(secondFinished)
         assertEquals(listOf(UHD_4K, DOLBY_VISION, DOLBY_ATMOS, DTS_X), rig.badges())
@@ -324,11 +333,11 @@ class TitleFormatProbeTest {
         val rig = rig("a1", "a2")
         rig.fetcher.behavior = { target -> listOf(stream(target.addonName, fourKDv)) }
         rig.engine.start(movie)
-        advanceUntilIdle()
+        settle()
         assertEquals(2, rig.fetcher.fetched.size)
 
         rig.engine.start(movie)
-        advanceUntilIdle()
+        settle()
 
         assertEquals(2, rig.fetcher.fetched.size)
         assertEquals(listOf(UHD_4K, DOLBY_VISION), rig.badges())
@@ -340,17 +349,17 @@ class TitleFormatProbeTest {
         val rig = rig("a1")
         rig.fetcher.behavior = { listOf(stream("a1", fourKDv)) }
         rig.engine.start(movie)
-        advanceUntilIdle()
+        settle()
         assertEquals(1, rig.fetcher.fetched.size)
 
         rig.now += TitleFormatProbeCache.POSITIVE_TTL_MS - 1
         rig.engine.start(movie)
-        advanceUntilIdle()
+        settle()
         assertEquals(1, rig.fetcher.fetched.size)
 
         rig.now += 1
         rig.engine.start(movie)
-        advanceUntilIdle()
+        settle()
         assertEquals(2, rig.fetcher.fetched.size)
     }
 
@@ -358,17 +367,17 @@ class TitleFormatProbeTest {
     fun anEmptyCacheEntryExpiresAfterThirtyMinutes() = runTest {
         val rig = rig("a1")
         rig.engine.start(movie) // the add-on answers, with nothing format-worthy
-        advanceUntilIdle()
+        settle()
         assertEquals(1, rig.fetcher.fetched.size)
 
         rig.now += TitleFormatProbeCache.EMPTY_TTL_MS - 1
         rig.engine.start(movie)
-        advanceUntilIdle()
+        settle()
         assertEquals(1, rig.fetcher.fetched.size)
 
         rig.now += 1
         rig.engine.start(movie)
-        advanceUntilIdle()
+        settle()
         assertEquals(2, rig.fetcher.fetched.size)
     }
 
@@ -377,12 +386,12 @@ class TitleFormatProbeTest {
         val rig = rig("a1")
         rig.fetcher.behavior = { listOf(stream(it.addonName, fourKDv)) }
         rig.engine.start(movie)
-        advanceUntilIdle()
+        settle()
         assertEquals(1, rig.fetcher.fetched.size)
 
         rig.addons = rig.addons + addon("a2")
         rig.engine.start(movie)
-        advanceUntilIdle()
+        settle()
 
         assertEquals(3, rig.fetcher.fetched.size)
     }
@@ -392,13 +401,13 @@ class TitleFormatProbeTest {
         val rig = rig("a1")
         rig.fetcher.behavior = { listOf(stream(it.addonName, fourKDv)) }
         rig.engine.start(movie)
-        advanceUntilIdle()
+        settle()
         assertEquals(1, rig.fetcher.fetched.size)
 
         rig.settings = DebridSettings(enabled = true, providerApiKeys = mapOf(DebridProviders.TORBOX_ID to "key"))
         assertTrue(rig.settings.canResolvePlayableLinks)
         rig.engine.start(movie)
-        advanceUntilIdle()
+        settle()
 
         assertEquals(2, rig.fetcher.fetched.size)
     }
@@ -408,13 +417,13 @@ class TitleFormatProbeTest {
         val rig = rig("a1", "a2")
         rig.fetcher.behavior = { error("boom") }
         rig.engine.start(movie)
-        advanceUntilIdle()
+        settle()
         assertEquals(emptyList(), rig.badges())
         assertFalse(rig.engine.state(movie).isProbing)
         assertEquals(2, rig.fetcher.fetched.size)
 
         rig.engine.start(movie)
-        advanceUntilIdle()
+        settle()
         assertEquals(4, rig.fetcher.fetched.size)
     }
 
@@ -423,11 +432,11 @@ class TitleFormatProbeTest {
         val rig = rig("a1")
         rig.fetcher.behavior = { delay(60_000); emptyList() }
         rig.engine.start(movie)
-        advanceUntilIdle()
+        settle()
         assertFalse(rig.engine.state(movie).isProbing)
 
         rig.engine.start(movie)
-        advanceUntilIdle()
+        settle()
         assertEquals(2, rig.fetcher.fetched.size)
     }
 
@@ -483,7 +492,7 @@ class TitleFormatProbeTest {
     fun pickerEmissionsForAnotherTitleAreIgnored() = runTest {
         val rig = rig("a1")
         rig.engine.start(movie)
-        advanceUntilIdle()
+        settle()
 
         val other = StreamsRepository.requestToken("movie", "tt9999999", null, null, manualSelection = true)
         rig.picker.value = pickerState(other, stream("picker", fourKDv))
@@ -496,7 +505,7 @@ class TitleFormatProbeTest {
     fun badgesNeverShrinkWhenALaterPickerEmissionHasFewerFormats() = runTest {
         val rig = rig("a1")
         rig.engine.start(movie)
-        advanceUntilIdle()
+        settle()
 
         rig.picker.value = pickerState(token(true), stream("picker", fourKDv))
         runCurrent()

@@ -23195,6 +23195,19 @@
         }
       }
     },
+    "Available in %@": {
+      "comment": "Accessibility label for the format badge row on the Detail page. %@ is a localized list of formats, like \"4K, Dolby Vision and Dolby Atmos\".",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Available in %@"
+          }
+        }
+      }
+    },
+    "Format Badges": {},
+    "Shows 4K, Dolby Vision, HDR and Dolby Atmos under the title when one of your add-ons has a stream in that format. Checks up to three add-ons in the background when a page opens.": {},
     "Icon-Only Detail Buttons": {
       "localizations": {
         "de": {
