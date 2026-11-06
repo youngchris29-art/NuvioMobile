@@ -23198,16 +23198,124 @@
     "Available in %@": {
       "comment": "Accessibility label for the format badge row on the Detail page. %@ is a localized list of formats, like \"4K, Dolby Vision and Dolby Atmos\".",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verfügbar in %@"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "Available in %@"
           }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disponible en %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disponible en %@"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disponibile in %@"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Có sẵn ở %@"
+          }
         }
       }
     },
-    "Format Badges": {},
-    "Shows 4K, Dolby Vision, HDR and Dolby Atmos under the title when one of your add-ons has a stream in that format. Checks up to three add-ons in the background when a page opens.": {},
+    "Format Badges": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Format-Badges"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Format Badges"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Insignias de formato"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Badges de format"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Badge formato"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Huy hiệu định dạng"
+          }
+        }
+      }
+    },
+    "Shows 4K, Dolby Vision, HDR and Dolby Atmos under the title when one of your add-ons has a stream in that format. Checks up to three add-ons in the background when a page opens.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zeigt 4K, Dolby Vision, HDR und Dolby Atmos unter dem Titel, wenn eines deiner Add-ons einen Stream in diesem Format hat. Prüft im Hintergrund bis zu drei Add-ons, wenn eine Seite geöffnet wird."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Shows 4K, Dolby Vision, HDR and Dolby Atmos under the title when one of your add-ons has a stream in that format. Checks up to three add-ons in the background when a page opens."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Muestra 4K, Dolby Vision, HDR y Dolby Atmos debajo del título cuando uno de tus complementos tiene un stream en ese formato. Comprueba hasta tres complementos en segundo plano al abrir una página."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Affiche 4K, Dolby Vision, HDR et Dolby Atmos sous le titre lorsqu'un de vos addons propose un flux dans ce format. Vérifie jusqu'à trois addons en arrière-plan à l'ouverture d'une page."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostra 4K, Dolby Vision, HDR e Dolby Atmos sotto il titolo quando uno dei tuoi add-on ha uno stream in quel formato. Controlla fino a tre add-on in background all'apertura di una pagina."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hiện 4K, Dolby Vision, HDR và Dolby Atmos dưới tiêu đề khi một trong các addon của bạn có luồng ở định dạng đó. Kiểm tra tối đa ba addon ở nền khi mở một trang."
+          }
+        }
+      }
+    },
     "Icon-Only Detail Buttons": {
       "localizations": {
         "de": {
