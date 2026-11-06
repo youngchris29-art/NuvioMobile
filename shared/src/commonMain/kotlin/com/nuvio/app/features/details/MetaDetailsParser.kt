@@ -316,17 +316,19 @@ object MetaDetailsParser {
             val normalizedKey = key.trim()
             if (normalizedKey.isEmpty()) return@mapNotNull null
 
+            val providedType = trailer.string("type")?.takeIf(String::isNotBlank)
             MetaTrailer(
                 id = trailer.string("id")?.takeIf(String::isNotBlank) ?: normalizedKey,
                 key = normalizedKey,
                 name = trailer.string("name")?.takeIf(String::isNotBlank) ?: resourceString("Trailer", StringKey.generic_trailer),
                 site = trailer.string("site")?.takeIf(String::isNotBlank) ?: "YouTube",
                 size = trailer.int("size"),
-                type = trailer.string("type")?.takeIf(String::isNotBlank) ?: resourceString("Trailer", StringKey.generic_trailer),
+                type = providedType ?: resourceString("Trailer", StringKey.generic_trailer),
                 official = trailer.boolean("official") == true,
                 publishedAt = trailer.string("published_at") ?: trailer.string("publishedAt"),
                 seasonNumber = trailer.int("seasonNumber") ?: trailer.int("season_number"),
                 displayName = trailer.string("displayName")?.takeIf(String::isNotBlank),
+                typeProvided = providedType != null,
             )
         }
 

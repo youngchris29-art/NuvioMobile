@@ -1,4 +1,5 @@
 import XCTest
+import SharedCore
 @testable import NuvioTV
 
 final class DetailTrailerPartitionTests: XCTestCase {
@@ -102,5 +103,24 @@ final class DetailTrailerPartitionTests: XCTestCase {
         XCTAssertEqual(DetailTrailerPartition.sharedTrailerWord,
                        Bundle.main.localizedString(forKey: "generic_trailer", value: "Trailer", table: "Shared"))
         XCTAssertFalse(DetailTrailerPartition.sharedTrailerWord.isEmpty)
+    }
+
+    /// End to end: an add-on meta whose videos carry no `type` goes through the shared parser
+    /// (which fills the type with the localized "Trailer") and is still classified by name, so
+    /// "Behind the Scenes" is Bonus and cannot take a trailer slot. Typed videos keep their type.
+    func testUntypedAddonVideosFromTheParserAreClassifiedByName() {
+        let payload = """
+        {"meta": {"id": "tt1", "type": "movie", "name": "Movie", "trailers": [
+          {"source": "a", "name": "Behind the Scenes"},
+          {"source": "b", "name": "Official Trailer"},
+          {"source": "c", "type": "Trailer", "name": "Making Of"},
+          {"source": "d", "type": "Featurette", "name": "Trailer Breakdown"}
+        ]}}
+        """
+        let meta = MetaDetailsParser.shared.parse(payload: payload)
+        XCTAssertEqual(meta.trailers.map(\.typeProvided), [false, false, true, true])
+        let r = DetailTrailerPartition.split(meta.trailers)
+        XCTAssertEqual(r.trailers.map(\.key), ["b", "c"])
+        XCTAssertEqual(r.bonus.map(\.key), ["a", "d"])
     }
 }

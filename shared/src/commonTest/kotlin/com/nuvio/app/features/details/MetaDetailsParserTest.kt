@@ -350,4 +350,29 @@ class MetaDetailsParserTest {
 
         assertEquals("https://img/landscape.jpg", result.background)
     }
+
+    @Test
+    fun `parse marks addon videos without a type as untyped`() {
+        val result = MetaDetailsParser.parse(
+            """
+            {
+              "meta": {
+                "id": "tt1",
+                "type": "movie",
+                "name": "Movie",
+                "trailers": [
+                  { "source": "abc", "name": "Behind the Scenes" },
+                  { "source": "def", "type": "Trailer", "name": "Official Trailer" },
+                  { "source": "ghi", "type": "  ", "name": "Teaser" }
+                ]
+              }
+            }
+            """.trimIndent(),
+        )
+
+        assertEquals(listOf(false, true, false), result.trailers.map { it.typeProvided })
+        assertEquals("Trailer", result.trailers[1].type)
+        // The display default still fills the type, as before.
+        assertTrue(result.trailers.all { it.type.isNotBlank() })
+    }
 }

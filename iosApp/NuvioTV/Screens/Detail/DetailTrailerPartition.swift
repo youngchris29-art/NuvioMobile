@@ -30,8 +30,13 @@ nonisolated enum DetailTrailerPartition {
         return (Array(trailers.prefix(perRowCap)), Array(bonus.prefix(perRowCap)))
     }
 
+    /// A video whose source sent no type (`typeProvided` false: Kotlin filled `type` with the
+    /// localized "Trailer" default) is classified by name, so an untyped add-on "Behind the Scenes"
+    /// lands in Bonus instead of taking a trailer slot. On an English device that default cannot
+    /// be told apart from a real "Trailer" type by its text alone, hence the flag.
     static func split(_ items: [MetaTrailer]) -> (trailers: [MetaTrailer], bonus: [MetaTrailer]) {
-        split(items, type: { $0.type }, name: { $0.displayName ?? $0.name }, localizedTrailer: sharedTrailerWord)
+        split(items, type: { $0.typeProvided ? $0.type : nil }, name: { $0.displayName ?? $0.name },
+              localizedTrailer: sharedTrailerWord)
     }
 
     /// The shared module fills a video with no type with `resourceString("Trailer",

@@ -80,6 +80,9 @@ data class MetaTrailer(
     /** BUG-63: ISO 639-1 tag of the video itself (TMDB `iso_639_1`), lowercase; null when the
      *  source (addon meta) doesn't say. Used only to *prefer* the Metadata Language at selection. */
     val language: String? = null,
+    /** False when the source sent no `type` and [type] holds the localized "Trailer" default
+     *  (`StringKey.generic_trailer`). The tvOS Trailers/Bonus split then classifies by name. */
+    val typeProvided: Boolean = true,
 )
 
 data class MetaPerson(

@@ -2318,18 +2318,20 @@ private fun TmdbVideoResult.toMetaTrailer(
     val videoKey = key?.trim().orEmpty()
     val videoName = name?.trim().takeUnless { it.isNullOrBlank() } ?: resourceString("Trailer", StringKey.generic_trailer)
     val trailerId = id?.trim().takeUnless { it.isNullOrBlank() } ?: videoKey
+    val providedType = type?.trim().takeUnless { it.isNullOrBlank() }
     return MetaTrailer(
         id = trailerId,
         key = videoKey,
         name = videoName,
         site = site?.trim().takeUnless { it.isNullOrBlank() } ?: "YouTube",
         size = size,
-        type = type?.trim().takeUnless { it.isNullOrBlank() } ?: resourceString("Trailer", StringKey.generic_trailer),
+        type = providedType ?: resourceString("Trailer", StringKey.generic_trailer),
         official = official == true,
         publishedAt = publishedAt,
         seasonNumber = seasonNumber,
         displayName = displayName,
         language = language?.trim()?.lowercase()?.takeIf { it.isNotBlank() },
+        typeProvided = providedType != null,
     )
 }
 
