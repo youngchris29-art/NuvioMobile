@@ -508,6 +508,21 @@ class TitleFormatProbeTest {
     }
 
     @Test
+    fun aManifestRefreshThatChangesIdPrefixesMissesTheCache() = runTest {
+        val rig = rig("a1")
+        rig.fetcher.behavior = { listOf(stream(it.addonName, fourKDv)) }
+        rig.engine.start(movie)
+        settle()
+        assertEquals(1, rig.fetcher.fetched.size)
+
+        rig.addons = listOf(addon("a1", idPrefixes = listOf("tmdb:")))
+        rig.engine.start(movie)
+        settle()
+
+        assertEquals(emptyList(), rig.badges(), "the add-on no longer serves this id")
+    }
+
+    @Test
     fun changingTheDebridFlagMissesTheCache() = runTest {
         val rig = rig("a1")
         rig.fetcher.behavior = { listOf(stream(it.addonName, fourKDv)) }

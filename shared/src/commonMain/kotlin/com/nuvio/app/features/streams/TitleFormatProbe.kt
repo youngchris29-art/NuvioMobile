@@ -551,8 +551,10 @@ internal class TitleFormatProbeEngine(
         ): String {
             val streamAddonIds = installed.enabledAddons().mapNotNull { addon ->
                 val manifest = addon.manifest ?: return@mapNotNull null
-                val servesType = manifest.resources.any { it.name == "stream" && it.types.contains(request.type) }
-                if (servesType) addon.streamAddonInstanceId(manifest.id) else null
+                val streamResources = manifest.resources.filter { it.name == "stream" && it.types.contains(request.type) }
+                // The id prefixes decide which ids the add-on is asked for (a refresh can change them).
+                if (streamResources.isEmpty()) null
+                else addon.streamAddonInstanceId(manifest.id) to streamResources.map { it.idPrefixes }
             }
             val fingerprint = listOf(
                 streamAddonIds,
