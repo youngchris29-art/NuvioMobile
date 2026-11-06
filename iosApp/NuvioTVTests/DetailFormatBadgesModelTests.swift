@@ -11,17 +11,22 @@ final class DetailFormatBadgesModelTests: XCTestCase {
         var started: [String] = []
         var cancelled: [String] = []
         var cached: [TitleFormatBadge] = []
-        private var continuations: [String: AsyncStream<[TitleFormatBadge]>.Continuation] = [:]
+        var generation: Int32 = 0
+        private var continuations: [String: AsyncStream<DetailFormatBadgeSnapshot>.Continuation] = [:]
 
         func start(_ request: TitleFormatRequest) { started.append(request.key) }
         func cancel(_ request: TitleFormatRequest) { cancelled.append(request.key) }
-        func badges(for request: TitleFormatRequest) -> [TitleFormatBadge] { cached }
-        func updates(for request: TitleFormatRequest) -> AsyncStream<[TitleFormatBadge]> {
-            let (stream, continuation) = AsyncStream<[TitleFormatBadge]>.makeStream()
+        func snapshot(for request: TitleFormatRequest) -> DetailFormatBadgeSnapshot {
+            DetailFormatBadgeSnapshot(badges: cached, generation: generation)
+        }
+        func updates(for request: TitleFormatRequest) -> AsyncStream<DetailFormatBadgeSnapshot> {
+            let (stream, continuation) = AsyncStream<DetailFormatBadgeSnapshot>.makeStream()
             continuations[request.key] = continuation
             return stream
         }
-        func emit(_ badges: [TitleFormatBadge], key: String) { continuations[key]?.yield(badges) }
+        func emit(_ badges: [TitleFormatBadge], key: String, generation: Int32? = nil) {
+            continuations[key]?.yield(DetailFormatBadgeSnapshot(badges: badges, generation: generation ?? self.generation))
+        }
         func hasUpdates(key: String) -> Bool { continuations[key] != nil }
     }
 
@@ -97,6 +102,22 @@ final class DetailFormatBadgesModelTests: XCTestCase {
         source.emit([.dolbyAtmos], key: req.key)
         try? await Task.sleep(for: .milliseconds(50))
         XCTAssertEqual(labels(model), both)
+        task.cancel()
+        await task.value
+    }
+
+    func testAProbeResetReplacesTheBadges() async {
+        let source = FakeSource()
+        let model = makeModel(source)
+        let req = request()
+        let task = Task { await model.run(request: req, enabled: true) }
+        await waitUntil("start") { source.hasUpdates(key: req.key) }
+
+        source.emit([.uhd4k, .dolbyVision], key: req.key)
+        await waitUntil("4K + DV") { model.badges.count == 2 }
+        // The add-on set or filters changed: the probe starts a new generation, without the 4K.
+        source.emit([.dolbyAtmos], key: req.key, generation: 7)
+        await waitUntil("reset") { self.labels(model) == [TitleFormatBadge.dolbyAtmos.label] }
         task.cancel()
         await task.value
     }

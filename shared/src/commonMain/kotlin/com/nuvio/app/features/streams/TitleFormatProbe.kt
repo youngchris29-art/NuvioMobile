@@ -55,11 +55,17 @@ data class TitleFormatRequest(
 /** Where a request's badges came from: the background probe, or the open stream picker. */
 enum class TitleFormatSource { PROBE, PICKER }
 
-/** The badge row's model for one request. [source] is null until anything has been learned. */
+/**
+ * The badge row's model for one request. [source] is null until anything has been learned.
+ * [generation] changes whenever the engine resets the request's badges (a new cache key, or an
+ * answer that expired from the cache): within one generation badges only grow, so a watcher merges
+ * within it and replaces on a change.
+ */
 data class TitleFormatState(
     val badges: List<TitleFormatBadge> = emptyList(),
     val isProbing: Boolean = false,
     val source: TitleFormatSource? = null,
+    val generation: Int = 0,
 )
 
 /** The probe's I/O, faked in tests. */
@@ -121,13 +127,21 @@ internal object AddonTitleFormatFetcher : TitleFormatFetcher {
  * resolver, NOT_CACHED hiding, per-group limits), then [StreamListability]. Badges are aggregated
  * from these, so a badge never advertises a stream the picker hides.
  */
-internal fun presentForBadges(group: AddonStreamGroup, settings: DebridSettings): List<StreamItem> =
-    DebridStreamPresentation.apply(
+internal fun presentForBadges(group: AddonStreamGroup, settings: DebridSettings): List<StreamItem> {
+    val presented = DebridStreamPresentation.apply(
         groups = listOf(group),
         settings = settings,
         allStreams = StreamPresentationPlatform.filtersApplyToAllStreams,
     ).firstOrNull()?.streams.orEmpty()
         .filter { StreamListability.isListable(it, settings.canResolvePlayableLinks) }
+    // The presenter's name/description templates can rewrite a managed stream's text (and drop a
+    // "DV" or "CAM" in it); facts are read from the add-on's own stream that survived presentation.
+    val originals = group.streams.groupBy { it.presentationIdentity() }
+    return presented.map { stream -> originals[stream.presentationIdentity()]?.firstOrNull() ?: stream }
+}
+
+/** A stream without the two fields `DebridStreamFormatter` rewrites. */
+private fun StreamItem.presentationIdentity(): StreamItem = copy(name = null, description = null)
 
 /**
  * Detail-page format badges: a background probe of up to [MAX_ADDONS] of the user's stream add-ons
@@ -144,8 +158,9 @@ internal fun presentForBadges(group: AddonStreamGroup, settings: DebridSettings)
  *   the picker's request token is a tracked request (either `manualSelection`), its presented,
  *   listable streams merge into that request's badges and into the cache (source PICKER), per
  *   emission. [cancel] stops only the network probe, so the fold keeps working under the picker.
- * - **Growth.** Within one run of a request key, badges only grow ([TitleFormatBadges.merge]).
- *   Starting a request whose cache key changed (add-ons or debrid/filter settings) resets it.
+ * - **Growth.** Within one [TitleFormatState.generation] of a request key, badges only grow
+ *   ([TitleFormatBadges.merge]). Starting a request whose cache key changed (add-ons, debrid keys or
+ *   filter settings), or whose earlier answer expired from the cache, resets it to a new generation.
  * - **Cache.** [TitleFormatProbeCache]: LRU 200, 6 h / 30 min TTL. A probe where every add-on failed
  *   or timed out is not cached; nor are embedded streams (no network to save).
  *
@@ -170,6 +185,8 @@ internal class TitleFormatProbeEngine(
         val cacheKey: String?,
         val canResolve: Boolean,
         var job: Job? = null,
+        /** A run answered (embedded, cache hit or a finished probe); a later miss means it expired. */
+        var answered: Boolean = false,
     )
 
     private val lock = SynchronizedObject()
@@ -177,6 +194,8 @@ internal class TitleFormatProbeEngine(
     /** By [TitleFormatRequest.key], oldest first; bounded by [MAX_TRACKED]. */
     private val tracked = LinkedHashMap<String, Tracked>()
     private var foldJob: Job? = null
+    /** The last [TitleFormatState.generation] handed out; guarded by [lock]. */
+    private var lastGeneration = 0
 
     private val _states = MutableStateFlow<Map<String, TitleFormatState>>(emptyMap())
     val states: StateFlow<Map<String, TitleFormatState>> = _states.asStateFlow()
@@ -196,14 +215,18 @@ internal class TitleFormatProbeEngine(
             val previous = tracked[request.key]
             if (previous != null && previous.cacheKey == cacheKey && previous.job?.isActive == true) return
             previous?.job?.cancel()
-            // Same cache key: what this key already showed stays (badges only grow). New key: reset.
-            if (previous == null || previous.cacheKey != cacheKey) {
-                _states.update { it - request.key }
+            val hit = cacheKey?.let { cache.get(it) }
+            // Same cache key: what this key already showed stays (badges only grow), unless its
+            // answer is no longer cached (expired): then the fresh probe must not inherit it.
+            // A run cancelled before it answered keeps its partial badges and grows on.
+            if (previous == null || previous.cacheKey != cacheKey || (hit == null && previous.answered)) {
+                resetState(request.key)
             }
             val entry = Tracked(request, cacheKey, canResolve)
             track(entry)
 
             if (cacheKey == null) {
+                entry.answered = true
                 val badges = TitleFormatBadges.aggregateStreams(
                     embedded.filter { StreamListability.isListable(it, canResolve) },
                 )
@@ -212,8 +235,8 @@ internal class TitleFormatProbeEngine(
                 return
             }
 
-            val hit = cache.get(cacheKey)
             if (hit != null) {
+                entry.answered = true
                 StreamDiagnostics.log("probe cache hit $cacheKey")
                 publish(request.key) { it.copy(badges = TitleFormatBadges.merge(it.badges, hit.badges), isProbing = false, source = it.source.upgradedTo(hit.source)) }
                 return
@@ -221,7 +244,7 @@ internal class TitleFormatProbeEngine(
 
             publish(request.key) { it.copy(isProbing = true) }
             scope.launch(start = CoroutineStart.LAZY) {
-                runProbe(request, cacheKey, installed, currentSettings)
+                runProbe(entry, cacheKey, installed, currentSettings)
             }.also { entry.job = it }
         }
         // Assigned before it can run, so cancel() always finds the job it must stop.
@@ -237,7 +260,9 @@ internal class TitleFormatProbeEngine(
             val entry = tracked[request.key] ?: return
             val job = entry.job ?: return
             entry.job = null
-            if (!job.isActive) return
+            // isCompleted, not isActive: a LAZY job start() has not started yet is not active, and
+            // must still be cancelled so its start() is a no-op.
+            if (job.isCompleted) return
             job.cancel()
             StreamDiagnostics.log("probe cancel ${entry.cacheKey}")
             publish(request.key) { it.copy(isProbing = false) }
@@ -245,12 +270,16 @@ internal class TitleFormatProbeEngine(
     }
 
     private suspend fun runProbe(
-        request: TitleFormatRequest,
+        entry: Tracked,
         cacheKey: String,
         installed: List<ManagedAddon>,
         settings: DebridSettings,
     ) = coroutineScope {
+        val request = entry.request
         var anySucceeded = false // guarded by lock
+        // What this run's add-ons answered (guarded by lock): the cache records only this, never
+        // badges the visible state carried over from an earlier run.
+        var runBadges = emptyList<TitleFormatBadge>()
         // Parent of the per-add-on fetches, so early exit and the overall cap can stop them all
         // without cancelling this coroutine. Supervisor: one add-on's bug never stops the others.
         val fetches = SupervisorJob(parent = coroutineContext.job)
@@ -263,6 +292,7 @@ internal class TitleFormatProbeEngine(
                         // Checked under the lock cancel() takes, so a cancelled run never publishes.
                         if (!isActive) return@launch
                         anySucceeded = true
+                        runBadges = TitleFormatBadges.merge(runBadges, badges)
                         publish(request.key) { it.copy(badges = TitleFormatBadges.merge(it.badges, badges)) }
                         TitleFormatBadges.isComplete(state(request).badges)
                     }
@@ -279,7 +309,8 @@ internal class TitleFormatProbeEngine(
 
         val badges = synchronized(lock) {
             if (!isActive) return@coroutineScope
-            if (anySucceeded) cache.record(cacheKey, state(request).badges, TitleFormatSource.PROBE)
+            if (anySucceeded) cache.record(cacheKey, runBadges, TitleFormatSource.PROBE)
+            entry.answered = true
             publish(request.key) { it.copy(isProbing = false, source = it.source.upgradedTo(TitleFormatSource.PROBE)) }
             state(request).badges
         }
@@ -363,9 +394,10 @@ internal class TitleFormatProbeEngine(
                     state.groups.flatMap { it.streams }.filter { StreamListability.isListable(it, entry.canResolve) },
                 )
                 if (badges.isEmpty() && !settled) return@forEach
-                // Like the probe: an empty answer is cached only if some source actually answered.
+                // Like the probe: an empty answer is cached only if some source actually answered,
+                // and only once the picker settled (a partial answer would suppress a full probe).
                 val answered = badges.isNotEmpty() || state.groups.any { it.error.isNullOrBlank() }
-                if (entry.cacheKey != null && answered) {
+                if (entry.cacheKey != null && answered && settled) {
                     cache.record(entry.cacheKey, badges, TitleFormatSource.PICKER)
                 }
                 publish(entry.request.key) {
@@ -386,6 +418,13 @@ internal class TitleFormatProbeEngine(
         }
     }
 
+    /** Call under [lock]. Replaces [requestKey]'s state with an empty one of a new generation. */
+    private fun resetState(requestKey: String) {
+        lastGeneration += 1
+        val fresh = TitleFormatState(generation = lastGeneration)
+        _states.update { it + (requestKey to fresh) }
+    }
+
     private fun publish(requestKey: String, transform: (TitleFormatState) -> TitleFormatState) {
         _states.update { states -> states + (requestKey to transform(states[requestKey] ?: TitleFormatState())) }
     }
@@ -403,7 +442,8 @@ internal class TitleFormatProbeEngine(
          * `type:videoId[:s:e]:<hash>`. The hash covers the enabled stream add-ons for the type in
          * user order (order picks the first [MAX_ADDONS]; the instance id embeds the manifest URL, so a
          * config change counts), the debrid resolve flag, the active resolver, Cached Sources Only and
-         * the effective Sources filters. Only the hash is kept: add-on ids can hold debrid keys.
+         * the effective Sources filters, and the debrid API keys (two accounts on one provider can
+         * differ in cached availability). Only the hash is kept: add-on ids and keys are secrets.
          */
         fun cacheKeyFor(request: TitleFormatRequest, installed: List<ManagedAddon>, settings: DebridSettings): String {
             val streamAddonIds = installed.enabledAddons().mapNotNull { addon ->
@@ -415,6 +455,7 @@ internal class TitleFormatProbeEngine(
                 streamAddonIds,
                 settings.canResolvePlayableLinks,
                 settings.activeResolverProviderId,
+                settings.providerApiKeys,
                 settings.streamCachedOnly,
                 DebridStreamMetadata.effectivePreferences(settings),
             ).hashCode()

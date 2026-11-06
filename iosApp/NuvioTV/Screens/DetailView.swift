@@ -2239,6 +2239,7 @@ struct DetailView: View {
             VStack(alignment: .leading, spacing: Theme.Spacing.lg + Theme.Spacing.sm) {
                 header
                 metaLine
+                DetailFormatBadgeRow(request: formatRequest)
                 actionRow
                 if !genres.isEmpty {
                     Text(genres.joined(separator: " \u{2022} "))

@@ -364,6 +364,47 @@ class TitleFormatProbeTest {
     }
 
     @Test
+    fun anExpiredAnswerIsNotCarriedIntoTheFreshProbe() = runTest {
+        val rig = rig("a1")
+        var name = fourKDv
+        rig.fetcher.behavior = { listOf(stream("a1", name)) }
+        rig.engine.start(movie)
+        settle()
+        val firstGeneration = rig.engine.state(movie).generation
+        assertEquals(listOf(UHD_4K, DOLBY_VISION), rig.badges())
+
+        name = "Movie.2024.1080p.WEB-DL-GRP"
+        rig.now += TitleFormatProbeCache.POSITIVE_TTL_MS
+        rig.engine.start(movie)
+        settle()
+
+        assertEquals(2, rig.fetcher.fetched.size)
+        assertEquals(emptyList(), rig.badges())
+        assertTrue(rig.engine.state(movie).generation != firstGeneration)
+        // And the cache holds the fresh answer only: a restart is a hit with no 4K.
+        rig.engine.start(movie)
+        settle()
+        assertEquals(2, rig.fetcher.fetched.size)
+        assertEquals(emptyList(), rig.badges())
+    }
+
+    @Test
+    fun changingTheDebridApiKeyMissesTheCache() = runTest {
+        val rig = rig("a1")
+        rig.fetcher.behavior = { listOf(stream(it.addonName, fourKDv)) }
+        rig.settings = DebridSettings(enabled = true, providerApiKeys = mapOf(DebridProviders.TORBOX_ID to "key-a"))
+        rig.engine.start(movie)
+        settle()
+        assertEquals(1, rig.fetcher.fetched.size)
+
+        rig.settings = DebridSettings(enabled = true, providerApiKeys = mapOf(DebridProviders.TORBOX_ID to "key-b"))
+        rig.engine.start(movie)
+        settle()
+
+        assertEquals(2, rig.fetcher.fetched.size)
+    }
+
+    @Test
     fun anEmptyCacheEntryExpiresAfterThirtyMinutes() = runTest {
         val rig = rig("a1")
         rig.engine.start(movie) // the add-on answers, with nothing format-worthy
@@ -486,6 +527,26 @@ class TitleFormatProbeTest {
         assertEquals(fetchesBefore, rig.fetcher.fetched.size)
         assertEquals(TitleFormatSource.PICKER, rig.engine.state(movie).source)
         assertEquals(listOf(UHD_4K, DOLBY_VISION, DOLBY_ATMOS, DTS_X), rig.badges())
+    }
+
+    @Test
+    fun aPartialPickerAnswerShowsButIsNotCached() = runTest {
+        val rig = rig("a1")
+        val gate = CompletableDeferred<List<StreamItem>>()
+        rig.fetcher.behavior = { gate.await() }
+        rig.engine.start(movie)
+        runCurrent()
+
+        rig.picker.value = pickerState(token(manual = true), stream("picker", fourKDv), loading = true)
+        runCurrent()
+        assertEquals(listOf(UHD_4K, DOLBY_VISION), rig.badges())
+
+        rig.engine.cancel(movie)
+        runCurrent()
+        val fetchesBefore = rig.fetcher.fetched.size
+        rig.engine.start(movie)
+        runCurrent()
+        assertEquals(fetchesBefore + 1, rig.fetcher.fetched.size, "a partial picker answer must not be a cache hit")
     }
 
     @Test
