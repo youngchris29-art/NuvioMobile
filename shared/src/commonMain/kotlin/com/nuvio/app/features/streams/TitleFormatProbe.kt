@@ -205,7 +205,24 @@ internal class TitleFormatProbeEngine(
     private val _states = MutableStateFlow<Map<String, TitleFormatState>>(emptyMap())
     val states: StateFlow<Map<String, TitleFormatState>> = _states.asStateFlow()
 
-    fun state(request: TitleFormatRequest): TitleFormatState = _states.value[request.key] ?: TitleFormatState()
+    /**
+     * What [request] may show right now, before any [start]: its published state, unless that was
+     * learned under another configuration (cache key) or its cached answer has expired, in which
+     * case an empty state of the same generation (the next [start] resets it). No network.
+     */
+    fun state(request: TitleFormatRequest): TitleFormatState {
+        val published = rawState(request)
+        val (entryKey, answered) = synchronized(lock) {
+            val entry = tracked[request.key] ?: return published
+            (entry.cacheKey ?: return published) to entry.answered
+        }
+        val currentKey = cacheKeyFor(request, installedAddons(), settings())
+        val stale = currentKey != entryKey || (answered && synchronized(lock) { cache.get(entryKey) } == null)
+        return if (stale) TitleFormatState(generation = published.generation) else published
+    }
+
+    private fun rawState(request: TitleFormatRequest): TitleFormatState =
+        _states.value[request.key] ?: TitleFormatState()
 
     /** Starts (or answers from cache) the probe for [request]. A no-op while the same probe runs. */
     fun start(request: TitleFormatRequest) {
@@ -231,7 +248,7 @@ internal class TitleFormatProbeEngine(
             track(entry)
             // The collector folds only new emissions: a picker that settled on this request before
             // it was tracked (opened during the dwell) is folded here, under the same lock.
-            foldInto(entry, pickerState.value)
+            foldInto(entry, pickerState.value, configChecked = true)
 
             if (cacheKey == null) {
                 entry.answered = true
@@ -322,7 +339,7 @@ internal class TitleFormatProbeEngine(
             if (anySucceeded) cache.record(cacheKey, runBadges, TitleFormatSource.PROBE)
             entry.answered = true
             publish(request.key) { it.copy(isProbing = false, source = it.source.upgradedTo(TitleFormatSource.PROBE)) }
-            state(request).badges
+            rawState(request).badges
         }
         StreamDiagnostics.log("probe done ${badges.describe()}")
     }
@@ -397,14 +414,25 @@ internal class TitleFormatProbeEngine(
     /** Folds the picker's presented, listable streams into every tracked request it is showing. */
     private fun fold(state: StreamsUiState) {
         synchronized(lock) {
-            tracked.values.forEach { foldInto(it, state) }
+            tracked.values.forEach { foldInto(it, state, configChecked = false) }
         }
     }
 
-    /** Call under [lock]. Folds [state] into [entry] when the picker is showing its request. */
-    private fun foldInto(entry: Tracked, state: StreamsUiState) {
+    /**
+     * Call under [lock]. Folds [state] into [entry] when the picker is showing its request and
+     * [entry] was tracked under the current configuration: a picker opened after an account, add-on
+     * or filter change must not write into the old configuration's cache entry (the next [start]
+     * re-tracks the request under the new key and folds the picker then). [configChecked]: the
+     * caller just computed [entry]'s key from the current configuration.
+     */
+    private fun foldInto(entry: Tracked, state: StreamsUiState, configChecked: Boolean) {
         val token = state.requestToken ?: return
         if (!entry.request.matchesPickerToken(token)) return
+        if (!configChecked && entry.cacheKey != null &&
+            entry.cacheKey != cacheKeyFor(entry.request, installedAddons(), settings())
+        ) {
+            return
+        }
         val settled = !state.isAnyLoading
         val badges = TitleFormatBadges.aggregateStreams(
             state.groups.flatMap { it.streams }.filter { StreamListability.isListable(it, entry.canResolve) },

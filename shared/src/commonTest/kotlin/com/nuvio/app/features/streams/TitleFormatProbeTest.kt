@@ -636,6 +636,44 @@ class TitleFormatProbeTest {
     }
 
     @Test
+    fun aPickerOpenedAfterAConfigChangeDoesNotWriteTheOldEntry() = runTest {
+        val rig = rig("a1")
+        rig.engine.start(movie)
+        settle() // answered empty under the default settings, cached
+        rig.settings = DebridSettings(enabled = true, providerApiKeys = mapOf(DebridProviders.TORBOX_ID to "key-b"))
+
+        rig.picker.value = pickerState(token(manual = true), stream("picker", fourKDv))
+        runCurrent()
+        assertEquals(emptyList(), rig.badges(), "not folded into the old configuration's entry")
+
+        rig.settings = DebridSettings()
+        val fetchesBefore = rig.fetcher.fetched.size
+        rig.picker.value = StreamsUiState()
+        runCurrent()
+        rig.engine.start(movie)
+        settle()
+        assertEquals(fetchesBefore, rig.fetcher.fetched.size, "the old entry is still a hit")
+        assertEquals(emptyList(), rig.badges(), "and holds no formats from the other configuration")
+    }
+
+    @Test
+    fun stateBeforeStartHidesAnswersFromAnotherConfigurationOrPastExpiry() = runTest {
+        val rig = rig("a1")
+        rig.fetcher.behavior = { listOf(stream("a1", fourKDv)) }
+        rig.engine.start(movie)
+        settle()
+        assertEquals(listOf(UHD_4K, DOLBY_VISION), rig.badges())
+
+        rig.settings = DebridSettings(streamDolbyVisionFilter = com.nuvio.app.features.debrid.DebridStreamFeatureFilter.EXCLUDE)
+        assertEquals(emptyList(), rig.badges(), "filters changed: not shown before the next start")
+        rig.settings = DebridSettings()
+        assertEquals(listOf(UHD_4K, DOLBY_VISION), rig.badges())
+
+        rig.now += TitleFormatProbeCache.POSITIVE_TTL_MS
+        assertEquals(emptyList(), rig.badges(), "expired: not shown before the next start")
+    }
+
+    @Test
     fun pickerEmissionsForAnotherTitleAreIgnored() = runTest {
         val rig = rig("a1")
         rig.engine.start(movie)
