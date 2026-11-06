@@ -123,4 +123,41 @@ final class DetailTrailerPartitionTests: XCTestCase {
         XCTAssertEqual(r.trailers.map(\.key), ["b", "c"])
         XCTAssertEqual(r.bonus.map(\.key), ["a", "d"])
     }
+
+    /// fr and es: the shared parser names an untyped, unnamed video with the localized "Trailer"
+    /// (`generic_trailer`: "Bande-annonce", "Tráiler"); read through the real `SharedStringProvider`
+    /// on that locale's catalog, the name fallback keeps it in Trailers. A named untyped extra
+    /// still goes to Bonus.
+    func testUntypedUnnamedVideoIsATrailerInFrenchAndSpanish() throws {
+        let saved = LocalizedStrings.shared.provider
+        defer { LocalizedStrings.shared.provider = saved }
+        let payload = """
+        {"meta": {"id": "tt1", "type": "movie", "name": "Movie", "trailers": [
+          {"source": "a"},
+          {"source": "b", "name": "Behind the Scenes"}
+        ]}}
+        """
+        for (locale, word) in [("fr", "Bande-annonce"), ("es", "Tráiler")] {
+            let path = try XCTUnwrap(Bundle.main.path(forResource: locale, ofType: "lproj"), locale)
+            let bundle = try XCTUnwrap(Bundle(path: path), locale)
+            XCTAssertEqual(DetailTrailerPartition.sharedTrailerWord(bundle: bundle), word)
+            LocalizedStrings.shared.provider = SharedStringProvider(bundle: bundle)
+            let meta = MetaDetailsParser.shared.parse(payload: payload)
+            XCTAssertEqual(meta.trailers.first?.name, word, locale)
+            XCTAssertEqual(meta.trailers.first?.typeProvided, false, locale)
+            let r = DetailTrailerPartition.split(meta.trailers,
+                                                 localizedTrailer: DetailTrailerPartition.sharedTrailerWord(bundle: bundle))
+            XCTAssertEqual(r.trailers.map(\.key), ["a"], locale)
+            XCTAssertEqual(r.bonus.map(\.key), ["b"], locale)
+        }
+    }
+
+    /// The localized word matches in an untyped NAME, case- and accent-insensitively.
+    func testNameFallbackMatchesLocalizedWord() {
+        XCTAssertTrue(DetailTrailerPartition.isTrailer(type: nil, name: "Bande-annonce VF", localizedTrailer: "Bande-annonce"))
+        XCTAssertTrue(DetailTrailerPartition.isTrailer(type: nil, name: "TRAILER oficial", localizedTrailer: "Tráiler"))
+        XCTAssertTrue(DetailTrailerPartition.isTrailer(type: nil, name: "Tráiler final", localizedTrailer: "Tráiler"))
+        XCTAssertFalse(DetailTrailerPartition.isTrailer(type: nil, name: "Making of", localizedTrailer: "Bande-annonce"))
+        XCTAssertFalse(DetailTrailerPartition.isTrailer(type: nil, name: "Making of", localizedTrailer: " "))
+    }
 }

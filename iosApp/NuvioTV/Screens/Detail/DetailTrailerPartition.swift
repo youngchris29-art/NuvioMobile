@@ -34,17 +34,23 @@ nonisolated enum DetailTrailerPartition {
     /// localized "Trailer" default) is classified by name, so an untyped add-on "Behind the Scenes"
     /// lands in Bonus instead of taking a trailer slot. On an English device that default cannot
     /// be told apart from a real "Trailer" type by its text alone, hence the flag.
-    static func split(_ items: [MetaTrailer]) -> (trailers: [MetaTrailer], bonus: [MetaTrailer]) {
+    static func split(_ items: [MetaTrailer],
+                      localizedTrailer: String = sharedTrailerWord) -> (trailers: [MetaTrailer], bonus: [MetaTrailer]) {
         split(items, type: { $0.typeProvided ? $0.type : nil }, name: { $0.displayName ?? $0.name },
-              localizedTrailer: sharedTrailerWord)
+              localizedTrailer: localizedTrailer)
     }
 
     /// The shared module fills a video with no type with `resourceString("Trailer",
     /// StringKey.generic_trailer)` (`MetaDetailsParser`, `TmdbMetadataService`), which the tvOS app
     /// answers from the "Shared" catalog (`SharedStringProvider`): "Bande-annonce" on a French
     /// device. Read the same entry the same way, so such a video still counts as a trailer.
-    static var sharedTrailerWord: String {
-        Bundle.main.localizedString(forKey: "generic_trailer", value: "Trailer", table: "Shared")
+    ///
+    /// An untyped video's NAME is that same word when the source gave none ("Bande-annonce",
+    /// "Tráiler"), so the name fallback matches it too (`isTrailer`).
+    static var sharedTrailerWord: String { sharedTrailerWord(bundle: .main) }
+
+    static func sharedTrailerWord(bundle: Bundle) -> String {
+        bundle.localizedString(forKey: "generic_trailer", value: "Trailer", table: "Shared")
     }
 
     static func isTrailer(type: String?, name: String?, localizedTrailer: String? = nil) -> Bool {
@@ -55,6 +61,10 @@ nonisolated enum DetailTrailerPartition {
             return !word.isEmpty && t == word
         }
         let n = (name ?? "").lowercased()
-        return n.contains("trailer") || n.contains("teaser")
+        if n.contains("trailer") || n.contains("teaser") { return true }
+        // The localized word (the parser's default name for an untyped video), case- and
+        // accent-insensitive.
+        let word = (localizedTrailer ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return !word.isEmpty && n.range(of: word, options: [.caseInsensitive, .diacriticInsensitive]) != nil
     }
 }
