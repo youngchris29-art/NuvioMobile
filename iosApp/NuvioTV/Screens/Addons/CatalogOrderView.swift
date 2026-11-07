@@ -116,6 +116,12 @@ struct CatalogOrderView: View {
     /// Whether the row at `index` can move one step in `direction` and change what the page shows:
     /// the neighbour must exist and must not be pinned to the top (the repository re-pins pinned
     /// collections), and a pinned row itself never moves.
+    /// Review A6-r1: a cancel never lands above a collection pinned to the top (one may have
+    /// been pinned by a sync during the move): the destination is clamped below every pinned key.
+    nonisolated static func cancelDestination(origin: Int, pinnedKeys: Set<String>) -> Int {
+        max(origin, pinnedKeys.count)
+    }
+
     nonisolated static func canMove(index: Int, direction: Int, orderedKeys: [String], pinnedKeys: Set<String>) -> Bool {
         guard orderedKeys.indices.contains(index), !pinnedKeys.contains(orderedKeys[index]) else { return false }
         let target = index + direction
@@ -154,6 +160,14 @@ struct CatalogOrderView: View {
     var body: some View {
         ScrollViewReader { proxy in
             list
+                // Review A6-r1: torn down mid-move (a programmatic section change, an install
+                // landing): the hub must not stay locked.
+                .onDisappear {
+                    if moveMode.isMoving {
+                        moveMode.commit()
+                        onMovingChange(false)
+                    }
+                }
                 .onChange(of: scrollTarget?.wrappedValue) { _, target in
                     guard let target, target.hasPrefix("catalog:") else { return }
                     proxy.scrollTo(String(target.dropFirst("catalog:".count)), anchor: .center)
@@ -332,8 +346,10 @@ struct CatalogOrderView: View {
     /// Menu while moving: puts the catalog back where it started (relative to the survivors), in
     /// one `moveByIndex`, only when a step actually happened.
     private func cancelMove() {
-        if let (key, origin) = moveMode.cancel(currentOrder: liveKeys()) {
-            if moveDidStep { model.moveCatalog(key: key, toIndex: origin) }
+        let items = liveItems()
+        if let (key, origin) = moveMode.cancel(currentOrder: items.map(\.key)) {
+            let pinned = Set(items.filter(\.isPinnedToTop).map(\.key))
+            if moveDidStep { model.moveCatalog(key: key, toIndex: Self.cancelDestination(origin: origin, pinnedKeys: pinned)) }
             onMovingChange(false)
             focusRowSoon(key)
         }

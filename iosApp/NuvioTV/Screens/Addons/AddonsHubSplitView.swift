@@ -75,7 +75,9 @@ struct AddonsHubSplitView: View {
     /// A4: the sidebar's default focus is suppressed while moving and for a moment after, so
     /// re-enabling the sidebar does not pull focus off the row (seen on the box).
     @State private var suppressSidebarDefaultFocus = false
-    @State private var lastMovedUrl: String?
+    /// A6: the focus key a move ended on (an Installed row or a Catalogs row), handed back if the
+    /// re-enabled sidebar grabs focus inside `sidebarGrabWindow`.
+    @State private var lastMovedKey: String?
     /// Review A4-r4: whether a step of the current move actually moved the add-on; a cancel with
     /// no step restores nothing (a sync may have reordered the list meanwhile).
     @State private var moveDidStep = false
@@ -316,7 +318,7 @@ struct AddonsHubSplitView: View {
                     onCommitMove: commitMove,
                     catalogFilter: catalogFilter,
                     onClearCatalogFilter: clearCatalogFilter,
-                    onCatalogsMovingChange: { catalogsMoving = $0 },
+                    onCatalogsMovingChange: catalogsMovingChanged,
                     catalogsScrollTarget: $catalogsScrollTarget,
                     installHandledSerial: $installHandledSerial,
                     onInstalled: focusNewestCard
@@ -404,6 +406,12 @@ struct AddonsHubSplitView: View {
         guard !section.isAction, section != selected else { return }
         pendingLiftUrl = nil
         catalogFilter = nil
+        // Review A6-r1: a programmatic switch away from Catalogs mid-move (an install landing)
+        // must not leave the hub locked; the pane also ends its mode when torn down.
+        if catalogsMoving {
+            catalogsMoving = false
+            suppressSidebarDefaultFocus = false
+        }
         popProgrammatically()
         // Review r4: the Installed list reports its scroll to the rail (Hide While Browsing); the
         // list is torn down on a section change without scrolling back, so clear its latch.
@@ -458,12 +466,12 @@ struct AddonsHubSplitView: View {
         }
         if old == nil, new == selected, let ended = moveEndedAt,
            ProcessInfo.processInfo.systemUptime - ended < Self.sidebarGrabWindow,
-           let url = lastMovedUrl {
+           let key = lastMovedKey {
             // A4: the re-enabled sidebar took focus right as a move ended (faster than anyone can
             // press Left): give it back to the row. A later sidebar landing is the user's own.
             Self.logFocus("sidebar grab \(Int((ProcessInfo.processInfo.systemUptime - ended) * 1000)) ms after move end -> row")
             moveEndedAt = nil
-            handOffContent(InstalledAddonsPane.rowKey(url))
+            handOffContent(key)
             return
         }
         if new == deliberateSidebar {
@@ -760,14 +768,37 @@ struct AddonsHubSplitView: View {
     /// focus stays suppressed for a moment, and a grab inside `sidebarGrabWindow` is handed back
     /// in `sidebarFocusChanged`. No timer, so nothing overrides the user's next press (review r2).
     private func refocusRowAfterMove(_ url: String) {
-        lastMovedUrl = url
-        moveEndedAt = ProcessInfo.processInfo.systemUptime
         installedScrollTarget = InstalledAddonsPane.rowKey(url)
+        refocusAfterMove(InstalledAddonsPane.rowKey(url))
+    }
+
+    /// The shared tail of a move's end (Installed or Catalogs): focus back on `key`, the sidebar's
+    /// default focus suppressed for a moment, a grab inside the window handed back.
+    private func refocusAfterMove(_ key: String) {
+        lastMovedKey = key
+        moveEndedAt = ProcessInfo.processInfo.systemUptime
         DispatchQueue.main.async {
-            deliberateContent = InstalledAddonsPane.rowKey(url)
-            contentFocus = InstalledAddonsPane.rowKey(url)
+            deliberateContent = key
+            contentFocus = key
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { suppressSidebarDefaultFocus = false }
+    }
+
+    /// A6: the Catalogs pane starts or ends a move. Start: the sidebar's default focus is held off
+    /// (it re-enables when the move ends). End (device check: the cancel's Menu left focus on the
+    /// sidebar): A4's tail, onto the catalog the pane had focused, unless the pane went away.
+    private func catalogsMovingChanged(_ moving: Bool) {
+        if moving {
+            suppressSidebarDefaultFocus = true
+            catalogsMoving = true
+            return
+        }
+        catalogsMoving = false
+        if selected == .catalogs, let key = contentFocus ?? lastContentFocus[.catalogs], key.hasPrefix("catalog:") {
+            refocusAfterMove(key)
+        } else {
+            suppressSidebarDefaultFocus = false
+        }
     }
 
     /// Review A4-r7: the lifted add-on went away (sync, another device). End the mode with the

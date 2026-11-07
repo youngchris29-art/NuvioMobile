@@ -109,4 +109,11 @@ final class CatalogOrderViewTests: XCTestCase {
         let filter = CatalogFilter(keys: ["a"], addonTitle: "Cinemeta")
         XCTAssertEqual(CatalogOrderView.filterLine(filter, count: 3), "3 catalogs from Cinemeta")
     }
+
+    /// Review A6-r1: a pin arriving during a move keeps the cancel below the pinned rows.
+    func testCancelDestinationStaysBelowPinnedCollections() {
+        XCTAssertEqual(CatalogOrderView.cancelDestination(origin: 0, pinnedKeys: ["x"]), 1)
+        XCTAssertEqual(CatalogOrderView.cancelDestination(origin: 3, pinnedKeys: ["x"]), 3)
+        XCTAssertEqual(CatalogOrderView.cancelDestination(origin: 0, pinnedKeys: []), 0)
+    }
 }
