@@ -12,6 +12,10 @@ nonisolated struct AddonMoveMode: Equatable, Sendable {
     private(set) var origin: Int = 0
     /// When the last accepted step happened (uptime seconds), for the throttle.
     private(set) var lastStepAt: TimeInterval?
+    /// A4 review r1: the add-ons that were ABOVE the moving one when the move started. Menu
+    /// restores the position relative to the survivors, so an add-on removed (sync) mid-move does
+    /// not turn the stored index into an out-of-range or wrong destination.
+    private(set) var predecessors: Set<String> = []
 
     /// Minimum time between two accepted steps.
     static let stepInterval: TimeInterval = 0.112
@@ -22,11 +26,13 @@ nonisolated struct AddonMoveMode: Equatable, Sendable {
     /// True only for the add-on currently being moved.
     func isMoving(_ manifestUrl: String) -> Bool { movingUrl == manifestUrl }
 
-    /// Starts moving `manifestUrl` from `index` (replaces any move in progress).
-    mutating func start(manifestUrl: String, index: Int) {
+    /// Starts moving `manifestUrl` from `index` in `order` (the list's manifest URLs; replaces any
+    /// move in progress).
+    mutating func start(manifestUrl: String, index: Int, order: [String] = []) {
         movingUrl = manifestUrl
         origin = index
         lastStepAt = nil
+        predecessors = Set(order.prefix(max(0, min(index, order.count))).filter { $0 != manifestUrl })
     }
 
     /// The destination index for one press from `currentIndex` in a list of `count`, or nil when
@@ -50,11 +56,18 @@ nonisolated struct AddonMoveMode: Equatable, Sendable {
         return url
     }
 
-    /// Ends the move and returns where the add-on must go back to: (url, origin), or nil when not
-    /// moving. The caller moves it from its current index to `origin`.
-    mutating func cancel() -> (manifestUrl: String, origin: Int)? {
+    /// Ends the move and returns where the add-on must go back to: (url, index), or nil when not
+    /// moving. With `currentOrder` (review r1) the index is the slot right after the last add-on
+    /// still listed that was above it when the move started (0 when none survives), so removals
+    /// and arrivals during the move are respected; without it, the stored start index. The caller
+    /// moves the add-on from its current index to that one.
+    mutating func cancel(currentOrder: [String]? = nil) -> (manifestUrl: String, origin: Int)? {
         guard let url = movingUrl else { return nil }
-        let back = origin
+        var back = origin
+        if let currentOrder {
+            let others = currentOrder.filter { $0 != url }
+            back = (others.lastIndex(where: { predecessors.contains($0) }) ?? -1) + 1
+        }
         reset()
         return (url, back)
     }
@@ -63,5 +76,6 @@ nonisolated struct AddonMoveMode: Equatable, Sendable {
         movingUrl = nil
         origin = 0
         lastStepAt = nil
+        predecessors = []
     }
 }

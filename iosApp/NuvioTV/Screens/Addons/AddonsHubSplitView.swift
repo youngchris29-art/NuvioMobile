@@ -534,7 +534,7 @@ struct AddonsHubSplitView: View {
 
     private func startMove(_ addon: ManagedAddon, index: Int) {
         guard !model.isReadOnly else { return }
-        moveMode.start(manifestUrl: addon.manifestUrl, index: index)
+        moveMode.start(manifestUrl: addon.manifestUrl, index: index, order: model.addons.map(\.manifestUrl))
         Self.logFocus("move start at \(index)")
         DispatchQueue.main.async { handOffContent(InstalledAddonsPane.rowKey(addon.manifestUrl)) }
     }
@@ -553,17 +553,29 @@ struct AddonsHubSplitView: View {
     private func commitMove() {
         guard let url = moveMode.commit() else { return }
         Self.logFocus("move commit")
-        DispatchQueue.main.async { handOffContent(InstalledAddonsPane.rowKey(url)) }
+        refocusRowAfterMove(url)
+    }
+
+    /// A4 device check: ending a move re-enables the sidebar, whose default focus can take focus
+    /// back from the row; the `FocusState` may still read the row key, so the guarded hand-off
+    /// would skip the write. Re-focus the row unconditionally once the sidebar has re-enabled.
+    private func refocusRowAfterMove(_ url: String) {
+        let key = InstalledAddonsPane.rowKey(url)
+        installedScrollTarget = key
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            deliberateContent = key
+            contentFocus = key
+        }
     }
 
     /// Menu while moving: back to the index the move started from.
     private func cancelMove() {
-        guard let (url, origin) = moveMode.cancel() else { return }
+        guard let (url, origin) = moveMode.cancel(currentOrder: model.addons.map(\.manifestUrl)) else { return }
         if let current = model.addons.firstIndex(where: { $0.manifestUrl == url }), current != origin {
             model.move(manifestUrl: url, by: origin - current)
         }
         Self.logFocus("move cancel back to \(origin)")
-        DispatchQueue.main.async { handOffContent(InstalledAddonsPane.rowKey(url)) }
+        refocusRowAfterMove(url)
     }
 
     /// Raises `AddonsView`'s confirm alert. From the pushed detail page the page pops first, so

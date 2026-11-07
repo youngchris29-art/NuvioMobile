@@ -69,4 +69,27 @@ final class AddonMoveModeTests: XCTestCase {
         XCTAssertTrue(mode.isMoving("a"))
         XCTAssertFalse(mode.isMoving("b"))
     }
+
+    /// A4 review r1: [A, B, C, D], move D up (to index 2), then sync removes A → [B, D, C].
+    /// Cancel restores D relative to the survivors: after B and C, index 2.
+    func testCancelRestoresRelativeToSurvivorsAfterARemoval() {
+        var mode = AddonMoveMode()
+        mode.start(manifestUrl: "D", index: 3, order: ["A", "B", "C", "D"])
+        let result = mode.cancel(currentOrder: ["B", "D", "C"])
+        XCTAssertEqual(result?.manifestUrl, "D")
+        XCTAssertEqual(result?.origin, 2)
+    }
+
+    func testCancelWithAnUnchangedListReturnsTheStartIndex() {
+        var mode = AddonMoveMode()
+        mode.start(manifestUrl: "B", index: 1, order: ["A", "B", "C"])
+        XCTAssertEqual(mode.cancel(currentOrder: ["B", "A", "C"])?.origin, 1)
+    }
+
+    func testCancelAfterAnAddonAboveWasAddedCountsOnlyTheOriginalOnes() {
+        var mode = AddonMoveMode()
+        mode.start(manifestUrl: "C", index: 2, order: ["A", "B", "C"])
+        // C moved to the top, then a new add-on N arrived at the top by sync: back after A and B.
+        XCTAssertEqual(mode.cancel(currentOrder: ["N", "C", "A", "B"])?.origin, 3)
+    }
 }
