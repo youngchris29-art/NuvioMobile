@@ -194,4 +194,16 @@ final class HubSectionTests: XCTestCase {
         XCTAssertNil(defaults.object(forKey: AddonsViewModel.refreshStampKey(profileId: 4)))
         XCTAssertNil(AddonsViewModel.loadRefreshStamp(defaults: defaults, profileId: 4, profileIdentity: ""))
     }
+
+    /// Review r12: the stamp `start()` shows across a stop/start and a profile change.
+    func testStampOnStartKeepsASessionStampForTheSameProfileOnly() {
+        let session = Date(timeIntervalSince1970: 3_000_000)
+        let stored = Date(timeIntervalSince1970: 1_000_000)
+        XCTAssertEqual(AddonsViewModel.stampOnStart(current: session, currentSlot: 4, slot: 4, loaded: nil), session,
+                       "same profile, nothing stored (no stable id): the session stamp stays")
+        XCTAssertNil(AddonsViewModel.stampOnStart(current: session, currentSlot: 4, slot: 2, loaded: nil),
+                     "another profile never sees it")
+        XCTAssertEqual(AddonsViewModel.stampOnStart(current: session, currentSlot: 4, slot: 2, loaded: stored), stored)
+        XCTAssertNil(AddonsViewModel.stampOnStart(current: nil, currentSlot: nil, slot: 1, loaded: nil))
+    }
 }

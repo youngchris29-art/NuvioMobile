@@ -101,6 +101,9 @@ final class AddonsViewModel: ObservableObject {
     /// Between `start()` and `stop()`; the ticker only runs while started. (The watcher's first
     /// emission can arrive before `watcher` is assigned, so that cannot be the signal.)
     private var isStarted = false
+    /// The profile slot `lastRefreshedAt` belongs to (review r12: a session-only stamp survives a
+    /// stop/start of the same profile).
+    private var stampSlot: Int32?
     private let defaults: UserDefaults
     private let now: () -> Date
 
@@ -134,6 +137,14 @@ final class AddonsViewModel: ObservableObject {
         guard !profileIdentity.isEmpty else { return }
         defaults.set(["at": date.timeIntervalSince1970, "profile": profileIdentity],
                      forKey: refreshStampKey(profileId: profileId))
+    }
+
+    /// The stamp `start()` shows: the stored one when there is one; otherwise, for the SAME profile
+    /// slot, the in-memory stamp (review r12: a profile without a stable id keeps its session-only
+    /// stamp across a stop/start); for a different slot, nothing.
+    nonisolated static func stampOnStart(current: Date?, currentSlot: Int32?, slot: Int32, loaded: Date?) -> Date? {
+        if let loaded { return loaded }
+        return currentSlot == slot ? current : nil
     }
 
     /// The active profile's stable id (empty when there is none, e.g. before a profile is picked).
@@ -195,8 +206,12 @@ final class AddonsViewModel: ObservableObject {
     func start() {
         guard watcher == nil else { return }
         isStarted = true
-        lastRefreshedAt = Self.loadRefreshStamp(defaults: defaults, profileId: ProfileRepository.shared.activeProfileId,
-                                                profileIdentity: Self.activeProfileIdentity)
+        let slot = ProfileRepository.shared.activeProfileId
+        lastRefreshedAt = Self.stampOnStart(
+            current: lastRefreshedAt, currentSlot: stampSlot, slot: slot,
+            loaded: Self.loadRefreshStamp(defaults: defaults, profileId: slot, profileIdentity: Self.activeProfileIdentity)
+        )
+        stampSlot = slot
         lastInstalledManifestUrl = nil
         let readOnly = AddonRepository.shared.isReadOnly()
         if isReadOnly != readOnly { isReadOnly = readOnly }
