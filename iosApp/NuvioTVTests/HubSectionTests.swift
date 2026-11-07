@@ -33,8 +33,9 @@ final class HubSectionTests: XCTestCase {
 
     // MARK: visibility
 
-    func testPluginsHiddenWithoutPluginSummaryAndShownWithOne() {
-        XCTAssertFalse(HubSection.plugins.isVisible(summary: summary(), phoneEnabled: true))
+    /// Review r4: Plugins stays visible with plugins off (its pane turns them back on).
+    func testPluginsVisibleWhetherOrNotPluginsAreOn() {
+        XCTAssertTrue(HubSection.plugins.isVisible(summary: summary(), phoneEnabled: true))
         XCTAssertTrue(HubSection.plugins.isVisible(summary: summary(plugins: pluginSummary), phoneEnabled: true))
     }
 
@@ -46,7 +47,7 @@ final class HubSectionTests: XCTestCase {
     func testVisibleKeepsDisplayOrder() {
         XCTAssertEqual(
             HubSection.visible(summary: summary(), phoneEnabled: false),
-            [.installed, .catalogs, .debrid, .install, .refresh]
+            [.installed, .catalogs, .debrid, .plugins, .install, .refresh]
         )
         XCTAssertEqual(
             HubSection.visible(summary: summary(plugins: pluginSummary), phoneEnabled: true),
@@ -90,7 +91,7 @@ final class HubSectionTests: XCTestCase {
     func testTrailingValueDebridEmptyAndPluginsNil() {
         let s = summary()
         XCTAssertEqual(HubSection.debrid.trailingValue(summary: s), "Not connected")
-        XCTAssertNil(HubSection.plugins.trailingValue(summary: s))
+        XCTAssertEqual(HubSection.plugins.trailingValue(summary: s), "Off")
     }
 
     // MARK: refresh stamp

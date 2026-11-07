@@ -80,6 +80,15 @@ data class AddonsUiState(
      * Defaulted so every other construction site (composeApp included) is unaffected.
      */
     val isInitialized: Boolean = false,
+    /**
+     * Add-ons hub v2 review r4: per add-on manifest URL, the generation of its newest refresh.
+     * Lives ON the state so the bump, the refreshing mark and a refresh's publication are each one
+     * compare-and-swap of the same value: a superseded refresh (see `restartRefresh`) can never
+     * commit over its replacement, even when the replacement's mark leaves the add-on unchanged.
+     * Not UI state; defaulted so every construction site is unaffected (a full replacement resets
+     * it, and a missing entry counts as current).
+     */
+    val refreshGenerations: Map<String, Long> = emptyMap(),
 )
 
 data class AddonOverview(

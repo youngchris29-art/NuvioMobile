@@ -67,6 +67,7 @@ struct AddonsHubSplitView: View {
     @State private var deliberateContent: String?
     @State private var deliberateSidebar: HubSection?
     @State private var dwell: Task<Void, Never>?
+    @Environment(\.navigationChrome) private var navigationChrome
 
     // Sheets, toasts and install/removal bookkeeping, carried over from v1's `SourcesHubView`
     // until A3–A6 move them onto the panes.
@@ -81,6 +82,8 @@ struct AddonsHubSplitView: View {
     @State private var confirmingSimklDisconnect = false
     @State private var debridDisconnectId: String?
 
+    /// The Add-ons tab's selection value (`MainTabView`, the rail's per-tab scroll map).
+    static let railTabIndex = 3
     /// How long focus must rest on a sidebar row before its section is selected.
     static let selectionDwell: Duration = .milliseconds(150)
     /// Fixed sidebar width (≈ 1/3 of the 1920 pt screen, padding included).
@@ -328,6 +331,11 @@ struct AddonsHubSplitView: View {
         dwell = nil
         guard !section.isAction, section != selected else { return }
         contentPath.removeAll()
+        // Review r4: the Installed list reports its scroll to the rail (Hide While Browsing); the
+        // list is torn down on a section change without scrolling back, so clear its latch.
+        if selected == .installed, NavigationChrome.isRail() {
+            navigationChrome.setScrolledDown(tab: Self.railTabIndex, false)
+        }
         selected = section
         storedSection = section.rawValue
     }
@@ -665,6 +673,8 @@ private struct HubContentColumn: View {
             .padding(.horizontal, Theme.Spacing.lg)
         }
         .scrollClipDisabled()
+        // Review r4: Hide While Browsing follows the Installed list, as it followed v1's hub.
+        .reportsScrollToTabBar(tab: "Add-ons")
     }
 }
 
@@ -684,12 +694,11 @@ private struct HubSidebarSurface: View {
     }
 }
 
-/// A0: with the rail Always Visible its pill sits flush against the sidebar glass. Two candidate
-/// treatments are wired for Christian's pick at the A2 device check (`-debug.hubRailClearance
-/// spacing|flat`, DEBUG only); the default keeps the designed layout until he chooses. Both are
-/// inert outside Rail mode with a reserved width.
+/// A0: in Rail mode the rail pill sat flush against the sidebar glass. Two candidate treatments
+/// are wired for Christian's pick at the A2 device check (`-debug.hubRailClearance spacing|flat`,
+/// DEBUG only); the default keeps the designed layout until he chooses. Inert outside Rail mode.
 enum HubRailClearance {
-    private static var applies: Bool { NavigationChrome.isRail() && NavigationChrome.reservesWidth() }
+    private static var applies: Bool { NavigationChrome.isRail() }
 
     private static var choice: String {
         #if DEBUG

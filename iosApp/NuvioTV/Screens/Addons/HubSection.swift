@@ -33,11 +33,11 @@ nonisolated enum HubSection: String, CaseIterable, Hashable, Sendable {
     /// True only for Refresh all: an action row runs on Select and never becomes the content section.
     var isAction: Bool { self == .refresh }
 
-    /// Whether the row shows: Plugins only when the plugin summary exists, Manage from phone only
-    /// when `phoneEnabled`, everything else always.
+    /// Whether the row shows: Manage from phone only when `phoneEnabled`, everything else always.
+    /// Plugins stays visible while plugins are off (review r4): its pane holds the switch that
+    /// turns them back on, so hiding the row stranded the user.
     func isVisible(summary: AddonsViewModel.HubSummary, phoneEnabled: Bool) -> Bool {
         switch self {
-        case .plugins: return summary.plugins != nil
         case .phone: return phoneEnabled
         default: return true
         }
@@ -61,7 +61,7 @@ nonisolated enum HubSection: String, CaseIterable, Hashable, Sendable {
                 ? String(localized: "Not connected")
                 : summary.debridConnected.joined(separator: ", ")
         case .plugins:
-            return summary.plugins.map { "\($0.providers)" }
+            return summary.plugins.map { "\($0.providers)" } ?? String(localized: "Off")
         case .install, .refresh, .phone:
             return nil
         }

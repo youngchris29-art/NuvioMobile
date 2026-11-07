@@ -28,4 +28,9 @@ class AddonRefreshSupersedeTest {
         val generations = bumpRefreshGeneration(bumpRefreshGeneration(emptyMap(), "a"), "b")
         assertTrue(isCurrentRefreshGeneration(bumpRefreshGeneration(generations, "b"), "a", 1L))
     }
+
+    @Test
+    fun aReplacedStateDoesNotBlockPublication() {
+        assertTrue(isCurrentRefreshGeneration(emptyMap(), "a", 3L), "a wholesale replacement keeps the old behaviour")
+    }
 }

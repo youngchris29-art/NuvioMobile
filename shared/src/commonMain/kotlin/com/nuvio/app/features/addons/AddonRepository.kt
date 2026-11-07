@@ -60,14 +60,6 @@ object AddonRepository {
     private var pulledFromServer = false
     private var currentProfileId: Int = 1
     private val activeRefreshJobs = mutableMapOf<String, Job>()
-    /**
-     * Add-ons hub v2 review r3: per add-on, the generation of the newest refresh. Bumped BEFORE the
-     * new refresh marks itself refreshing; a refresh publishes only from inside `_uiState.update`
-     * while it is still the newest generation. `update` is a compare-and-swap loop, so an older job
-     * that read the old generation retries its lambda when the newer job's `markRefreshing` lands,
-     * then sees the new generation and leaves the state alone.
-     */
-    private val refreshGenerations = MutableStateFlow<Map<String, Long>>(emptyMap())
     private val pushJobsByProfile = mutableMapOf<Int, Job>()
 
     // Observable mirror of the bootstrap guard so consumers that can outrun bootstrap (the player's
@@ -417,11 +409,14 @@ object AddonRepository {
         val existingJob = activeRefreshJobs[manifestUrl]
         if (existingJob?.isActive == true) return
 
+        // Review r4: the generation bump and the refreshing mark are ONE update of the state the
+        // publication below compares against (`AddonsUiState.refreshGenerations`).
         var generation = 0L
-        refreshGenerations.update { current ->
-            bumpRefreshGeneration(current, manifestUrl).also { generation = it.getValue(manifestUrl) }
+        _uiState.update { current ->
+            val bumped = bumpRefreshGeneration(current.refreshGenerations, manifestUrl)
+            generation = bumped.getValue(manifestUrl)
+            markedRefreshing(current, manifestUrl).copy(refreshGenerations = bumped)
         }
-        markRefreshing(manifestUrl)
         var refreshJob: Job? = null
         refreshJob = scope.launch {
             try {
@@ -441,7 +436,7 @@ object AddonRepository {
                 result.exceptionOrNull()?.let { if (it is CancellationException) throw it }
 
                 _uiState.update { current ->
-                    if (!isCurrentRefreshGeneration(refreshGenerations.value, manifestUrl, generation)) {
+                    if (!isCurrentRefreshGeneration(current.refreshGenerations, manifestUrl, generation)) {
                         return@update current
                     }
                     current.copy(
@@ -533,22 +528,19 @@ object AddonRepository {
         pushJobsByProfile[profileId] = pushJob
     }
 
-    private fun markRefreshing(manifestUrl: String) {
-        _uiState.update { current ->
-            current.copy(
-                addons = current.addons.map { addon ->
-                    if (addon.manifestUrl == manifestUrl) {
-                        addon.copy(
-                            isRefreshing = true,
-                            errorMessage = null,
-                        )
-                    } else {
-                        addon
-                    }
-                },
-            )
-        }
-    }
+    private fun markedRefreshing(current: AddonsUiState, manifestUrl: String): AddonsUiState =
+        current.copy(
+            addons = current.addons.map { addon ->
+                if (addon.manifestUrl == manifestUrl) {
+                    addon.copy(
+                        isRefreshing = true,
+                        errorMessage = null,
+                    )
+                } else {
+                    addon
+                }
+            },
+        )
 
     private fun persist() {
         val addons = _uiState.value.addons
@@ -681,6 +673,10 @@ internal fun defaultAddonSeedingAllowed(authState: AuthState, serverPullSettled:
 internal fun bumpRefreshGeneration(current: Map<String, Long>, manifestUrl: String): Map<String, Long> =
     current + (manifestUrl to ((current[manifestUrl] ?: 0L) + 1L))
 
-/** Whether [generation] is still the newest refresh of [manifestUrl]. */
+/**
+ * Whether [generation] is still the newest refresh of [manifestUrl]. A missing entry (the state
+ * was replaced wholesale, e.g. a profile switch or server pull) counts as current, as before
+ * generations existed.
+ */
 internal fun isCurrentRefreshGeneration(generations: Map<String, Long>, manifestUrl: String, generation: Long): Boolean =
-    generations[manifestUrl] == generation
+    generations[manifestUrl]?.let { it == generation } ?: true
