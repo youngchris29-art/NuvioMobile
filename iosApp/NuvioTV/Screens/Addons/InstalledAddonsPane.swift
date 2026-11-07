@@ -140,7 +140,7 @@ struct InstalledAddonsPane: View {
                     model: model, focus: focus,
                     onOpen: onOpen, onConfigure: onConfigure, onMove: onMove, onRemove: onRemove,
                     isMoving: movingUrl == addon.manifestUrl, isLocked: movingUrl != nil && movingUrl != addon.manifestUrl,
-                    onStartMove: onStartMove, onCommitMove: onCommitMove
+                    onStartMove: onStartMove, onMoveStep: onMoveStep, onCommitMove: onCommitMove
                 )
             }
         }
@@ -179,6 +179,7 @@ private struct AddonRow: View {
     let isMoving: Bool
     let isLocked: Bool
     let onStartMove: (ManagedAddon, Int) -> Void
+    let onMoveStep: (AddonMoveMode.Direction) -> Void
     let onCommitMove: () -> Void
 
     private var actions: [InstalledAddonsPane.RowAction] {
@@ -218,7 +219,11 @@ private struct AddonRow: View {
         .accessibilityLabel(title)
         .accessibilityValue("\(statusText), \(host)")
         .accessibilityIdentifier("addons_row_\(index)")
-        .modifier(MoveActions(allowed: InstalledAddonsPane.voiceOverMoves(index: index, count: count, isReadOnly: isReadOnly)) { delta in onMove(addon, index, delta) })
+        .modifier(MoveActions(allowed: isLocked ? [] : InstalledAddonsPane.voiceOverMoves(index: index, count: count, isReadOnly: isReadOnly)) { delta in
+            // Review A4-r5: on the lifted row the actions are Move mode's own (tracked) steps, so
+            // Menu can still cancel them; locked rows offer none.
+            if isMoving { onMoveStep(delta < 0 ? .up : .down) } else { onMove(addon, index, delta) }
+        })
     }
 
     private var leading: some View {
