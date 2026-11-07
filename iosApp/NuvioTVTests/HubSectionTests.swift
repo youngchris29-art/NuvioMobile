@@ -97,14 +97,14 @@ final class HubSectionTests: XCTestCase {
     // MARK: refresh stamp
 
     func testRefreshStampAbsentIsNil() {
-        XCTAssertNil(AddonsViewModel.loadRefreshStamp(defaults: freshDefaults(), profileId: 1))
+        XCTAssertNil(AddonsViewModel.loadRefreshStamp(defaults: freshDefaults(), profileId: 1, profileIdentity: "p1"))
     }
 
     func testRefreshStampRoundTrips() {
         let defaults = freshDefaults()
         let date = Date(timeIntervalSince1970: 1_800_000_123.456)
-        AddonsViewModel.saveRefreshStamp(date, defaults: defaults, profileId: 2)
-        let loaded = AddonsViewModel.loadRefreshStamp(defaults: defaults, profileId: 2)
+        AddonsViewModel.saveRefreshStamp(date, defaults: defaults, profileId: 2, profileIdentity: "p2")
+        let loaded = AddonsViewModel.loadRefreshStamp(defaults: defaults, profileId: 2, profileIdentity: "p2")
         XCTAssertNotNil(loaded)
         XCTAssertEqual(loaded?.timeIntervalSince1970 ?? 0, date.timeIntervalSince1970, accuracy: 0.001)
     }
@@ -113,11 +113,11 @@ final class HubSectionTests: XCTestCase {
         let defaults = freshDefaults()
         let first = Date(timeIntervalSince1970: 1_800_000_000)
         let second = Date(timeIntervalSince1970: 1_800_005_000)
-        AddonsViewModel.saveRefreshStamp(first, defaults: defaults, profileId: 1)
-        XCTAssertNil(AddonsViewModel.loadRefreshStamp(defaults: defaults, profileId: 2))
-        AddonsViewModel.saveRefreshStamp(second, defaults: defaults, profileId: 2)
-        XCTAssertEqual(AddonsViewModel.loadRefreshStamp(defaults: defaults, profileId: 1)?.timeIntervalSince1970 ?? 0, first.timeIntervalSince1970, accuracy: 0.001)
-        XCTAssertEqual(AddonsViewModel.loadRefreshStamp(defaults: defaults, profileId: 2)?.timeIntervalSince1970 ?? 0, second.timeIntervalSince1970, accuracy: 0.001)
+        AddonsViewModel.saveRefreshStamp(first, defaults: defaults, profileId: 1, profileIdentity: "p1")
+        XCTAssertNil(AddonsViewModel.loadRefreshStamp(defaults: defaults, profileId: 2, profileIdentity: "p2"))
+        AddonsViewModel.saveRefreshStamp(second, defaults: defaults, profileId: 2, profileIdentity: "p2")
+        XCTAssertEqual(AddonsViewModel.loadRefreshStamp(defaults: defaults, profileId: 1, profileIdentity: "p1")?.timeIntervalSince1970 ?? 0, first.timeIntervalSince1970, accuracy: 0.001)
+        XCTAssertEqual(AddonsViewModel.loadRefreshStamp(defaults: defaults, profileId: 2, profileIdentity: "p2")?.timeIntervalSince1970 ?? 0, second.timeIntervalSince1970, accuracy: 0.001)
     }
 
     func testRefreshStampKeyFormat() {
@@ -172,17 +172,15 @@ final class HubSectionTests: XCTestCase {
         XCTAssertEqual(readOnly, ["card:a", "card:b"])
     }
 
-    /// Review r9: deleting a profile forgets its stamp, so a new profile in the reused slot reads
-    /// "Not refreshed yet"; other profiles keep theirs.
-    func testClearingAProfilesStampLeavesOthers() {
-        let suite = "hubv2-tests-clear-\(UUID().uuidString)"
+    /// Review r10: a stamp written by another profile that held the same slot (deleted here or on
+    /// another device, then the slot reused) is ignored, so the new profile reads "Not refreshed yet".
+    func testAStampFromAnotherProfileInTheSameSlotIsIgnored() {
+        let suite = "hubv2-tests-slot-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let stamp = Date(timeIntervalSince1970: 2_000_000)
-        AddonsViewModel.saveRefreshStamp(stamp, defaults: defaults, profileId: 2)
-        AddonsViewModel.saveRefreshStamp(stamp, defaults: defaults, profileId: 3)
-        AddonsViewModel.clearRefreshStamp(defaults: defaults, profileId: 2)
-        XCTAssertNil(AddonsViewModel.loadRefreshStamp(defaults: defaults, profileId: 2))
-        XCTAssertNotNil(AddonsViewModel.loadRefreshStamp(defaults: defaults, profileId: 3))
+        AddonsViewModel.saveRefreshStamp(stamp, defaults: defaults, profileId: 2, profileIdentity: "old-profile")
+        XCTAssertNil(AddonsViewModel.loadRefreshStamp(defaults: defaults, profileId: 2, profileIdentity: "new-profile"))
+        XCTAssertNotNil(AddonsViewModel.loadRefreshStamp(defaults: defaults, profileId: 2, profileIdentity: "old-profile"))
     }
 }

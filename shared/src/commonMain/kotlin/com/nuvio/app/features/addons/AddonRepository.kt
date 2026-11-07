@@ -67,7 +67,7 @@ object AddonRepository {
     /**
      * Add-ons hub v2 review r7: guards every read and write of [activeRefreshJobs] (the active-job
      * check plus registration in [refreshAddon], the replacement in [restartRefresh], a job's
-     * identity-checked removal, [cancelActiveRefreshes]), so a cancelled job's cleanup can never
+     * identity-checked removal, [resetRefreshesAndState]), so a cancelled job's cleanup can never
      * remove its replacement's entry and leave that request untracked.
      */
     private val refreshJobsLock = SynchronizedObject()
@@ -142,23 +142,21 @@ object AddonRepository {
     fun onProfileChanged(profileId: Int) {
         val effectiveProfileId = resolveEffectiveProfileId(profileId)
         if (effectiveProfileId == currentProfileId && bootstrap.initialized) return
-        cancelActiveRefreshes()
         currentProfileId = effectiveProfileId
         bootstrap.reset()
         pulledFromServer = false
         _serverPullSettled.value = false
-        _uiState.value = AddonsUiState()
+        resetRefreshesAndState()
     }
 
     fun clearLocalState() {
-        cancelActiveRefreshes()
         pushJobsByProfile.values.forEach(Job::cancel)
         pushJobsByProfile.clear()
         currentProfileId = 1
         bootstrap.reset()
         pulledFromServer = false
         _serverPullSettled.value = false
-        _uiState.value = AddonsUiState()
+        resetRefreshesAndState()
     }
 
     suspend fun pullFromServer(profileId: Int) {
@@ -615,9 +613,18 @@ object AddonRepository {
         AddonStorage.loadAddonEnabledStates(currentProfileId)
             .mapKeys { (url, _) -> ensureManifestSuffix(url) }
 
-    private fun cancelActiveRefreshes() {
+    /**
+     * Review r10: empties the job map AND resets the state under the job lock, so no refresh can
+     * register between the two (it would survive the cancellation, lose its generation with the
+     * reset, block the new profile's refresh of the same URL and never clear its row). A refresh
+     * registered before this is cancelled; one registered after belongs to the new state.
+     */
+    private fun resetRefreshesAndState() {
         val jobs = synchronized(refreshJobsLock) {
-            activeRefreshJobs.values.toList().also { activeRefreshJobs.clear() }
+            val running = activeRefreshJobs.values.toList()
+            activeRefreshJobs.clear()
+            _uiState.value = AddonsUiState()
+            running
         }
         jobs.forEach(Job::cancel)
     }

@@ -114,22 +114,26 @@ final class AddonsViewModel: ObservableObject {
         "addons.lastRefreshedAt.\(profileId)"
     }
 
-    /// The stored refresh stamp for `profileId` (seconds since 1970), or nil when absent.
-    nonisolated static func loadRefreshStamp(defaults: UserDefaults, profileId: Int32) -> Date? {
-        let key = refreshStampKey(profileId: profileId)
-        guard defaults.object(forKey: key) != nil else { return nil }
-        return Date(timeIntervalSince1970: defaults.double(forKey: key))
+    /// The stored refresh stamp for the profile in slot `profileId`, or nil when absent or written
+    /// by ANOTHER profile that held the slot (review r10: slots are reused after a delete, here or
+    /// on another device, so the stamp carries the profile's stable `id` and is ignored on a
+    /// mismatch). Stored as `["at": seconds since 1970, "profile": id]`.
+    nonisolated static func loadRefreshStamp(defaults: UserDefaults, profileId: Int32, profileIdentity: String) -> Date? {
+        guard let stored = defaults.dictionary(forKey: refreshStampKey(profileId: profileId)),
+              let seconds = stored["at"] as? Double,
+              (stored["profile"] as? String) == profileIdentity else { return nil }
+        return Date(timeIntervalSince1970: seconds)
     }
 
-    /// Review r9: forgets `profileId`'s stamp. Called when that profile is deleted: slots are
-    /// reused, and a new profile in the slot must not read "Updated" before it ever refreshed.
-    nonisolated static func clearRefreshStamp(defaults: UserDefaults, profileId: Int32) {
-        defaults.removeObject(forKey: refreshStampKey(profileId: profileId))
+    /// Stores `date` as the refresh stamp for slot `profileId`, tagged with the profile's `id`.
+    nonisolated static func saveRefreshStamp(_ date: Date, defaults: UserDefaults, profileId: Int32, profileIdentity: String) {
+        defaults.set(["at": date.timeIntervalSince1970, "profile": profileIdentity],
+                     forKey: refreshStampKey(profileId: profileId))
     }
 
-    /// Stores `date` as the refresh stamp for `profileId`.
-    nonisolated static func saveRefreshStamp(_ date: Date, defaults: UserDefaults, profileId: Int32) {
-        defaults.set(date.timeIntervalSince1970, forKey: refreshStampKey(profileId: profileId))
+    /// The active profile's stable id (empty when there is none, e.g. before a profile is picked).
+    private static var activeProfileIdentity: String {
+        (ProfileRepository.shared.state.value_ as? ProfileState)?.activeProfile?.id ?? ""
     }
 
     /// The add-ons whose refresh started at least `ceiling` seconds before `now`.
@@ -186,7 +190,8 @@ final class AddonsViewModel: ObservableObject {
     func start() {
         guard watcher == nil else { return }
         isStarted = true
-        lastRefreshedAt = Self.loadRefreshStamp(defaults: defaults, profileId: ProfileRepository.shared.activeProfileId)
+        lastRefreshedAt = Self.loadRefreshStamp(defaults: defaults, profileId: ProfileRepository.shared.activeProfileId,
+                                                profileIdentity: Self.activeProfileIdentity)
         lastInstalledManifestUrl = nil
         let readOnly = AddonRepository.shared.isReadOnly()
         if isReadOnly != readOnly { isReadOnly = readOnly }
@@ -356,7 +361,8 @@ final class AddonsViewModel: ObservableObject {
             if outcome.succeeded > 0 {
                 let stamp = self.now()
                 self.lastRefreshedAt = stamp
-                Self.saveRefreshStamp(stamp, defaults: self.defaults, profileId: ProfileRepository.shared.activeProfileId)
+                Self.saveRefreshStamp(stamp, defaults: self.defaults, profileId: ProfileRepository.shared.activeProfileId,
+                                      profileIdentity: Self.activeProfileIdentity)
             }
             // The 60 s cap can end the wait with a request still running: keep the spinner then.
             let live = (AddonRepository.shared.uiState.value_ as? AddonsUiState)?.addons ?? latest
