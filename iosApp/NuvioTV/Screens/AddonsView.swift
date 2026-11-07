@@ -5,15 +5,12 @@ import SharedCore
 /// content on the right, each content column with its own NavigationStack). This view keeps what
 /// must outlive a section switch: the stores the hub and its panes read (started and stopped here,
 /// so a push inside the content column never stops them) and the remove confirmation (raised by
-/// a card's trash control or the Detail sheet).
+/// an Installed row's context menu or the add-on's page).
 struct AddonsView: View {
     @StateObject private var model = AddonsViewModel()
     @StateObject private var settings = SettingsViewModel()
     @StateObject private var debrid = DebridViewModel()
     @StateObject private var plugins = PluginsViewModel()
-    @StateObject private var badges = BadgeSettingsViewModel()
-    @StateObject private var trakt = TraktViewModel()
-    @StateObject private var simkl = SimklViewModel()
     /// Addon pending a remove confirmation (drives the alert below).
     @State private var addonPendingRemoval: ManagedAddon?
     /// The neighbours of the card whose removal was requested, so focus can follow the removal.
@@ -24,7 +21,6 @@ struct AddonsView: View {
     var body: some View {
         AddonsHubSplitView(
             model: model, settings: settings, debrid: debrid, plugins: plugins,
-            badges: badges, trakt: trakt, simkl: simkl,
             pendingRemoval: $addonPendingRemoval, removal: $removal
         )
             // FEAT-30 / H9 / D6: the rail's Menu reveal sits on the hub's SIDEBAR, not here: the
@@ -39,18 +35,12 @@ struct AddonsView: View {
             settings.start()
             debrid.start()
             plugins.start()
-            badges.start()
-            trakt.start()
-            simkl.start()
         }
         .onDisappear {
             model.stop()
             settings.stop()
             debrid.stop()
             plugins.stop()
-            badges.stop()
-            trakt.stop()
-            simkl.stop()
         }
         .alert(
             "Remove \(addonPendingRemoval.map { model.displayName($0) } ?? "")?",

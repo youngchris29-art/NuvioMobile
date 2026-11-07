@@ -418,6 +418,41 @@
         }
       }
     },
+    "%@ in stream order": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ in der Stream-Reihenfolge"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ en el orden de streams"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ dans l'ordre des flux"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ nell'ordine degli stream"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ trong thứ tự nguồn phát"
+          }
+        }
+      }
+    },
+    "%@ n=%lld thumbs=%lld": {},
     "%@ rejected the saved sign-in. Press to disconnect, then connect again.": {
       "localizations": {
         "de": {
@@ -687,6 +722,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "%@ · v%@"
+          }
+        }
+      }
+    },
+    "%@, %@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@, %@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@, %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@, %@"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@, %@"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@, %@"
           }
         }
       }
@@ -1309,6 +1378,40 @@
         }
       }
     },
+    "%lld catalogs from %@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld Kataloge von %@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld catálogos de %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld catalogues de %@"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld cataloghi da %@"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld danh mục từ %@"
+          }
+        }
+      }
+    },
     "%lld entries": {
       "localizations": {
         "de": {
@@ -1582,6 +1685,40 @@
         }
       }
     },
+    "%lld of %lld": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld von %lld"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld de %lld"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld sur %lld"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld su %lld"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld trên %lld"
+          }
+        }
+      }
+    },
     "%lld of %lld enabled": {
       "localizations": {
         "de": {
@@ -1612,6 +1749,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Đã bật %lld trên %lld"
+          }
+        }
+      }
+    },
+    "%lld of %lld on": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld von %lld aktiv"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld de %lld activados"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld sur %lld activés"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld su %lld attivi"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld trên %lld đang bật"
           }
         }
       }
@@ -2088,6 +2259,112 @@
           "stringUnit": {
             "state": "translated",
             "value": "%lld luồng"
+          }
+        }
+      }
+    },
+    "%lld uncached sources hidden by Cached Sources Only.": {
+      "localizations": {
+        "de": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld nicht gecachte Quelle durch Nur Quellen aus dem Cache ausgeblendet."
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld nicht gecachte Quellen durch Nur Quellen aus dem Cache ausgeblendet."
+                }
+              }
+            }
+          }
+        },
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld uncached source hidden by Cached Sources Only."
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld uncached sources hidden by Cached Sources Only."
+                }
+              }
+            }
+          }
+        },
+        "es": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld fuente sin caché oculta por Solo fuentes en caché."
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld fuentes sin caché ocultas por Solo fuentes en caché."
+                }
+              }
+            }
+          }
+        },
+        "fr": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld source hors cache masquée par Sources en cache uniquement."
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld sources hors cache masquées par Sources en cache uniquement."
+                }
+              }
+            }
+          }
+        },
+        "it": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld fonte non in cache nascosta da Solo fonti in cache."
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld fonti non in cache nascoste da Solo fonti in cache."
+                }
+              }
+            }
+          }
+        },
+        "vi": {
+          "variations": {
+            "plural": {
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Đã ẩn %lld nguồn chưa lưu đệm do Chỉ nguồn đã lưu đệm."
+                }
+              }
+            }
           }
         }
       }
@@ -8269,6 +8546,47 @@
         }
       }
     },
+    "Available in %@": {
+      "comment": "Accessibility label for the format badge row on the Detail page. %@ is a localized list of formats, like \"4K, Dolby Vision and Dolby Atmos\".",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verfügbar in %@"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Available in %@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disponible en %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disponible en %@"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disponibile in %@"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Có sẵn ở %@"
+          }
+        }
+      }
+    },
     "Avatar": {
       "localizations": {
         "de": {
@@ -8367,40 +8685,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "A–Z"
-          }
-        }
-      }
-    },
-    "Bonus": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Bonus"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Extras"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Bonus"
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Contenuti extra"
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Nội dung bổ sung"
           }
         }
       }
@@ -9637,6 +9921,40 @@
         }
       }
     },
+    "Bonus": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bonus"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Extras"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bonus"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Contenuti extra"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nội dung bổ sung"
+          }
+        }
+      }
+    },
     "Boost": {
       "localizations": {
         "de": {
@@ -10453,6 +10771,40 @@
         }
       }
     },
+    "Catalogs from this add-on": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kataloge dieses Add-ons"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Catálogos de este complemento"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Catalogues de cet addon"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cataloghi di questo addon"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Danh mục từ addon này"
+          }
+        }
+      }
+    },
     "Catalogs now follow your add-ons order.": {
       "localizations": {
         "de": {
@@ -10585,6 +10937,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Đổi PIN"
+          }
+        }
+      }
+    },
+    "Change where this add-on sits in stream order": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Position dieses Add-ons in der Stream-Reihenfolge ändern"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cambiar la posición de este complemento en el orden de streams"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Modifier la position de cet addon dans l'ordre des flux"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cambia la posizione di questo addon nell'ordine degli stream"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đổi vị trí addon này trong thứ tự nguồn phát"
           }
         }
       }
@@ -15153,6 +15539,7 @@
         }
       }
     },
+    "Couldn’t update your library.": {},
     "Country": {
       "localizations": {
         "de": {
@@ -15697,6 +16084,7 @@
         }
       }
     },
+    "DV FEL dual-layer": {},
     "Dates & Ratings": {
       "localizations": {
         "de": {
@@ -16792,80 +17180,6 @@
         }
       }
     },
-    "Director of Photography": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Kamera"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Director de fotografía"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Directeur de la photographie"
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Direttore della fotografia"
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Đạo diễn hình ảnh"
-          }
-        }
-      }
-    },
-    "Dolby Atmos passthrough is off while this is on": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Dolby Atmos Passthrough ist aus, solange diese Option ein ist"
-          }
-        },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Dolby Atmos passthrough is off while this is on"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Dolby Atmos passthrough está desactivado mientras esto esté activado"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Le passthrough Dolby Atmos est désactivé tant que cette option est activée"
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Il passthrough Dolby Atmos è disattivato finché questa opzione è attiva"
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Dolby Atmos passthrough tắt khi mục này bật"
-          }
-        }
-      }
-    },
     "Died %@": {
       "localizations": {
         "de": {
@@ -16998,6 +17312,74 @@
           "stringUnit": {
             "state": "translated",
             "value": "Đạo diễn"
+          }
+        }
+      }
+    },
+    "Director of Photography": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kamera"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Director de fotografía"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Directeur de la photographie"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Direttore della fotografia"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đạo diễn hình ảnh"
+          }
+        }
+      }
+    },
+    "Disable": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deaktivieren"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desactivar"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Désactiver"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disattiva"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tắt"
           }
         }
       }
@@ -17410,6 +17792,46 @@
         }
       }
     },
+    "Dolby Atmos passthrough is off while this is on": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dolby Atmos Passthrough ist aus, solange diese Option ein ist"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dolby Atmos passthrough is off while this is on"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dolby Atmos passthrough está desactivado mientras esto esté activado"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le passthrough Dolby Atmos est désactivé tant que cette option est activée"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Il passthrough Dolby Atmos è disattivato finché questa opzione è attiva"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dolby Atmos passthrough tắt khi mục này bật"
+          }
+        }
+      }
+    },
     "Dolby Vision": {
       "localizations": {
         "de": {
@@ -17440,40 +17862,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Dolby Vision"
-          }
-        }
-      }
-    },
-    "Dolby Vision profile 5": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Dolby Vision Profil 5"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Dolby Vision perfil 5"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Dolby Vision profil 5"
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Dolby Vision profilo 5"
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Dolby Vision cấu hình 5"
           }
         }
       }
@@ -17514,6 +17902,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Dolby Vision Profile 7 FEL hai lớp"
+          }
+        }
+      }
+    },
+    "Dolby Vision profile 5": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dolby Vision Profil 5"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dolby Vision perfil 5"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dolby Vision profil 5"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dolby Vision profilo 5"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dolby Vision cấu hình 5"
           }
         }
       }
@@ -18302,6 +18724,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Xanh ngọc"
+          }
+        }
+      }
+    },
+    "Enable": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aktivieren"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activar"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activer"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Attiva"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bật"
           }
         }
       }
@@ -20565,148 +21021,42 @@
         }
       }
     },
-    "%lld uncached sources hidden by Cached Sources Only.": {
-      "localizations": {
-        "de": {
-          "variations": {
-            "plural": {
-              "one": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld nicht gecachte Quelle durch Nur Quellen aus dem Cache ausgeblendet."
-                }
-              },
-              "other": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld nicht gecachte Quellen durch Nur Quellen aus dem Cache ausgeblendet."
-                }
-              }
-            }
-          }
-        },
-        "en": {
-          "variations": {
-            "plural": {
-              "one": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld uncached source hidden by Cached Sources Only."
-                }
-              },
-              "other": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld uncached sources hidden by Cached Sources Only."
-                }
-              }
-            }
-          }
-        },
-        "es": {
-          "variations": {
-            "plural": {
-              "one": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld fuente sin caché oculta por Solo fuentes en caché."
-                }
-              },
-              "other": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld fuentes sin caché ocultas por Solo fuentes en caché."
-                }
-              }
-            }
-          }
-        },
-        "fr": {
-          "variations": {
-            "plural": {
-              "one": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld source hors cache masquée par Sources en cache uniquement."
-                }
-              },
-              "other": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld sources hors cache masquées par Sources en cache uniquement."
-                }
-              }
-            }
-          }
-        },
-        "it": {
-          "variations": {
-            "plural": {
-              "one": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld fonte non in cache nascosta da Solo fonti in cache."
-                }
-              },
-              "other": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld fonti non in cache nascoste da Solo fonti in cache."
-                }
-              }
-            }
-          }
-        },
-        "vi": {
-          "variations": {
-            "plural": {
-              "other": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "Đã ẩn %lld nguồn chưa lưu đệm do Chỉ nguồn đã lưu đệm."
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "Turn it off in Settings → Sources to see them.": {
+    "Format Badges": {
       "localizations": {
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Deaktiviere die Option unter Einstellungen → Quellen, um sie zu sehen."
+            "value": "Format-Badges"
           }
         },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Turn it off in Settings → Sources to see them."
+            "value": "Format Badges"
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Desactívala en Configuración → Fuentes para verlas."
+            "value": "Insignias de formato"
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Désactivez-la dans Paramètres → Sources pour les voir."
+            "value": "Badges de format"
           }
         },
         "it": {
           "stringUnit": {
             "state": "translated",
-            "value": "Disattivala in Impostazioni → Sorgenti per vederle."
+            "value": "Badge formato"
           }
         },
         "vi": {
           "stringUnit": {
             "state": "translated",
-            "value": "Tắt tùy chọn này trong Cài đặt → Nguồn để xem chúng."
+            "value": "Huy hiệu định dạng"
           }
         }
       }
@@ -22490,6 +22840,40 @@
         }
       }
     },
+    "Hide code": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Code ausblenden"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ocultar código"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Masquer le code"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nascondi codice"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ẩn mã"
+          }
+        }
+      }
+    },
     "Hide sound descriptions and speaker labels from text subtitles.": {
       "localizations": {
         "de": {
@@ -23341,127 +23725,6 @@
         }
       }
     },
-    "Available in %@": {
-      "comment": "Accessibility label for the format badge row on the Detail page. %@ is a localized list of formats, like \"4K, Dolby Vision and Dolby Atmos\".",
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Verfügbar in %@"
-          }
-        },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Available in %@"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Disponible en %@"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Disponible en %@"
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Disponibile in %@"
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Có sẵn ở %@"
-          }
-        }
-      }
-    },
-    "Format Badges": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Format-Badges"
-          }
-        },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Format Badges"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Insignias de formato"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Badges de format"
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Badge formato"
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Huy hiệu định dạng"
-          }
-        }
-      }
-    },
-    "Shows 4K, Dolby Vision, HDR and Dolby Atmos under the title when one of your add-ons has a stream in that format. Checks up to three add-ons in the background when a page opens.": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Zeigt 4K, Dolby Vision, HDR und Dolby Atmos unter dem Titel, wenn eines deiner Add-ons einen Stream in diesem Format hat. Prüft im Hintergrund bis zu drei Add-ons, wenn eine Seite geöffnet wird."
-          }
-        },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Shows 4K, Dolby Vision, HDR and Dolby Atmos under the title when one of your add-ons has a stream in that format. Checks up to three add-ons in the background when a page opens."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Muestra 4K, Dolby Vision, HDR y Dolby Atmos debajo del título cuando uno de tus complementos tiene un stream en ese formato. Comprueba hasta tres complementos en segundo plano al abrir una página."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Affiche 4K, Dolby Vision, HDR et Dolby Atmos sous le titre lorsqu'un de vos addons propose un flux dans ce format. Vérifie jusqu'à trois addons en arrière-plan à l'ouverture d'une page."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Mostra 4K, Dolby Vision, HDR e Dolby Atmos sotto il titolo quando uno dei tuoi add-on ha uno stream in quel formato. Controlla fino a tre add-on in background all'apertura di una pagina."
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Hiện 4K, Dolby Vision, HDR và Dolby Atmos dưới tiêu đề khi một trong các addon của bạn có luồng ở định dạng đó. Kiểm tra tối đa ba addon ở nền khi mở một trang."
-          }
-        }
-      }
-    },
     "Icon-Only Detail Buttons": {
       "localizations": {
         "de": {
@@ -24173,6 +24436,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Cài addon để tùy chỉnh hàng Trang chủ."
+          }
+        }
+      }
+    },
+    "Install an add-on with catalogs first.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Installiere zuerst ein Add-on mit Katalogen."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Instala primero un complemento con catálogos."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Installez d'abord un addon avec des catalogues."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Installa prima un addon con cataloghi."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hãy cài trước một addon có danh mục."
           }
         }
       }
@@ -27808,6 +28105,40 @@
         }
       }
     },
+    "Move": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verschieben"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mover"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Déplacer"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sposta"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Di chuyển"
+          }
+        }
+      }
+    },
     "Move Down": {
       "localizations": {
         "de": {
@@ -28008,6 +28339,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Phim"
+          }
+        }
+      }
+    },
+    "Moving — Up or Down, then Select": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verschieben — Hoch oder Runter, dann Auswählen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Moviendo — Arriba o Abajo, luego Seleccionar"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Déplacement — Haut ou Bas, puis Sélectionner"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Spostamento — Su o Giù, poi Seleziona"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đang di chuyển — Lên hoặc Xuống, rồi Chọn"
           }
         }
       }
@@ -28728,6 +29093,40 @@
         }
       }
     },
+    "No add-ons": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keine Add-ons"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sin complementos"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aucun addon"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nessun addon"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chưa có addon"
+          }
+        }
+      }
+    },
     "No add-ons installed. Install one to get started.": {
       "localizations": {
         "de": {
@@ -28894,6 +29293,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Chưa nhập gói huy hiệu nào."
+          }
+        }
+      }
+    },
+    "No catalogs yet": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Noch keine Kataloge"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aún no hay catálogos"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aucun catalogue pour l'instant"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nessun catalogo per ora"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chưa có danh mục"
           }
         }
       }
@@ -33366,40 +33799,6 @@
         }
       }
     },
-    "Original language": {
-      "localizations": {
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Langue originale"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Idioma original"
-          }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Originalsprache"
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Lingua originale"
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ngôn ngữ gốc"
-          }
-        }
-      }
-    },
     "Original Music Composer": {
       "localizations": {
         "de": {
@@ -33430,6 +33829,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Nhạc gốc"
+          }
+        }
+      }
+    },
+    "Original language": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Langue originale"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Idioma original"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Originalsprache"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lingua originale"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ngôn ngữ gốc"
           }
         }
       }
@@ -33567,120 +34000,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Tab riêng đặt Khám phá trên thanh tab và thanh bên. Trong Tìm kiếm thêm một hàng Khám phá vào trang tìm kiếm để mở nó. Tắt sẽ ẩn Khám phá ở mọi nơi và đồng bộ dưới dạng Ẩn Khám phá tới các thiết bị khác của bạn. Mặc định: Tab riêng."
-          }
-        }
-      }
-    },
-    "Pick the speaker layout your receiver and speakers use for height channels. 7.1.4 by default.": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Wähle die Lautsprecheranordnung, die dein Receiver und deine Lautsprecher für Höhenkanäle nutzen. Standardmäßig 7.1.4."
-          }
-        },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Pick the speaker layout your receiver and speakers use for height channels. 7.1.4 by default."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Elige la disposición de altavoces que usan tu receptor y tus altavoces para los canales de altura. 7.1.4 por defecto."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Choisissez la disposition d’enceintes que votre récepteur et vos enceintes utilisent pour les canaux de hauteur. 7.1.4 par défaut."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Scegli la disposizione degli altoparlanti che il tuo ricevitore e i tuoi altoparlanti usano per i canali di altezza. 7.1.4 per impostazione predefinita."
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Chọn bố trí loa mà bộ thu AV và loa của bạn dùng cho kênh độ cao. Mặc định 7.1.4."
-          }
-        }
-      }
-    },
-    "Plays the trailer full screen shortly after you open a title. On by default; in Apple-style it is off by default and the trailer goes full screen only when you choose Watch Trailer.": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Spielt den Trailer kurz nach dem Öffnen eines Titels im Vollbild ab. Standardmäßig an; im Apple-Stil ist die Funktion standardmäßig aus, und der Trailer läuft nur im Vollbild, wenn du „Trailer ansehen“ wählst."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Reproduce el tráiler a pantalla completa poco después de abrir un título. Activado por defecto; en Estilo Apple está desactivado por defecto y el tráiler solo se ve a pantalla completa cuando eliges Ver tráiler."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Lance la bande-annonce en plein écran peu après l’ouverture d’un titre. Activé par défaut ; en Style Apple, il est désactivé par défaut et la bande-annonce ne passe en plein écran que lorsque tu choisis Regarder la bande-annonce."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Riproduce il trailer a schermo intero poco dopo l’apertura di un titolo. Attivo per impostazione predefinita; in Stile Apple è disattivato per impostazione predefinita e il trailer va a schermo intero solo quando scegli Guarda trailer."
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Phát trailer toàn màn hình ngay sau khi bạn mở một tiêu đề. Mặc định bật; ở Kiểu Apple, mặc định tắt và trailer chỉ chiếu toàn màn hình khi bạn chọn Xem trailer."
-          }
-        }
-      }
-    },
-    "Plays TrueHD and DTS:X with height channels when your receiver supports it. Off by default.": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Gibt TrueHD und DTS:X mit Höhenkanälen wieder, wenn dein Receiver das unterstützt. Standardmäßig aus."
-          }
-        },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Plays TrueHD and DTS:X with height channels when your receiver supports it. Off by default."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Reproduce TrueHD y DTS:X con canales de altura cuando tu receptor lo admite. Desactivado por defecto."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Lit TrueHD et DTS:X avec les canaux de hauteur si votre récepteur le prend en charge. Désactivé par défaut."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Riproduce TrueHD e DTS:X con i canali di altezza se il tuo ricevitore li supporta. Disattivato per impostazione predefinita."
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Phát TrueHD và DTS:X với kênh độ cao khi bộ thu AV của bạn hỗ trợ. Mặc định tắt."
           }
         }
       }
@@ -34234,6 +34553,46 @@
           "stringUnit": {
             "state": "translated",
             "value": "Chọn tập tiếp theo từ cùng bản phát hành hoặc nhóm addon, nếu có."
+          }
+        }
+      }
+    },
+    "Pick the speaker layout your receiver and speakers use for height channels. 7.1.4 by default.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wähle die Lautsprecheranordnung, die dein Receiver und deine Lautsprecher für Höhenkanäle nutzen. Standardmäßig 7.1.4."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pick the speaker layout your receiver and speakers use for height channels. 7.1.4 by default."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Elige la disposición de altavoces que usan tu receptor y tus altavoces para los canales de altura. 7.1.4 por defecto."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choisissez la disposition d’enceintes que votre récepteur et vos enceintes utilisent pour les canaux de hauteur. 7.1.4 par défaut."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scegli la disposizione degli altoparlanti che il tuo ricevitore e i tuoi altoparlanti usano per i canali di altezza. 7.1.4 per impostazione predefinita."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chọn bố trí loa mà bộ thu AV và loa của bạn dùng cho kênh độ cao. Mặc định 7.1.4."
           }
         }
       }
@@ -35069,6 +35428,46 @@
         }
       }
     },
+    "Plays TrueHD and DTS:X with height channels when your receiver supports it. Off by default.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gibt TrueHD und DTS:X mit Höhenkanälen wieder, wenn dein Receiver das unterstützt. Standardmäßig aus."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Plays TrueHD and DTS:X with height channels when your receiver supports it. Off by default."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reproduce TrueHD y DTS:X con canales de altura cuando tu receptor lo admite. Desactivado por defecto."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lit TrueHD et DTS:X avec les canaux de hauteur si votre récepteur le prend en charge. Désactivé par défaut."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Riproduce TrueHD e DTS:X con i canali di altezza se il tuo ricevitore li supporta. Disattivato per impostazione predefinita."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Phát TrueHD và DTS:X với kênh độ cao khi bộ thu AV của bạn hỗ trợ. Mặc định tắt."
+          }
+        }
+      }
+    },
     "Plays a muted trailer behind the description on title pages. On by default.": {
       "localizations": {
         "de": {
@@ -35133,6 +35532,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Phát bản xem trước trailer tắt tiếng sau khi bạn dừng lại trên poster một lúc. Mặc định tắt."
+          }
+        }
+      }
+    },
+    "Plays the trailer full screen shortly after you open a title. On by default; in Apple-style it is off by default and the trailer goes full screen only when you choose Watch Trailer.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Spielt den Trailer kurz nach dem Öffnen eines Titels im Vollbild ab. Standardmäßig an; im Apple-Stil ist die Funktion standardmäßig aus, und der Trailer läuft nur im Vollbild, wenn du „Trailer ansehen“ wählst."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reproduce el tráiler a pantalla completa poco después de abrir un título. Activado por defecto; en Estilo Apple está desactivado por defecto y el tráiler solo se ve a pantalla completa cuando eliges Ver tráiler."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lance la bande-annonce en plein écran peu après l’ouverture d’un titre. Activé par défaut ; en Style Apple, il est désactivé par défaut et la bande-annonce ne passe en plein écran que lorsque tu choisis Regarder la bande-annonce."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Riproduce il trailer a schermo intero poco dopo l’apertura di un titolo. Attivo per impostazione predefinita; in Stile Apple è disattivato per impostazione predefinita e il trailer va a schermo intero solo quando scegli Guarda trailer."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Phát trailer toàn màn hình ngay sau khi bạn mở một tiêu đề. Mặc định bật; ở Kiểu Apple, mặc định tắt và trailer chỉ chiếu toàn màn hình khi bạn chọn Xem trailer."
           }
         }
       }
@@ -37826,6 +38259,40 @@
         }
       }
     },
+    "Refreshing…": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wird aktualisiert…"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Actualizando…"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Actualisation…"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aggiornamento…"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đang làm mới…"
+          }
+        }
+      }
+    },
     "Region": {
       "localizations": {
         "de": {
@@ -38916,6 +39383,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Hiển thị cả hai lớp của đĩa Dolby Vision Profile 7 FEL khi Apple TV đủ sức xử lý. Mặc định tắt."
+          }
+        }
+      }
+    },
+    "Reorder Home rows to follow your add-ons": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start-Zeilen nach deinen Add-ons sortieren"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reordena las filas de Inicio según tus complementos"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Réorganiser les rangées de l'accueil selon vos addons"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Riordina le righe di Home in base ai tuoi addon"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sắp xếp lại các hàng Trang chủ theo addon của bạn"
           }
         }
       }
@@ -40353,6 +40854,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Quét mã QR để đăng nhập — không cần gõ"
+          }
+        }
+      }
+    },
+    "Scan a code to change this add-on's settings on your phone": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scanne einen Code, um die Einstellungen dieses Add-ons auf deinem Handy zu ändern"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Escanea un código para cambiar la configuración de este complemento en tu teléfono"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scannez un code pour modifier les réglages de cet addon sur votre téléphone"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Inquadra un codice per cambiare le impostazioni di questo addon sul telefono"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quét mã để đổi cài đặt addon này trên điện thoại của bạn"
           }
         }
       }
@@ -43059,6 +43594,40 @@
         }
       }
     },
+    "Show all catalogs": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alle Kataloge anzeigen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostrar todos los catálogos"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Afficher tous les catalogues"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostra tutti i cataloghi"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hiện tất cả danh mục"
+          }
+        }
+      }
+    },
     "Show cast in player": {
       "extractionState": "manual",
       "localizations": {
@@ -43096,6 +43665,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Hiện diễn viên trong trình phát"
+          }
+        }
+      }
+    },
+    "Show code": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Code anzeigen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostrar código"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Afficher le code"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostra codice"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hiện mã"
           }
         }
       }
@@ -43368,6 +43971,46 @@
           "stringUnit": {
             "state": "translated",
             "value": "Hiện sẽ mở rộng thanh bên để hiển thị tên từng tab khi bạn mở nó. Chỉ biểu tượng giữ thanh hẹp và chỉ hiện các biểu tượng. Mặc định: Hiện."
+          }
+        }
+      }
+    },
+    "Shows 4K, Dolby Vision, HDR and Dolby Atmos under the title when one of your add-ons has a stream in that format. Checks up to three add-ons in the background when a page opens.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zeigt 4K, Dolby Vision, HDR und Dolby Atmos unter dem Titel, wenn eines deiner Add-ons einen Stream in diesem Format hat. Prüft im Hintergrund bis zu drei Add-ons, wenn eine Seite geöffnet wird."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Shows 4K, Dolby Vision, HDR and Dolby Atmos under the title when one of your add-ons has a stream in that format. Checks up to three add-ons in the background when a page opens."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Muestra 4K, Dolby Vision, HDR y Dolby Atmos debajo del título cuando uno de tus complementos tiene un stream en ese formato. Comprueba hasta tres complementos en segundo plano al abrir una página."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Affiche 4K, Dolby Vision, HDR et Dolby Atmos sous le titre lorsqu'un de vos addons propose un flux dans ce format. Vérifie jusqu'à trois addons en arrière-plan à l'ouverture d'une page."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostra 4K, Dolby Vision, HDR e Dolby Atmos sotto il titolo quando uno dei tuoi add-on ha uno stream in quel formato. Controlla fino a tre add-on in background all'apertura di una pagina."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hiện 4K, Dolby Vision, HDR và Dolby Atmos dưới tiêu đề khi một trong các addon của bạn có luồng ở định dạng đó. Kiểm tra tối đa ba addon ở nền khi mở một trang."
           }
         }
       }
@@ -47242,6 +47885,40 @@
         }
       }
     },
+    "Still refreshing…": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wird noch aktualisiert…"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sigue actualizando…"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Actualisation toujours en cours…"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aggiornamento ancora in corso…"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vẫn đang làm mới…"
+          }
+        }
+      }
+    },
     "Still watching?": {
       "localizations": {
         "de": {
@@ -48950,40 +49627,6 @@
         }
       }
     },
-    "Teleplay": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Fernsehdrehbuch"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Guion para televisión"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Scénario TV"
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Sceneggiatura TV"
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Kịch bản truyền hình"
-          }
-        }
-      }
-    },
     "TMDB": {
       "localizations": {
         "de": {
@@ -49286,86 +49929,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "NGÀY MAI"
-          }
-        }
-      }
-    },
-    "Tries a new playback engine for compatible files, with automatic fallback to mpv if anything goes wrong. Off by default.": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Probiert für kompatible Dateien eine neue Wiedergabe-Engine aus, mit automatischem Rückgriff auf mpv, falls etwas schiefgeht. Standardmäßig aus."
-          }
-        },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tries a new playback engine for compatible files, with automatic fallback to mpv if anything goes wrong. Off by default."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Prueba un nuevo motor de reproducción con los archivos compatibles, con vuelta automática a mpv si algo sale mal. Desactivado por defecto."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Essaie un nouveau moteur de lecture pour les fichiers compatibles, avec repli automatique sur mpv en cas de problème. Désactivé par défaut."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Prova un nuovo motore di riproduzione per i file compatibili, con ripiego automatico su mpv in caso di problemi. Disattivato per impostazione predefinita."
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Thử một engine phát mới cho các tệp tương thích, tự động dự phòng bằng mpv nếu có sự cố. Mặc định tắt."
-          }
-        }
-      }
-    },
-    "Turning Lossless surround (LPCM) off sends TrueHD and DTS as Dolby Digital Plus 5.1, which older soundbars accept.": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Wenn „Verlustfreier Surround-Sound (LPCM)“ ausgeschaltet ist, werden TrueHD und DTS als Dolby Digital Plus 5.1 gesendet, das ältere Soundbars akzeptieren."
-          }
-        },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Turning Lossless surround (LPCM) off sends TrueHD and DTS as Dolby Digital Plus 5.1, which older soundbars accept."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Si desactivas «Sonido envolvente sin pérdidas (LPCM)», TrueHD y DTS se envían como Dolby Digital Plus 5.1, que aceptan las barras de sonido más antiguas."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Si vous désactivez « Son surround sans perte (LPCM) », TrueHD et DTS sont envoyés en Dolby Digital Plus 5.1, que les barres de son plus anciennes acceptent."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Se disattivi «Surround senza perdita (LPCM)», TrueHD e DTS vengono inviati come Dolby Digital Plus 5.1, che le soundbar meno recenti accettano."
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Khi tắt “Âm thanh vòm không mất dữ liệu (LPCM)”, TrueHD và DTS được gửi dưới dạng Dolby Digital Plus 5.1, loại mà các loa thanh đời cũ chấp nhận."
           }
         }
       }
@@ -49706,6 +50269,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Talk show"
+          }
+        }
+      }
+    },
+    "Teleplay": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fernsehdrehbuch"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Guion para televisión"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scénario TV"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sceneggiatura TV"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kịch bản truyền hình"
           }
         }
       }
@@ -50624,6 +51221,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Nguồn của tập tiếp theo bị lỗi. Hãy chọn một nguồn bên dưới."
+          }
+        }
+      }
+    },
+    "The primary profile has no add-ons. Add them there.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Das Hauptprofil hat keine Add-ons. Füge sie dort hinzu."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El perfil principal no tiene complementos. Añádelos allí."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le profil principal n'a aucun addon. Ajoutez-les là-bas."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Il profilo principale non ha addon. Aggiungili lì."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hồ sơ chính chưa có addon. Hãy thêm chúng ở đó."
           }
         }
       }
@@ -52840,6 +53471,46 @@
         }
       }
     },
+    "Tries a new playback engine for compatible files, with automatic fallback to mpv if anything goes wrong. Off by default.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Probiert für kompatible Dateien eine neue Wiedergabe-Engine aus, mit automatischem Rückgriff auf mpv, falls etwas schiefgeht. Standardmäßig aus."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tries a new playback engine for compatible files, with automatic fallback to mpv if anything goes wrong. Off by default."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Prueba un nuevo motor de reproducción con los archivos compatibles, con vuelta automática a mpv si algo sale mal. Desactivado por defecto."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Essaie un nouveau moteur de lecture pour les fichiers compatibles, avec repli automatique sur mpv en cas de problème. Désactivé par défaut."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Prova un nuovo motore di riproduzione per i file compatibili, con ripiego automatico su mpv in caso di problemi. Disattivato per impostazione predefinita."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thử một engine phát mới cho các tệp tương thích, tự động dự phòng bằng mpv nếu có sự cố. Mặc định tắt."
+          }
+        }
+      }
+    },
     "Try Again": {
       "localizations": {
         "de": {
@@ -53044,6 +53715,74 @@
         }
       }
     },
+    "Turn Off": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deaktivieren"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desactivar"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Désactiver"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disattiva"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tắt"
+          }
+        }
+      }
+    },
+    "Turn On": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aktivieren"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activar"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activer"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Attiva"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bật"
+          }
+        }
+      }
+    },
     "Turn cached torrent results into direct links automatically": {
       "localizations": {
         "de": {
@@ -53109,6 +53848,46 @@
           "stringUnit": {
             "state": "translated",
             "value": "Bật hoặc tắt mọi nhà cung cấp trong %@."
+          }
+        }
+      }
+    },
+    "Turn it off in Settings → Sources to see them.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deaktiviere die Option unter Einstellungen → Quellen, um sie zu sehen."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Turn it off in Settings → Sources to see them."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desactívala en Configuración → Fuentes para verlas."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Désactivez-la dans Paramètres → Sources pour les voir."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disattivala in Impostazioni → Sorgenti per vederle."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tắt tùy chọn này trong Cài đặt → Nguồn để xem chúng."
           }
         }
       }
@@ -53347,6 +54126,46 @@
           "stringUnit": {
             "state": "translated",
             "value": "Bật nếu được yêu cầu ghi lại vì sao trailer trông bị phóng to, có viền đen hoặc bị giật"
+          }
+        }
+      }
+    },
+    "Turning Lossless surround (LPCM) off sends TrueHD and DTS as Dolby Digital Plus 5.1, which older soundbars accept.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wenn „Verlustfreier Surround-Sound (LPCM)“ ausgeschaltet ist, werden TrueHD und DTS als Dolby Digital Plus 5.1 gesendet, das ältere Soundbars akzeptieren."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Turning Lossless surround (LPCM) off sends TrueHD and DTS as Dolby Digital Plus 5.1, which older soundbars accept."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Si desactivas «Sonido envolvente sin pérdidas (LPCM)», TrueHD y DTS se envían como Dolby Digital Plus 5.1, que aceptan las barras de sonido más antiguas."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Si vous désactivez « Son surround sans perte (LPCM) », TrueHD et DTS sont envoyés en Dolby Digital Plus 5.1, que les barres de son plus anciennes acceptent."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Se disattivi «Surround senza perdita (LPCM)», TrueHD e DTS vengono inviati come Dolby Digital Plus 5.1, che le soundbar meno recenti accettano."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Khi tắt “Âm thanh vòm không mất dữ liệu (LPCM)”, TrueHD và DTS được gửi dưới dạng Dolby Digital Plus 5.1, loại mà các loa thanh đời cũ chấp nhận."
           }
         }
       }
@@ -53859,6 +54678,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Không khả dụng"
+          }
+        }
+      }
+    },
+    "Unavailable — Retry to load it again": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nicht verfügbar — mit „Erneut versuchen“ neu laden"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No disponible — Reintentar para volver a cargarlo"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Indisponible — Réessayer pour le charger à nouveau"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Non disponibile — Riprova per caricarlo di nuovo"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không khả dụng — Thử lại để tải lại"
           }
         }
       }
@@ -57105,6 +57958,9 @@
         }
       }
     },
+    "audio %@": {},
+    "audio only": {},
+    "bridged": {},
     "budget used": {
       "localizations": {
         "de": {
@@ -57923,6 +58779,7 @@
         }
       }
     },
+    "decoded": {},
     "depth=%lld cycles=%lld": {
       "localizations": {
         "de": {
@@ -58401,6 +59258,7 @@
         }
       }
     },
+    "dropped": {},
     "en": {
       "localizations": {
         "de": {
@@ -58503,6 +59361,7 @@
         }
       }
     },
+    "escalations %lld": {},
     "focused": {
       "shouldTranslate": false
     },
@@ -58642,6 +59501,8 @@
         }
       }
     },
+    "native": {},
+    "no audio": {},
     "no seek index": {
       "localizations": {
         "de": {
@@ -59132,6 +59993,8 @@
         }
       }
     },
+    "shaped": {},
+    "software": {},
     "stage text slot": {
       "shouldTranslate": false
     },
@@ -59169,6 +60032,7 @@
         }
       }
     },
+    "stream copy": {},
     "stream.picker.notCached": {
       "extractionState": "manual",
       "localizations": {

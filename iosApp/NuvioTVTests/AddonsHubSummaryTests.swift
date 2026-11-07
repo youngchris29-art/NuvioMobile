@@ -219,12 +219,12 @@ final class AddonsHubSummaryTests: XCTestCase {
     func testInstallPhaseMapsBusyOutcomesAndIdle() {
         let installed = AddonsViewModel.InstallOutcome.installed(name: "Torrentio", serial: 1)
         let failed = AddonsViewModel.InstallOutcome.failed(message: "nope", serial: 2)
-        XCTAssertEqual(AddonInstallSheet.installPhase(isInstalling: true, outcome: nil), .checking)
-        XCTAssertEqual(AddonInstallSheet.installPhase(isInstalling: true, outcome: failed), .checking)
-        XCTAssertEqual(AddonInstallSheet.installPhase(isInstalling: true, outcome: installed), .checking)
-        XCTAssertEqual(AddonInstallSheet.installPhase(isInstalling: false, outcome: installed), .installed(name: "Torrentio"))
-        XCTAssertEqual(AddonInstallSheet.installPhase(isInstalling: false, outcome: failed), .failed(message: "nope"))
-        XCTAssertEqual(AddonInstallSheet.installPhase(isInstalling: false, outcome: nil), .idle)
+        XCTAssertEqual(InstallFlow.installPhase(isInstalling: true, outcome: nil), .checking)
+        XCTAssertEqual(InstallFlow.installPhase(isInstalling: true, outcome: failed), .checking)
+        XCTAssertEqual(InstallFlow.installPhase(isInstalling: true, outcome: installed), .checking)
+        XCTAssertEqual(InstallFlow.installPhase(isInstalling: false, outcome: installed), .installed(name: "Torrentio"))
+        XCTAssertEqual(InstallFlow.installPhase(isInstalling: false, outcome: failed), .failed(message: "nope"))
+        XCTAssertEqual(InstallFlow.installPhase(isInstalling: false, outcome: nil), .idle)
     }
 
     /// H4: collections keep their index; the rest sort stably by add-on position, matched by the

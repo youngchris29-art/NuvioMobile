@@ -1,8 +1,8 @@
 import SharedCore
 import SwiftUI
 
-/// Add-ons hub v2, A5: the add-on detail page, pushed from the Installed pane (replaces v1's
-/// `AddonDetailSheet`).
+/// Add-ons hub v2, A5: the add-on detail page, pushed from the Installed pane (v1's detail sheet
+/// was deleted in A7).
 ///
 /// A native `List` like the Installed pane: a non-focusable header (logo, name, version · host ·
 /// stream position, description, resource chips), then `SettingsRowKit` rows in `rows(…)` order,

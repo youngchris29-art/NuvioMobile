@@ -21,9 +21,4 @@ final class InstallFlowTests: XCTestCase {
         XCTAssertEqual(InstallFlow.installPhase(isInstalling: false, outcome: failed), .failed(message: "nope"))
         XCTAssertEqual(InstallFlow.installPhase(isInstalling: false, outcome: nil), .idle)
     }
-
-    func testSheetForwardersMatchInstallFlow() {
-        XCTAssertEqual(AddonInstallSheet.serial(of: failed), InstallFlow.serial(of: failed))
-        XCTAssertEqual(AddonInstallSheet.installPhase(isInstalling: false, outcome: installed), InstallFlow.installPhase(isInstalling: false, outcome: installed))
-    }
 }

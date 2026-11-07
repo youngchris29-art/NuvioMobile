@@ -1,7 +1,7 @@
 import SharedCore
 import SwiftUI
 
-/// Add-ons hub v2, A2: the two-column Add-ons page that replaced `SourcesHubView` as the body of
+/// Add-ons hub v2, A2: the two-column Add-ons page that replaced v1's card hub (deleted in A7) as the body of
 /// `AddonsView`. Left: a `List` of sidebar `Button` rows (`HubSection`), on a Liquid Glass
 /// container (D5). Right: the content column, with its own `NavigationStack` (D2), rebuilt per
 /// section. One title, "Add-ons", above both columns (HIG Split views). `AddonsView` owns every
@@ -46,9 +46,6 @@ struct AddonsHubSplitView: View {
     @ObservedObject var settings: SettingsViewModel
     @ObservedObject var debrid: DebridViewModel
     @ObservedObject var plugins: PluginsViewModel
-    @ObservedObject var badges: BadgeSettingsViewModel
-    @ObservedObject var trakt: TraktViewModel
-    @ObservedObject var simkl: SimklViewModel
     @Binding var pendingRemoval: ManagedAddon?
     @Binding var removal: RemovalIntent?
 
@@ -84,8 +81,7 @@ struct AddonsHubSplitView: View {
     @State private var dwell: Task<Void, Never>?
     @Environment(\.navigationChrome) private var navigationChrome
 
-    // Sheets, toasts and install/removal bookkeeping, carried over from v1's `SourcesHubView`
-    // until A3–A6 move them onto the panes.
+    // Toasts, the Catalogs filter and install/removal bookkeeping.
     /// A6: the Catalogs section's per-add-on filter (the detail page's "Catalogs from this
     /// add-on"); cleared on leaving the section or with the pane's "Show all" row.
     /// Review A6-r3: the filter holds the add-on's URL; its keys and title are derived on every
@@ -110,8 +106,6 @@ struct AddonsHubSplitView: View {
     @State private var installHandledSerial: Int?
     @State private var toast: String?
     @State private var toastSerial = 0
-    @State private var confirmingTraktDisconnect = false
-    @State private var confirmingSimklDisconnect = false
     @State private var debridDisconnectId: String?
 
     /// A4 review r2: a sidebar landing within this long after a move ends is the sidebar's own
@@ -156,7 +150,6 @@ struct AddonsHubSplitView: View {
             HStack(alignment: .top, spacing: Theme.Spacing.xl) {
                 sidebar(visible: visible, summary: summary)
                     .frame(width: Self.sidebarWidth)
-                    .padding(.leading, HubRailClearance.extraLeading)
                     .disabled(isMovingAny)
                 .focusSection()
                 contentColumn
@@ -298,11 +291,8 @@ struct AddonsHubSplitView: View {
             VStack(spacing: 0) {
                 HubContentColumn(
                     section: selected,
-                    model: model, settings: settings, debrid: debrid, plugins: plugins, badges: badges,
-                    trakt: trakt, simkl: simkl,
+                    model: model, settings: settings, debrid: debrid, plugins: plugins,
                     contentFocus: $contentFocus,
-                    confirmingTraktDisconnect: $confirmingTraktDisconnect,
-                    confirmingSimklDisconnect: $confirmingSimklDisconnect,
                     debridDisconnectId: $debridDisconnectId,
                     onOpenAddon: { contentPath.append(HubAddonRoute(manifestUrl: $0.manifestUrl)) },
                     onConfigureAddon: { contentPath.append(HubAddonRoute(manifestUrl: $0.manifestUrl, startsInConfigure: true)) },
@@ -367,18 +357,6 @@ struct AddonsHubSplitView: View {
         // A new section starts the column over: a fresh stack (anything pushed is dropped, value
         // links included) and fresh pane state.
         .id(selected)
-        .alert("Disconnect Trakt?", isPresented: $confirmingTraktDisconnect) {
-            Button("Disconnect", role: .destructive) { trakt.disconnect() }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Scrobbling stops and this Apple TV's Trakt access token is revoked. Your Trakt history is untouched.")
-        }
-        .alert("Disconnect Simkl?", isPresented: $confirmingSimklDisconnect) {
-            Button("Disconnect", role: .destructive) { simkl.disconnect() }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Scrobbling stops and this Apple TV's Simkl authorization is cleared. Your Simkl history is untouched.")
-        }
         .alert(
             "Disconnect debrid provider?",
             isPresented: Binding(get: { debridDisconnectId != nil }, set: { if !$0 { debridDisconnectId = nil } })
@@ -940,12 +918,7 @@ private struct HubContentColumn: View {
     @ObservedObject var settings: SettingsViewModel
     @ObservedObject var debrid: DebridViewModel
     @ObservedObject var plugins: PluginsViewModel
-    @ObservedObject var badges: BadgeSettingsViewModel
-    @ObservedObject var trakt: TraktViewModel
-    @ObservedObject var simkl: SimklViewModel
     let contentFocus: FocusState<String?>.Binding
-    @Binding var confirmingTraktDisconnect: Bool
-    @Binding var confirmingSimklDisconnect: Bool
     @Binding var debridDisconnectId: String?
     let onOpenAddon: (ManagedAddon) -> Void
     let onConfigureAddon: (ManagedAddon) -> Void
@@ -1034,39 +1007,14 @@ private struct HubContentColumn: View {
     }
 }
 
-// MARK: - Sidebar surface and the rail clearance knob
+// MARK: - Sidebar surface
 
 /// D5: Liquid Glass on the sidebar container only; the content column stays flat (HIG Materials:
-/// glass is for the control layer). `HubRailClearance` can swap it for the flat surface while the
-/// rail is visible.
+/// glass is for the control layer). Christian kept the glass next to the rail as built (A2 device
+/// check, 2026-11-07), so there is no flat variant.
 private struct HubSidebarSurface: View {
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: 36, style: .continuous)
-        if HubRailClearance.flatSidebar {
-            shape.fill(Theme.Palette.surface)
-        } else {
-            shape.fill(Color.clear).glassEffect(.regular, in: shape)
-        }
+        shape.fill(Color.clear).glassEffect(.regular, in: shape)
     }
-}
-
-/// A0: in Rail mode the rail pill sat flush against the sidebar glass. Two candidate treatments
-/// are wired for Christian's pick at the A2 device check (`-debug.hubRailClearance spacing|flat`,
-/// DEBUG only); the default keeps the designed layout until he chooses. Inert outside Rail mode.
-enum HubRailClearance {
-    private static var applies: Bool { NavigationChrome.isRail() }
-
-    private static var choice: String {
-        #if DEBUG
-        return UserDefaults.standard.string(forKey: "debug.hubRailClearance") ?? ""
-        #else
-        return ""
-        #endif
-    }
-
-    /// Extra leading space before the sidebar ("spacing").
-    static var extraLeading: CGFloat { applies && choice == "spacing" ? Theme.Spacing.lg : 0 }
-
-    /// The flat surface instead of glass ("flat").
-    static var flatSidebar: Bool { applies && choice == "flat" }
 }
