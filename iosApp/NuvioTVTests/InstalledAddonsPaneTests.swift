@@ -28,20 +28,23 @@ final class InstalledAddonsPaneTests: XCTestCase {
         XCTAssertEqual(Pane.rowKey("https://a.example.com/manifest.json"), "row:https://a.example.com/manifest.json")
     }
 
-    func testMiddleRowHasBothMoves() {
-        XCTAssertEqual(actions(index: 1, count: 3), [.toggle(enable: false), .moveUp, .moveDown, .refresh, .remove])
+    /// A4: one "Move" item (Move mode) on any row of a list with more than one add-on.
+    func testEveryRowOfALongerListOffersMove() {
+        for index in 0..<3 {
+            XCTAssertEqual(actions(index: index, count: 3), [.toggle(enable: false), .move, .refresh, .remove])
+        }
     }
 
-    func testFirstRowHasNoMoveUp() {
-        XCTAssertEqual(actions(index: 0, count: 3), [.toggle(enable: false), .moveDown, .refresh, .remove])
-    }
-
-    func testLastRowHasNoMoveDown() {
-        XCTAssertEqual(actions(index: 2, count: 3), [.toggle(enable: false), .moveUp, .refresh, .remove])
-    }
-
-    func testOnlyRowHasNoMoves() {
+    func testOnlyRowHasNoMove() {
         XCTAssertEqual(actions(index: 0, count: 1), [.toggle(enable: false), .refresh, .remove])
+    }
+
+    /// A4: VoiceOver keeps the direct Move up / Move down actions where they apply.
+    func testVoiceOverMovesFollowThePosition() {
+        XCTAssertEqual(Pane.voiceOverMoves(index: 0, count: 3, isReadOnly: false), [.moveDown])
+        XCTAssertEqual(Pane.voiceOverMoves(index: 1, count: 3, isReadOnly: false), [.moveUp, .moveDown])
+        XCTAssertEqual(Pane.voiceOverMoves(index: 2, count: 3, isReadOnly: false), [.moveUp])
+        XCTAssertEqual(Pane.voiceOverMoves(index: 1, count: 3, isReadOnly: true), [])
     }
 
     func testDisabledAddonOffersEnable() {
@@ -50,7 +53,7 @@ final class InstalledAddonsPaneTests: XCTestCase {
 
     func testConfigurableAddsConfigureBeforeRemove() {
         let on = actions(configurable: true)
-        XCTAssertEqual(on, [.toggle(enable: false), .moveUp, .moveDown, .refresh, .configure, .remove])
+        XCTAssertEqual(on, [.toggle(enable: false), .move, .refresh, .configure, .remove])
         XCTAssertFalse(actions(configurable: false).contains(.configure))
     }
 

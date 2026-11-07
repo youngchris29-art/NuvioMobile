@@ -441,7 +441,7 @@ final class AddonsHubUITests: XCTestCase {
     }
 
     private func rowMenuIsOpen(_ app: XCUIApplication) -> Bool {
-        ["Disable", "Enable", "Move up", "Move down", "Retry"].contains { menuItem(app, $0).exists }
+        ["Disable", "Enable", "Move", "Retry"].contains { menuItem(app, $0).exists }
     }
 
     /// Holds Select 2 s on the focused row (the repo's working hold, `testS11`); a hold that falls
@@ -465,7 +465,7 @@ final class AddonsHubUITests: XCTestCase {
         // tvOS context-menu items are `Other` elements that never report focus to XCUITest (A3
         // probe): the menu's order is fixed, so walk to the top and step Down to the item's
         // position. The legs then assert the OUTCOME (row moved, row removed), which is the proof.
-        let known = ["Enable", "Disable", "Move up", "Move down", "Refresh", "Retry", "Configure", "Remove"]
+        let known = ["Enable", "Disable", "Move", "Refresh", "Retry", "Configure", "Remove"]
         let items = known.compactMap { name -> (String, CGFloat)? in
             let element = menuItem(app, name)
             return element.exists ? (name, element.frame.minY) : nil
@@ -541,10 +541,28 @@ final class AddonsHubUITests: XCTestCase {
         say("installed B at row \(bIndex) of \(rowCount(app))")
         pause(1)
 
-        // 3. Reorder: B up one, through the row's context menu.
+        // 3. Reorder (A4 Move mode): first a CANCELLED move (Move, Up, Menu → B back where it
+        // was), then a committed one (Move, Up, Select → B one place up).
         XCTAssertGreaterThan(bIndex, 0, "B is the first row, nothing to move up; rows: \(rowTitles(app))")
         XCTAssertTrue(openRowMenu(app, index: bIndex, title: "ZZ Hub B"), "the context menu never opened on B's row; focused: \(focusDump(app))")
-        XCTAssertTrue(chooseMenuItem(app, "Move up"), "the Move up item never took focus; focused: \(focusDump(app))")
+        XCTAssertTrue(chooseMenuItem(app, "Move"), "the Move item was not chosen; focused: \(focusDump(app))")
+        XCTAssertTrue(element(app, "addons_move_badge").waitForExistence(timeout: 3), "the Moving badge never appeared")
+        remote.press(.up); pause(0.8)
+        XCTAssertTrue(waitUntil(timeout: 5) { self.rowIndex(app, titled: "ZZ Hub B") == bIndex - 1 },
+                      "Up in Move mode did not move B; rows: \(rowTitles(app))")
+        remote.press(.menu); pause(1.0)
+        XCTAssertTrue(waitUntil(timeout: 5) { self.rowIndex(app, titled: "ZZ Hub B") == bIndex },
+                      "Menu did not cancel the move back to row \(bIndex); rows: \(rowTitles(app))")
+        XCTAssertFalse(element(app, "addons_move_badge").exists, "the Moving badge stayed after cancel")
+        XCTAssertTrue(element(app, "addons_split_root").exists, "Menu while moving left the hub")
+        say("cancelled move restored: \(rowTitles(app))")
+
+        XCTAssertTrue(openRowMenu(app, index: bIndex, title: "ZZ Hub B"), "the context menu never reopened on B's row; focused: \(focusDump(app))")
+        XCTAssertTrue(chooseMenuItem(app, "Move"), "the Move item was not chosen (second time)")
+        XCTAssertTrue(element(app, "addons_move_badge").waitForExistence(timeout: 3), "the Moving badge never appeared (second time)")
+        remote.press(.up); pause(0.8)
+        remote.press(.select); pause(1.0)
+        XCTAssertFalse(element(app, "addons_move_badge").exists, "Select did not end Move mode")
         let newIndex = bIndex - 1
         XCTAssertTrue(waitUntil(timeout: 10) { self.rowIndex(app, titled: "ZZ Hub B") == newIndex },
                       "B did not move to row \(newIndex); rows: \(rowTitles(app))")

@@ -22,6 +22,11 @@ struct InstalledAddonsPane: View {
     /// A row key the split view is about to focus (review A3-r1): the List scrolls that row into
     /// view first, because a row the List has not realized cannot take focus. Cleared once done.
     @Binding var scrollTarget: String?
+    /// A4: the add-on in Move mode (nil when not moving). Owned by the split view.
+    let movingUrl: String?
+    let onStartMove: (ManagedAddon, Int) -> Void
+    let onMoveStep: (AddonMoveMode.Direction) -> Void
+    let onCommitMove: () -> Void
 
     nonisolated static func rowKey(_ manifestUrl: String) -> String { "row:" + manifestUrl }
     /// The empty state's row (review A3-r1: Select on Installed hands focus to it).
@@ -30,7 +35,8 @@ struct InstalledAddonsPane: View {
     // MARK: Pure rules
 
     nonisolated enum RowAction: Hashable {
-        case toggle(enable: Bool), moveUp, moveDown, refresh, retry, configure, remove
+        /// `move` starts A4's Move mode; `moveUp`/`moveDown` remain as VoiceOver actions only.
+        case toggle(enable: Bool), move, moveUp, moveDown, refresh, retry, configure, remove
     }
 
     /// The trailing status word of a row.
@@ -44,8 +50,18 @@ struct InstalledAddonsPane: View {
         }
     }
 
+    /// A4: the VoiceOver reorder actions a row offers (no Move mode for VoiceOver users).
+    nonisolated static func voiceOverMoves(index: Int, count: Int, isReadOnly: Bool) -> [RowAction] {
+        guard !isReadOnly else { return [] }
+        var moves: [RowAction] = []
+        if index > 0 { moves.append(.moveUp) }
+        if index < count - 1 { moves.append(.moveDown) }
+        return moves
+    }
+
     /// The context menu's actions, in order. Read-only profiles may only refresh (or retry a
-    /// stalled refresh); otherwise toggle, moves, refresh/retry, configure, remove.
+    /// stalled refresh); otherwise toggle, Move (A4, when there is more than one add-on),
+    /// refresh/retry, configure, remove.
     nonisolated static func menuActions(
         enabled: Bool, configurable: Bool, index: Int, count: Int,
         isReadOnly: Bool, status: AddonsViewModel.AddonStatus
@@ -53,8 +69,7 @@ struct InstalledAddonsPane: View {
         let refreshAction: RowAction = status == .stalled ? .retry : .refresh
         if isReadOnly { return [refreshAction] }
         var actions: [RowAction] = [.toggle(enable: !enabled)]
-        if index > 0 { actions.append(.moveUp) }
-        if index < count - 1 { actions.append(.moveDown) }
+        if count > 1 { actions.append(.move) }
         actions.append(refreshAction)
         if configurable { actions.append(.configure) }
         actions.append(.remove)
@@ -123,12 +138,25 @@ struct InstalledAddonsPane: View {
                     isReadOnly: model.isReadOnly,
                     status: AddonsViewModel.status(of: addon, stalled: model.stalledUrls),
                     model: model, focus: focus,
-                    onOpen: onOpen, onConfigure: onConfigure, onMove: onMove, onRemove: onRemove
+                    onOpen: onOpen, onConfigure: onConfigure, onMove: onMove, onRemove: onRemove,
+                    isMoving: movingUrl == addon.manifestUrl, isLocked: movingUrl != nil && movingUrl != addon.manifestUrl,
+                    onStartMove: onStartMove, onCommitMove: onCommitMove
                 )
             }
         }
         .environment(\.settingsUsesNativeList, true)
         .scrollClipDisabled()
+        // A4: while an add-on is lifted every other row (and the sidebar, and the tab bar) is out
+        // of focus reach, so Up/Down have no target and arrive here as move commands. Left/Right
+        // are swallowed while moving (nothing to do).
+        .onMoveCommand { direction in
+            guard movingUrl != nil else { return }
+            switch direction {
+            case .up: onMoveStep(.up)
+            case .down: onMoveStep(.down)
+            default: break
+            }
+        }
         .accessibilityIdentifier("addons_installed_list")
     }
 }
@@ -147,6 +175,11 @@ private struct AddonRow: View {
     let onConfigure: (ManagedAddon) -> Void
     let onMove: (ManagedAddon, Int, Int) -> Void
     let onRemove: (ManagedAddon) -> Void
+    /// A4: this row is lifted (Move mode) / another row is, so this one is out of focus reach.
+    let isMoving: Bool
+    let isLocked: Bool
+    let onStartMove: (ManagedAddon, Int) -> Void
+    let onCommitMove: () -> Void
 
     private var actions: [InstalledAddonsPane.RowAction] {
         InstalledAddonsPane.menuActions(
@@ -163,15 +196,20 @@ private struct AddonRow: View {
     private var statusText: String { InstalledAddonsPane.trailingText(status) }
 
     var body: some View {
-        let allowed = actions
-        Button { onOpen(addon) } label: {
+        // While moving there is no context menu (the long press would fight the mode).
+        let allowed = isMoving || isLocked ? [] : actions
+        Button {
+            // A4: Select drops a lifted row where it is; otherwise it opens the detail page.
+            if isMoving { onCommitMove() } else { onOpen(addon) }
+        } label: {
             SettingsRowChrome {
                 leading
             } trailing: {
-                trailing
+                if isMoving { movingBadge } else { trailing }
             }
         }
         .focused(focus, equals: InstalledAddonsPane.rowKey(addon.manifestUrl))
+        .disabled(isLocked)
         .contextMenu {
             ForEach(allowed, id: \.self) { action in
                 menuButton(action)
@@ -180,7 +218,7 @@ private struct AddonRow: View {
         .accessibilityLabel(title)
         .accessibilityValue("\(statusText), \(host)")
         .accessibilityIdentifier("addons_row_\(index)")
-        .modifier(MoveActions(allowed: allowed) { delta in onMove(addon, index, delta) })
+        .modifier(MoveActions(allowed: InstalledAddonsPane.voiceOverMoves(index: index, count: count, isReadOnly: isReadOnly)) { delta in onMove(addon, index, delta) })
     }
 
     private var leading: some View {
@@ -213,6 +251,18 @@ private struct AddonRow: View {
         }
     }
 
+    /// A4: the lifted row's trailing badge.
+    private var movingBadge: some View {
+        HStack(spacing: Theme.Spacing.xs) {
+            Image(systemName: "arrow.up.arrow.down")
+            Text("Moving — Up or Down, then Select")
+                .lineLimit(1)
+        }
+        .font(SettingsRowFont.subtitle)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("addons_move_badge")
+    }
+
     private var trailing: some View {
         HStack(spacing: Theme.Spacing.sm) {
             if status == .refreshing || status == .stalled {
@@ -236,12 +286,11 @@ private struct AddonRow: View {
         switch action {
         case .toggle(let enable):
             Button(enable ? "Enable" : "Disable") { model.setEnabled(addon, enable) }
-        // A4: replaced by the Move mode (pick up, Up/Down, Select to drop); these two stay as the
-        // interim reorder path until then.
-        case .moveUp:
-            Button("Move up") { onMove(addon, index, -1) }
-        case .moveDown:
-            Button("Move down") { onMove(addon, index, 1) }
+        case .move:
+            Button("Move") { onStartMove(addon, index) }
+        // VoiceOver-only actions; never in the menu (`menuActions` does not return them).
+        case .moveUp, .moveDown:
+            EmptyView()
         case .refresh:
             Button("Refresh") { model.refresh(manifestUrl: addon.manifestUrl) }
         case .retry:

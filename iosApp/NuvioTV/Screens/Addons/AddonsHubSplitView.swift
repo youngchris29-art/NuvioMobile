@@ -68,6 +68,8 @@ struct AddonsHubSplitView: View {
     @State private var deliberateSidebar: HubSection?
     /// The Installed row about to be focused (A3-r1): the pane scrolls it into view first.
     @State private var installedScrollTarget: String?
+    /// A4: the Installed pane's Move mode.
+    @State private var moveMode = AddonMoveMode()
     @State private var dwell: Task<Void, Never>?
     @Environment(\.navigationChrome) private var navigationChrome
 
@@ -123,7 +125,8 @@ struct AddonsHubSplitView: View {
                 sidebar(visible: visible, summary: summary)
                     .frame(width: Self.sidebarWidth)
                     .padding(.leading, HubRailClearance.extraLeading)
-                    .focusSection()
+                    .disabled(moveMode.isMoving)
+                .focusSection()
                 contentColumn
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .focusSection()
@@ -134,6 +137,13 @@ struct AddonsHubSplitView: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("addons_split_root")
         .overlay(alignment: .bottom) { toastView }
+        // A4: in Tabs mode the visible tab bar is the one focus target left while an add-on is
+        // lifted; lock it so Up stays a move command.
+        .background { TabBarFocusLock(active: moveMode.isMoving).frame(width: 0, height: 0) }
+        .onChange(of: model.addons.map(\.manifestUrl)) { _, urls in
+            // The lifted add-on went away (sync, another device): end the mode.
+            if let url = moveMode.movingUrl, !urls.contains(url) { moveMode.commit() }
+        }
         .onAppear { restoreSection(visible: visible) }
         .onChange(of: visible) { _, now in
             // A section that disappears (Plugins switched off) falls back to Installed.
@@ -168,7 +178,8 @@ struct AddonsHubSplitView: View {
         // H9 (P4 §2.5): a rail exit back to the hub takes the default hand-off; the sidebar's
         // landing correction then puts focus on the selected section's row.
         .railReturnRoute {
-            RailReturnRoute(name: "addons", capture: {}, restore: { false }, vetoesLeftArm: { false })
+            // A4: while an add-on is lifted a Left must not arm the rail (Left is swallowed).
+            RailReturnRoute(name: "addons", capture: {}, restore: { false }, vetoesLeftArm: { moveMode.isMoving })
         }
     }
 
@@ -272,7 +283,11 @@ struct AddonsHubSplitView: View {
                         // A3: the empty Installed pane's link row goes to the Install section.
                         select(.install)
                         DispatchQueue.main.async { handOffContent(Self.installOpenKey) }
-                    }
+                    },
+                    movingUrl: moveMode.movingUrl,
+                    onStartMove: startMove,
+                    onMoveStep: moveStep,
+                    onCommitMove: commitMove
                 )
                 // A second child: a one-child stack forwarded its identifier to the pane's
                 // ScrollView (A2 probe), so the column needs to be a real container.
@@ -287,6 +302,8 @@ struct AddonsHubSplitView: View {
                 // untagged pane (the interim hosts: contentFocus stays nil there too, so allow it
                 // when no Installed row is the remembered target).
                 Self.logFocus("menu at content root; focus=\(contentFocus.map(Self.kind(of:)) ?? "nil")")
+                // A4: Menu cancels a move (back to where it started) before anything else.
+                if moveMode.isMoving { cancelMove(); return }
                 if contentFocus != nil || selected != .installed { handOffSidebar(selected) }
             }
             .accessibilityElement(children: .contain)
@@ -513,6 +530,42 @@ struct AddonsHubSplitView: View {
         DispatchQueue.main.async { handOffContent(InstalledAddonsPane.rowKey(addon.manifestUrl)) }
     }
 
+    // MARK: - Move mode (A4)
+
+    private func startMove(_ addon: ManagedAddon, index: Int) {
+        guard !model.isReadOnly else { return }
+        moveMode.start(manifestUrl: addon.manifestUrl, index: index)
+        Self.logFocus("move start at \(index)")
+        DispatchQueue.main.async { handOffContent(InstalledAddonsPane.rowKey(addon.manifestUrl)) }
+    }
+
+    /// One Up/Down press while moving: the reducer decides (ends, 112 ms throttle); the add-on
+    /// moves one place and focus stays on its row.
+    private func moveStep(_ direction: AddonMoveMode.Direction) {
+        guard let url = moveMode.movingUrl,
+              let current = model.addons.firstIndex(where: { $0.manifestUrl == url }),
+              let target = moveMode.step(direction, currentIndex: current, count: model.addons.count,
+                                         now: ProcessInfo.processInfo.systemUptime) else { return }
+        model.move(manifestUrl: url, by: target - current)
+        DispatchQueue.main.async { handOffContent(InstalledAddonsPane.rowKey(url)) }
+    }
+
+    private func commitMove() {
+        guard let url = moveMode.commit() else { return }
+        Self.logFocus("move commit")
+        DispatchQueue.main.async { handOffContent(InstalledAddonsPane.rowKey(url)) }
+    }
+
+    /// Menu while moving: back to the index the move started from.
+    private func cancelMove() {
+        guard let (url, origin) = moveMode.cancel() else { return }
+        if let current = model.addons.firstIndex(where: { $0.manifestUrl == url }), current != origin {
+            model.move(manifestUrl: url, by: origin - current)
+        }
+        Self.logFocus("move cancel back to \(origin)")
+        DispatchQueue.main.async { handOffContent(InstalledAddonsPane.rowKey(url)) }
+    }
+
     /// Raises `AddonsView`'s confirm alert. From the pushed detail page the page pops first, so
     /// focus returns to the card list the removal acts on.
     private func requestRemoval(_ addon: ManagedAddon, fromDetail: Bool) {
@@ -630,6 +683,10 @@ private struct HubContentColumn: View {
     let onInstall: () -> Void
     @Binding var installedScrollTarget: String?
     let onShowInstall: () -> Void
+    let movingUrl: String?
+    let onStartMove: (ManagedAddon, Int) -> Void
+    let onMoveStep: (AddonMoveMode.Direction) -> Void
+    let onCommitMove: () -> Void
 
     var body: some View {
         switch section {
@@ -683,7 +740,11 @@ private struct HubContentColumn: View {
             onMove: onMove,
             onRemove: onRemove,
             onShowInstall: onShowInstall,
-            scrollTarget: $installedScrollTarget
+            scrollTarget: $installedScrollTarget,
+            movingUrl: movingUrl,
+            onStartMove: onStartMove,
+            onMoveStep: onMoveStep,
+            onCommitMove: onCommitMove
         )
         // Review r4: Hide While Browsing follows the Installed list, as it followed v1's hub.
         .reportsScrollToTabBar(tab: "Add-ons")
