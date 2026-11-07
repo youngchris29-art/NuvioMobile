@@ -569,7 +569,9 @@ struct AddonsHubSplitView: View {
               let current = order.firstIndex(of: url),
               let target = moveMode.step(direction, currentIndex: current, count: order.count,
                                          now: ProcessInfo.processInfo.systemUptime) else { return }
-        model.moveTo(manifestUrl: url, index: target)
+        // Review r3: the reducer only gates the press (ends, throttle); the repository resolves the
+        // add-on and its destination by URL in one atomic update.
+        model.moveStep(manifestUrl: url, by: target - current)
         DispatchQueue.main.async { handOffContent(InstalledAddonsPane.rowKey(url)) }
     }
 
@@ -595,9 +597,11 @@ struct AddonsHubSplitView: View {
 
     /// Menu while moving: back to the index the move started from.
     private func cancelMove() {
-        // Review r2: destination and move both from the repository's current list.
+        // Review r3: restored by URL relative to the surviving neighbours, inside the
+        // repository's atomic update.
+        let predecessors = moveMode.predecessors
         guard let (url, origin) = moveMode.cancel(currentOrder: model.liveOrder()) else { return }
-        model.moveTo(manifestUrl: url, index: origin)
+        model.restore(manifestUrl: url, after: predecessors)
         Self.logFocus("move cancel back to \(origin)")
         refocusRowAfterMove(url)
     }

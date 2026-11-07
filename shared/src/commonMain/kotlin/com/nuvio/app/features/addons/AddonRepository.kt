@@ -397,6 +397,36 @@ object AddonRepository {
         pushToServer()
     }
 
+    /**
+     * Add-ons hub v2 A4 (review r3): moves [manifestUrl] one place by [delta] (±1). The add-on and
+     * its destination are resolved INSIDE the state update, so a list replaced by a sync between
+     * a caller's read and this call can never move a different add-on. Returns whether it moved.
+     */
+    fun moveAddonStep(manifestUrl: String, delta: Int): Boolean =
+        reorderAtomically { steppedOrder(it, manifestUrl, delta) }
+
+    /**
+     * Add-ons hub v2 A4 (review r3): puts [manifestUrl] right after the last add-on of
+     * [predecessors] still listed (first when none), resolved inside the state update. The Move
+     * mode's cancel uses it to restore the position relative to the survivors.
+     */
+    fun moveAddonAfter(manifestUrl: String, predecessors: Set<String>): Boolean =
+        reorderAtomically { restoredOrder(it, manifestUrl, predecessors) }
+
+    private fun reorderAtomically(reorder: (List<ManagedAddon>) -> List<ManagedAddon>?): Boolean {
+        if (isUsingPrimaryAddonsFromSecondaryProfile()) return false
+        var changed = false
+        _uiState.update { current ->
+            val reordered = reorder(current.addons)
+            changed = reordered != null && reordered != current.addons
+            if (changed) current.copy(addons = reordered!!) else current
+        }
+        if (!changed) return false
+        persist()
+        pushToServer()
+        return true
+    }
+
     fun setAddonEnabled(manifestUrl: String, enabled: Boolean) {
         if (isUsingPrimaryAddonsFromSecondaryProfile()) return
         var shouldRefresh = false
@@ -769,3 +799,23 @@ internal fun keepingLiveRefresh(rebuilt: List<ManagedAddon>, current: AddonsUiSt
  */
 internal fun isCurrentRefreshGeneration(generations: Map<String, Long>, manifestUrl: String, generation: Long): Boolean =
     generations[manifestUrl] == generation
+
+/** [addons] with [manifestUrl] moved one place by [delta] (±1), or null when absent or at the end. */
+internal fun steppedOrder(addons: List<ManagedAddon>, manifestUrl: String, delta: Int): List<ManagedAddon>? {
+    val from = addons.indexOfFirst { it.manifestUrl == manifestUrl }
+    if (from < 0 || delta == 0) return null
+    val to = from + delta
+    if (to !in addons.indices) return null
+    return addons.toMutableList().apply { add(to, removeAt(from)) }
+}
+
+/**
+ * [addons] with [manifestUrl] placed right after the last add-on of [predecessors] still listed
+ * (first when none survives), or null when absent.
+ */
+internal fun restoredOrder(addons: List<ManagedAddon>, manifestUrl: String, predecessors: Set<String>): List<ManagedAddon>? {
+    val moving = addons.firstOrNull { it.manifestUrl == manifestUrl } ?: return null
+    val others = addons.filter { it.manifestUrl != manifestUrl }
+    val insertAt = others.indexOfLast { it.manifestUrl in predecessors } + 1
+    return others.toMutableList().apply { add(insertAt, moving) }
+}

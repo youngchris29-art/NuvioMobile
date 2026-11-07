@@ -339,15 +339,16 @@ final class AddonsViewModel: ObservableObject {
         ((AddonRepository.shared.uiState.value_ as? AddonsUiState)?.addons ?? []).map(\.manifestUrl)
     }
 
-    /// A4 review r2: moves `manifestUrl` to `index` in ONE repository call, computed from the
-    /// repository's current list (clamped to it), so the destination and the move use the same
-    /// state. No-op when the add-on is gone or already there.
-    func moveTo(manifestUrl: String, index: Int) {
-        let current = liveOrder()
-        guard let from = current.firstIndex(of: manifestUrl), !current.isEmpty else { return }
-        let to = min(max(0, index), current.count - 1)
-        guard to != from else { return }
-        AddonRepository.shared.moveAddon(fromIndex: Int32(from), toIndex: Int32(to))
+    /// A4 review r3: one place up or down, resolved by URL inside the repository's state update.
+    @discardableResult
+    func moveStep(manifestUrl: String, by delta: Int) -> Bool {
+        AddonRepository.shared.moveAddonStep(manifestUrl: manifestUrl, delta: Int32(delta))
+    }
+
+    /// A4 review r3: back right after the surviving `predecessors`, resolved inside the
+    /// repository's state update (Move mode's cancel).
+    func restore(manifestUrl: String, after predecessors: Set<String>) {
+        AddonRepository.shared.moveAddonAfter(manifestUrl: manifestUrl, predecessors: predecessors)
     }
 
     /// Re-fetches every enabled add-on's manifest.
