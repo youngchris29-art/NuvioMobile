@@ -101,9 +101,15 @@ final class AddonsViewModel: ObservableObject {
     /// Between `start()` and `stop()`; the ticker only runs while started. (The watcher's first
     /// emission can arrive before `watcher` is assigned, so that cannot be the signal.)
     private var isStarted = false
-    /// The profile slot `lastRefreshedAt` belongs to (review r12: a session-only stamp survives a
-    /// stop/start of the same profile).
-    private var stampSlot: Int32?
+    /// Who `lastRefreshedAt` belongs to: a profile slot plus that profile's stable id.
+    nonisolated struct StampOwner: Equatable {
+        let slot: Int32
+        let identity: String
+    }
+
+    /// The owner of `lastRefreshedAt` (review r12/r13: a session-only stamp survives a stop/start of
+    /// the SAME profile, matched by slot and stable id).
+    private var stampOwner: StampOwner?
     private let defaults: UserDefaults
     private let now: () -> Date
 
@@ -140,11 +146,12 @@ final class AddonsViewModel: ObservableObject {
     }
 
     /// The stamp `start()` shows: the stored one when there is one; otherwise, for the SAME profile
-    /// slot, the in-memory stamp (review r12: a profile without a stable id keeps its session-only
-    /// stamp across a stop/start); for a different slot, nothing.
-    nonisolated static func stampOnStart(current: Date?, currentSlot: Int32?, slot: Int32, loaded: Date?) -> Date? {
+    /// (slot AND stable id, review r13: a profile pulled into the slot is another profile), the
+    /// in-memory stamp (review r12: a profile without a stable id keeps its session-only stamp
+    /// across a stop/start); for anyone else, nothing.
+    nonisolated static func stampOnStart(current: Date?, currentOwner: StampOwner?, owner: StampOwner, loaded: Date?) -> Date? {
         if let loaded { return loaded }
-        return currentSlot == slot ? current : nil
+        return currentOwner == owner ? current : nil
     }
 
     /// The active profile's stable id (empty when there is none, e.g. before a profile is picked).
@@ -206,12 +213,12 @@ final class AddonsViewModel: ObservableObject {
     func start() {
         guard watcher == nil else { return }
         isStarted = true
-        let slot = ProfileRepository.shared.activeProfileId
+        let owner = StampOwner(slot: ProfileRepository.shared.activeProfileId, identity: Self.activeProfileIdentity)
         lastRefreshedAt = Self.stampOnStart(
-            current: lastRefreshedAt, currentSlot: stampSlot, slot: slot,
-            loaded: Self.loadRefreshStamp(defaults: defaults, profileId: slot, profileIdentity: Self.activeProfileIdentity)
+            current: lastRefreshedAt, currentOwner: stampOwner, owner: owner,
+            loaded: Self.loadRefreshStamp(defaults: defaults, profileId: owner.slot, profileIdentity: owner.identity)
         )
-        stampSlot = slot
+        stampOwner = owner
         lastInstalledManifestUrl = nil
         let readOnly = AddonRepository.shared.isReadOnly()
         if isReadOnly != readOnly { isReadOnly = readOnly }

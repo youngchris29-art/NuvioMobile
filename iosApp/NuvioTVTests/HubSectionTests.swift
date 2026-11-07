@@ -195,15 +195,20 @@ final class HubSectionTests: XCTestCase {
         XCTAssertNil(AddonsViewModel.loadRefreshStamp(defaults: defaults, profileId: 4, profileIdentity: ""))
     }
 
-    /// Review r12: the stamp `start()` shows across a stop/start and a profile change.
+    /// Review r12/r13: the stamp `start()` shows across a stop/start and a profile change.
     func testStampOnStartKeepsASessionStampForTheSameProfileOnly() {
+        typealias Owner = AddonsViewModel.StampOwner
         let session = Date(timeIntervalSince1970: 3_000_000)
         let stored = Date(timeIntervalSince1970: 1_000_000)
-        XCTAssertEqual(AddonsViewModel.stampOnStart(current: session, currentSlot: 4, slot: 4, loaded: nil), session,
+        let guest = Owner(slot: 4, identity: "")
+        XCTAssertEqual(AddonsViewModel.stampOnStart(current: session, currentOwner: guest, owner: guest, loaded: nil), session,
                        "same profile, nothing stored (no stable id): the session stamp stays")
-        XCTAssertNil(AddonsViewModel.stampOnStart(current: session, currentSlot: 4, slot: 2, loaded: nil),
-                     "another profile never sees it")
-        XCTAssertEqual(AddonsViewModel.stampOnStart(current: session, currentSlot: 4, slot: 2, loaded: stored), stored)
-        XCTAssertNil(AddonsViewModel.stampOnStart(current: nil, currentSlot: nil, slot: 1, loaded: nil))
+        XCTAssertNil(AddonsViewModel.stampOnStart(current: session, currentOwner: guest, owner: Owner(slot: 2, identity: ""), loaded: nil),
+                     "another slot never sees it")
+        XCTAssertNil(AddonsViewModel.stampOnStart(current: session, currentOwner: Owner(slot: 2, identity: "a"),
+                                                  owner: Owner(slot: 2, identity: "b"), loaded: nil),
+                     "a different profile pulled into the same slot never sees it")
+        XCTAssertEqual(AddonsViewModel.stampOnStart(current: session, currentOwner: guest, owner: Owner(slot: 2, identity: "b"), loaded: stored), stored)
+        XCTAssertNil(AddonsViewModel.stampOnStart(current: nil, currentOwner: nil, owner: Owner(slot: 1, identity: ""), loaded: nil))
     }
 }
