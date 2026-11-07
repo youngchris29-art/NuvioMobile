@@ -951,6 +951,17 @@ final class SettingsViewModel: ObservableObject {
         return moves.count
     }
 
+    /// A6: Move mode's cancel. Puts the catalog `key` at `toIndex` of the repository's full ordered
+    /// list (collections included) in one `moveByIndex`. Reads the repository's current items, else
+    /// this model's. No-op when the key is missing or already there.
+    func moveCatalog(key: String, toIndex: Int) {
+        let repoItems = (HomeCatalogSettingsRepository.shared.uiState.value_ as? HomeCatalogSettingsUiState)?.items ?? []
+        let keys = (repoItems.isEmpty ? catalogs : repoItems).map(\.key)
+        guard let from = keys.firstIndex(of: key), keys.indices.contains(toIndex), from != toIndex else { return }
+        HomeCatalogSettingsRepository.shared.moveByIndex(fromIndex: Int32(from), toIndex: Int32(toIndex))
+        refreshHome()
+    }
+
     /// The manifest id at the front of a catalog key `"<manifest.id>:<type>:<catalogId>"`: the key
     /// minus its last two components. nil for keys that do not have that shape (collections).
     nonisolated static func idPrefix(of key: String) -> String? {

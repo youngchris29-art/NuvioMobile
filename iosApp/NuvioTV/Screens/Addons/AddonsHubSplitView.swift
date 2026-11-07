@@ -58,7 +58,7 @@ struct AddonsHubSplitView: View {
     @State private var didRestoreSection = false
     @FocusState private var sidebarFocus: HubSection?
     /// Shared by every pane that takes part in focus memory; keys are pane-defined strings
-    /// (`InstalledAddonsPane.rowKey` for the Installed rows, `installOpenKey` for Install).
+    /// (`InstalledAddonsPane.rowKey` for the Installed rows, `CatalogOrderView`'s keys for Catalogs, `InstallAddonPane.fieldKey` for Install).
     @FocusState private var contentFocus: String?
     @State private var lastContentFocus: [HubSection: String] = [:]
     /// A focus write this view made on purpose (after a move, an install, a removal, a Select on
@@ -84,7 +84,13 @@ struct AddonsHubSplitView: View {
 
     // Sheets, toasts and install/removal bookkeeping, carried over from v1's `SourcesHubView`
     // until A3–A6 move them onto the panes.
-    @State private var showInstall = false
+    /// A6: the Catalogs section's per-add-on filter (the detail page's "Catalogs from this
+    /// add-on"); cleared on leaving the section or with the pane's "Show all" row.
+    @State private var catalogFilter: CatalogFilter?
+    /// A6: the Catalogs pane has a row lifted in Move mode (it owns the mode; the hub adds the
+    /// sidebar, tab bar and rail locks).
+    @State private var catalogsMoving = false
+    @State private var catalogsScrollTarget: String?
     /// The content column's stack (D2): an add-on's detail page is pushed here, not a sheet.
     @State private var contentPath: [HubAddonRoute] = []
     /// A5 device check: the next pop is the hub's own (Move, Remove, a section change, a removed
@@ -97,7 +103,6 @@ struct AddonsHubSplitView: View {
     /// Review A5-r3: the add-on the detail page's Move will lift once the pop settles; any push,
     /// section change, focus on the sidebar or leaving the hub in between cancels it.
     @State private var pendingLiftUrl: String?
-    @State private var focusNewCardAfterInstall = false
     @State private var installHandledSerial: Int?
     @State private var toast: String?
     @State private var toastSerial = 0
@@ -148,7 +153,7 @@ struct AddonsHubSplitView: View {
                 sidebar(visible: visible, summary: summary)
                     .frame(width: Self.sidebarWidth)
                     .padding(.leading, HubRailClearance.extraLeading)
-                    .disabled(moveMode.isMoving)
+                    .disabled(isMovingAny)
                 .focusSection()
                 contentColumn
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -162,7 +167,7 @@ struct AddonsHubSplitView: View {
         .overlay(alignment: .bottom) { toastView }
         // A4: in Tabs mode the visible tab bar is the one focus target left while an add-on is
         // lifted; lock it so Up stays a move command.
-        .background { TabBarFocusLock(active: moveMode.isMoving).frame(width: 0, height: 0) }
+        .background { TabBarFocusLock(active: isMovingAny).frame(width: 0, height: 0) }
         .onChange(of: model.addons.map(\.manifestUrl)) { _, urls in
             // The lifted add-on went away (sync, another device): end the mode.
             if let url = moveMode.movingUrl, !urls.contains(url) { endMoveBecauseRemoved() }
@@ -177,9 +182,6 @@ struct AddonsHubSplitView: View {
         .onChange(of: sidebarFocus) { old, new in sidebarFocusChanged(from: old, to: new) }
         .onChange(of: contentPath) { old, new in contentPathChanged(from: old, to: new) }
         .onChange(of: contentFocus) { old, new in contentFocusChanged(from: old, to: new) }
-        .sheet(isPresented: $showInstall, onDismiss: focusAfterInstall) {
-            AddonInstallSheet(model: model, handledSerial: installHandledSerial)
-        }
         .onChange(of: model.refreshOutcomeSerial) { _, _ in
             guard let outcome = model.lastRefreshOutcome else { return }
             showToast(outcome.failed == 0
@@ -188,11 +190,10 @@ struct AddonsHubSplitView: View {
         }
         .onChange(of: model.installOutcome) { _, outcome in
             guard let outcome else { return }
-            installHandledSerial = AddonInstallSheet.serial(of: outcome)
-            if showInstall {
-                if case .installed = outcome { focusNewCardAfterInstall = true }
-                return
-            }
+            // A6: the inline Install pane shows its own status modal (and its Done lands on the new
+            // row); a result that arrives while another section is showing is toasted here.
+            if selected == .install { return }
+            installHandledSerial = InstallFlow.serial(of: outcome)
             switch outcome {
             case .installed(let name, _):
                 showToast(String(localized: "Installed \(name)."))
@@ -205,7 +206,7 @@ struct AddonsHubSplitView: View {
         // landing correction then puts focus on the selected section's row.
         .railReturnRoute {
             // A4: while an add-on is lifted a Left must not arm the rail (Left is swallowed).
-            RailReturnRoute(name: "addons", capture: {}, restore: { false }, vetoesLeftArm: { moveMode.isMoving })
+            RailReturnRoute(name: "addons", capture: {}, restore: { false }, vetoesLeftArm: { isMovingAny })
         }
     }
 
@@ -303,17 +304,22 @@ struct AddonsHubSplitView: View {
                     onConfigureAddon: { contentPath.append(HubAddonRoute(manifestUrl: $0.manifestUrl, startsInConfigure: true)) },
                     onMove: move,
                     onRemove: { requestRemoval($0, fromDetail: false) },
-                    onInstall: { showInstall = true },
                     installedScrollTarget: $installedScrollTarget,
                     onShowInstall: {
                         // A3: the empty Installed pane's link row goes to the Install section.
                         select(.install)
-                        DispatchQueue.main.async { handOffContent(Self.installOpenKey) }
+                        DispatchQueue.main.async { handOffContent(InstallAddonPane.fieldKey) }
                     },
                     movingUrl: moveMode.movingUrl,
                     onStartMove: startMove,
                     onMoveStep: moveStep,
-                    onCommitMove: commitMove
+                    onCommitMove: commitMove,
+                    catalogFilter: catalogFilter,
+                    onClearCatalogFilter: clearCatalogFilter,
+                    onCatalogsMovingChange: { catalogsMoving = $0 },
+                    catalogsScrollTarget: $catalogsScrollTarget,
+                    installHandledSerial: $installHandledSerial,
+                    onInstalled: focusNewestCard
                 )
                 // A second child: a one-child stack forwarded its identifier to the pane's
                 // ScrollView (A2 probe), so the column needs to be a real container.
@@ -330,6 +336,8 @@ struct AddonsHubSplitView: View {
                 Self.logFocus("menu at content root; focus=\(contentFocus.map(Self.kind(of:)) ?? "nil")")
                 // A4: Menu cancels a move (back to where it started) before anything else.
                 if moveMode.isMoving { cancelMove(); return }
+                // A6: the Catalogs pane cancels its own move (its Menu handler exists only then).
+                if catalogsMoving { return }
                 if contentFocus != nil || selected != .installed { handOffSidebar(selected) }
             }
             .accessibilityElement(children: .contain)
@@ -395,6 +403,7 @@ struct AddonsHubSplitView: View {
         dwell = nil
         guard !section.isAction, section != selected else { return }
         pendingLiftUrl = nil
+        catalogFilter = nil
         popProgrammatically()
         // Review r4: the Installed list reports its scroll to the rail (Hide While Browsing); the
         // list is torn down on a section change without scrolling back, so clear its latch.
@@ -520,6 +529,15 @@ struct AddonsHubSplitView: View {
             }
             return
         }
+        if selected == .catalogs, key.hasPrefix("catalog:") {
+            // A6: the Catalogs List is lazy too.
+            catalogsScrollTarget = key
+            DispatchQueue.main.async {
+                deliberateContent = key
+                contentFocus = key
+            }
+            return
+        }
         deliberateContent = key
         contentFocus = key
     }
@@ -548,14 +566,36 @@ struct AddonsHubSplitView: View {
     private func contentLandingTarget(for section: HubSection) -> String? {
         let keys = contentKeys(for: section)
         if let remembered = lastContentFocus[section], keys.contains(remembered) { return remembered }
+        if section == .catalogs { return firstCatalogsKey() }
         return Self.firstContentKey(section: section, addons: model.addons)
     }
+
+    /// A6: where Catalogs lands with nothing remembered: the first catalog of a filtered view,
+    /// else the Match row, else the empty row.
+    private func firstCatalogsKey() -> String {
+        if settings.catalogs.isEmpty { return CatalogOrderView.emptyKey }
+        if catalogFilter != nil {
+            let visible = CatalogOrderView.visibleRows(settings.catalogs, filter: catalogFilter)
+            return visible.first.map { CatalogOrderView.rowKey($0.key) } ?? CatalogOrderView.clearFilterKey
+        }
+        return CatalogOrderView.matchKey
+    }
+
+    /// A4 + A6: a row is lifted in Installed or in Catalogs; the sidebar, tab bar and rail lock.
+    private var isMovingAny: Bool { moveMode.isMoving || catalogsMoving }
 
     /// Every focus key the pane for `section` can hold right now (Installed: one row per add-on,
     /// A3; Install: its row).
     private func contentKeys(for section: HubSection) -> Set<String> {
         switch section {
-        case .install: return [Self.installOpenKey]
+        case .install: return [InstallAddonPane.fieldKey, InstallAddonPane.buttonKey]
+        case .catalogs:
+            let visible = CatalogOrderView.visibleRows(settings.catalogs, filter: catalogFilter)
+            var keys = Set(visible.map { CatalogOrderView.rowKey($0.key) })
+            if catalogFilter != nil { keys.insert(CatalogOrderView.clearFilterKey) }
+            if catalogFilter == nil && !settings.catalogs.isEmpty { keys.insert(CatalogOrderView.matchKey) }
+            if settings.catalogs.isEmpty { keys.insert(CatalogOrderView.emptyKey) }
+            return keys
         case .installed:
             if model.isInitialized && model.addons.isEmpty { return [InstalledAddonsPane.emptyKey] }
             return Self.installedFocusKeys(urls: model.addons.map(\.manifestUrl))
@@ -570,13 +610,12 @@ struct AddonsHubSplitView: View {
     }
 
     /// The Install pane's one row.
-    nonisolated static let installOpenKey = "install:open"
 
     /// The first row of a taking-part pane (Installed: the first card; Install: its row), else nil.
     nonisolated static func firstContentKey(section: HubSection, addons: [ManagedAddon]) -> String? {
         switch section {
         case .installed: return addons.first.map { InstalledAddonsPane.rowKey($0.manifestUrl) } ?? InstalledAddonsPane.emptyKey
-        case .install: return installOpenKey
+        case .install: return InstallAddonPane.fieldKey
         default: return nil
         }
     }
@@ -660,8 +699,26 @@ struct AddonsHubSplitView: View {
     /// The detail page's "Catalogs from this add-on": the Catalogs section, focus on its sidebar
     /// row (the interim v1 Catalogs host has no focus keys until A6 re-hosts it; Right enters it).
     private func showCatalogsFromDetail() {
+        // Captured before the pop: the detail page's add-on and the catalogs it owns (Home's
+        // ownership rule, the same set its row counted).
+        let route = contentPath.last
+        let addon = route.flatMap { r in model.addons.first { $0.manifestUrl == r.manifestUrl } }
         select(.catalogs)
-        DispatchQueue.main.async { handOffSidebar(.catalogs) }
+        if let addon {
+            catalogFilter = CatalogFilter(
+                keys: AddonDetailPane.catalogKeys(ownedBy: addon.manifestUrl, in: model.addons),
+                addonTitle: AddonsViewModel.displayTitle(addon)
+            )
+            lastContentFocus[.catalogs] = nil
+        }
+        DispatchQueue.main.async { handOffContent(firstCatalogsKey()) }
+    }
+
+    /// The Catalogs pane's "Show all" row: drop the filter, land on the Match row.
+    private func clearCatalogFilter() {
+        catalogFilter = nil
+        lastContentFocus[.catalogs] = nil
+        DispatchQueue.main.async { handOffContent(firstCatalogsKey()) }
     }
 
     /// How long a NavigationStack pop takes to hand focus back on the box (A5 device check).
@@ -774,12 +831,6 @@ struct AddonsHubSplitView: View {
         }
     }
 
-    private func focusAfterInstall() {
-        guard focusNewCardAfterInstall else { return }
-        focusNewCardAfterInstall = false
-        focusNewestCard()
-    }
-
     /// After an install: the Installed section, focus on the new card (else the last card).
     private func focusNewestCard() {
         select(.installed)
@@ -857,42 +908,54 @@ private struct HubContentColumn: View {
     let onConfigureAddon: (ManagedAddon) -> Void
     let onMove: (ManagedAddon, Int, Int) -> Void
     let onRemove: (ManagedAddon) -> Void
-    let onInstall: () -> Void
     @Binding var installedScrollTarget: String?
     let onShowInstall: () -> Void
     let movingUrl: String?
     let onStartMove: (ManagedAddon, Int) -> Void
     let onMoveStep: (AddonMoveMode.Direction) -> Void
     let onCommitMove: () -> Void
+    let catalogFilter: CatalogFilter?
+    let onClearCatalogFilter: () -> Void
+    let onCatalogsMovingChange: (Bool) -> Void
+    @Binding var catalogsScrollTarget: String?
+    @Binding var installHandledSerial: Int?
+    let onInstalled: () -> Void
 
     var body: some View {
         switch section {
         case .installed:
             installed
         case .catalogs:
-            CatalogOrderView(model: settings)
+            // A6: Catalogs on the row kit, Move mode and the per-add-on filter.
+            CatalogOrderView(
+                model: settings,
+                focus: contentFocus,
+                scrollTarget: $catalogsScrollTarget,
+                allowsMoveMode: true,
+                filter: catalogFilter,
+                onClearFilter: onClearCatalogFilter,
+                onMovingChange: onCatalogsMovingChange
+            )
         case .debrid:
+            // A6 (D4): the debrid providers only (Services keeps Trakt/Simkl/MDBList).
             kitList {
-                ServicesSettingsPane(
-                    trakt: trakt, simkl: simkl, debrid: debrid,
-                    confirmingTraktDisconnect: $confirmingTraktDisconnect,
-                    confirmingSimklDisconnect: $confirmingSimklDisconnect,
-                    debridDisconnectId: $debridDisconnectId
-                )
+                SettingsSection(String(localized: "Debrid")) {
+                    DebridProvidersSection(debrid: debrid, debridDisconnectId: $debridDisconnectId)
+                }
             }
         case .plugins:
-            kitList { SourcesSettingsPane(model: settings, plugins: plugins, badges: badges) }
-        case .install:
             kitList {
-                SettingsActionRow(
-                    title: String(localized: "Install add-on"),
-                    subtitle: String(localized: "From a manifest URL"),
-                    systemImage: "plus.circle.fill",
-                    action: onInstall
-                )
-                .focused(contentFocus, equals: AddonsHubSplitView.installOpenKey)
-                .accessibilityIdentifier("addons_install_open")
+                SettingsSection(String(localized: "Plugins")) {
+                    PluginsSection(plugins: plugins)
+                }
             }
+        case .install:
+            // A6: the inline Install pane (field, Install, status modal).
+            InstallAddonPane(
+                model: model, focus: contentFocus,
+                handledSerial: $installHandledSerial,
+                onInstalled: onInstalled
+            )
         case .refresh, .phone:
             kitList {
                 SettingsValueRow(title: String(localized: "Manage from phone"), value: String(localized: "Coming in a later beta"), focusable: true)

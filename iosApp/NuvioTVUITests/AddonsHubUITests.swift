@@ -123,10 +123,11 @@ final class AddonsHubUITests: XCTestCase {
         say("sheet open: \(focusDump(app))")
         pause(2)
 
+        // A6: the pane is inline, so Menu goes to the Install sidebar row and the pane stays.
         remote.press(.menu); pause(1.5)
-        XCTAssertFalse(element(app, "addons_hub_install_field").exists, "the sheet is still up after Menu")
-        XCTAssertTrue(waitUntil(timeout: 3) { self.installRowHasFocus(app) }, "focus did not return to the Install add-on row; focused: \(focusDump(app))")
-        say("sheet closed: \(focusDump(app))")
+        XCTAssertTrue(waitSidebarFocus(app, "install"), "Menu did not go to the Install sidebar row; focused: \(focusDump(app))")
+        XCTAssertTrue(element(app, "addons_hub_install_field").exists, "the inline pane went away after Menu")
+        say("menu back to the sidebar: \(focusDump(app))")
         pause(2)
     }
 
@@ -351,24 +352,20 @@ final class AddonsHubUITests: XCTestCase {
 
     /// The Install content's single row: its own identifier, or a focused cell labelled "Install
     /// add-on…" sitting right of the sidebar row (the sidebar row carries the same title).
-    private func installRowHasFocus(_ app: XCUIApplication) -> Bool {
-        let row = element(app, "addons_install_open")
-        if row.exists && row.hasFocus { return true }
-        let side = sidebar(app, "install")
-        guard side.exists else { return false }
-        let focused = app.descendants(matching: .any).matching(NSPredicate(format: "hasFocus == true")).allElementsBoundByIndex
-        return focused.contains { $0.label.hasPrefix("Install add-on") && $0.frame.midX > side.frame.maxX }
+    /// A6: the inline Install pane's URL field holds focus.
+    private func installFieldHasFocus(_ app: XCUIApplication) -> Bool {
+        let field = element(app, "addons_hub_install_field")
+        return field.exists && field.hasFocus
     }
 
-    /// Install section, Right onto the row, Select: opens the install sheet.
+    /// A6: the Install section is an inline pane; Right from its sidebar row lands on the field.
     private func openInstallSheet(_ app: XCUIApplication) {
         selectSection(app, "install")
-        XCTAssertTrue(element(app, "addons_install_open").waitForExistence(timeout: 5), "addons_install_open missing")
+        XCTAssertTrue(element(app, "addons_install_pane").waitForExistence(timeout: 5), "addons_install_pane missing")
         remote.press(.right); pause(0.8)
-        XCTAssertTrue(waitUntil(timeout: 3) { self.installRowHasFocus(app) }, "Right never landed on the Install add-on row; focused: \(focusDump(app))")
+        XCTAssertTrue(waitUntil(timeout: 3) { self.installFieldHasFocus(app) }, "Right never landed on the URL field; focused: \(focusDump(app))")
         say("install row focused")
         pause(1)
-        remote.press(.select); pause(1.5)
     }
 
     // MARK: - Installed rows (native List: `addons_row_<index>`, label = title, value = state)
@@ -459,6 +456,8 @@ final class AddonsHubUITests: XCTestCase {
         }
         return false
     }
+
+    private func isRowOn(_ row: XCUIElement) -> Bool { ((row.value as? String) ?? "").hasPrefix("On") }
 
     /// A focused element whose label is `label` or starts with it and a comma (List cells carry
     /// the row's label; toggles add their value). The label is compared, never printed.
@@ -692,38 +691,40 @@ final class AddonsHubUITests: XCTestCase {
         XCTAssertFalse(sidebarHasFocus(app, "catalogs"), "Right did not enter the catalogs pane; focused: \(focusDump(app))")
         let row0 = element(app, "addons_hub_catalog_0")
         XCTAssertTrue(row0.waitForExistence(timeout: 10), "no addons_hub_catalog_0 on the fixture")
-        XCTAssertTrue(moveFocus(.down, until: row0, max: 4), "catalog row 0 never took focus; focused: \(focusDump(app))")
-        let toggle = element(app, "addons_hub_catalog_0_toggle")
-        remote.press(.right); pause(0.6)
-        XCTAssertTrue(toggle.exists && toggle.hasFocus, "the toggle never took focus; focused: \(focusDump(app))")
+        let title = row0.label
+        // A6: rows on the kit; Right lands on Match add-ons order, Down reaches catalog 0, whose
+        // List cell carries the title (focus is matched by label, never printed).
+        var onRow = labelHasFocus(app, title)
+        for _ in 0..<4 where !onRow {
+            remote.press(.down); pause(0.6)
+            onRow = labelHasFocus(app, title)
+        }
+        XCTAssertTrue(onRow, "catalog row 0 never took focus; focused: \(focusDump(app))")
 
-        func value() -> String { (toggle.value as? String) ?? "" }
+        func value() -> String { (row0.value as? String) ?? "" }
+        func isOn() -> Bool { value().hasPrefix("On") }
         let before = value()
-        XCTAssertTrue(before == "enabled" || before == "disabled", "unexpected toggle value \"\(before)\"")
-        let flipped = before == "enabled" ? "disabled" : "enabled"
-        say("catalog 0 toggle: \(before)")
+        XCTAssertTrue(before.hasPrefix("On") || before.hasPrefix("Off"), "unexpected row value \"\(before)\"")
+        let wasOn = isOn()
+        say("catalog 0: \(wasOn ? "On" : "Off")")
 
+        // Select on the row toggles it (the old name area did the same).
         remote.press(.select)
-        let didFlip = waitUntil(timeout: 5) { value() == flipped }
-        let labelWhenFlipped = row0.label
-        // Restore first, keyed on the VALUE (a dropped Select followed by a restore press would
-        // leave the Chris fixture flipped with nothing to undo it), up to two presses in case the
-        // restore press itself is dropped; focus is still on the toggle after Select.
-        var restored = value() == before
+        let didFlip = waitUntil(timeout: 5) { self.isRowOn(row0) != wasOn }
+        let disabledShownWhenFlipped = app.staticTexts["Disabled on Home"].exists
+        // Restore first, keyed on the VALUE, up to two presses in case one is dropped.
+        var restored = isOn() == wasOn
         for _ in 0..<2 where !restored {
             remote.press(.select)
-            restored = waitUntil(timeout: 5) { value() == before }
+            restored = waitUntil(timeout: 5) { self.isRowOn(row0) == wasOn }
         }
 
-        XCTAssertTrue(didFlip, "the toggle value never flipped to \(flipped)")
-        if flipped == "disabled" {
-            XCTAssertTrue(labelWhenFlipped.contains("Disabled on Home"), "row 0 lacks \"Disabled on Home\" when disabled; label: \(labelWhenFlipped)")
-        } else {
-            XCTAssertFalse(labelWhenFlipped.contains("Disabled on Home"), "row 0 still says \"Disabled on Home\" after enabling; label: \(labelWhenFlipped)")
+        XCTAssertTrue(didFlip, "the row never flipped from \(wasOn ? "On" : "Off")")
+        if wasOn {
+            XCTAssertTrue(disabledShownWhenFlipped, "no \"Disabled on Home\" once the catalog was off")
         }
-        XCTAssertTrue(restored, "the toggle did not return to \(before)")
-        XCTAssertEqual(row0.label.contains("Disabled on Home"), before == "disabled", "row 0's label does not match the restored state")
-        say("catalog 0 toggle restored: \(value())")
+        XCTAssertTrue(restored, "the row did not return to \(wasOn ? "On" : "Off")")
+        say("catalog 0 restored: \(value())")
 
         // No push any more: Menu at the content root goes to the selected sidebar row.
         remote.press(.menu); pause(1.5)
