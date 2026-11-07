@@ -29,8 +29,9 @@ class AddonRefreshSupersedeTest {
         assertTrue(isCurrentRefreshGeneration(bumpRefreshGeneration(generations, "b"), "a", 1L))
     }
 
+    /** Review r5: after a reset (generations cleared) an earlier refresh must not publish. */
     @Test
-    fun aReplacedStateDoesNotBlockPublication() {
-        assertTrue(isCurrentRefreshGeneration(emptyMap(), "a", 3L), "a wholesale replacement keeps the old behaviour")
+    fun aRefreshFromBeforeAResetDoesNotPublish() {
+        assertFalse(isCurrentRefreshGeneration(emptyMap(), "a", 3L))
     }
 }

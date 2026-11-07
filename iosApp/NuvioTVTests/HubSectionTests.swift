@@ -138,14 +138,28 @@ final class HubSectionTests: XCTestCase {
     /// Review r2: ages come from the live list, so a refresh the repository started itself (not
     /// through this model) is aged too; a URL that stops refreshing is forgotten.
     func testRefreshAgesFollowTheLiveList() {
+        typealias Age = AddonsViewModel.RefreshAge
         let t0 = Date(timeIntervalSince1970: 1_000_000)
         let t1 = t0.addingTimeInterval(5)
-        var ages = AddonsViewModel.updatedRefreshAges([:], refreshing: ["a"], now: t0)
-        XCTAssertEqual(ages, ["a": t0])
-        ages = AddonsViewModel.updatedRefreshAges(ages, refreshing: ["a", "b"], now: t1)
-        XCTAssertEqual(ages, ["a": t0, "b": t1], "an add-on already refreshing keeps its first-seen time")
-        ages = AddonsViewModel.updatedRefreshAges(ages, refreshing: ["b"], now: t1)
-        XCTAssertEqual(ages, ["b": t1])
+        var ages = AddonsViewModel.updatedRefreshAges([:], refreshing: ["a": 1], now: t0)
+        XCTAssertEqual(ages, ["a": Age(generation: 1, startedAt: t0)])
+        ages = AddonsViewModel.updatedRefreshAges(ages, refreshing: ["a": 1, "b": 4], now: t1)
+        XCTAssertEqual(ages, ["a": Age(generation: 1, startedAt: t0), "b": Age(generation: 4, startedAt: t1)],
+                       "a request already refreshing keeps its first-seen time")
+        ages = AddonsViewModel.updatedRefreshAges(ages, refreshing: ["b": 4], now: t1)
+        XCTAssertEqual(ages, ["b": Age(generation: 4, startedAt: t1)])
+    }
+
+    /// Review r5: a NEW request for the same add-on (another generation, e.g. one that started
+    /// while the hub was away) starts its own age rather than inheriting the old one.
+    func testANewRequestForTheSameAddonStartsItsOwnAge() {
+        typealias Age = AddonsViewModel.RefreshAge
+        let t0 = Date(timeIntervalSince1970: 1_000_000)
+        let later = t0.addingTimeInterval(120)
+        let before = ["a": Age(generation: 1, startedAt: t0)]
+        let after = AddonsViewModel.updatedRefreshAges(before, refreshing: ["a": 2], now: later)
+        XCTAssertEqual(after, ["a": Age(generation: 2, startedAt: later)])
+        XCTAssertEqual(AddonsViewModel.stalledUrls(startedAt: after.mapValues(\.startedAt), now: later.addingTimeInterval(1)), [])
     }
 
     /// Review r2: focus memory only lands on controls the card keeps enabled.

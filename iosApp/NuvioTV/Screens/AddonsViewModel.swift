@@ -85,9 +85,17 @@ final class AddonsViewModel: ObservableObject {
 
     private var watcher: FlowWatcher?
     private var refreshWait: Task<Void, Never>?
-    /// When each add-on still refreshing was first seen refreshing (review r2: repository-started
-    /// refreshes too, not only the ones this model started). Kept across `stop()`/`start()`.
-    private var refreshStartedAt: [String: Date] = [:]
+    /// One refresh request's age: its generation (`AddonsUiState.refreshGenerations`) and when this
+    /// model first saw it refreshing.
+    nonisolated struct RefreshAge: Equatable {
+        let generation: Int64
+        let startedAt: Date
+    }
+
+    /// The age of each add-on's current refresh request (review r2: repository-started refreshes
+    /// too). Kept across `stop()`/`start()`; keyed by generation (review r5), so a NEW request for
+    /// the same add-on starts its own age instead of inheriting an earlier one's.
+    private var refreshStartedAt: [String: RefreshAge] = [:]
     /// Re-evaluates `stalledUrls` once a second while anything is refreshing.
     private var stallTicker: Task<Void, Never>?
     /// Between `start()` and `stop()`; the ticker only runs while started. (The watcher's first
@@ -125,18 +133,34 @@ final class AddonsViewModel: ObservableObject {
         Set(startedAt.filter { now.timeIntervalSince($0.value) >= ceiling }.keys)
     }
 
-    /// Starts/forgets refresh ages from the live list: a URL newly refreshing gets `now`, a URL no
-    /// longer refreshing is dropped. Pure, so the bookkeeping is unit-tested.
+    /// Starts/forgets refresh ages from the live list (`refreshing`: URL → its refresh generation):
+    /// a URL newly refreshing, or refreshing under a new generation, gets `now`; a URL no longer
+    /// refreshing is dropped. Pure, so the bookkeeping is unit-tested.
     nonisolated static func updatedRefreshAges(
-        _ ages: [String: Date], refreshing: Set<String>, now: Date
-    ) -> [String: Date] {
-        var next = ages.filter { refreshing.contains($0.key) }
-        for url in refreshing where next[url] == nil { next[url] = now }
+        _ ages: [String: RefreshAge], refreshing: [String: Int64], now: Date
+    ) -> [String: RefreshAge] {
+        var next: [String: RefreshAge] = [:]
+        for (url, generation) in refreshing {
+            if let age = ages[url], age.generation == generation {
+                next[url] = age
+            } else {
+                next[url] = RefreshAge(generation: generation, startedAt: now)
+            }
+        }
         return next
     }
 
+    /// URL → refresh generation for every add-on refreshing in `state`.
+    private static func refreshingGenerations(_ state: AddonsUiState) -> [String: Int64] {
+        var result: [String: Int64] = [:]
+        for addon in state.addons where addon.isRefreshing {
+            result[addon.manifestUrl] = state.refreshGenerations[addon.manifestUrl]?.int64Value ?? 0
+        }
+        return result
+    }
+
     private func reevaluateStalled() {
-        let next = Self.stalledUrls(startedAt: refreshStartedAt, now: now())
+        let next = Self.stalledUrls(startedAt: refreshStartedAt.mapValues(\.startedAt), now: now())
         if next != stalledUrls { stalledUrls = next }
         if refreshStartedAt.isEmpty {
             stallTicker?.cancel()
@@ -165,9 +189,9 @@ final class AddonsViewModel: ObservableObject {
             if state.addons != self.addons { self.addons = state.addons }
             let overview = HubOverview(total: state.addons.count, active: state.addons.filter { $0.enabled }.count)
             if overview != self.overview { self.overview = overview }
-            let refreshingUrls = Set(state.addons.filter { $0.isRefreshing }.map { $0.manifestUrl })
-            let ages = Self.updatedRefreshAges(self.refreshStartedAt, refreshing: refreshingUrls, now: self.now())
-            if ages != self.refreshStartedAt || !self.stalledUrls.isSubset(of: refreshingUrls) {
+            let refreshing = Self.refreshingGenerations(state)
+            let ages = Self.updatedRefreshAges(self.refreshStartedAt, refreshing: refreshing, now: self.now())
+            if ages != self.refreshStartedAt || !self.stalledUrls.isSubset(of: Set(refreshing.keys)) {
                 self.refreshStartedAt = ages
                 self.reevaluateStalled()
             }
@@ -287,12 +311,14 @@ final class AddonsViewModel: ObservableObject {
     /// it (a plain `refresh` is a no-op while the old job is active) and starts a fresh one.
     func retryRefresh(manifestUrl: String) {
         stalledUrls.remove(manifestUrl)
-        // Review r3: the replacement request's age starts now. Set here, not left to the watcher:
-        // the repository's state for a stuck add-on (refreshing, no error) does not change on a
-        // restart, so the flow need not emit.
-        refreshStartedAt[manifestUrl] = now()
-        reevaluateStalled()
         AddonRepository.shared.restartRefresh(manifestUrl: manifestUrl)
+        // Review r3/r5: the replacement request's age starts now, under the generation the restart
+        // just bumped (read straight back, so it does not wait for the next emission).
+        if let state = AddonRepository.shared.uiState.value_ as? AddonsUiState,
+           let generation = Self.refreshingGenerations(state)[manifestUrl] {
+            refreshStartedAt[manifestUrl] = RefreshAge(generation: generation, startedAt: now())
+        }
+        reevaluateStalled()
         trackRefresh()
     }
 

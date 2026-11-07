@@ -85,8 +85,9 @@ data class AddonsUiState(
      * Lives ON the state so the bump, the refreshing mark and a refresh's publication are each one
      * compare-and-swap of the same value: a superseded refresh (see `restartRefresh`) can never
      * commit over its replacement, even when the replacement's mark leaves the add-on unchanged.
-     * Not UI state; defaulted so every construction site is unaffected (a full replacement resets
-     * it, and a missing entry counts as current).
+     * Not UI state; defaulted so every construction site compiles. Same-profile replacements in
+     * `AddonRepository` carry it over; a reset (`clearLocalState`) starts it empty, and a refresh
+     * whose entry is gone never publishes.
      */
     val refreshGenerations: Map<String, Long> = emptyMap(),
 )

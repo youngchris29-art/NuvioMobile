@@ -638,10 +638,13 @@ private struct HubContentColumn: View {
             .environment(\.settingsUsesNativeList, true)
     }
 
-    /// Interim Installed content: v1's cards, focus keys shared with the split view's memory.
+    /// Interim Installed content: v1's cards, focus keys shared with the split view's memory. An
+    /// EAGER stack (review r5): a focus hand-off to a card far down the list (a new install, a
+    /// remembered deep card) needs that card realized; a lazy stack had not created it yet. The
+    /// list is short and A3 replaces it with a native `List`.
     private var installed: some View {
         ScrollView(.vertical) {
-            LazyVStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
                 if !model.isInitialized { ProgressView() }
                 if model.isInitialized && model.addons.isEmpty {
                     Text("No add-ons installed. Install one to get started.")

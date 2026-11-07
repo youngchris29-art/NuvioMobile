@@ -94,15 +94,20 @@ object AddonRepository {
         }
 
         val existingByUrl = _uiState.value.addons.associateBy(ManagedAddon::manifestUrl)
-        _uiState.value = AddonsUiState(
-            addons = storedUrls.map { manifestUrl ->
-                existingByUrl[manifestUrl].toPendingAddon(
-                    manifestUrl = manifestUrl,
-                    enabled = enabledByUrl[manifestUrl],
-                )
-            },
-            isInitialized = true,
-        )
+        // Add-ons hub v2 review r5: a same-profile replacement keeps the refresh generations, so a
+        // refresh superseded before it carries over can still be told apart.
+        _uiState.update { current ->
+            AddonsUiState(
+                refreshGenerations = current.refreshGenerations,
+                addons = storedUrls.map { manifestUrl ->
+                    existingByUrl[manifestUrl].toPendingAddon(
+                        manifestUrl = manifestUrl,
+                        enabled = enabledByUrl[manifestUrl],
+                    )
+                },
+                isInitialized = true,
+            )
+        }
 
         storedUrls.forEach { manifestUrl ->
             val existing = existingByUrl[manifestUrl]
@@ -199,18 +204,23 @@ object AddonRepository {
                         log.w { "pullFromServer() — remote empty while local has ${localUrls.size} addons; preserving local addons" }
                         val enabledByUrl = loadLocalEnabledStates()
                         val existingByUrl = _uiState.value.addons.associateBy(ManagedAddon::manifestUrl)
-                        _uiState.value = AddonsUiState(
-                            addons = localUrls.map { url ->
-                                existingByUrl[url].toPendingAddon(
-                                    manifestUrl = url,
-                                    enabled = enabledByUrl[url],
-                                )
-                            },
-                            // This path completes bootstrap below, so the published state
-                            // says so too — a pull that wins the race with initialize() must not
-                            // leave watchers thinking bootstrap never happened.
-                            isInitialized = true,
-                        )
+                        // Add-ons hub v2 review r5: a same-profile replacement keeps the refresh generations, so a
+                        // refresh superseded before it carries over can still be told apart.
+                        _uiState.update { current ->
+                            AddonsUiState(
+                                refreshGenerations = current.refreshGenerations,
+                                addons = localUrls.map { url ->
+                                    existingByUrl[url].toPendingAddon(
+                                        manifestUrl = url,
+                                        enabled = enabledByUrl[url],
+                                    )
+                                },
+                                // This path completes bootstrap below, so the published state
+                                // says so too — a pull that wins the race with initialize() must not
+                                // leave watchers thinking bootstrap never happened.
+                                isInitialized = true,
+                            )
+                        }
                         persist()
                         localUrls.forEach { url ->
                             val existing = existingByUrl[url]
@@ -226,18 +236,23 @@ object AddonRepository {
                 }
 
                 val existingByUrl = _uiState.value.addons.associateBy(ManagedAddon::manifestUrl)
-                _uiState.value = AddonsUiState(
-                    addons = urls.map { url ->
-                        val row = rowsByUrl[url]
-                        existingByUrl[url].toPendingAddon(
-                            manifestUrl = url,
-                            userSetName = row?.name?.takeIf { it.isNotBlank() },
-                            enabled = row?.enabled,
-                        )
-                    },
-                    // As above: the server's list IS a settled bootstrap for this profile.
-                    isInitialized = true,
-                )
+                // Add-ons hub v2 review r5: a same-profile replacement keeps the refresh generations, so a
+                // refresh superseded before it carries over can still be told apart.
+                _uiState.update { current ->
+                    AddonsUiState(
+                        refreshGenerations = current.refreshGenerations,
+                        addons = urls.map { url ->
+                            val row = rowsByUrl[url]
+                            existingByUrl[url].toPendingAddon(
+                                manifestUrl = url,
+                                userSetName = row?.name?.takeIf { it.isNotBlank() },
+                                enabled = row?.enabled,
+                            )
+                        },
+                        // As above: the server's list IS a settled bootstrap for this profile.
+                        isInitialized = true,
+                    )
+                }
                 persist()
                 urls.forEach { url ->
                     val existing = existingByUrl[url]
@@ -674,9 +689,9 @@ internal fun bumpRefreshGeneration(current: Map<String, Long>, manifestUrl: Stri
     current + (manifestUrl to ((current[manifestUrl] ?: 0L) + 1L))
 
 /**
- * Whether [generation] is still the newest refresh of [manifestUrl]. A missing entry (the state
- * was replaced wholesale, e.g. a profile switch or server pull) counts as current, as before
- * generations existed.
+ * Whether [generation] is still the newest refresh of [manifestUrl]. Strict (review r5): every
+ * refresh bumps its entry before it starts and same-profile replacements carry the map over, so a
+ * missing entry only follows a reset (`clearLocalState`), whose refreshes must not publish.
  */
 internal fun isCurrentRefreshGeneration(generations: Map<String, Long>, manifestUrl: String, generation: Long): Boolean =
-    generations[manifestUrl]?.let { it == generation } ?: true
+    generations[manifestUrl] == generation
