@@ -88,7 +88,9 @@ struct AddonsHubSplitView: View {
     // until A3–A6 move them onto the panes.
     /// A6: the Catalogs section's per-add-on filter (the detail page's "Catalogs from this
     /// add-on"); cleared on leaving the section or with the pane's "Show all" row.
-    @State private var catalogFilter: CatalogFilter?
+    /// Review A6-r3: the filter holds the add-on's URL; its keys and title are derived on every
+    /// render (`catalogFilter`), so a refresh or an ownership change never leaves it stale.
+    @State private var catalogFilterUrl: String?
     /// A6: the Catalogs pane has a row lifted in Move mode (it owns the mode; the hub adds the
     /// sidebar, tab bar and rail locks).
     @State private var catalogsMoving = false
@@ -405,7 +407,7 @@ struct AddonsHubSplitView: View {
         dwell = nil
         guard !section.isAction, section != selected else { return }
         pendingLiftUrl = nil
-        catalogFilter = nil
+        catalogFilterUrl = nil
         // Review A6-r1: a programmatic switch away from Catalogs mid-move (an install landing)
         // must not leave the hub locked; the pane also ends its mode when torn down.
         if catalogsMoving {
@@ -589,6 +591,19 @@ struct AddonsHubSplitView: View {
         return CatalogOrderView.matchKey
     }
 
+    /// A6: the live filter for `catalogFilterUrl` (nil once that add-on is gone).
+    private var catalogFilter: CatalogFilter? { Self.catalogFilter(for: catalogFilterUrl, addons: model.addons) }
+
+    /// Review A6-r3: the filter for `url` from the CURRENT add-on list: the catalogs it owns now
+    /// (Home's ownership rule) and its title now; nil when `url` is nil or no longer installed.
+    nonisolated static func catalogFilter(for url: String?, addons: [ManagedAddon]) -> CatalogFilter? {
+        guard let url, let addon = addons.first(where: { $0.manifestUrl == url }) else { return nil }
+        return CatalogFilter(
+            keys: AddonDetailPane.catalogKeys(ownedBy: url, in: addons),
+            addonTitle: AddonsViewModel.displayTitle(addon)
+        )
+    }
+
     /// A4 + A6: a row is lifted in Installed or in Catalogs; the sidebar, tab bar and rail lock.
     private var isMovingAny: Bool { moveMode.isMoving || catalogsMoving }
 
@@ -713,10 +728,7 @@ struct AddonsHubSplitView: View {
         let addon = route.flatMap { r in model.addons.first { $0.manifestUrl == r.manifestUrl } }
         select(.catalogs)
         if let addon {
-            catalogFilter = CatalogFilter(
-                keys: AddonDetailPane.catalogKeys(ownedBy: addon.manifestUrl, in: model.addons),
-                addonTitle: AddonsViewModel.displayTitle(addon)
-            )
+            catalogFilterUrl = addon.manifestUrl
             lastContentFocus[.catalogs] = nil
         }
         DispatchQueue.main.async { handOffContent(firstCatalogsKey()) }
@@ -724,7 +736,7 @@ struct AddonsHubSplitView: View {
 
     /// The Catalogs pane's "Show all" row: drop the filter, land on the Match row.
     private func clearCatalogFilter() {
-        catalogFilter = nil
+        catalogFilterUrl = nil
         lastContentFocus[.catalogs] = nil
         DispatchQueue.main.async { handOffContent(firstCatalogsKey()) }
     }
