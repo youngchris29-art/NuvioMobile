@@ -70,6 +70,12 @@ struct AddonsHubSplitView: View {
     @State private var installedScrollTarget: String?
     /// A4: the Installed pane's Move mode.
     @State private var moveMode = AddonMoveMode()
+    /// A4 review r2: when the last move ended (uptime), for the sidebar-grab check.
+    @State private var moveEndedAt: TimeInterval?
+    /// A4: the sidebar's default focus is suppressed while moving and for a moment after, so
+    /// re-enabling the sidebar does not pull focus off the row (seen on the box).
+    @State private var suppressSidebarDefaultFocus = false
+    @State private var lastMovedUrl: String?
     @State private var dwell: Task<Void, Never>?
     @Environment(\.navigationChrome) private var navigationChrome
 
@@ -85,6 +91,10 @@ struct AddonsHubSplitView: View {
     @State private var confirmingTraktDisconnect = false
     @State private var confirmingSimklDisconnect = false
     @State private var debridDisconnectId: String?
+
+    /// A4 review r2: a sidebar landing within this long after a move ends is the sidebar's own
+    /// re-enable grab, not a user's Left (a person cannot press that fast after Select / Menu).
+    nonisolated static let sidebarGrabWindow: TimeInterval = 0.12
 
     /// The Add-ons tab's selection value (`MainTabView`, the rail's per-tab scroll map).
     static let railTabIndex = 3
@@ -205,7 +215,7 @@ struct AddonsHubSplitView: View {
                 .accessibilityIdentifier("addons_sidebar_\(section.rawValue)")
             }
         }
-        .defaultFocus($sidebarFocus, selected)
+        .defaultFocus($sidebarFocus, suppressSidebarDefaultFocus ? nil : selected)
         // D6: Menu in the sidebar opens the rail in Rail mode (nothing in Tabs mode: the system
         // takes focus to the tab bar). Here and not on `AddonsView`: pushed pages in the content
         // column are descendants of that view, and must pop on Menu.
@@ -401,6 +411,16 @@ struct AddonsHubSplitView: View {
             dwell = nil
             return
         }
+        if old == nil, new == selected, let ended = moveEndedAt,
+           ProcessInfo.processInfo.systemUptime - ended < Self.sidebarGrabWindow,
+           let url = lastMovedUrl {
+            // A4: the re-enabled sidebar took focus right as a move ended (faster than anyone can
+            // press Left): give it back to the row. A later sidebar landing is the user's own.
+            Self.logFocus("sidebar grab \(Int((ProcessInfo.processInfo.systemUptime - ended) * 1000)) ms after move end -> row")
+            moveEndedAt = nil
+            handOffContent(InstalledAddonsPane.rowKey(url))
+            return
+        }
         if new == deliberateSidebar {
             deliberateSidebar = nil
             if !new.isAction, new != selected { select(new) }
@@ -534,7 +554,9 @@ struct AddonsHubSplitView: View {
 
     private func startMove(_ addon: ManagedAddon, index: Int) {
         guard !model.isReadOnly else { return }
-        moveMode.start(manifestUrl: addon.manifestUrl, index: index, order: model.addons.map(\.manifestUrl))
+        suppressSidebarDefaultFocus = true
+        let order = model.liveOrder()
+        moveMode.start(manifestUrl: addon.manifestUrl, index: order.firstIndex(of: addon.manifestUrl) ?? index, order: order)
         Self.logFocus("move start at \(index)")
         DispatchQueue.main.async { handOffContent(InstalledAddonsPane.rowKey(addon.manifestUrl)) }
     }
@@ -542,11 +564,12 @@ struct AddonsHubSplitView: View {
     /// One Up/Down press while moving: the reducer decides (ends, 112 ms throttle); the add-on
     /// moves one place and focus stays on its row.
     private func moveStep(_ direction: AddonMoveMode.Direction) {
+        let order = model.liveOrder()
         guard let url = moveMode.movingUrl,
-              let current = model.addons.firstIndex(where: { $0.manifestUrl == url }),
-              let target = moveMode.step(direction, currentIndex: current, count: model.addons.count,
+              let current = order.firstIndex(of: url),
+              let target = moveMode.step(direction, currentIndex: current, count: order.count,
                                          now: ProcessInfo.processInfo.systemUptime) else { return }
-        model.move(manifestUrl: url, by: target - current)
+        model.moveTo(manifestUrl: url, index: target)
         DispatchQueue.main.async { handOffContent(InstalledAddonsPane.rowKey(url)) }
     }
 
@@ -556,24 +579,25 @@ struct AddonsHubSplitView: View {
         refocusRowAfterMove(url)
     }
 
-    /// A4 device check: ending a move re-enables the sidebar, whose default focus can take focus
-    /// back from the row; the `FocusState` may still read the row key, so the guarded hand-off
-    /// would skip the write. Re-focus the row unconditionally once the sidebar has re-enabled.
+    /// A4: after a move ends, keep focus on the row. The sidebar re-enables here; its default
+    /// focus stays suppressed for a moment, and a grab inside `sidebarGrabWindow` is handed back
+    /// in `sidebarFocusChanged`. No timer, so nothing overrides the user's next press (review r2).
     private func refocusRowAfterMove(_ url: String) {
-        let key = InstalledAddonsPane.rowKey(url)
-        installedScrollTarget = key
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            deliberateContent = key
-            contentFocus = key
+        lastMovedUrl = url
+        moveEndedAt = ProcessInfo.processInfo.systemUptime
+        installedScrollTarget = InstalledAddonsPane.rowKey(url)
+        DispatchQueue.main.async {
+            deliberateContent = InstalledAddonsPane.rowKey(url)
+            contentFocus = InstalledAddonsPane.rowKey(url)
         }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { suppressSidebarDefaultFocus = false }
     }
 
     /// Menu while moving: back to the index the move started from.
     private func cancelMove() {
-        guard let (url, origin) = moveMode.cancel(currentOrder: model.addons.map(\.manifestUrl)) else { return }
-        if let current = model.addons.firstIndex(where: { $0.manifestUrl == url }), current != origin {
-            model.move(manifestUrl: url, by: origin - current)
-        }
+        // Review r2: destination and move both from the repository's current list.
+        guard let (url, origin) = moveMode.cancel(currentOrder: model.liveOrder()) else { return }
+        model.moveTo(manifestUrl: url, index: origin)
         Self.logFocus("move cancel back to \(origin)")
         refocusRowAfterMove(url)
     }
