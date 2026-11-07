@@ -99,18 +99,45 @@ final class AddonDetailPaneTests: XCTestCase {
 
     // MARK: catalogs
 
-    func testCatalogKeysFollowTheSharedKeyFormat() {
-        let withCatalogs = AddonManifest(
-            id: "org.mine", name: "Mine", description: "", version: "1.0.0", logoUrl: nil,
+    private func catalogManifest(_ id: String, catalogs: [AddonCatalog]) -> AddonManifest {
+        AddonManifest(
+            id: id, name: id, description: "", version: "1.0.0", logoUrl: nil,
             resources: [AddonResource(name: "catalog", types: ["movie"], idPrefixes: [])],
-            types: ["movie"], idPrefixes: [],
-            catalogs: [AddonCatalog(type: "movie", id: "top", name: "Top", extra: []),
-                       AddonCatalog(type: "series", id: "top", name: "Top", extra: [])],
+            types: ["movie"], idPrefixes: [], catalogs: catalogs,
             behaviorHints: AddonBehaviorHints(configurable: false, configurationRequired: false, adult: false, p2p: false),
-            transportUrl: "https://mine.example.com"
+            transportUrl: "https://\(id).example.com"
         )
-        XCTAssertEqual(AddonDetailPane.catalogKeys(of: withCatalogs), ["org.mine:movie:top", "org.mine:series:top"])
-        XCTAssertTrue(AddonDetailPane.catalogKeys(of: nil).isEmpty)
+    }
+
+    func testCatalogKeysFollowTheSharedKeyFormatAndSkipRequiredExtras() {
+        let mine = catalogManifest("org.mine", catalogs: [
+            AddonCatalog(type: "movie", id: "top", name: "Top", extra: []),
+            AddonCatalog(type: "series", id: "top", name: "Top", extra: []),
+            AddonCatalog(type: "movie", id: "search", name: "Search",
+                         extra: [AddonExtraProperty(name: "search", isRequired: true, options: [], optionsLimit: nil)]),
+        ])
+        let list = [addon("mine", manifest: mine)]
+        XCTAssertEqual(AddonDetailPane.catalogKeys(ownedBy: list[0].manifestUrl, in: list),
+                       ["org.mine:movie:top", "org.mine:series:top"])
+        XCTAssertTrue(AddonDetailPane.catalogKeys(ownedBy: addon("none", manifest: nil).manifestUrl,
+                                                  in: [addon("none", manifest: nil)]).isEmpty)
+    }
+
+    /// Review A5-r2: a mirror install (same manifest, another URL) owns only what its twin above
+    /// it did not claim; a disabled install owns nothing (Home skips it).
+    func testCatalogKeysFollowHomesOwnershipRule() {
+        let shared = [AddonCatalog(type: "movie", id: "top", name: "Top", extra: [])]
+        let first = addon("first", manifest: catalogManifest("org.twin", catalogs: shared))
+        let mirror = addon("mirror", manifest: catalogManifest("org.twin", catalogs: shared + [
+            AddonCatalog(type: "movie", id: "extra", name: "Extra", extra: []),
+        ]))
+        let list = [first, mirror]
+        XCTAssertEqual(AddonDetailPane.catalogKeys(ownedBy: first.manifestUrl, in: list), ["org.twin:movie:top"])
+        XCTAssertEqual(AddonDetailPane.catalogKeys(ownedBy: mirror.manifestUrl, in: list), ["org.twin:movie:extra"])
+        let firstOff = addon("first", manifest: catalogManifest("org.twin", catalogs: shared), enabled: false)
+        XCTAssertTrue(AddonDetailPane.catalogKeys(ownedBy: firstOff.manifestUrl, in: [firstOff, mirror]).isEmpty)
+        XCTAssertEqual(AddonDetailPane.catalogKeys(ownedBy: mirror.manifestUrl, in: [firstOff, mirror]),
+                       ["org.twin:movie:top", "org.twin:movie:extra"])
     }
 
     /// Review A5-r1: matched by key, so a renamed add-on keeps its catalogs and another add-on

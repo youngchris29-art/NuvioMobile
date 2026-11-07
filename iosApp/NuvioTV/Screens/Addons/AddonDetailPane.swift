@@ -144,12 +144,23 @@ struct AddonDetailPane: View {
         return parts.joined(separator: " · ")
     }
 
-    /// The Home-settings keys of this add-on's catalogs: `manifestId:type:catalogId`, exactly as
-    /// `buildHomeCatalogDefinitions` (shared) builds them. Review A5-r1: never the add-on's name
-    /// (settings carry the display title, which a rename changes and two installs can share).
-    nonisolated static func catalogKeys(of manifest: AddonManifest?) -> Set<String> {
-        guard let manifest else { return [] }
-        return Set(manifest.catalogs.map { "\(manifest.id):\($0.type):\($0.id)" })
+    /// The Home-settings keys of the catalogs this add-on OWNS: `manifestId:type:catalogId`,
+    /// exactly as `buildHomeCatalogDefinitions` (shared) builds them, with its ownership rule:
+    /// enabled add-ons in list order, catalogs with a required extra skipped, the first add-on to
+    /// produce a key keeps it. Review A5-r1: never the name (a rename changes it, two installs can
+    /// share it); A5-r2: a mirror install at another URL owns nothing its twin already claimed.
+    nonisolated static func catalogKeys(ownedBy manifestUrl: String, in addons: [ManagedAddon]) -> Set<String> {
+        var claimed = Set<String>()
+        var owned = Set<String>()
+        for addon in addons where addon.enabled {
+            guard let manifest = addon.manifest else { continue }
+            for catalog in manifest.catalogs where !catalog.extra.contains(where: { $0.isRequired }) {
+                let key = "\(manifest.id):\(catalog.type):\(catalog.id)"
+                guard claimed.insert(key).inserted else { continue }
+                if addon.manifestUrl == manifestUrl { owned.insert(key) }
+            }
+        }
+        return owned
     }
 
     /// The add-on's catalogs in Home settings, matched by key; collections are not add-on catalogs.
@@ -233,7 +244,7 @@ struct AddonDetailPane: View {
         Self.rows(
             configurable: configurable, isReadOnly: model.isReadOnly, addonCount: model.addons.count,
             status: status,
-            catalogTotal: Self.catalogCounts(keys: Self.catalogKeys(of: addon.manifest), catalogs: settings.catalogs).total,
+            catalogTotal: Self.catalogCounts(keys: Self.catalogKeys(ownedBy: addon.manifestUrl, in: model.addons), catalogs: settings.catalogs).total,
             configureFirst: configureFirst
         )
     }
@@ -429,7 +440,7 @@ struct AddonDetailPane: View {
             .focused($focus, equals: .move)
             .accessibilityIdentifier("addons_detail_move")
         case .catalogs:
-            let counts = Self.catalogCounts(keys: Self.catalogKeys(of: addon.manifest), catalogs: settings.catalogs)
+            let counts = Self.catalogCounts(keys: Self.catalogKeys(ownedBy: addon.manifestUrl, in: model.addons), catalogs: settings.catalogs)
             Button(action: onShowCatalogs) {
                 SettingsRowChrome {
                     SettingsRowLabel(title: String(localized: "Catalogs from this add-on"))

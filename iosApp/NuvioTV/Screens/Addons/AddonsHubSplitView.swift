@@ -426,7 +426,7 @@ struct AddonsHubSplitView: View {
             dwell = nil
             return
         }
-        if old == nil, new == selected, let at = poppedAt, let url = popReturnUrl,
+        if old == nil, new == selected, new != deliberateSidebar, let at = poppedAt, let url = popReturnUrl,
            ProcessInfo.processInfo.systemUptime - at < Self.popGrabWindow {
             // A5: the Menu pop from a detail page dropped focus onto the sidebar (on the box the
             // engine falls back there once the page's focused row is gone): back to the row.
@@ -473,6 +473,9 @@ struct AddonsHubSplitView: View {
         guard let new else { return }
         if new == deliberateContent {
             deliberateContent = nil
+            // Review A5-r2: the pop's reclaim landed; from here a sidebar landing is the user's
+            // own (a quick Left), not the engine's fallback.
+            if let url = popReturnUrl, new == InstalledAddonsPane.rowKey(url) { poppedAt = nil }
             lastContentFocus[selected] = new
             return
         }
@@ -510,6 +513,9 @@ struct AddonsHubSplitView: View {
     }
 
     private func handOffSidebar(_ section: HubSection) {
+        // Review A5-r2: a deliberate move to the sidebar (Menu at the content root, a removal's
+        // empty list) ends any pending pop recovery, so the sidebar keeps it.
+        poppedAt = nil
         guard sidebarFocus != section else { return }
         deliberateSidebar = section
         sidebarFocus = section
