@@ -423,6 +423,11 @@ object AddonRepository {
                         payload = payload,
                     )
                 }
+                // Add-ons hub v2 review r2: a cancelled job (restartRefresh) must not publish a
+                // failure over its replacement, and a job that finished after being superseded
+                // must not overwrite the newer one's state.
+                result.exceptionOrNull()?.let { if (it is CancellationException) throw it }
+                if (isSupersededRefresh(registered = activeRefreshJobs[manifestUrl], self = refreshJob)) return@launch
 
                 _uiState.update { current ->
                     current.copy(
@@ -657,3 +662,10 @@ internal fun shouldBlockUnhydratedAddonPush(authState: AuthState, pulledFromServ
 /// over the account's real addon list. See docs/addon-wipe-investigation-2026-08-28.md.
 internal fun defaultAddonSeedingAllowed(authState: AuthState, serverPullSettled: Boolean): Boolean =
     authState !is AuthState.Authenticated || authState.isAnonymous || serverPullSettled
+
+/**
+ * A refresh job is superseded when another job is registered for its add-on. `null` (not yet
+ * registered: the job can reach this point before `refreshAddon` stores it) is not superseded.
+ */
+internal fun isSupersededRefresh(registered: Job?, self: Job?): Boolean =
+    registered != null && registered !== self

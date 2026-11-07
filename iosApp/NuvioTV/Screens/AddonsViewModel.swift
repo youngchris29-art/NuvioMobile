@@ -85,6 +85,14 @@ final class AddonsViewModel: ObservableObject {
 
     private var watcher: FlowWatcher?
     private var refreshWait: Task<Void, Never>?
+    /// When each add-on still refreshing was first seen refreshing (review r2: repository-started
+    /// refreshes too, not only the ones this model started). Kept across `stop()`/`start()`.
+    private var refreshStartedAt: [String: Date] = [:]
+    /// Re-evaluates `stalledUrls` once a second while anything is refreshing.
+    private var stallTicker: Task<Void, Never>?
+    /// Between `start()` and `stop()`; the ticker only runs while started. (The watcher's first
+    /// emission can arrive before `watcher` is assigned, so that cannot be the signal.)
+    private var isStarted = false
     private let defaults: UserDefaults
     private let now: () -> Date
 
@@ -110,16 +118,44 @@ final class AddonsViewModel: ObservableObject {
         defaults.set(date.timeIntervalSince1970, forKey: refreshStampKey(profileId: profileId))
     }
 
-    /// The subset of `stillRefreshing` to flag as stalled: all of it once `ceiling` seconds have
-    /// passed since `startedAt`, else none.
+    /// The add-ons whose refresh started at least `ceiling` seconds before `now`.
     nonisolated static func stalledUrls(
-        stillRefreshing: Set<String>, startedAt: Date, now: Date, ceiling: TimeInterval = refreshStallSeconds
+        startedAt: [String: Date], now: Date, ceiling: TimeInterval = refreshStallSeconds
     ) -> Set<String> {
-        now.timeIntervalSince(startedAt) >= ceiling ? stillRefreshing : []
+        Set(startedAt.filter { now.timeIntervalSince($0.value) >= ceiling }.keys)
+    }
+
+    /// Starts/forgets refresh ages from the live list: a URL newly refreshing gets `now`, a URL no
+    /// longer refreshing is dropped. Pure, so the bookkeeping is unit-tested.
+    nonisolated static func updatedRefreshAges(
+        _ ages: [String: Date], refreshing: Set<String>, now: Date
+    ) -> [String: Date] {
+        var next = ages.filter { refreshing.contains($0.key) }
+        for url in refreshing where next[url] == nil { next[url] = now }
+        return next
+    }
+
+    private func reevaluateStalled() {
+        let next = Self.stalledUrls(startedAt: refreshStartedAt, now: now())
+        if next != stalledUrls { stalledUrls = next }
+        if refreshStartedAt.isEmpty {
+            stallTicker?.cancel()
+            stallTicker = nil
+        } else if stallTicker == nil, isStarted {
+            stallTicker = Task { @MainActor [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    guard let self, !Task.isCancelled else { return }
+                    self.reevaluateStalled()
+                    if self.stallTicker == nil { return }
+                }
+            }
+        }
     }
 
     func start() {
         guard watcher == nil else { return }
+        isStarted = true
         lastRefreshedAt = Self.loadRefreshStamp(defaults: defaults, profileId: ProfileRepository.shared.activeProfileId)
         lastInstalledManifestUrl = nil
         let readOnly = AddonRepository.shared.isReadOnly()
@@ -129,10 +165,11 @@ final class AddonsViewModel: ObservableObject {
             if state.addons != self.addons { self.addons = state.addons }
             let overview = HubOverview(total: state.addons.count, active: state.addons.filter { $0.enabled }.count)
             if overview != self.overview { self.overview = overview }
-            if !self.stalledUrls.isEmpty {
-                let refreshing = Set(state.addons.filter { $0.isRefreshing }.map { $0.manifestUrl })
-                let kept = self.stalledUrls.intersection(refreshing)
-                if kept != self.stalledUrls { self.stalledUrls = kept }
+            let refreshingUrls = Set(state.addons.filter { $0.isRefreshing }.map { $0.manifestUrl })
+            let ages = Self.updatedRefreshAges(self.refreshStartedAt, refreshing: refreshingUrls, now: self.now())
+            if ages != self.refreshStartedAt || !self.stalledUrls.isSubset(of: refreshingUrls) {
+                self.refreshStartedAt = ages
+                self.reevaluateStalled()
             }
             if self.isInitialized != state.isInitialized { self.isInitialized = state.isInitialized }
             let readOnly = AddonRepository.shared.isReadOnly()
@@ -148,6 +185,8 @@ final class AddonsViewModel: ObservableObject {
             }
         }
         AddonRepository.shared.initialize()
+        // Resume ageing refreshes seen before a stop.
+        reevaluateStalled()
     }
 
     func stop() {
@@ -155,6 +194,9 @@ final class AddonsViewModel: ObservableObject {
         watcher = nil
         refreshWait?.cancel()
         refreshWait = nil
+        stallTicker?.cancel()
+        stallTicker = nil
+        isStarted = false
         isRefreshingAny = false
     }
 
@@ -245,6 +287,8 @@ final class AddonsViewModel: ObservableObject {
     /// it (a plain `refresh` is a no-op while the old job is active) and starts a fresh one.
     func retryRefresh(manifestUrl: String) {
         stalledUrls.remove(manifestUrl)
+        // The replacement request's age starts over (the watcher re-adds it with `now`).
+        refreshStartedAt[manifestUrl] = nil
         AddonRepository.shared.restartRefresh(manifestUrl: manifestUrl)
         trackRefresh()
     }
@@ -259,20 +303,12 @@ final class AddonsViewModel: ObservableObject {
         let refreshedUrls = Set(started.filter { $0.isRefreshing }.map { $0.manifestUrl })
         guard !refreshedUrls.isEmpty else { return }
         isRefreshingAny = true
-        let startedAt = now()
         refreshWait?.cancel()
         refreshWait = Task { @MainActor [weak self] in
             var latest = started
             for _ in 0..<240 {
                 latest = (AddonRepository.shared.uiState.value_ as? AddonsUiState)?.addons ?? []
-                let stillRefreshing = Set(latest.filter { refreshedUrls.contains($0.manifestUrl) && $0.isRefreshing }.map { $0.manifestUrl })
-                if let self {
-                    let next = self.stalledUrls.subtracting(refreshedUrls).union(
-                        Self.stalledUrls(stillRefreshing: stillRefreshing, startedAt: startedAt, now: self.now())
-                    )
-                    if next != self.stalledUrls { self.stalledUrls = next }
-                }
-                if stillRefreshing.isEmpty { break }
+                if !latest.contains(where: { refreshedUrls.contains($0.manifestUrl) && $0.isRefreshing }) { break }
                 try? await Task.sleep(nanoseconds: 250_000_000)
                 if Task.isCancelled { return }
             }
@@ -413,5 +449,6 @@ final class AddonsViewModel: ObservableObject {
     deinit {
         watcher?.cancel()
         refreshWait?.cancel()
+        stallTicker?.cancel()
     }
 }

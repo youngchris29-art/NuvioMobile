@@ -415,17 +415,40 @@ struct AddonsHubSplitView: View {
     /// it still exists, else the pane's first row; nil for panes that do not take part.
     private func contentLandingTarget(for section: HubSection) -> String? {
         let keys = contentKeys(for: section)
-        if let remembered = lastContentFocus[section], keys.contains(remembered) { return remembered }
+        if let remembered = lastContentFocus[section] {
+            if keys.contains(remembered) { return remembered }
+            // Review r2: a remembered control that is now disabled (moved to an end, or read-only)
+            // falls back to that add-on's card while the add-on is still listed.
+            if let url = remembered.split(separator: ":", maxSplits: 1).last.map(String.init),
+               keys.contains("card:" + url) {
+                return "card:" + url
+            }
+        }
         return Self.firstContentKey(section: section, addons: model.addons)
     }
 
-    /// Every focus key the pane for `section` can hold (Installed: each card's controls).
+    /// Every focus key the pane for `section` can hold right now (Installed: each card's ENABLED
+    /// controls, by the card's own rules; Install: its row).
     private func contentKeys(for section: HubSection) -> Set<String> {
-        if section == .install { return [Self.installOpenKey] }
-        guard section == .installed else { return [] }
+        switch section {
+        case .install: return [Self.installOpenKey]
+        case .installed: return Self.installedFocusKeys(urls: model.addons.map(\.manifestUrl), isReadOnly: model.isReadOnly)
+        default: return []
+        }
+    }
+
+    /// The Installed cards' focusable keys: every card's name area; with editing allowed, its
+    /// toggle and Remove, Up except on the first card and Down except on the last
+    /// (`AddonCardView`'s disabled rules).
+    nonisolated static func installedFocusKeys(urls: [String], isReadOnly: Bool) -> Set<String> {
         var keys = Set<String>()
-        for addon in model.addons {
-            for prefix in ["card", "toggle", "up", "down", "remove"] { keys.insert("\(prefix):\(addon.manifestUrl)") }
+        for (index, url) in urls.enumerated() {
+            keys.insert("card:" + url)
+            guard !isReadOnly else { continue }
+            keys.insert("toggle:" + url)
+            keys.insert("remove:" + url)
+            if index > 0 { keys.insert("up:" + url) }
+            if index < urls.count - 1 { keys.insert("down:" + url) }
         }
         return keys
     }

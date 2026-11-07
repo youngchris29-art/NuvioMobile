@@ -126,10 +126,34 @@ final class HubSectionTests: XCTestCase {
     // MARK: stall ceiling
 
     func testStalledUrlsRespectTheCeiling() {
-        let start = Date(timeIntervalSince1970: 1_800_000_000)
-        let urls: Set<String> = ["https://a.example.com/manifest.json", "https://b.example.com/manifest.json"]
-        XCTAssertEqual(AddonsViewModel.stalledUrls(stillRefreshing: urls, startedAt: start, now: start.addingTimeInterval(29.9)), [])
-        XCTAssertEqual(AddonsViewModel.stalledUrls(stillRefreshing: urls, startedAt: start, now: start.addingTimeInterval(30)), urls)
-        XCTAssertEqual(AddonsViewModel.stalledUrls(stillRefreshing: [], startedAt: start, now: start.addingTimeInterval(45)), [])
+        let start = Date(timeIntervalSince1970: 1_000_000)
+        let ages = ["a": start, "b": start.addingTimeInterval(10)]
+        XCTAssertEqual(AddonsViewModel.stalledUrls(startedAt: ages, now: start.addingTimeInterval(29.9)), [])
+        XCTAssertEqual(AddonsViewModel.stalledUrls(startedAt: ages, now: start.addingTimeInterval(30)), ["a"])
+        XCTAssertEqual(AddonsViewModel.stalledUrls(startedAt: ages, now: start.addingTimeInterval(40)), ["a", "b"])
+        XCTAssertEqual(AddonsViewModel.stalledUrls(startedAt: [:], now: start.addingTimeInterval(45)), [])
+    }
+
+    /// Review r2: ages come from the live list, so a refresh the repository started itself (not
+    /// through this model) is aged too; a URL that stops refreshing is forgotten.
+    func testRefreshAgesFollowTheLiveList() {
+        let t0 = Date(timeIntervalSince1970: 1_000_000)
+        let t1 = t0.addingTimeInterval(5)
+        var ages = AddonsViewModel.updatedRefreshAges([:], refreshing: ["a"], now: t0)
+        XCTAssertEqual(ages, ["a": t0])
+        ages = AddonsViewModel.updatedRefreshAges(ages, refreshing: ["a", "b"], now: t1)
+        XCTAssertEqual(ages, ["a": t0, "b": t1], "an add-on already refreshing keeps its first-seen time")
+        ages = AddonsViewModel.updatedRefreshAges(ages, refreshing: ["b"], now: t1)
+        XCTAssertEqual(ages, ["b": t1])
+    }
+
+    /// Review r2: focus memory only lands on controls the card keeps enabled.
+    func testInstalledFocusKeysFollowTheCardsDisabledRules() {
+        let keys = AddonsHubSplitView.installedFocusKeys(urls: ["a", "b", "c"], isReadOnly: false)
+        XCTAssertTrue(keys.isSuperset(of: ["card:a", "toggle:a", "remove:a", "down:a", "up:b", "down:b", "up:c"]))
+        XCTAssertFalse(keys.contains("up:a"), "the first card's Up is disabled")
+        XCTAssertFalse(keys.contains("down:c"), "the last card's Down is disabled")
+        let readOnly = AddonsHubSplitView.installedFocusKeys(urls: ["a", "b"], isReadOnly: true)
+        XCTAssertEqual(readOnly, ["card:a", "card:b"])
     }
 }
