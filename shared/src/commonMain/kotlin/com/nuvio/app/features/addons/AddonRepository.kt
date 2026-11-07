@@ -11,7 +11,10 @@ import com.nuvio.app.core.sync.putSyncOriginClientId
 import io.github.jan.supabase.postgrest.postgrest
 import io.github.jan.supabase.postgrest.query.Order
 import io.github.jan.supabase.postgrest.rpc
+import kotlinx.atomicfu.locks.SynchronizedObject
+import kotlinx.atomicfu.locks.synchronized
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -61,6 +64,13 @@ object AddonRepository {
     private var pulledFromServer = false
     private var currentProfileId: Int = 1
     private val activeRefreshJobs = mutableMapOf<String, Job>()
+    /**
+     * Add-ons hub v2 review r7: guards every read and write of [activeRefreshJobs] (the active-job
+     * check plus registration in [refreshAddon], the replacement in [restartRefresh], a job's
+     * identity-checked removal, [cancelActiveRefreshes]), so a cancelled job's cleanup can never
+     * remove its replacement's entry and leave that request untracked.
+     */
+    private val refreshJobsLock = SynchronizedObject()
     /**
      * Add-ons hub v2 review r6: refresh generations are unique ids from one process-wide counter,
      * never reused, so a job that outlived a reset (`clearLocalState`) can never match the id of a
@@ -420,7 +430,7 @@ object AddonRepository {
      * only removes its own map entry, so the new job stays tracked.
      */
     fun restartRefresh(manifestUrl: String) {
-        activeRefreshJobs.remove(manifestUrl)?.cancel()
+        synchronized(refreshJobsLock) { activeRefreshJobs.remove(manifestUrl) }?.cancel()
         refreshAddon(manifestUrl = manifestUrl, forceRefresh = true)
     }
 
@@ -437,18 +447,32 @@ object AddonRepository {
         manifestUrl: String,
         forceRefresh: Boolean = false,
     ) {
-        val existingJob = activeRefreshJobs[manifestUrl]
-        if (existingJob?.isActive == true) return
-
-        // Review r4: the generation bump and the refreshing mark are ONE update of the state the
-        // publication below compares against (`AddonsUiState.refreshGenerations`).
-        val generation = refreshIdCounter.updateAndGet { it + 1 }
-        _uiState.update { current ->
-            markedRefreshing(current, manifestUrl)
-                .copy(refreshGenerations = withRefreshGeneration(current.refreshGenerations, manifestUrl, generation))
-        }
+        // Review r7: the active-job check, the generation bump and the registration happen under
+        // the job lock; the job is created LAZY and only started once it is registered.
         var refreshJob: Job? = null
-        refreshJob = scope.launch {
+        synchronized(refreshJobsLock) {
+            if (activeRefreshJobs[manifestUrl]?.isActive == true) return
+            // Review r4: the generation bump and the refreshing mark are ONE update of the state
+            // the publication below compares against (`AddonsUiState.refreshGenerations`).
+            val generation = refreshIdCounter.updateAndGet { it + 1 }
+            _uiState.update { current ->
+                markedRefreshing(current, manifestUrl)
+                    .copy(refreshGenerations = withRefreshGeneration(current.refreshGenerations, manifestUrl, generation))
+            }
+            val job = launchRefresh(manifestUrl, forceRefresh, generation)
+            activeRefreshJobs[manifestUrl] = job
+            refreshJob = job
+        }
+        refreshJob?.start()
+    }
+
+    /** The refresh job itself (LAZY: [refreshAddon] starts it after registering it). */
+    private fun launchRefresh(
+        manifestUrl: String,
+        forceRefresh: Boolean,
+        generation: Long,
+    ): Job =
+        scope.launch(start = CoroutineStart.LAZY) {
             try {
                 val result = runCatching {
                     val payload = fetchAddonResponseText(
@@ -495,13 +519,14 @@ object AddonRepository {
                     )
                 }
             } finally {
-                if (activeRefreshJobs[manifestUrl] === refreshJob) {
-                    activeRefreshJobs.remove(manifestUrl)
+                val self = coroutineContext[Job]
+                synchronized(refreshJobsLock) {
+                    if (activeRefreshJobs[manifestUrl] === self) {
+                        activeRefreshJobs.remove(manifestUrl)
+                    }
                 }
             }
         }
-        activeRefreshJobs[manifestUrl] = refreshJob
-    }
 
     /// Whether the default-addon seed may run right now. Guests/signed-out sessions seed
     /// immediately (nothing to pull); a signed-in account must wait until the first server pull
@@ -589,8 +614,10 @@ object AddonRepository {
             .mapKeys { (url, _) -> ensureManifestSuffix(url) }
 
     private fun cancelActiveRefreshes() {
-        activeRefreshJobs.values.forEach(Job::cancel)
-        activeRefreshJobs.clear()
+        val jobs = synchronized(refreshJobsLock) {
+            activeRefreshJobs.values.toList().also { activeRefreshJobs.clear() }
+        }
+        jobs.forEach(Job::cancel)
     }
 
     private fun resolveEffectiveProfileId(profileId: Int): Int {
