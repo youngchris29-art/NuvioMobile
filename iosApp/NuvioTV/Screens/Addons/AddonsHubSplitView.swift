@@ -399,8 +399,16 @@ struct AddonsHubSplitView: View {
             return
         }
         if old == nil, let target = contentLandingTarget(for: selected), target != new {
-            // Entering from outside (the sidebar, the tab bar): land on the remembered row.
-            contentFocus = target
+            // Entering from outside (the sidebar, the tab bar): land on the remembered row. On the
+            // Living Room box (A2 device check, Tabs mode) a write made inside this same focus
+            // update was dropped and focus stayed on the geometric landing (a card's toggle), so
+            // the correction runs on the next turn, and only if focus is still where it landed.
+            Self.logFocus("content landed \(Self.kind(of: new)) -> correcting to \(Self.kind(of: target))")
+            let landed = new
+            DispatchQueue.main.async {
+                guard contentFocus == landed else { return }
+                handOffContent(target)
+            }
             return
         }
         lastContentFocus[selected] = new
@@ -417,6 +425,16 @@ struct AddonsHubSplitView: View {
         guard sidebarFocus != section else { return }
         deliberateSidebar = section
         sidebarFocus = section
+    }
+
+    /// `[HubFocus]` lines for device checks: the KIND of control only (the key's prefix), never the
+    /// manifest URL (it can carry a debrid key).
+    private static func logFocus(_ message: String) {
+        NSLog("[HubFocus] %@", message)
+    }
+
+    private static func kind(of key: String) -> String {
+        key.split(separator: ":", maxSplits: 1).first.map(String.init) ?? key
     }
 
     /// Where focus should land when it enters `section`'s content: the row last focused there if

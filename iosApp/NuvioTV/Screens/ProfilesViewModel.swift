@@ -170,8 +170,13 @@ final class ProfilesViewModel: ObservableObject {
     }
 
     func deleteProfile(_ profile: NuvioProfile, completion: @escaping () -> Void = {}) {
-        ProfileRepository.shared.deleteProfile(profileIndex: profile.profileIndex) { _ in
-            DispatchQueue.main.async { completion() }
+        let profileIndex = profile.profileIndex
+        ProfileRepository.shared.deleteProfile(profileIndex: profileIndex) { _ in
+            DispatchQueue.main.async {
+                // Add-ons hub v2 review r9: the slot can be reused by a new profile.
+                AddonsViewModel.clearRefreshStamp(defaults: .standard, profileId: profileIndex)
+                completion()
+            }
         }
     }
 

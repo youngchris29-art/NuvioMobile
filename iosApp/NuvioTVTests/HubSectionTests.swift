@@ -171,4 +171,18 @@ final class HubSectionTests: XCTestCase {
         let readOnly = AddonsHubSplitView.installedFocusKeys(urls: ["a", "b"], isReadOnly: true)
         XCTAssertEqual(readOnly, ["card:a", "card:b"])
     }
+
+    /// Review r9: deleting a profile forgets its stamp, so a new profile in the reused slot reads
+    /// "Not refreshed yet"; other profiles keep theirs.
+    func testClearingAProfilesStampLeavesOthers() {
+        let suite = "hubv2-tests-clear-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let stamp = Date(timeIntervalSince1970: 2_000_000)
+        AddonsViewModel.saveRefreshStamp(stamp, defaults: defaults, profileId: 2)
+        AddonsViewModel.saveRefreshStamp(stamp, defaults: defaults, profileId: 3)
+        AddonsViewModel.clearRefreshStamp(defaults: defaults, profileId: 2)
+        XCTAssertNil(AddonsViewModel.loadRefreshStamp(defaults: defaults, profileId: 2))
+        XCTAssertNotNil(AddonsViewModel.loadRefreshStamp(defaults: defaults, profileId: 3))
+    }
 }

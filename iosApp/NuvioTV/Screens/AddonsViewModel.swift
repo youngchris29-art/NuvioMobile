@@ -121,6 +121,12 @@ final class AddonsViewModel: ObservableObject {
         return Date(timeIntervalSince1970: defaults.double(forKey: key))
     }
 
+    /// Review r9: forgets `profileId`'s stamp. Called when that profile is deleted: slots are
+    /// reused, and a new profile in the slot must not read "Updated" before it ever refreshed.
+    nonisolated static func clearRefreshStamp(defaults: UserDefaults, profileId: Int32) {
+        defaults.removeObject(forKey: refreshStampKey(profileId: profileId))
+    }
+
     /// Stores `date` as the refresh stamp for `profileId`.
     nonisolated static func saveRefreshStamp(_ date: Date, defaults: UserDefaults, profileId: Int32) {
         defaults.set(date.timeIntervalSince1970, forKey: refreshStampKey(profileId: profileId))
