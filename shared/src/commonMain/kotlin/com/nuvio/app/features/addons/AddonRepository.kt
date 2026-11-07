@@ -411,9 +411,18 @@ object AddonRepository {
      * mode's cancel uses it to restore the position relative to the survivors.
      */
     fun moveAddonAfter(manifestUrl: String, predecessors: Set<String>): Boolean =
-        reorderAtomically { restoredOrder(it, manifestUrl, predecessors) }
+        reorderAtomically(pushWhenUnchanged = true) { restoredOrder(it, manifestUrl, predecessors) }
 
-    private fun reorderAtomically(reorder: (List<ManagedAddon>) -> List<ManagedAddon>?): Boolean {
+    /**
+     * [pushWhenUnchanged] (review A4-r4): a cancel whose restored order is already in place (a
+     * pull applied it meanwhile) still schedules a push of the CURRENT list, which replaces a
+     * step's pending debounced push (`pushToServer` snapshots the list and cancels the previous
+     * job), so the cancelled order can never reach the server afterwards.
+     */
+    private fun reorderAtomically(
+        pushWhenUnchanged: Boolean = false,
+        reorder: (List<ManagedAddon>) -> List<ManagedAddon>?,
+    ): Boolean {
         if (isUsingPrimaryAddonsFromSecondaryProfile()) return false
         var changed = false
         _uiState.update { current ->
@@ -421,7 +430,10 @@ object AddonRepository {
             changed = reordered != null && reordered != current.addons
             if (changed) current.copy(addons = reordered!!) else current
         }
-        if (!changed) return false
+        if (!changed) {
+            if (pushWhenUnchanged) pushToServer()
+            return false
+        }
         persist()
         pushToServer()
         return true

@@ -76,6 +76,9 @@ struct AddonsHubSplitView: View {
     /// re-enabling the sidebar does not pull focus off the row (seen on the box).
     @State private var suppressSidebarDefaultFocus = false
     @State private var lastMovedUrl: String?
+    /// Review A4-r4: whether a step of the current move actually moved the add-on; a cancel with
+    /// no step restores nothing (a sync may have reordered the list meanwhile).
+    @State private var moveDidStep = false
     @State private var dwell: Task<Void, Never>?
     @Environment(\.navigationChrome) private var navigationChrome
 
@@ -555,6 +558,7 @@ struct AddonsHubSplitView: View {
     private func startMove(_ addon: ManagedAddon, index: Int) {
         guard !model.isReadOnly else { return }
         suppressSidebarDefaultFocus = true
+        moveDidStep = false
         let order = model.liveOrder()
         moveMode.start(manifestUrl: addon.manifestUrl, index: order.firstIndex(of: addon.manifestUrl) ?? index, order: order)
         Self.logFocus("move start at \(index)")
@@ -571,7 +575,7 @@ struct AddonsHubSplitView: View {
                                          now: ProcessInfo.processInfo.systemUptime) else { return }
         // Review r3: the reducer only gates the press (ends, throttle); the repository resolves the
         // add-on and its destination by URL in one atomic update.
-        model.moveStep(manifestUrl: url, by: target - current)
+        if model.moveStep(manifestUrl: url, by: target - current) { moveDidStep = true }
         DispatchQueue.main.async { handOffContent(InstalledAddonsPane.rowKey(url)) }
     }
 
@@ -601,7 +605,8 @@ struct AddonsHubSplitView: View {
         // repository's atomic update.
         let predecessors = moveMode.predecessors
         guard let (url, origin) = moveMode.cancel(currentOrder: model.liveOrder()) else { return }
-        model.restore(manifestUrl: url, after: predecessors)
+        if moveDidStep { model.restore(manifestUrl: url, after: predecessors) }
+        moveDidStep = false
         Self.logFocus("move cancel back to \(origin)")
         refocusRowAfterMove(url)
     }
