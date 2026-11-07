@@ -7,8 +7,8 @@ import SharedCore
 @MainActor
 final class AddonsViewModel: ObservableObject {
 
-    /// Add-ons hub C, H1: the header counts (`toOverview`): installed and active (enabled with a
-    /// loaded manifest). There is deliberately no catalog count here: `AddonOverview.totalCatalogs`
+    /// Add-ons hub C, H1: the header counts: installed and active (enabled, whether or not its
+    /// manifest has loaded, so the count does not dip while a manifest reloads). There is deliberately no catalog count here: `AddonOverview.totalCatalogs`
     /// counts every catalog of every enabled add-on including search-only ones, which is not what
     /// the hub shows; the Catalogs card reads `HubSummary.catalogsOn / catalogsTotal` (the Home items).
     nonisolated struct HubOverview: Equatable {
@@ -18,6 +18,7 @@ final class AddonsViewModel: ObservableObject {
     }
 
     /// Add-ons hub C, H1: the hub's summary line, composed from the five stores the hub draws on.
+    /// `addonsOn` counts enabled add-ons, with or without a loaded manifest.
     nonisolated struct HubSummary: Equatable {
         let addonsInstalled: Int
         let addonsOn: Int
@@ -48,19 +49,28 @@ final class AddonsViewModel: ObservableObject {
         case failed(message: String, serial: Int)
     }
 
-    /// Card state, in priority order: refreshing, unavailable, disabled, active.
+    /// Card state, in priority order: stalled, refreshing, unavailable, disabled, active.
     nonisolated enum AddonStatus: Equatable {
         case active, disabled, refreshing, unavailable
+        /// A refresh that has run past `refreshStallSeconds` and is still going.
+        case stalled
     }
+
+    /// Add-ons hub v2 (A1): how long a refresh may run before its add-on reads as stalled.
+    nonisolated static let refreshStallSeconds: TimeInterval = 30
 
     @Published private(set) var addons: [ManagedAddon] = []
     @Published private(set) var statusMessage: String?
     @Published private(set) var isInstalling = false
     @Published private(set) var overview = HubOverview.empty
     @Published private(set) var isRefreshingAny = false
-    /// When a refresh this model started last loaded at least one add-on. Per session, by design:
-    /// it is not persisted and a refresh the repository ran by itself never sets it.
+    /// When a refresh this model started last loaded at least one add-on. Persisted per profile
+    /// (`refreshStampKey`) and reloaded by `start()`; a refresh the repository ran by itself never
+    /// sets it.
     @Published private(set) var lastRefreshedAt: Date?
+    /// Add-ons still refreshing after `refreshStallSeconds`; the hub offers a retry for these.
+    /// Kept after `stop()`; entries leave when the add-on stops refreshing.
+    @Published private(set) var stalledUrls: Set<String> = []
     @Published private(set) var lastRefreshOutcome: RefreshOutcome?
     /// Increments each time `lastRefreshOutcome` is published, so an identical outcome twice in a
     /// row still changes something the hub can observe.
@@ -75,18 +85,55 @@ final class AddonsViewModel: ObservableObject {
 
     private var watcher: FlowWatcher?
     private var refreshWait: Task<Void, Never>?
+    private let defaults: UserDefaults
+    private let now: () -> Date
+
+    init(defaults: UserDefaults = .standard, now: @escaping () -> Date = Date.init) {
+        self.defaults = defaults
+        self.now = now
+    }
+
+    /// UserDefaults key of the refresh stamp for `profileId`.
+    nonisolated static func refreshStampKey(profileId: Int32) -> String {
+        "addons.lastRefreshedAt.\(profileId)"
+    }
+
+    /// The stored refresh stamp for `profileId` (seconds since 1970), or nil when absent.
+    nonisolated static func loadRefreshStamp(defaults: UserDefaults, profileId: Int32) -> Date? {
+        let key = refreshStampKey(profileId: profileId)
+        guard defaults.object(forKey: key) != nil else { return nil }
+        return Date(timeIntervalSince1970: defaults.double(forKey: key))
+    }
+
+    /// Stores `date` as the refresh stamp for `profileId`.
+    nonisolated static func saveRefreshStamp(_ date: Date, defaults: UserDefaults, profileId: Int32) {
+        defaults.set(date.timeIntervalSince1970, forKey: refreshStampKey(profileId: profileId))
+    }
+
+    /// The subset of `stillRefreshing` to flag as stalled: all of it once `ceiling` seconds have
+    /// passed since `startedAt`, else none.
+    nonisolated static func stalledUrls(
+        stillRefreshing: Set<String>, startedAt: Date, now: Date, ceiling: TimeInterval = refreshStallSeconds
+    ) -> Set<String> {
+        now.timeIntervalSince(startedAt) >= ceiling ? stillRefreshing : []
+    }
 
     func start() {
         guard watcher == nil else { return }
+        lastRefreshedAt = Self.loadRefreshStamp(defaults: defaults, profileId: ProfileRepository.shared.activeProfileId)
         lastInstalledManifestUrl = nil
         let readOnly = AddonRepository.shared.isReadOnly()
         if isReadOnly != readOnly { isReadOnly = readOnly }
         watcher = FlowWatcherKt.watch(AddonRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? AddonsUiState else { return }
             if state.addons != self.addons { self.addons = state.addons }
-            let summary = AddonModelsKt.toOverview(state.addons)
-            let overview = HubOverview(total: Int(summary.totalAddons), active: Int(summary.activeAddons))
+            let overview = HubOverview(total: state.addons.count, active: state.addons.filter { $0.enabled }.count)
             if overview != self.overview { self.overview = overview }
+            if !self.stalledUrls.isEmpty {
+                let refreshing = Set(state.addons.filter { $0.isRefreshing }.map { $0.manifestUrl })
+                let kept = self.stalledUrls.intersection(refreshing)
+                if kept != self.stalledUrls { self.stalledUrls = kept }
+            }
             if self.isInitialized != state.isInitialized { self.isInitialized = state.isInitialized }
             let readOnly = AddonRepository.shared.isReadOnly()
             if self.isReadOnly != readOnly { self.isReadOnly = readOnly }
@@ -194,6 +241,12 @@ final class AddonsViewModel: ObservableObject {
         trackRefresh()
     }
 
+    /// Retries a stalled add-on: clears its stalled flag, then refreshes it again.
+    func retryRefresh(manifestUrl: String) {
+        stalledUrls.remove(manifestUrl)
+        refresh(manifestUrl: manifestUrl)
+    }
+
     /// The repository marks `isRefreshing` synchronously before it launches each fetch, so the
     /// add-ons refreshing right after the call are exactly the ones it started. (Watching the flow
     /// instead can miss a fast refresh: the StateFlow conflates and skips values equal to the last
@@ -204,12 +257,20 @@ final class AddonsViewModel: ObservableObject {
         let refreshedUrls = Set(started.filter { $0.isRefreshing }.map { $0.manifestUrl })
         guard !refreshedUrls.isEmpty else { return }
         isRefreshingAny = true
+        let startedAt = now()
         refreshWait?.cancel()
         refreshWait = Task { @MainActor [weak self] in
             var latest = started
             for _ in 0..<240 {
                 latest = (AddonRepository.shared.uiState.value_ as? AddonsUiState)?.addons ?? []
-                if !latest.contains(where: { refreshedUrls.contains($0.manifestUrl) && $0.isRefreshing }) { break }
+                let stillRefreshing = Set(latest.filter { refreshedUrls.contains($0.manifestUrl) && $0.isRefreshing }.map { $0.manifestUrl })
+                if let self {
+                    let next = self.stalledUrls.subtracting(refreshedUrls).union(
+                        Self.stalledUrls(stillRefreshing: stillRefreshing, startedAt: startedAt, now: self.now())
+                    )
+                    if next != self.stalledUrls { self.stalledUrls = next }
+                }
+                if stillRefreshing.isEmpty { break }
                 try? await Task.sleep(nanoseconds: 250_000_000)
                 if Task.isCancelled { return }
             }
@@ -217,7 +278,11 @@ final class AddonsViewModel: ObservableObject {
             let outcome = Self.refreshOutcome(addons: latest, refreshedUrls: refreshedUrls)
             self.lastRefreshOutcome = outcome
             self.refreshOutcomeSerial += 1
-            if outcome.succeeded > 0 { self.lastRefreshedAt = Date() }
+            if outcome.succeeded > 0 {
+                let stamp = self.now()
+                self.lastRefreshedAt = stamp
+                Self.saveRefreshStamp(stamp, defaults: self.defaults, profileId: ProfileRepository.shared.activeProfileId)
+            }
             self.isRefreshingAny = false
         }
     }
@@ -245,7 +310,8 @@ final class AddonsViewModel: ObservableObject {
     }
 
     /// Hub C, H1: pure composition of the hub's summary line. Collections are not catalogs, so
-    /// only `!isCollection` items count; `addonsOn` counts `isActive` (enabled with a manifest).
+    /// only `!isCollection` items count; `addonsOn` counts enabled add-ons (with or without a loaded
+    /// manifest), so it does not dip while a manifest reloads.
     nonisolated static func summary(
         addons: [ManagedAddon],
         catalogs: [HomeCatalogSettingsItem],
@@ -257,7 +323,7 @@ final class AddonsViewModel: ObservableObject {
         let plain = catalogs.filter { !$0.isCollection }
         return HubSummary(
             addonsInstalled: addons.count,
-            addonsOn: addons.filter { $0.isActive }.count,
+            addonsOn: addons.filter { $0.enabled }.count,
             catalogsOn: plain.filter { $0.enabled }.count,
             catalogsTotal: plain.count,
             debridConnected: debridConnectedNames,
@@ -283,10 +349,10 @@ final class AddonsViewModel: ObservableObject {
         return RefreshOutcome(succeeded: succeeded, failed: failed)
     }
 
-    /// Hub C, H2: card state. Order matters: refreshing, then unavailable (error and no manifest),
-    /// then disabled, else active.
-    nonisolated static func status(of addon: ManagedAddon) -> AddonStatus {
-        if addon.isRefreshing { return .refreshing }
+    /// Hub C, H2: card state. Order matters: refreshing (stalled when its URL is in `stalled`),
+    /// then unavailable (error and no manifest), then disabled, else active.
+    nonisolated static func status(of addon: ManagedAddon, stalled: Set<String> = []) -> AddonStatus {
+        if addon.isRefreshing { return stalled.contains(addon.manifestUrl) ? .stalled : .refreshing }
         if addon.errorMessage != nil && addon.manifest == nil { return .unavailable }
         if !addon.enabled { return .disabled }
         return .active

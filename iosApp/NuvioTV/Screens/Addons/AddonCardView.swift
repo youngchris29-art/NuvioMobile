@@ -130,6 +130,7 @@ private struct AddonStatusPill: View {
         case .active: return String(localized: "Active")
         case .disabled: return String(localized: "Disabled")
         case .refreshing: return String(localized: "Refreshing")
+        case .stalled: return String(localized: "Still refreshing…")
         case .unavailable: return String(localized: "Unavailable")
         }
     }
@@ -141,7 +142,7 @@ private struct AddonStatusPill: View {
 
     var body: some View {
         HStack(spacing: Theme.Spacing.xs) {
-            if status == .refreshing { ProgressView().controlSize(.small) }
+            if status == .refreshing || status == .stalled { ProgressView().controlSize(.small) }
             Text(word).font(Theme.Font.caption).rowTextColor()
         }
         .padding(.horizontal, Theme.Spacing.sm)

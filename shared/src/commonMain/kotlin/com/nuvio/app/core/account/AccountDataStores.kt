@@ -390,6 +390,14 @@ object AccountDataStores {
             androidPreferences = null,
             appleKeys = listOf(AppleKeySpec.Plain("tvos_rejected_stream_links_v1")),
         ),
+        AccountDataStore(
+            // tvOS-only (Swift `AddonsViewModel.refreshStampKey`): per-profile "Updated" stamp of
+            // the Add-ons hub, `UserDefaults.standard`, key `"addons.lastRefreshedAt.<profileId>"`
+            // (seconds since 1970). No Android backing.
+            name = "AddonsRefreshStamp",
+            androidPreferences = null,
+            appleKeys = listOf(AppleKeySpec.ProfileIndexed("addons.lastRefreshedAt.")),
+        ),
 
         // ── Player ─────────────────────────────────────────────────────────────────────────────
         AccountDataStore(

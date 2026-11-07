@@ -56,10 +56,23 @@ final class AddonsHubSummaryTests: XCTestCase {
             pluginsEnabled: true, pluginRepositories: 2, pluginProviders: 7
         )
         XCTAssertEqual(summary, AddonsViewModel.HubSummary(
-            addonsInstalled: 3, addonsOn: 1, catalogsOn: 2, catalogsTotal: 3,
+            addonsInstalled: 3, addonsOn: 2, catalogsOn: 2, catalogsTotal: 3,
             debridConnected: ["TorBox"],
             plugins: AddonsViewModel.PluginSummary(repositories: 2, providers: 7)
         ))
+    }
+
+    /// The on-count is stable while a manifest reloads: enabled with no manifest still counts.
+    func testEnabledAddonWithoutManifestCountsAsOn() {
+        let list = [
+            addon("a", manifest: nil, enabled: true),
+            addon("b", manifest: nil, enabled: false),
+        ]
+        let summary = AddonsViewModel.summary(
+            addons: list, catalogs: [], debridConnectedNames: [],
+            pluginsEnabled: false, pluginRepositories: 0, pluginProviders: 0
+        )
+        XCTAssertEqual(summary.addonsOn, 1)
     }
 
     func testDisabledPluginsGiveNoPluginSummary() {
@@ -109,6 +122,17 @@ final class AddonsHubSummaryTests: XCTestCase {
         XCTAssertEqual(AddonsViewModel.status(of: addon("a", manifest: nil, enabled: false, error: "x")), .unavailable)
         XCTAssertEqual(AddonsViewModel.status(of: addon("a", manifest: m, enabled: false, error: "x")), .disabled)
         XCTAssertEqual(AddonsViewModel.status(of: addon("a", manifest: m, enabled: true)), .active)
+    }
+
+    func testStatusStalledOnlyWhileRefreshing() {
+        let m = manifest("a", catalogs: 0)
+        let refreshing = addon("a", manifest: m, enabled: true, refreshing: true)
+        let url = refreshing.manifestUrl
+        XCTAssertEqual(AddonsViewModel.status(of: refreshing, stalled: [url]), .stalled)
+        XCTAssertEqual(AddonsViewModel.status(of: refreshing, stalled: []), .refreshing)
+        XCTAssertEqual(AddonsViewModel.status(of: refreshing, stalled: ["https://other.example.com/manifest.json"]), .refreshing)
+        let idle = addon("a", manifest: m, enabled: true)
+        XCTAssertEqual(AddonsViewModel.status(of: idle, stalled: [idle.manifestUrl]), .active)
     }
 
     func testHostKeepsAnIPv6LiteralAndDropsItsPort() {
