@@ -112,8 +112,13 @@ final class CatalogOrderViewTests: XCTestCase {
 
     /// Review A6-r1: a pin arriving during a move keeps the cancel below the pinned rows.
     func testCancelDestinationStaysBelowPinnedCollections() {
-        XCTAssertEqual(CatalogOrderView.cancelDestination(origin: 0, pinnedKeys: ["x"]), 1)
-        XCTAssertEqual(CatalogOrderView.cancelDestination(origin: 3, pinnedKeys: ["x"]), 3)
-        XCTAssertEqual(CatalogOrderView.cancelDestination(origin: 0, pinnedKeys: []), 0)
+        XCTAssertEqual(CatalogOrderView.cancelDestination(key: "a", origin: 0, pinnedKeys: ["x"]), 1)
+        XCTAssertEqual(CatalogOrderView.cancelDestination(key: "a", origin: 3, pinnedKeys: ["x"]), 3)
+        XCTAssertEqual(CatalogOrderView.cancelDestination(key: "a", origin: 0, pinnedKeys: []), 0)
+    }
+
+    /// Review A6-r2: the moving row pinned during its own move is left where the pin put it.
+    func testCancelDestinationSkipsARowPinnedDuringItsMove() {
+        XCTAssertNil(CatalogOrderView.cancelDestination(key: "col", origin: 1, pinnedKeys: ["col"]))
     }
 }

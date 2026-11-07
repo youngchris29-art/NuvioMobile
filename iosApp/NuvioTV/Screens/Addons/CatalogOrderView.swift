@@ -118,8 +118,11 @@ struct CatalogOrderView: View {
     /// collections), and a pinned row itself never moves.
     /// Review A6-r1: a cancel never lands above a collection pinned to the top (one may have
     /// been pinned by a sync during the move): the destination is clamped below every pinned key.
-    nonisolated static func cancelDestination(origin: Int, pinnedKeys: Set<String>) -> Int {
-        max(origin, pinnedKeys.count)
+    /// Review A6-r2: nil when the moving row itself was pinned meanwhile (the repository already
+    /// put it at the top; restoring would pull a pinned row below unpinned ones).
+    nonisolated static func cancelDestination(key: String, origin: Int, pinnedKeys: Set<String>) -> Int? {
+        guard !pinnedKeys.contains(key) else { return nil }
+        return max(origin, pinnedKeys.count)
     }
 
     nonisolated static func canMove(index: Int, direction: Int, orderedKeys: [String], pinnedKeys: Set<String>) -> Bool {
@@ -349,7 +352,9 @@ struct CatalogOrderView: View {
         let items = liveItems()
         if let (key, origin) = moveMode.cancel(currentOrder: items.map(\.key)) {
             let pinned = Set(items.filter(\.isPinnedToTop).map(\.key))
-            if moveDidStep { model.moveCatalog(key: key, toIndex: Self.cancelDestination(origin: origin, pinnedKeys: pinned)) }
+            if moveDidStep, let destination = Self.cancelDestination(key: key, origin: origin, pinnedKeys: pinned) {
+                model.moveCatalog(key: key, toIndex: destination)
+            }
             onMovingChange(false)
             focusRowSoon(key)
         }
