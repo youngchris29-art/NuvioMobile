@@ -426,7 +426,7 @@ object AddonRepository {
 
     /**
      * Cancels a refresh still running for [manifestUrl] (a stuck request: [refreshAddon] is a no-op
-     * while one is active) and starts a fresh, cache-bypassing one. The cancelled job's cleanup
+     * while one is registered and not completed) and starts a fresh, cache-bypassing one. The cancelled job's cleanup
      * only removes its own map entry, so the new job stays tracked.
      */
     fun restartRefresh(manifestUrl: String) {
@@ -451,7 +451,9 @@ object AddonRepository {
         // the job lock; the job is created LAZY and only started once it is registered.
         var refreshJob: Job? = null
         synchronized(refreshJobsLock) {
-            if (activeRefreshJobs[manifestUrl]?.isActive == true) return
+            // Review r8: `isCompleted`, not `isActive`: a LAZY job reads inactive between its
+            // registration and `start()`, and must already hold the URL then.
+            if (activeRefreshJobs[manifestUrl]?.isCompleted == false) return
             // Review r4: the generation bump and the refreshing mark are ONE update of the state
             // the publication below compares against (`AddonsUiState.refreshGenerations`).
             val generation = refreshIdCounter.updateAndGet { it + 1 }
