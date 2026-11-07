@@ -155,7 +155,7 @@ struct AddonsHubSplitView: View {
         .background { TabBarFocusLock(active: moveMode.isMoving).frame(width: 0, height: 0) }
         .onChange(of: model.addons.map(\.manifestUrl)) { _, urls in
             // The lifted add-on went away (sync, another device): end the mode.
-            if let url = moveMode.movingUrl, !urls.contains(url) { moveMode.commit() }
+            if let url = moveMode.movingUrl, !urls.contains(url) { endMoveBecauseRemoved() }
         }
         .onAppear { restoreSection(visible: visible) }
         .onChange(of: visible) { _, now in
@@ -597,6 +597,24 @@ struct AddonsHubSplitView: View {
             contentFocus = InstalledAddonsPane.rowKey(url)
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { suppressSidebarDefaultFocus = false }
+    }
+
+    /// Review A4-r7: the lifted add-on went away (sync, another device). End the mode with the
+    /// same cleanup as Select/Menu (sidebar default focus back, no pending step) and put focus on
+    /// a surviving row, else the Install row.
+    private func endMoveBecauseRemoved() {
+        moveMode.commit()
+        moveDidStep = false
+        suppressSidebarDefaultFocus = false
+        moveEndedAt = nil
+        Self.logFocus("move ended: lifted add-on removed")
+        DispatchQueue.main.async {
+            if let first = model.addons.first {
+                handOffContent(InstalledAddonsPane.rowKey(first.manifestUrl))
+            } else {
+                handOffSidebar(.install)
+            }
+        }
     }
 
     /// Menu while moving: back to the index the move started from.
