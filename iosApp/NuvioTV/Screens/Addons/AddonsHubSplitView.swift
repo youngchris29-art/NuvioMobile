@@ -322,12 +322,16 @@ struct AddonsHubSplitView: View {
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("addons_content_\(selected.rawValue)")
             .navigationDestination(for: HubAddonRoute.self) { route in
-                // v1's detail view as a pushed page until A5's `AddonDetailPane`; it reads the
-                // add-on live and keeps a focusable Refresh button in every state (BUG-47 rule).
+                // A5: the add-on's detail page on the row kit. It reads the add-on live and keeps
+                // a focusable row in every state (BUG-47 rule: Refresh/Retry is always there).
                 if let addon = model.addons.first(where: { $0.manifestUrl == route.manifestUrl }) {
-                    AddonDetailSheet(model: model, snapshot: addon, isReadOnly: model.isReadOnly, onRemove: {
-                        requestRemoval(addon, fromDetail: true)
-                    }, startsInConfigure: route.startsInConfigure)
+                    AddonDetailPane(
+                        model: model, settings: settings, snapshot: addon,
+                        startsInConfigure: route.startsInConfigure,
+                        onMove: moveFromDetail,
+                        onShowCatalogs: showCatalogsFromDetail,
+                        onRemove: { requestRemoval($0, fromDetail: true) }
+                    )
                     .accessibilityIdentifier("addons_detail_root")
                 } else {
                     // Removed elsewhere (sync) while open: nothing to show, go back.
@@ -552,6 +556,31 @@ struct AddonsHubSplitView: View {
         model.move(manifestUrl: addon.manifestUrl, by: delta)
         DispatchQueue.main.async { handOffContent(InstalledAddonsPane.rowKey(addon.manifestUrl)) }
     }
+
+    // MARK: - Detail page actions (A5)
+
+    /// The detail page's Move: pop back to Installed, then lift this add-on's row (A4 Move mode).
+    /// The lift waits for the pop to settle, so the stack's own focus return (onto the pushing
+    /// row) cannot land after Move mode's hand-off.
+    private func moveFromDetail(_ addon: ManagedAddon) {
+        contentPath.removeAll()
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.popSettle) {
+            guard selected == .installed, !moveMode.isMoving,
+                  let index = model.addons.firstIndex(where: { $0.manifestUrl == addon.manifestUrl }),
+                  model.addons.count > 1 else { return }
+            startMove(addon, index: index)
+        }
+    }
+
+    /// The detail page's "Catalogs from this add-on": the Catalogs section, focus on its sidebar
+    /// row (the interim v1 Catalogs host has no focus keys until A6 re-hosts it; Right enters it).
+    private func showCatalogsFromDetail() {
+        select(.catalogs)
+        DispatchQueue.main.async { handOffSidebar(.catalogs) }
+    }
+
+    /// How long a NavigationStack pop takes to hand focus back on the box (A5 device check).
+    static let popSettle: TimeInterval = 0.45
 
     // MARK: - Move mode (A4)
 

@@ -460,6 +460,13 @@ final class AddonsHubUITests: XCTestCase {
         return false
     }
 
+    /// A focused element whose label is `label` or starts with it and a comma (List cells carry
+    /// the row's label; toggles add their value). The label is compared, never printed.
+    private func labelHasFocus(_ app: XCUIApplication, _ label: String) -> Bool {
+        let focused = app.descendants(matching: .any).matching(NSPredicate(format: "hasFocus == true")).allElementsBoundByIndex
+        return focused.contains { $0.label == label || $0.label.hasPrefix(label + ",") }
+    }
+
     /// Focus-walks the open context menu to the item labelled `label` and presses Select on it.
     private func chooseMenuItem(_ app: XCUIApplication, _ label: String) -> Bool {
         // tvOS context-menu items are `Other` elements that never report focus to XCUITest (A3
@@ -557,9 +564,28 @@ final class AddonsHubUITests: XCTestCase {
         XCTAssertTrue(element(app, "addons_split_root").exists, "Menu while moving left the hub")
         say("cancelled move restored: \(rowTitles(app))")
 
-        XCTAssertTrue(openRowMenu(app, index: bIndex, title: "ZZ Hub B"), "the context menu never reopened on B's row; focused: \(focusDump(app))")
-        XCTAssertTrue(chooseMenuItem(app, "Move"), "the Move item was not chosen (second time)")
-        XCTAssertTrue(element(app, "addons_move_badge").waitForExistence(timeout: 3), "the Moving badge never appeared (second time)")
+        // A5: the committed move starts from B's detail page (its Move row pops back to
+        // Installed with B lifted).
+        XCTAssertTrue(waitUntil(timeout: 5) { self.rowHasFocus(app, index: bIndex, title: "ZZ Hub B") },
+                      "focus is not on B's row after the cancel; focused: \(focusDump(app))")
+        remote.press(.select); pause(1.5)
+        XCTAssertTrue(element(app, "addons_detail_root").waitForExistence(timeout: 5), "B's detail page was not pushed")
+        XCTAssertTrue(waitUntil(timeout: 5) { self.labelHasFocus(app, "Enabled") },
+                      "B's detail page did not open on Enabled; focused: \(focusDump(app))")
+        let header = element(app, "addons_detail_header")
+        XCTAssertTrue(header.exists && header.label.contains("in stream order"),
+                      "the header has no stream-order line; header: \(header.exists ? header.label : "<none>")")
+        var onMove = false
+        for _ in 0..<6 where !onMove {
+            remote.press(.down); pause(0.6)
+            onMove = labelHasFocus(app, "Move")
+        }
+        XCTAssertTrue(onMove, "never reached the detail page's Move row; focused: \(focusDump(app))")
+        remote.press(.select); pause(2.0)
+        XCTAssertFalse(element(app, "addons_detail_root").exists, "Move did not pop the detail page")
+        XCTAssertTrue(element(app, "addons_move_badge").waitForExistence(timeout: 3), "the detail page's Move did not lift B")
+        XCTAssertTrue(waitUntil(timeout: 5) { self.rowHasFocus(app, index: bIndex, title: "ZZ Hub B") },
+                      "focus is not on the lifted B row; focused: \(focusDump(app))")
         remote.press(.up); pause(0.8)
         remote.press(.select); pause(1.0)
         XCTAssertFalse(element(app, "addons_move_badge").exists, "Select did not end Move mode")

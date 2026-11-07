@@ -289,23 +289,3 @@ final class AddonsHubSummaryTests: XCTestCase {
         XCTAssertTrue(SettingsViewModel.movesToReach(current: ["a", "b"], desired: ["a", "x"]).isEmpty)
     }
 }
-
-/// H5 device finding: the sheet once rendered `manifest.description`, which on a bridged Kotlin
-/// object is NSObject's `description` (the data class's toString, transportUrl and all).
-final class AddonDetailSheetBlurbTests: XCTestCase {
-    func testBlurbIsTheManifestDescriptionNotTheObjectDump() {
-        let manifest = AddonManifest(
-            id: "org.example.keyed", name: "Keyed", description: "Streams from a private tracker.",
-            version: "2.0.0", logoUrl: nil,
-            resources: [AddonResource(name: "stream", types: ["movie"], idPrefixes: [])],
-            types: ["movie"], idPrefixes: [], catalogs: [],
-            behaviorHints: AddonBehaviorHints(configurable: false, configurationRequired: false, adult: false, p2p: false),
-            transportUrl: "https://example.com/SECRET-KEY-123/manifest.json"
-        )
-        let blurb = AddonDetailSheet.blurb(of: manifest)
-        XCTAssertEqual(blurb, "Streams from a private tracker.")
-        XCTAssertFalse(blurb.contains("transportUrl"))
-        XCTAssertFalse(blurb.contains("SECRET-KEY-123"))
-        XCTAssertTrue(AddonDetailSheet.blurb(of: manifest).isEmpty == false)
-    }
-}

@@ -24,6 +24,22 @@ final class AddonsSplitUITests: XCTestCase {
     private static let titles = ["installed": "Installed", "catalogs": "Catalogs", "debrid": "Debrid",
                                  "plugins": "Plugins", "install": "Install add-on", "refresh": "Refresh all"]
 
+    /// A focused element whose label is `label` or starts with it and a comma (List cells carry
+    /// the row's label, toggles add their value).
+    private func labelHasFocus(_ app: XCUIApplication, _ label: String) -> Bool {
+        let focused = app.descendants(matching: .any).matching(NSPredicate(format: "hasFocus == true")).allElementsBoundByIndex
+        return focused.contains { $0.label == label || $0.label.hasPrefix(label + ",") }
+    }
+
+    private func waitLabelFocus(_ app: XCUIApplication, _ label: String, timeout: TimeInterval = 3) -> Bool {
+        let end = Date().addingTimeInterval(timeout)
+        while Date() < end {
+            if labelHasFocus(app, label) { return true }
+            pause(0.2)
+        }
+        return labelHasFocus(app, label)
+    }
+
     /// A List row's focus sits on its CELL (no identifier), so match the focused cell's label too.
     private func sidebarHasFocus(_ app: XCUIApplication, _ section: String) -> Bool {
         if sidebar(app, section).exists && sidebar(app, section).hasFocus { return true }
@@ -70,15 +86,6 @@ final class AddonsSplitUITests: XCTestCase {
             if target.exists && target.hasFocus { return true }
             remote.press(direction)
             pause(0.4)
-        }
-        return target.exists && target.hasFocus
-    }
-
-    private func waitFocus(_ target: XCUIElement, timeout: TimeInterval = 3) -> Bool {
-        let end = Date().addingTimeInterval(timeout)
-        while Date() < end {
-            if target.exists && target.hasFocus { return true }
-            pause(0.2)
         }
         return target.exists && target.hasFocus
     }
@@ -246,8 +253,8 @@ final class AddonsSplitUITests: XCTestCase {
         XCTAssertTrue(detail.waitForExistence(timeout: 5), "the detail page was not pushed")
         pause(1.5)
         XCTAssertTrue(detail.exists, "the pushed detail page went away on its own")
-        let refresh = element(app, "addons_hub_detail_refresh")
-        XCTAssertTrue(waitFocus(refresh), "focus left the pushed page; focused: \(focusDump(app))")
+        // A5: the detail page opens on its Enabled row.
+        XCTAssertTrue(waitLabelFocus(app, "Enabled"), "the detail page did not open on Enabled; focused: \(focusDump(app))")
         XCTAssertFalse(sidebarHasFocus(app, "installed"), "focus fell onto the sidebar after the push")
         press(.menu, settle: 1.5)
         XCTAssertFalse(detail.exists, "Menu did not pop the detail page")

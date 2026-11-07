@@ -40,7 +40,7 @@ struct AddonDetailSheet: View {
                     // Kotlin's `description` bridges as `description_`; plain `.description` is
                     // NSObject's, i.e. the data class's toString with the keyed transportUrl in it
                     // (seen on the box 2026-10-26).
-                    let blurb = Self.blurb(of: manifest)
+                    let blurb = AddonDetailPane.blurb(of: manifest)
                     if !blurb.isEmpty {
                         Text(blurb).font(Theme.Font.body).lineLimit(6)
                     }
@@ -50,7 +50,7 @@ struct AddonDetailSheet: View {
                 } else {
                     Text("Loading…").font(Theme.Font.meta).foregroundStyle(Theme.Palette.textSecondary)
                 }
-                Text(Self.locationLine(addon.manifestUrl))
+                Text(AddonDetailPane.locationLine(addon.manifestUrl))
                     .font(Theme.Font.caption).foregroundStyle(Theme.Palette.textSecondary)
                     .accessibilityIdentifier("addons_hub_detail_location")
                 if !configureFirst {
@@ -72,25 +72,15 @@ struct AddonDetailSheet: View {
         .task(id: qrKey(addon)) {
             let key = qrKey(addon)
             guard !key.isEmpty, key != qrFor else { return }
-            qrImage = Self.makeQR(key)
+            qrImage = AddonDetailPane.makeQR(key)
             qrFor = key
         }
     }
 
-    /// The manifest's own description text (never the bridged object's `description`).
-    nonisolated static func blurb(of manifest: AddonManifest) -> String { manifest.description_ }
-
     /// The configure URL while the QR is wanted, else "" (nothing to build).
     private func qrKey(_ addon: ManagedAddon) -> String {
         showsConfigure && addon.manifest?.behaviorHints.configurable == true
-            ? Self.configureUrl(addon.manifestUrl) : ""
-    }
-
-    /// Review r1: the module count comes from a scale-1 render; the final scale is the largest
-    /// whole number that fits 320 pt (minimum 1), so every module lands on whole pixels.
-    private static func makeQR(_ url: String) -> UIImage? {
-        guard let raw = QRCode.image(for: url, scale: 1), let width = raw.cgImage?.width, width > 0 else { return nil }
-        return QRCode.image(for: url, scale: CGFloat(max(1, 320 / width)))
+            ? AddonDetailPane.configureUrl(addon.manifestUrl) : ""
     }
 
     private func versionLine(_ manifest: AddonManifest) -> String {
@@ -150,7 +140,7 @@ struct AddonDetailSheet: View {
 
     @ViewBuilder
     private func configureSection(_ addon: ManagedAddon) -> some View {
-        let url = Self.configureUrl(addon.manifestUrl)
+        let url = AddonDetailPane.configureUrl(addon.manifestUrl)
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             Text("Scan to configure this add-on on your phone.").font(Theme.Font.body)
             if qrFor == url, let image = qrImage {
@@ -166,52 +156,5 @@ struct AddonDetailSheet: View {
             Text(AddonsViewModel.host(of: url) + "/…/configure")
                 .font(Theme.Font.caption).foregroundStyle(Theme.Palette.textSecondary)
         }
-    }
-
-    /// Where the add-on lives, without its key. Debrid keys live in the PATH of most add-on URLs
-    /// (`/torbox=KEY/manifest.json`) as well as the query, so the path is never shown: the file
-    /// name appears only when it is exactly `manifest.json`, otherwise just "host/…". "(key
-    /// hidden)" is appended whenever anything was dropped (path segments, query or userinfo). A
-    /// `#fragment` is stripped first; a bare host renders as the host alone.
-    static func locationLine(_ manifestUrl: String) -> String {
-        let host = AddonsViewModel.host(of: manifestUrl)
-        let noFragment = manifestUrl.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
-            .first.map(String.init) ?? manifestUrl
-        let hasQuery = noFragment.contains("?")
-        let withoutQuery = noFragment.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
-            .first.map(String.init) ?? noFragment
-        var rest = Substring(withoutQuery)
-        if let sep = rest.range(of: "://"), sep.lowerBound < (rest.firstIndex(of: "/") ?? rest.endIndex) {
-            rest = rest[sep.upperBound...]
-        }
-        let authorityEnd = rest.firstIndex(of: "/") ?? rest.endIndex
-        let hasUserinfo = rest[..<authorityEnd].contains("@")
-        let segments = rest[authorityEnd...].split(separator: "/").map(String.init)
-        let hidden = hasQuery || hasUserinfo || segments.count > 1
-            || (segments.count == 1 && segments[0] != "manifest.json")
-        let base: String
-        if segments.isEmpty {
-            base = host
-        } else if segments.last == "manifest.json" {
-            base = segments.count == 1 ? "\(host)/manifest.json" : "\(host)/…/manifest.json"
-        } else {
-            base = "\(host)/…"
-        }
-        return hidden ? base + " " + String(localized: "(key hidden)") : base
-    }
-
-    /// The manifest URL with a trailing `/manifest.json` (before any query) swapped for
-    /// `/configure`, query kept. A URL without that suffix gets `/configure` appended to its path.
-    static func configureUrl(_ manifestUrl: String) -> String {
-        let split = manifestUrl.firstIndex(of: "?")
-        let path = split.map { String(manifestUrl[..<$0]) } ?? manifestUrl
-        let query = split.map { String(manifestUrl[$0...]) } ?? ""
-        let trimmed: String
-        if path.hasSuffix("/manifest.json") {
-            trimmed = String(path.dropLast("/manifest.json".count))
-        } else {
-            trimmed = path.hasSuffix("/") ? String(path.dropLast()) : path
-        }
-        return trimmed + "/configure" + query
     }
 }
