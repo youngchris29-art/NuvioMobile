@@ -263,6 +263,7 @@ struct AddonsHubSplitView: View {
                     confirmingSimklDisconnect: $confirmingSimklDisconnect,
                     debridDisconnectId: $debridDisconnectId,
                     onOpenAddon: { contentPath.append(HubAddonRoute(manifestUrl: $0.manifestUrl)) },
+                    onConfigureAddon: { contentPath.append(HubAddonRoute(manifestUrl: $0.manifestUrl, startsInConfigure: true)) },
                     onMove: move,
                     onRemove: { requestRemoval($0, fromDetail: false) },
                     onInstall: { showInstall = true },
@@ -286,9 +287,9 @@ struct AddonsHubSplitView: View {
                 // v1's detail view as a pushed page until A5's `AddonDetailPane`; it reads the
                 // add-on live and keeps a focusable Refresh button in every state (BUG-47 rule).
                 if let addon = model.addons.first(where: { $0.manifestUrl == route.manifestUrl }) {
-                    AddonDetailSheet(model: model, snapshot: addon, isReadOnly: model.isReadOnly) {
+                    AddonDetailSheet(model: model, snapshot: addon, isReadOnly: model.isReadOnly, onRemove: {
                         requestRemoval(addon, fromDetail: true)
-                    }
+                    }, startsInConfigure: route.startsInConfigure)
                     .accessibilityIdentifier("addons_detail_root")
                 } else {
                     // Removed elsewhere (sync) while open: nothing to show, go back.
@@ -595,6 +596,8 @@ struct HubToast: View {
 /// A pushed add-on detail page in the content column (D2).
 struct HubAddonRoute: Hashable {
     let manifestUrl: String
+    /// A3 review r2: opened from the row's Configure (the configure QR starts open).
+    var startsInConfigure = false
 }
 
 /// The right column's root for one section. Installed is A3's native pane; A5 (detail) and A6
@@ -613,6 +616,7 @@ private struct HubContentColumn: View {
     @Binding var confirmingSimklDisconnect: Bool
     @Binding var debridDisconnectId: String?
     let onOpenAddon: (ManagedAddon) -> Void
+    let onConfigureAddon: (ManagedAddon) -> Void
     let onMove: (ManagedAddon, Int, Int) -> Void
     let onRemove: (ManagedAddon) -> Void
     let onInstall: () -> Void
@@ -667,6 +671,7 @@ private struct HubContentColumn: View {
             model: model,
             focus: contentFocus,
             onOpen: onOpenAddon,
+            onConfigure: onConfigureAddon,
             onMove: onMove,
             onRemove: onRemove,
             onShowInstall: onShowInstall,

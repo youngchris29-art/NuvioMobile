@@ -11,8 +11,11 @@ struct AddonDetailSheet: View {
     let snapshot: ManagedAddon
     let isReadOnly: Bool
     let onRemove: () -> Void
+    /// A3 review r2: the Installed row's Configure opens this page with the configure QR showing.
+    var startsInConfigure = false
 
     @State private var showsConfigure = false
+    @State private var appliedStartsInConfigure = false
     /// The rendered QR and the URL it was built for; rebuilt only when that URL changes.
     @State private var qrImage: UIImage?
     @State private var qrFor: String?
@@ -52,6 +55,11 @@ struct AddonDetailSheet: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .accessibilityIdentifier("addons_hub_detail_sheet")
+        .onAppear {
+            guard !appliedStartsInConfigure else { return }
+            appliedStartsInConfigure = true
+            if startsInConfigure { showsConfigure = true }
+        }
         .task(id: qrKey(addon)) {
             let key = qrKey(addon)
             guard !key.isEmpty, key != qrFor else { return }

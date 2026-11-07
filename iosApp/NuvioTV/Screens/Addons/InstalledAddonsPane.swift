@@ -14,6 +14,8 @@ struct InstalledAddonsPane: View {
     @ObservedObject var model: AddonsViewModel
     let focus: FocusState<String?>.Binding
     let onOpen: (ManagedAddon) -> Void
+    /// A3 review r2: Configure pushes the detail page with the configure QR already showing.
+    let onConfigure: (ManagedAddon) -> Void
     let onMove: (ManagedAddon, Int, Int) -> Void
     let onRemove: (ManagedAddon) -> Void
     let onShowInstall: () -> Void
@@ -121,7 +123,7 @@ struct InstalledAddonsPane: View {
                     isReadOnly: model.isReadOnly,
                     status: AddonsViewModel.status(of: addon, stalled: model.stalledUrls),
                     model: model, focus: focus,
-                    onOpen: onOpen, onMove: onMove, onRemove: onRemove
+                    onOpen: onOpen, onConfigure: onConfigure, onMove: onMove, onRemove: onRemove
                 )
             }
         }
@@ -142,6 +144,7 @@ private struct AddonRow: View {
     let model: AddonsViewModel
     let focus: FocusState<String?>.Binding
     let onOpen: (ManagedAddon) -> Void
+    let onConfigure: (ManagedAddon) -> Void
     let onMove: (ManagedAddon, Int, Int) -> Void
     let onRemove: (ManagedAddon) -> Void
 
@@ -154,6 +157,9 @@ private struct AddonRow: View {
     }
 
     private var title: String { AddonsViewModel.displayTitle(addon) }
+    /// A3 review r2: the host (never the path or key) tells two installs with the same name apart,
+    /// on the row and in its accessibility value, as v1's card did.
+    private var host: String { AddonsViewModel.host(of: addon.manifestUrl) }
     private var statusText: String { InstalledAddonsPane.trailingText(status) }
 
     var body: some View {
@@ -172,7 +178,7 @@ private struct AddonRow: View {
             }
         }
         .accessibilityLabel(title)
-        .accessibilityValue(statusText)
+        .accessibilityValue("\(statusText), \(host)")
         .accessibilityIdentifier("addons_row_\(index)")
         .modifier(MoveActions(allowed: allowed) { delta in onMove(addon, index, delta) })
     }
@@ -211,11 +217,11 @@ private struct AddonRow: View {
         }
     }
 
-    /// "v2.4.1 · Streams · Subtitles", or "Loading…" until the manifest arrives.
+    /// "v2.4.1 · Streams · Subtitles · host", or "Loading… · host" until the manifest arrives.
     private var metaLine: String {
-        guard let manifest = addon.manifest else { return String(localized: "Loading…") }
+        guard let manifest = addon.manifest else { return String(localized: "Loading…") + " · " + host }
         let labels = AddonsViewModel.resourceLabels(of: manifest)
-        return (["v\(manifest.version)"] + labels).joined(separator: " · ")
+        return (["v\(manifest.version)"] + labels + [host]).joined(separator: " · ")
     }
 
     @ViewBuilder
@@ -234,7 +240,7 @@ private struct AddonRow: View {
         case .retry:
             Button("Retry") { model.retryRefresh(manifestUrl: addon.manifestUrl) }
         case .configure:
-            Button("Configure") { onOpen(addon) }
+            Button("Configure") { onConfigure(addon) }
         case .remove:
             Button("Remove", role: .destructive) { onRemove(addon) }
         }
