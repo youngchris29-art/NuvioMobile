@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
@@ -60,6 +61,12 @@ object AddonRepository {
     private var pulledFromServer = false
     private var currentProfileId: Int = 1
     private val activeRefreshJobs = mutableMapOf<String, Job>()
+    /**
+     * Add-ons hub v2 review r6: refresh generations are unique ids from one process-wide counter,
+     * never reused, so a job that outlived a reset (`clearLocalState`) can never match the id of a
+     * later refresh of the same URL.
+     */
+    private val refreshIdCounter = MutableStateFlow(0L)
     private val pushJobsByProfile = mutableMapOf<Int, Job>()
 
     // Observable mirror of the bootstrap guard so consumers that can outrun bootstrap (the player's
@@ -99,12 +106,15 @@ object AddonRepository {
         _uiState.update { current ->
             AddonsUiState(
                 refreshGenerations = current.refreshGenerations,
-                addons = storedUrls.map { manifestUrl ->
-                    existingByUrl[manifestUrl].toPendingAddon(
-                        manifestUrl = manifestUrl,
-                        enabled = enabledByUrl[manifestUrl],
-                    )
-                },
+                addons = keepingLiveRefresh(
+                    storedUrls.map { manifestUrl ->
+                        existingByUrl[manifestUrl].toPendingAddon(
+                            manifestUrl = manifestUrl,
+                            enabled = enabledByUrl[manifestUrl],
+                        )
+                    },
+                    current,
+                ),
                 isInitialized = true,
             )
         }
@@ -209,12 +219,15 @@ object AddonRepository {
                         _uiState.update { current ->
                             AddonsUiState(
                                 refreshGenerations = current.refreshGenerations,
-                                addons = localUrls.map { url ->
-                                    existingByUrl[url].toPendingAddon(
-                                        manifestUrl = url,
-                                        enabled = enabledByUrl[url],
-                                    )
-                                },
+                                addons = keepingLiveRefresh(
+                                    localUrls.map { url ->
+                                        existingByUrl[url].toPendingAddon(
+                                            manifestUrl = url,
+                                            enabled = enabledByUrl[url],
+                                        )
+                                    },
+                                    current,
+                                ),
                                 // This path completes bootstrap below, so the published state
                                 // says so too — a pull that wins the race with initialize() must not
                                 // leave watchers thinking bootstrap never happened.
@@ -241,14 +254,17 @@ object AddonRepository {
                 _uiState.update { current ->
                     AddonsUiState(
                         refreshGenerations = current.refreshGenerations,
-                        addons = urls.map { url ->
-                            val row = rowsByUrl[url]
-                            existingByUrl[url].toPendingAddon(
-                                manifestUrl = url,
-                                userSetName = row?.name?.takeIf { it.isNotBlank() },
-                                enabled = row?.enabled,
-                            )
-                        },
+                        addons = keepingLiveRefresh(
+                            urls.map { url ->
+                                val row = rowsByUrl[url]
+                                existingByUrl[url].toPendingAddon(
+                                    manifestUrl = url,
+                                    userSetName = row?.name?.takeIf { it.isNotBlank() },
+                                    enabled = row?.enabled,
+                                )
+                            },
+                            current,
+                        ),
                         // As above: the server's list IS a settled bootstrap for this profile.
                         isInitialized = true,
                     )
@@ -426,11 +442,10 @@ object AddonRepository {
 
         // Review r4: the generation bump and the refreshing mark are ONE update of the state the
         // publication below compares against (`AddonsUiState.refreshGenerations`).
-        var generation = 0L
+        val generation = refreshIdCounter.updateAndGet { it + 1 }
         _uiState.update { current ->
-            val bumped = bumpRefreshGeneration(current.refreshGenerations, manifestUrl)
-            generation = bumped.getValue(manifestUrl)
-            markedRefreshing(current, manifestUrl).copy(refreshGenerations = bumped)
+            markedRefreshing(current, manifestUrl)
+                .copy(refreshGenerations = withRefreshGeneration(current.refreshGenerations, manifestUrl, generation))
         }
         var refreshJob: Job? = null
         refreshJob = scope.launch {
@@ -684,9 +699,21 @@ internal fun shouldBlockUnhydratedAddonPush(authState: AuthState, pulledFromServ
 internal fun defaultAddonSeedingAllowed(authState: AuthState, serverPullSettled: Boolean): Boolean =
     authState !is AuthState.Authenticated || authState.isAnonymous || serverPullSettled
 
-/** [current] with [manifestUrl]'s refresh generation advanced by one (first refresh: 1). */
-internal fun bumpRefreshGeneration(current: Map<String, Long>, manifestUrl: String): Map<String, Long> =
-    current + (manifestUrl to ((current[manifestUrl] ?: 0L) + 1L))
+/** [current] with [generation] (a unique refresh id) as [manifestUrl]'s newest refresh. */
+internal fun withRefreshGeneration(current: Map<String, Long>, manifestUrl: String, generation: Long): Map<String, Long> =
+    current + (manifestUrl to generation)
+
+/**
+ * Add-ons hub v2 review r6: a same-profile rebuild of the list (`initialize`, a server pull) builds
+ * rows through `toPendingAddon`, which drops `isRefreshing` for an add-on that already has a
+ * manifest. A refresh job still running for it would then be invisible (no spinner, no stall
+ * ceiling, no retry). Keep the live flag from [current] on the rebuilt rows.
+ */
+internal fun keepingLiveRefresh(rebuilt: List<ManagedAddon>, current: AddonsUiState): List<ManagedAddon> {
+    val refreshing = current.addons.filter { it.isRefreshing }.mapTo(HashSet()) { it.manifestUrl }
+    if (refreshing.isEmpty()) return rebuilt
+    return rebuilt.map { if (it.manifestUrl in refreshing && !it.isRefreshing) it.copy(isRefreshing = true) else it }
+}
 
 /**
  * Whether [generation] is still the newest refresh of [manifestUrl]. Strict (review r5): every
