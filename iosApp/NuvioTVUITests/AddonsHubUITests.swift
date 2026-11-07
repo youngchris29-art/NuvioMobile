@@ -11,6 +11,13 @@ import XCTest
 final class AddonsHubUITests: XCTestCase {
     let remote = XCUIRemote.shared
 
+    /// Add-ons hub v2 (A2): the v1 hub page these legs drive (summary/action cards, the card list
+    /// root) is gone; `AddonsSplitUITests` covers the split shell, and A8 rewrites these six legs
+    /// onto the final panes.
+    override func setUpWithError() throws {
+        throw XCTSkip("Add-ons hub v2: v1 hub page replaced by the split view; A8 rewrites these legs.")
+    }
+
     private func pause(_ s: TimeInterval) { Thread.sleep(forTimeInterval: s) }
     private func element(_ app: XCUIApplication, _ id: String) -> XCUIElement { app.descendants(matching: .any)[id] }
     private func say(_ text: String) { print("[HubLeg] \(text)") }

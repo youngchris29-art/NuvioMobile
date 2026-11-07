@@ -1,11 +1,11 @@
 import SwiftUI
 import SharedCore
 
-/// Add-ons hub C, H2: the Sources hub. The body is `SourcesHubView` (summary cards, install and
-/// refresh actions, the installed add-on cards). This view keeps what must sit beside the
-/// NavigationStack: the stores the hub and its pushed panes read (all six, started and stopped on
-/// the stack the way `SettingsView` does, so a push never stops them), the pushed-pane path and
-/// the remove confirmation (raised by a card's trash control or the Detail sheet).
+/// The Add-ons tab. Add-ons hub v2 (A2): the body is `AddonsHubSplitView` (sections on the left,
+/// content on the right, each content column with its own NavigationStack). This view keeps what
+/// must outlive a section switch: the stores the hub and its panes read (started and stopped here,
+/// so a push inside the content column never stops them) and the remove confirmation (raised by
+/// a card's trash control or the Detail sheet).
 struct AddonsView: View {
     @StateObject private var model = AddonsViewModel()
     @StateObject private var settings = SettingsViewModel()
@@ -14,33 +14,26 @@ struct AddonsView: View {
     @StateObject private var badges = BadgeSettingsViewModel()
     @StateObject private var trakt = TraktViewModel()
     @StateObject private var simkl = SimklViewModel()
-    @State private var path: [HubRoute] = []
     /// Addon pending a remove confirmation (drives the alert below).
     @State private var addonPendingRemoval: ManagedAddon?
     /// The neighbours of the card whose removal was requested, so focus can follow the removal.
     /// Owned here so the alert's Cancel can clear it (a later sync removal must not toast or
     /// move focus).
-    @State private var removal: SourcesHubView.RemovalIntent?
+    @State private var removal: AddonsHubSplitView.RemovalIntent?
 
     var body: some View {
-        NavigationStack(path: $path) {
-            SourcesHubView(
-                model: model, settings: settings, debrid: debrid, plugins: plugins,
-                badges: badges, trakt: trakt, simkl: simkl,
-                path: $path, pendingRemoval: $addonPendingRemoval, removal: $removal
-            )
-                // FEAT-30 / H9: Menu summons the rail in Rail mode (a second Menu, with focus in the
-                // rail, exits as before). No modifier at all in tabs mode.
-                .railMenuReveal()
-                // BUG-214: the app background every other screen draws (`SettingsView` does the same
-                // on its root). `Theme.Palette.background` is what OLED True Black swaps to pure
-                // black; without it OLED never reached this screen.
-                .background(Theme.Palette.background.ignoresSafeArea())
-                // Sim look (H2 run 2): the stack's large title stays pinned and overlaps the card
-                // row once the page scrolls to the add-on cards, so the hub draws its own title
-                // inside the content, as the Settings panes do (`settings_pane_title`).
-        }
-        // On the stack, not the root view: pushing a pane must NOT stop the stores.
+        AddonsHubSplitView(
+            model: model, settings: settings, debrid: debrid, plugins: plugins,
+            badges: badges, trakt: trakt, simkl: simkl,
+            pendingRemoval: $addonPendingRemoval, removal: $removal
+        )
+            // FEAT-30 / H9 / D6: the rail's Menu reveal sits on the hub's SIDEBAR, not here: the
+            // content column's stack is nested inside this view, so a reveal here would catch Menu
+            // on a pushed page instead of letting the stack pop (A2 sim leg, Rail mode).
+            // BUG-214: the app background (`Theme.Palette.background` is what OLED True Black swaps
+            // to pure black).
+            .background(Theme.Palette.background.ignoresSafeArea())
+        // On the hub root: a push inside the content column must NOT stop the stores.
         .onAppear {
             model.start()
             settings.start()

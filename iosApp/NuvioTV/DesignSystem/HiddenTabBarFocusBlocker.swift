@@ -207,7 +207,16 @@ struct HiddenTabBarFocusBlocker: UIViewRepresentable {
             blockedBar = bar
             if bar.isUserInteractionEnabled {
                 bar.isUserInteractionEnabled = false
-                tabController.setNeedsFocusUpdate()
+                // Add-ons hub v2 A2 (A0 spike, Living Room, tvOS 27.3): a push inside a NESTED
+                // NavigationStack (the hub's content column) re-enables the bar, and an
+                // unconditional `setNeedsFocusUpdate()` here made the engine resolve the tab
+                // root's preferred focus — the sidebar's top row — 17 ms after the pushed page
+                // took focus. Kick focus only when it is actually inside the bar; with focus
+                // anywhere else, disabling interaction is all that is needed.
+                let focusedInBar = window.flatMap { UIFocusSystem.focusSystem(for: $0)?.focusedItem }
+                    .map { isInBlockedBar($0) } ?? false
+                NSLog("[NavRail] tab bar re-enabled; re-blocked (focus in bar=%d)", focusedInBar ? 1 : 0)
+                if focusedInBar { tabController.setNeedsFocusUpdate() }
             }
             HiddenTabBarFocusBlocker.isBlocking = true
             if !loggedSuccess {
