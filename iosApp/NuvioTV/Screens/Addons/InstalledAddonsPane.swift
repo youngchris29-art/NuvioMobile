@@ -203,6 +203,12 @@ private struct AddonRow: View {
                     .font(SettingsRowFont.subtitle)
                     .rowTextColor(secondary: true)
                     .lineLimit(1)
+                // A3 review r3: the host on its own line, never truncated away by long metadata.
+                Text(host)
+                    .font(SettingsRowFont.subtitle)
+                    .rowTextColor(secondary: true)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
         }
     }
@@ -217,11 +223,12 @@ private struct AddonRow: View {
         }
     }
 
-    /// "v2.4.1 · Streams · Subtitles · host", or "Loading… · host" until the manifest arrives.
+    /// "v2.4.1 · Streams · Subtitles", or "Loading…" until the manifest arrives (the host has its
+    /// own line).
     private var metaLine: String {
-        guard let manifest = addon.manifest else { return String(localized: "Loading…") + " · " + host }
+        guard let manifest = addon.manifest else { return String(localized: "Loading…") }
         let labels = AddonsViewModel.resourceLabels(of: manifest)
-        return (["v\(manifest.version)"] + labels + [host]).joined(separator: " · ")
+        return (["v\(manifest.version)"] + labels).joined(separator: " · ")
     }
 
     @ViewBuilder

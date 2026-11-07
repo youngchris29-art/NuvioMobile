@@ -26,9 +26,16 @@ struct AddonDetailSheet: View {
 
     var body: some View {
         let addon = addon
+        // A3 review r3: opened through Configure, the actions and the QR come first, so the code
+        // is on screen however long the description and catalog list are.
+        let configureFirst = startsInConfigure && showsConfigure && addon.manifest?.behaviorHints.configurable == true
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
                 Text(AddonsViewModel.displayTitle(addon)).font(Theme.Font.screenTitle)
+                if configureFirst {
+                    buttons(addon)
+                    configureSection(addon)
+                }
                 if let manifest = addon.manifest {
                     // Kotlin's `description` bridges as `description_`; plain `.description` is
                     // NSObject's, i.e. the data class's toString with the keyed transportUrl in it
@@ -46,9 +53,11 @@ struct AddonDetailSheet: View {
                 Text(Self.locationLine(addon.manifestUrl))
                     .font(Theme.Font.caption).foregroundStyle(Theme.Palette.textSecondary)
                     .accessibilityIdentifier("addons_hub_detail_location")
-                buttons(addon)
-                if showsConfigure, addon.manifest?.behaviorHints.configurable == true {
-                    configureSection(addon)
+                if !configureFirst {
+                    buttons(addon)
+                    if showsConfigure, addon.manifest?.behaviorHints.configurable == true {
+                        configureSection(addon)
+                    }
                 }
             }
             .padding(Theme.Spacing.screen)

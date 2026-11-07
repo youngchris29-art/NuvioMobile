@@ -280,7 +280,15 @@ struct AddonsHubSplitView: View {
             }
             // D6: Menu at the column root goes to the sidebar first. Pushed pages are stack
             // destinations, not descendants of this view, so Menu on them still pops.
-            .onExitCommand { handOffSidebar(selected) }
+            .onExitCommand {
+                // A3 device check: the Menu press that closes a row's context menu also reached
+                // this handler and threw focus onto the sidebar. Route to the sidebar only while
+                // focus is actually on a content control (nil while the menu holds it) or on an
+                // untagged pane (the interim hosts: contentFocus stays nil there too, so allow it
+                // when no Installed row is the remembered target).
+                Self.logFocus("menu at content root; focus=\(contentFocus.map(Self.kind(of:)) ?? "nil")")
+                if contentFocus != nil || selected != .installed { handOffSidebar(selected) }
+            }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("addons_content_\(selected.rawValue)")
             .navigationDestination(for: HubAddonRoute.self) { route in
