@@ -241,10 +241,12 @@ final class AddonsViewModel: ObservableObject {
         trackRefresh()
     }
 
-    /// Retries a stalled add-on: clears its stalled flag, then refreshes it again.
+    /// Retries a stalled add-on: clears its stalled flag, cancels the request still running for
+    /// it (a plain `refresh` is a no-op while the old job is active) and starts a fresh one.
     func retryRefresh(manifestUrl: String) {
         stalledUrls.remove(manifestUrl)
-        refresh(manifestUrl: manifestUrl)
+        AddonRepository.shared.restartRefresh(manifestUrl: manifestUrl)
+        trackRefresh()
     }
 
     /// The repository marks `isRefreshing` synchronously before it launches each fetch, so the

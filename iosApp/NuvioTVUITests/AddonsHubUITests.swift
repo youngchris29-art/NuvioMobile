@@ -1,22 +1,15 @@
 import XCTest
 
-/// Add-ons hub C (H2 seed of H5's `AddonsHubUITests`): the hub is up with its summary and action
-/// cards and the installed list on the FA87 fixture (Chris, which has add-ons), the first add-on
-/// card takes focus and its four controls are reachable by Right. Prints `[HubLeg]` lines and
-/// dwells 2 s per state so a screenshot from outside the runner can read each one.
+/// Add-ons hub legs on the v2 split view (two columns: a sidebar `List` of `addons_sidebar_<section>`
+/// rows, the selected section's pane `addons_content_<section>` on the right, root `addons_split_root`).
+/// Focus resting on a sidebar row selects its section; Right enters the content, Left or Menu at the
+/// content root returns to the selected row. Runs on the FA87 fixture (Chris), prints `[HubLeg]` lines,
+/// and keeps labels out of the logs (they can carry add-on hosts).
 ///
 /// Launch: `-home_layout classic -debug.rememberLastProfile NO -debug.trailerForceNoTrailer YES`;
-/// the Chris tile is the shared verified step. No Select on a card control (nothing is changed on
-/// the fixture: no toggle, no move, no remove, no install).
+/// the Chris tile is the shared verified step. The two v1-layout legs stay skipped (A8 rewrites them).
 final class AddonsHubUITests: XCTestCase {
     let remote = XCUIRemote.shared
-
-    /// Add-ons hub v2 (A2): the v1 hub page these legs drive (summary/action cards, the card list
-    /// root) is gone; `AddonsSplitUITests` covers the split shell, and A8 rewrites these six legs
-    /// onto the final panes.
-    override func setUpWithError() throws {
-        throw XCTSkip("Add-ons hub v2: v1 hub page replaced by the split view; A8 rewrites these legs.")
-    }
 
     private func pause(_ s: TimeInterval) { Thread.sleep(forTimeInterval: s) }
     private func element(_ app: XCUIApplication, _ id: String) -> XCUIElement { app.descendants(matching: .any)[id] }
@@ -53,6 +46,7 @@ final class AddonsHubUITests: XCTestCase {
     }
 
     func testHubCardsAndFirstAddonCard() throws {
+        throw XCTSkip("Add-ons hub v2: v1 page layout; AddonsSplitUITests covers the split shell, A8 rewrites this leg.")
         let app = XCUIApplication()
         app.launchArguments = ["-home_layout", "classic", "-debug.rememberLastProfile", "NO",
                                "-debug.trailerForceNoTrailer", "YES", "-detail_trailer_autoplay", "NO"]
@@ -109,8 +103,8 @@ final class AddonsHubUITests: XCTestCase {
         pause(2)
     }
 
-    /// H3: the Install action card opens the install sheet with the URL field focused, and Menu
-    /// closes the sheet with focus back on the Install card. No URL is typed; nothing installs.
+    /// H3: the Install section's row opens the install sheet with the URL field focused, and Menu
+    /// closes the sheet with focus back on that row. No URL is typed; nothing installs.
     func testInstallSheetOpensAndCancels() throws {
         let app = XCUIApplication()
         app.launchArguments = ["-home_layout", "classic", "-debug.rememberLastProfile", "NO",
@@ -121,20 +115,8 @@ final class AddonsHubUITests: XCTestCase {
         if chris.exists { DetailEntryRoute.selectChrisTile(self, app, timeout: 5) }
         pause(10)
 
-        openTab(app, named: "Add-ons")
-        XCTAssertTrue(element(app, "addons_hub_root").waitForExistence(timeout: 10), "addons_hub_root never appeared; focused: \(focusDump(app))")
-        let install = element(app, "addons_hub_action_install")
-        XCTAssertTrue(install.waitForExistence(timeout: 5), "addons_hub_action_install missing")
-
-        remote.press(.down); pause(0.8)
-        if !moveFocus(.down, until: install, max: 3) {
-            if !moveFocus(.left, until: install, max: 3) { _ = moveFocus(.right, until: install, max: 3) }
-        }
-        XCTAssertTrue(install.hasFocus, "the Install action card never took focus; focused: \(focusDump(app))")
-        say("install card focused")
-        pause(2)
-
-        remote.press(.select); pause(1.5)
+        openSplit(app)
+        openInstallSheet(app)
         let field = element(app, "addons_hub_install_field")
         XCTAssertTrue(field.waitForExistence(timeout: 5), "the install sheet did not open; focused: \(focusDump(app))")
         XCTAssertTrue(field.hasFocus, "the URL field does not hold focus; focused: \(focusDump(app))")
@@ -143,7 +125,7 @@ final class AddonsHubUITests: XCTestCase {
 
         remote.press(.menu); pause(1.5)
         XCTAssertFalse(element(app, "addons_hub_install_field").exists, "the sheet is still up after Menu")
-        XCTAssertTrue(install.exists && install.hasFocus, "focus did not return to the Install card; focused: \(focusDump(app))")
+        XCTAssertTrue(waitUntil(timeout: 3) { self.installRowHasFocus(app) }, "focus did not return to the Install add-on row; focused: \(focusDump(app))")
         say("sheet closed: \(focusDump(app))")
         pause(2)
     }
@@ -152,6 +134,7 @@ final class AddonsHubUITests: XCTestCase {
     /// Up (disabled on the first row) and Down are reachable by Right; Menu returns to the hub with the
     /// Catalogs card focused. Never Select on a control: nothing changes on the fixture.
     func testCatalogsPageOpensFromTheHub() throws {
+        throw XCTSkip("Add-ons hub v2: v1 page layout; AddonsSplitUITests covers the split shell, A8 rewrites this leg.")
         let app = XCUIApplication()
         app.launchArguments = ["-home_layout", "classic", "-debug.rememberLastProfile", "NO",
                                "-debug.trailerForceNoTrailer", "YES", "-detail_trailer_autoplay", "NO"]
@@ -308,31 +291,84 @@ final class AddonsHubUITests: XCTestCase {
         seed.terminate()
     }
 
-    private static let summaryIds = ["addons_hub_summary_addons", "addons_hub_summary_catalogs", "addons_hub_summary_debrid", "addons_hub_summary_plugins"]
+    // MARK: - Split-view navigation helpers (same shape as `AddonsSplitUITests`)
 
-    /// Down only while no summary card has focus (the page default can already sit on one).
-    private func reachSummaryRow(_ app: XCUIApplication) {
-        for _ in 0..<4 where !Self.summaryIds.contains(where: { element(app, $0).hasFocus }) {
-            remote.press(.down); pause(0.8)
+    private func sidebar(_ app: XCUIApplication, _ section: String) -> XCUIElement { element(app, "addons_sidebar_\(section)") }
+
+    private static let titles = ["installed": "Installed", "catalogs": "Catalogs", "debrid": "Debrid",
+                                 "plugins": "Plugins", "install": "Install add-on", "refresh": "Refresh all"]
+
+    /// A List row's focus sits on its CELL (no identifier), so match the focused cell's label too.
+    /// The label is compared, never printed.
+    private func sidebarHasFocus(_ app: XCUIApplication, _ section: String) -> Bool {
+        if sidebar(app, section).exists && sidebar(app, section).hasFocus { return true }
+        guard let title = Self.titles[section] else { return false }
+        let focused = app.descendants(matching: .any).matching(NSPredicate(format: "hasFocus == true")).allElementsBoundByIndex
+        return focused.contains { $0.label == title || $0.label.hasPrefix(title + ",") }
+    }
+
+    private func waitSidebarFocus(_ app: XCUIApplication, _ section: String, timeout: TimeInterval = 3) -> Bool {
+        waitUntil(timeout: timeout) { self.sidebarHasFocus(app, section) }
+    }
+
+    /// Moves focus within the sidebar to `section` (Down, then Up).
+    @discardableResult
+    private func moveSidebar(_ app: XCUIApplication, to section: String) -> Bool {
+        for direction in [XCUIRemote.Button.down, .up] {
+            for _ in 0..<7 {
+                if sidebarHasFocus(app, section) { return true }
+                remote.press(direction)
+                pause(0.45)
+            }
+        }
+        return sidebarHasFocus(app, section)
+    }
+
+    /// From the tab bar or wherever the tab entry left it: Down until a sidebar row has focus. The
+    /// tab bar's own Right would switch tabs, so never press Right before this.
+    private func enterSidebar(_ app: XCUIApplication) {
+        for _ in 0..<4 {
+            if Self.titles.keys.contains(where: { sidebarHasFocus(app, $0) }) { return }
+            remote.press(.down)
+            pause(0.8)
         }
     }
 
-    /// Summary row, one Down to the action row, then along it to `id`.
-    private func focusActionCard(_ app: XCUIApplication, _ id: String) {
-        let card = element(app, id)
-        XCTAssertTrue(card.waitForExistence(timeout: 5), "\(id) missing")
-        reachSummaryRow(app)
-        remote.press(.down); pause(0.8)
-        if !card.hasFocus, !moveFocus(.right, until: card, max: 3) { _ = moveFocus(.left, until: card, max: 4) }
-        XCTAssertTrue(card.hasFocus, "\(id) never took focus; focused: \(focusDump(app))")
+    /// Moves focus to `section`'s sidebar row and waits out the selection dwell.
+    private func selectSection(_ app: XCUIApplication, _ section: String) {
+        XCTAssertTrue(moveSidebar(app, to: section), "sidebar \(section) never took focus; focused: \(focusDump(app))")
+        pause(0.8)
+        XCTAssertTrue(element(app, "addons_content_\(section)").waitForExistence(timeout: 3), "content for \(section) never appeared")
     }
 
-    private func focusSummaryCard(_ app: XCUIApplication, _ id: String) {
-        let card = element(app, id)
-        XCTAssertTrue(card.waitForExistence(timeout: 5), "\(id) missing")
-        reachSummaryRow(app)
-        if !card.hasFocus, !moveFocus(.right, until: card, max: 3) { _ = moveFocus(.left, until: card, max: 4) }
-        XCTAssertTrue(card.hasFocus, "\(id) never took focus; focused: \(focusDump(app))")
+    /// Add-ons tab, split root up, focus on a sidebar row.
+    private func openSplit(_ app: XCUIApplication) {
+        openTab(app, named: "Add-ons")
+        XCTAssertTrue(element(app, "addons_split_root").waitForExistence(timeout: 10), "addons_split_root never appeared; focused: \(focusDump(app))")
+        enterSidebar(app)
+        XCTAssertTrue(Self.titles.keys.contains(where: { sidebarHasFocus(app, $0) }), "no sidebar row took focus; focused: \(focusDump(app))")
+    }
+
+    /// The Install content's single row: its own identifier, or a focused cell labelled "Install
+    /// add-on…" sitting right of the sidebar row (the sidebar row carries the same title).
+    private func installRowHasFocus(_ app: XCUIApplication) -> Bool {
+        let row = element(app, "addons_install_open")
+        if row.exists && row.hasFocus { return true }
+        let side = sidebar(app, "install")
+        guard side.exists else { return false }
+        let focused = app.descendants(matching: .any).matching(NSPredicate(format: "hasFocus == true")).allElementsBoundByIndex
+        return focused.contains { $0.label.hasPrefix("Install add-on") && $0.frame.midX > side.frame.maxX }
+    }
+
+    /// Install section, Right onto the row, Select: opens the install sheet.
+    private func openInstallSheet(_ app: XCUIApplication) {
+        selectSection(app, "install")
+        XCTAssertTrue(element(app, "addons_install_open").waitForExistence(timeout: 5), "addons_install_open missing")
+        remote.press(.right); pause(0.8)
+        XCTAssertTrue(waitUntil(timeout: 3) { self.installRowHasFocus(app) }, "Right never landed on the Install add-on row; focused: \(focusDump(app))")
+        say("install row focused")
+        pause(1)
+        remote.press(.select); pause(1.5)
     }
 
     /// Index of the installed card whose label contains `text`, nil when none is realized.
@@ -357,12 +393,14 @@ final class AddonsHubUITests: XCTestCase {
         }.joined(separator: " | ")
     }
 
-    /// From the action row (or anywhere above the list) down to the installed card at `index`.
+    /// Installed section, Right into the content (card 0 or the last-focused row), then Down to the card at `index`.
     private func focusCard(_ app: XCUIApplication, index: Int) {
         let card = element(app, "addons_hub_card_\(index)")
         XCTAssertTrue(card.waitForExistence(timeout: 10), "addons_hub_card_\(index) missing; cards: \(cardLabels(app))")
-        reachSummaryRow(app)
-        remote.press(.down); pause(0.8)
+        XCTAssertTrue(moveSidebar(app, to: "installed"), "Installed never took focus; focused: \(focusDump(app))")
+        pause(0.8)
+        remote.press(.right); pause(0.8)
+        XCTAssertFalse(sidebarHasFocus(app, "installed"), "Right did not leave the sidebar; focused: \(focusDump(app))")
         XCTAssertTrue(moveFocus(.down, until: card, max: 12), "card \(index) never took focus; focused: \(focusDump(app))")
     }
 
@@ -387,12 +425,10 @@ final class AddonsHubUITests: XCTestCase {
         // 2. Install B through the prefill seam.
         let app = launchHub(Self.hubCommon + ["-debug.installPrefillUrl", manifestB])
         pause(10)
-        openTab(app, named: "Add-ons")
-        XCTAssertTrue(element(app, "addons_hub_root").waitForExistence(timeout: 10), "addons_hub_root never appeared; focused: \(focusDump(app))")
+        openSplit(app)
         XCTAssertTrue(waitUntil(timeout: 20) { self.cardIndex(app, containing: "ZZ Hub A") != nil },
                       "A never showed on the hub (seed refused?); cards: \(cardLabels(app))")
-        focusActionCard(app, "addons_hub_action_install")
-        remote.press(.select); pause(1.5)
+        openInstallSheet(app)
 
         let field = element(app, "addons_hub_install_field")
         XCTAssertTrue(field.waitForExistence(timeout: 5), "the install sheet did not open; focused: \(focusDump(app))")
@@ -485,8 +521,7 @@ final class AddonsHubUITests: XCTestCase {
         // 5. Remove B from the hub (relaunch: a clean path to the tab bar).
         let hubApp = launchHub(Self.hubCommon)
         pause(10)
-        openTab(hubApp, named: "Add-ons")
-        XCTAssertTrue(element(hubApp, "addons_hub_root").waitForExistence(timeout: 10), "addons_hub_root never appeared; focused: \(focusDump(hubApp))")
+        openSplit(hubApp)
         var bNow = -1
         XCTAssertTrue(waitUntil(timeout: 20) {
             if let found = self.cardIndex(hubApp, containing: "ZZ Hub B") { bNow = found; return true }
@@ -533,11 +568,11 @@ final class AddonsHubUITests: XCTestCase {
         continueAfterFailure = false
         let app = launchHub(Self.hubCommon)
         pause(10)
-        openTab(app, named: "Add-ons")
-        XCTAssertTrue(element(app, "addons_hub_root").waitForExistence(timeout: 10), "addons_hub_root never appeared; focused: \(focusDump(app))")
-        focusSummaryCard(app, "addons_hub_summary_catalogs")
-        remote.press(.select); pause(1.5)
-        XCTAssertTrue(element(app, "addons_hub_catalogs_root").waitForExistence(timeout: 5), "the catalogs page did not open; focused: \(focusDump(app))")
+        openSplit(app)
+        selectSection(app, "catalogs")
+        XCTAssertTrue(element(app, "addons_hub_catalogs_root").waitForExistence(timeout: 5), "the catalogs pane did not show; focused: \(focusDump(app))")
+        remote.press(.right); pause(0.8)
+        XCTAssertFalse(sidebarHasFocus(app, "catalogs"), "Right did not enter the catalogs pane; focused: \(focusDump(app))")
         let row0 = element(app, "addons_hub_catalog_0")
         XCTAssertTrue(row0.waitForExistence(timeout: 10), "no addons_hub_catalog_0 on the fixture")
         XCTAssertTrue(moveFocus(.down, until: row0, max: 4), "catalog row 0 never took focus; focused: \(focusDump(app))")
@@ -573,8 +608,10 @@ final class AddonsHubUITests: XCTestCase {
         XCTAssertEqual(row0.label.contains("Disabled on Home"), before == "disabled", "row 0's label does not match the restored state")
         say("catalog 0 toggle restored: \(value())")
 
+        // No push any more: Menu at the content root goes to the selected sidebar row.
         remote.press(.menu); pause(1.5)
-        XCTAssertFalse(element(app, "addons_hub_catalogs_root").exists, "the catalogs page is still up after Menu")
+        XCTAssertTrue(waitSidebarFocus(app, "catalogs"), "Menu did not go to the Catalogs row; focused: \(focusDump(app))")
+        XCTAssertTrue(element(app, "addons_content_catalogs").exists, "the catalogs content went away after Menu")
     }
 
     // MARK: - H5 leg 3: Refresh all
@@ -586,25 +623,36 @@ final class AddonsHubUITests: XCTestCase {
 
         let app = launchHub(Self.hubCommon)
         pause(10)
-        openTab(app, named: "Add-ons")
-        XCTAssertTrue(element(app, "addons_hub_root").waitForExistence(timeout: 10), "addons_hub_root never appeared; focused: \(focusDump(app))")
+        openSplit(app)
         XCTAssertTrue(waitUntil(timeout: 20) { self.cardIndex(app, containing: "ZZ Hub A") != nil },
                       "A never showed on the hub (seed refused?); cards: \(cardLabels(app))")
-        let refresh = element(app, "addons_hub_action_refresh")
-        XCTAssertTrue(refresh.waitForExistence(timeout: 5), "addons_hub_action_refresh missing")
-        say("refresh card before: stamped=\(refresh.label.contains("Updated")) neverRefreshed=\(refresh.label.contains("Not refreshed yet"))")
-        // The stamp is in-memory and only `refreshAll()` writes it, so a fresh launch always
-        // starts unstamped; the Select below is then the only way to "Updated".
-        XCTAssertTrue(refresh.label.contains("Not refreshed yet"), "the Refresh card is already stamped on a fresh launch; label: \(refresh.label)")
-        focusActionCard(app, "addons_hub_action_refresh")
+        let refresh = sidebar(app, "refresh")
+        XCTAssertTrue(refresh.waitForExistence(timeout: 5), "addons_sidebar_refresh missing")
+        func stamp() -> String { (refresh.value as? String) ?? "" }
+        // The stamp persists per profile across relaunches, so it may already read "Updated ...":
+        // the leg asserts it CHANGES to an "Updated" value after the refresh finishes.
+        let before = stamp()
+        say("refresh row before: updated=\(before.hasPrefix("Updated")) neverRefreshed=\(before.contains("Not refreshed yet"))")
+        // From Install add-on (selected) one Down: walking there from Installed passes through
+        // Install add-on slowly enough for the selection dwell to pick it.
+        selectSection(app, "install")
+        XCTAssertTrue(moveSidebar(app, to: "refresh"), "the Refresh all row never took focus; focused: \(focusDump(app))")
+        pause(0.8)
+        XCTAssertTrue(element(app, "addons_content_install").exists, "focusing Refresh all replaced the content")
         remote.press(.select)
 
         let toast = element(app, "addons_hub_toast")
-        XCTAssertTrue(waitUntil(timeout: 15) { toast.exists && (toast.label.contains("Refreshing") || toast.label.contains("Refreshed")) },
-                      "no Refreshing/Refreshed toast; toast: \(toast.exists ? toast.label : "<none>")")
-        XCTAssertTrue(waitUntil(timeout: 20) { refresh.exists && refresh.label.contains("Updated") && !refresh.label.contains("Not refreshed yet") },
-                      "the Refresh card never showed Updated; label: \(refresh.exists ? refresh.label : "<gone>")")
-        say("refresh card after: stamped")
+        var sawRefreshing = false
+        XCTAssertTrue(waitUntil(timeout: 15) {
+            if stamp().contains("Refreshing") { sawRefreshing = true }
+            return toast.exists && (toast.label.contains("Refreshing") || toast.label.contains("Refreshed"))
+        }, "no Refreshing/Refreshed toast; toast: \(toast.exists ? toast.label : "<none>")")
+        XCTAssertTrue(waitUntil(timeout: 20) {
+            let now = stamp()
+            if now.contains("Refreshing") { sawRefreshing = true }
+            return now.hasPrefix("Updated") && (now != before || sawRefreshing)
+        }, "the Refresh all row never changed to an Updated stamp; before: \(before); now: \(stamp())")
+        say("refresh row after: stamped (spinner seen: \(sawRefreshing))")
         pause(2)
     }
 }

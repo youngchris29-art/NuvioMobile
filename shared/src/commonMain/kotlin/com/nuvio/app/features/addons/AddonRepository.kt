@@ -383,6 +383,16 @@ object AddonRepository {
         }
     }
 
+    /**
+     * Cancels a refresh still running for [manifestUrl] (a stuck request: [refreshAddon] is a no-op
+     * while one is active) and starts a fresh, cache-bypassing one. The cancelled job's cleanup
+     * only removes its own map entry, so the new job stays tracked.
+     */
+    fun restartRefresh(manifestUrl: String) {
+        activeRefreshJobs.remove(manifestUrl)?.cancel()
+        refreshAddon(manifestUrl = manifestUrl, forceRefresh = true)
+    }
+
     fun refreshAll() {
         _uiState.value.addons.filter { it.enabled }.distinctBy { it.manifestUrl }.forEach { addon ->
             refreshAddon(

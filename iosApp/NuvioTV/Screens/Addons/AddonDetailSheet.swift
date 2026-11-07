@@ -99,7 +99,12 @@ struct AddonDetailSheet: View {
     private func buttons(_ addon: ManagedAddon) -> some View {
         HStack(spacing: Theme.Spacing.md) {
             Button {
-                model.refresh(manifestUrl: addon.manifestUrl)
+                // A1/A2 review r1: on a stalled refresh, Refresh restarts the stuck request.
+                if model.stalledUrls.contains(addon.manifestUrl) {
+                    model.retryRefresh(manifestUrl: addon.manifestUrl)
+                } else {
+                    model.refresh(manifestUrl: addon.manifestUrl)
+                }
             } label: {
                 Label("Refresh", systemImage: "arrow.clockwise").padding(.horizontal, Theme.Spacing.sm)
             }

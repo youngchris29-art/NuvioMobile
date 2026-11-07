@@ -16,6 +16,9 @@ struct AddonCardView: View {
     let onMoveUp: () -> Void
     let onMoveDown: () -> Void
     let onRemove: () -> Void
+    /// Add-ons hub v2 (A1/A2 review r1): `AddonsViewModel.stalledUrls`, so a refresh past the
+    /// ceiling reads "Still refreshing…".
+    var stalledUrls: Set<String> = []
 
     var body: some View {
         HStack(spacing: Theme.Spacing.lg) {
@@ -56,7 +59,7 @@ struct AddonCardView: View {
                     }
                 }
                 Spacer(minLength: Theme.Spacing.md)
-                AddonStatusPill(status: AddonsViewModel.status(of: addon))
+                AddonStatusPill(status: AddonsViewModel.status(of: addon, stalled: stalledUrls))
                     .accessibilityIdentifier("addons_hub_status_\(index)")
             }
             .padding(Theme.Spacing.md)

@@ -61,6 +61,11 @@ struct AddonsHubSplitView: View {
     /// (`card:<url>`, `toggle:<url>`, … for the Installed cards).
     @FocusState private var contentFocus: String?
     @State private var lastContentFocus: [HubSection: String] = [:]
+    /// A focus write this view made on purpose (after a move, an install, a removal, a Select on
+    /// a sidebar row): the landing corrections must let it through, not treat it as a geometric
+    /// entry (review r1).
+    @State private var deliberateContent: String?
+    @State private var deliberateSidebar: HubSection?
     @State private var dwell: Task<Void, Never>?
 
     // Sheets, toasts and install/removal bookkeeping, carried over from v1's `SourcesHubView`
@@ -179,7 +184,7 @@ struct AddonsHubSplitView: View {
                 .focused($sidebarFocus, equals: section)
                 .listRowBackground(selectedMarker(section))
                 .accessibilityLabel(Text(section.title))
-                .accessibilityValue(Text(section.trailingValue(summary: summary) ?? ""))
+                .accessibilityValue(Text(sidebarAccessibilityValue(section, summary: summary)))
                 .accessibilityAddTraits(section == selected ? .isSelected : [])
                 .accessibilityIdentifier("addons_sidebar_\(section.rawValue)")
             }
@@ -214,6 +219,13 @@ struct AddonsHubSplitView: View {
         }
     }
 
+    /// The row's value for VoiceOver and the legs; the refresh row reads its live state.
+    private func sidebarAccessibilityValue(_ section: HubSection, summary: AddonsViewModel.HubSummary) -> String {
+        guard section == .refresh else { return section.trailingValue(summary: summary) ?? "" }
+        if model.isRefreshingAny { return String(localized: "Refreshing…") }
+        return refreshStamp ?? String(localized: "Not refreshed yet")
+    }
+
     private var refreshStamp: String? {
         model.lastRefreshedAt.map { String(localized: "Updated \($0.formatted(.relative(presentation: .named)))") }
     }
@@ -234,22 +246,29 @@ struct AddonsHubSplitView: View {
 
     private var contentColumn: some View {
         NavigationStack(path: $contentPath) {
-            HubContentColumn(
-                section: selected,
-                model: model, settings: settings, debrid: debrid, plugins: plugins, badges: badges,
-                trakt: trakt, simkl: simkl,
-                contentFocus: $contentFocus,
-                confirmingTraktDisconnect: $confirmingTraktDisconnect,
-                confirmingSimklDisconnect: $confirmingSimklDisconnect,
-                debridDisconnectId: $debridDisconnectId,
-                onOpenAddon: { contentPath.append(HubAddonRoute(manifestUrl: $0.manifestUrl)) },
-                onMove: move,
-                onRemove: { requestRemoval($0, fromDetail: false) },
-                onInstall: { showInstall = true }
-            )
+            // A container stack, so the column's identifier never overwrites the pane's own root
+            // identifier (`addons_hub_catalogs_root` was lost, A2 leg).
+            VStack(spacing: 0) {
+                HubContentColumn(
+                    section: selected,
+                    model: model, settings: settings, debrid: debrid, plugins: plugins, badges: badges,
+                    trakt: trakt, simkl: simkl,
+                    contentFocus: $contentFocus,
+                    confirmingTraktDisconnect: $confirmingTraktDisconnect,
+                    confirmingSimklDisconnect: $confirmingSimklDisconnect,
+                    debridDisconnectId: $debridDisconnectId,
+                    onOpenAddon: { contentPath.append(HubAddonRoute(manifestUrl: $0.manifestUrl)) },
+                    onMove: move,
+                    onRemove: { requestRemoval($0, fromDetail: false) },
+                    onInstall: { showInstall = true }
+                )
+                // A second child: a one-child stack forwarded its identifier to the pane's
+                // ScrollView (A2 probe), so the column needs to be a real container.
+                Color.clear.frame(height: 0).accessibilityHidden(true)
+            }
             // D6: Menu at the column root goes to the sidebar first. Pushed pages are stack
             // destinations, not descendants of this view, so Menu on them still pops.
-            .onExitCommand { sidebarFocus = selected }
+            .onExitCommand { handOffSidebar(selected) }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("addons_content_\(selected.rawValue)")
             .navigationDestination(for: HubAddonRoute.self) { route in
@@ -325,8 +344,10 @@ struct AddonsHubSplitView: View {
             model.refreshAll()
         default:
             select(section)
+            // Panes that take part in focus memory get focus handed over; the interim Catalogs,
+            // Debrid and Plugins hosts join when A6 moves them onto the kit (Right enters them).
             if let key = contentLandingTarget(for: section) {
-                DispatchQueue.main.async { contentFocus = key }
+                DispatchQueue.main.async { handOffContent(key) }
             }
         }
     }
@@ -336,6 +357,11 @@ struct AddonsHubSplitView: View {
             // Focus left the sidebar: a pending selection must not fire after the fact.
             dwell?.cancel()
             dwell = nil
+            return
+        }
+        if new == deliberateSidebar {
+            deliberateSidebar = nil
+            if !new.isAction, new != selected { select(new) }
             return
         }
         if old == nil, new != selected {
@@ -359,12 +385,30 @@ struct AddonsHubSplitView: View {
 
     private func contentFocusChanged(from old: String?, to new: String?) {
         guard let new else { return }
+        if new == deliberateContent {
+            deliberateContent = nil
+            lastContentFocus[selected] = new
+            return
+        }
         if old == nil, let target = contentLandingTarget(for: selected), target != new {
             // Entering from outside (the sidebar, the tab bar): land on the remembered row.
             contentFocus = target
             return
         }
         lastContentFocus[selected] = new
+    }
+
+    /// A no-op write (focus already there) fires no change, so it must not leave a stale flag.
+    private func handOffContent(_ key: String) {
+        guard contentFocus != key else { return }
+        deliberateContent = key
+        contentFocus = key
+    }
+
+    private func handOffSidebar(_ section: HubSection) {
+        guard sidebarFocus != section else { return }
+        deliberateSidebar = section
+        sidebarFocus = section
     }
 
     /// Where focus should land when it enters `section`'s content: the row last focused there if
@@ -377,6 +421,7 @@ struct AddonsHubSplitView: View {
 
     /// Every focus key the pane for `section` can hold (Installed: each card's controls).
     private func contentKeys(for section: HubSection) -> Set<String> {
+        if section == .install { return [Self.installOpenKey] }
         guard section == .installed else { return [] }
         var keys = Set<String>()
         for addon in model.addons {
@@ -385,10 +430,16 @@ struct AddonsHubSplitView: View {
         return keys
     }
 
-    /// The first row of a taking-part pane (Installed: the first card), else nil.
+    /// The Install pane's one row.
+    nonisolated static let installOpenKey = "install:open"
+
+    /// The first row of a taking-part pane (Installed: the first card; Install: its row), else nil.
     nonisolated static func firstContentKey(section: HubSection, addons: [ManagedAddon]) -> String? {
-        guard section == .installed, let first = addons.first else { return nil }
-        return "card:" + first.manifestUrl
+        switch section {
+        case .installed: return addons.first.map { "card:" + $0.manifestUrl }
+        case .install: return installOpenKey
+        default: return nil
+        }
     }
 
     // MARK: - Reorder, removal and install (v1 logic, keyed on `contentFocus`)
@@ -405,7 +456,7 @@ struct AddonsHubSplitView: View {
             let newIndex = list.firstIndex { $0.manifestUrl == addon.manifestUrl } ?? (index + delta)
             let atEnd = delta < 0 ? newIndex <= 0 : newIndex >= list.count - 1
             let key = atEnd ? "card" : (delta < 0 ? "up" : "down")
-            contentFocus = "\(key):\(addon.manifestUrl)"
+            handOffContent("\(key):\(addon.manifestUrl)")
         }
     }
 
@@ -433,9 +484,9 @@ struct AddonsHubSplitView: View {
         let target = [intent.nextUrl, intent.previousUrl].compactMap { $0 }.first(where: urls.contains)
         DispatchQueue.main.async {
             if let target {
-                contentFocus = "card:" + target
+                handOffContent("card:" + target)
             } else {
-                sidebarFocus = .install
+                handOffSidebar(.install)
             }
         }
     }
@@ -454,9 +505,9 @@ struct AddonsHubSplitView: View {
                 model.addons.first { AddonManifestURL.isSameManifest($0.manifestUrl, url) }
             }
             if let card = installed ?? model.addons.last {
-                contentFocus = "card:" + card.manifestUrl
+                handOffContent("card:" + card.manifestUrl)
             } else {
-                sidebarFocus = .install
+                handOffSidebar(.install)
             }
         }
     }
@@ -540,6 +591,7 @@ private struct HubContentColumn: View {
                     systemImage: "plus.circle.fill",
                     action: onInstall
                 )
+                .focused(contentFocus, equals: AddonsHubSplitView.installOpenKey)
                 .accessibilityIdentifier("addons_install_open")
             }
         case .refresh, .phone:
@@ -581,7 +633,8 @@ private struct HubContentColumn: View {
                         onToggle: { model.setEnabled(addon, !addon.enabled) },
                         onMoveUp: { onMove(addon, index, -1) },
                         onMoveDown: { onMove(addon, index, 1) },
-                        onRemove: { onRemove(addon) }
+                        onRemove: { onRemove(addon) },
+                        stalledUrls: model.stalledUrls
                     )
                 }
             }
