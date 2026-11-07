@@ -216,7 +216,11 @@ struct AddonsHubSplitView: View {
                     activate(section)
                 } label: {
                     SettingsRowChrome {
-                        SettingsRowLabel(title: section.title, systemImage: section.systemImage)
+                        if section == .refresh {
+                            refreshRowLabel(section)
+                        } else {
+                            SettingsRowLabel(title: section.title, systemImage: section.systemImage)
+                        }
                     } trailing: {
                         sidebarTrailing(section, summary: summary)
                     }
@@ -241,18 +245,37 @@ struct AddonsHubSplitView: View {
         .background { HubSidebarSurface() }
     }
 
+    /// A7 device check (German): "Alle aktualisieren" and "Noch nicht aktualisiert" do not fit
+    /// side by side in the 560 pt sidebar (the title hyphenated, the stamp truncated). The stamp
+    /// stays trailing when it fits (English) and drops under the title when it does not. While
+    /// refreshing there is no stamp, only the trailing spinner.
+    @ViewBuilder
+    private func refreshRowLabel(_ section: HubSection) -> some View {
+        if model.isRefreshingAny {
+            SettingsRowLabel(title: section.title, systemImage: section.systemImage)
+        } else {
+            // The named relative stamp does not tick by itself (v1 note): a 30 s timeline.
+            TimelineView(.periodic(from: .now, by: 30)) { _ in
+                let stamp = model.lastRefreshedAt != nil ? refreshStamp : String(localized: "Not refreshed yet")
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: Theme.Spacing.md) {
+                        SettingsRowLabel(title: section.title, systemImage: section.systemImage)
+                            .fixedSize()
+                        Spacer(minLength: Theme.Spacing.md)
+                        SettingsTrailingValue(value: stamp, showsChevron: false)
+                            .fixedSize()
+                    }
+                    SettingsRowLabel(title: section.title, subtitle: stamp, systemImage: section.systemImage)
+                }
+            }
+        }
+    }
+
     @ViewBuilder
     private func sidebarTrailing(_ section: HubSection, summary: AddonsViewModel.HubSummary) -> some View {
         if section == .refresh {
             if model.isRefreshingAny {
                 ProgressView().controlSize(.small)
-            } else if model.lastRefreshedAt != nil {
-                // The named relative stamp does not tick by itself (v1 note): a 30 s timeline.
-                TimelineView(.periodic(from: .now, by: 30)) { _ in
-                    SettingsTrailingValue(value: refreshStamp, showsChevron: false)
-                }
-            } else {
-                SettingsTrailingValue(value: String(localized: "Not refreshed yet"), showsChevron: false)
             }
         } else {
             SettingsTrailingValue(value: section.trailingValue(summary: summary), showsChevron: false)
