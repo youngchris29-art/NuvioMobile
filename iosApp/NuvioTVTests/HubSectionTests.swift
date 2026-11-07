@@ -183,4 +183,15 @@ final class HubSectionTests: XCTestCase {
         XCTAssertNil(AddonsViewModel.loadRefreshStamp(defaults: defaults, profileId: 2, profileIdentity: "new-profile"))
         XCTAssertNotNil(AddonsViewModel.loadRefreshStamp(defaults: defaults, profileId: 2, profileIdentity: "old-profile"))
     }
+
+    /// Review r11: a profile without a stable id (guest, or applied locally before a pull) never
+    /// persists or reads a stamp, so a reused guest slot cannot inherit one.
+    func testAProfileWithoutAStableIdNeverPersistsAStamp() {
+        let suite = "hubv2-tests-guest-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        AddonsViewModel.saveRefreshStamp(Date(timeIntervalSince1970: 2_000_000), defaults: defaults, profileId: 4, profileIdentity: "")
+        XCTAssertNil(defaults.object(forKey: AddonsViewModel.refreshStampKey(profileId: 4)))
+        XCTAssertNil(AddonsViewModel.loadRefreshStamp(defaults: defaults, profileId: 4, profileIdentity: ""))
+    }
 }

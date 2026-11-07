@@ -428,8 +428,7 @@ object AddonRepository {
      * only removes its own map entry, so the new job stays tracked.
      */
     fun restartRefresh(manifestUrl: String) {
-        synchronized(refreshJobsLock) { activeRefreshJobs.remove(manifestUrl) }?.cancel()
-        refreshAddon(manifestUrl = manifestUrl, forceRefresh = true)
+        startRefresh(manifestUrl = manifestUrl, forceRefresh = true, replaceExisting = true)
     }
 
     fun refreshAll() {
@@ -445,13 +444,24 @@ object AddonRepository {
         manifestUrl: String,
         forceRefresh: Boolean = false,
     ) {
-        // Review r7: the active-job check, the generation bump and the registration happen under
-        // the job lock; the job is created LAZY and only started once it is registered.
-        var refreshJob: Job? = null
+        startRefresh(manifestUrl = manifestUrl, forceRefresh = forceRefresh, replaceExisting = false)
+    }
+
+    /**
+     * Review r7/r11: the active-job check (or, for [replaceExisting], taking the old job out), the
+     * generation bump and the new job's registration are ONE step under the job lock, so a stuck
+     * job that is still parsing when a retry arrives is superseded before it can publish. The job
+     * is created LAZY; the old one is cancelled and the new one started after the lock.
+     */
+    private fun startRefresh(manifestUrl: String, forceRefresh: Boolean, replaceExisting: Boolean) {
+        var started: Job? = null
+        var replaced: Job? = null
         synchronized(refreshJobsLock) {
+            val existing = activeRefreshJobs[manifestUrl]
             // Review r8: `isCompleted`, not `isActive`: a LAZY job reads inactive between its
             // registration and `start()`, and must already hold the URL then.
-            if (activeRefreshJobs[manifestUrl]?.isCompleted == false) return
+            if (existing?.isCompleted == false && !replaceExisting) return
+            replaced = existing
             // Review r4: the generation bump and the refreshing mark are ONE update of the state
             // the publication below compares against (`AddonsUiState.refreshGenerations`).
             val generation = refreshIdCounter.updateAndGet { it + 1 }
@@ -461,9 +471,10 @@ object AddonRepository {
             }
             val job = launchRefresh(manifestUrl, forceRefresh, generation)
             activeRefreshJobs[manifestUrl] = job
-            refreshJob = job
+            started = job
         }
-        refreshJob?.start()
+        replaced?.cancel()
+        started?.start()
     }
 
     /** The refresh job itself (LAZY: [refreshAddon] starts it after registering it). */

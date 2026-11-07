@@ -119,14 +119,19 @@ final class AddonsViewModel: ObservableObject {
     /// on another device, so the stamp carries the profile's stable `id` and is ignored on a
     /// mismatch). Stored as `["at": seconds since 1970, "profile": id]`.
     nonisolated static func loadRefreshStamp(defaults: UserDefaults, profileId: Int32, profileIdentity: String) -> Date? {
-        guard let stored = defaults.dictionary(forKey: refreshStampKey(profileId: profileId)),
+        // Review r11: an empty id (guest and locally applied profiles) identifies nobody, so a
+        // stamp is never trusted for it.
+        guard !profileIdentity.isEmpty,
+              let stored = defaults.dictionary(forKey: refreshStampKey(profileId: profileId)),
               let seconds = stored["at"] as? Double,
               (stored["profile"] as? String) == profileIdentity else { return nil }
         return Date(timeIntervalSince1970: seconds)
     }
 
     /// Stores `date` as the refresh stamp for slot `profileId`, tagged with the profile's `id`.
+    /// Without a stable id (empty) nothing is persisted: the stamp then lives for the session only.
     nonisolated static func saveRefreshStamp(_ date: Date, defaults: UserDefaults, profileId: Int32, profileIdentity: String) {
+        guard !profileIdentity.isEmpty else { return }
         defaults.set(["at": date.timeIntervalSince1970, "profile": profileIdentity],
                      forKey: refreshStampKey(profileId: profileId))
     }
