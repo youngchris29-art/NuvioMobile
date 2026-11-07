@@ -43,9 +43,9 @@ final class AddonDetailPaneTests: XCTestCase {
         )
     }
 
-    private func catalog(_ name: String?, enabled: Bool, collection: Bool = false) -> HomeCatalogSettingsItem {
+    private func catalog(_ key: String, enabled: Bool, collection: Bool = false, addonName: String = "Mine") -> HomeCatalogSettingsItem {
         HomeCatalogSettingsItem(
-            key: UUID().uuidString, defaultTitle: "t", addonName: name ?? "", customTitle: "", enabled: enabled,
+            key: key, defaultTitle: "t", addonName: addonName, customTitle: "", enabled: enabled,
             heroSourceEnabled: true, order: 0, isCollection: collection, collectionId: nil, isPinnedToTop: false
         )
     }
@@ -99,18 +99,35 @@ final class AddonDetailPaneTests: XCTestCase {
 
     // MARK: catalogs
 
-    func testCatalogCountsMatchByNameAndSkipCollections() {
+    func testCatalogKeysFollowTheSharedKeyFormat() {
+        let withCatalogs = AddonManifest(
+            id: "org.mine", name: "Mine", description: "", version: "1.0.0", logoUrl: nil,
+            resources: [AddonResource(name: "catalog", types: ["movie"], idPrefixes: [])],
+            types: ["movie"], idPrefixes: [],
+            catalogs: [AddonCatalog(type: "movie", id: "top", name: "Top", extra: []),
+                       AddonCatalog(type: "series", id: "top", name: "Top", extra: [])],
+            behaviorHints: AddonBehaviorHints(configurable: false, configurationRequired: false, adult: false, p2p: false),
+            transportUrl: "https://mine.example.com"
+        )
+        XCTAssertEqual(AddonDetailPane.catalogKeys(of: withCatalogs), ["org.mine:movie:top", "org.mine:series:top"])
+        XCTAssertTrue(AddonDetailPane.catalogKeys(of: nil).isEmpty)
+    }
+
+    /// Review A5-r1: matched by key, so a renamed add-on keeps its catalogs and another add-on
+    /// with the same display name does not add to them.
+    func testCatalogCountsMatchByKeyAndSkipCollections() {
+        let keys: Set<String> = ["org.mine:movie:top", "org.mine:series:top", "org.mine:movie:new"]
         let items = [
-            catalog("Mine", enabled: true),
-            catalog("Mine", enabled: false),
-            catalog("Mine", enabled: true),
-            catalog("Mine", enabled: true, collection: true),
-            catalog("Other", enabled: true),
+            catalog("org.mine:movie:top", enabled: true, addonName: "Renamed by me"),
+            catalog("org.mine:series:top", enabled: false),
+            catalog("org.mine:movie:new", enabled: true),
+            catalog("collection_1", enabled: true, collection: true),
+            catalog("org.other:movie:top", enabled: true, addonName: "Mine"),
         ]
-        let counts = AddonDetailPane.catalogCounts(addonName: "Mine", catalogs: items)
+        let counts = AddonDetailPane.catalogCounts(keys: keys, catalogs: items)
         XCTAssertEqual(counts.on, 2)
         XCTAssertEqual(counts.total, 3)
-        let none = AddonDetailPane.catalogCounts(addonName: nil, catalogs: items)
+        let none = AddonDetailPane.catalogCounts(keys: [], catalogs: items)
         XCTAssertEqual(none.on, 0)
         XCTAssertEqual(none.total, 0)
         XCTAssertEqual(AddonDetailPane.catalogsValue(on: 2, total: 3), "2 of 3 on")
@@ -164,6 +181,14 @@ final class AddonDetailPaneTests: XCTestCase {
     }
 
     // MARK: configureUrl / locationLine
+
+    func testPageItemsPutTheCodeRightAfterConfigure() {
+        let rows: [Row] = [.configure, .enabled, .refresh, .remove]
+        XCTAssertEqual(AddonDetailPane.pageItems(rows, showsCode: true),
+                       [.row(.configure), .code, .row(.enabled), .row(.refresh), .row(.remove)])
+        XCTAssertEqual(AddonDetailPane.pageItems(rows, showsCode: false), rows.map { .row($0) })
+        XCTAssertEqual(AddonDetailPane.pageItems([.enabled, .refresh], showsCode: true), [.row(.enabled), .row(.refresh)])
+    }
 
     func testConfigureUrl() {
         XCTAssertEqual(

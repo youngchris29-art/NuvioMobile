@@ -87,6 +87,13 @@ struct AddonsHubSplitView: View {
     @State private var showInstall = false
     /// The content column's stack (D2): an add-on's detail page is pushed here, not a sheet.
     @State private var contentPath: [HubAddonRoute] = []
+    /// A5 device check: the next pop is the hub's own (Move, Remove, a section change, a removed
+    /// add-on), not the user's Menu, so it does not reclaim the pushing row.
+    @State private var programmaticPop = false
+    /// A5 device check: the row a user's Menu pop returns to, and when the pop happened (a sidebar
+    /// landing inside `popGrabWindow` is the engine's fallback, handed back to the row).
+    @State private var popReturnUrl: String?
+    @State private var poppedAt: TimeInterval?
     @State private var focusNewCardAfterInstall = false
     @State private var installHandledSerial: Int?
     @State private var toast: String?
@@ -163,6 +170,7 @@ struct AddonsHubSplitView: View {
             if !now.contains(selected) { select(.installed) }
         }
         .onChange(of: sidebarFocus) { old, new in sidebarFocusChanged(from: old, to: new) }
+        .onChange(of: contentPath) { old, new in contentPathChanged(from: old, to: new) }
         .onChange(of: contentFocus) { old, new in contentFocusChanged(from: old, to: new) }
         .sheet(isPresented: $showInstall, onDismiss: focusAfterInstall) {
             AddonInstallSheet(model: model, handledSerial: installHandledSerial)
@@ -335,7 +343,7 @@ struct AddonsHubSplitView: View {
                     .accessibilityIdentifier("addons_detail_root")
                 } else {
                     // Removed elsewhere (sync) while open: nothing to show, go back.
-                    Color.clear.onAppear { contentPath.removeAll() }
+                    Color.clear.onAppear { popProgrammatically() }
                 }
             }
         }
@@ -381,7 +389,7 @@ struct AddonsHubSplitView: View {
         dwell?.cancel()
         dwell = nil
         guard !section.isAction, section != selected else { return }
-        contentPath.removeAll()
+        popProgrammatically()
         // Review r4: the Installed list reports its scroll to the rail (Hide While Browsing); the
         // list is torn down on a section change without scrolling back, so clear its latch.
         if selected == .installed, NavigationChrome.isRail() {
@@ -416,6 +424,15 @@ struct AddonsHubSplitView: View {
             // Focus left the sidebar: a pending selection must not fire after the fact.
             dwell?.cancel()
             dwell = nil
+            return
+        }
+        if old == nil, new == selected, let at = poppedAt, let url = popReturnUrl,
+           ProcessInfo.processInfo.systemUptime - at < Self.popGrabWindow {
+            // A5: the Menu pop from a detail page dropped focus onto the sidebar (on the box the
+            // engine falls back there once the page's focused row is gone): back to the row.
+            Self.logFocus("sidebar grab \(Int((ProcessInfo.processInfo.systemUptime - at) * 1000)) ms after pop -> row")
+            poppedAt = nil
+            reclaimRow(url)
             return
         }
         if old == nil, new == selected, let ended = moveEndedAt,
@@ -557,13 +574,52 @@ struct AddonsHubSplitView: View {
         DispatchQueue.main.async { handOffContent(InstalledAddonsPane.rowKey(addon.manifestUrl)) }
     }
 
+    // MARK: - Pops (A5)
+
+    /// Empties the content stack for the hub's own reasons; the pop does not reclaim a row.
+    private func popProgrammatically() {
+        guard !contentPath.isEmpty else { return }
+        programmaticPop = true
+        contentPath.removeAll()
+    }
+
+    /// A5 device check: the user's Menu pop from a detail page lands focus on the pushing row (the
+    /// box dropped it onto the sidebar; the simulator did not).
+    private func contentPathChanged(from old: [HubAddonRoute], to new: [HubAddonRoute]) {
+        guard new.isEmpty, let route = old.last else { return }
+        if programmaticPop {
+            programmaticPop = false
+            return
+        }
+        guard selected == .installed,
+              model.addons.contains(where: { $0.manifestUrl == route.manifestUrl }) else { return }
+        popReturnUrl = route.manifestUrl
+        poppedAt = ProcessInfo.processInfo.systemUptime
+        Self.logFocus("detail popped -> row")
+        DispatchQueue.main.async { reclaimRow(route.manifestUrl) }
+    }
+
+    /// Focus onto an Installed row after a pop: scrolled into view first (the List is lazy), the
+    /// write one turn later, even when `contentFocus` still names it from before the push.
+    private func reclaimRow(_ url: String) {
+        let key = InstalledAddonsPane.rowKey(url)
+        installedScrollTarget = key
+        DispatchQueue.main.async {
+            deliberateContent = key
+            contentFocus = key
+        }
+    }
+
+    /// How long after a pop a sidebar landing still counts as the engine's fallback.
+    nonisolated static let popGrabWindow: TimeInterval = 0.8
+
     // MARK: - Detail page actions (A5)
 
     /// The detail page's Move: pop back to Installed, then lift this add-on's row (A4 Move mode).
     /// The lift waits for the pop to settle, so the stack's own focus return (onto the pushing
     /// row) cannot land after Move mode's hand-off.
     private func moveFromDetail(_ addon: ManagedAddon) {
-        contentPath.removeAll()
+        popProgrammatically()
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.popSettle) {
             guard selected == .installed, !moveMode.isMoving,
                   let index = model.addons.firstIndex(where: { $0.manifestUrl == addon.manifestUrl }),
@@ -669,7 +725,7 @@ struct AddonsHubSplitView: View {
             nextUrl: at.flatMap { $0 + 1 < urls.count ? urls[$0 + 1] : nil },
             previousUrl: at.flatMap { $0 > 0 ? urls[$0 - 1] : nil }
         )
-        if fromDetail { contentPath.removeAll() }
+        if fromDetail { popProgrammatically() }
         pendingRemoval = addon
     }
 

@@ -17,7 +17,7 @@ struct AddonDetailPane: View {
     /// falls back to this, so it never blanks mid-removal.
     let snapshot: ManagedAddon
     /// Opened from the row's Configure (A3 review r2/r3): the QR starts open and comes first.
-    var startsInConfigure = false
+    let startsInConfigure: Bool
     /// Move: the split view pops to Installed and lifts this add-on's row (A4 Move mode).
     let onMove: (ManagedAddon) -> Void
     /// Catalogs from this add-on: the split view switches to the Catalogs section.
@@ -25,8 +25,26 @@ struct AddonDetailPane: View {
     /// Remove: the split view pops and raises its confirm alert (an alert never sits on a pushed page).
     let onRemove: (ManagedAddon) -> Void
 
-    @State private var showsConfigure = false
-    @State private var appliedStartsInConfigure = false
+    /// Seeded from `startsInConfigure` in `init` (device check: flipping it on appear re-ordered
+    /// the rows after the first render).
+    @State private var showsConfigure: Bool
+    init(
+        model: AddonsViewModel, settings: SettingsViewModel, snapshot: ManagedAddon,
+        startsInConfigure: Bool = false,
+        onMove: @escaping (ManagedAddon) -> Void,
+        onShowCatalogs: @escaping () -> Void,
+        onRemove: @escaping (ManagedAddon) -> Void
+    ) {
+        self.model = model
+        self.settings = settings
+        self.snapshot = snapshot
+        self.startsInConfigure = startsInConfigure
+        self.onMove = onMove
+        self.onShowCatalogs = onShowCatalogs
+        self.onRemove = onRemove
+        _showsConfigure = State(initialValue: startsInConfigure)
+    }
+
     /// The rendered QR and the URL it was built for; rebuilt only when that URL changes.
     @State private var qrImage: UIImage?
     @State private var qrFor: String?
@@ -126,13 +144,20 @@ struct AddonDetailPane: View {
         return parts.joined(separator: " · ")
     }
 
-    /// The add-on's catalogs in Home settings: collections are not add-on catalogs, and the match
-    /// is the exact manifest `name`. A nil name has no catalogs.
+    /// The Home-settings keys of this add-on's catalogs: `manifestId:type:catalogId`, exactly as
+    /// `buildHomeCatalogDefinitions` (shared) builds them. Review A5-r1: never the add-on's name
+    /// (settings carry the display title, which a rename changes and two installs can share).
+    nonisolated static func catalogKeys(of manifest: AddonManifest?) -> Set<String> {
+        guard let manifest else { return [] }
+        return Set(manifest.catalogs.map { "\(manifest.id):\($0.type):\($0.id)" })
+    }
+
+    /// The add-on's catalogs in Home settings, matched by key; collections are not add-on catalogs.
     nonisolated static func catalogCounts(
-        addonName: String?, catalogs: [HomeCatalogSettingsItem]
+        keys: Set<String>, catalogs: [HomeCatalogSettingsItem]
     ) -> (on: Int, total: Int) {
-        guard let addonName else { return (0, 0) }
-        let mine = catalogs.filter { !$0.isCollection && $0.addonName == addonName }
+        guard !keys.isEmpty else { return (0, 0) }
+        let mine = catalogs.filter { !$0.isCollection && keys.contains($0.key) }
         return (mine.filter(\.enabled).count, mine.count)
     }
 
@@ -170,6 +195,19 @@ struct AddonDetailPane: View {
     }
 
     /// Where focus lands on push: Configure when the page was opened through it, else Enabled,
+    /// One List item: a row, or the configure QR block (which sits right below the Configure row).
+    nonisolated enum PageItem: Hashable {
+        case row(DetailRow)
+        case code
+    }
+
+    /// The rows as List items, with the QR block after Configure while the code is showing.
+    nonisolated static func pageItems(_ rows: [DetailRow], showsCode: Bool) -> [PageItem] {
+        rows.flatMap { row -> [PageItem] in
+            row == .configure && showsCode ? [.row(row), .code] : [.row(row)]
+        }
+    }
+
     /// else whatever comes first (read-only pages have no Enabled row).
     nonisolated static func defaultRow(_ rows: [DetailRow], configureFirst: Bool) -> DetailRow? {
         if configureFirst, rows.contains(.configure) { return .configure }
@@ -195,7 +233,7 @@ struct AddonDetailPane: View {
         Self.rows(
             configurable: configurable, isReadOnly: model.isReadOnly, addonCount: model.addons.count,
             status: status,
-            catalogTotal: Self.catalogCounts(addonName: addon.manifest?.name, catalogs: settings.catalogs).total,
+            catalogTotal: Self.catalogCounts(keys: Self.catalogKeys(of: addon.manifest), catalogs: settings.catalogs).total,
             configureFirst: configureFirst
         )
     }
@@ -208,10 +246,12 @@ struct AddonDetailPane: View {
         let defaultRow = Self.defaultRow(rows, configureFirst: configureFirst)
         List {
             header(addon)
-            ForEach(rows, id: \.self) { row in
-                rowView(row, addon: addon)
-                if row == .configure, showsConfigure, configurable {
-                    configureSection(addon)
+            // Device check: one List item per id. A ForEach element that yielded the row AND the
+            // QR block gave both the row's id, and the List drew Configure twice on a reorder.
+            ForEach(Self.pageItems(rows, showsCode: showsConfigure && configurable), id: \.self) { item in
+                switch item {
+                case .row(let row): rowView(row, addon: addon)
+                case .code: configureSection(addon)
                 }
             }
             if configureFirst { details(addon) }
@@ -232,18 +272,12 @@ struct AddonDetailPane: View {
             }
         }
         .onAppear {
-            if !appliedStartsInConfigure {
-                appliedStartsInConfigure = true
-                if startsInConfigure { showsConfigure = true }
-            }
             // The push transition can hand focus elsewhere, so claim the default row one runloop
             // late, once per push (same pattern as `SettingsListPickerPage`).
             guard !didClaimFocus else { return }
             didClaimFocus = true
             DispatchQueue.main.async {
-                focus = Self.defaultRow(
-                    currentRows, configureFirst: startsInConfigure && configurable
-                )
+                focus = Self.defaultRow(currentRows, configureFirst: configureFirst)
             }
         }
         .task(id: qrKey(addon)) {
@@ -395,7 +429,7 @@ struct AddonDetailPane: View {
             .focused($focus, equals: .move)
             .accessibilityIdentifier("addons_detail_move")
         case .catalogs:
-            let counts = Self.catalogCounts(addonName: addon.manifest?.name, catalogs: settings.catalogs)
+            let counts = Self.catalogCounts(keys: Self.catalogKeys(of: addon.manifest), catalogs: settings.catalogs)
             Button(action: onShowCatalogs) {
                 SettingsRowChrome {
                     SettingsRowLabel(title: String(localized: "Catalogs from this add-on"))
