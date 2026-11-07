@@ -287,8 +287,11 @@ final class AddonsViewModel: ObservableObject {
     /// it (a plain `refresh` is a no-op while the old job is active) and starts a fresh one.
     func retryRefresh(manifestUrl: String) {
         stalledUrls.remove(manifestUrl)
-        // The replacement request's age starts over (the watcher re-adds it with `now`).
-        refreshStartedAt[manifestUrl] = nil
+        // Review r3: the replacement request's age starts now. Set here, not left to the watcher:
+        // the repository's state for a stuck add-on (refreshing, no error) does not change on a
+        // restart, so the flow need not emit.
+        refreshStartedAt[manifestUrl] = now()
+        reevaluateStalled()
         AddonRepository.shared.restartRefresh(manifestUrl: manifestUrl)
         trackRefresh()
     }
@@ -313,6 +316,8 @@ final class AddonsViewModel: ObservableObject {
                 if Task.isCancelled { return }
             }
             guard !Task.isCancelled, let self else { return }
+            // Review r3: a finished wait clears itself, so the watcher owns the spinner again.
+            self.refreshWait = nil
             let outcome = Self.refreshOutcome(addons: latest, refreshedUrls: refreshedUrls)
             self.lastRefreshOutcome = outcome
             self.refreshOutcomeSerial += 1
@@ -321,7 +326,9 @@ final class AddonsViewModel: ObservableObject {
                 self.lastRefreshedAt = stamp
                 Self.saveRefreshStamp(stamp, defaults: self.defaults, profileId: ProfileRepository.shared.activeProfileId)
             }
-            self.isRefreshingAny = false
+            // The 60 s cap can end the wait with a request still running: keep the spinner then.
+            let live = (AddonRepository.shared.uiState.value_ as? AddonsUiState)?.addons ?? latest
+            self.isRefreshingAny = live.contains { $0.isRefreshing }
         }
     }
 

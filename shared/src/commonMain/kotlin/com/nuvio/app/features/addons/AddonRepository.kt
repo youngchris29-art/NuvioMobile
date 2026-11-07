@@ -60,6 +60,14 @@ object AddonRepository {
     private var pulledFromServer = false
     private var currentProfileId: Int = 1
     private val activeRefreshJobs = mutableMapOf<String, Job>()
+    /**
+     * Add-ons hub v2 review r3: per add-on, the generation of the newest refresh. Bumped BEFORE the
+     * new refresh marks itself refreshing; a refresh publishes only from inside `_uiState.update`
+     * while it is still the newest generation. `update` is a compare-and-swap loop, so an older job
+     * that read the old generation retries its lambda when the newer job's `markRefreshing` lands,
+     * then sees the new generation and leaves the state alone.
+     */
+    private val refreshGenerations = MutableStateFlow<Map<String, Long>>(emptyMap())
     private val pushJobsByProfile = mutableMapOf<Int, Job>()
 
     // Observable mirror of the bootstrap guard so consumers that can outrun bootstrap (the player's
@@ -409,6 +417,10 @@ object AddonRepository {
         val existingJob = activeRefreshJobs[manifestUrl]
         if (existingJob?.isActive == true) return
 
+        var generation = 0L
+        refreshGenerations.update { current ->
+            bumpRefreshGeneration(current, manifestUrl).also { generation = it.getValue(manifestUrl) }
+        }
         markRefreshing(manifestUrl)
         var refreshJob: Job? = null
         refreshJob = scope.launch {
@@ -427,9 +439,11 @@ object AddonRepository {
                 // failure over its replacement, and a job that finished after being superseded
                 // must not overwrite the newer one's state.
                 result.exceptionOrNull()?.let { if (it is CancellationException) throw it }
-                if (isSupersededRefresh(registered = activeRefreshJobs[manifestUrl], self = refreshJob)) return@launch
 
                 _uiState.update { current ->
+                    if (!isCurrentRefreshGeneration(refreshGenerations.value, manifestUrl, generation)) {
+                        return@update current
+                    }
                     current.copy(
                         addons = current.addons.map { addon ->
                             if (addon.manifestUrl != manifestUrl) {
@@ -663,9 +677,10 @@ internal fun shouldBlockUnhydratedAddonPush(authState: AuthState, pulledFromServ
 internal fun defaultAddonSeedingAllowed(authState: AuthState, serverPullSettled: Boolean): Boolean =
     authState !is AuthState.Authenticated || authState.isAnonymous || serverPullSettled
 
-/**
- * A refresh job is superseded when another job is registered for its add-on. `null` (not yet
- * registered: the job can reach this point before `refreshAddon` stores it) is not superseded.
- */
-internal fun isSupersededRefresh(registered: Job?, self: Job?): Boolean =
-    registered != null && registered !== self
+/** [current] with [manifestUrl]'s refresh generation advanced by one (first refresh: 1). */
+internal fun bumpRefreshGeneration(current: Map<String, Long>, manifestUrl: String): Map<String, Long> =
+    current + (manifestUrl to ((current[manifestUrl] ?: 0L) + 1L))
+
+/** Whether [generation] is still the newest refresh of [manifestUrl]. */
+internal fun isCurrentRefreshGeneration(generations: Map<String, Long>, manifestUrl: String, generation: Long): Boolean =
+    generations[manifestUrl] == generation
