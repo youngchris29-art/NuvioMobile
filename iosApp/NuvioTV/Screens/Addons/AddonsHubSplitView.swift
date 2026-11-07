@@ -94,6 +94,9 @@ struct AddonsHubSplitView: View {
     /// landing inside `popGrabWindow` is the engine's fallback, handed back to the row).
     @State private var popReturnUrl: String?
     @State private var poppedAt: TimeInterval?
+    /// Review A5-r3: the add-on the detail page's Move will lift once the pop settles; any push,
+    /// section change, focus on the sidebar or leaving the hub in between cancels it.
+    @State private var pendingLiftUrl: String?
     @State private var focusNewCardAfterInstall = false
     @State private var installHandledSerial: Int?
     @State private var toast: String?
@@ -165,6 +168,8 @@ struct AddonsHubSplitView: View {
             if let url = moveMode.movingUrl, !urls.contains(url) { endMoveBecauseRemoved() }
         }
         .onAppear { restoreSection(visible: visible) }
+        // Review A5-r3: leaving the hub cancels a detail page's pending Move lift.
+        .onDisappear { pendingLiftUrl = nil }
         .onChange(of: visible) { _, now in
             // A section that disappears (Plugins switched off) falls back to Installed.
             if !now.contains(selected) { select(.installed) }
@@ -389,6 +394,7 @@ struct AddonsHubSplitView: View {
         dwell?.cancel()
         dwell = nil
         guard !section.isAction, section != selected else { return }
+        pendingLiftUrl = nil
         popProgrammatically()
         // Review r4: the Installed list reports its scroll to the rail (Hide While Browsing); the
         // list is torn down on a section change without scrolling back, so clear its latch.
@@ -471,11 +477,11 @@ struct AddonsHubSplitView: View {
 
     private func contentFocusChanged(from old: String?, to new: String?) {
         guard let new else { return }
+        // Review A5-r3: pop recovery ends as soon as the row has focus, however it got there (the
+        // engine can land it before the queued reclaim writes it).
+        if let url = popReturnUrl, new == InstalledAddonsPane.rowKey(url) { poppedAt = nil }
         if new == deliberateContent {
             deliberateContent = nil
-            // Review A5-r2: the pop's reclaim landed; from here a sidebar landing is the user's
-            // own (a quick Left), not the engine's fallback.
-            if let url = popReturnUrl, new == InstalledAddonsPane.rowKey(url) { poppedAt = nil }
             lastContentFocus[selected] = new
             return
         }
@@ -592,6 +598,8 @@ struct AddonsHubSplitView: View {
     /// A5 device check: the user's Menu pop from a detail page lands focus on the pushing row (the
     /// box dropped it onto the sidebar; the simulator did not).
     private func contentPathChanged(from old: [HubAddonRoute], to new: [HubAddonRoute]) {
+        // Review A5-r3: a push (another detail page) cancels a pending lift.
+        if new.count > old.count { pendingLiftUrl = nil }
         guard new.isEmpty, let route = old.last else { return }
         if programmaticPop {
             programmaticPop = false
@@ -611,6 +619,12 @@ struct AddonsHubSplitView: View {
         let key = InstalledAddonsPane.rowKey(url)
         installedScrollTarget = key
         DispatchQueue.main.async {
+            // Review A5-r3: already there (the engine got it first): nothing to write, and no
+            // deliberate flag left behind on a no-op.
+            if contentFocus == key {
+                poppedAt = nil
+                return
+            }
             deliberateContent = key
             contentFocus = key
         }
@@ -625,9 +639,12 @@ struct AddonsHubSplitView: View {
     /// The lift waits for the pop to settle, so the stack's own focus return (onto the pushing
     /// row) cannot land after Move mode's hand-off.
     private func moveFromDetail(_ addon: ManagedAddon) {
+        pendingLiftUrl = addon.manifestUrl
         popProgrammatically()
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.popSettle) {
-            guard selected == .installed, !moveMode.isMoving,
+            guard pendingLiftUrl == addon.manifestUrl else { return }
+            pendingLiftUrl = nil
+            guard selected == .installed, contentPath.isEmpty, sidebarFocus == nil, !moveMode.isMoving,
                   let index = model.addons.firstIndex(where: { $0.manifestUrl == addon.manifestUrl }),
                   model.addons.count > 1 else { return }
             startMove(addon, index: index)
