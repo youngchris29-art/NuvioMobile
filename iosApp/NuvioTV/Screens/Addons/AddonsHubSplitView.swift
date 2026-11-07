@@ -66,6 +66,8 @@ struct AddonsHubSplitView: View {
     /// entry (review r1).
     @State private var deliberateContent: String?
     @State private var deliberateSidebar: HubSection?
+    /// The Installed row about to be focused (A3-r1): the pane scrolls it into view first.
+    @State private var installedScrollTarget: String?
     @State private var dwell: Task<Void, Never>?
     @Environment(\.navigationChrome) private var navigationChrome
 
@@ -264,6 +266,7 @@ struct AddonsHubSplitView: View {
                     onMove: move,
                     onRemove: { requestRemoval($0, fromDetail: false) },
                     onInstall: { showInstall = true },
+                    installedScrollTarget: $installedScrollTarget,
                     onShowInstall: {
                         // A3: the empty Installed pane's link row goes to the Install section.
                         select(.install)
@@ -422,6 +425,16 @@ struct AddonsHubSplitView: View {
     /// A no-op write (focus already there) fires no change, so it must not leave a stale flag.
     private func handOffContent(_ key: String) {
         guard contentFocus != key else { return }
+        if selected == .installed, key.hasPrefix("row:") {
+            // Review A3-r1: the native List realizes rows lazily; scroll the row into view, then
+            // focus it on the next turn.
+            installedScrollTarget = key
+            DispatchQueue.main.async {
+                deliberateContent = key
+                contentFocus = key
+            }
+            return
+        }
         deliberateContent = key
         contentFocus = key
     }
@@ -455,7 +468,9 @@ struct AddonsHubSplitView: View {
     private func contentKeys(for section: HubSection) -> Set<String> {
         switch section {
         case .install: return [Self.installOpenKey]
-        case .installed: return Self.installedFocusKeys(urls: model.addons.map(\.manifestUrl))
+        case .installed:
+            if model.isInitialized && model.addons.isEmpty { return [InstalledAddonsPane.emptyKey] }
+            return Self.installedFocusKeys(urls: model.addons.map(\.manifestUrl))
         default: return []
         }
     }
@@ -472,7 +487,7 @@ struct AddonsHubSplitView: View {
     /// The first row of a taking-part pane (Installed: the first card; Install: its row), else nil.
     nonisolated static func firstContentKey(section: HubSection, addons: [ManagedAddon]) -> String? {
         switch section {
-        case .installed: return addons.first.map { InstalledAddonsPane.rowKey($0.manifestUrl) }
+        case .installed: return addons.first.map { InstalledAddonsPane.rowKey($0.manifestUrl) } ?? InstalledAddonsPane.emptyKey
         case .install: return installOpenKey
         default: return nil
         }
@@ -601,6 +616,7 @@ private struct HubContentColumn: View {
     let onMove: (ManagedAddon, Int, Int) -> Void
     let onRemove: (ManagedAddon) -> Void
     let onInstall: () -> Void
+    @Binding var installedScrollTarget: String?
     let onShowInstall: () -> Void
 
     var body: some View {
@@ -653,7 +669,8 @@ private struct HubContentColumn: View {
             onOpen: onOpenAddon,
             onMove: onMove,
             onRemove: onRemove,
-            onShowInstall: onShowInstall
+            onShowInstall: onShowInstall,
+            scrollTarget: $installedScrollTarget
         )
         // Review r4: Hide While Browsing follows the Installed list, as it followed v1's hub.
         .reportsScrollToTabBar(tab: "Add-ons")

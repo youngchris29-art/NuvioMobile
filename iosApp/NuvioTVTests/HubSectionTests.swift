@@ -209,4 +209,9 @@ final class HubSectionTests: XCTestCase {
         XCTAssertEqual(AddonsViewModel.stampOnStart(current: session, currentOwner: guest, owner: Owner(slot: 2, identity: "b"), loaded: stored), stored)
         XCTAssertNil(AddonsViewModel.stampOnStart(current: nil, currentOwner: nil, owner: Owner(slot: 1, identity: ""), loaded: nil))
     }
+
+    /// A3 review r1: Select on an EMPTY Installed section hands focus to its empty-state row.
+    func testEmptyInstalledLandsOnTheEmptyRow() {
+        XCTAssertEqual(AddonsHubSplitView.firstContentKey(section: .installed, addons: []), InstalledAddonsPane.emptyKey)
+    }
 }

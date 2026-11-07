@@ -17,8 +17,13 @@ struct InstalledAddonsPane: View {
     let onMove: (ManagedAddon, Int, Int) -> Void
     let onRemove: (ManagedAddon) -> Void
     let onShowInstall: () -> Void
+    /// A row key the split view is about to focus (review A3-r1): the List scrolls that row into
+    /// view first, because a row the List has not realized cannot take focus. Cleared once done.
+    @Binding var scrollTarget: String?
 
     nonisolated static func rowKey(_ manifestUrl: String) -> String { "row:" + manifestUrl }
+    /// The empty state's row (review A3-r1: Select on Installed hands focus to it).
+    nonisolated static let emptyKey = "installed:empty"
 
     // MARK: Pure rules
 
@@ -57,6 +62,17 @@ struct InstalledAddonsPane: View {
     // MARK: Body
 
     var body: some View {
+        ScrollViewReader { proxy in
+            list
+                .onChange(of: scrollTarget) { _, target in
+                    guard let target, target.hasPrefix("row:") else { return }
+                    proxy.scrollTo(String(target.dropFirst(4)), anchor: .center)
+                    scrollTarget = nil
+                }
+        }
+    }
+
+    private var list: some View {
         List {
             if model.isReadOnly {
                 Text("This profile uses the primary profile's add-ons. Manage them there.")
@@ -73,17 +89,31 @@ struct InstalledAddonsPane: View {
                 }
                 .accessibilityIdentifier("addons_installed_loading")
             } else if model.addons.isEmpty {
-                Button(action: onShowInstall) {
-                    SettingsRowChrome {
-                        SettingsRowLabel(
-                            title: String(localized: "Install add-on"),
-                            subtitle: String(localized: "No add-ons installed. Install one to get started.")
-                        )
-                    } trailing: {
-                        SettingsTrailingValue(value: nil)
+                if model.isReadOnly {
+                    // Review A3-r1: a profile on the primary profile's add-ons cannot install here,
+                    // so the empty state says where to manage them instead (still focusable).
+                    SettingsValueRow(
+                        title: String(localized: "No add-ons"),
+                        value: "",
+                        subtitle: String(localized: "The primary profile has no add-ons. Add them there."),
+                        focusable: true
+                    )
+                    .focused(focus, equals: InstalledAddonsPane.emptyKey)
+                    .accessibilityIdentifier("addons_hub_empty")
+                } else {
+                    Button(action: onShowInstall) {
+                        SettingsRowChrome {
+                            SettingsRowLabel(
+                                title: String(localized: "Install add-on"),
+                                subtitle: String(localized: "No add-ons installed. Install one to get started.")
+                            )
+                        } trailing: {
+                            SettingsTrailingValue(value: nil)
+                        }
                     }
+                    .focused(focus, equals: InstalledAddonsPane.emptyKey)
+                    .accessibilityIdentifier("addons_hub_empty")
                 }
-                .accessibilityIdentifier("addons_hub_empty")
             }
             ForEach(Array(model.addons.enumerated()), id: \.element.manifestUrl) { index, addon in
                 AddonRow(
