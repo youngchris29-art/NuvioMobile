@@ -162,14 +162,12 @@ final class HubSectionTests: XCTestCase {
         XCTAssertEqual(AddonsViewModel.stalledUrls(startedAt: after.mapValues(\.startedAt), now: later.addingTimeInterval(1)), [])
     }
 
-    /// Review r2: focus memory only lands on controls the card keeps enabled.
-    func testInstalledFocusKeysFollowTheCardsDisabledRules() {
-        let keys = AddonsHubSplitView.installedFocusKeys(urls: ["a", "b", "c"], isReadOnly: false)
-        XCTAssertTrue(keys.isSuperset(of: ["card:a", "toggle:a", "remove:a", "down:a", "up:b", "down:b", "up:c"]))
-        XCTAssertFalse(keys.contains("up:a"), "the first card's Up is disabled")
-        XCTAssertFalse(keys.contains("down:c"), "the last card's Down is disabled")
-        let readOnly = AddonsHubSplitView.installedFocusKeys(urls: ["a", "b"], isReadOnly: true)
-        XCTAssertEqual(readOnly, ["card:a", "card:b"])
+    /// A3: the Installed pane's focus keys are one row per add-on (actions live in the context
+    /// menu), read-only profiles included.
+    func testInstalledFocusKeysAreOneRowPerAddon() {
+        XCTAssertEqual(AddonsHubSplitView.installedFocusKeys(urls: ["a", "b"]),
+                       [InstalledAddonsPane.rowKey("a"), InstalledAddonsPane.rowKey("b")])
+        XCTAssertEqual(AddonsHubSplitView.installedFocusKeys(urls: []), [])
     }
 
     /// Review r10: a stamp written by another profile that held the same slot (deleted here or on

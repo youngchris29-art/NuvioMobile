@@ -203,8 +203,8 @@ final class AddonsSplitUITests: XCTestCase {
         XCTAssertTrue(element(app, "addons_split_root").exists, "Menu left the hub")
     }
 
-    /// D2 + focus memory: the first card takes focus on Right, Select pushes the detail inside
-    /// the content column, Menu pops back to the card; Left then Right comes back to the card.
+    /// D2 + focus memory: the first row takes focus on Right, Select pushes the detail inside
+    /// the content column, Menu pops back to the row; Left then Right comes back to the row.
     func testPushDetailMenuBackTabs() throws {
         try pushAndPop(launch(rail: false))
     }
@@ -215,12 +215,32 @@ final class AddonsSplitUITests: XCTestCase {
         try pushAndPop(launch(rail: true))
     }
 
+    /// A List row's focus sits on its CELL, so match the row's identifier OR a focused element whose
+    /// label is the add-on's title (or starts with it and a comma). The label is compared, never printed.
+    private func rowHasFocus(_ app: XCUIApplication, index: Int, title: String) -> Bool {
+        let row = element(app, "addons_row_\(index)")
+        if row.exists && row.hasFocus { return true }
+        let focused = app.descendants(matching: .any).matching(NSPredicate(format: "hasFocus == true")).allElementsBoundByIndex
+        return focused.contains { $0.label == title || $0.label.hasPrefix(title + ",") }
+    }
+
+    private func waitRowFocus(_ app: XCUIApplication, index: Int, title: String, timeout: TimeInterval = 3) -> Bool {
+        let end = Date().addingTimeInterval(timeout)
+        while Date() < end {
+            if rowHasFocus(app, index: index, title: title) { return true }
+            pause(0.2)
+        }
+        return rowHasFocus(app, index: index, title: title)
+    }
+
     private func pushAndPop(_ app: XCUIApplication) throws {
-        let card0 = element(app, "addons_hub_card_0")
-        XCTAssertTrue(card0.waitForExistence(timeout: 15), "no addons_hub_card_0 on the fixture (does Chris have add-ons?)")
+        let row0 = element(app, "addons_row_0")
+        XCTAssertTrue(row0.waitForExistence(timeout: 15), "no addons_row_0 on the fixture (does Chris have add-ons?)")
+        let title = row0.label
+        XCTAssertFalse(title.isEmpty, "addons_row_0 has no label")
         XCTAssertTrue(moveSidebar(app, to: "installed"), "Installed never took focus; focused: \(focusDump(app))")
         press(.right)
-        XCTAssertTrue(waitFocus(card0), "Right did not land on the first card; focused: \(focusDump(app))")
+        XCTAssertTrue(waitRowFocus(app, index: 0, title: title), "Right did not land on the first row; focused: \(focusDump(app))")
         press(.select, settle: 1.5)
         let detail = element(app, "addons_detail_root")
         XCTAssertTrue(detail.waitForExistence(timeout: 5), "the detail page was not pushed")
@@ -231,11 +251,11 @@ final class AddonsSplitUITests: XCTestCase {
         XCTAssertFalse(sidebarHasFocus(app, "installed"), "focus fell onto the sidebar after the push")
         press(.menu, settle: 1.5)
         XCTAssertFalse(detail.exists, "Menu did not pop the detail page")
-        XCTAssertTrue(waitFocus(card0), "Menu did not return to the pushing card; focused: \(focusDump(app))")
+        XCTAssertTrue(waitRowFocus(app, index: 0, title: title), "Menu did not return to the pushing row; focused: \(focusDump(app))")
         press(.left)
         XCTAssertTrue(waitSidebarFocus(app, "installed"), "Left did not land on Installed; focused: \(focusDump(app))")
         press(.right)
-        XCTAssertTrue(waitFocus(card0), "Right did not come back to the remembered card; focused: \(focusDump(app))")
+        XCTAssertTrue(waitRowFocus(app, index: 0, title: title), "Right did not come back to the remembered row; focused: \(focusDump(app))")
         say("push/pop ok")
     }
 }

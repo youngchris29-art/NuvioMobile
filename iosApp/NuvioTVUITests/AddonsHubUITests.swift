@@ -371,37 +371,114 @@ final class AddonsHubUITests: XCTestCase {
         remote.press(.select); pause(1.5)
     }
 
-    /// Index of the installed card whose label contains `text`, nil when none is realized.
-    private func cardIndex(_ app: XCUIApplication, containing text: String) -> Int? {
+    // MARK: - Installed rows (native List: `addons_row_<index>`, label = title, value = state)
+
+    private static let stubTitles = ["ZZ Hub A", "ZZ Hub B"]
+
+    private func rowLabel(_ app: XCUIApplication, _ index: Int) -> String? {
+        let row = element(app, "addons_row_\(index)")
+        return row.exists ? row.label : nil
+    }
+
+    /// Index of the installed row whose title is `text`, nil when none is realized.
+    private func rowIndex(_ app: XCUIApplication, titled text: String) -> Int? {
         for index in 0..<30 {
-            let card = element(app, "addons_hub_card_\(index)")
-            if card.exists, card.label.contains(text) { return index }
+            if let label = rowLabel(app, index), label == text || label.hasPrefix(text + ",") { return index }
         }
         return nil
     }
 
-    private func cardCount(_ app: XCUIApplication) -> Int {
+    private func rowCount(_ app: XCUIApplication) -> Int {
         app.descendants(matching: .any)
-            .matching(NSPredicate(format: "identifier MATCHES %@", "addons_hub_card_[0-9]+")).count
+            .matching(NSPredicate(format: "identifier MATCHES %@", "addons_row_[0-9]+")).count
     }
 
-    private func cardLabels(_ app: XCUIApplication) -> String {
+    /// Row titles in order; only the stub titles are printed, every other add-on reads "<other>"
+    /// (a real add-on's title can carry its host).
+    private func rowTitles(_ app: XCUIApplication) -> String {
         (0..<30).compactMap { index -> String? in
-            let card = element(app, "addons_hub_card_\(index)")
-            guard card.exists else { return nil }
-            return String(card.label.split(separator: ",").first ?? "")
+            guard let label = rowLabel(app, index) else { return nil }
+            return Self.stubTitles.first { label == $0 || label.hasPrefix($0 + ",") } ?? "<other>"
         }.joined(separator: " | ")
     }
 
-    /// Installed section, Right into the content (card 0 or the last-focused row), then Down to the card at `index`.
-    private func focusCard(_ app: XCUIApplication, index: Int) {
-        let card = element(app, "addons_hub_card_\(index)")
-        XCTAssertTrue(card.waitForExistence(timeout: 10), "addons_hub_card_\(index) missing; cards: \(cardLabels(app))")
+    private func rowValue(_ app: XCUIApplication, _ index: Int) -> String {
+        (element(app, "addons_row_\(index)").value as? String) ?? ""
+    }
+
+    /// A List row's focus sits on its CELL, so match the row's identifier OR a focused element whose
+    /// label is the add-on's title (or starts with it and a comma). The label is compared, never printed.
+    private func rowHasFocus(_ app: XCUIApplication, index: Int, title: String) -> Bool {
+        let row = element(app, "addons_row_\(index)")
+        if row.exists && row.hasFocus { return true }
+        let focused = app.descendants(matching: .any).matching(NSPredicate(format: "hasFocus == true")).allElementsBoundByIndex
+        return focused.contains { $0.label == title || $0.label.hasPrefix(title + ",") }
+    }
+
+    /// Installed section, Right into the content (row 0 or the remembered row), then Down/Up to the row.
+    private func focusRow(_ app: XCUIApplication, index: Int, title: String) {
+        XCTAssertTrue(element(app, "addons_row_\(index)").waitForExistence(timeout: 10),
+                      "addons_row_\(index) missing; rows: \(rowTitles(app))")
         XCTAssertTrue(moveSidebar(app, to: "installed"), "Installed never took focus; focused: \(focusDump(app))")
         pause(0.8)
         remote.press(.right); pause(0.8)
         XCTAssertFalse(sidebarHasFocus(app, "installed"), "Right did not leave the sidebar; focused: \(focusDump(app))")
-        XCTAssertTrue(moveFocus(.down, until: card, max: 12), "card \(index) never took focus; focused: \(focusDump(app))")
+        var found = rowHasFocus(app, index: index, title: title)
+        for direction in [XCUIRemote.Button.down, .up] {
+            for _ in 0..<12 where !found {
+                remote.press(direction); pause(0.4)
+                found = rowHasFocus(app, index: index, title: title)
+            }
+        }
+        XCTAssertTrue(found, "row \(index) never took focus; focused: \(focusDump(app))")
+    }
+
+    /// Long press of Select on the focused row opens its context menu; true once a menu item exists.
+    /// The context menu's items, matched by label among ALL descendants (on tvOS they are not
+    /// always `buttons`; `StageStripUITests.testS11` does the same).
+    private func menuItem(_ app: XCUIApplication, _ label: String) -> XCUIElement {
+        app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", label)).firstMatch
+    }
+
+    private func rowMenuIsOpen(_ app: XCUIApplication) -> Bool {
+        ["Disable", "Enable", "Move up", "Move down", "Retry"].contains { menuItem(app, $0).exists }
+    }
+
+    /// Holds Select 2 s on the focused row (the repo's working hold, `testS11`); a hold that falls
+    /// through to a plain press pushes the detail page, which is popped before the next try.
+    private func openRowMenu(_ app: XCUIApplication, index: Int, title: String) -> Bool {
+        for attempt in 0..<3 {
+            guard rowHasFocus(app, index: index, title: title) else {
+                say("openRowMenu try \(attempt): row \(index) not focused; focused: \(focusDump(app))")
+                return false
+            }
+            XCUIRemote.shared.press(.select, forDuration: 2.0)
+            if waitUntil(timeout: 4, { rowMenuIsOpen(app) }) { return true }
+            say("openRowMenu try \(attempt): no menu; detail pushed: \(element(app, "addons_detail_root").exists)")
+            if element(app, "addons_detail_root").exists { remote.press(.menu); pause(1.5) }
+        }
+        return false
+    }
+
+    /// Focus-walks the open context menu to the item labelled `label` and presses Select on it.
+    private func chooseMenuItem(_ app: XCUIApplication, _ label: String) -> Bool {
+        // tvOS context-menu items are `Other` elements that never report focus to XCUITest (A3
+        // probe): the menu's order is fixed, so walk to the top and step Down to the item's
+        // position. The legs then assert the OUTCOME (row moved, row removed), which is the proof.
+        let known = ["Enable", "Disable", "Move up", "Move down", "Refresh", "Retry", "Configure", "Remove"]
+        let items = known.compactMap { name -> (String, CGFloat)? in
+            let element = menuItem(app, name)
+            return element.exists ? (name, element.frame.minY) : nil
+        }.sorted { $0.1 < $1.1 }.map(\.0)
+        guard let position = items.firstIndex(of: label) else {
+            say("chooseMenuItem: '\(label)' not in the menu (\(items))")
+            return false
+        }
+        for _ in 0..<items.count { remote.press(.up); pause(0.3) }
+        for _ in 0..<position { remote.press(.down); pause(0.4) }
+        say("chooseMenuItem: '\(label)' at \(position) of \(items)")
+        remote.press(.select); pause(1.0)
+        return true
     }
 
     private func detailUp(_ app: XCUIApplication) -> Bool {
@@ -426,8 +503,8 @@ final class AddonsHubUITests: XCTestCase {
         let app = launchHub(Self.hubCommon + ["-debug.installPrefillUrl", manifestB])
         pause(10)
         openSplit(app)
-        XCTAssertTrue(waitUntil(timeout: 20) { self.cardIndex(app, containing: "ZZ Hub A") != nil },
-                      "A never showed on the hub (seed refused?); cards: \(cardLabels(app))")
+        XCTAssertTrue(waitUntil(timeout: 20) { self.rowIndex(app, titled: "ZZ Hub A") != nil },
+                      "A never showed on the hub (seed refused?); rows: \(rowTitles(app))")
         openInstallSheet(app)
 
         let field = element(app, "addons_hub_install_field")
@@ -456,28 +533,25 @@ final class AddonsHubUITests: XCTestCase {
 
         var bIndex = -1
         XCTAssertTrue(waitUntil(timeout: 15) {
-            if let found = self.cardIndex(app, containing: "ZZ Hub B") { bIndex = found; return true }
+            if let found = self.rowIndex(app, titled: "ZZ Hub B") { bIndex = found; return true }
             return false
-        }, "no card labelled ZZ Hub B after install; cards: \(cardLabels(app))")
-        let bCard = element(app, "addons_hub_card_\(bIndex)")
-        XCTAssertTrue(waitUntil(timeout: 5) { bCard.hasFocus }, "focus did not land on the new B card (index \(bIndex)); focused: \(focusDump(app))")
-        say("installed B at card \(bIndex) of \(cardCount(app))")
+        }, "no row titled ZZ Hub B after install; rows: \(rowTitles(app))")
+        XCTAssertTrue(waitUntil(timeout: 5) { self.rowHasFocus(app, index: bIndex, title: "ZZ Hub B") },
+                      "focus did not land on the new B row (index \(bIndex)); focused: \(focusDump(app))")
+        say("installed B at row \(bIndex) of \(rowCount(app))")
         pause(1)
 
-        // 3. Reorder: B up one.
-        XCTAssertGreaterThan(bIndex, 0, "B is the first card, nothing to move up; cards: \(cardLabels(app))")
-        let upB = element(app, "addons_hub_card_\(bIndex)_up")
-        XCTAssertTrue(moveFocus(.right, until: upB, max: 4), "B's Up control never took focus; focused: \(focusDump(app))")
-        XCTAssertTrue(upB.isEnabled, "B's Up control is disabled")
-        remote.press(.select)
+        // 3. Reorder: B up one, through the row's context menu.
+        XCTAssertGreaterThan(bIndex, 0, "B is the first row, nothing to move up; rows: \(rowTitles(app))")
+        XCTAssertTrue(openRowMenu(app, index: bIndex, title: "ZZ Hub B"), "the context menu never opened on B's row; focused: \(focusDump(app))")
+        XCTAssertTrue(chooseMenuItem(app, "Move up"), "the Move up item never took focus; focused: \(focusDump(app))")
         let newIndex = bIndex - 1
-        XCTAssertTrue(waitUntil(timeout: 10) { self.cardIndex(app, containing: "ZZ Hub B") == newIndex },
-                      "B did not move to card \(newIndex); cards: \(cardLabels(app))")
-        // H2 focus-return rule: the same control follows the card; at the very top it is the name area.
-        let landing = element(app, newIndex == 0 ? "addons_hub_card_0" : "addons_hub_card_\(newIndex)_up")
-        XCTAssertTrue(waitUntil(timeout: 5) { landing.exists && landing.hasFocus },
-                      "focus did not follow B to \(landing.identifier); focused: \(focusDump(app))")
-        say("order after move: \(cardLabels(app))")
+        XCTAssertTrue(waitUntil(timeout: 10) { self.rowIndex(app, titled: "ZZ Hub B") == newIndex },
+                      "B did not move to row \(newIndex); rows: \(rowTitles(app))")
+        // After a Move the focus stays on the moved row.
+        XCTAssertTrue(waitUntil(timeout: 5) { self.rowHasFocus(app, index: newIndex, title: "ZZ Hub B") },
+                      "focus did not follow B to row \(newIndex); focused: \(focusDump(app))")
+        say("order after move: \(rowTitles(app))")
         pause(1.5)
 
         // 4. The picker follows the order: B's chip before A's.
@@ -524,13 +598,12 @@ final class AddonsHubUITests: XCTestCase {
         openSplit(hubApp)
         var bNow = -1
         XCTAssertTrue(waitUntil(timeout: 20) {
-            if let found = self.cardIndex(hubApp, containing: "ZZ Hub B") { bNow = found; return true }
+            if let found = self.rowIndex(hubApp, titled: "ZZ Hub B") { bNow = found; return true }
             return false
-        }, "ZZ Hub B is not on the hub after the relaunch; cards: \(cardLabels(hubApp))")
-        focusCard(hubApp, index: bNow)
-        let removeB = element(hubApp, "addons_hub_card_\(bNow)_remove")
-        XCTAssertTrue(moveFocus(.right, until: removeB, max: 5), "B's Remove control never took focus; focused: \(focusDump(hubApp))")
-        remote.press(.select)
+        }, "ZZ Hub B is not on the hub after the relaunch; rows: \(rowTitles(hubApp))")
+        focusRow(hubApp, index: bNow, title: "ZZ Hub B")
+        XCTAssertTrue(openRowMenu(hubApp, index: bNow, title: "ZZ Hub B"), "the context menu never opened on B's row; focused: \(focusDump(hubApp))")
+        XCTAssertTrue(chooseMenuItem(hubApp, "Remove"), "the Remove item never took focus; focused: \(focusDump(hubApp))")
 
         // The alert exposes its Remove button twice on the FA87 sim (one snapshot matched two
         // elements), so focus is read across every match rather than through a single element.
@@ -550,8 +623,8 @@ final class AddonsHubUITests: XCTestCase {
         XCTAssertTrue(removeHasFocus(), "the alert's Remove button does not hold focus; focused: \(focusDump(hubApp))")
         remote.press(.select)
 
-        XCTAssertTrue(waitUntil(timeout: 10) { self.cardIndex(hubApp, containing: "ZZ Hub B") == nil },
-                      "ZZ Hub B still on the hub; cards: \(cardLabels(hubApp))")
+        XCTAssertTrue(waitUntil(timeout: 10) { self.rowIndex(hubApp, titled: "ZZ Hub B") == nil },
+                      "ZZ Hub B still on the hub; rows: \(rowTitles(hubApp))")
         let toast = element(hubApp, "addons_hub_toast")
         XCTAssertTrue(waitUntil(timeout: 10) { toast.exists && toast.label.contains("Removed ZZ Hub B") },
                       "the removal toast never said \"Removed ZZ Hub B.\"; toast: \(toast.exists ? toast.label : "<none>")")
@@ -624,8 +697,8 @@ final class AddonsHubUITests: XCTestCase {
         let app = launchHub(Self.hubCommon)
         pause(10)
         openSplit(app)
-        XCTAssertTrue(waitUntil(timeout: 20) { self.cardIndex(app, containing: "ZZ Hub A") != nil },
-                      "A never showed on the hub (seed refused?); cards: \(cardLabels(app))")
+        XCTAssertTrue(waitUntil(timeout: 20) { self.rowIndex(app, titled: "ZZ Hub A") != nil },
+                      "A never showed on the hub (seed refused?); rows: \(rowTitles(app))")
         let refresh = sidebar(app, "refresh")
         XCTAssertTrue(refresh.waitForExistence(timeout: 5), "addons_sidebar_refresh missing")
         func stamp() -> String { (refresh.value as? String) ?? "" }

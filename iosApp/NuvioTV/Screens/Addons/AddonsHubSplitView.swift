@@ -58,7 +58,7 @@ struct AddonsHubSplitView: View {
     @State private var didRestoreSection = false
     @FocusState private var sidebarFocus: HubSection?
     /// Shared by every pane that takes part in focus memory; keys are pane-defined strings
-    /// (`card:<url>`, `toggle:<url>`, … for the Installed cards).
+    /// (`InstalledAddonsPane.rowKey` for the Installed rows, `installOpenKey` for Install).
     @FocusState private var contentFocus: String?
     @State private var lastContentFocus: [HubSection: String] = [:]
     /// A focus write this view made on purpose (after a move, an install, a removal, a Select on
@@ -263,7 +263,12 @@ struct AddonsHubSplitView: View {
                     onOpenAddon: { contentPath.append(HubAddonRoute(manifestUrl: $0.manifestUrl)) },
                     onMove: move,
                     onRemove: { requestRemoval($0, fromDetail: false) },
-                    onInstall: { showInstall = true }
+                    onInstall: { showInstall = true },
+                    onShowInstall: {
+                        // A3: the empty Installed pane's link row goes to the Install section.
+                        select(.install)
+                        DispatchQueue.main.async { handOffContent(Self.installOpenKey) }
+                    }
                 )
                 // A second child: a one-child stack forwarded its identifier to the pane's
                 // ScrollView (A2 probe), so the column needs to be a real container.
@@ -441,42 +446,24 @@ struct AddonsHubSplitView: View {
     /// it still exists, else the pane's first row; nil for panes that do not take part.
     private func contentLandingTarget(for section: HubSection) -> String? {
         let keys = contentKeys(for: section)
-        if let remembered = lastContentFocus[section] {
-            if keys.contains(remembered) { return remembered }
-            // Review r2: a remembered control that is now disabled (moved to an end, or read-only)
-            // falls back to that add-on's card while the add-on is still listed.
-            if let url = remembered.split(separator: ":", maxSplits: 1).last.map(String.init),
-               keys.contains("card:" + url) {
-                return "card:" + url
-            }
-        }
+        if let remembered = lastContentFocus[section], keys.contains(remembered) { return remembered }
         return Self.firstContentKey(section: section, addons: model.addons)
     }
 
-    /// Every focus key the pane for `section` can hold right now (Installed: each card's ENABLED
-    /// controls, by the card's own rules; Install: its row).
+    /// Every focus key the pane for `section` can hold right now (Installed: one row per add-on,
+    /// A3; Install: its row).
     private func contentKeys(for section: HubSection) -> Set<String> {
         switch section {
         case .install: return [Self.installOpenKey]
-        case .installed: return Self.installedFocusKeys(urls: model.addons.map(\.manifestUrl), isReadOnly: model.isReadOnly)
+        case .installed: return Self.installedFocusKeys(urls: model.addons.map(\.manifestUrl))
         default: return []
         }
     }
 
-    /// The Installed cards' focusable keys: every card's name area; with editing allowed, its
-    /// toggle and Remove, Up except on the first card and Down except on the last
-    /// (`AddonCardView`'s disabled rules).
-    nonisolated static func installedFocusKeys(urls: [String], isReadOnly: Bool) -> Set<String> {
-        var keys = Set<String>()
-        for (index, url) in urls.enumerated() {
-            keys.insert("card:" + url)
-            guard !isReadOnly else { continue }
-            keys.insert("toggle:" + url)
-            keys.insert("remove:" + url)
-            if index > 0 { keys.insert("up:" + url) }
-            if index < urls.count - 1 { keys.insert("down:" + url) }
-        }
-        return keys
+    /// The Installed pane's focusable keys: one row per add-on (A3: actions live in the row's
+    /// context menu, so a row is always focusable, read-only profiles included).
+    nonisolated static func installedFocusKeys(urls: [String]) -> Set<String> {
+        Set(urls.map(InstalledAddonsPane.rowKey))
     }
 
     /// The Install pane's one row.
@@ -485,7 +472,7 @@ struct AddonsHubSplitView: View {
     /// The first row of a taking-part pane (Installed: the first card; Install: its row), else nil.
     nonisolated static func firstContentKey(section: HubSection, addons: [ManagedAddon]) -> String? {
         switch section {
-        case .installed: return addons.first.map { "card:" + $0.manifestUrl }
+        case .installed: return addons.first.map { InstalledAddonsPane.rowKey($0.manifestUrl) }
         case .install: return installOpenKey
         default: return nil
         }
@@ -493,20 +480,13 @@ struct AddonsHubSplitView: View {
 
     // MARK: - Reorder, removal and install (v1 logic, keyed on `contentFocus`)
 
-    /// Moves the card, then puts focus back on the same control of the moved card; at an end the
-    /// control is disabled, so focus goes to the card's name area (v1 `SourcesHubView.move`).
+    /// Moves the add-on one place and keeps focus on its row (A3: the row moves with it). A4's
+    /// Move mode replaces the context menu's Move up / Move down with this as its step.
     private func move(_ addon: ManagedAddon, index: Int, by delta: Int) {
         let count = model.addons.count
         guard AddonsViewModel.moveTarget(index: index, by: delta, count: count) != nil else { return }
         model.move(manifestUrl: addon.manifestUrl, by: delta)
-        DispatchQueue.main.async {
-            let repoList = (AddonRepository.shared.uiState.value_ as? AddonsUiState)?.addons ?? []
-            let list = repoList.isEmpty ? model.addons : repoList
-            let newIndex = list.firstIndex { $0.manifestUrl == addon.manifestUrl } ?? (index + delta)
-            let atEnd = delta < 0 ? newIndex <= 0 : newIndex >= list.count - 1
-            let key = atEnd ? "card" : (delta < 0 ? "up" : "down")
-            handOffContent("\(key):\(addon.manifestUrl)")
-        }
+        DispatchQueue.main.async { handOffContent(InstalledAddonsPane.rowKey(addon.manifestUrl)) }
     }
 
     /// Raises `AddonsView`'s confirm alert. From the pushed detail page the page pops first, so
@@ -533,7 +513,7 @@ struct AddonsHubSplitView: View {
         let target = [intent.nextUrl, intent.previousUrl].compactMap { $0 }.first(where: urls.contains)
         DispatchQueue.main.async {
             if let target {
-                handOffContent("card:" + target)
+                handOffContent(InstalledAddonsPane.rowKey(target))
             } else {
                 handOffSidebar(.install)
             }
@@ -554,7 +534,7 @@ struct AddonsHubSplitView: View {
                 model.addons.first { AddonManifestURL.isSameManifest($0.manifestUrl, url) }
             }
             if let card = installed ?? model.addons.last {
-                handOffContent("card:" + card.manifestUrl)
+                handOffContent(InstalledAddonsPane.rowKey(card.manifestUrl))
             } else {
                 handOffSidebar(.install)
             }
@@ -565,17 +545,7 @@ struct AddonsHubSplitView: View {
 
     @ViewBuilder
     private var toastView: some View {
-        if let toast {
-            Text(toast)
-                .font(Theme.Font.body)
-                .foregroundStyle(Theme.Palette.textPrimary)
-                .padding(.horizontal, Theme.Spacing.lg)
-                .padding(.vertical, Theme.Spacing.md)
-                .background(Theme.Surface.overlay, in: Capsule())
-                .padding(.bottom, Theme.Spacing.xl)
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-                .accessibilityIdentifier("addons_hub_toast")
-        }
+        if let toast { HubToast(text: toast) }
     }
 
     private func showToast(_ message: String) {
@@ -588,6 +558,23 @@ struct AddonsHubSplitView: View {
     }
 }
 
+/// A3: the hub's capsule toast (v1's), its own view so the split view only owns the text and timer.
+struct HubToast: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(Theme.Font.body)
+            .foregroundStyle(Theme.Palette.textPrimary)
+            .padding(.horizontal, Theme.Spacing.lg)
+            .padding(.vertical, Theme.Spacing.md)
+            .background(Theme.Surface.overlay, in: Capsule())
+            .padding(.bottom, Theme.Spacing.xl)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+            .accessibilityIdentifier("addons_hub_toast")
+    }
+}
+
 // MARK: - Content column
 
 /// A pushed add-on detail page in the content column (D2).
@@ -595,8 +582,8 @@ struct HubAddonRoute: Hashable {
     let manifestUrl: String
 }
 
-/// The right column's root for one section. A2 hosts the v1 pieces as interim content; A3 (the
-/// Installed pane), A5 (detail) and A6 (Catalogs, Debrid, Plugins, Install) replace them.
+/// The right column's root for one section. Installed is A3's native pane; A5 (detail) and A6
+/// (Catalogs, Debrid, Plugins, Install) replace the remaining v1 hosts.
 private struct HubContentColumn: View {
     let section: HubSection
     @ObservedObject var model: AddonsViewModel
@@ -614,6 +601,7 @@ private struct HubContentColumn: View {
     let onMove: (ManagedAddon, Int, Int) -> Void
     let onRemove: (ManagedAddon) -> Void
     let onInstall: () -> Void
+    let onShowInstall: () -> Void
 
     var body: some View {
         switch section {
@@ -656,44 +644,17 @@ private struct HubContentColumn: View {
             .environment(\.settingsUsesNativeList, true)
     }
 
-    /// Interim Installed content: v1's cards, focus keys shared with the split view's memory. An
-    /// EAGER stack (review r5): a focus hand-off to a card far down the list (a new install, a
-    /// remembered deep card) needs that card realized; a lazy stack had not created it yet. The
-    /// list is short and A3 replaces it with a native `List`.
+    /// A3: the Installed pane on the native kit (rows, context menu), focus keys shared with the
+    /// split view's memory.
     private var installed: some View {
-        ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                if !model.isInitialized { ProgressView() }
-                if model.isInitialized && model.addons.isEmpty {
-                    Text("No add-ons installed. Install one to get started.")
-                        .font(Theme.Font.body).foregroundStyle(Theme.Palette.textSecondary)
-                        .accessibilityIdentifier("addons_hub_empty")
-                }
-                if model.isReadOnly {
-                    Text("This profile uses the primary profile's add-ons. Manage them there.")
-                        .font(Theme.Font.body).foregroundStyle(Theme.Palette.textSecondary)
-                        .accessibilityIdentifier("addons_hub_readonly")
-                }
-                ForEach(Array(model.addons.enumerated()), id: \.element.manifestUrl) { index, addon in
-                    AddonCardView(
-                        addon: addon,
-                        index: index,
-                        count: model.addons.count,
-                        isReadOnly: model.isReadOnly,
-                        focus: contentFocus,
-                        onOpen: { onOpenAddon(addon) },
-                        onToggle: { model.setEnabled(addon, !addon.enabled) },
-                        onMoveUp: { onMove(addon, index, -1) },
-                        onMoveDown: { onMove(addon, index, 1) },
-                        onRemove: { onRemove(addon) },
-                        stalledUrls: model.stalledUrls
-                    )
-                }
-            }
-            .padding(.vertical, Theme.Spacing.md)
-            .padding(.horizontal, Theme.Spacing.lg)
-        }
-        .scrollClipDisabled()
+        InstalledAddonsPane(
+            model: model,
+            focus: contentFocus,
+            onOpen: onOpenAddon,
+            onMove: onMove,
+            onRemove: onRemove,
+            onShowInstall: onShowInstall
+        )
         // Review r4: Hide While Browsing follows the Installed list, as it followed v1's hub.
         .reportsScrollToTabBar(tab: "Add-ons")
     }
