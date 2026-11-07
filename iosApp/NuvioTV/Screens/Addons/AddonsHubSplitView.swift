@@ -432,6 +432,12 @@ struct AddonsHubSplitView: View {
             dwell = nil
             return
         }
+        if pendingLiftUrl != nil {
+            // Review A5-r4: focus visited the sidebar before the detail page's Move could lift
+            // its row; the lift is off even if focus comes back before it would have fired.
+            Self.logFocus("sidebar focus cancels the pending lift")
+            pendingLiftUrl = nil
+        }
         if old == nil, new == selected, new != deliberateSidebar, let at = poppedAt, let url = popReturnUrl,
            ProcessInfo.processInfo.systemUptime - at < Self.popGrabWindow {
             // A5: the Menu pop from a detail page dropped focus onto the sidebar (on the box the
@@ -644,7 +650,7 @@ struct AddonsHubSplitView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.popSettle) {
             guard pendingLiftUrl == addon.manifestUrl else { return }
             pendingLiftUrl = nil
-            guard selected == .installed, contentPath.isEmpty, sidebarFocus == nil, !moveMode.isMoving,
+            guard selected == .installed, contentPath.isEmpty, !moveMode.isMoving,
                   let index = model.addons.firstIndex(where: { $0.manifestUrl == addon.manifestUrl }),
                   model.addons.count > 1 else { return }
             startMove(addon, index: index)
