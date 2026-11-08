@@ -244,6 +244,34 @@ final class AddonsSplitUITests: XCTestCase {
         say("phone: fresh session on return")
     }
 
+    /// C2 review r3: Settings › Account & Profiles › Manage from phone switches to the Add-ons tab,
+    /// selects the phone section and leaves focus on its sidebar row (hub already visited, Tabs).
+    /// Never presses Select on any row other than the target (Sign Out sits first in that pane).
+    func testSettingsRowOpensManageFromPhone() throws {
+        let app = launch(rail: false)
+        XCTAssertTrue(waitSidebarFocus(app, "installed"), "entry focus is not Installed; focused: \(focusDump(app))")
+        let tabNames = ["Home", "Search", "Discover", "Library", "Add-ons", "Settings", "Profile"]
+        for _ in 0..<20 {
+            if tabNames.contains(where: { app.buttons[$0].exists && app.buttons[$0].hasFocus }) { break }
+            press(.up, settle: 0.4)
+        }
+        XCTAssertTrue(moveFocus(.right, until: app.buttons["Settings"], max: 4), "Settings tab never took focus")
+        press(.select, settle: 2)
+        let category = element(app, "settings_category_accountProfiles")
+        XCTAssertTrue(category.waitForExistence(timeout: 5), "Account & Profiles missing")
+        XCTAssertTrue(moveFocus(.down, until: category, max: 4) || category.hasFocus, "Account & Profiles never took focus")
+        press(.select, settle: 1.5)
+        let row = element(app, "settings_manage_from_phone")
+        XCTAssertTrue(row.waitForExistence(timeout: 5), "the Manage from phone row is missing")
+        XCTAssertTrue(moveFocus(.down, until: row, max: 8), "the Manage from phone row never took focus; focused: \(focusDump(app))")
+        XCTAssertTrue(row.hasFocus)
+        press(.select, settle: 2.5)
+        XCTAssertTrue(element(app, "addons_content_phone").waitForExistence(timeout: 5), "the hub did not show Manage from phone")
+        XCTAssertTrue(waitSidebarFocus(app, "phone"), "focus is not on the phone row; focused: \(focusDump(app))")
+        XCTAssertTrue(element(app, "addons_phone_url").waitForExistence(timeout: 8), "Remote Setup never started")
+        say("phone: opened from Settings")
+    }
+
     /// Sidebar rows, entry focus on Installed, selection follows focus after the dwell.
     func testSplitShellSelectsSectionByFocus() throws {
         let app = launch(rail: false)

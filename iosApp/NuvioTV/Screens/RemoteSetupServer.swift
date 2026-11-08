@@ -375,7 +375,7 @@ final class RemoteSetupServer {
             lock.unlock()
             response = HttpResponse(status: "200 OK", contentType: "application/json", body: body)
         case ("POST", "/api/apply"):
-            response = handleApply(body: request.body)
+            response = handleApply(body: request.body, session: session, token: expected)
         case ("GET", let path) where path.hasPrefix("/api/status/"):
             let id = String(path.dropFirst("/api/status/".count))
             lock.lock()
@@ -412,19 +412,36 @@ final class RemoteSetupServer {
 
     /// Test seam: submits a proposal body as `POST /api/apply` would and returns its change id
     /// (nil when refused), without a listener.
-    func submitForTesting(_ body: Data) -> String? {
-        let response = handleApply(body: body)
+    func submitForTesting(_ body: Data, session: Int? = nil) -> String? {
+        lock.lock()
+        let current = (generation, token)
+        lock.unlock()
+        let response = handleApply(body: body, session: session ?? current.0, token: current.1)
         let json = try? JSONSerialization.jsonObject(with: response.body) as? [String: Any]
         return json?["id"] as? String
     }
 
-    private func handleApply(body: Data) -> HttpResponse {
+    /// Test seam: the current session's generation (bumped by every start and stop).
+    func sessionForTesting() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return generation
+    }
+
+    /// `session` and `token` are what the request was authorised against; review r3: they are
+    /// checked again under the lock that stores the proposal, so a request authorised just before
+    /// New code (or Stop) cannot land in the next session.
+    private func handleApply(body: Data, session: Int, token authorised: String?) -> HttpResponse {
         guard let proposal = try? JSONDecoder().decode(Proposal.self, from: body) else {
             return HttpResponse.json(["error": "Invalid request body"], status: "400 Bad Request")
         }
         let change = PendingChange(proposal: proposal)
         let now = Date()
         lock.lock()
+        guard generation == session, token == authorised else {
+            lock.unlock()
+            return HttpResponse(status: "403 Forbidden", contentType: "text/plain", body: Data("Forbidden".utf8))
+        }
         // Simple rate limit: one proposal per second. Stops a misbehaving peer from replacing the
         // on-TV confirmation alert in a loop (ME-003).
         if let last = lastProposalAt, now.timeIntervalSince(last) < minProposalInterval {

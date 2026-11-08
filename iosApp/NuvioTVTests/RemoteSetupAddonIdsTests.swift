@@ -207,6 +207,17 @@ final class RemoteSetupServerClaimTests: XCTestCase {
         XCTAssertFalse(server.claimForConfirm(id: "unknown"))
     }
 
+    /// C2 review r3: a request authorised in a session that has since ended is refused at storage.
+    func testAProposalFromAnEndedSessionIsRefused() {
+        let server = RemoteSetupServer()
+        server.minProposalInterval = 0
+        let body = Data(#"{"rowOrder":["a"]}"#.utf8)
+        let old = server.sessionForTesting()
+        server.stop()
+        XCTAssertNil(server.submitForTesting(body, session: old))
+        XCTAssertNotNil(server.submitForTesting(body))
+    }
+
     /// Review r16: a restarted session never serves the previous session's snapshot.
     func testRestartClearsTheStateSnapshot() {
         let server = RemoteSetupServer()
