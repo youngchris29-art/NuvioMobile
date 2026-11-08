@@ -143,22 +143,25 @@ nonisolated struct RemoteSetupAddonIds {
         var raw = (halves.first ?? "").split(separator: "/").map(String.init).filter { $0 != "manifest.json" }
         if halves.count > 1 { raw.append(String(halves[1])) }
         raw.append(contentsOf: userinfo)
-        var pieces = Set<String>()
+        // Two kinds of piece (review r17): whole chunks and unlabelled parts are cut only at 8+
+        // characters, since an ordinary route (`/anime/`) can match a real title; a `name=value`
+        // value or a userinfo credential is a secret by position and counts from 4 (review r14).
+        var long = Set<String>()
+        var valued = Set<String>(userinfo.filter { $0.count >= 4 })
         // Review r12: each chunk is split both as written and percent-decoded, so an encoded
         // separator (`%3D`, `%7C`) cannot hide a value inside it.
         let chunks = raw.flatMap { chunk in [chunk, chunk.removingPercentEncoding].compactMap { $0 } }
         for chunk in chunks {
-            pieces.insert(chunk)
+            long.insert(chunk)
             for part in chunk.split(whereSeparator: { "&|,;".contains($0) }) {
-                pieces.insert(String(part))
-                if let eq = part.firstIndex(of: "=") { pieces.insert(String(part[part.index(after: eq)...])) }
+                long.insert(String(part))
+                if let eq = part.firstIndex(of: "=") { valued.insert(String(part[part.index(after: eq)...])) }
             }
         }
+        var pieces = long.filter { $0.count >= longPiece }.union(valued.filter { $0.count >= 4 })
         for piece in pieces {
-            if let decoded = piece.removingPercentEncoding { pieces.insert(decoded) }
+            if let decoded = piece.removingPercentEncoding, decoded.count >= 4 { pieces.insert(decoded) }
         }
-        // Whole chunks need 8+ characters; a parsed value or userinfo credential counts from 4
-        // (review r14: short passwords and keys), shorter ones are flags like `rd` or `en`.
-        return pieces.filter { $0.count >= 4 }.sorted { $0.count > $1.count }
+        return pieces.sorted { $0.count > $1.count }
     }
 }

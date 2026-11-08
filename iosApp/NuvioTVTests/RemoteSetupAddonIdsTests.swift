@@ -167,6 +167,14 @@ final class RemoteSetupPageSafeTextTests: XCTestCase {
         XCTAssertEqual(RemoteSetupAddonIds.pageSafe("hunter22 hunters", manifestUrl: short), "hunter22 hunters")
     }
 
+    /// Review r17: an ordinary short route is not a secret, so a title matching it stays.
+    func testOrdinaryShortRoutesAreNotRedacted() {
+        let route = "https://example.com/anime/manifest.json"
+        XCTAssertEqual(RemoteSetupAddonIds.pageSafe("anime", manifestUrl: route), "anime")
+        let keyed = "https://example.com/anime/token=abcd/manifest.json"
+        XCTAssertEqual(RemoteSetupAddonIds.pageSafe("anime abcd", manifestUrl: keyed), "anime <redacted>")
+    }
+
     func testPlainTextIsUntouched() {
         XCTAssertEqual(RemoteSetupAddonIds.pageSafe("Torrentio — streams from many sources", manifestUrl: url),
                        "Torrentio — streams from many sources")
