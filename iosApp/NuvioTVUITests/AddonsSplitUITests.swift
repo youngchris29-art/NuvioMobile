@@ -352,8 +352,9 @@ final class AddonsSplitUITests: XCTestCase {
         XCTAssertEqual(proposalStatus(page, first), "rejected")
 
         // Review r3: a long list from any fixture: every row flipped and the order reversed (a
-        // line per row each, up to 2 x rows), plus a poster pattern and a badge pack line.
-        let lineCount = rows.count * 2 + 2
+        // line per row, and a move line for all rows but one), plus a poster pattern and a badge
+        // pack line.
+        let lineCount = rows.count * 2 + 1
         try XCTSkipIf(lineCount < 8, "the fixture has \(rows.count) Home rows, too few for a long list")
         pause(1.2)
         let flipped = rows.filter(\.enabled).map(\.id)
@@ -367,16 +368,22 @@ final class AddonsSplitUITests: XCTestCase {
         say("dialog: about \(lineCount) lines, list height \(Int(longHeight))")
         XCTAssertGreaterThan(longHeight, shortHeight, "the long list is no taller than one line")
         XCTAssertLessThanOrEqual(longHeight, 540, "the long list passes its cap")
+        // Review r5: the list must be at its cap, so the scrolling branch is the one under test.
+        XCTAssertGreaterThanOrEqual(longHeight, 500, "the long list is under its cap; the fixture is too small to test scrolling")
         // Up walks the lines to the first one, which scrolls into the list's frame. Review r2:
         // the line is found by its index (a title shared by two rows is disambiguated in the text).
         let line = element(app, "phone_confirm_line_0").firstMatch
         XCTAssertTrue(line.waitForExistence(timeout: 3), "the first line is missing")
         let firstLine = line.label
         var reached = false
+        var scrolledAway = false
         for _ in 0..<(lineCount + 3) {
             press(.up, settle: 0.5)
             if labelHasFocus(app, firstLine) { reached = true; break }
+            // Entering at the bottom scrolls the first line out above the list.
+            if line.frame.midY < list.frame.minY { scrolledAway = true }
         }
+        XCTAssertTrue(scrolledAway, "the first line never left the list's viewport; the list did not scroll")
         XCTAssertTrue(reached, "Up never reached the first line; focused: \(focusDump(app))")
         // The focused line lifts (scales) past its slot by a few points, so its centre is checked.
         XCTAssertGreaterThanOrEqual(line.frame.midY, list.frame.minY, "the first line is above the list")
