@@ -41,7 +41,7 @@ nonisolated enum AddonHealthText {
     /// The subtitle suffix (leading " · " included), "" with no data.
     static func rowSuffix(_ health: AddonHealthSnapshot?) -> String {
         guard let health else { return "" }
-        if health.failed { return " · " + String(localized: "Not responding") }
+        if health.failed { return " · " + String(localized: "Check failed") }
         guard let ms = health.latencyMs else { return "" }
         return " · \(ms) ms"
     }
@@ -49,7 +49,7 @@ nonisolated enum AddonHealthText {
     /// The accessibility phrase, nil with no data.
     static func spoken(_ health: AddonHealthSnapshot?) -> String? {
         guard let health else { return nil }
-        if health.failed { return String(localized: "Not responding") }
+        if health.failed { return String(localized: "Check failed") }
         guard let ms = health.latencyMs, let level = AddonHealthLevel.of(health) else { return nil }
         switch level {
         case .good: return String(localized: "Responds in \(latency(ms))")
@@ -63,13 +63,16 @@ nonisolated enum AddonHealthText {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .short
         let when = formatter.localizedString(for: health.checkedAt, relativeTo: now)
-        if health.failed { return when + " · " + String(localized: "Not responding") }
+        if health.failed { return when + " · " + String(localized: "Check failed") }
         guard let ms = health.latencyMs else { return when }
         return when + " · \(ms) ms"
     }
 }
 
-/// Watches the shared tracker and keeps the last check per profile in UserDefaults.
+/// C4: the tvOS side of `AddonHealthTracker`. Review r1: in memory only, mirroring the tracker,
+/// which is cleared with the add-on state on a profile switch or sign-out. Nothing goes to disk
+/// (the map is keyed by manifest URLs, which can carry debrid keys), and nothing can be filed
+/// under the wrong profile. Health shows from the first refresh after launch.
 @MainActor
 final class AddonHealthStore: ObservableObject {
     static let shared = AddonHealthStore()
@@ -77,21 +80,9 @@ final class AddonHealthStore: ObservableObject {
     @Published private(set) var snapshots: [String: AddonHealthSnapshot] = [:]
 
     private var watcher: FlowWatcher?
-    private let defaults: UserDefaults
-    private let profileId: () -> Int32
-    private var loadedProfile: Int32?
 
-    init(defaults: UserDefaults = .standard,
-         profileId: @escaping () -> Int32 = { Int32(truncatingIfNeeded: ProfileRepository.shared.activeProfileId) }) {
-        self.defaults = defaults
-        self.profileId = profileId
-    }
-
-    nonisolated static func storageKey(profileId: Int32) -> String { "addonHealth.v1.\(profileId)" }
-
-    /// Idempotent: loads the active profile's persisted map, then follows the Kotlin flow.
+    /// Idempotent: follows the Kotlin flow.
     func start() {
-        reloadPersistedIfProfileChanged()
         guard watcher == nil else { return }
         watcher = FlowWatcherKt.watch(AddonHealthTracker.shared.health) { [weak self] emitted in
             guard let map = emitted as? [String: AddonHealth] else { return }
@@ -101,20 +92,10 @@ final class AddonHealthStore: ObservableObject {
 
     func snapshot(for manifestUrl: String) -> AddonHealthSnapshot? { snapshots[manifestUrl] }
 
-    private func reloadPersistedIfProfileChanged() {
-        let id = profileId()
-        guard loadedProfile != id else { return }
-        loadedProfile = id
-        snapshots = Self.decode(defaults.data(forKey: Self.storageKey(profileId: id)))
-    }
-
-    /// Kotlin values win over persisted ones.
+    /// The tracker's whole map replaces the mirror (an empty map after a reset clears it).
     func receive(_ map: [String: AddonHealth]) {
-        reloadPersistedIfProfileChanged()
-        guard !map.isEmpty else { return }
-        var next = snapshots
-        for (url, health) in map {
-            next[url] = AddonHealthSnapshot(
+        let next = map.mapValues { health in
+            AddonHealthSnapshot(
                 latencyMs: health.latencyMs.map { Int(truncating: $0) },
                 failed: health.failed,
                 checkedAt: Date(timeIntervalSince1970: Double(health.checkedAtEpochMs) / 1000)
@@ -122,15 +103,5 @@ final class AddonHealthStore: ObservableObject {
         }
         guard next != snapshots else { return }
         snapshots = next
-        defaults.set(Self.encode(next), forKey: Self.storageKey(profileId: loadedProfile ?? profileId()))
-    }
-
-    nonisolated static func encode(_ map: [String: AddonHealthSnapshot]) -> Data? {
-        try? JSONEncoder().encode(map)
-    }
-
-    nonisolated static func decode(_ data: Data?) -> [String: AddonHealthSnapshot] {
-        guard let data else { return [:] }
-        return (try? JSONDecoder().decode([String: AddonHealthSnapshot].self, from: data)) ?? [:]
     }
 }

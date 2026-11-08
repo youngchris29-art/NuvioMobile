@@ -597,7 +597,7 @@ struct AddonsHubSplitView: View {
     /// A no-op write (focus already there) fires no change, so it must not leave a stale flag.
     private func handOffContent(_ key: String) {
         guard contentFocus != key else { return }
-        if selected == .installed, key.hasPrefix("row:") {
+        if selected == .installed, key.hasPrefix("row:") || key == InstalledAddonsPane.checkNowKey {
             // Review A3-r1: the native List realizes rows lazily; scroll the row into view, then
             // focus it on the next turn.
             installedScrollTarget = key

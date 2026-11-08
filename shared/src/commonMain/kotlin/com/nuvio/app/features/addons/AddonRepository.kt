@@ -619,13 +619,17 @@ object AddonRepository {
                 result.exceptionOrNull()?.let { if (it is CancellationException) throw it }
                 val elapsedMs = startMark.elapsedNow().inWholeMilliseconds
 
-                // C4: health is recorded only by the current generation, like the state below.
-                var isCurrent = true
+                // C4 review r1: health is recorded inside the same state update that checks the
+                // generation, so a superseded job or one cut off by a reset never publishes it.
                 _uiState.update { current ->
-                    isCurrent = isCurrentRefreshGeneration(current.refreshGenerations, manifestUrl, generation)
-                    if (!isCurrent) {
+                    if (!isCurrentRefreshGeneration(current.refreshGenerations, manifestUrl, generation)) {
                         return@update current
                     }
+                    AddonHealthTracker.record(
+                        manifestUrl = manifestUrl,
+                        latencyMs = elapsedMs,
+                        failed = result.isFailure,
+                    )
                     current.copy(
                         addons = current.addons.map { addon ->
                             if (addon.manifestUrl != manifestUrl) {
@@ -649,13 +653,6 @@ object AddonRepository {
                                 )
                             }
                         },
-                    )
-                }
-                if (isCurrent) {
-                    AddonHealthTracker.record(
-                        manifestUrl = manifestUrl,
-                        latencyMs = elapsedMs,
-                        failed = result.isFailure,
                     )
                 }
             } finally {

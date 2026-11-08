@@ -86,8 +86,15 @@ struct InstalledAddonsPane: View {
         ScrollViewReader { proxy in
             list
                 .onChange(of: scrollTarget) { _, target in
-                    guard let target, target.hasPrefix("row:") else { return }
-                    proxy.scrollTo(String(target.dropFirst(4)), anchor: .center)
+                    guard let target else { return }
+                    if target.hasPrefix("row:") {
+                        proxy.scrollTo(String(target.dropFirst(4)), anchor: .center)
+                    } else if target == Self.checkNowKey {
+                        // C4 review r1: the Check now row is lazy too; it scrolls by its own id.
+                        proxy.scrollTo(Self.checkNowKey, anchor: .center)
+                    } else {
+                        return
+                    }
                     scrollTarget = nil
                 }
         }
@@ -153,6 +160,7 @@ struct InstalledAddonsPane: View {
                     subtitle: String(localized: "Re-check every enabled add-on and update its response time")
                 ) { model.refreshAll() }
                 .focused(focus, equals: InstalledAddonsPane.checkNowKey)
+                .id(InstalledAddonsPane.checkNowKey)
                 .disabled(movingUrl != nil)
                 .accessibilityIdentifier("addons_installed_check_now")
             }

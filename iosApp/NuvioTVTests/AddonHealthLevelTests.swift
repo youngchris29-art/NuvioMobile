@@ -1,5 +1,6 @@
 import XCTest
 @testable import NuvioTV
+import SharedCore
 
 final class AddonHealthLevelTests: XCTestCase {
     func testThresholds() {
@@ -35,18 +36,23 @@ final class AddonHealthLevelTests: XCTestCase {
         let slow = AddonHealthSnapshot(latencyMs: 1800, failed: false, checkedAt: Date())
         XCTAssertEqual(AddonHealthText.spoken(slow), "Slow, 1.8 s")
         let bad = AddonHealthSnapshot(latencyMs: 50, failed: true, checkedAt: Date())
-        XCTAssertEqual(AddonHealthText.spoken(bad), "Not responding")
-        XCTAssertEqual(AddonHealthText.rowSuffix(bad), " · Not responding")
+        XCTAssertEqual(AddonHealthText.spoken(bad), "Check failed")
+        XCTAssertEqual(AddonHealthText.rowSuffix(bad), " · Check failed")
         XCTAssertEqual(AddonHealthText.lastChecked(nil), "Not checked yet")
         XCTAssertTrue(AddonHealthText.lastChecked(ok).hasSuffix(" · 210 ms"))
-        XCTAssertTrue(AddonHealthText.lastChecked(bad).hasSuffix(" · Not responding"))
+        XCTAssertTrue(AddonHealthText.lastChecked(bad).hasSuffix(" · Check failed"))
     }
 
-    func testPersistenceRoundTrip() {
-        let map = ["https://a.example.com/manifest.json":
-                    AddonHealthSnapshot(latencyMs: 210, failed: false, checkedAt: Date(timeIntervalSince1970: 1_000))]
-        XCTAssertEqual(AddonHealthStore.decode(AddonHealthStore.encode(map)), map)
-        XCTAssertEqual(AddonHealthStore.decode(nil), [:])
-        XCTAssertEqual(AddonHealthStore.decode(Data("junk".utf8)), [:])
+    /// Review r1: the store mirrors the tracker's whole map in memory; an empty map (a reset on
+    /// a profile switch or sign-out) clears it.
+    @MainActor
+    func testTheStoreMirrorsTheTracker() {
+        let store = AddonHealthStore()
+        let url = "https://a.example.com/manifest.json"
+        store.receive([url: AddonHealth(latencyMs: KotlinLong(value: 210), failed: false, checkedAtEpochMs: 1_000)])
+        XCTAssertEqual(store.snapshot(for: url),
+                       AddonHealthSnapshot(latencyMs: 210, failed: false, checkedAt: Date(timeIntervalSince1970: 1)))
+        store.receive([:])
+        XCTAssertNil(store.snapshot(for: url))
     }
 }
