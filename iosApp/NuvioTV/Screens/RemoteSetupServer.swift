@@ -97,8 +97,13 @@ final class RemoteSetupServer {
     /// then calls `confirm(id:)` or `reject(id:)`.
     var onChangeProposed: ((PendingChange) -> Void)?
     /// C2: called on the main queue for every request that presented this session's token, so
-    /// the TV can show "Phone connected".
-    var onAuthorizedRequest: (() -> Void)?
+    /// the TV can show "Phone connected". Review r2: stored under `lock` (the listener queue reads
+    /// it), and a call from a session that has since ended (New code, Stop) is dropped.
+    var onAuthorizedRequest: (() -> Void)? {
+        get { lock.lock(); defer { lock.unlock() }; return authorizedRequestHandler }
+        set { lock.lock(); authorizedRequestHandler = newValue; lock.unlock() }
+    }
+    private var authorizedRequestHandler: (() -> Void)?
 
     private(set) var port: UInt16?
 
@@ -335,6 +340,8 @@ final class RemoteSetupServer {
         // header (the page's own API calls). Everything else gets an opaque 403 (HI-001).
         lock.lock()
         let expected = token
+        let session = generation
+        let onAuthorized = authorizedRequestHandler
         lock.unlock()
         let presented = request.query["t"] ?? request.headers["x-setup-token"]
         guard let expected, let presented, presented == expected else {
@@ -344,7 +351,15 @@ final class RemoteSetupServer {
             )
             return
         }
-        if let onAuthorizedRequest { DispatchQueue.main.async(execute: onAuthorizedRequest) }
+        if let onAuthorized {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.lock.lock()
+                let current = self.generation == session && self.token == expected
+                self.lock.unlock()
+                if current { onAuthorized() }
+            }
+        }
 
         let response: HttpResponse
         switch (request.method, request.path) {

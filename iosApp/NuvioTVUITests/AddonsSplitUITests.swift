@@ -195,6 +195,55 @@ final class AddonsSplitUITests: XCTestCase {
         say("phone: closed on leaving")
     }
 
+    /// HTTP status for `url` (GET, 3 s), or nil when nothing answers. Never prints the address.
+    private func httpStatus(_ url: String) -> Int? {
+        guard let target = URL(string: url) else { return nil }
+        var request = URLRequest(url: target, timeoutInterval: 3)
+        request.httpMethod = "GET"
+        let done = DispatchSemaphore(value: 0)
+        var status: Int?
+        URLSession.shared.dataTask(with: request) { _, response, _ in
+            status = (response as? HTTPURLResponse)?.statusCode
+            done.signal()
+        }.resume()
+        _ = done.wait(timeout: .now() + 5)
+        return status
+    }
+
+    /// C2 review r2: leaving the Add-ons TAB (not just the section) closes Remote Setup, and coming
+    /// back opens a fresh session (a new address). The old address must stop answering.
+    func testManageFromPhoneClosesWhenTheTabChanges() throws {
+        let app = launch(rail: false)
+        XCTAssertTrue(waitSidebarFocus(app, "installed"), "entry focus is not Installed; focused: \(focusDump(app))")
+        selectSection(app, "phone")
+        let urlLabel = element(app, "addons_phone_url")
+        XCTAssertTrue(urlLabel.waitForExistence(timeout: 8), "Remote Setup never started")
+        let first = urlLabel.label
+        XCTAssertEqual(httpStatus(first), 200, "the first session does not answer")
+        // Up to the tab bar, then onto Library: the Add-ons tab is no longer selected.
+        let tabNames = ["Home", "Search", "Discover", "Library", "Add-ons", "Settings", "Profile"]
+        for _ in 0..<20 {
+            if tabNames.contains(where: { app.buttons[$0].exists && app.buttons[$0].hasFocus }) { break }
+            press(.up, settle: 0.4)
+        }
+        XCTAssertTrue(moveFocus(.left, until: app.buttons["Library"], max: 4), "Library tab never took focus")
+        press(.select, settle: 2)
+        XCTAssertNil(httpStatus(first).flatMap { $0 == 200 ? $0 : nil }, "the session still answers after leaving the tab")
+        say("phone: closed on a tab switch")
+        // Back to Add-ons: the section is still selected, so a fresh session starts.
+        for _ in 0..<20 {
+            if tabNames.contains(where: { app.buttons[$0].exists && app.buttons[$0].hasFocus }) { break }
+            press(.up, settle: 0.4)
+        }
+        XCTAssertTrue(moveFocus(.right, until: app.buttons["Add-ons"], max: 4), "Add-ons tab never took focus")
+        press(.select, settle: 2)
+        let restarted = NSPredicate(format: "exists == true AND label != %@", first)
+        let wait = XCTNSPredicateExpectation(predicate: restarted, object: urlLabel)
+        XCTAssertEqual(XCTWaiter().wait(for: [wait], timeout: 10), .completed, "no fresh session after coming back")
+        XCTAssertEqual(httpStatus(urlLabel.label), 200, "the fresh session does not answer")
+        say("phone: fresh session on return")
+    }
+
     /// Sidebar rows, entry focus on Installed, selection follows focus after the dwell.
     func testSplitShellSelectsSectionByFocus() throws {
         let app = launch(rail: false)
