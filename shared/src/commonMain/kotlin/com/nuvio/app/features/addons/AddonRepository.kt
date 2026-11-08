@@ -584,6 +584,9 @@ object AddonRepository {
         var started: Job? = null
         var replaced: Job? = null
         synchronized(refreshJobsLock) {
+            // C4 review r7: a URL that left the list (a sync, a removal) between a caller's
+            // snapshot and here gets no job, so nothing orphaned can publish onto a reinstall.
+            if (_uiState.value.addons.none { it.manifestUrl == manifestUrl }) return
             val existing = activeRefreshJobs[manifestUrl]
             // Review r8: `isCompleted`, not `isActive`: a LAZY job reads inactive between its
             // registration and `start()`, and must already hold the URL then.
