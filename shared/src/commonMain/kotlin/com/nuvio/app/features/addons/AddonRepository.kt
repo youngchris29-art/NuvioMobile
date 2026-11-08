@@ -327,7 +327,7 @@ object AddonRepository {
             return AddAddonResult.Error(error.message ?: resourceString("Enter a valid addon URL", StringKey.addon_invalid_url))
         }
 
-        if (_uiState.value.addons.any { it.manifestUrl == manifestUrl }) {
+        if (_uiState.value.addons.any { isSameManifestUrl(it.manifestUrl, manifestUrl) }) {
             return AddAddonResult.Error(resourceString("That addon is already installed.", StringKey.addon_already_installed))
         }
 
@@ -348,7 +348,7 @@ object AddonRepository {
         // one URL can both pass it; the append re-checks inside the update and only one lands.
         var appended = false
         _uiState.update { current ->
-            appended = current.addons.none { it.manifestUrl == manifestUrl }
+            appended = current.addons.none { isSameManifestUrl(it.manifestUrl, manifestUrl) }
             if (!appended) return@update current
             current.copy(
                 addons = current.addons + ManagedAddon(
@@ -924,6 +924,24 @@ internal fun editedAddonList(
         val flag = enabled[url]
         if (flag == null || flag == addon.enabled) addon else addon.copy(enabled = flag)
     }
+}
+
+/**
+ * Add-ons hub v2 C1 (review r21): two normalised manifest URLs name the same add-on when they
+ * match with the scheme and host compared case-insensitively (the rule the tvOS install field and
+ * Remote Setup use); userinfo, path and query keep their case.
+ */
+internal fun isSameManifestUrl(a: String, b: String): Boolean = manifestComparisonKey(a) == manifestComparisonKey(b)
+
+private fun manifestComparisonKey(url: String): String {
+    val sep = url.indexOf("://")
+    if (sep < 0) return url
+    val afterSep = url.substring(sep + 3)
+    val authorityEnd = afterSep.indexOfFirst { it == '/' || it == '?' }.let { if (it < 0) afterSep.length else it }
+    val authority = afterSep.substring(0, authorityEnd)
+    val at = authority.lastIndexOf('@')
+    val host = if (at >= 0) authority.substring(0, at + 1) + authority.substring(at + 1).lowercase() else authority.lowercase()
+    return url.substring(0, sep).lowercase() + "://" + host + afterSep.substring(authorityEnd)
 }
 
 internal fun steppedOrder(addons: List<ManagedAddon>, manifestUrl: String, delta: Int): List<ManagedAddon>? {
