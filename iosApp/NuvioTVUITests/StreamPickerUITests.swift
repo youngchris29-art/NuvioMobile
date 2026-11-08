@@ -340,7 +340,11 @@ final class StreamPickerUITests: XCTestCase {
             XCTAssertEqual(art.height, art.width * 1.5, accuracy: 1, "poster \(art) not 2:3")
             XCTAssertTrue(pane.contains(art.insetBy(dx: 1, dy: 1)), "poster \(art) outside the info panel \(pane)")
             XCTAssertGreaterThanOrEqual(line.minY, art.maxY - 1, "progress line \(line) not under the poster \(art)")
-            XCTAssertLessThanOrEqual(line.maxY, pane.maxY + 1, "progress line \(line) falls off the info panel \(pane)")
+            // The panel's frame includes its 60 pt vertical padding (`Theme.Spacing.screen`); the
+            // progress line must end above it (review p5).
+            let content = pane.insetBy(dx: 0, dy: 60)
+            XCTAssertLessThanOrEqual(line.maxY, content.maxY + 1, "progress line \(line) runs into the info panel's padding \(content)")
+            XCTAssertLessThanOrEqual(art.maxY, content.maxY + 1, "poster \(art) runs into the info panel's padding \(content)")
             say("info panel \(pane), poster \(art), progress line \(line)")
         }
 
