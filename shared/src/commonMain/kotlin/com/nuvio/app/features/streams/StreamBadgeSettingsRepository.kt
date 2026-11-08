@@ -5,6 +5,7 @@ import com.nuvio.app.core.i18n.localizedBadgeImportFailed
 import com.nuvio.app.core.i18n.localizedBadgeImportLimit
 import com.nuvio.app.core.i18n.localizedBadgeUrlSchemeInvalid
 import com.nuvio.app.features.addons.httpGetText
+import com.nuvio.app.features.profiles.ProfileRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -137,7 +138,15 @@ object StreamBadgeSettingsRepository {
     /** Serialises the post-fetch merge of concurrent imports (hub v2 C3 review r9). */
     private val importMutex = Mutex()
 
-    suspend fun importStreamBadgeRulesFromUrl(url: String): StreamBadgeImportResult {
+    suspend fun importStreamBadgeRulesFromUrl(url: String): StreamBadgeImportResult =
+        importStreamBadgeRulesFromUrl(url, expectedProfileId = null)
+
+    /**
+     * [expectedProfileId] (hub v2 C3 review r10): the profile the import was approved for. Checked
+     * inside the locked merge and save, so a profile switch during the download refuses the import
+     * instead of saving the pack to the other profile.
+     */
+    suspend fun importStreamBadgeRulesFromUrl(url: String, expectedProfileId: Int?): StreamBadgeImportResult {
         ensureLoaded()
         val normalizedUrl = url.trim()
         if (normalizedUrl.isBlank()) {
@@ -166,6 +175,9 @@ object StreamBadgeSettingsRepository {
             // The pre-fetch snapshot would drop a pack another import added meanwhile, and two
             // imports finishing together must not both read the same rules.
             importMutex.withLock {
+                if (expectedProfileId != null && ProfileRepository.activeProfileId != expectedProfileId) {
+                    return StreamBadgeImportResult.Error(localizedBadgeImportFailed())
+                }
                 val latestRules = streamBadgeRules.normalized()
                 val stillNew = latestRules.imports.none { it.sourceUrl.equals(normalizedUrl, ignoreCase = true) }
                 if (stillNew && latestRules.imports.size >= STREAM_BADGE_IMPORT_LIMIT) {

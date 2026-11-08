@@ -444,7 +444,7 @@ final class RemoteSetupViewModel: ObservableObject {
         guard ProfileRepository.shared.activeProfileId == profile else { done(failures + urls.count); return }
         // Review r8: held strongly. An approved change finishes even if the screen is left
         // meanwhile (the closure is released once the import returns).
-        StreamBadgeSettingsRepository.shared.importStreamBadgeRulesFromUrl(url: url) { result, _ in
+        StreamBadgeSettingsRepository.shared.importStreamBadgeRulesFromUrl(url: url, expectedProfileId: KotlinInt(value: profile)) { result, _ in
             let ok = result is StreamBadgeImportResultSuccess
             Task { @MainActor in
                 self.importBadges(Array(urls.dropFirst()), profile: profile, failures: failures + (ok ? 0 : 1), then: done)
