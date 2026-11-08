@@ -1,3 +1,4 @@
+import Combine
 import SharedCore
 import SwiftUI
 
@@ -54,6 +55,8 @@ struct AddonsHubSplitView: View {
     @State private var selected: HubSection = .installed
     @State private var didRestoreSection = false
     @FocusState private var sidebarFocus: HubSection?
+    /// C5: whether the Add-ons tab is selected (requested sections wait for it).
+    @ObservedObject private var tabActivity = AddonsTabActivity.shared
     /// Shared by every pane that takes part in focus memory; keys are pane-defined strings
     /// (`InstalledAddonsPane.rowKey` for the Installed rows, `CatalogOrderView`'s keys for Catalogs, `InstallAddonPane.fieldKey` for Install).
     @FocusState private var contentFocus: String?
@@ -179,6 +182,14 @@ struct AddonsHubSplitView: View {
         // C2: a request while the hub is mounted (Settings' "Manage from phone" row).
         .onReceive(NotificationCenter.default.publisher(for: AddonsHubRequests.notification)) { _ in
             showRequestedSection(visible: visible)
+        }
+        // C5 device note: the request arrives while the Settings tab is still on screen, so focus
+        // set then is dropped and the tab switch leaves it on the rail. Hand it to the section's
+        // sidebar row once the Add-ons tab is the selected one.
+        .onReceive(tabActivity.$isActive.removeDuplicates()) { active in
+            // `$isActive` publishes before the stored value changes, so pass the new value.
+            guard active else { return }
+            showRequestedSection(visible: visible, tabActive: true)
         }
         // Review A5-r3: leaving the hub cancels a detail page's pending Move lift.
         .onDisappear {
@@ -456,11 +467,18 @@ struct AddonsHubSplitView: View {
 
     /// C2: shows a section another screen asked for (`AddonsHubRequests`) and puts focus on its
     /// sidebar row, so Right enters it. A request for a hidden section is dropped.
-    private func showRequestedSection(visible: [HubSection]) {
+    private func showRequestedSection(visible: [HubSection], tabActive: Bool? = nil) {
+        // C5: keep the request until the Add-ons tab is showing; focus set on a hidden tab is lost.
+        guard tabActive ?? tabActivity.isActive else { return }
         guard let section = AddonsHubRequests.take(), visible.contains(section), !section.isAction else { return }
         if moveMode.isMoving { cancelMove() }
         select(section)
         DispatchQueue.main.async { handOffSidebar(section) }
+        // The tab switch settles focus on the rail a moment later; claim it again once it has.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            guard selected == section, sidebarFocus != section, contentFocus == nil else { return }
+            handOffSidebar(section)
+        }
     }
 
     private func select(_ section: HubSection) {
