@@ -23,6 +23,9 @@ final class RemoteSetupViewModel: ObservableObject {
     @Published private(set) var pendingSummary: String = ""
     /// C3: the pending proposal, one line per change (the hub's confirm dialog lists these).
     @Published private(set) var pendingLines: [RemoteSetupChangeList.Line] = []
+    /// C3 review r1: the lines were recomputed at Confirm because the TV's lists changed while
+    /// the dialog was up; the dialog says so and asks again.
+    @Published private(set) var pendingLinesRefreshed = false
 
     var isRunning: Bool { serverURL != nil }
 
@@ -107,7 +110,8 @@ final class RemoteSetupViewModel: ObservableObject {
                 case .success(let resolved):
                     self.pendingAddons = resolved
                     self.pendingSummary = self.summarize(change.proposal)
-                    self.pendingLines = self.changeLines(change.proposal)
+                    self.pendingLines = self.changeLines(change.proposal, addons: resolved)
+                    self.pendingLinesRefreshed = false
                     self.pendingChange = change
                 }
             }
@@ -206,21 +210,36 @@ final class RemoteSetupViewModel: ObservableObject {
 
     func confirmPending() {
         guard let change = pendingChange else { return }
-        pendingChange = nil
-        pendingAddons = nil
-        // Superseded or refused while the alert was up: nothing to apply.
-        guard server.isPending(id: change.id) else { return }
-        // The add-on list can change under the alert (sync, another screen): resolve the ids
+        // Superseded or refused while the dialog was up: nothing to apply.
+        guard server.isPending(id: change.id) else {
+            pendingChange = nil
+            pendingAddons = nil
+            return
+        }
+        // The add-on list can change under the dialog (sync, another screen): resolve the ids
         // again against the list as it is now, and refuse the whole proposal if one went stale.
         switch resolveAddons(change.proposal) {
         case .failure(let refusal):
+            pendingChange = nil
+            pendingAddons = nil
             server.reject(id: change.id, status: Self.status(for: refusal))
         case .success(let resolved):
+            // C3 review r1: what the user approved must still be what applies. If the lists
+            // moved under the dialog, show the new lines and ask again instead of applying.
+            let fresh = changeLines(change.proposal, addons: resolved)
+            guard fresh == pendingLines else {
+                pendingAddons = resolved
+                pendingLines = fresh
+                pendingLinesRefreshed = true
+                return
+            }
+            pendingChange = nil
+            pendingAddons = nil
             // Claimed atomically with supersession: a newer proposal that lands after the check
             // above wins, and this one is not applied.
             guard server.claimForConfirm(id: change.id) else { return }
             let status = apply(change.proposal, addons: resolved)
-            let installs = status == .confirmed ? (resolved ?? []).filter(\.isNew).map(\.url) : []
+            let installs = status == .confirmed ? (resolved ?? []).filter(\.isNew) : []
             installThenFinish(installs, changeId: change.id, status: status)
         }
     }
@@ -383,7 +402,8 @@ final class RemoteSetupViewModel: ObservableObject {
     /// when every one has finished, so the page, which keeps polling while the change is
     /// `applying`, reloads a list that already holds them. A read-only list was refused before
     /// this, so the repository accepts them (a failed fetch simply leaves that one out).
-    private func installThenFinish(_ urls: [String], changeId: String, status: RemoteSetupServer.ChangeStatus) {
+    private func installThenFinish(_ entries: [RemoteSetupAddonIds.Resolved], changeId: String, status: RemoteSetupServer.ChangeStatus) {
+        let urls = entries.map(\.url)
         guard !urls.isEmpty else {
             server.finishApplying(id: changeId, status: status)
             return
@@ -395,7 +415,14 @@ final class RemoteSetupViewModel: ObservableObject {
                 let succeeded = result is AddAddonResultSuccess
                 Task { @MainActor in
                     let installed = (AddonRepository.shared.uiState.value_ as? AddonsUiState)?.addons.map(\.manifestUrl) ?? []
-                    if !Self.installSatisfied(succeeded: succeeded, url: url, installed: installed) { failed.append(index) }
+                    if !Self.installSatisfied(succeeded: succeeded, url: url, installed: installed) {
+                        failed.append(index)
+                    } else if entries[index].enabled == false,
+                              let landed = installed.first(where: { AddonManifestURL.isSameManifest($0, url) }) {
+                        // C3 review r1: a new add-on sent turned off is installed turned off, as
+                        // the dialog said.
+                        AddonRepository.shared.setAddonEnabled(manifestUrl: landed, enabled: false)
+                    }
                     remaining -= 1
                     guard remaining == 0 else { return }
                     // Review r14: a failed install is reported, not hidden behind "confirmed".
@@ -467,10 +494,13 @@ final class RemoteSetupViewModel: ObservableObject {
     // MARK: - Alert summary
 
     /// C3: the proposal's changes against the lists as they are now (names, never URLs).
-    private func changeLines(_ proposal: RemoteSetupServer.Proposal) -> [RemoteSetupChangeList.Line] {
+    private func changeLines(
+        _ proposal: RemoteSetupServer.Proposal,
+        addons resolved: [RemoteSetupAddonIds.Resolved]?
+    ) -> [RemoteSetupChangeList.Line] {
         RemoteSetupChangeList.lines(
             addons: addons.map { .init(id: $0.manifestUrl, title: $0.displayTitle, enabled: $0.enabled) },
-            proposedAddons: pendingAddons?.map { entry in
+            proposedAddons: resolved?.map { entry in
                 .init(
                     id: entry.url,
                     title: entry.isNew ? AddonsViewModel.host(of: entry.url) : (addons.first { $0.manifestUrl == entry.url }?.displayTitle ?? AddonsViewModel.host(of: entry.url)),

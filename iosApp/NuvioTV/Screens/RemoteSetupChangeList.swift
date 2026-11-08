@@ -33,8 +33,9 @@ nonisolated enum RemoteSetupChangeList {
         let isNew: Bool
     }
 
-    /// The lines for a proposal. `proposedAddons` is nil when the proposal leaves add-ons alone;
-    /// `rowOrder` nil when it leaves Home rows alone (`disabledRows` then ignored).
+    /// The lines for a proposal. `proposedAddons` is nil when the proposal leaves add-ons alone,
+    /// `rowOrder` nil when it leaves the row order alone, `disabledRows` nil when it leaves the
+    /// rows' on/off alone (each is applied on its own, as `applyRows` does).
     static func lines(
         addons: [Item],
         proposedAddons: [ProposedAddon]?,
@@ -75,15 +76,23 @@ nonisolated enum RemoteSetupChangeList {
             }
         }
 
+        // Review r1: the same simulation `applyRows` runs. The proposed order goes to the front
+        // in that order; rows the phone did not list (a sync added them) keep their order after it.
         if let order = rowOrder {
-            let known = Set(rows.map(\.id))
-            let after = order.filter(known.contains)
-            for id in movedIds(before: rows.map(\.id).filter(Set(after).contains), after: after) {
+            let current = rows.map(\.id)
+            let known = Set(current)
+            var seen = Set<String>()
+            let listed = order.filter { known.contains($0) && seen.insert($0).inserted }
+            let result = listed + current.filter { !seen.contains($0) }
+            for id in movedIds(before: current, after: result) {
                 guard let title = rows.first(where: { $0.id == id })?.title,
-                      let position = after.firstIndex(of: id) else { continue }
+                      let position = result.firstIndex(of: id) else { continue }
                 out.append(Line(kind: .move, text: String(localized: "Move Home row \(title) to position \(position + 1)")))
             }
-            let disabled = disabledRows ?? []
+        }
+        // Review r1: on/off is applied whenever the proposal carries the disabled set, with or
+        // without an order, and only then.
+        if let disabled = disabledRows {
             for row in rows {
                 let shouldBeOn = !disabled.contains(row.id)
                 guard row.enabled != shouldBeOn else { continue }

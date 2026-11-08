@@ -89,6 +89,7 @@ struct ManageFromPhonePane: View {
         )) {
             ConfirmPhoneChangesDialog(
                 lines: remote.pendingLines,
+                refreshed: remote.pendingLinesRefreshed,
                 onConfirm: { remote.confirmPending() },
                 onReject: { remote.rejectPending() }
             )

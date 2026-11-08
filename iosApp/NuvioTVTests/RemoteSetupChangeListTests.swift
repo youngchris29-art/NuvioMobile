@@ -55,6 +55,23 @@ final class RemoteSetupChangeListTests: XCTestCase {
         XCTAssertTrue(out.contains { $0.text == "Turn on Home row Top Rated" })
     }
 
+    /// Review r1: on/off and order are applied independently, so they are listed independently.
+    func testPartialRowProposalsListOnlyWhatApplies() {
+        let rows = [item("r1", "Popular"), item("r2", "Trending", on: false)]
+        XCTAssertEqual(lines(rows: rows, rowOrder: nil, disabled: ["r1"]).map(\.text),
+                       ["Turn off Home row Popular", "Turn on Home row Trending"], "on/off without an order")
+        XCTAssertEqual(lines(rows: rows, rowOrder: ["r2", "r1"], disabled: nil).map(\.kind), [.move],
+                       "an order alone leaves the flags alone")
+    }
+
+    /// Review r1: a row the phone did not list (a sync added it) stays after the listed ones, as
+    /// `applyRows` does, so the listed rows really move ahead of it.
+    func testRowsTheProposalDidNotListFallBehind() {
+        let rows = [item("x", "New Row"), item("a", "A"), item("b", "B")]
+        let out = lines(rows: rows, rowOrder: ["a", "b"], disabled: nil)
+        XCTAssertEqual(out, [.init(kind: .move, text: "Move Home row New Row to position 3")])
+    }
+
     func testKeysPatternAndBadges() {
         XCTAssertEqual(lines(key: true).map(\.kind), [.key])
         XCTAssertEqual(lines(pattern: "  ").map(\.text), ["Clear the custom poster pattern"])
