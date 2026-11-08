@@ -87,4 +87,33 @@ nonisolated struct RemoteSetupAddonIds {
         }
         return .success(resolved)
     }
+
+    /// C1 review r10: an add-on's name and description reach the page too, and either can quote a
+    /// keyed URL (a synced name, a manifest description). Every URL becomes `<link>`, secret-style
+    /// `name=value` pairs lose their value, and any long path or query piece of the add-on's own
+    /// manifest URL (where debrid keys live) is cut wherever it appears.
+    static func pageSafe(_ text: String, manifestUrl: String) -> String {
+        var out = text
+        for piece in secretPieces(of: manifestUrl) {
+            out = out.replacingOccurrences(of: piece, with: "<redacted>")
+        }
+        out = out.replacingOccurrences(
+            of: #"(?i)\b(?:https?|stremio)://[^\s"'<>]+"#, with: "<link>", options: .regularExpression)
+        out = out.replacingOccurrences(
+            of: #"(?i)\b(token|access_token|apikey|api_key|key|auth|password)=[^&\s"'<>)]+"#,
+            with: "$1=<redacted>", options: .regularExpression)
+        return out
+    }
+
+    /// The path segments and query of `manifestUrl` long enough to hold a key, longest first.
+    private static func secretPieces(of manifestUrl: String) -> [String] {
+        guard let components = URLComponents(string: manifestUrl) else { return [] }
+        var pieces = components.percentEncodedPath.split(separator: "/").map(String.init)
+            .filter { $0 != "manifest.json" && $0.count >= 8 }
+        if let query = components.percentEncodedQuery, query.count >= 8 { pieces.append(query) }
+        for piece in pieces where piece.removingPercentEncoding.map({ $0 != piece }) == true {
+            pieces.append(piece.removingPercentEncoding!)
+        }
+        return pieces.sorted { $0.count > $1.count }
+    }
 }

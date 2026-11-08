@@ -118,6 +118,30 @@ final class RemoteSetupAddonIdsTests: XCTestCase {
     }
 }
 
+/// C1 review r10: names and descriptions never carry a keyed URL to the page.
+final class RemoteSetupPageSafeTextTests: XCTestCase {
+    private let url = "https://torrentio.strem.fun/torbox=SECRETKEY123/manifest.json"
+
+    func testTheManifestUrlAndItsKeyedPiecesAreCut() {
+        let text = RemoteSetupAddonIds.pageSafe("Configured at \(url) (torbox=SECRETKEY123)", manifestUrl: url)
+        XCTAssertFalse(text.contains("SECRETKEY123"))
+        XCTAssertTrue(text.contains("<link>"))
+    }
+
+    func testOtherUrlsAndSecretParamsAreRedacted() {
+        let text = RemoteSetupAddonIds.pageSafe(
+            "See stremio://other.example.com/abc/manifest.json or apikey=xyz789&x=1", manifestUrl: url)
+        XCTAssertFalse(text.contains("other.example.com"))
+        XCTAssertFalse(text.contains("xyz789"))
+        XCTAssertTrue(text.contains("apikey=<redacted>"))
+    }
+
+    func testPlainTextIsUntouched() {
+        XCTAssertEqual(RemoteSetupAddonIds.pageSafe("Torrentio — streams from many sources", manifestUrl: url),
+                       "Torrentio — streams from many sources")
+    }
+}
+
 /// C1 review r2: confirming claims the change atomically with supersession.
 final class RemoteSetupServerClaimTests: XCTestCase {
     func testASupersededChangeCannotBeClaimedAndSettledChangesStaySettled() throws {

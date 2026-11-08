@@ -328,7 +328,9 @@ async function apply() {
 }
 
 async function poll(id, tries) {
-  if (tries > 120) { setStatus("Timed out waiting for the TV.", "err"); el("apply").disabled = false; setLocked(false); return; }
+  // The TV can still apply this change, so the page stays locked and keeps asking until it
+  // settles (a TV that restarted its session answers not_found and the page reloads).
+  if (tries === 120) setStatus("Still waiting for the TV. Confirm or decline the change there.", "err");
   try {
     const res = await fetch("/api/status/" + id, { headers: AUTH });
     const { status } = await res.json();

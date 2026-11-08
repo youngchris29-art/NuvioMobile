@@ -241,8 +241,8 @@ final class RemoteSetupViewModel: ObservableObject {
                 StateAddon(
                     id: addonIds.id(for: $0.manifestUrl),
                     host: AddonsViewModel.host(of: $0.manifestUrl),
-                    name: $0.displayTitle,
-                    description: $0.manifest?.description_ ?? "",
+                    name: RemoteSetupAddonIds.pageSafe($0.displayTitle, manifestUrl: $0.manifestUrl),
+                    description: RemoteSetupAddonIds.pageSafe($0.manifest?.description_ ?? "", manifestUrl: $0.manifestUrl),
                     enabled: $0.enabled
                 )
             },
