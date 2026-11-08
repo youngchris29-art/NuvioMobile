@@ -524,6 +524,9 @@ struct AddonsHubSplitView: View {
             handOffContent(key)
             return
         }
+        // Review VO-r3: focus reached the sidebar for real (the post-move grab was handed back
+        // above): a waiting move announcement no longer describes what has focus.
+        HubAccessibility.invalidatePending()
         if new == deliberateSidebar {
             deliberateSidebar = nil
             if !new.isAction, new != selected { select(new) }
@@ -724,7 +727,11 @@ struct AddonsHubSplitView: View {
     /// box dropped it onto the sidebar; the simulator did not).
     private func contentPathChanged(from old: [HubAddonRoute], to new: [HubAddonRoute]) {
         // Review A5-r3: a push (another detail page) cancels a pending lift.
-        if new.count > old.count { pendingLiftUrl = nil }
+        if new.count > old.count {
+            pendingLiftUrl = nil
+            // Review VO-r3: a detail page pushed right after a move must not hear its "Moved".
+            HubAccessibility.invalidatePending()
+        }
         guard new.isEmpty, let route = old.last else { return }
         if programmaticPop {
             programmaticPop = false
