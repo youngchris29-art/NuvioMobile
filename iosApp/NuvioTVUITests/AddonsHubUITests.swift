@@ -7,7 +7,7 @@ import XCTest
 /// and keeps labels out of the logs (they can carry add-on hosts).
 ///
 /// Launch: `-home_layout classic -debug.rememberLastProfile NO -debug.trailerForceNoTrailer YES`;
-/// the Chris tile is the shared verified step. The two v1-layout legs stay skipped (A8 rewrites them).
+/// the Chris tile is the shared verified step. All legs drive the v2 split view.
 final class AddonsHubUITests: XCTestCase {
     let remote = XCUIRemote.shared
 
@@ -45,62 +45,40 @@ final class AddonsHubUITests: XCTestCase {
         pause(2)
     }
 
-    func testHubCardsAndFirstAddonCard() throws {
-        throw XCTSkip("Add-ons hub v2: v1 page layout; AddonsSplitUITests covers the split shell, A8 rewrites this leg.")
-        let app = XCUIApplication()
-        app.launchArguments = ["-home_layout", "classic", "-debug.rememberLastProfile", "NO",
-                               "-debug.trailerForceNoTrailer", "YES", "-detail_trailer_autoplay", "NO"]
-        app.launch()
-        let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
-        XCTAssertTrue(chris.waitForExistence(timeout: 90), "profile picker never appeared")
-        if chris.exists { DetailEntryRoute.selectChrisTile(self, app, timeout: 5) }
+    /// Split hub shell on a seeded fixture (stub A "ZZ Hub A" installed): the root and all six sidebar
+    /// rows exist, the Installed row's value is a count of at least 1, the stub's row is listed, and
+    /// Right from the Installed sidebar row lands on the FIRST Installed row (value starts with "On").
+    /// Menu returns to the Installed sidebar row. Nothing is selected or changed.
+    func testSplitHubRowsAndFirstInstalledRow() throws {
+        continueAfterFailure = false
+        let addonStub = try startHubStubs()
+        seedHubAddonA(addonStub)
+
+        let app = launchHub(Self.hubCommon)
         pause(10)
+        openSplit(app)
+        XCTAssertTrue(element(app, "addons_split_root").exists, "addons_split_root missing")
+        for section in ["installed", "catalogs", "debrid", "plugins", "install", "refresh"] {
+            XCTAssertTrue(sidebar(app, section).waitForExistence(timeout: 5), "addons_sidebar_\(section) missing")
+        }
+        let installedValue = (sidebar(app, "installed").value as? String) ?? ""
+        let installedCount = Int(installedValue.prefix(while: { $0.isNumber })) ?? 0
+        XCTAssertGreaterThanOrEqual(installedCount, 1, "the Installed row's value is not a number >= 1: \"\(installedValue)\"")
+        XCTAssertTrue(waitUntil(timeout: 20) { self.rowIndex(app, titled: "ZZ Hub A") != nil },
+                      "A never showed on the hub (seed refused?); rows: \(rowTitles(app))")
+        say("installed count \(installedCount); rows: \(rowTitles(app))")
 
-        openTab(app, named: "Add-ons")
-        XCTAssertTrue(element(app, "addons_hub_root").waitForExistence(timeout: 10), "addons_hub_root never appeared; focused: \(focusDump(app))")
-        for id in ["addons_hub_summary_addons", "addons_hub_summary_catalogs", "addons_hub_summary_debrid",
-                   "addons_hub_action_install", "addons_hub_action_refresh", "addons_hub_installed_title"] {
-            XCTAssertTrue(element(app, id).waitForExistence(timeout: 5), "\(id) missing")
-        }
-        say("hub up; plugins card: \(element(app, "addons_hub_summary_plugins").exists); phone card: \(element(app, "addons_hub_action_phone").exists)")
-        pause(2)
+        XCTAssertTrue(moveSidebar(app, to: "installed"), "Installed never took focus; focused: \(focusDump(app))")
+        pause(0.8)
+        remote.press(.right); pause(0.8)
+        XCTAssertTrue(element(app, "addons_row_0").waitForExistence(timeout: 5), "addons_row_0 missing")
+        XCTAssertTrue(waitUntil(timeout: 5) { self.rowHasFocus(app, index: 0, title: self.rowLabel(app, 0) ?? "") },
+                      "Right did not land on the first Installed row; focused: \(focusDump(app))")
+        XCTAssertTrue(rowValue(app, 0).hasPrefix("On"), "the first Installed row's value does not start with On: \"\(rowValue(app, 0))\"")
 
-        // Focus into the page: the first summary card, then the action row, then card 0.
-        if !element(app, "addons_hub_summary_addons").hasFocus { remote.press(.down); pause(0.8) }
-        say("after Down: \(focusDump(app))")
-        pause(2)
-        remote.press(.down); pause(0.8)
-        say("action row: \(focusDump(app))")
-        pause(2)
-        let card0 = element(app, "addons_hub_card_0")
-        XCTAssertTrue(card0.waitForExistence(timeout: 15), "no addons_hub_card_0 on the fixture (does Chris have add-ons?); empty=\(element(app, "addons_hub_empty").exists)")
-        remote.press(.down); pause(0.8)
-        XCTAssertTrue(moveFocus(.down, until: card0, max: 3), "card 0 never took focus; focused: \(focusDump(app))")
-        say("card 0: exists=\(card0.exists) hasFocus=\(card0.hasFocus) enabled=\(card0.isEnabled)")
-        pause(2)
-        // The single-card fixture: Up and Down are disabled (no neighbour) and so skipped by
-        // focus; Right from Toggle lands on Remove.
-        for control in ["toggle", "remove"] {
-            remote.press(.right); pause(0.6)
-            let node = element(app, "addons_hub_card_0_\(control)")
-            say("Right -> \(control): exists=\(node.exists) enabled=\(node.isEnabled) hasFocus=\(node.hasFocus)")
-            XCTAssertTrue(node.exists && node.hasFocus, "\(control) never took focus; focused: \(focusDump(app))")
-            pause(1.5)
-        }
-        for control in ["up", "down"] {
-            let node = element(app, "addons_hub_card_0_\(control)")
-            XCTAssertTrue(node.exists, "\(control) control missing")
-            XCTAssertFalse(node.isEnabled, "\(control) should be disabled on the single-card fixture")
-        }
-        // Up on the remove control must stay inside the installed list or go to the action row,
-        // never leave the hub.
-        remote.press(.up); pause(0.8)
-        let actions = ["addons_hub_action_install", "addons_hub_action_refresh", "addons_hub_action_phone"]
-        let focusedAction = actions.first { element(app, $0).exists && element(app, $0).hasFocus }
-        say("Up from controls: focused action card: \(focusedAction ?? "<none>")")
-        XCTAssertNotNil(focusedAction, "focus after the final Up is not an addons_hub_action_* card; focused: \(focusDump(app))")
-        XCTAssertTrue(element(app, "addons_hub_root").exists, "the hub went away")
-        pause(2)
+        remote.press(.menu); pause(1.5)
+        XCTAssertTrue(waitSidebarFocus(app, "installed"), "Menu did not go to the Installed sidebar row; focused: \(focusDump(app))")
+        pause(1)
     }
 
     /// H3: the Install section's row opens the install sheet with the URL field focused, and Menu
@@ -131,69 +109,38 @@ final class AddonsHubUITests: XCTestCase {
         pause(2)
     }
 
-    /// H4: the Catalogs summary card opens the catalogs page; the first row's name area, On/Off,
-    /// Up (disabled on the first row) and Down are reachable by Right; Menu returns to the hub with the
-    /// Catalogs card focused. Never Select on a control: nothing changes on the fixture.
+    /// The Catalogs section of the split hub: its pane (root, title, first catalog row) exists, Right
+    /// from the Catalogs sidebar row lands on "Match add-ons order", Down reaches catalog 0, and Menu
+    /// from the content returns to the Catalogs sidebar row with the pane still showing (the v1 P2
+    /// regression). Never Select on anything: nothing changes on the fixture.
     func testCatalogsPageOpensFromTheHub() throws {
-        throw XCTSkip("Add-ons hub v2: v1 page layout; AddonsSplitUITests covers the split shell, A8 rewrites this leg.")
-        let app = XCUIApplication()
-        app.launchArguments = ["-home_layout", "classic", "-debug.rememberLastProfile", "NO",
-                               "-debug.trailerForceNoTrailer", "YES", "-detail_trailer_autoplay", "NO"]
-        app.launch()
-        let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
-        XCTAssertTrue(chris.waitForExistence(timeout: 90), "profile picker never appeared")
-        if chris.exists { DetailEntryRoute.selectChrisTile(self, app, timeout: 5) }
+        continueAfterFailure = false
+        let app = launchHub(Self.hubCommon)
         pause(10)
-
-        openTab(app, named: "Add-ons")
-        XCTAssertTrue(element(app, "addons_hub_root").waitForExistence(timeout: 10), "addons_hub_root never appeared; focused: \(focusDump(app))")
-        let card = element(app, "addons_hub_summary_catalogs")
-        XCTAssertTrue(card.waitForExistence(timeout: 5), "addons_hub_summary_catalogs missing")
-        // Run 1: the page's default focus can already sit on the Add-ons summary card after the tab
-        // Select, so an unconditional Down fell through to the action row. Go Down only while no
-        // summary card has focus, then Right along the row.
-        let summaryIds = ["addons_hub_summary_addons", "addons_hub_summary_catalogs", "addons_hub_summary_debrid", "addons_hub_summary_plugins"]
-        for _ in 0..<4 where !summaryIds.contains(where: { element(app, $0).hasFocus }) {
-            remote.press(.down); pause(0.8)
-        }
-        if !moveFocus(.right, until: card, max: 3) { _ = moveFocus(.left, until: card, max: 4) }
-        XCTAssertTrue(card.hasFocus, "the Catalogs summary card never took focus; focused: \(focusDump(app))")
-        pause(1)
-
-        remote.press(.select); pause(1.5)
-        XCTAssertTrue(element(app, "addons_hub_catalogs_root").waitForExistence(timeout: 5), "the catalogs page did not open; focused: \(focusDump(app))")
+        openSplit(app)
+        selectSection(app, "catalogs")
+        XCTAssertTrue(element(app, "addons_hub_catalogs_root").waitForExistence(timeout: 5), "the catalogs pane did not show; focused: \(focusDump(app))")
         XCTAssertTrue(element(app, "addons_hub_catalogs_title").exists, "catalogs title missing")
         let row0 = element(app, "addons_hub_catalog_0")
-        XCTAssertTrue(row0.waitForExistence(timeout: 10), "no addons_hub_catalog_0 on the fixture; empty=\(element(app, "addons_hub_catalogs_empty").exists)")
-        XCTAssertTrue(moveFocus(.down, until: row0, max: 4), "catalog row 0 never took focus; focused: \(focusDump(app))")
-        let rowCount = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "identifier MATCHES %@", "addons_hub_catalog_[0-9]+")).count
-        say("catalogs page shows \(rowCount) rows")
-        say("catalog row 0 focused")
-        pause(1.5)
-
-        remote.press(.right); pause(0.6)
-        let toggle = element(app, "addons_hub_catalog_0_toggle")
-        XCTAssertTrue(toggle.exists && toggle.hasFocus, "the toggle never took focus; focused: \(focusDump(app))")
-        remote.press(.right); pause(0.6)
-        let up = element(app, "addons_hub_catalog_0_up")
-        let down = element(app, "addons_hub_catalog_0_down")
-        XCTAssertTrue(up.exists, "up control missing")
-        XCTAssertFalse(up.isEnabled, "up should be disabled on the first row")
-        XCTAssertTrue(down.exists, "down control missing")
-        if down.isEnabled {
-            XCTAssertTrue(down.hasFocus, "down never took focus; focused: \(focusDump(app))")
-        } else {
-            XCTAssertTrue(toggle.hasFocus, "focus left the toggle on a one-catalog fixture; focused: \(focusDump(app))")
+        if !row0.waitForExistence(timeout: 10) {
+            if element(app, "addons_hub_catalogs_empty").exists { throw XCTSkip("no catalogs on the fixture") }
+            XCTFail("no addons_hub_catalog_0 on the fixture")
+            return
         }
-        pause(1.5)
+        let title = row0.label
+
+        remote.press(.right); pause(0.8)
+        XCTAssertTrue(waitUntil(timeout: 3) { self.labelHasFocus(app, "Match add-ons order") },
+                      "Right did not land on the Match add-ons order row; focused: \(focusDump(app))")
+        remote.press(.down); pause(0.8)
+        XCTAssertTrue(waitUntil(timeout: 3) { self.labelHasFocus(app, title) },
+                      "Down did not reach catalog row 0; focused: \(focusDump(app))")
+        say("catalogs: Match row then catalog 0 focused")
 
         remote.press(.menu); pause(1.5)
-        XCTAssertFalse(element(app, "addons_hub_catalogs_root").exists, "the catalogs page is still up after Menu")
-        XCTAssertTrue(element(app, "addons_hub_root").exists, "the hub is not showing")
-        XCTAssertTrue(card.exists && card.hasFocus, "focus did not return to the Catalogs card; focused: \(focusDump(app))")
-        say("back on the hub: \(focusDump(app))")
-        pause(2)
+        XCTAssertTrue(waitSidebarFocus(app, "catalogs"), "Menu did not go to the Catalogs sidebar row; focused: \(focusDump(app))")
+        XCTAssertTrue(element(app, "addons_content_catalogs").exists, "the catalogs content went away after Menu")
+        pause(1)
     }
 
     // MARK: - H5 legs: shared helpers
@@ -734,6 +681,10 @@ final class AddonsHubUITests: XCTestCase {
 
     // MARK: - H5 leg 3: Refresh all
 
+    /// Refresh all on a seeded fixture: selecting the row shows a Refreshing/Refreshed toast, the row's
+    /// value goes through "Refreshing" to an "Updated ..." stamp. After a relaunch the leg reports
+    /// whether the stamp was kept: the stamp persists per profile identity, which the guest fixture
+    /// does not have, so survival is checked on the device in a signed-in profile.
     func testRefreshAllTogglesTheSpinnerAndStamps() throws {
         continueAfterFailure = false
         let addonStub = try startHubStubs()
@@ -771,6 +722,20 @@ final class AddonsHubUITests: XCTestCase {
             return now.hasPrefix("Updated") && (now != before || sawRefreshing)
         }, "the Refresh all row never changed to an Updated stamp; before: \(before); now: \(stamp())")
         say("refresh row after: stamped (spinner seen: \(sawRefreshing))")
+
+        // The stamp is stored per profile IDENTITY (A1) and never for a profile without one. The
+        // FA87 fixture's "Chris" is a signed-out local guest with an empty profile id, so the
+        // stamp is not stored there by design ("before" reads "Not refreshed yet" on every run).
+        // Survival across a relaunch is covered by A1's load/save unit tests and by the device
+        // pass in Test 2 (a signed-in profile); here it is only reported.
+        app.terminate()
+        let again = launchHub(Self.hubCommon)
+        pause(10)
+        openSplit(again)
+        let refreshAgain = sidebar(again, "refresh")
+        XCTAssertTrue(refreshAgain.waitForExistence(timeout: 5), "addons_sidebar_refresh missing after the relaunch")
+        let survived = waitUntil(timeout: 5) { ((refreshAgain.value as? String) ?? "").hasPrefix("Updated") }
+        say("refresh stamp after relaunch: \(survived ? "kept" : "not kept (guest fixture: no profile id)")")
         pause(2)
     }
 }
