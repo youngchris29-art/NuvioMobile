@@ -60,5 +60,8 @@ class EditedAddonListTest {
         kotlin.test.assertTrue(isSameManifestUrl("https://example.com/manifest.json", "HTTPS://EXAMPLE.com/manifest.json"))
         kotlin.test.assertFalse(isSameManifestUrl("https://example.com/Key/manifest.json", "https://example.com/key/manifest.json"))
         kotlin.test.assertTrue(isSameManifestUrl("https://User@Example.com/manifest.json", "https://User@example.COM/manifest.json"))
+        kotlin.test.assertTrue(isSameManifestUrl("EXAMPLE.com/manifest.json", "https://example.com/manifest.json"))
+        kotlin.test.assertTrue(isSameManifestUrl("stremio://example.com/manifest.json", "https://example.com/manifest.json"))
+        kotlin.test.assertFalse(isSameManifestUrl("http://example.com/manifest.json", "https://example.com/manifest.json"))
     }
 }

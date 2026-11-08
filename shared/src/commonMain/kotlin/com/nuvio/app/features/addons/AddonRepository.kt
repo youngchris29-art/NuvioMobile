@@ -933,9 +933,19 @@ internal fun editedAddonList(
  */
 internal fun isSameManifestUrl(a: String, b: String): Boolean = manifestComparisonKey(a) == manifestComparisonKey(b)
 
-private fun manifestComparisonKey(url: String): String {
+private fun manifestComparisonKey(raw: String): String {
+    // Review r22: a synced URL can be schemeless (`EXAMPLE.com/manifest.json`) or `stremio://`;
+    // both mean https, as normalizeManifestUrl reads them. Only a `://` before the first `/` or
+    // `?` is a scheme separator.
+    val trimmed = raw.trim()
+    val firstBreak = trimmed.indexOfFirst { it == '/' || it == '?' }.let { if (it < 0) trimmed.length else it }
+    val schemeAt = trimmed.indexOf("://").takeIf { it in 0 until firstBreak }
+    val url = when {
+        schemeAt == null -> "https://$trimmed"
+        trimmed.substring(0, schemeAt).equals("stremio", ignoreCase = true) -> "https://" + trimmed.substring(schemeAt + 3)
+        else -> trimmed
+    }
     val sep = url.indexOf("://")
-    if (sep < 0) return url
     val afterSep = url.substring(sep + 3)
     val authorityEnd = afterSep.indexOfFirst { it == '/' || it == '?' }.let { if (it < 0) afterSep.length else it }
     val authority = afterSep.substring(0, authorityEnd)
