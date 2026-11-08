@@ -107,7 +107,11 @@ final class RemoteSetupChangeListTests: XCTestCase {
         XCTAssertEqual(lines(pattern: "https://img.example.com/{id}.jpg").map(\.kind), [.pattern])
         XCTAssertEqual(lines(pattern: "ftp://x").map(\.kind), [.rejected])
         XCTAssertEqual(lines(badges: ["https://cdn.example.com/packs/neon.json?v=2", "https://other.example.org/a/b.json"]).map(\.text),
-                       ["Import and use badge pack cdn.example.com/neon.json", "Import and use badge pack other.example.org/b.json"])
+                       ["Import badge pack cdn.example.com/neon.json",
+                        "Import badge pack other.example.org/b.json and make it the active pack"])
+        // Review r7: packs that would read the same show their whole path.
+        XCTAssertEqual(List.badgePackLabels(["https://h.example.com/alice/badges.json", "https://h.example.com/bob/badges.json"]),
+                       ["h.example.com/alice/badges.json", "h.example.com/bob/badges.json"])
     }
 
     func testMovedIdsKeepsTheLongestOrderedRun() {

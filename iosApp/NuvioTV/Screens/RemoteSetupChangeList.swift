@@ -139,14 +139,30 @@ nonisolated enum RemoteSetupChangeList {
                 out.append(Line(kind: .rejected, text: String(localized: "Ignore the poster pattern (it must be an http(s) URL)")))
             }
         }
-        // Review r6: one line per pack (host and file name; a pack URL is a public file), and an
-        // import makes that pack the active one.
-        for url in badgePackUrls {
+        // Review r6/r7: one line per pack (a pack URL is a public file). Packs import in order
+        // and the last one imported is the active pack, so the dialog says which one that is.
+        let labels = badgePackLabels(badgePackUrls)
+        for (index, url) in badgePackUrls.enumerated() {
+            let label = labels[index]
             out.append(Line(kind: .badges,
-                            text: String(localized: "Import and use badge pack \(badgePackLabel(url))"),
+                            text: index == badgePackUrls.count - 1
+                                ? String(localized: "Import badge pack \(label) and make it the active pack")
+                                : String(localized: "Import badge pack \(label)"),
                             subject: url))
         }
         return out
+    }
+
+    /// Labels for `urls` in order: `host/file.json`, or the whole path where two would read the
+    /// same (review r7).
+    static func badgePackLabels(_ urls: [String]) -> [String] {
+        let short = urls.map(badgePackLabel)
+        let counts = Dictionary(short.map { ($0, 1) }, uniquingKeysWith: +)
+        return urls.enumerated().map { index, url in
+            guard counts[short[index], default: 0] > 1,
+                  let parts = URLComponents(string: url), let host = parts.host else { return short[index] }
+            return host + parts.path
+        }
     }
 
     /// `host/file.json` for a badge pack URL (the query is dropped), or the trimmed text when it

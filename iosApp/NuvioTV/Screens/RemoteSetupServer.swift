@@ -86,6 +86,8 @@ final class RemoteSetupServer {
         /// Review r4/r5: the session ids of new add-ons another change installed first with the other
         /// on/off setting (the page marks those rows).
         var conflictIds: [String] = []
+        /// C3 review r7: badge packs whose import failed.
+        var badgeFailures = 0
         let createdAt = Date()
 
         init(proposal: Proposal) {
@@ -170,13 +172,14 @@ final class RemoteSetupServer {
     }
 
     /// Settles a claimed change as `confirmed`, or as the refusal that stopped it.
-    func finishApplying(id: String, status: ChangeStatus, failedNewIndices: [Int] = [], conflictIds: [String] = []) {
+    func finishApplying(id: String, status: ChangeStatus, failedNewIndices: [Int] = [], conflictIds: [String] = [], badgeFailures: Int = 0) {
         lock.lock()
         defer { lock.unlock() }
         guard let change = pending[id], change.status == .applying else { return }
         change.status = status
         change.failedNewIndices = failedNewIndices
         change.conflictIds = conflictIds
+        change.badgeFailures = badgeFailures
     }
 
     /// Settles a still-pending change as declined or refused; a no-op for one already settled.
@@ -386,10 +389,12 @@ final class RemoteSetupServer {
             let status = pending[id]?.status.rawValue ?? "not_found"
             let failed = pending[id]?.failedNewIndices ?? []
             let conflictIds = pending[id]?.conflictIds ?? []
+            let badgeFailures = pending[id]?.badgeFailures ?? 0
             lock.unlock()
             var fields = ["status": status]
             if !failed.isEmpty { fields["failedNew"] = failed.map(String.init).joined(separator: ",") }
             if !conflictIds.isEmpty { fields["conflictIds"] = conflictIds.joined(separator: ",") }
+            if badgeFailures > 0 { fields["badgeFailed"] = String(badgeFailures) }
             response = HttpResponse.json(fields)
         default:
             response = HttpResponse(

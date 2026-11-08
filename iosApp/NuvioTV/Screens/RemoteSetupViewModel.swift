@@ -246,7 +246,8 @@ final class RemoteSetupViewModel: ObservableObject {
             guard server.claimForConfirm(id: change.id) else { return }
             let status = apply(change.proposal, addons: resolved)
             let installs = status == .confirmed ? (resolved ?? []).filter(\.isNew) : []
-            installThenFinish(installs, changeId: change.id, status: status)
+            let badges = status == .confirmed ? Self.badgeUrls(change.proposal) : []
+            installThenFinish(installs, badges: badges, changeId: change.id, status: status)
         }
     }
 
@@ -363,13 +364,7 @@ final class RemoteSetupViewModel: ObservableObject {
                 CustomPosterUrlRepository.shared.setPattern(pattern: pattern)
             }
         }
-        // Badge pack imports (async fetch+parse; the badge watcher refreshes the page state as
-        // each one lands). Already-imported URLs are re-fetched/updated by the shared repo.
-        for url in proposal.badgeUrls ?? [] {
-            let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { continue }
-            StreamBadgeSettingsRepository.shared.importStreamBadgeRulesFromUrl(url: trimmed) { _, _ in }
-        }
+        // Badge packs are imported by `installThenFinish`, one after another (C3 review r7).
         return .confirmed
     }
 
@@ -430,10 +425,45 @@ final class RemoteSetupViewModel: ObservableObject {
     /// when every one has finished, so the page, which keeps polling while the change is
     /// `applying`, reloads a list that already holds them. A read-only list was refused before
     /// this, so the repository accepts them (a failed fetch simply leaves that one out).
-    private func installThenFinish(_ entries: [RemoteSetupAddonIds.Resolved], changeId: String, status: RemoteSetupServer.ChangeStatus) {
+    /// The proposal's badge pack URLs, trimmed, blanks dropped (the dialog and the import share it).
+    nonisolated static func badgeUrls(_ proposal: RemoteSetupServer.Proposal) -> [String] {
+        (proposal.badgeUrls ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+    }
+
+    /// C3 review r7: badge packs one after another (each import rewrites the pack list from its
+    /// own snapshot, and the last one imported is the active pack), counting failures.
+    private func importBadges(_ urls: [String], failures: Int = 0, then done: @escaping (Int) -> Void) {
+        guard let url = urls.first else { done(failures); return }
+        StreamBadgeSettingsRepository.shared.importStreamBadgeRulesFromUrl(url: url) { [weak self] result, _ in
+            let ok = result is StreamBadgeImportResultSuccess
+            Task { @MainActor in
+                guard let self else { return }
+                self.importBadges(Array(urls.dropFirst()), failures: failures + (ok ? 0 : 1), then: done)
+            }
+        }
+    }
+
+    private func installThenFinish(
+        _ entries: [RemoteSetupAddonIds.Resolved],
+        badges: [String],
+        changeId: String,
+        status: RemoteSetupServer.ChangeStatus
+    ) {
+        // Settles the change once installs and badge imports are done (C3 review r7: the page
+        // learns of failed badge packs too).
+        let finish: ([Int], [String]) -> Void = { [weak self] failed, conflictIds in
+            self?.importBadges(badges) { badgeFailures in
+                if failed.isEmpty && conflictIds.isEmpty && badgeFailures == 0 {
+                    self?.server.finishApplying(id: changeId, status: status)
+                } else {
+                    self?.server.finishApplying(id: changeId, status: .partial, failedNewIndices: failed.sorted(),
+                                                conflictIds: conflictIds, badgeFailures: badgeFailures)
+                }
+            }
+        }
         let urls = entries.map(\.url)
         guard !urls.isEmpty else {
-            server.finishApplying(id: changeId, status: status)
+            finish([], [])
             return
         }
         var remaining = urls.count
@@ -458,11 +488,7 @@ final class RemoteSetupViewModel: ObservableObject {
                     remaining -= 1
                     guard remaining == 0 else { return }
                     // Review r14: a failed install is reported, not hidden behind "confirmed".
-                    if failed.isEmpty && conflictIds.isEmpty {
-                        self?.server.finishApplying(id: changeId, status: status)
-                    } else {
-                        self?.server.finishApplying(id: changeId, status: .partial, failedNewIndices: failed.sorted(), conflictIds: conflictIds.filter { !$0.isEmpty })
-                    }
+                    finish(failed, conflictIds.filter { !$0.isEmpty })
                 }
             }
         }
@@ -563,7 +589,7 @@ final class RemoteSetupViewModel: ObservableObject {
             mdbListEnabled: mdbListEnabled,
             posterPattern: proposal.posterPattern,
             posterPatternValid: Self.isValidPosterPattern,
-            badgePackUrls: (proposal.badgeUrls ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+            badgePackUrls: Self.badgeUrls(proposal)
         )
     }
 

@@ -355,7 +355,7 @@ async function poll(id, tries) {
   try {
     const res = await fetch("/api/status/" + id, { headers: AUTH });
     if (res.status === 403) { endPairing(); return; }
-    const { status, failedNew, conflictIds } = await res.json();
+    const { status, failedNew, conflictIds, badgeFailed } = await res.json();
     if (status === "partial") {
       // Applied, except new add-ons whose install failed: the TV's state is reloaded and exactly
       // those entries are put back so they can be fixed and sent again.
@@ -368,6 +368,8 @@ async function poll(id, tries) {
       const notes = [];
       if (failed.length) notes.push(failed.length + " new add-on(s) couldn't be installed. Check the address; they're still in the list to send again.");
       const clashIds = (conflictIds || "").split(",").filter(Boolean);
+      const badgeMisses = Number(badgeFailed || 0);
+      if (badgeMisses) notes.push(badgeMisses + " badge pack(s) couldn't be imported. Check the address and add them again.");
       if (clashIds.length) notes.push(clashIds.length + " new add-on(s) were already installed by another change with a different on/off setting. They're marked in the list; check their switch.");
       await reloadLocked("Applied on the TV, but " + notes.join(" "), false, 1500);
       for (const a of addons) if (clashIds.includes(a.id)) a.conflict = true;
