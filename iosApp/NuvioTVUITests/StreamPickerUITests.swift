@@ -335,17 +335,18 @@ final class StreamPickerUITests: XCTestCase {
             XCTAssertTrue(poster.waitForExistence(timeout: 10), "no poster in the info panel on a 1080p sim")
             pause(1) // let the header/facts/progress measurements settle
             let pane = infoPanel.frame, art = poster.frame, line = progress.frame
+            // The panel's accessibility frame is the union of its children (its padding isn't in
+            // it), so the bound is the screen: everything ends above the 60 pt screen margin
+            // (`Theme.Spacing.screen`) (review p5).
+            let bottom = app.windows.firstMatch.frame.maxY - 60
+            say("info panel \(pane), poster \(art), progress line \(line), bottom bound \(bottom)")
             XCTAssertGreaterThanOrEqual(art.width, 260, "poster \(art) under the 260 pt floor")
             XCTAssertLessThanOrEqual(art.width, 360, "poster \(art) over the 360 pt cap")
             XCTAssertEqual(art.height, art.width * 1.5, accuracy: 1, "poster \(art) not 2:3")
-            XCTAssertTrue(pane.contains(art.insetBy(dx: 1, dy: 1)), "poster \(art) outside the info panel \(pane)")
+            XCTAssertGreaterThanOrEqual(art.minX, pane.minX - 1, "poster \(art) left of the info panel \(pane)")
+            XCTAssertLessThanOrEqual(art.maxX, pane.maxX + 1, "poster \(art) right of the info panel \(pane)")
             XCTAssertGreaterThanOrEqual(line.minY, art.maxY - 1, "progress line \(line) not under the poster \(art)")
-            // The panel's frame includes its 60 pt vertical padding (`Theme.Spacing.screen`); the
-            // progress line must end above it (review p5).
-            let content = pane.insetBy(dx: 0, dy: 60)
-            XCTAssertLessThanOrEqual(line.maxY, content.maxY + 1, "progress line \(line) runs into the info panel's padding \(content)")
-            XCTAssertLessThanOrEqual(art.maxY, content.maxY + 1, "poster \(art) runs into the info panel's padding \(content)")
-            say("info panel \(pane), poster \(art), progress line \(line)")
+            XCTAssertLessThanOrEqual(line.maxY, bottom + 1, "progress line \(line) runs past the screen margin \(bottom)")
         }
 
         // d. Chips.
