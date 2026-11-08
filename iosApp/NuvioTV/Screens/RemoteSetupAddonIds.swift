@@ -105,15 +105,28 @@ nonisolated struct RemoteSetupAddonIds {
         return out
     }
 
-    /// The path segments and query of `manifestUrl` long enough to hold a key, longest first.
-    private static func secretPieces(of manifestUrl: String) -> [String] {
-        guard let components = URLComponents(string: manifestUrl) else { return [] }
-        var pieces = components.percentEncodedPath.split(separator: "/").map(String.init)
-            .filter { $0 != "manifest.json" && $0.count >= 8 }
-        if let query = components.percentEncodedQuery, query.count >= 8 { pieces.append(query) }
-        for piece in pieces where piece.removingPercentEncoding.map({ $0 != piece }) == true {
-            pieces.append(piece.removingPercentEncoding!)
+    /// The pieces of `manifestUrl` long enough to hold a key, longest first: each path segment and
+    /// the query, and (review r11) each value inside them (`torbox=KEY`, `a=1|b=KEY`, query items),
+    /// plain and percent-decoded, so a key quoted on its own is cut too.
+    static func secretPieces(of manifestUrl: String) -> [String] {
+        // Parsed by hand: a literal `|` (common in debrid add-on paths) makes URLComponents fail.
+        guard let sep = manifestUrl.range(of: "://") else { return [] }
+        let afterHost = manifestUrl[sep.upperBound...].drop(while: { $0 != "/" && $0 != "?" })
+        let noFragment = afterHost.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first ?? ""
+        let halves = noFragment.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
+        var raw = (halves.first ?? "").split(separator: "/").map(String.init).filter { $0 != "manifest.json" }
+        if halves.count > 1 { raw.append(String(halves[1])) }
+        var pieces = Set<String>()
+        for chunk in raw {
+            pieces.insert(chunk)
+            for part in chunk.split(whereSeparator: { "&|,;".contains($0) }) {
+                pieces.insert(String(part))
+                if let eq = part.firstIndex(of: "=") { pieces.insert(String(part[part.index(after: eq)...])) }
+            }
         }
-        return pieces.sorted { $0.count > $1.count }
+        for piece in pieces {
+            if let decoded = piece.removingPercentEncoding { pieces.insert(decoded) }
+        }
+        return pieces.filter { $0.count >= 8 }.sorted { $0.count > $1.count }
     }
 }

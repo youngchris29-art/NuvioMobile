@@ -136,6 +136,16 @@ final class RemoteSetupPageSafeTextTests: XCTestCase {
         XCTAssertTrue(text.contains("apikey=<redacted>"))
     }
 
+    /// Review r11: a key quoted on its own, from the path or the query, plain or decoded.
+    func testIsolatedKeyValuesAreCut() {
+        XCTAssertFalse(RemoteSetupAddonIds.pageSafe("TorBox key: SECRETKEY123", manifestUrl: url).contains("SECRETKEY123"))
+        let queried = "https://addon.example.com/manifest.json?debrid=rd&token=ABC%2FDEF12345"
+        let text = RemoteSetupAddonIds.pageSafe("uses ABC/DEF12345 and ABC%2FDEF12345", manifestUrl: queried)
+        XCTAssertFalse(text.contains("DEF12345"))
+        let piped = "https://addon.example.com/providers=x|debridoptions=y|realdebrid=PIPEKEY99/manifest.json"
+        XCTAssertFalse(RemoteSetupAddonIds.pageSafe("key PIPEKEY99", manifestUrl: piped).contains("PIPEKEY99"))
+    }
+
     func testPlainTextIsUntouched() {
         XCTAssertEqual(RemoteSetupAddonIds.pageSafe("Torrentio — streams from many sources", manifestUrl: url),
                        "Torrentio — streams from many sources")
@@ -157,5 +167,18 @@ final class RemoteSetupServerClaimTests: XCTestCase {
         server.reject(id: second, status: .stale)
         XCTAssertFalse(server.isPending(id: second))
         XCTAssertFalse(server.claimForConfirm(id: "unknown"))
+    }
+
+    /// Review r11: a change being applied (slow installs) outlives the bounded history.
+    func testAnApplyingChangeIsNotEvicted() throws {
+        let server = RemoteSetupServer()
+        server.minProposalInterval = 0
+        let body = Data(#"{"rowOrder":["a"]}"#.utf8)
+        let first = try XCTUnwrap(server.submitForTesting(body))
+        XCTAssertTrue(server.claimForConfirm(id: first))
+        for _ in 0..<12 { _ = server.submitForTesting(body) }
+        XCTAssertEqual(server.statusForTesting(id: first), .applying)
+        server.finishApplying(id: first, status: .confirmed)
+        XCTAssertEqual(server.statusForTesting(id: first), .confirmed)
     }
 }

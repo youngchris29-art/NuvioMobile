@@ -171,9 +171,19 @@ function setStatus(text, cls) {
 
 // `note`, when given, replaces the "Connected" line once the TV's list is on screen. With
 // `addonsOnly`, the staged Home-row edits are kept and only the add-on list is replaced.
+// A restarted Remote Setup session has a new pairing token, so this page's token now gets a 403
+// on every route: say so and stop, rather than retrying or waiting forever.
+function endPairing() {
+  setStatus("This page's pairing has ended: Remote Setup was restarted on the TV. Scan the new code on the TV to pair again.", "err");
+  el("apply").disabled = true;
+  setLocked(false);
+}
+
+// true when loaded, false when the TV can't be reached, "ended" when the pairing has ended.
 async function load(note, addonsOnly) {
   try {
     const res = await fetch("/api/state", { headers: AUTH });
+    if (res.status === 403) { endPairing(); return "ended"; }
     const state = await res.json();
     addons = (state.addons || []).map(a => ({ ...a, isNew: false, origEnabled: a.enabled }));
     addonBaseline = addons.map(a => a.id);
@@ -273,11 +283,12 @@ async function reloadLocked(note, addonsOnly, delayMs) {
   el("apply").disabled = true;
   setLocked(true);
   if (delayMs) await new Promise(r => setTimeout(r, delayMs));
-  while (!(await load(note, addonsOnly))) {
+  let loaded;
+  while ((loaded = await load(note, addonsOnly)) === false) {
     setStatus("Couldn't reach the TV to reload its list. Trying again… (is Remote Setup still open?)", "err");
     await new Promise(r => setTimeout(r, 3000));
   }
-  setLocked(false);
+  if (loaded === true) setLocked(false);
 }
 
 function setLocked(locked) {
@@ -318,6 +329,7 @@ async function apply() {
       headers: { "Content-Type": "application/json", ...AUTH },
       body: JSON.stringify(payload)
     });
+    if (res.status === 403) { endPairing(); return; }
     const { id, error } = await res.json();
     if (error || !id) throw new Error(error || "bad response");
     poll(id, 0);
@@ -333,6 +345,7 @@ async function poll(id, tries) {
   if (tries === 120) setStatus("Still waiting for the TV. Confirm or decline the change there.", "err");
   try {
     const res = await fetch("/api/status/" + id, { headers: AUTH });
+    if (res.status === 403) { endPairing(); return; }
     const { status } = await res.json();
     if (status === "confirmed") {
       setStatus("Applied on the TV ✓", "ok");

@@ -362,6 +362,13 @@ final class RemoteSetupServer {
         send(response, on: connection)
     }
 
+    /// Test seam: the status a page polling `id` would see (nil once evicted).
+    func statusForTesting(id: String) -> ChangeStatus? {
+        lock.lock()
+        defer { lock.unlock() }
+        return pending[id]?.status
+    }
+
     /// Test seam: submits a proposal body as `POST /api/apply` would and returns its change id
     /// (nil when refused), without a listener.
     func submitForTesting(_ body: Data) -> String? {
@@ -392,8 +399,12 @@ final class RemoteSetupServer {
         pendingOrder.append(change.id)
         // Keep a small bounded history — enough for the browser's status polling of the current
         // and recently superseded proposals, without growing for the session's lifetime (ME-003).
-        while pendingOrder.count > 8 {
-            pending.removeValue(forKey: pendingOrder.removeFirst())
+        // Only settled changes are evicted: a change still being applied (slow installs) keeps
+        // its entry so its page learns the real outcome (C1 review r11). The newest, pending
+        // one is never the oldest while anything older is settled.
+        while pendingOrder.count > 8,
+              let index = pendingOrder.firstIndex(where: { pending[$0]?.status != .applying && $0 != change.id }) {
+            pending.removeValue(forKey: pendingOrder.remove(at: index))
         }
         lock.unlock()
 
