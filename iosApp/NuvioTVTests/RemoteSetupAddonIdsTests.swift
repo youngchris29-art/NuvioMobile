@@ -203,3 +203,13 @@ final class RemoteSetupServerClaimTests: XCTestCase {
         XCTAssertEqual(server.statusForTesting(id: first), .confirmed)
     }
 }
+
+/// C1 review r15: an install that lost the duplicate race still counts.
+final class RemoteSetupInstallOutcomeTests: XCTestCase {
+    func testAnInstallIsSatisfiedWhenItSucceededOrTheManifestIsPresent() {
+        let url = "https://new.example.com/manifest.json"
+        XCTAssertTrue(RemoteSetupViewModel.installSatisfied(succeeded: true, url: url, installed: []))
+        XCTAssertTrue(RemoteSetupViewModel.installSatisfied(succeeded: false, url: url, installed: ["https://NEW.example.com/manifest.json"]))
+        XCTAssertFalse(RemoteSetupViewModel.installSatisfied(succeeded: false, url: url, installed: ["https://other.example.com/manifest.json"]))
+    }
+}

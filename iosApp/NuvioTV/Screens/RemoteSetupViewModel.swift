@@ -357,6 +357,12 @@ final class RemoteSetupViewModel: ObservableObject {
         return .confirmed
     }
 
+    /// Review r15: an install that lost the duplicate race (another page or screen installed the
+    /// same manifest first) is satisfied, not failed: the add-on is there.
+    nonisolated static func installSatisfied(succeeded: Bool, url: String, installed: [String]) -> Bool {
+        succeeded || installed.contains { AddonManifestURL.isSameManifest($0, url) }
+    }
+
     /// Installs the proposal's new add-ons (async manifest fetches) and settles the change only
     /// when every one has finished, so the page, which keeps polling while the change is
     /// `applying`, reloads a list that already holds them. A read-only list was refused before
@@ -370,9 +376,10 @@ final class RemoteSetupViewModel: ObservableObject {
         var failed: [Int] = []
         for (index, url) in urls.enumerated() {
             AddonRepository.shared.addAddon(rawUrl: url) { [weak self] result, _ in
-                let ok = result is AddAddonResultSuccess
+                let succeeded = result is AddAddonResultSuccess
                 Task { @MainActor in
-                    if !ok { failed.append(index) }
+                    let installed = (AddonRepository.shared.uiState.value_ as? AddonsUiState)?.addons.map(\.manifestUrl) ?? []
+                    if !Self.installSatisfied(succeeded: succeeded, url: url, installed: installed) { failed.append(index) }
                     remaining -= 1
                     guard remaining == 0 else { return }
                     // Review r14: a failed install is reported, not hidden behind "confirmed".
