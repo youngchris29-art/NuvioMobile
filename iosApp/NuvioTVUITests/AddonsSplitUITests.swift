@@ -359,20 +359,19 @@ final class AddonsSplitUITests: XCTestCase {
         say("dialog: \(rows.count) lines, list height \(Int(longHeight))")
         XCTAssertGreaterThan(longHeight, shortHeight, "the long list is no taller than one line")
         XCTAssertLessThanOrEqual(longHeight, 540, "the long list passes its cap")
-        // Up walks the lines to the first one, which scrolls into the list's frame.
-        let firstRow = rows[0]
-        let firstLine = (firstRow.enabled ? "Turn off Home row " : "Turn on Home row ") + firstRow.title
+        // Up walks the lines to the first one, which scrolls into the list's frame. Review r2:
+        // the line is found by its index (a title shared by two rows is disambiguated in the text).
+        let line = element(app, "phone_confirm_line_0").firstMatch
+        XCTAssertTrue(line.waitForExistence(timeout: 3), "the first line is missing")
+        let firstLine = line.label
         var reached = false
         for _ in 0..<(rows.count + 3) {
             press(.up, settle: 0.5)
             if labelHasFocus(app, firstLine) { reached = true; break }
         }
         XCTAssertTrue(reached, "Up never reached the first line; focused: \(focusDump(app))")
-        let line = app.buttons[firstLine].firstMatch
-        if line.exists {
-            XCTAssertGreaterThanOrEqual(line.frame.minY, list.frame.minY - 2, "the first line is above the list")
-            XCTAssertLessThanOrEqual(line.frame.maxY, list.frame.maxY + 2, "the first line is below the list")
-        }
+        XCTAssertGreaterThanOrEqual(line.frame.minY, list.frame.minY - 2, "the first line is above the list")
+        XCTAssertLessThanOrEqual(line.frame.maxY, list.frame.maxY + 2, "the first line is below the list")
         press(.menu, settle: 1.5)
         XCTAssertFalse(dialog.exists, "Menu did not close the long dialog")
         XCTAssertEqual(proposalStatus(page, second), "rejected")

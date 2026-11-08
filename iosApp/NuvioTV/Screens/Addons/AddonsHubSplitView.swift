@@ -57,6 +57,9 @@ struct AddonsHubSplitView: View {
     @FocusState private var sidebarFocus: HubSection?
     /// C5: whether the Add-ons tab is selected (requested sections wait for it).
     @ObservedObject private var tabActivity = AddonsTabActivity.shared
+    /// C5 review r2: the requested section whose focus hand-off may still need a retry; cleared as
+    /// soon as focus reaches the hub or the tab is left, so a later press is never undone.
+    @State private var pendingRequestFocus: HubSection?
     /// Shared by every pane that takes part in focus memory; keys are pane-defined strings
     /// (`InstalledAddonsPane.rowKey` for the Installed rows, `CatalogOrderView`'s keys for Catalogs, `InstallAddonPane.fieldKey` for Install).
     @FocusState private var contentFocus: String?
@@ -188,7 +191,7 @@ struct AddonsHubSplitView: View {
         // sidebar row once the Add-ons tab is the selected one.
         .onReceive(tabActivity.$isActive.removeDuplicates()) { active in
             // `$isActive` publishes before the stored value changes, so pass the new value.
-            guard active else { return }
+            guard active else { pendingRequestFocus = nil; return }
             showRequestedSection(visible: visible, tabActive: true)
         }
         // Review A5-r3: leaving the hub cancels a detail page's pending Move lift.
@@ -200,9 +203,15 @@ struct AddonsHubSplitView: View {
             // A section that disappears (Plugins switched off) falls back to Installed.
             if !now.contains(selected) { select(.installed) }
         }
-        .onChange(of: sidebarFocus) { old, new in sidebarFocusChanged(from: old, to: new) }
+        .onChange(of: sidebarFocus) { old, new in
+            if new != nil { pendingRequestFocus = nil }
+            sidebarFocusChanged(from: old, to: new)
+        }
         .onChange(of: contentPath) { old, new in contentPathChanged(from: old, to: new) }
-        .onChange(of: contentFocus) { old, new in contentFocusChanged(from: old, to: new) }
+        .onChange(of: contentFocus) { old, new in
+            if new != nil { pendingRequestFocus = nil }
+            contentFocusChanged(from: old, to: new)
+        }
         .onChange(of: model.refreshOutcomeSerial) { _, _ in
             guard let outcome = model.lastRefreshOutcome else { return }
             showToast(outcome.failed == 0
@@ -473,12 +482,15 @@ struct AddonsHubSplitView: View {
         guard let section = AddonsHubRequests.take(), visible.contains(section), !section.isAction else { return }
         if moveMode.isMoving { cancelMove() }
         select(section)
+        pendingRequestFocus = section
         DispatchQueue.main.async { handOffSidebar(section) }
         // The tab switch settles focus on the rail a moment later; claim it again once it has,
-        // but only while focus is still outside the hub (review r1: a quick press to another
-        // sidebar row, Refresh all included, must not be pulled back).
+        // but only if focus has not reached the hub since (review r1/r2: a quick press to another
+        // row, or Menu back to the rail after landing, must not be pulled back).
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-            guard selected == section, sidebarFocus == nil, contentFocus == nil else { return }
+            defer { pendingRequestFocus = nil }
+            guard pendingRequestFocus == section, selected == section,
+                  sidebarFocus == nil, contentFocus == nil else { return }
             handOffSidebar(section)
         }
     }

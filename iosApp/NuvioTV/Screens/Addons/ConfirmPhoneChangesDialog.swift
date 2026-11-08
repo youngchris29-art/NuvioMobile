@@ -80,7 +80,7 @@ struct ConfirmPhoneChangesDialog: View {
 
     private var linesStack: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-            ForEach(lines) { line in
+            ForEach(Array(lines.enumerated()), id: \.element.id) { index, line in
                 Button(action: {}) {
                     HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.md) {
                         Image(systemName: Self.symbol(for: line.kind))
@@ -96,6 +96,7 @@ struct ConfirmPhoneChangesDialog: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("phone_confirm_line_\(index)")
             }
         }
         .padding(.vertical, Theme.Spacing.xs)
