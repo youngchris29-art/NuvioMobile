@@ -139,8 +139,8 @@ nonisolated enum RemoteSetupChangeList {
                 out.append(Line(kind: .rejected, text: String(localized: "Ignore the poster pattern (it must be an http(s) URL)")))
             }
         }
-        // Review r6/r7: one line per pack (a pack URL is a public file). Packs import in order
-        // and the last one imported is the active pack, so the dialog says which one that is.
+        // Review r6/r7/r9: a change carries at most one pack (the TV refuses more); it becomes
+        // the active pack. The loop and labels still cope with more for older pages.
         let labels = badgePackLabels(badgePackUrls)
         for (index, url) in badgePackUrls.enumerated() {
             let label = labels[index]

@@ -261,7 +261,10 @@ function addBadgeUrl() {
     setStatus("That badge pack is already in the list.", "err");
     return;
   }
-  stagedBadgeUrls.push(url);
+  // Hub v2 C3 review r9: one pack per change (the imported pack becomes the active one). A new
+  // address replaces the staged one.
+  if (stagedBadgeUrls.length) setStatus("One badge pack per change: this one replaces the pack you added before.", "");
+  stagedBadgeUrls = [url];
   input.value = "";
   render();
 }

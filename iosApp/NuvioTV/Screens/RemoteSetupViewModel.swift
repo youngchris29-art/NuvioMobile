@@ -103,6 +103,11 @@ final class RemoteSetupViewModel: ObservableObject {
                     self.server.reject(id: change.id, status: .staleRows)
                     return
                 }
+                // C3 review r9: one badge pack per change (each import makes its pack active).
+                guard Self.badgeUrls(change.proposal).count <= 1 else {
+                    self.server.reject(id: change.id, status: .invalid)
+                    return
+                }
                 // C1: resolve the page's ids back to manifest URLs now; an unknown or stale id
                 // (or a bad new URL) refuses the whole proposal, since dropping the entry would
                 // remove that add-on.
@@ -247,7 +252,8 @@ final class RemoteSetupViewModel: ObservableObject {
             let status = apply(change.proposal, addons: resolved)
             let installs = status == .confirmed ? (resolved ?? []).filter(\.isNew) : []
             let badges = status == .confirmed ? Self.badgeUrls(change.proposal) : []
-            installThenFinish(installs, badges: badges, changeId: change.id, status: status)
+            installThenFinish(installs, badges: badges, changeId: change.id, status: status,
+                              profile: ProfileRepository.shared.activeProfileId)
         }
     }
 
@@ -432,14 +438,16 @@ final class RemoteSetupViewModel: ObservableObject {
 
     /// C3 review r7: badge packs one after another (each import rewrites the pack list from its
     /// own snapshot, and the last one imported is the active pack), counting failures.
-    private func importBadges(_ urls: [String], failures: Int = 0, then done: @escaping (Int) -> Void) {
+    private func importBadges(_ urls: [String], profile: Int32, failures: Int = 0, then done: @escaping (Int) -> Void) {
         guard let url = urls.first else { done(failures); return }
+        // Review r9: the change was approved for `profile`; after a switch, nothing more applies.
+        guard ProfileRepository.shared.activeProfileId == profile else { done(failures + urls.count); return }
         // Review r8: held strongly. An approved change finishes even if the screen is left
         // meanwhile (the closure is released once the import returns).
         StreamBadgeSettingsRepository.shared.importStreamBadgeRulesFromUrl(url: url) { result, _ in
             let ok = result is StreamBadgeImportResultSuccess
             Task { @MainActor in
-                self.importBadges(Array(urls.dropFirst()), failures: failures + (ok ? 0 : 1), then: done)
+                self.importBadges(Array(urls.dropFirst()), profile: profile, failures: failures + (ok ? 0 : 1), then: done)
             }
         }
     }
@@ -448,13 +456,14 @@ final class RemoteSetupViewModel: ObservableObject {
         _ entries: [RemoteSetupAddonIds.Resolved],
         badges: [String],
         changeId: String,
-        status: RemoteSetupServer.ChangeStatus
+        status: RemoteSetupServer.ChangeStatus,
+        profile: Int32
     ) {
         // Settles the change once installs and badge imports are done (C3 review r7: the page
         // learns of failed badge packs too).
         // Review r8: everything here holds the model strongly until the approved work settles.
         let finish: ([Int], [String]) -> Void = { failed, conflictIds in
-            self.importBadges(badges) { badgeFailures in
+            self.importBadges(badges, profile: profile) { badgeFailures in
                 if failed.isEmpty && conflictIds.isEmpty && badgeFailures == 0 {
                     self.server.finishApplying(id: changeId, status: status)
                 } else {
@@ -479,7 +488,10 @@ final class RemoteSetupViewModel: ObservableObject {
                 Task { @MainActor in
                     let current = (AddonRepository.shared.uiState.value_ as? AddonsUiState)?.addons ?? []
                     let landed = current.first(where: { AddonManifestURL.isSameManifest($0.manifestUrl, url) })
-                    switch Self.installOutcome(succeeded: succeeded, wanted: wanted, landedEnabled: landed?.enabled) {
+                    // Review r9: a profile switch while the fetch ran means the add-on may have
+                    // landed in the other profile; it is reported back, not counted as done.
+                    let sameProfile = ProfileRepository.shared.activeProfileId == profile
+                    switch sameProfile ? Self.installOutcome(succeeded: succeeded, wanted: wanted, landedEnabled: landed?.enabled) : .failed {
                     case .installed: break
                     case .failed: failed.append(index)
                     case .conflict:

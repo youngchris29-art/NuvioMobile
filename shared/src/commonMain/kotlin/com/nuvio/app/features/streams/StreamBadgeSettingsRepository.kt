@@ -6,6 +6,8 @@ import com.nuvio.app.core.i18n.localizedBadgeImportLimit
 import com.nuvio.app.core.i18n.localizedBadgeUrlSchemeInvalid
 import com.nuvio.app.features.addons.httpGetText
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -132,6 +134,9 @@ object StreamBadgeSettingsRepository {
         return _uiState.value.badgePlacement
     }
 
+    /** Serialises the post-fetch merge of concurrent imports (hub v2 C3 review r9). */
+    private val importMutex = Mutex()
+
     suspend fun importStreamBadgeRulesFromUrl(url: String): StreamBadgeImportResult {
         ensureLoaded()
         val normalizedUrl = url.trim()
@@ -157,17 +162,20 @@ object StreamBadgeSettingsRepository {
                 sourceUrl = normalizedUrl,
                 payload = payload,
             )
-            // Hub v2 C3 review r8: merge into the rules as they are NOW. The pre-fetch snapshot
-            // would drop a pack another import (another phone, another screen) added meanwhile.
-            val latestRules = streamBadgeRules.normalized()
-            val stillNew = latestRules.imports.none { it.sourceUrl.equals(normalizedUrl, ignoreCase = true) }
-            if (stillNew && latestRules.imports.size >= STREAM_BADGE_IMPORT_LIMIT) {
-                return StreamBadgeImportResult.Error(localizedBadgeImportLimit(STREAM_BADGE_IMPORT_LIMIT))
+            // Hub v2 C3 review r8/r9: merge into the rules as they are NOW, one import at a time.
+            // The pre-fetch snapshot would drop a pack another import added meanwhile, and two
+            // imports finishing together must not both read the same rules.
+            importMutex.withLock {
+                val latestRules = streamBadgeRules.normalized()
+                val stillNew = latestRules.imports.none { it.sourceUrl.equals(normalizedUrl, ignoreCase = true) }
+                if (stillNew && latestRules.imports.size >= STREAM_BADGE_IMPORT_LIMIT) {
+                    return StreamBadgeImportResult.Error(localizedBadgeImportLimit(STREAM_BADGE_IMPORT_LIMIT))
+                }
+                streamBadgeRules = latestRules.upsert(parsedImport, activate = true)
+                publish()
+                saveStreamBadgeRules()
+                StreamBadgeImportResult.Success(streamBadgeRules)
             }
-            streamBadgeRules = latestRules.upsert(parsedImport, activate = true)
-            publish()
-            saveStreamBadgeRules()
-            StreamBadgeImportResult.Success(streamBadgeRules)
         } catch (error: Exception) {
             if (error is CancellationException) throw error
             StreamBadgeImportResult.Error(error.message ?: localizedBadgeImportFailed())
