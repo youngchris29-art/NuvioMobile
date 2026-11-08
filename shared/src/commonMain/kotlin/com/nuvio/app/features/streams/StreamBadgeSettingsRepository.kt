@@ -157,7 +157,14 @@ object StreamBadgeSettingsRepository {
                 sourceUrl = normalizedUrl,
                 payload = payload,
             )
-            streamBadgeRules = currentRules.upsert(parsedImport, activate = true)
+            // Hub v2 C3 review r8: merge into the rules as they are NOW. The pre-fetch snapshot
+            // would drop a pack another import (another phone, another screen) added meanwhile.
+            val latestRules = streamBadgeRules.normalized()
+            val stillNew = latestRules.imports.none { it.sourceUrl.equals(normalizedUrl, ignoreCase = true) }
+            if (stillNew && latestRules.imports.size >= STREAM_BADGE_IMPORT_LIMIT) {
+                return StreamBadgeImportResult.Error(localizedBadgeImportLimit(STREAM_BADGE_IMPORT_LIMIT))
+            }
+            streamBadgeRules = latestRules.upsert(parsedImport, activate = true)
             publish()
             saveStreamBadgeRules()
             StreamBadgeImportResult.Success(streamBadgeRules)

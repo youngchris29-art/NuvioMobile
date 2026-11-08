@@ -112,6 +112,8 @@ final class RemoteSetupChangeListTests: XCTestCase {
         // Review r7: packs that would read the same show their whole path.
         XCTAssertEqual(List.badgePackLabels(["https://h.example.com/alice/badges.json", "https://h.example.com/bob/badges.json"]),
                        ["h.example.com/alice/badges.json", "h.example.com/bob/badges.json"])
+        XCTAssertEqual(List.badgePackLabels(["https://h.example.com/pack?id=blue", "https://h.example.com/pack?id=red"]),
+                       ["h.example.com/pack (#1)", "h.example.com/pack (#2)"], "query-only differences")
     }
 
     func testMovedIdsKeepsTheLongestOrderedRun() {

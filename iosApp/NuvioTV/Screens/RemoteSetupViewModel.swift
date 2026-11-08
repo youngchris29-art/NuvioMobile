@@ -434,10 +434,11 @@ final class RemoteSetupViewModel: ObservableObject {
     /// own snapshot, and the last one imported is the active pack), counting failures.
     private func importBadges(_ urls: [String], failures: Int = 0, then done: @escaping (Int) -> Void) {
         guard let url = urls.first else { done(failures); return }
-        StreamBadgeSettingsRepository.shared.importStreamBadgeRulesFromUrl(url: url) { [weak self] result, _ in
+        // Review r8: held strongly. An approved change finishes even if the screen is left
+        // meanwhile (the closure is released once the import returns).
+        StreamBadgeSettingsRepository.shared.importStreamBadgeRulesFromUrl(url: url) { result, _ in
             let ok = result is StreamBadgeImportResultSuccess
             Task { @MainActor in
-                guard let self else { return }
                 self.importBadges(Array(urls.dropFirst()), failures: failures + (ok ? 0 : 1), then: done)
             }
         }
@@ -451,12 +452,13 @@ final class RemoteSetupViewModel: ObservableObject {
     ) {
         // Settles the change once installs and badge imports are done (C3 review r7: the page
         // learns of failed badge packs too).
-        let finish: ([Int], [String]) -> Void = { [weak self] failed, conflictIds in
-            self?.importBadges(badges) { badgeFailures in
+        // Review r8: everything here holds the model strongly until the approved work settles.
+        let finish: ([Int], [String]) -> Void = { failed, conflictIds in
+            self.importBadges(badges) { badgeFailures in
                 if failed.isEmpty && conflictIds.isEmpty && badgeFailures == 0 {
-                    self?.server.finishApplying(id: changeId, status: status)
+                    self.server.finishApplying(id: changeId, status: status)
                 } else {
-                    self?.server.finishApplying(id: changeId, status: .partial, failedNewIndices: failed.sorted(),
+                    self.server.finishApplying(id: changeId, status: .partial, failedNewIndices: failed.sorted(),
                                                 conflictIds: conflictIds, badgeFailures: badgeFailures)
                 }
             }
@@ -472,7 +474,7 @@ final class RemoteSetupViewModel: ObservableObject {
         for (index, url) in urls.enumerated() {
             // Review r4: the requested flag is set inside the install's own state update.
             let wanted = entries[index].enabled ?? true
-            AddonRepository.shared.addAddon(rawUrl: url, enabled: wanted) { [weak self] result, _ in
+            AddonRepository.shared.addAddon(rawUrl: url, enabled: wanted) { result, _ in
                 let succeeded = result is AddAddonResultSuccess
                 Task { @MainActor in
                     let current = (AddonRepository.shared.uiState.value_ as? AddonsUiState)?.addons ?? []
@@ -483,7 +485,7 @@ final class RemoteSetupViewModel: ObservableObject {
                     case .conflict:
                         // Review r5: name the installed add-on by its session id, so the page can
                         // mark exactly that row (two variants from one host look alike).
-                        if let landed { conflictIds.append(self?.addonIds.id(for: landed.manifestUrl) ?? "") }
+                        if let landed { conflictIds.append(self.addonIds.id(for: landed.manifestUrl)) }
                     }
                     remaining -= 1
                     guard remaining == 0 else { return }

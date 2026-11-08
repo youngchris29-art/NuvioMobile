@@ -158,10 +158,15 @@ nonisolated enum RemoteSetupChangeList {
     static func badgePackLabels(_ urls: [String]) -> [String] {
         let short = urls.map(badgePackLabel)
         let counts = Dictionary(short.map { ($0, 1) }, uniquingKeysWith: +)
-        return urls.enumerated().map { index, url in
+        let longer = urls.enumerated().map { index, url -> String in
             guard counts[short[index], default: 0] > 1,
                   let parts = URLComponents(string: url), let host = parts.host else { return short[index] }
             return host + parts.path
+        }
+        // Review r8: still the same (they differ only in the query): add their place in the list.
+        let longCounts = Dictionary(longer.map { ($0, 1) }, uniquingKeysWith: +)
+        return longer.enumerated().map { index, label in
+            longCounts[label, default: 0] > 1 ? "\(label) (#\(index + 1))" : label
         }
     }
 
