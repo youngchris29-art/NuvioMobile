@@ -680,7 +680,9 @@ struct AddonsHubSplitView: View {
     private func move(_ addon: ManagedAddon, index: Int, by delta: Int) {
         let count = model.addons.count
         guard AddonsViewModel.moveTarget(index: index, by: delta, count: count) != nil else { return }
-        model.move(manifestUrl: addon.manifestUrl, by: delta)
+        // Stage A review: VoiceOver's direct moves go through the URL-keyed atomic step (A4), so
+        // a sync landing between the read and the write never moves a different add-on.
+        guard model.moveStep(manifestUrl: addon.manifestUrl, by: delta) else { return }
         DispatchQueue.main.async { handOffContent(InstalledAddonsPane.rowKey(addon.manifestUrl)) }
     }
 

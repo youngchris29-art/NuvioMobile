@@ -437,13 +437,11 @@ object HomeCatalogSettingsRepository {
         HomeCatalogSettingsSyncService.triggerPush()
     }
 
-    fun moveUp(key: String) {
-        move(key = key, direction = -1)
-    }
+    /** Returns whether the order changed (Stage A review: Move mode counts only real steps). */
+    fun moveUp(key: String): Boolean = move(key = key, direction = -1)
 
-    fun moveDown(key: String) {
-        move(key = key, direction = 1)
-    }
+    /** Returns whether the order changed (Stage A review: Move mode counts only real steps). */
+    fun moveDown(key: String): Boolean = move(key = key, direction = 1)
 
     fun moveByIndex(fromIndex: Int, toIndex: Int) {
         ensureLoaded()
@@ -757,7 +755,7 @@ object HomeCatalogSettingsRepository {
     private fun move(
         key: String,
         direction: Int,
-    ) {
+    ): Boolean {
         ensureLoaded()
         // Add-ons hub v2 (Stage A review): the order is read, stepped and written under the
         // mutation lock, so a synced order applied between a separate read and write is never
@@ -778,12 +776,13 @@ object HomeCatalogSettingsRepository {
                 true
             }
         }
-        if (!changed) return
+        if (!changed) return false
 
         publish()
         persist()
         HomeRepository.applyCurrentSettings()
         HomeCatalogSettingsSyncService.triggerPush()
+        return true
     }
 
     fun exportToSyncPayload(): SyncHomeCatalogPayload {

@@ -922,14 +922,20 @@ final class SettingsViewModel: ObservableObject {
         refreshHome()
     }
 
-    func moveUp(_ item: HomeCatalogSettingsItem) {
-        HomeCatalogSettingsRepository.shared.moveUp(key: item.key)
-        refreshHome()
+    /// Returns whether the order changed (the repository rechecks atomically; Stage A review).
+    @discardableResult
+    func moveUp(_ item: HomeCatalogSettingsItem) -> Bool {
+        let changed = HomeCatalogSettingsRepository.shared.moveUp(key: item.key)
+        if changed { refreshHome() }
+        return changed
     }
 
-    func moveDown(_ item: HomeCatalogSettingsItem) {
-        HomeCatalogSettingsRepository.shared.moveDown(key: item.key)
-        refreshHome()
+    /// Returns whether the order changed (the repository rechecks atomically; Stage A review).
+    @discardableResult
+    func moveDown(_ item: HomeCatalogSettingsItem) -> Bool {
+        let changed = HomeCatalogSettingsRepository.shared.moveDown(key: item.key)
+        if changed { refreshHome() }
+        return changed
     }
 
     /// Add-ons hub C, H4: one-shot "Match add-ons order". Reorders the catalogs to follow the

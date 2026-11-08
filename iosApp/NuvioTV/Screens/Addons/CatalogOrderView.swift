@@ -326,8 +326,10 @@ struct CatalogOrderView: View {
               Self.canMove(index: current, direction: target - current, orderedKeys: order, pinnedKeys: pinned)
         else { return }
         let item = items[current]
-        if target < current { model.moveUp(item) } else { model.moveDown(item) }
-        moveDidStep = true
+        // Stage A review: only a step the repository actually applied counts, so a cancel never
+        // "restores" over an order a sync changed underneath a rejected step.
+        let stepped = target < current ? model.moveUp(item) : model.moveDown(item)
+        if stepped { moveDidStep = true }
         focusRowSoon(key)
     }
 
