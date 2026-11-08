@@ -71,20 +71,22 @@ final class RemoteSetupViewModel: ObservableObject {
         server.onChangeProposed = { [weak self] change in
             Task { @MainActor in
                 guard let self else { return }
+                // The server has already superseded whatever was awaiting a decision, so the
+                // alert for it goes away whether or not this proposal gets one.
+                self.pendingChange = nil
+                self.pendingAddons = nil
+                guard self.server.isPending(id: change.id) else { return }
                 // C1: resolve the page's ids back to manifest URLs now; an unknown or stale id
-                // (or a malformed new URL) rejects the whole proposal, since dropping the entry
-                // would remove that add-on.
-                if let entries = change.proposal.addons {
-                    guard let resolved = self.resolveAddons(entries) else {
-                        self.server.reject(id: change.id)
-                        return
-                    }
+                // (or a bad new URL) refuses the whole proposal, since dropping the entry would
+                // remove that add-on.
+                switch self.resolveAddons(change.proposal.addons) {
+                case .failure(let refusal):
+                    self.server.reject(id: change.id, status: Self.status(for: refusal))
+                case .success(let resolved):
                     self.pendingAddons = resolved
-                } else {
-                    self.pendingAddons = nil
+                    self.pendingSummary = self.summarize(change.proposal)
+                    self.pendingChange = change
                 }
-                self.pendingSummary = self.summarize(change.proposal)
-                self.pendingChange = change
             }
         }
         server.start { [weak self] port in
@@ -180,10 +182,19 @@ final class RemoteSetupViewModel: ObservableObject {
 
     func confirmPending() {
         guard let change = pendingChange else { return }
-        apply(change.proposal)
-        server.confirm(id: change.id)
         pendingChange = nil
         pendingAddons = nil
+        // Superseded or refused while the alert was up: nothing to apply.
+        guard server.isPending(id: change.id) else { return }
+        // The add-on list can change under the alert (sync, another screen): resolve the ids
+        // again against the list as it is now, and refuse the whole proposal if one went stale.
+        switch resolveAddons(change.proposal.addons) {
+        case .failure(let refusal):
+            server.reject(id: change.id, status: Self.status(for: refusal))
+        case .success(let resolved):
+            apply(change.proposal, addons: resolved)
+            server.confirm(id: change.id)
+        }
     }
 
     func rejectPending() {
@@ -249,16 +260,28 @@ final class RemoteSetupViewModel: ObservableObject {
 
     // MARK: - Applying a confirmed proposal
 
-    private func resolveAddons(_ entries: [RemoteSetupServer.Proposal.AddonEntry]) -> [RemoteSetupAddonIds.Resolved]? {
-        addonIds.resolve(
+    /// The proposal's add-on list resolved against the current list; nil inside `.success` when
+    /// the proposal leaves add-ons alone.
+    private func resolveAddons(
+        _ entries: [RemoteSetupServer.Proposal.AddonEntry]?
+    ) -> Result<[RemoteSetupAddonIds.Resolved]?, RemoteSetupAddonIds.Refusal> {
+        guard let entries else { return .success(nil) }
+        return addonIds.resolve(
             entries.map { (id: $0.id, url: $0.url, enabled: $0.enabled) },
             currentUrls: addons.map(\.manifestUrl),
             sameManifest: AddonManifestURL.isSameManifest
-        )
+        ).map { Optional($0) }
     }
 
-    private func apply(_ proposal: RemoteSetupServer.Proposal) {
-        if let resolved = pendingAddons { applyAddons(resolved) }
+    private static func status(for refusal: RemoteSetupAddonIds.Refusal) -> RemoteSetupServer.ChangeStatus {
+        switch refusal {
+        case .stale: .stale
+        case .invalidUrl, .alreadyInstalled: .invalid
+        }
+    }
+
+    private func apply(_ proposal: RemoteSetupServer.Proposal, addons resolved: [RemoteSetupAddonIds.Resolved]?) {
+        if let resolved { applyAddons(resolved) }
         applyRows(proposal)
         if let key = proposal.mdblistKey?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty {
             MdbListSettingsRepository.shared.setApiKey(value: key)

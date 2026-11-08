@@ -52,6 +52,11 @@ nonisolated enum AddonManifestURL {
         return query.isEmpty ? path : "\(path)?\(query)"
     }
 
+    /// `normalize`, or nil when the input cannot be a manifest URL.
+    nonisolated static func normalizeOrNil(_ raw: String) -> String? {
+        try? normalize(raw)
+    }
+
     /// True when both inputs normalise to the same manifest. Scheme and host compare lowercased;
     /// the path and query compare exactly. Anything that fails to normalise is never "the same".
     nonisolated static func isSameManifest(_ a: String, _ b: String) -> Bool {

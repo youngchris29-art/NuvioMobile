@@ -37,38 +37,49 @@ nonisolated struct RemoteSetupAddonIds {
         let isNew: Bool
     }
 
-    /// The page's add-on list resolved to manifest URLs, or nil when the proposal must be rejected
-    /// (an unknown or stale id, an entry with neither id nor URL, or a new URL that is not
-    /// http(s)). A new URL that is the same manifest as an installed add-on resolves to that
-    /// add-on (no duplicate install). Later duplicates of an add-on are dropped.
+    /// Why a proposal's add-on list cannot be applied as sent.
+    enum Refusal: Error, Equatable {
+        /// An id this session never minted, an id whose add-on left the list since, or an entry
+        /// with neither id nor URL: the page's list is out of date.
+        case stale
+        /// A new add-on address is not a valid http(s) manifest URL.
+        case invalidUrl
+        /// A new add-on address is the same manifest as an add-on already installed (its row on
+        /// the page would carry settings the TV cannot tell apart from the installed one's).
+        case alreadyInstalled
+    }
+
+    /// The page's add-on list resolved to manifest URLs, in the proposed order, or why it must be
+    /// refused as a whole. A new URL is normalised the way the repository normalises it
+    /// (`stremio://` and bare hosts are accepted) and must come out as http(s) with a host. Later
+    /// duplicates of an existing add-on are dropped; two new rows for one manifest are refused.
     func resolve(
         _ entries: [(id: String?, url: String?, enabled: Bool?)],
         currentUrls: [String],
+        normalize: (String) -> String? = { AddonManifestURL.normalizeOrNil($0) },
         sameManifest: (String, String) -> Bool = { $0 == $1 }
-    ) -> [Resolved]? {
+    ) -> Result<[Resolved], Refusal> {
         var resolved: [Resolved] = []
         var seen = Set<String>()
         for entry in entries {
-            let item: Resolved
             if let id = entry.id {
-                guard let url = urlsById[id], currentUrls.contains(url) else { return nil }
-                item = Resolved(url: url, enabled: entry.enabled, isNew: false)
+                guard let url = urlsById[id], currentUrls.contains(url) else { return .failure(.stale) }
+                guard seen.insert(url).inserted else { continue }
+                resolved.append(Resolved(url: url, enabled: entry.enabled, isNew: false))
             } else if let raw = entry.url?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
-                guard let scheme = URLComponents(string: raw)?.scheme?.lowercased(),
+                guard let url = normalize(raw),
+                      let components = URLComponents(string: url),
+                      let scheme = components.scheme?.lowercased(),
                       scheme == "http" || scheme == "https",
-                      URLComponents(string: raw)?.host?.isEmpty == false
-                else { return nil }
-                if let existing = currentUrls.first(where: { sameManifest($0, raw) }) {
-                    item = Resolved(url: existing, enabled: entry.enabled, isNew: false)
-                } else {
-                    item = Resolved(url: raw, enabled: entry.enabled, isNew: true)
-                }
+                      components.host?.isEmpty == false
+                else { return .failure(.invalidUrl) }
+                if currentUrls.contains(where: { sameManifest($0, url) }) { return .failure(.alreadyInstalled) }
+                if resolved.contains(where: { $0.isNew && sameManifest($0.url, url) }) { return .failure(.invalidUrl) }
+                resolved.append(Resolved(url: url, enabled: entry.enabled, isNew: true))
             } else {
-                return nil
+                return .failure(.stale)
             }
-            guard seen.insert(item.url).inserted else { continue }
-            resolved.append(item)
         }
-        return resolved
+        return .success(resolved)
     }
 }

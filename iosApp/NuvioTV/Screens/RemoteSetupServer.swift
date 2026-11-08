@@ -12,7 +12,7 @@ import Security
 /// - `POST /api/apply`      → proposes a change; returns `{id, status: "pending_confirmation"}`.
 ///                            Nothing is applied until the user confirms ON THE TV (alert in
 ///                            Settings) — same trust model as Android.
-/// - `GET  /api/status/{id}`→ `{status: pending|confirmed|rejected|not_found}` (browser polls)
+/// - `GET  /api/status/{id}`→ `{status: pending|confirmed|rejected|superseded|stale|invalid|not_found}` (browser polls)
 ///
 /// Threading: the listener + connections run on a private queue. The state snapshot and the
 /// pending-change table are guarded by a lock; `onChangeProposed` is delivered on the main queue.
@@ -50,7 +50,16 @@ final class RemoteSetupServer {
     enum ChangeStatus: String {
         case pending
         case confirmed
+        /// Declined by the user on the TV.
         case rejected
+        /// Replaced by a newer proposal before the user decided.
+        case superseded
+        /// Refused by the TV without asking: an add-on id is unknown or its add-on left the list
+        /// since the page loaded (the page reloads the TV's list).
+        case stale
+        /// Refused by the TV without asking: a new add-on address is not a valid manifest URL or
+        /// is already installed (the page keeps its edits).
+        case invalid
     }
 
     final class PendingChange {
@@ -125,8 +134,15 @@ final class RemoteSetupServer {
         setStatus(id: id, status: .confirmed)
     }
 
-    func reject(id: String) {
-        setStatus(id: id, status: .rejected)
+    func reject(id: String, status: ChangeStatus = .rejected) {
+        setStatus(id: id, status: status)
+    }
+
+    /// True while `id` is still awaiting a decision (not superseded, refused or decided).
+    func isPending(id: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return pending[id]?.status == .pending
     }
 
     // MARK: - Internals
@@ -336,7 +352,7 @@ final class RemoteSetupServer {
         lastProposalAt = now
         // A new proposal supersedes any stale pending one (mirrors Android).
         for other in pending.values where other.status == .pending {
-            other.status = .rejected
+            other.status = .superseded
         }
         pending[change.id] = change
         pendingOrder.append(change.id)

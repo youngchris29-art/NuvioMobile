@@ -24,49 +24,80 @@ final class RemoteSetupAddonIdsTests: XCTestCase {
         XCTAssertNotEqual(a.id(for: keyed), b.id(for: keyed))
     }
 
+    private func ok(_ result: Result<[RemoteSetupAddonIds.Resolved], RemoteSetupAddonIds.Refusal>) -> [RemoteSetupAddonIds.Resolved]? {
+        if case .success(let value) = result { return value }
+        return nil
+    }
+
+    private func refusal(_ result: Result<[RemoteSetupAddonIds.Resolved], RemoteSetupAddonIds.Refusal>) -> RemoteSetupAddonIds.Refusal? {
+        if case .failure(let value) = result { return value }
+        return nil
+    }
+
     func testResolveMapsIdsBackAndKeepsOrderAndFlags() {
         var ids = RemoteSetupAddonIds(prefix: "s")
         let k = ids.id(for: keyed), p = ids.id(for: plain)
-        let resolved = ids.resolve([(p, nil, true), (k, nil, false)], currentUrls: [keyed, plain])
-        XCTAssertEqual(resolved, [
+        XCTAssertEqual(ok(ids.resolve([(p, nil, true), (k, nil, false)], currentUrls: [keyed, plain])), [
             .init(url: plain, enabled: true, isNew: false),
             .init(url: keyed, enabled: false, isNew: false),
         ])
     }
 
-    func testNewUrlsInstallAndAnExistingManifestIsNotDuplicated() {
+    func testNewUrlsAreNormalisedTheWayTheRepositoryDoes() {
         var ids = RemoteSetupAddonIds(prefix: "s")
         let k = ids.id(for: keyed)
-        let resolved = ids.resolve(
-            [(k, nil, true), (nil, "  https://new.example.com/manifest.json ", true), (nil, plain, nil)],
-            currentUrls: [keyed, plain]
-        )
+        let resolved = ok(ids.resolve(
+            [(k, nil, true),
+             (nil, "  https://new.example.com/manifest.json ", true),
+             (nil, "stremio://deep.example.com/manifest.json", false),
+             (nil, "bare.example.com", nil)],
+            currentUrls: [keyed],
+            sameManifest: AddonManifestURL.isSameManifest
+        ))
         XCTAssertEqual(resolved, [
             .init(url: keyed, enabled: true, isNew: false),
             .init(url: "https://new.example.com/manifest.json", enabled: true, isNew: true),
-            .init(url: plain, enabled: nil, isNew: false),
+            .init(url: "https://deep.example.com/manifest.json", enabled: false, isNew: true),
+            .init(url: "https://bare.example.com/manifest.json", enabled: nil, isNew: true),
         ])
     }
 
-    /// Dropping an unknown or stale entry would remove that add-on, so the proposal is rejected.
-    func testUnknownOrStaleIdsRejectTheProposal() {
+    /// A new row for an installed manifest would carry settings the TV cannot tell apart from the
+    /// installed row's, so the proposal is refused instead of silently dropping one of them.
+    func testANewRowForAnInstalledAddonIsRefused() {
         var ids = RemoteSetupAddonIds(prefix: "s")
-        let k = ids.id(for: keyed)
-        XCTAssertNil(ids.resolve([(k, nil, true), ("s-99", nil, true)], currentUrls: [keyed]))
-        XCTAssertNil(ids.resolve([(k, nil, true)], currentUrls: [plain]), "the add-on left the list since")
+        let p = ids.id(for: plain)
+        XCTAssertEqual(refusal(ids.resolve(
+            [(p, nil, true), (nil, "https://v3-cinemeta.strem.io/", false)],
+            currentUrls: [plain],
+            sameManifest: AddonManifestURL.isSameManifest
+        )), .alreadyInstalled)
+        XCTAssertEqual(refusal(ids.resolve(
+            [(nil, "https://a.example.com", true), (nil, "https://a.example.com/manifest.json", false)],
+            currentUrls: [],
+            sameManifest: AddonManifestURL.isSameManifest
+        )), .invalidUrl, "two new rows for one manifest")
     }
 
-    func testMalformedEntriesRejectTheProposal() {
+    /// Dropping an unknown or stale entry would remove that add-on, so the proposal is refused.
+    func testUnknownOrStaleIdsRefuseTheProposal() {
+        var ids = RemoteSetupAddonIds(prefix: "s")
+        let k = ids.id(for: keyed)
+        XCTAssertEqual(refusal(ids.resolve([(k, nil, true), ("s-99", nil, true)], currentUrls: [keyed])), .stale)
+        XCTAssertEqual(refusal(ids.resolve([(k, nil, true)], currentUrls: [plain])), .stale, "the add-on left the list since")
+        XCTAssertEqual(refusal(ids.resolve([(nil, nil, true)], currentUrls: [])), .stale)
+    }
+
+    func testBadNewAddressesRefuseTheProposal() {
         let ids = RemoteSetupAddonIds(prefix: "s")
-        XCTAssertNil(ids.resolve([(nil, nil, true)], currentUrls: []))
-        XCTAssertNil(ids.resolve([(nil, "ftp://x.example.com/manifest.json", true)], currentUrls: []))
-        XCTAssertNil(ids.resolve([(nil, "not a url", true)], currentUrls: []))
+        XCTAssertEqual(refusal(ids.resolve([(nil, "ftp://x.example.com/manifest.json", true)], currentUrls: [])), .invalidUrl)
+        XCTAssertEqual(refusal(ids.resolve([(nil, "not a url", true)], currentUrls: [])), .invalidUrl)
     }
 
-    func testDuplicatesAreDropped() {
+    func testDuplicateIdsAreDropped() {
         var ids = RemoteSetupAddonIds(prefix: "s")
         let k = ids.id(for: keyed)
-        XCTAssertEqual(ids.resolve([(k, nil, true), (k, nil, false)], currentUrls: [keyed]),
+        XCTAssertEqual(ok(ids.resolve([(k, nil, true), (k, nil, false)], currentUrls: [keyed])),
                        [.init(url: keyed, enabled: true, isNew: false)])
     }
 }

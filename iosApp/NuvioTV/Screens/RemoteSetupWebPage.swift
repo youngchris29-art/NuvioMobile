@@ -250,8 +250,8 @@ function addAddon() {
   const input = el("addon-url");
   const url = input.value.trim();
   if (!url) return;
-  // Installed add-ons are known only by host here; the TV matches a URL it already has to that
-  // add-on instead of installing it twice.
+  // Installed add-ons are known only by host here, so the TV checks a new address against its
+  // list and refuses the change (keeping these edits) when that add-on is already installed.
   if (addons.some(a => a.isNew && a.url === url)) { setStatus("That add-on is already in the list.", "err"); return; }
   addons.push({ url, name: "", description: "", enabled: true, isNew: true });
   input.value = "";
@@ -302,11 +302,26 @@ async function poll(id, tries) {
       el("apply").disabled = false;
       return;
     }
-    if (status === "rejected" || status === "not_found") {
-      // Declined on the TV, or refused because the TV's list changed since this page loaded (the
-      // add-on ids belong to that list): reload the TV's list either way.
-      setStatus("Not applied (declined on the TV, or its list changed). Reloading the TV's list…", "err");
+    if (status === "stale" || status === "not_found") {
+      // The add-on ids belong to the list this page loaded, and the TV's list has changed since
+      // (or the TV restarted the session): only a fresh copy can be edited.
+      setStatus("Not applied: the TV's add-on list changed. Reloading it, so make your changes again.", "err");
       setTimeout(load, 1500);
+      el("apply").disabled = false;
+      return;
+    }
+    if (status === "invalid") {
+      setStatus("Not applied: a new add-on address isn't valid, or that add-on is already installed. Your other changes are still here.", "err");
+      el("apply").disabled = false;
+      return;
+    }
+    if (status === "superseded") {
+      setStatus("Not applied: a newer change reached the TV first. Your changes are still here.", "err");
+      el("apply").disabled = false;
+      return;
+    }
+    if (status === "rejected") {
+      setStatus("Declined on the TV. Your changes are still here.", "err");
       el("apply").disabled = false;
       return;
     }
