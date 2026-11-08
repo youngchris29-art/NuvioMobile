@@ -153,6 +153,13 @@ final class RemoteSetupPageSafeTextTests: XCTestCase {
         XCTAssertFalse(RemoteSetupAddonIds.pageSafe("Popular (SECRETKEY123)", manifestUrls: [encoded, url]).contains("SECRETKEY123"))
     }
 
+    /// Review r13: userinfo credentials, quoted on their own.
+    func testUserinfoCredentialsAreCut() {
+        let withUser = "https://alice:USERPASS9876@addon.example.com/manifest.json"
+        let text = RemoteSetupAddonIds.pageSafe("password USERPASS9876", manifestUrl: withUser)
+        XCTAssertFalse(text.contains("USERPASS9876"))
+    }
+
     func testPlainTextIsUntouched() {
         XCTAssertEqual(RemoteSetupAddonIds.pageSafe("Torrentio — streams from many sources", manifestUrl: url),
                        "Torrentio — streams from many sources")

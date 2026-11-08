@@ -239,21 +239,23 @@ final class RemoteSetupViewModel: ObservableObject {
     }
 
     private func pushState() {
+        // Any add-on's text can quote any add-on's key, so every text is checked against all URLs.
+        let allUrls = addons.map(\.manifestUrl)
         let snapshot = StateSnapshot(
             deviceName: UIDevice.current.name,
             addons: addons.map {
                 StateAddon(
                     id: addonIds.id(for: $0.manifestUrl),
                     host: AddonsViewModel.host(of: $0.manifestUrl),
-                    name: RemoteSetupAddonIds.pageSafe($0.displayTitle, manifestUrl: $0.manifestUrl),
-                    description: RemoteSetupAddonIds.pageSafe($0.manifest?.description_ ?? "", manifestUrl: $0.manifestUrl),
+                    name: RemoteSetupAddonIds.pageSafe($0.displayTitle, manifestUrls: allUrls),
+                    description: RemoteSetupAddonIds.pageSafe($0.manifest?.description_ ?? "", manifestUrls: allUrls),
                     enabled: $0.enabled
                 )
             },
             rows: rows.map {
                 StateRow(
                     key: rowIds.id(for: $0.key),
-                    title: RemoteSetupAddonIds.pageSafe($0.displayTitle, manifestUrls: addons.map(\.manifestUrl)),
+                    title: RemoteSetupAddonIds.pageSafe($0.displayTitle, manifestUrls: allUrls),
                     enabled: $0.enabled,
                     isCollection: $0.isCollection
                 )

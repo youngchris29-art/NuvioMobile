@@ -118,11 +118,21 @@ nonisolated struct RemoteSetupAddonIds {
     static func secretPieces(of manifestUrl: String) -> [String] {
         // Parsed by hand: a literal `|` (common in debrid add-on paths) makes URLComponents fail.
         guard let sep = manifestUrl.range(of: "://") else { return [] }
-        let afterHost = manifestUrl[sep.upperBound...].drop(while: { $0 != "/" && $0 != "?" })
+        let afterScheme = manifestUrl[sep.upperBound...]
+        let afterHost = afterScheme.drop(while: { $0 != "/" && $0 != "?" })
+        // Review r13: `user:password@` credentials in the authority are pieces too.
+        let authority = afterScheme[..<afterHost.startIndex]
+        var userinfo: [String] = []
+        if let at = authority.lastIndex(of: "@") {
+            let info = authority[..<at]
+            userinfo.append(String(info))
+            userinfo.append(contentsOf: info.split(separator: ":").map(String.init))
+        }
         let noFragment = afterHost.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first ?? ""
         let halves = noFragment.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
         var raw = (halves.first ?? "").split(separator: "/").map(String.init).filter { $0 != "manifest.json" }
         if halves.count > 1 { raw.append(String(halves[1])) }
+        raw.append(contentsOf: userinfo)
         var pieces = Set<String>()
         // Review r12: each chunk is split both as written and percent-decoded, so an encoded
         // separator (`%3D`, `%7C`) cannot hide a value inside it.
