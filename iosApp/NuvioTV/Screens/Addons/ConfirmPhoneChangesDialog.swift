@@ -11,8 +11,17 @@ struct ConfirmPhoneChangesDialog: View {
     let onConfirm: () -> Void
     let onReject: () -> Void
 
-    /// The list's height; longer lists scroll as focus moves through them.
+    /// The list's height cap; longer lists scroll as focus moves through them.
     static let listHeight: CGFloat = 520
+
+    /// The list's frame height for lines measuring `content` points: their own height up to the
+    /// cap. Before the first measurement (0) it uses one line's worth, never the full cap.
+    nonisolated static func listFrameHeight(content: CGFloat) -> CGFloat {
+        min(content > 0 ? content : 64, listHeight)
+    }
+
+    /// The lines' measured height (C5).
+    @State private var linesHeight: CGFloat = 0
 
     private enum Control: Hashable { case confirm, reject }
     @FocusState private var focus: Control?
@@ -38,13 +47,15 @@ struct ConfirmPhoneChangesDialog: View {
                     // Review r1: every line can be reached. Lines take focus (tvOS scrolls only
                     // through focusable content), so Up from the buttons walks the whole list.
                     // C5 device note: the list is as tall as its lines up to `listHeight`, and
-                    // scrolls only past that (one line no longer leaves a tall empty box).
-                    ViewThatFits(in: .vertical) {
+                    // scrolls only past that. The lines are measured and the scroll view gets an
+                    // exact height (a max-height frame alone still claimed the whole cap, so one
+                    // line sat in a tall empty box on the device).
+                    ScrollView(.vertical) {
                         linesStack
-                        ScrollView(.vertical) { linesStack }
-                            .scrollClipDisabled()
+                            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { linesHeight = $0 }
                     }
-                    .frame(maxHeight: Self.listHeight)
+                    .scrollClipDisabled()
+                    .frame(height: Self.listFrameHeight(content: linesHeight))
                     .accessibilityIdentifier("phone_confirm_lines")
                     Text(lines.count == 1 ? String(localized: "1 change") : String(localized: "\(lines.count) changes"))
                         .font(Theme.Font.caption)

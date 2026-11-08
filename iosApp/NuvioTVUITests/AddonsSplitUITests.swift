@@ -344,9 +344,17 @@ final class AddonsSplitUITests: XCTestCase {
         XCTAssertTrue(dialog.waitForExistence(timeout: 5), "the confirm dialog never opened")
         let list = element(app, "phone_confirm_lines").firstMatch
         XCTAssertTrue(list.waitForExistence(timeout: 3), "the dialog shows no lines")
-        let shortHeight = list.frame.height
-        say("dialog: one line, list height \(Int(shortHeight))")
-        XCTAssertLessThan(shortHeight, 200, "one line still leaves a tall list")
+        // C5 device fail: a list element's own frame can follow its content, not the space the
+        // layout gives it. Measure the box itself: the gap between the title and the count caption.
+        func boxHeight(_ caption: String) -> CGFloat {
+            let title = app.staticTexts["Apply changes from your phone?"].firstMatch
+            let count = app.staticTexts[caption].firstMatch
+            guard title.waitForExistence(timeout: 3), count.waitForExistence(timeout: 3) else { return .infinity }
+            return count.frame.minY - title.frame.maxY
+        }
+        let shortHeight = boxHeight("1 change")
+        say("dialog: one line, box height \(Int(shortHeight))")
+        XCTAssertLessThan(shortHeight, 220, "one line still leaves a tall box")
         press(.menu, settle: 1.5)
         XCTAssertFalse(dialog.exists, "Menu did not close the dialog")
         XCTAssertEqual(proposalStatus(page, first), "rejected")
@@ -364,12 +372,15 @@ final class AddonsSplitUITests: XCTestCase {
         let second = try XCTUnwrap(postProposal(page, long), "the long proposal was not accepted")
         XCTAssertTrue(dialog.waitForExistence(timeout: 5), "the confirm dialog never opened again")
         XCTAssertTrue(waitLabelFocus(app, "Confirm"), "focus is not on Confirm; focused: \(focusDump(app))")
-        let longHeight = list.frame.height
-        say("dialog: about \(lineCount) lines, list height \(Int(longHeight))")
-        XCTAssertGreaterThan(longHeight, shortHeight, "the long list is no taller than one line")
-        XCTAssertLessThanOrEqual(longHeight, 540, "the long list passes its cap")
+        let countCaption = app.staticTexts.matching(NSPredicate(format: "label ENDSWITH %@", " changes")).firstMatch
+        XCTAssertTrue(countCaption.waitForExistence(timeout: 3), "the long dialog has no count caption")
+        let longHeight = boxHeight(countCaption.label)
+        say("dialog: \(countCaption.label), box height \(Int(longHeight))")
+        XCTAssertGreaterThan(longHeight, shortHeight + 200, "the long box is not much taller than one line")
+        // The cap (520) plus the stack's spacing above and below the list.
+        XCTAssertLessThanOrEqual(longHeight, 620, "the long box passes its cap")
         // Review r5: the list must be at its cap, so the scrolling branch is the one under test.
-        XCTAssertGreaterThanOrEqual(longHeight, 500, "the long list is under its cap; the fixture is too small to test scrolling")
+        XCTAssertGreaterThanOrEqual(longHeight, 520, "the long box is under its cap; the fixture is too small to test scrolling")
         // Up walks the lines to the first one, which scrolls into the list's frame. Review r2:
         // the line is found by its index (a title shared by two rows is disambiguated in the text).
         let line = element(app, "phone_confirm_line_0").firstMatch
