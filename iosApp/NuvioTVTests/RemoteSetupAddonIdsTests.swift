@@ -146,6 +146,13 @@ final class RemoteSetupPageSafeTextTests: XCTestCase {
         XCTAssertFalse(RemoteSetupAddonIds.pageSafe("key PIPEKEY99", manifestUrl: piped).contains("PIPEKEY99"))
     }
 
+    /// Review r12: encoded separators cannot hide a value, and titles are checked against every add-on.
+    func testEncodedSeparatorsAndOtherAddonsAreCovered() {
+        let encoded = "https://addon.example.com/providers%3Dx%7Crealdebrid%3DENCKEY4567/manifest.json"
+        XCTAssertFalse(RemoteSetupAddonIds.pageSafe("key ENCKEY4567", manifestUrl: encoded).contains("ENCKEY4567"))
+        XCTAssertFalse(RemoteSetupAddonIds.pageSafe("Popular (SECRETKEY123)", manifestUrls: [encoded, url]).contains("SECRETKEY123"))
+    }
+
     func testPlainTextIsUntouched() {
         XCTAssertEqual(RemoteSetupAddonIds.pageSafe("Torrentio — streams from many sources", manifestUrl: url),
                        "Torrentio — streams from many sources")

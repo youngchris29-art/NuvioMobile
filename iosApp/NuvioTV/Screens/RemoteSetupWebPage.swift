@@ -357,7 +357,13 @@ async function poll(id, tries) {
       el("status").className = "ok";
       return;
     }
-    if (status === "stale" || status === "not_found") {
+    if (status === "not_found") {
+      // The TV no longer holds this change's outcome (a long disconnect, or many later changes):
+      // it may or may not have been applied, so show the TV's state as it is now.
+      await reloadLocked("The TV no longer knows how this change ended. This is its current state, so check it before sending again.", false, 0);
+      return;
+    }
+    if (status === "stale") {
       // The add-on ids belong to the list this page loaded, and the TV's list has changed since
       // (or the TV restarted the session): only a fresh copy can be edited.
       // Reload straight away, with Apply held until the fresh list is on screen, so nothing the

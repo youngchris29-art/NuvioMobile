@@ -93,8 +93,15 @@ nonisolated struct RemoteSetupAddonIds {
     /// `name=value` pairs lose their value, and any long path or query piece of the add-on's own
     /// manifest URL (where debrid keys live) is cut wherever it appears.
     static func pageSafe(_ text: String, manifestUrl: String) -> String {
+        pageSafe(text, manifestUrls: [manifestUrl])
+    }
+
+    /// `pageSafe` against every installed add-on's URL (review r12: Home-row titles come from
+    /// catalog names, which any add-on can set).
+    static func pageSafe(_ text: String, manifestUrls: [String]) -> String {
         var out = text
-        for piece in secretPieces(of: manifestUrl) {
+        let pieces = Set(manifestUrls.flatMap(secretPieces(of:))).sorted { $0.count > $1.count }
+        for piece in pieces {
             out = out.replacingOccurrences(of: piece, with: "<redacted>")
         }
         out = out.replacingOccurrences(
@@ -117,7 +124,10 @@ nonisolated struct RemoteSetupAddonIds {
         var raw = (halves.first ?? "").split(separator: "/").map(String.init).filter { $0 != "manifest.json" }
         if halves.count > 1 { raw.append(String(halves[1])) }
         var pieces = Set<String>()
-        for chunk in raw {
+        // Review r12: each chunk is split both as written and percent-decoded, so an encoded
+        // separator (`%3D`, `%7C`) cannot hide a value inside it.
+        let chunks = raw.flatMap { chunk in [chunk, chunk.removingPercentEncoding].compactMap { $0 } }
+        for chunk in chunks {
             pieces.insert(chunk)
             for part in chunk.split(whereSeparator: { "&|,;".contains($0) }) {
                 pieces.insert(String(part))

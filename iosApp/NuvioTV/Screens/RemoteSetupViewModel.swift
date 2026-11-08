@@ -43,6 +43,9 @@ final class RemoteSetupViewModel: ObservableObject {
     /// Stage C (C1): the per-session add-on ids the page sees instead of manifest URLs; a fresh
     /// map on every start, so ids from an earlier session mean nothing.
     private var addonIds = RemoteSetupAddonIds()
+    /// Review r12: Home-row keys are built from add-on-authored ids, so the page gets per-session
+    /// opaque row ids too, translated back to keys at the proposal boundary.
+    private var rowIds = RemoteSetupAddonIds()
     /// The pending proposal's add-on list resolved to manifest URLs (nil when it has none).
     private var pendingAddons: [RemoteSetupAddonIds.Resolved]?
 
@@ -67,6 +70,7 @@ final class RemoteSetupViewModel: ObservableObject {
         startAttempt += 1
         let attempt = startAttempt
         addonIds = RemoteSetupAddonIds()
+        rowIds = RemoteSetupAddonIds()
 
         server.onChangeProposed = { [weak self] change in
             Task { @MainActor in
@@ -248,8 +252,8 @@ final class RemoteSetupViewModel: ObservableObject {
             },
             rows: rows.map {
                 StateRow(
-                    key: $0.key,
-                    title: $0.displayTitle,
+                    key: rowIds.id(for: $0.key),
+                    title: RemoteSetupAddonIds.pageSafe($0.displayTitle, manifestUrls: addons.map(\.manifestUrl)),
                     enabled: $0.enabled,
                     isCollection: $0.isCollection
                 )
@@ -366,10 +370,16 @@ final class RemoteSetupViewModel: ObservableObject {
         }
     }
 
+    /// The page's opaque row ids as Home-row keys; ids this session never minted are dropped
+    /// (rows are matched leniently, as they always were).
+    private func rowKeys(_ ids: [String]?) -> [String]? {
+        ids?.compactMap { rowIds.url(for: $0) }
+    }
+
     private func applyRows(_ proposal: RemoteSetupServer.Proposal) {
         let repo = HomeCatalogSettingsRepository.shared
 
-        if let disabledKeys = proposal.disabledRowKeys {
+        if let disabledKeys = rowKeys(proposal.disabledRowKeys) {
             let disabled = Set(disabledKeys)
             for row in rows {
                 let shouldBeEnabled = !disabled.contains(row.key)
@@ -379,7 +389,7 @@ final class RemoteSetupViewModel: ObservableObject {
             }
         }
 
-        if let order = proposal.rowOrder {
+        if let order = rowKeys(proposal.rowOrder) {
             var simulated = rows.map(\.key)
             let desired = order.filter { simulated.contains($0) }
             for targetIndex in desired.indices {
@@ -433,9 +443,9 @@ final class RemoteSetupViewModel: ObservableObject {
             if orderChanged || togglesChanged { parts.append(String(localized: "add-on settings changed")) }
         }
 
-        if let order = proposal.rowOrder {
+        if let order = rowKeys(proposal.rowOrder) {
             let known = rows.map(\.key)
-            let disabled = Set(proposal.disabledRowKeys ?? [])
+            let disabled = Set(rowKeys(proposal.disabledRowKeys) ?? [])
             let orderChanged = order.filter { known.contains($0) } != known.filter { order.contains($0) }
             let togglesChanged = rows.contains { $0.enabled == disabled.contains($0.key) }
             if orderChanged || togglesChanged { parts.append(String(localized: "Home rows updated")) }
