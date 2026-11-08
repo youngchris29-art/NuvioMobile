@@ -365,14 +365,15 @@ async function poll(id, tries) {
       const failed = (failedNew || "").split(",").filter(Boolean).map(Number).map(i => sentNew[i]).filter(Boolean);
       el("mdblist-key").value = "";
       el("poster-pattern").value = "";
-      stagedBadgeUrls = [];
+      // Review r12: a pack that failed to import stays staged, so it can be fixed and sent again.
+      const badgeMisses = Number(badgeFailed || 0);
+      if (!badgeMisses) stagedBadgeUrls = [];
       // Review r4: a conflict is an add-on another change installed first with the other on/off
       // setting; it is in the reloaded list with its real setting, so it is not put back.
       const notes = [];
       if (failed.length) notes.push(failed.length + " new add-on(s) couldn't be installed. Check the address; they're still in the list to send again.");
       const clashIds = (conflictIds || "").split(",").filter(Boolean);
-      const badgeMisses = Number(badgeFailed || 0);
-      if (badgeMisses) notes.push(badgeMisses + " badge pack(s) couldn't be imported. Check the address and add them again.");
+      if (badgeMisses) notes.push("The badge pack couldn't be imported. It's still staged: check the address and send again.");
       if (clashIds.length) notes.push(clashIds.length + " new add-on(s) were already installed by another change with a different on/off setting. They're marked in the list; check their switch.");
       await reloadLocked("Applied on the TV, but " + notes.join(" "), false, 1500);
       for (const a of addons) if (clashIds.includes(a.id)) a.conflict = true;

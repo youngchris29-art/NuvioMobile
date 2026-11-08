@@ -169,7 +169,8 @@ nonisolated enum RemoteSetupChangeList {
         guard let parts = URLComponents(string: url), let host = parts.host, !host.isEmpty else {
             return String(url.prefix(80))
         }
-        var label = host + parts.path
+        // Review r12: the port too (two servers on one host can serve different packs).
+        var label = host + (parts.port.map { ":\($0)" } ?? "") + parts.path
         if let query = parts.query, !query.isEmpty { label += "?" + query }
         guard label.count > 80 else { return label }
         return String(label.prefix(50)) + "…" + String(label.suffix(29))
