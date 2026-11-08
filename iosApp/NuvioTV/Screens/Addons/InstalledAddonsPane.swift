@@ -219,7 +219,7 @@ private struct AddonRow: View {
             }
         }
         .accessibilityLabel(title)
-        .accessibilityValue("\(statusText), \(host)")
+        .accessibilityValue(HubAccessibility.rowValue("\(statusText), \(host)", isMoving: isMoving))
         .accessibilityIdentifier("addons_row_\(index)")
         .modifier(MoveActions(allowed: isLocked ? [] : InstalledAddonsPane.voiceOverMoves(index: index, count: count, isReadOnly: isReadOnly)) { delta in
             // Review A4-r5: on the lifted row the actions are Move mode's own (tracked) steps, so

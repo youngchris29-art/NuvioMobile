@@ -313,6 +313,7 @@ struct CatalogOrderView: View {
         moveDidStep = false
         onMovingChange(true)
         focusRowSoon(item.key)
+        AddonsHubSplitView.announceSoon(.started)
     }
 
     private func step(_ direction: AddonMoveMode.Direction) {
@@ -337,6 +338,7 @@ struct CatalogOrderView: View {
         moveMode.commit()
         onMovingChange(false)
         focusRowSoon(key)
+        AddonsHubSplitView.announceSoon(.committed)
     }
 
     /// Menu while moving: puts the catalog back where it started (relative to the survivors), in
@@ -349,6 +351,7 @@ struct CatalogOrderView: View {
             if moveDidStep { model.restoreCatalog(key: key, after: predecessors) }
             onMovingChange(false)
             focusRowSoon(key)
+            AddonsHubSplitView.announceSoon(.cancelled)
         }
     }
 
@@ -419,7 +422,7 @@ private struct CatalogRow: View {
             }
         }
         .accessibilityLabel(item.displayTitle)
-        .accessibilityValue("\(statusText), \(CatalogOrderView.subtitle(of: item))")
+        .accessibilityValue(HubAccessibility.rowValue("\(statusText), \(CatalogOrderView.subtitle(of: item))", isMoving: isMoving))
         .accessibilityIdentifier("addons_hub_catalog_\(index)")
         .modifier(CatalogMoveActions(allowed: voiceOverMoves, move: onMoveBy))
     }

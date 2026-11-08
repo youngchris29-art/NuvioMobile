@@ -64,11 +64,20 @@ final class AddonsHubUITests: XCTestCase {
         let installedValue = (sidebar(app, "installed").value as? String) ?? ""
         let installedCount = Int(installedValue.prefix(while: { $0.isNumber })) ?? 0
         XCTAssertGreaterThanOrEqual(installedCount, 1, "the Installed row's value is not a number >= 1: \"\(installedValue)\"")
+        // VoiceOver check (2026-11-08): the spoken label carries the count (and, on the section
+        // showing, "current section"), since the value and the trait were not spoken on the box.
+        let installedLabel = sidebar(app, "installed").label
+        XCTAssertTrue(installedLabel.hasPrefix("Installed, \(installedCount)"),
+                      "the Installed row's label does not carry its count: \"\(installedLabel)\"")
+
         XCTAssertTrue(waitUntil(timeout: 20) { self.rowIndex(app, titled: "ZZ Hub A") != nil },
                       "A never showed on the hub (seed refused?); rows: \(rowTitles(app))")
         say("installed count \(installedCount); rows: \(rowTitles(app))")
 
         XCTAssertTrue(moveSidebar(app, to: "installed"), "Installed never took focus; focused: \(focusDump(app))")
+        // The section showing says so in its label (after the dwell has selected Installed).
+        XCTAssertTrue(waitUntil(timeout: 3) { self.sidebar(app, "installed").label.hasSuffix("current section") },
+                      "the selected Installed row's label does not say current section: \"\(sidebar(app, "installed").label)\"")
         pause(0.8)
         remote.press(.right); pause(0.8)
         XCTAssertTrue(element(app, "addons_row_0").waitForExistence(timeout: 5), "addons_row_0 missing")

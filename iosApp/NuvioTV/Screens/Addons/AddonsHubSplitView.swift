@@ -240,7 +240,13 @@ struct AddonsHubSplitView: View {
                 }
                 .focused($sidebarFocus, equals: section)
                 .listRowBackground(selectedMarker(section))
-                .accessibilityLabel(Text(section.title))
+                // Christian's VoiceOver check (2026-11-08): the value and the selected trait were not
+                // spoken, so the label carries them (the value stays for the UI legs).
+                .accessibilityLabel(Text(HubAccessibility.sidebarLabel(
+                    title: section.title,
+                    value: sidebarAccessibilityValue(section, summary: summary),
+                    isSelected: section == selected
+                )))
                 .accessibilityValue(Text(sidebarAccessibilityValue(section, summary: summary)))
                 .accessibilityAddTraits(section == selected ? .isSelected : [])
                 .accessibilityIdentifier("addons_sidebar_\(section.rawValue)")
@@ -786,6 +792,15 @@ struct AddonsHubSplitView: View {
         moveMode.start(manifestUrl: addon.manifestUrl, index: order.firstIndex(of: addon.manifestUrl) ?? index, order: order)
         Self.logFocus("move start at \(index)")
         DispatchQueue.main.async { handOffContent(InstalledAddonsPane.rowKey(addon.manifestUrl)) }
+        // VoiceOver check (2026-11-08): the badge alone was never spoken. Said a moment later, so
+        // the focus hand-off's own announcement does not cut it off. Covers the context menu's
+        // Move and the add-on page's Move (it lifts the row through here).
+        Self.announceSoon(.started)
+    }
+
+    /// Posts a Move mode announcement once the focus change it follows has been spoken.
+    static func announceSoon(_ event: HubAccessibility.MoveEvent) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { HubAccessibility.announce(event) }
     }
 
     /// One Up/Down press while moving: the reducer decides (ends, 112 ms throttle); the add-on
@@ -805,6 +820,7 @@ struct AddonsHubSplitView: View {
     private func commitMove() {
         guard let url = moveMode.commit() else { return }
         Self.logFocus("move commit")
+        Self.announceSoon(.committed)
         refocusRowAfterMove(url)
     }
 
@@ -872,6 +888,7 @@ struct AddonsHubSplitView: View {
         if moveDidStep { model.restore(manifestUrl: url, after: predecessors) }
         moveDidStep = false
         Self.logFocus("move cancel back to \(origin)")
+        Self.announceSoon(.cancelled)
         refocusRowAfterMove(url)
     }
 

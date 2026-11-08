@@ -28207,6 +28207,40 @@
         }
       }
     },
+    "Move cancelled.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verschieben abgebrochen."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Movimiento cancelado."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Déplacement annulé."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Spostamento annullato."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đã hủy di chuyển."
+          }
+        }
+      }
+    },
     "Move down": {
       "localizations": {
         "de": {
@@ -28271,6 +28305,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Di lên"
+          }
+        }
+      }
+    },
+    "Moved.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verschoben."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Movido."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Déplacé."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Spostato."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đã di chuyển."
           }
         }
       }
@@ -28343,6 +28411,40 @@
         }
       }
     },
+    "Moving": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wird verschoben"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Moviendo"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Déplacement"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Spostamento"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đang di chuyển"
+          }
+        }
+      }
+    },
     "Moving — Up or Down, then Select": {
       "localizations": {
         "de": {
@@ -28373,6 +28475,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Đang di chuyển — Lên hoặc Xuống, rồi Chọn"
+          }
+        }
+      }
+    },
+    "Moving. Press Up or Down, then Select to drop it, or Menu to cancel.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verschieben. Hoch oder Runter drücken, dann Auswählen zum Ablegen oder Menü zum Abbrechen."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Moviendo. Pulsa Arriba o Abajo, luego Seleccionar para soltarlo, o Menú para cancelar."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Déplacement. Appuyez sur Haut ou Bas, puis Sélectionner pour le déposer, ou Menu pour annuler."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Spostamento. Premi Su o Giù, poi Seleziona per rilasciarlo, o Menu per annullare."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đang di chuyển. Nhấn Lên hoặc Xuống, rồi Chọn để thả, hoặc Menu để hủy."
           }
         }
       }
@@ -58061,6 +58197,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "đã lưu đệm trên %@"
+          }
+        }
+      }
+    },
+    "current section": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "aktueller Bereich"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "sección actual"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "section actuelle"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "sezione attuale"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "mục hiện tại"
           }
         }
       }
