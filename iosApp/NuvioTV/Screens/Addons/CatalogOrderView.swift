@@ -161,6 +161,8 @@ struct CatalogOrderView: View {
                         moveMode.commit()
                         onMovingChange(false)
                     }
+                    // A move announcement still waiting described this pane.
+                    HubAccessibility.invalidatePending()
                 }
                 .onChange(of: scrollTarget?.wrappedValue) { _, target in
                     guard let target, target.hasPrefix("catalog:") else { return }
@@ -306,6 +308,16 @@ struct CatalogOrderView: View {
 
     // MARK: - Move mode
 
+    /// A move announcement for the catalog `key`, spoken only if, when it fires, focus is still on
+    /// that row and the row is still lifted (`.started`) or no longer lifted (the results).
+    private func announceMove(_ event: HubAccessibility.MoveEvent, key: String) {
+        let rowKey = Self.rowKey(key)
+        HubAccessibility.announceWhenSettled(event) {
+            guard (focus?.wrappedValue ?? ownFocus) == rowKey else { return false }
+            return event == .started ? moveMode.movingUrl == key : !moveMode.isMoving
+        }
+    }
+
     private func startMove(_ item: HomeCatalogSettingsItem, index: Int) {
         guard allowsMoveMode else { return }
         let order = liveKeys()
@@ -313,7 +325,7 @@ struct CatalogOrderView: View {
         moveDidStep = false
         onMovingChange(true)
         focusRowSoon(item.key)
-        HubAccessibility.announce(.started)
+        announceMove(.started, key: item.key)
     }
 
     private func step(_ direction: AddonMoveMode.Direction) {
@@ -338,7 +350,7 @@ struct CatalogOrderView: View {
         moveMode.commit()
         onMovingChange(false)
         focusRowSoon(key)
-        HubAccessibility.announce(.committed)
+        announceMove(.committed, key: key)
     }
 
     /// Menu while moving: puts the catalog back where it started (relative to the survivors), in
@@ -351,7 +363,7 @@ struct CatalogOrderView: View {
             if moveDidStep { model.restoreCatalog(key: key, after: predecessors) }
             onMovingChange(false)
             focusRowSoon(key)
-            HubAccessibility.announce(.cancelled)
+            announceMove(.cancelled, key: key)
         }
     }
 

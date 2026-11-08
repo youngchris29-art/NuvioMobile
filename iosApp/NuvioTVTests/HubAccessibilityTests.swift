@@ -34,11 +34,57 @@ final class HubAccessibilityTests: XCTestCase {
         XCTAssertEqual(Set([started, committed, cancelled]).count, 3)
     }
 
-    /// Review VO-r5: the start instructions queue; the results are low priority, so VoiceOver
-    /// drops them once other speech takes over (no timer to outlive a focus change).
-    func testAnnouncementPriorities() {
-        XCTAssertEqual(HubAccessibility.priority(.started), .default)
-        XCTAssertEqual(HubAccessibility.priority(.committed), .low)
-        XCTAssertEqual(HubAccessibility.priority(.cancelled), .low)
+    // MARK: - Settled announcements (review VO-r1…r6)
+
+    @MainActor
+    private func spoken(after work: () -> Void) -> [String] {
+        var said: [String] = []
+        let original = HubAccessibility.post
+        HubAccessibility.post = { said.append($0) }
+        defer { HubAccessibility.post = original }
+        work()
+        let settled = expectation(description: "settle delay passes")
+        DispatchQueue.main.asyncAfter(deadline: .now() + HubAccessibility.settleDelay + 0.2) { settled.fulfill() }
+        wait(for: [settled], timeout: 3)
+        return said
+    }
+
+    @MainActor
+    func testAnnouncementIsSpokenWhenStillCurrent() {
+        let said = spoken { HubAccessibility.announceWhenSettled(.started) { true } }
+        XCTAssertEqual(said, [HubAccessibility.announcement(.started)])
+    }
+
+    /// Focus or state changed before it fired (another row, the sidebar, the tab bar, a page,
+    /// the move already over): nothing is spoken.
+    @MainActor
+    func testAnnouncementIsDroppedWhenNoLongerCurrent() {
+        var stillCurrent = true
+        let said = spoken {
+            HubAccessibility.announceWhenSettled(.committed) { stillCurrent }
+            stillCurrent = false
+        }
+        XCTAssertTrue(said.isEmpty)
+    }
+
+    /// A newer announcement supersedes an older one: a quick cancel after a start says only the
+    /// cancel.
+    @MainActor
+    func testANewerAnnouncementSupersedesAnOlderOne() {
+        let said = spoken {
+            HubAccessibility.announceWhenSettled(.started) { true }
+            HubAccessibility.announceWhenSettled(.cancelled) { true }
+        }
+        XCTAssertEqual(said, [HubAccessibility.announcement(.cancelled)])
+    }
+
+    /// The pane that scheduled it went away: nothing is spoken.
+    @MainActor
+    func testInvalidationDropsAWaitingAnnouncement() {
+        let said = spoken {
+            HubAccessibility.announceWhenSettled(.committed) { true }
+            HubAccessibility.invalidatePending()
+        }
+        XCTAssertTrue(said.isEmpty)
     }
 }

@@ -1,4 +1,3 @@
-import Accessibility
 import SwiftUI
 
 /// Add-ons hub v2: VoiceOver wording, from Christian's check on the Apple TV (2026-11-08).
@@ -37,20 +36,40 @@ nonisolated enum HubAccessibility {
         }
     }
 
-    /// The speech priority of each event: the start instructions queue behind the focus
-    /// change's own speech; "Moved" and "Move cancelled" are low priority, so VoiceOver drops them
-    /// when other speech (the next row, the tab bar, a page) takes over.
-    static func priority(_ event: MoveEvent) -> AttributeScopes.AccessibilityAttributes.AnnouncementPriorityAttribute.AnnouncementPriority {
-        event == .started ? .default : .low
+    /// Bumped by every scheduled announcement and by `invalidatePending()`: a scheduled one posts
+    /// only if nothing came after it.
+    @MainActor private(set) static var generation = 0
+
+    /// How long a move announcement waits: the focus hand-off and VoiceOver's reading of the row
+    /// come first, so the announcement neither cuts them off nor is cut off by them.
+    static let settleDelay: TimeInterval = 0.5
+
+    /// Review VO-r1…r6: posts `event` once the focus change has settled, and only if `isCurrent`
+    /// still holds then (the same row still moving for `.started`; focus still on the moved row,
+    /// nothing pushed, for the results) and no newer announcement or teardown came first. The
+    /// condition is checked when it fires, so ANY change of focus or state in between (another
+    /// row, the sidebar, the tab bar, a page, another move) drops it without listing the paths.
+    @MainActor
+    static func announceWhenSettled(_ event: MoveEvent, isCurrent: @escaping @MainActor () -> Bool) {
+        generation += 1
+        let scheduled = generation
+        DispatchQueue.main.asyncAfter(deadline: .now() + settleDelay) {
+            guard scheduled == generation, isCurrent() else { return }
+            announce(event)
+        }
     }
 
-    /// Posts the announcement now. Review VO-r5: no timer (an earlier 350 ms delay could outlive
-    /// every kind of focus change); VoiceOver's own queue orders it after the focus change and,
-    /// for the low-priority results, drops it when the user has moved on.
+    /// Drops an announcement still waiting (the pane that scheduled it went away).
+    @MainActor
+    static func invalidatePending() {
+        generation += 1
+    }
+
+    /// Where an announcement goes: VoiceOver; tests swap it to capture what would be spoken.
+    @MainActor static var post: (String) -> Void = { AccessibilityNotification.Announcement($0).post() }
+
     @MainActor
     static func announce(_ event: MoveEvent) {
-        var text = AttributedString(announcement(event))
-        text.accessibilitySpeechAnnouncementPriority = priority(event)
-        AccessibilityNotification.Announcement(text).post()
+        post(announcement(event))
     }
 }

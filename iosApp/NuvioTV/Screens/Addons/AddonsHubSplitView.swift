@@ -174,7 +174,10 @@ struct AddonsHubSplitView: View {
         }
         .onAppear { restoreSection(visible: visible) }
         // Review A5-r3: leaving the hub cancels a detail page's pending Move lift.
-        .onDisappear { pendingLiftUrl = nil }
+        .onDisappear {
+            pendingLiftUrl = nil
+            HubAccessibility.invalidatePending()
+        }
         .onChange(of: visible) { _, now in
             // A section that disappears (Plugins switched off) falls back to Installed.
             if !now.contains(selected) { select(.installed) }
@@ -797,6 +800,17 @@ struct AddonsHubSplitView: View {
 
     // MARK: - Move mode (A4)
 
+    /// A move announcement for the Installed row `url`, spoken only if, when it fires, focus is
+    /// still on that row with no page pushed, and the row is still lifted (`.started`) or no
+    /// longer lifted (the results).
+    private func announceMove(_ event: HubAccessibility.MoveEvent, url: String) {
+        let key = InstalledAddonsPane.rowKey(url)
+        HubAccessibility.announceWhenSettled(event) {
+            guard contentFocus == key, contentPath.isEmpty, selected == .installed else { return false }
+            return event == .started ? moveMode.movingUrl == url : !moveMode.isMoving
+        }
+    }
+
     private func startMove(_ addon: ManagedAddon, index: Int) {
         guard !model.isReadOnly else { return }
         suppressSidebarDefaultFocus = true
@@ -805,10 +819,10 @@ struct AddonsHubSplitView: View {
         moveMode.start(manifestUrl: addon.manifestUrl, index: order.firstIndex(of: addon.manifestUrl) ?? index, order: order)
         Self.logFocus("move start at \(index)")
         DispatchQueue.main.async { handOffContent(InstalledAddonsPane.rowKey(addon.manifestUrl)) }
-        // VoiceOver check (2026-11-08): the badge alone was never spoken. Queued behind the focus
-        // hand-off's own speech. Covers the context menu's Move and the add-on page's Move (it
-        // lifts the row through here).
-        HubAccessibility.announce(.started)
+        // VoiceOver check (2026-11-08): the badge alone was never spoken. Said once the hand-off
+        // has settled, only while this row is still the lifted, focused one. Covers the context
+        // menu's Move and the add-on page's Move (it lifts the row through here).
+        announceMove(.started, url: addon.manifestUrl)
     }
 
 
@@ -830,7 +844,7 @@ struct AddonsHubSplitView: View {
     private func commitMove() {
         guard let url = moveMode.commit() else { return }
         Self.logFocus("move commit")
-        HubAccessibility.announce(.committed)
+        announceMove(.committed, url: url)
         refocusRowAfterMove(url)
     }
 
@@ -898,7 +912,7 @@ struct AddonsHubSplitView: View {
         if moveDidStep { model.restore(manifestUrl: url, after: predecessors) }
         moveDidStep = false
         Self.logFocus("move cancel back to \(origin)")
-        HubAccessibility.announce(.cancelled)
+        announceMove(.cancelled, url: url)
         refocusRowAfterMove(url)
     }
 
