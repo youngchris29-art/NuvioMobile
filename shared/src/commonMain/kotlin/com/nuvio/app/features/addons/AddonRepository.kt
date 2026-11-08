@@ -802,6 +802,31 @@ object AddonRepository {
 
     /** tvOS Add-ons hub: a secondary profile that uses the primary profile's add-ons cannot add, move, enable or remove them; the hub greys its controls. */
     fun isReadOnly(): Boolean = isUsingPrimaryAddonsFromSecondaryProfile()
+
+    /**
+     * Add-ons hub v2 C4 review r3: an add-on that leaves the list by ANY route (removal, a sync,
+     * a phone edit) has its in-flight refresh cancelled and its health dropped, under the lock
+     * refresh registration and health publication use. A synced restore or a quick reinstall of
+     * the same URL therefore starts without a result, and a refresh from before the removal can
+     * never publish onto the new instance (a cancelled job publishes nothing).
+     * Declared last, so every property it uses is initialised first.
+     */
+    init {
+        scope.launch {
+            var installed = emptySet<String>()
+            _uiState.collect { state ->
+                val now = state.addons.mapTo(mutableSetOf()) { it.manifestUrl }
+                val left = installed - now
+                installed = now
+                if (left.isEmpty()) return@collect
+                val cancelled = synchronized(refreshJobsLock) {
+                    left.forEach(AddonHealthTracker::forget)
+                    left.mapNotNull { activeRefreshJobs.remove(it) }
+                }
+                cancelled.forEach(Job::cancel)
+            }
+        }
+    }
 }
 
 private fun ManagedAddon?.toPendingAddon(
