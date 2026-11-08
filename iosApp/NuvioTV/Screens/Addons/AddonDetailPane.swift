@@ -190,7 +190,12 @@ struct AddonDetailPane: View {
     ) -> [DetailRow] {
         let refreshRow: DetailRow = status == .stalled ? .retry : .refresh
         if isReadOnly {
-            return [refreshRow] + (catalogTotal > 0 ? [.catalogs] : [])
+            // Stage A review: a profile on the primary profile's add-ons cannot toggle, move or
+            // remove, but may still show a configurable add-on's configure QR (v1's sheet did).
+            var rows: [DetailRow] = [refreshRow]
+            if configurable { rows.insert(.configure, at: configureFirst ? 0 : 1) }
+            if catalogTotal > 0 { rows.append(.catalogs) }
+            return rows
         }
         var rows: [DetailRow] = [.enabled]
         if configurable { rows.append(.configure) }

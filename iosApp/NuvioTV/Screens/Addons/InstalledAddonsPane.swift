@@ -67,7 +67,9 @@ struct InstalledAddonsPane: View {
         isReadOnly: Bool, status: AddonsViewModel.AddonStatus
     ) -> [RowAction] {
         let refreshAction: RowAction = status == .stalled ? .retry : .refresh
-        if isReadOnly { return [refreshAction] }
+        // Stage A review: read-only profiles may refresh and, when configurable, show the
+        // configure QR; nothing that changes the primary profile's list.
+        if isReadOnly { return configurable ? [refreshAction, .configure] : [refreshAction] }
         var actions: [RowAction] = [.toggle(enable: !enabled)]
         if count > 1 { actions.append(.move) }
         actions.append(refreshAction)

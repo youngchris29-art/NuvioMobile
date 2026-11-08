@@ -63,8 +63,10 @@ final class InstalledAddonsPaneTests: XCTestCase {
         XCTAssertFalse(list.contains(.refresh))
     }
 
-    func testReadOnlyOnlyRefreshesOrRetries() {
-        XCTAssertEqual(actions(configurable: true, readOnly: true), [.refresh])
+    /// Stage A review: read-only profiles refresh (or retry) and may still Configure.
+    func testReadOnlyRefreshesOrRetriesAndMayConfigure() {
+        XCTAssertEqual(actions(configurable: true, readOnly: true), [.refresh, .configure])
+        XCTAssertEqual(actions(readOnly: true), [.refresh])
         XCTAssertEqual(actions(readOnly: true, status: .stalled), [.retry])
     }
 }

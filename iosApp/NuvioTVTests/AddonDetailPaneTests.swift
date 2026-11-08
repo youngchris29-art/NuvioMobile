@@ -186,10 +186,12 @@ final class AddonDetailPaneTests: XCTestCase {
         XCTAssertEqual(rows(status: .stalled), [.enabled, .configure, .retry, .move, .catalogs, .remove])
     }
 
-    func testReadOnlyOffersRefreshAndCatalogsOnly() {
-        XCTAssertEqual(rows(isReadOnly: true), [.refresh, .catalogs])
-        XCTAssertEqual(rows(isReadOnly: true, catalogTotal: 0), [.refresh])
-        XCTAssertEqual(rows(isReadOnly: true, status: .stalled, configureFirst: true), [.retry, .catalogs])
+    /// Stage A review: read-only profiles keep Configure (the QR) on a configurable add-on.
+    func testReadOnlyOffersRefreshConfigureAndCatalogsOnly() {
+        XCTAssertEqual(rows(isReadOnly: true), [.refresh, .configure, .catalogs])
+        XCTAssertEqual(rows(configurable: false, isReadOnly: true), [.refresh, .catalogs])
+        XCTAssertEqual(rows(configurable: false, isReadOnly: true, catalogTotal: 0), [.refresh])
+        XCTAssertEqual(rows(isReadOnly: true, status: .stalled, configureFirst: true), [.configure, .retry, .catalogs])
     }
 
     func testConfigureFirstMovesConfigureToTheFront() {
