@@ -474,9 +474,11 @@ struct AddonsHubSplitView: View {
         if moveMode.isMoving { cancelMove() }
         select(section)
         DispatchQueue.main.async { handOffSidebar(section) }
-        // The tab switch settles focus on the rail a moment later; claim it again once it has.
+        // The tab switch settles focus on the rail a moment later; claim it again once it has,
+        // but only while focus is still outside the hub (review r1: a quick press to another
+        // sidebar row, Refresh all included, must not be pulled back).
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-            guard selected == section, sidebarFocus != section, contentFocus == nil else { return }
+            guard selected == section, sidebarFocus == nil, contentFocus == nil else { return }
             handOffSidebar(section)
         }
     }

@@ -234,6 +234,33 @@ final class AddonsSplitUITests: XCTestCase {
         return id
     }
 
+    /// The Home rows the page sees (`/api/state`): (id, title, enabled), or nil.
+    private func stateRows(_ pageUrl: String) -> [(id: String, title: String, enabled: Bool)]? {
+        guard let page = URLComponents(string: pageUrl),
+              let token = page.queryItems?.first(where: { $0.name == "t" })?.value,
+              var state = URLComponents(string: pageUrl) else { return nil }
+        state.path = "/api/state"
+        state.query = nil
+        guard let url = state.url else { return nil }
+        var request = URLRequest(url: url, timeoutInterval: 5)
+        request.setValue(token, forHTTPHeaderField: "X-Setup-Token")
+        let done = DispatchSemaphore(value: 0)
+        var rows: [(id: String, title: String, enabled: Bool)]?
+        URLSession.shared.dataTask(with: request) { data, _, _ in
+            if let data, let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let list = json["rows"] as? [[String: Any]] {
+                rows = list.compactMap { row in
+                    guard let id = row["key"] as? String, let title = row["title"] as? String,
+                          let enabled = row["enabled"] as? Bool else { return nil }
+                    return (id, title, enabled)
+                }
+            }
+            done.signal()
+        }.resume()
+        _ = done.wait(timeout: .now() + 6)
+        return rows
+    }
+
     /// The status of change `id` (`/api/status/{id}`), or nil.
     private func proposalStatus(_ pageUrl: String, _ id: String) -> String? {
         guard let page = URLComponents(string: pageUrl),
@@ -286,6 +313,70 @@ final class AddonsSplitUITests: XCTestCase {
         XCTAssertFalse(dialog.exists, "the dialog stayed after Confirm")
         XCTAssertEqual(proposalStatus(page, second), "confirmed")
         say("phone: confirmed from the dialog")
+    }
+
+    /// C5 device note: the confirm dialog's list is as tall as its lines (one line leaves no tall
+    /// empty box) and scrolls past its cap, with every line reachable before Confirm. Both
+    /// proposals are rejected, so nothing changes.
+    func testConfirmDialogListSizesToItsLines() throws {
+        let app = launch(rail: false)
+        XCTAssertTrue(waitSidebarFocus(app, "installed"), "entry focus is not Installed; focused: \(focusDump(app))")
+        selectSection(app, "phone")
+        let urlLabel = element(app, "addons_phone_url").firstMatch
+        XCTAssertTrue(urlLabel.waitForExistence(timeout: 8), "Remote Setup never started")
+        let page = urlLabel.label
+        let rows = try XCTUnwrap(stateRows(page), "no Home rows in the page state")
+        try XCTSkipIf(rows.isEmpty, "the fixture has no Home rows")
+        let disabled = rows.filter { !$0.enabled }.map(\.id)
+        func body(_ disabledIds: [String]) -> String {
+            let quoted = disabledIds.map { "\"\($0)\"" }.joined(separator: ",")
+            return "{\"disabledRowKeys\":[\(quoted)]}"
+        }
+
+        // One line: a short list.
+        let flip = rows[0]
+        let one = flip.enabled ? disabled + [flip.id] : disabled.filter { $0 != flip.id }
+        let first = try XCTUnwrap(postProposal(page, body(one)), "the one-line proposal was not accepted")
+        let dialog = element(app, "phone_confirm_dialog").firstMatch
+        XCTAssertTrue(dialog.waitForExistence(timeout: 5), "the confirm dialog never opened")
+        let list = element(app, "phone_confirm_lines").firstMatch
+        XCTAssertTrue(list.waitForExistence(timeout: 3), "the dialog shows no lines")
+        let shortHeight = list.frame.height
+        say("dialog: one line, list height \(Int(shortHeight))")
+        XCTAssertLessThan(shortHeight, 200, "one line still leaves a tall list")
+        press(.menu, settle: 1.5)
+        XCTAssertFalse(dialog.exists, "Menu did not close the dialog")
+        XCTAssertEqual(proposalStatus(page, first), "rejected")
+
+        // Every row flipped: a long list, capped and scrollable.
+        try XCTSkipIf(rows.count < 10, "the fixture has \(rows.count) Home rows, too few for the cap")
+        pause(1.2)
+        let all = rows.filter(\.enabled).map(\.id)
+        let second = try XCTUnwrap(postProposal(page, body(all)), "the long proposal was not accepted")
+        XCTAssertTrue(dialog.waitForExistence(timeout: 5), "the confirm dialog never opened again")
+        XCTAssertTrue(waitLabelFocus(app, "Confirm"), "focus is not on Confirm; focused: \(focusDump(app))")
+        let longHeight = list.frame.height
+        say("dialog: \(rows.count) lines, list height \(Int(longHeight))")
+        XCTAssertGreaterThan(longHeight, shortHeight, "the long list is no taller than one line")
+        XCTAssertLessThanOrEqual(longHeight, 540, "the long list passes its cap")
+        // Up walks the lines to the first one, which scrolls into the list's frame.
+        let firstRow = rows[0]
+        let firstLine = (firstRow.enabled ? "Turn off Home row " : "Turn on Home row ") + firstRow.title
+        var reached = false
+        for _ in 0..<(rows.count + 3) {
+            press(.up, settle: 0.5)
+            if labelHasFocus(app, firstLine) { reached = true; break }
+        }
+        XCTAssertTrue(reached, "Up never reached the first line; focused: \(focusDump(app))")
+        let line = app.buttons[firstLine].firstMatch
+        if line.exists {
+            XCTAssertGreaterThanOrEqual(line.frame.minY, list.frame.minY - 2, "the first line is above the list")
+            XCTAssertLessThanOrEqual(line.frame.maxY, list.frame.maxY + 2, "the first line is below the list")
+        }
+        press(.menu, settle: 1.5)
+        XCTAssertFalse(dialog.exists, "Menu did not close the long dialog")
+        XCTAssertEqual(proposalStatus(page, second), "rejected")
+        say("dialog: list sized and scrolled, both rejected")
     }
 
     /// C2 review r2: leaving the Add-ons TAB (not just the section) closes Remote Setup, and coming
