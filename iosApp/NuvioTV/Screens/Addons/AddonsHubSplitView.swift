@@ -174,7 +174,10 @@ struct AddonsHubSplitView: View {
         }
         .onAppear { restoreSection(visible: visible) }
         // Review A5-r3: leaving the hub cancels a detail page's pending Move lift.
-        .onDisappear { pendingLiftUrl = nil }
+        .onDisappear {
+            pendingLiftUrl = nil
+            HubAccessibility.invalidatePending()
+        }
         .onChange(of: visible) { _, now in
             // A section that disappears (Plugins switched off) falls back to Installed.
             if !now.contains(selected) { select(.installed) }
@@ -225,31 +228,15 @@ struct AddonsHubSplitView: View {
     private func sidebar(visible: [HubSection], summary: AddonsViewModel.HubSummary) -> some View {
         List {
             ForEach(visible, id: \.self) { section in
-                Button {
-                    activate(section)
-                } label: {
-                    SettingsRowChrome {
-                        if section == .refresh {
-                            refreshRowLabel(section)
-                        } else {
-                            SettingsRowLabel(title: section.title, systemImage: section.systemImage)
-                        }
-                    } trailing: {
-                        sidebarTrailing(section, summary: summary)
+                if section == .refresh {
+                    // Review VO-r1: the refresh row's spoken label carries the relative stamp, so it
+                    // is rebuilt on the same 30 s timeline as the visible stamp.
+                    TimelineView(.periodic(from: .now, by: 30)) { _ in
+                        sidebarRow(section, summary: summary)
                     }
+                } else {
+                    sidebarRow(section, summary: summary)
                 }
-                .focused($sidebarFocus, equals: section)
-                .listRowBackground(selectedMarker(section))
-                // Christian's VoiceOver check (2026-11-08): the value and the selected trait were not
-                // spoken, so the label carries them (the value stays for the UI legs).
-                .accessibilityLabel(Text(HubAccessibility.sidebarLabel(
-                    title: section.title,
-                    value: sidebarAccessibilityValue(section, summary: summary),
-                    isSelected: section == selected
-                )))
-                .accessibilityValue(Text(sidebarAccessibilityValue(section, summary: summary)))
-                .accessibilityAddTraits(section == selected ? .isSelected : [])
-                .accessibilityIdentifier("addons_sidebar_\(section.rawValue)")
             }
         }
         .defaultFocus($sidebarFocus, suppressSidebarDefaultFocus ? nil : selected)
@@ -262,6 +249,35 @@ struct AddonsHubSplitView: View {
         .padding(.vertical, Theme.Spacing.md)
         .padding(.horizontal, Theme.Spacing.xs)
         .background { HubSidebarSurface() }
+    }
+
+    /// One sidebar row (a `Button` on the row kit).
+    private func sidebarRow(_ section: HubSection, summary: AddonsViewModel.HubSummary) -> some View {
+        Button {
+            activate(section)
+        } label: {
+            SettingsRowChrome {
+                if section == .refresh {
+                    refreshRowLabel(section)
+                } else {
+                    SettingsRowLabel(title: section.title, systemImage: section.systemImage)
+                }
+            } trailing: {
+                sidebarTrailing(section, summary: summary)
+            }
+        }
+        .focused($sidebarFocus, equals: section)
+        .listRowBackground(selectedMarker(section))
+        // Christian's VoiceOver check (2026-11-08): the value and the selected trait were not
+        // spoken, so the label carries them (the value stays for the UI legs).
+        .accessibilityLabel(Text(HubAccessibility.sidebarLabel(
+            title: section.title,
+            value: sidebarAccessibilityValue(section, summary: summary),
+            isSelected: section == selected
+        )))
+        .accessibilityValue(Text(sidebarAccessibilityValue(section, summary: summary)))
+        .accessibilityAddTraits(section == selected ? .isSelected : [])
+        .accessibilityIdentifier("addons_sidebar_\(section.rawValue)")
     }
 
     /// A7 device check (German): "Alle aktualisieren" and "Noch nicht aktualisiert" do not fit
@@ -795,13 +811,10 @@ struct AddonsHubSplitView: View {
         // VoiceOver check (2026-11-08): the badge alone was never spoken. Said a moment later, so
         // the focus hand-off's own announcement does not cut it off. Covers the context menu's
         // Move and the add-on page's Move (it lifts the row through here).
-        Self.announceSoon(.started)
+        HubAccessibility.announceSoon(.started)
     }
 
-    /// Posts a Move mode announcement once the focus change it follows has been spoken.
-    static func announceSoon(_ event: HubAccessibility.MoveEvent) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { HubAccessibility.announce(event) }
-    }
+
 
     /// One Up/Down press while moving: the reducer decides (ends, 112 ms throttle); the add-on
     /// moves one place and focus stays on its row.
@@ -820,7 +833,7 @@ struct AddonsHubSplitView: View {
     private func commitMove() {
         guard let url = moveMode.commit() else { return }
         Self.logFocus("move commit")
-        Self.announceSoon(.committed)
+        HubAccessibility.announceSoon(.committed)
         refocusRowAfterMove(url)
     }
 
@@ -870,6 +883,7 @@ struct AddonsHubSplitView: View {
         suppressSidebarDefaultFocus = false
         moveEndedAt = nil
         Self.logFocus("move ended: lifted add-on removed")
+        HubAccessibility.invalidatePending()
         DispatchQueue.main.async {
             if let first = model.addons.first {
                 handOffContent(InstalledAddonsPane.rowKey(first.manifestUrl))
@@ -888,7 +902,7 @@ struct AddonsHubSplitView: View {
         if moveDidStep { model.restore(manifestUrl: url, after: predecessors) }
         moveDidStep = false
         Self.logFocus("move cancel back to \(origin)")
-        Self.announceSoon(.cancelled)
+        HubAccessibility.announceSoon(.cancelled)
         refocusRowAfterMove(url)
     }
 

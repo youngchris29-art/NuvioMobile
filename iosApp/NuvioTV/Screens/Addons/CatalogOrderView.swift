@@ -160,6 +160,7 @@ struct CatalogOrderView: View {
                     if moveMode.isMoving {
                         moveMode.commit()
                         onMovingChange(false)
+                        HubAccessibility.invalidatePending()
                     }
                 }
                 .onChange(of: scrollTarget?.wrappedValue) { _, target in
@@ -256,6 +257,7 @@ struct CatalogOrderView: View {
             if let key = moveMode.movingUrl, !keys.contains(key), !liveKeys().contains(key) {
                 moveMode.commit()
                 onMovingChange(false)
+                HubAccessibility.invalidatePending()
             }
         }
         .overlay(alignment: .bottom) { toastView }
@@ -313,7 +315,7 @@ struct CatalogOrderView: View {
         moveDidStep = false
         onMovingChange(true)
         focusRowSoon(item.key)
-        AddonsHubSplitView.announceSoon(.started)
+        HubAccessibility.announceSoon(.started)
     }
 
     private func step(_ direction: AddonMoveMode.Direction) {
@@ -338,7 +340,7 @@ struct CatalogOrderView: View {
         moveMode.commit()
         onMovingChange(false)
         focusRowSoon(key)
-        AddonsHubSplitView.announceSoon(.committed)
+        HubAccessibility.announceSoon(.committed)
     }
 
     /// Menu while moving: puts the catalog back where it started (relative to the survivors), in
@@ -351,7 +353,7 @@ struct CatalogOrderView: View {
             if moveDidStep { model.restoreCatalog(key: key, after: predecessors) }
             onMovingChange(false)
             focusRowSoon(key)
-            AddonsHubSplitView.announceSoon(.cancelled)
+            HubAccessibility.announceSoon(.cancelled)
         }
     }
 

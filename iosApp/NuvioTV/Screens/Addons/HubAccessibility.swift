@@ -40,4 +40,32 @@ nonisolated enum HubAccessibility {
     static func announce(_ event: MoveEvent) {
         AccessibilityNotification.Announcement(announcement(event)).post()
     }
+
+    /// Bumped by every scheduled announcement and by `invalidatePending()`; a scheduled one posts
+    /// only if nothing came after it (review VO-r1: a Menu inside the delay must not let the
+    /// start instructions follow the move's end).
+    @MainActor private(set) static var generation = 0
+
+    /// How long after the focus change a move announcement is posted, so the focus change's own
+    /// speech does not cut it off.
+    static let announceDelay: TimeInterval = 0.35
+
+    /// Posts `event` after `announceDelay` unless another announcement or `invalidatePending()`
+    /// came first.
+    @MainActor
+    static func announceSoon(_ event: MoveEvent) {
+        generation += 1
+        let scheduled = generation
+        DispatchQueue.main.asyncAfter(deadline: .now() + announceDelay) {
+            guard scheduled == generation else { return }
+            announce(event)
+        }
+    }
+
+    /// Drops any announcement still waiting (the move's pane went away, the lifted row was
+    /// removed).
+    @MainActor
+    static func invalidatePending() {
+        generation += 1
+    }
 }
