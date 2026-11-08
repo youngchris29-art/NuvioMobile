@@ -86,10 +86,15 @@ struct StreamPickerInfoPanel: View {
                     upgrade: .logo
                 )
                 .frame(maxWidth: Self.logoDecodeWidth, alignment: .leading)
+                // Review p4: the three measured parts take their ideal height whatever the poster
+                // takes, so a facts line that grows after the episode fetch measures two lines and
+                // the poster shrinks for it (never the other way round).
+                .fixedSize(horizontal: false, vertical: true)
                 .onGeometryChange(for: CGFloat.self, of: { $0.size.height.rounded(.up) }) { headerHeight = $0 }
 
                 StreamPickerFactsText(season: season, episode: episode, episodes: episodes, meta: meta,
                                       lineLimit: 2)
+                    .fixedSize(horizontal: false, vertical: true)
                     .onGeometryChange(for: CGFloat.self, of: { $0.size.height.rounded(.up) }) { factsHeight = $0 }
 
                 if let poster, !poster.isEmpty,
@@ -109,6 +114,7 @@ struct StreamPickerInfoPanel: View {
                 }
 
                 StreamPickerProgressLine(progress: progress)
+                    .fixedSize(horizontal: false, vertical: true)
                     .onGeometryChange(for: CGFloat.self, of: { $0.size.height.rounded(.up) }) { progressHeight = $0 }
 
                 Spacer(minLength: 0)
