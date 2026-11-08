@@ -107,7 +107,7 @@ final class RemoteSetupChangeListTests: XCTestCase {
         XCTAssertEqual(lines(pattern: "https://img.example.com/{id}.jpg").map(\.kind), [.pattern])
         XCTAssertEqual(lines(pattern: "ftp://x").map(\.kind), [.rejected])
         XCTAssertEqual(lines(badges: ["https://cdn.example.com/packs/neon.json?v=2"]).map(\.text),
-                       ["Import badge pack cdn.example.com/packs/neon.json?v=2 and make it the active pack"])
+                       ["Import badge pack https://cdn.example.com/packs/neon.json?v=2 and make it the active pack"])
         // Review r11: one pack per change, so the label alone tells packs apart.
         XCTAssertNotEqual(List.badgePackLabel("https://h.example.com/alice/badges.json"),
                           List.badgePackLabel("https://h.example.com/bob/badges.json"))
@@ -115,7 +115,15 @@ final class RemoteSetupChangeListTests: XCTestCase {
                           List.badgePackLabel("https://h.example.com/pack?id=red"))
         XCTAssertNotEqual(List.badgePackLabel("http://192.168.1.10:8080/badges.json"),
                           List.badgePackLabel("http://192.168.1.10:9090/badges.json"), "ports")
-        XCTAssertLessThanOrEqual(List.badgePackLabel("https://h.example.com/" + String(repeating: "x", count: 200)).count, 81)
+        XCTAssertLessThanOrEqual(List.badgePackLabel("https://h.example.com/" + String(repeating: "x", count: 200)).count, 82)
+        // Review r13: the scheme, and cut labels that differ only in the middle.
+        XCTAssertNotEqual(List.badgePackLabel("http://example.com/pack.json"), List.badgePackLabel("https://example.com/pack.json"))
+        let middle = String(repeating: "m", count: 60)
+        XCTAssertNotEqual(List.badgePackLabel("https://h.example.com/a" + middle + "1" + middle + "/p.json"),
+                          List.badgePackLabel("https://h.example.com/a" + middle + "2" + middle + "/p.json"))
+        // A new add-on is labelled by host and port, never its path.
+        XCTAssertEqual(List.newAddonLabel("http://192.168.1.10:8080/torbox=KEY/manifest.json"), "192.168.1.10:8080")
+        XCTAssertNotEqual(List.newAddonLabel("http://192.168.1.10:8080/manifest.json"), List.newAddonLabel("http://192.168.1.10:9090/manifest.json"))
     }
 
     func testMovedIdsKeepsTheLongestOrderedRun() {

@@ -162,6 +162,24 @@ nonisolated enum RemoteSetupChangeList {
         }
     }
 
+    /// A new add-on's label: its host and port only (review r13). The path and query are where
+    /// debrid keys live, so they never reach the TV screen; the phone shows the full address the
+    /// user typed.
+    static func newAddonLabel(_ url: String) -> String {
+        guard let parts = URLComponents(string: url), let host = parts.host, !host.isEmpty else {
+            return AddonsViewModel.host(of: url)
+        }
+        return host + (parts.port.map { ":\($0)" } ?? "")
+    }
+
+    /// A short, stable fingerprint of `text` (FNV-1a, 4 hex digits) to tell apart labels that were
+    /// cut short.
+    static func fingerprint(_ text: String) -> String {
+        var hash: UInt32 = 2_166_136_261
+        for byte in text.utf8 { hash = (hash ^ UInt32(byte)) &* 16_777_619 }
+        return String(format: "%04x", hash & 0xffff)
+    }
+
     /// `host/path` for a badge pack URL, with the query when there is one (review r11: a change
     /// carries one pack, so the label alone must tell it apart from any other pack). A pack URL is
     /// a public file; long labels are cut in the middle.
@@ -170,10 +188,13 @@ nonisolated enum RemoteSetupChangeList {
             return String(url.prefix(80))
         }
         // Review r12: the port too (two servers on one host can serve different packs).
-        var label = host + (parts.port.map { ":\($0)" } ?? "") + parts.path
+        // Review r13: the scheme too (http and https can serve different files), and a cut
+        // label carries a fingerprint of the whole address.
+        let scheme = (parts.scheme ?? "https").lowercased()
+        var label = scheme + "://" + host + (parts.port.map { ":\($0)" } ?? "") + parts.path
         if let query = parts.query, !query.isEmpty { label += "?" + query }
         guard label.count > 80 else { return label }
-        return String(label.prefix(50)) + "…" + String(label.suffix(29))
+        return String(label.prefix(46)) + "…" + String(label.suffix(26)) + " [" + fingerprint(url) + "]"
     }
 
     /// The ids that moved from `before` to `after` (same set of ids): everything outside a longest

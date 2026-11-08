@@ -591,7 +591,7 @@ final class RemoteSetupViewModel: ObservableObject {
             proposedAddons: resolved?.map { entry in
                 .init(
                     id: entry.url,
-                    title: entry.isNew ? AddonsViewModel.host(of: entry.url) : (addons.first { $0.manifestUrl == entry.url }?.displayTitle ?? AddonsViewModel.host(of: entry.url)),
+                    title: entry.isNew ? RemoteSetupChangeList.newAddonLabel(entry.url) : (addons.first { $0.manifestUrl == entry.url }?.displayTitle ?? AddonsViewModel.host(of: entry.url)),
                     enabled: entry.enabled,
                     isNew: entry.isNew
                 )
