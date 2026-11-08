@@ -50,16 +50,29 @@ nonisolated enum HubAccessibility {
     /// speech does not cut it off.
     static let announceDelay: TimeInterval = 0.35
 
-    /// Posts `event` after `announceDelay` unless another announcement or `invalidatePending()`
-    /// came first.
+    /// The focus key of the row a waiting announcement describes (review VO-r4).
+    @MainActor private(set) static var pendingRowKey: String?
+
+    /// Posts `event` after `announceDelay` unless another announcement, `invalidatePending()` or
+    /// focus landing on a row other than `rowKey` (`focusLanded(on:)`) came first.
     @MainActor
-    static func announceSoon(_ event: MoveEvent) {
+    static func announceSoon(_ event: MoveEvent, rowKey: String) {
         generation += 1
+        pendingRowKey = rowKey
         let scheduled = generation
         DispatchQueue.main.asyncAfter(deadline: .now() + announceDelay) {
             guard scheduled == generation else { return }
+            pendingRowKey = nil
             announce(event)
         }
+    }
+
+    /// Content focus landed on `key`: a waiting announcement about another row is dropped (the
+    /// user moved on), one about this row (the post-move hand-back) is kept.
+    @MainActor
+    static func focusLanded(on key: String) {
+        guard let pending = pendingRowKey, pending != key else { return }
+        invalidatePending()
     }
 
     /// Drops any announcement still waiting (the move's pane went away, the lifted row was
@@ -67,5 +80,6 @@ nonisolated enum HubAccessibility {
     @MainActor
     static func invalidatePending() {
         generation += 1
+        pendingRowKey = nil
     }
 }

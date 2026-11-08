@@ -560,6 +560,9 @@ struct AddonsHubSplitView: View {
 
     private func contentFocusChanged(from old: String?, to new: String?) {
         guard let new else { return }
+        // Review VO-r4: focus moved on to another row: a waiting move announcement about the
+        // moved row is dropped (the hand-back onto that row keeps it).
+        HubAccessibility.focusLanded(on: new)
         // Review A5-r3: pop recovery ends as soon as the row has focus, however it got there (the
         // engine can land it before the queued reclaim writes it).
         if let url = popReturnUrl, new == InstalledAddonsPane.rowKey(url) { poppedAt = nil }
@@ -821,7 +824,7 @@ struct AddonsHubSplitView: View {
         // VoiceOver check (2026-11-08): the badge alone was never spoken. Said a moment later, so
         // the focus hand-off's own announcement does not cut it off. Covers the context menu's
         // Move and the add-on page's Move (it lifts the row through here).
-        HubAccessibility.announceSoon(.started)
+        HubAccessibility.announceSoon(.started, rowKey: InstalledAddonsPane.rowKey(addon.manifestUrl))
     }
 
 
@@ -843,7 +846,7 @@ struct AddonsHubSplitView: View {
     private func commitMove() {
         guard let url = moveMode.commit() else { return }
         Self.logFocus("move commit")
-        HubAccessibility.announceSoon(.committed)
+        HubAccessibility.announceSoon(.committed, rowKey: InstalledAddonsPane.rowKey(url))
         refocusRowAfterMove(url)
     }
 
@@ -912,7 +915,7 @@ struct AddonsHubSplitView: View {
         if moveDidStep { model.restore(manifestUrl: url, after: predecessors) }
         moveDidStep = false
         Self.logFocus("move cancel back to \(origin)")
-        HubAccessibility.announceSoon(.cancelled)
+        HubAccessibility.announceSoon(.cancelled, rowKey: InstalledAddonsPane.rowKey(url))
         refocusRowAfterMove(url)
     }
 

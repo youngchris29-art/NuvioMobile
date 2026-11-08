@@ -317,7 +317,7 @@ struct CatalogOrderView: View {
         moveDidStep = false
         onMovingChange(true)
         focusRowSoon(item.key)
-        HubAccessibility.announceSoon(.started)
+        HubAccessibility.announceSoon(.started, rowKey: Self.rowKey(item.key))
     }
 
     private func step(_ direction: AddonMoveMode.Direction) {
@@ -342,7 +342,7 @@ struct CatalogOrderView: View {
         moveMode.commit()
         onMovingChange(false)
         focusRowSoon(key)
-        HubAccessibility.announceSoon(.committed)
+        HubAccessibility.announceSoon(.committed, rowKey: Self.rowKey(key))
     }
 
     /// Menu while moving: puts the catalog back where it started (relative to the survivors), in
@@ -355,7 +355,7 @@ struct CatalogOrderView: View {
             if moveDidStep { model.restoreCatalog(key: key, after: predecessors) }
             onMovingChange(false)
             focusRowSoon(key)
-            HubAccessibility.announceSoon(.cancelled)
+            HubAccessibility.announceSoon(.cancelled, rowKey: Self.rowKey(key))
         }
     }
 
