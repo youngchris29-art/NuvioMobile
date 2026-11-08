@@ -312,6 +312,10 @@ struct StreamCompactRowView: View, Equatable {
                         .font(Theme.Font.caption)
                         .rowTextColor(secondary: true)
                         .lineLimit(1)
+                        // GitHub #25 review r6: in add-on text the add-on's generic name does not tell
+                        // sources apart, so the source (and "Failed recently") claims its width
+                        // before the lead and facts truncate.
+                        .layoutPriority(model.addonText ? 2 : 0)
                 }
             }
             .padding(.horizontal, Theme.Spacing.md)
