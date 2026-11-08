@@ -175,6 +175,47 @@ final class StreamPickerFullWidthTests: XCTestCase {
         XCTAssertEqual(StreamPickerWideMetrics.cardMaxWidth(fullWidth: false), .infinity)
     }
 
+    func testAddonTextRestCaps() {
+        // Christian after the device pass (2026-11-08): the description shows 3 lines at rest in
+        // both layouts, the whole text after the dwell; the name keeps 3.
+        XCTAssertEqual(StreamPickerWideMetrics.descriptionRestLines, 3)
+        XCTAssertEqual(StreamPickerWideMetrics.nameRestLines, 3)
+    }
+
+    // MARK: - Two-Pane poster (option (a) after the device pass)
+
+    func testPosterFillsA1080pPaneBetweenTheOldAndTheNewSize() throws {
+        typealias P = StreamPickerInfoPanel
+        // The box measured ~840 pt; the facts and progress lines are one body line each (~39 pt).
+        let reserved = P.reservedHeight(factsHeight: 39, progressHeight: 39)
+        XCTAssertEqual(reserved, 180 + 39 + 39 + 4 * 24)
+        let width = try XCTUnwrap(P.posterWidth(paneHeight: 840, reserved: reserved))
+        XCTAssertEqual(width, ((840 - reserved) / 1.5).rounded(.down))
+        XCTAssertGreaterThanOrEqual(width, 300)
+        XCTAssertLessThan(width, 360)
+        // Two facts lines (an episode with a long name) still leave a poster on the box.
+        let twoLines = try XCTUnwrap(P.posterWidth(paneHeight: 840, reserved: P.estimatedReservedHeight))
+        XCTAssertGreaterThanOrEqual(twoLines, P.posterMinimumWidth)
+        XCTAssertLessThan(twoLines, width)
+    }
+
+    func testPosterCapsAt360OnATallPane() {
+        typealias P = StreamPickerInfoPanel
+        XCTAssertEqual(P.posterWidth(paneHeight: 2000, reserved: P.estimatedReservedHeight), 360)
+        XCTAssertEqual(P.posterWidth(paneHeight: 540 + 400, reserved: 400), 360)
+    }
+
+    func testPosterHidesWhenEvenTheOldSizeDoesNotFit() {
+        typealias P = StreamPickerInfoPanel
+        let reserved = P.estimatedReservedHeight
+        // Exactly 260 × 390 fits; one point less does not.
+        XCTAssertEqual(P.posterWidth(paneHeight: reserved + 390, reserved: reserved), 260)
+        XCTAssertNil(P.posterWidth(paneHeight: reserved + 389, reserved: reserved))
+        XCTAssertNil(P.posterWidth(paneHeight: 500, reserved: reserved))
+        XCTAssertNil(P.posterWidth(paneHeight: 0, reserved: reserved))
+        XCTAssertNil(P.posterWidth(paneHeight: .infinity, reserved: reserved))
+    }
+
     // MARK: - Compact row
 
     func testCompactPartsInAddonText() {

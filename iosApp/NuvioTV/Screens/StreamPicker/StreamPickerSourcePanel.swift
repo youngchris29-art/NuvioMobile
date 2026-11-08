@@ -76,6 +76,7 @@ nonisolated enum StreamPickerWideMetrics {
     static let nameColumnWidth: CGFloat = 300
     /// Name lines an add-on-text row shows at rest; the whole name after the focus dwell (review r1).
     static let nameRestLines = 3
-    /// Description lines an add-on-text row shows at rest; the whole text after the focus dwell.
-    static let descriptionRestLines = 4
+    /// Description lines an add-on-text row shows at rest, in both layouts; the whole text after
+    /// the focus dwell (Christian after the device pass, 2026-11-08: 3, down from 4).
+    static let descriptionRestLines = 3
 }

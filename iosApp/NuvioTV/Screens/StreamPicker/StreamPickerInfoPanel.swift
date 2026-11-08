@@ -6,7 +6,8 @@ import SharedCore
 /// the poster, and a live progress line that counts the fan-out ("Finding streams… 3 of 4") and
 /// settles on the result ("155 sources from 4 add-ons").
 ///
-/// The poster is dropped when the pane is under `posterMinimumHeight` points tall, so a small
+/// The poster takes the height the rest of the pane leaves (`posterWidth(paneHeight:reserved:)`,
+/// 2:3, up to 360 pt wide) and is dropped when even `posterMinimumWidth` doesn't fit, so a small
 /// window (the simulator at a reduced scale, a sheet) never pushes the progress line off the pane.
 struct StreamPickerInfoPanel: View {
     let title: String
@@ -24,13 +25,46 @@ struct StreamPickerInfoPanel: View {
     /// `heroLogoMaxWidth` (520 pt), which the pane's 40 % share (768 pt at 1080p) holds with room.
     nonisolated static let logoSlotHeight: CGFloat = 180
     nonisolated static let logoDecodeWidth: CGFloat = 600
-    /// GitHub #25 (Christian on the mockup, 2026-11-08): 360 × 540, up from 260 × 390.
-    nonisolated static let posterWidth: CGFloat = 360
-    nonisolated static var posterHeight: CGFloat { posterWidth * 1.5 }
-    /// Below this pane height the poster is hidden (the loading cover and alerts are unaffected).
-    /// Logo slot 180 + facts (two lines) + poster 540 + progress line + the gaps: about 850, raised
-    /// from 700 with the larger poster so the progress line never falls off the pane.
-    nonisolated static let posterMinimumHeight: CGFloat = 850
+    /// GitHub #25 (Christian, 2026-11-08): the poster grows to 360 × 540 where the pane has the
+    /// room. A 1080p box's pane is about 840 pt, which holds roughly 300–325 pt (option (a) after the
+    /// device pass: a fixed 360 behind an 850 pt threshold never showed on the box).
+    nonisolated static let posterMaximumWidth: CGFloat = 360
+    /// The old fixed size; below it the poster is hidden (the loading cover and alerts are unaffected).
+    nonisolated static let posterMinimumWidth: CGFloat = 260
+    /// Height over width (2:3).
+    nonisolated static let posterAspect: CGFloat = 1.5
+    /// The VStack gaps while the poster shows: logo → facts → poster → progress → spacer.
+    nonisolated static let posterGapCount: CGFloat = 4
+    /// The pane height everything but the poster takes before the facts and progress lines are
+    /// measured: logo slot 180 + two facts lines + one progress line (body, about 39 pt each) + the
+    /// four gaps. The measured heights replace the two text estimates after the first layout.
+    nonisolated static let estimatedTextLineHeight: CGFloat = 39
+    nonisolated static var estimatedReservedHeight: CGFloat {
+        reservedHeight(factsHeight: estimatedTextLineHeight * 2, progressHeight: estimatedTextLineHeight)
+    }
+
+    /// The pane height the logo slot, the facts and progress lines and the gaps take.
+    nonisolated static func reservedHeight(factsHeight: CGFloat, progressHeight: CGFloat) -> CGFloat {
+        logoSlotHeight + factsHeight + progressHeight + posterGapCount * Theme.Spacing.lg
+    }
+
+    /// The poster width for a pane `paneHeight` tall: the room left after `reserved`, at 2:3, capped
+    /// at `posterMaximumWidth`, whole points; nil (no poster) when that is under `posterMinimumWidth`.
+    nonisolated static func posterWidth(paneHeight: CGFloat, reserved: CGFloat) -> CGFloat? {
+        let room = paneHeight - reserved
+        guard room.isFinite, room > 0 else { return nil }
+        let width = (room / posterAspect).rounded(.down)
+        guard width >= posterMinimumWidth else { return nil }
+        return min(width, posterMaximumWidth)
+    }
+
+    @State private var factsHeight: CGFloat?
+    @State private var progressHeight: CGFloat?
+
+    private var reservedHeight: CGFloat {
+        Self.reservedHeight(factsHeight: factsHeight ?? Self.estimatedTextLineHeight * 2,
+                            progressHeight: progressHeight ?? Self.estimatedTextLineHeight)
+    }
 
     var body: some View {
         GeometryReader { geo in
@@ -47,19 +81,25 @@ struct StreamPickerInfoPanel: View {
 
                 StreamPickerFactsText(season: season, episode: episode, episodes: episodes, meta: meta,
                                       lineLimit: 2)
+                    .onGeometryChange(for: CGFloat.self, of: { $0.size.height.rounded(.up) }) { factsHeight = $0 }
 
-                if geo.size.height >= Self.posterMinimumHeight, let poster, !poster.isEmpty {
+                if let poster, !poster.isEmpty,
+                   let width = Self.posterWidth(paneHeight: geo.size.height, reserved: reservedHeight) {
+                    let height = width * Self.posterAspect
                     CachedAsyncImage(
                         string: poster,
-                        decodeSize: .points(width: Self.posterWidth, height: Self.posterHeight),
+                        // Decoded at the largest size so a pane resize never re-fetches the art.
+                        decodeSize: .points(width: Self.posterMaximumWidth,
+                                            height: Self.posterMaximumWidth * Self.posterAspect),
                         upgrade: .posterLarge
                     )
-                    .frame(width: Self.posterWidth, height: Self.posterHeight)
+                    .frame(width: width, height: height)
                     .clipShape(RoundedRectangle(cornerRadius: posterStyle.cornerRadius, style: .continuous))
                     .accessibilityHidden(true)
                 }
 
                 StreamPickerProgressLine(progress: progress)
+                    .onGeometryChange(for: CGFloat.self, of: { $0.size.height.rounded(.up) }) { progressHeight = $0 }
 
                 Spacer(minLength: 0)
             }
