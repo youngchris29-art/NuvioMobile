@@ -378,8 +378,9 @@ final class AddonsSplitUITests: XCTestCase {
             if labelHasFocus(app, firstLine) { reached = true; break }
         }
         XCTAssertTrue(reached, "Up never reached the first line; focused: \(focusDump(app))")
-        XCTAssertGreaterThanOrEqual(line.frame.minY, list.frame.minY - 2, "the first line is above the list")
-        XCTAssertLessThanOrEqual(line.frame.maxY, list.frame.maxY + 2, "the first line is below the list")
+        // The focused line lifts (scales) past its slot by a few points, so its centre is checked.
+        XCTAssertGreaterThanOrEqual(line.frame.midY, list.frame.minY, "the first line is above the list")
+        XCTAssertLessThanOrEqual(line.frame.midY, list.frame.maxY, "the first line is below the list")
         press(.menu, settle: 1.5)
         XCTAssertFalse(dialog.exists, "Menu did not close the long dialog")
         XCTAssertEqual(proposalStatus(page, second), "rejected")

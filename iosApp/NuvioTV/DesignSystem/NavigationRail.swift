@@ -85,6 +85,15 @@ final class NavigationChromeModel: ObservableObject {
         revealRequest = RailRevealRequest(generation: revealRequest.generation &+ 1, reason: reason)
     }
 
+    /// Add-ons hub v2 C5: bumped when a screen opened by a programmatic tab switch wants focus while
+    /// the rail holds it (the switch can leave focus on the rail, which gates the content). The rail
+    /// runs its normal exit to the current tab, so the tab's return route places focus.
+    @Published private(set) var exitRequest: Int = 0
+
+    func requestExitToContent() {
+        exitRequest &+= 1
+    }
+
     func setFocusedChrome(_ focused: Bool) {
         guard isFocusedChrome != focused else { return }
         isFocusedChrome = focused
@@ -592,6 +601,10 @@ struct NavigationRail: View {
         }
         .onChange(of: chrome.revealRequest) { _, request in
             arm(request.reason, origin: "request")
+        }
+        .onChange(of: chrome.exitRequest) { _, _ in
+            guard focusedItem != nil else { return }
+            exitRail(to: selectedTab, via: "request")
         }
         .onChange(of: focusedItem) { old, new in
             focusChanged(old: old, new: new)

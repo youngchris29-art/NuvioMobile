@@ -483,7 +483,7 @@ struct AddonsHubSplitView: View {
         if moveMode.isMoving { cancelMove() }
         select(section)
         pendingRequestFocus = section
-        DispatchQueue.main.async { handOffSidebar(section) }
+        DispatchQueue.main.async { claimRequestedFocus(section) }
         // The tab switch settles focus on the rail a moment later; claim it again once it has,
         // but only if focus has not reached the hub since (review r1/r2: a quick press to another
         // row, or Menu back to the rail after landing, must not be pulled back).
@@ -491,6 +491,17 @@ struct AddonsHubSplitView: View {
             defer { pendingRequestFocus = nil }
             guard pendingRequestFocus == section, selected == section,
                   sidebarFocus == nil, contentFocus == nil else { return }
+            claimRequestedFocus(section)
+        }
+    }
+
+    /// C5: puts focus on a requested section's row. With the rail, the tab switch can leave focus
+    /// on the rail, which gates the content so a focus write cannot land; the rail is asked to exit
+    /// instead, and its return route (below) hands focus to the selected section's row.
+    private func claimRequestedFocus(_ section: HubSection) {
+        if navigationChrome.isFocusedChrome {
+            navigationChrome.requestExitToContent()
+        } else {
             handOffSidebar(section)
         }
     }
