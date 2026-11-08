@@ -825,6 +825,12 @@ object AddonRepository {
                     val current = _uiState.value.addons.mapTo(mutableSetOf()) { it.manifestUrl }
                     val gone = left.filterNot(current::contains)
                     gone.forEach(AddonHealthTracker::forget)
+                    // Review r6: also end the departed URLs' refresh generations, so a job whose
+                    // fetch already returned fails its generation check after a reinstall even
+                    // if the cancellation arrives too late to stop it.
+                    if (gone.isNotEmpty()) {
+                        _uiState.update { state -> state.copy(refreshGenerations = state.refreshGenerations - gone.toSet()) }
+                    }
                     gone.mapNotNull { activeRefreshJobs.remove(it) }
                 }
                 cancelled.forEach(Job::cancel)
