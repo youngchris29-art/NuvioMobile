@@ -25,7 +25,7 @@ struct ConfirmPhoneChangesDialog: View {
                     .font(Theme.Font.screenTitle.weight(.bold))
                     .foregroundStyle(Theme.Palette.textPrimary)
                 if refreshed {
-                    Label("The TV's lists changed while this was open. Check the changes again.", systemImage: "arrow.triangle.2.circlepath")
+                    Label("This changed while it was open (the TV's lists moved, or a newer change from the phone replaced it). Check the changes again.", systemImage: "arrow.triangle.2.circlepath")
                         .font(Theme.Font.body)
                         .foregroundStyle(Color.orange)
                         .accessibilityIdentifier("phone_confirm_refreshed")

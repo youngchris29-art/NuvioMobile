@@ -373,7 +373,7 @@ async function poll(id, tries) {
       const notes = [];
       if (failed.length) notes.push(failed.length + " new add-on(s) couldn't be installed. Check the address; they're still in the list to send again.");
       const clashIds = (conflictIds || "").split(",").filter(Boolean);
-      if (badgeMisses) notes.push("The badge pack couldn't be imported. It's still staged: check the address and send again.");
+      if (badgeMisses) notes.push("the badge pack couldn't be imported. It's still staged: check the address and send again.");
       if (clashIds.length) notes.push(clashIds.length + " new add-on(s) were already installed by another change with a different on/off setting. They're marked in the list; check their switch.");
       await reloadLocked("Applied on the TV, but " + notes.join(" "), false, 1500);
       for (const a of addons) if (clashIds.includes(a.id)) a.conflict = true;

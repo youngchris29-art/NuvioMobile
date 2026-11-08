@@ -97,6 +97,7 @@ final class RemoteSetupViewModel: ObservableObject {
                 // leaves the alert alone. A current one replaces the alert: the server has
                 // already superseded whatever it showed.
                 guard self.server.isPending(id: change.id) else { return }
+                let wasShowing = self.pendingChange != nil
                 self.pendingChange = nil
                 self.pendingAddons = nil
                 guard self.rowIdsKnown(change.proposal) else {
@@ -117,8 +118,11 @@ final class RemoteSetupViewModel: ObservableObject {
                 case .success(let resolved):
                     self.pendingAddons = resolved
                     self.pendingSummary = self.summarize(change.proposal)
+                    // C3 stand-in review: a newer change replacing one already on screen says so
+                    // (its lines may read the same while hidden values differ).
+                    let replacing = wasShowing
                     self.pendingLines = self.changeLines(change.proposal, addons: resolved)
-                    self.pendingLinesRefreshed = false
+                    self.pendingLinesRefreshed = replacing
                     self.pendingChange = change
                 }
             }
@@ -667,6 +671,11 @@ final class RemoteSetupViewModel: ObservableObject {
     }
 
     deinit {
+        // C3 stand-in review: a model released with a change pending skipped `stop()` (the pane
+        // keeps the server while the confirm cover is up); give the idle timer back here.
+        if disabledIdleTimer {
+            DispatchQueue.main.async { UIApplication.shared.isIdleTimerDisabled = false }
+        }
         server.stop()
         addonWatcher?.cancel()
         rowWatcher?.cancel()
