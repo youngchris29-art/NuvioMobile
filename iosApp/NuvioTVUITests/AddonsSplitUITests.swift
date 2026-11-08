@@ -210,6 +210,84 @@ final class AddonsSplitUITests: XCTestCase {
         return status
     }
 
+    /// Posts `body` to the session's /api/apply (token from the page address) and returns the
+    /// change id, or nil. Never prints the address.
+    private func postProposal(_ pageUrl: String, _ body: String) -> String? {
+        guard let page = URLComponents(string: pageUrl),
+              let token = page.queryItems?.first(where: { $0.name == "t" })?.value,
+              var apply = URLComponents(string: pageUrl) else { return nil }
+        apply.path = "/api/apply"
+        apply.query = nil
+        guard let url = apply.url else { return nil }
+        var request = URLRequest(url: url, timeoutInterval: 5)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(token, forHTTPHeaderField: "X-Setup-Token")
+        request.httpBody = Data(body.utf8)
+        let done = DispatchSemaphore(value: 0)
+        var id: String?
+        URLSession.shared.dataTask(with: request) { data, _, _ in
+            if let data, let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] { id = json["id"] as? String }
+            done.signal()
+        }.resume()
+        _ = done.wait(timeout: .now() + 6)
+        return id
+    }
+
+    /// The status of change `id` (`/api/status/{id}`), or nil.
+    private func proposalStatus(_ pageUrl: String, _ id: String) -> String? {
+        guard let page = URLComponents(string: pageUrl),
+              let token = page.queryItems?.first(where: { $0.name == "t" })?.value,
+              var status = URLComponents(string: pageUrl) else { return nil }
+        status.path = "/api/status/\(id)"
+        status.query = nil
+        guard let url = status.url else { return nil }
+        var request = URLRequest(url: url, timeoutInterval: 5)
+        request.setValue(token, forHTTPHeaderField: "X-Setup-Token")
+        let done = DispatchSemaphore(value: 0)
+        var value: String?
+        URLSession.shared.dataTask(with: request) { data, _, _ in
+            if let data, let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] { value = json["status"] as? String }
+            done.signal()
+        }.resume()
+        _ = done.wait(timeout: .now() + 6)
+        return value
+    }
+
+    /// C3: a change from the phone opens the per-change dialog with focus on Confirm; Reject and
+    /// Confirm settle it. The proposal is empty, so nothing on the fixture changes.
+    func testPhoneChangeOpensTheConfirmDialog() throws {
+        let app = launch(rail: false)
+        XCTAssertTrue(waitSidebarFocus(app, "installed"), "entry focus is not Installed; focused: \(focusDump(app))")
+        selectSection(app, "phone")
+        let urlLabel = element(app, "addons_phone_url").firstMatch
+        XCTAssertTrue(urlLabel.waitForExistence(timeout: 8), "Remote Setup never started")
+        let page = urlLabel.label
+
+        // Reject.
+        let first = try XCTUnwrap(postProposal(page, "{}"), "the proposal was not accepted")
+        let dialog = element(app, "phone_confirm_dialog").firstMatch
+        XCTAssertTrue(dialog.waitForExistence(timeout: 5), "the confirm dialog never opened")
+        XCTAssertTrue(app.staticTexts["Nothing would change."].exists, "the empty change is not described")
+        XCTAssertTrue(waitLabelFocus(app, "Confirm"), "focus is not on Confirm; focused: \(focusDump(app))")
+        press(.left)
+        XCTAssertTrue(waitLabelFocus(app, "Reject"), "Left did not reach Reject; focused: \(focusDump(app))")
+        press(.select, settle: 1.5)
+        XCTAssertFalse(dialog.exists, "the dialog stayed after Reject")
+        XCTAssertEqual(proposalStatus(page, first), "rejected")
+        say("phone: rejected from the dialog")
+
+        // Confirm (an empty change applies nothing).
+        pause(1.2)
+        let second = try XCTUnwrap(postProposal(page, "{}"), "the second proposal was not accepted")
+        XCTAssertTrue(dialog.waitForExistence(timeout: 5), "the confirm dialog never opened again")
+        XCTAssertTrue(waitLabelFocus(app, "Confirm"), "focus is not on Confirm; focused: \(focusDump(app))")
+        press(.select, settle: 1.5)
+        XCTAssertFalse(dialog.exists, "the dialog stayed after Confirm")
+        XCTAssertEqual(proposalStatus(page, second), "confirmed")
+        say("phone: confirmed from the dialog")
+    }
+
     /// C2 review r2: leaving the Add-ons TAB (not just the section) closes Remote Setup, and coming
     /// back opens a fresh session (a new address). The old address must stop answering.
     func testManageFromPhoneClosesWhenTheTabChanges() throws {

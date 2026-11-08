@@ -21,6 +21,8 @@ final class RemoteSetupViewModel: ObservableObject {
     /// Non-nil while a browser proposal awaits the user's decision (drives the alert).
     @Published var pendingChange: RemoteSetupServer.PendingChange?
     @Published private(set) var pendingSummary: String = ""
+    /// C3: the pending proposal, one line per change (the hub's confirm dialog lists these).
+    @Published private(set) var pendingLines: [RemoteSetupChangeList.Line] = []
 
     var isRunning: Bool { serverURL != nil }
 
@@ -105,6 +107,7 @@ final class RemoteSetupViewModel: ObservableObject {
                 case .success(let resolved):
                     self.pendingAddons = resolved
                     self.pendingSummary = self.summarize(change.proposal)
+                    self.pendingLines = self.changeLines(change.proposal)
                     self.pendingChange = change
                 }
             }
@@ -462,6 +465,28 @@ final class RemoteSetupViewModel: ObservableObject {
     }
 
     // MARK: - Alert summary
+
+    /// C3: the proposal's changes against the lists as they are now (names, never URLs).
+    private func changeLines(_ proposal: RemoteSetupServer.Proposal) -> [RemoteSetupChangeList.Line] {
+        RemoteSetupChangeList.lines(
+            addons: addons.map { .init(id: $0.manifestUrl, title: $0.displayTitle, enabled: $0.enabled) },
+            proposedAddons: pendingAddons?.map { entry in
+                .init(
+                    id: entry.url,
+                    title: entry.isNew ? AddonsViewModel.host(of: entry.url) : (addons.first { $0.manifestUrl == entry.url }?.displayTitle ?? AddonsViewModel.host(of: entry.url)),
+                    enabled: entry.enabled,
+                    isNew: entry.isNew
+                )
+            },
+            rows: rows.map { .init(id: $0.key, title: $0.displayTitle, enabled: $0.enabled) },
+            rowOrder: rowKeys(proposal.rowOrder),
+            disabledRows: rowKeys(proposal.disabledRowKeys).map(Set.init),
+            setsMdbListKey: proposal.mdblistKey?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
+            posterPattern: proposal.posterPattern,
+            posterPatternValid: Self.isValidPosterPattern,
+            badgePackCount: (proposal.badgeUrls ?? []).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.count
+        )
+    }
 
     private func summarize(_ proposal: RemoteSetupServer.Proposal) -> String {
         var parts: [String] = []

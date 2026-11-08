@@ -3,8 +3,8 @@ import SwiftUI
 /// Add-ons hub v2, Stage C (C2): the "Manage from phone" section. It hosts Remote Setup: the local
 /// config page starts shortly after the section opens and stops when it closes (the pane is
 /// rebuilt per section, so leaving the section or the hub tears it down). It shows the QR, the URL
-/// and a status line, and a proposal from the phone surfaces as a confirm alert here (C3 replaces
-/// the alert with the per-change dialog).
+/// and a status line, and a proposal from the phone opens the per-change confirm dialog (C3,
+/// `ConfirmPhoneChangesDialog`).
 ///
 /// The start waits `startDelay` so focus passing over the sidebar row (the hub selects a section
 /// after a short dwell) does not open a server for a fraction of a second.
@@ -74,18 +74,24 @@ struct ManageFromPhonePane: View {
             guard !Task.isCancelled, tab.isActive else { return }
             remote.start()
         }
-        .onDisappear { remote.stop() }
-        .alert(
-            "Apply changes from your phone?",
-            isPresented: Binding(
-                get: { remote.pendingChange != nil },
-                set: { if !$0 { remote.rejectPending() } }
+        .onDisappear {
+            // C3: presenting the confirm dialog (a full-screen cover) can report the pane as gone;
+            // the server must outlive that, or the change it is confirming dies with it. A real
+            // exit happens with no change pending (the cover blocks the hub while one is), and
+            // leaving the tab stops it through `AddonsTabActivity` either way.
+            guard remote.pendingChange == nil else { return }
+            remote.stop()
+        }
+        // C3: the per-change confirm dialog (focus on Confirm, Menu rejects).
+        .fullScreenCover(isPresented: Binding(
+            get: { remote.pendingChange != nil },
+            set: { if !$0 && remote.pendingChange != nil { remote.rejectPending() } }
+        )) {
+            ConfirmPhoneChangesDialog(
+                lines: remote.pendingLines,
+                onConfirm: { remote.confirmPending() },
+                onReject: { remote.rejectPending() }
             )
-        ) {
-            Button("Apply") { remote.confirmPending() }
-            Button("Decline", role: .cancel) { remote.rejectPending() }
-        } message: {
-            Text(remote.pendingSummary)
         }
     }
 

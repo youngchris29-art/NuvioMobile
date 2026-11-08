@@ -1,0 +1,71 @@
+import XCTest
+@testable import NuvioTV
+
+/// Add-ons hub v2 C3: the confirm dialog's one-line-per-change list.
+final class RemoteSetupChangeListTests: XCTestCase {
+    private typealias List = RemoteSetupChangeList
+    private let keyed = "https://torrentio.strem.fun/torbox=SECRET/manifest.json"
+
+    private func item(_ id: String, _ title: String, on: Bool = true) -> List.Item { .init(id: id, title: title, enabled: on) }
+    private func kept(_ id: String, _ title: String, on: Bool? = nil) -> List.ProposedAddon { .init(id: id, title: title, enabled: on, isNew: false) }
+
+    private func lines(
+        addons: [List.Item] = [], proposed: [List.ProposedAddon]? = nil,
+        rows: [List.Item] = [], rowOrder: [String]? = nil, disabled: Set<String>? = nil,
+        key: Bool = false, pattern: String? = nil, badges: Int = 0
+    ) -> [List.Line] {
+        List.lines(addons: addons, proposedAddons: proposed, rows: rows, rowOrder: rowOrder, disabledRows: disabled,
+                   setsMdbListKey: key, posterPattern: pattern,
+                   posterPatternValid: { $0.hasPrefix("https://") }, badgePackCount: badges)
+    }
+
+    func testNothingChangedGivesNoLines() {
+        let addons = [item("a", "Cinemeta"), item("b", "Torrentio")]
+        let rows = [item("r1", "Popular"), item("r2", "Trending")]
+        XCTAssertEqual(lines(addons: addons, proposed: [kept("a", "Cinemeta"), kept("b", "Torrentio")],
+                             rows: rows, rowOrder: ["r1", "r2"], disabled: []), [])
+    }
+
+    func testInstallRemoveAndFlags() {
+        let addons = [item("a", "Cinemeta"), item(keyed, "Torrentio"), item("c", "OpenSubtitles", on: false)]
+        let out = lines(addons: addons, proposed: [
+            kept("a", "Cinemeta", on: false),
+            kept("c", "OpenSubtitles", on: true),
+            .init(id: "https://new.example.com/manifest.json", title: "new.example.com", enabled: true, isNew: true),
+        ])
+        XCTAssertEqual(out.map(\.kind), [.remove, .install, .turnOff, .turnOn])
+        XCTAssertEqual(out[0].text, "Remove add-on Torrentio")
+        XCTAssertEqual(out[1].text, "Install add-on new.example.com")
+        XCTAssertFalse(out.contains { $0.text.contains("SECRET") || $0.text.contains("://") }, "no URL reaches the dialog")
+    }
+
+    /// Moving one item lists that item only, at its new position.
+    func testAMoveListsOnlyTheItemThatMoved() {
+        let addons = ["a", "b", "c", "d"].map { item($0, $0.uppercased()) }
+        let out = lines(addons: addons, proposed: ["d", "a", "b", "c"].map { kept($0, $0.uppercased()) })
+        XCTAssertEqual(out, [.init(kind: .move, text: "Move add-on D to position 1")])
+    }
+
+    func testRowsMoveAndToggle() {
+        let rows = [item("r1", "Popular"), item("r2", "Trending"), item("r3", "Top Rated", on: false)]
+        let out = lines(rows: rows, rowOrder: ["r2", "r1", "r3"], disabled: ["r1"])
+        XCTAssertEqual(out.map(\.kind), [.move, .turnOff, .turnOn], "toggles follow the row order")
+        XCTAssertEqual(out[0].text, "Move Home row Trending to position 1")
+        XCTAssertTrue(out.contains { $0.text == "Turn off Home row Popular" })
+        XCTAssertTrue(out.contains { $0.text == "Turn on Home row Top Rated" })
+    }
+
+    func testKeysPatternAndBadges() {
+        XCTAssertEqual(lines(key: true).map(\.kind), [.key])
+        XCTAssertEqual(lines(pattern: "  ").map(\.text), ["Clear the custom poster pattern"])
+        XCTAssertEqual(lines(pattern: "https://img.example.com/{id}.jpg").map(\.kind), [.pattern])
+        XCTAssertEqual(lines(pattern: "ftp://x").map(\.kind), [.rejected])
+        XCTAssertEqual(lines(badges: 2).map(\.text), ["Import 2 badge packs"])
+    }
+
+    func testMovedIdsKeepsTheLongestOrderedRun() {
+        XCTAssertEqual(List.movedIds(before: ["a", "b", "c"], after: ["a", "b", "c"]), [])
+        XCTAssertEqual(List.movedIds(before: ["a", "b", "c", "d"], after: ["b", "c", "d", "a"]), ["a"])
+        XCTAssertEqual(List.movedIds(before: ["a", "b", "c"], after: ["c", "b", "a"]).count, 2)
+    }
+}

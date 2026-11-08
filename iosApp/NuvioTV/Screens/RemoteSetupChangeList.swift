@@ -1,0 +1,150 @@
+import Foundation
+
+/// Add-ons hub v2, Stage C (C3): what a Remote Setup proposal changes, one line per change, for
+/// the confirm dialog on the TV. Pure: the view model passes in the lists as they are now and as
+/// the proposal would leave them.
+///
+/// Add-ons are named by their title (a new one by its host): never by manifest URL, which can
+/// carry a debrid key. A reorder lists only the items that actually moved (everything outside the
+/// longest run that kept its relative order), so dragging one item gives one line.
+nonisolated enum RemoteSetupChangeList {
+
+    struct Line: Equatable, Identifiable {
+        enum Kind: Equatable {
+            case install, remove, move, turnOn, turnOff, key, pattern, badges, rejected
+        }
+        let kind: Kind
+        let text: String
+        var id: String { "\(kind)|\(text)" }
+    }
+
+    /// An installed add-on or a Home row as it is now.
+    struct Item: Equatable {
+        let id: String
+        let title: String
+        let enabled: Bool
+    }
+
+    /// One add-on of the proposed list: an installed one by `id`, or a new one (`isNew`, titled by host).
+    struct ProposedAddon: Equatable {
+        let id: String
+        let title: String
+        let enabled: Bool?
+        let isNew: Bool
+    }
+
+    /// The lines for a proposal. `proposedAddons` is nil when the proposal leaves add-ons alone;
+    /// `rowOrder` nil when it leaves Home rows alone (`disabledRows` then ignored).
+    static func lines(
+        addons: [Item],
+        proposedAddons: [ProposedAddon]?,
+        rows: [Item],
+        rowOrder: [String]?,
+        disabledRows: Set<String>?,
+        setsMdbListKey: Bool,
+        posterPattern: String?,
+        posterPatternValid: (String) -> Bool,
+        badgePackCount: Int
+    ) -> [Line] {
+        var out: [Line] = []
+
+        if let proposed = proposedAddons {
+            let keptIds = Set(proposed.filter { !$0.isNew }.map(\.id))
+            for addon in addons where !keptIds.contains(addon.id) {
+                out.append(Line(kind: .remove, text: String(localized: "Remove add-on \(addon.title)")))
+            }
+            for entry in proposed where entry.isNew {
+                let off = entry.enabled == false
+                out.append(Line(kind: .install, text: off
+                    ? String(localized: "Install add-on \(entry.title) (turned off)")
+                    : String(localized: "Install add-on \(entry.title)")))
+            }
+            let kept = proposed.filter { !$0.isNew }
+            for id in movedIds(before: addons.map(\.id).filter(keptIds.contains), after: kept.map(\.id)) {
+                guard let title = addons.first(where: { $0.id == id })?.title,
+                      let position = kept.firstIndex(where: { $0.id == id }) else { continue }
+                out.append(Line(kind: .move, text: String(localized: "Move add-on \(title) to position \(position + 1)")))
+            }
+            for entry in kept {
+                guard let enabled = entry.enabled,
+                      let current = addons.first(where: { $0.id == entry.id }),
+                      current.enabled != enabled else { continue }
+                out.append(enabled
+                    ? Line(kind: .turnOn, text: String(localized: "Turn on add-on \(current.title)"))
+                    : Line(kind: .turnOff, text: String(localized: "Turn off add-on \(current.title)")))
+            }
+        }
+
+        if let order = rowOrder {
+            let known = Set(rows.map(\.id))
+            let after = order.filter(known.contains)
+            for id in movedIds(before: rows.map(\.id).filter(Set(after).contains), after: after) {
+                guard let title = rows.first(where: { $0.id == id })?.title,
+                      let position = after.firstIndex(of: id) else { continue }
+                out.append(Line(kind: .move, text: String(localized: "Move Home row \(title) to position \(position + 1)")))
+            }
+            let disabled = disabledRows ?? []
+            for row in rows {
+                let shouldBeOn = !disabled.contains(row.id)
+                guard row.enabled != shouldBeOn else { continue }
+                out.append(shouldBeOn
+                    ? Line(kind: .turnOn, text: String(localized: "Turn on Home row \(row.title)"))
+                    : Line(kind: .turnOff, text: String(localized: "Turn off Home row \(row.title)")))
+            }
+        }
+
+        if setsMdbListKey {
+            out.append(Line(kind: .key, text: String(localized: "Set the MDBList API key")))
+        }
+        if let raw = posterPattern {
+            let pattern = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if pattern.isEmpty {
+                out.append(Line(kind: .pattern, text: String(localized: "Clear the custom poster pattern")))
+            } else if posterPatternValid(pattern) {
+                out.append(Line(kind: .pattern, text: String(localized: "Set the custom poster pattern")))
+            } else {
+                out.append(Line(kind: .rejected, text: String(localized: "Ignore the poster pattern (it must be an http(s) URL)")))
+            }
+        }
+        if badgePackCount > 0 {
+            out.append(Line(kind: .badges, text: badgePackCount == 1
+                ? String(localized: "Import 1 badge pack")
+                : String(localized: "Import \(badgePackCount) badge packs")))
+        }
+        return out
+    }
+
+    /// The ids that moved from `before` to `after` (same set of ids): everything outside a longest
+    /// subsequence that kept its relative order, in `after` order.
+    static func movedIds(before: [String], after: [String]) -> [String] {
+        let rank = Dictionary(uniqueKeysWithValues: before.enumerated().map { ($1, $0) })
+        let ranks = after.compactMap { rank[$0] }
+        guard ranks.count == after.count, !ranks.isEmpty else { return [] }
+        // Longest increasing subsequence of `ranks`, keeping the indices that form it.
+        var tailRanks: [Int] = []
+        var tailIndex: [Int] = []
+        var previous = Array(repeating: -1, count: ranks.count)
+        for (i, r) in ranks.enumerated() {
+            var low = 0, high = tailRanks.count
+            while low < high {
+                let mid = (low + high) / 2
+                if tailRanks[mid] < r { low = mid + 1 } else { high = mid }
+            }
+            if low > 0 { previous[i] = tailIndex[low - 1] }
+            if low == tailRanks.count {
+                tailRanks.append(r)
+                tailIndex.append(i)
+            } else {
+                tailRanks[low] = r
+                tailIndex[low] = i
+            }
+        }
+        var stays = Set<Int>()
+        var cursor = tailIndex.last ?? -1
+        while cursor >= 0 {
+            stays.insert(cursor)
+            cursor = previous[cursor]
+        }
+        return after.enumerated().filter { !stays.contains($0.offset) }.map(\.element)
+    }
+}
