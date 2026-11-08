@@ -1058,6 +1058,11 @@ final class StreamPickerUITests: XCTestCase {
         let refresh = element(app, "stream_picker_chip_refresh")
         func rowFrame() -> String { "refresh.minX=\(refresh.frame.minX) last.maxX=\(last.frame.maxX)" }
         say("overflow: panel=\(panel.frame) \(rowFrame()) all=\(chip(app, "all").frame) last(\(lastIndex))=\(last.frame) before the step")
+        // GitHub #25: the Full Width panel is about twice as wide, so seven stub chips fit and there
+        // is no overflow to scroll; the Two-Pane run of this leg covers the scroll.
+        if Self.isFullWidthRun, last.frame.maxX <= panel.frame.maxX {
+            throw XCTSkip("Full Width: the chip row fits the panel (last=\(last.frame) panel=\(panel.frame)); overflow scrolling is covered by the Two-Pane run")
+        }
         // Review: the leg must prove an overflow first, else a row that fits passes with no scroll.
         XCTAssertGreaterThan(last.frame.maxX, panel.frame.maxX,
                              "the chip row does not overflow the panel with \(names.count) stub add-ons: last=\(last.frame) panel=\(panel.frame)")
