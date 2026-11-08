@@ -196,7 +196,7 @@ final class RemoteSetupViewModel: ObservableObject {
             // Claimed atomically with supersession: a newer proposal that lands after the check
             // above wins, and this one is not applied.
             guard server.claimForConfirm(id: change.id) else { return }
-            server.finishApplying(id: change.id, applied: apply(change.proposal, addons: resolved))
+            server.finishApplying(id: change.id, status: apply(change.proposal, addons: resolved))
         }
     }
 
@@ -284,12 +284,16 @@ final class RemoteSetupViewModel: ObservableObject {
         }
     }
 
-    /// Applies a confirmed proposal; false, with nothing applied, when the add-on list moved
-    /// under it between the check and the repository's own atomic one.
-    private func apply(_ proposal: RemoteSetupServer.Proposal, addons resolved: [RemoteSetupAddonIds.Resolved]?) -> Bool {
+    /// Applies a confirmed proposal and returns how it settled. When the repository refuses the
+    /// add-on part (the list moved, or it is read-only), nothing of the proposal is applied.
+    private func apply(
+        _ proposal: RemoteSetupServer.Proposal,
+        addons resolved: [RemoteSetupAddonIds.Resolved]?
+    ) -> RemoteSetupServer.ChangeStatus {
         if let resolved {
             let expected = (proposal.addonBaseline ?? []).compactMap { addonIds.url(for: $0) }
-            guard applyAddons(resolved, expected: expected) else { return false }
+            let outcome = applyAddons(resolved, expected: expected)
+            guard outcome == .confirmed else { return outcome }
         }
         applyRows(proposal)
         if let key = proposal.mdblistKey?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty {
@@ -312,29 +316,36 @@ final class RemoteSetupViewModel: ObservableObject {
             guard !trimmed.isEmpty else { continue }
             StreamBadgeSettingsRepository.shared.importStreamBadgeRulesFromUrl(url: trimmed) { _, _ in }
         }
-        return true
+        return .confirmed
     }
 
     /// Removals, enabled flips and the order go to the repository as ONE atomic step that checks
     /// the list is still `expected` (the list the page edited) against the repository's own
     /// state, not this screen's watcher copy; installs follow only when it applied.
-    private func applyAddons(_ proposed: [RemoteSetupAddonIds.Resolved], expected: [String]) -> Bool {
+    private func applyAddons(_ proposed: [RemoteSetupAddonIds.Resolved], expected: [String]) -> RemoteSetupServer.ChangeStatus {
         let repo = AddonRepository.shared
         let existing = proposed.filter { !$0.isNew }
         var enabled: [String: KotlinBoolean] = [:]
         for entry in existing {
             if let flag = entry.enabled { enabled[entry.url] = KotlinBoolean(value: flag) }
         }
-        guard repo.applyEditedListIfUnchanged(
+        let result = repo.applyEditedListIfUnchanged(
             expectedUrls: expected,
             desiredUrls: existing.map(\.url),
-            enabled: enabled
-        ) else { return false }
-        // Installs (async manifest fetch; appended by the repo when they resolve).
+            enabled: enabled,
+            addsNew: proposed.contains(where: \.isNew)
+        )
+        switch result {
+        case .stale: return .stale
+        case .readOnly: return .readOnly
+        default: break
+        }
+        // Installs (async manifest fetch; appended by the repo when they resolve). A read-only
+        // list was refused above, so the repository accepts these.
         for entry in proposed where entry.isNew {
             repo.addAddon(rawUrl: entry.url) { _, _ in }
         }
-        return true
+        return .confirmed
     }
 
     private func applyRows(_ proposal: RemoteSetupServer.Proposal) {

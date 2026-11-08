@@ -443,28 +443,34 @@ object AddonRepository {
      * Add-ons hub v2 C1 (review r3): applies a list edited on the Remote Setup phone page in ONE
      * state update, and only if the list is still exactly [expectedUrls] (the list the page
      * edited). The result is [desiredUrls] in that order (add-ons left out are removed), with
-     * [enabled] overriding each add-on's flag. Returns false, changing nothing, when the list
-     * moved under the page (a sync or another screen) or when the active profile's add-ons are
-     * read-only and the edit would change them; true otherwise, including when nothing needed to
-     * change. Add-ons newly enabled without a manifest are refreshed, as
+     * [enabled] overriding each add-on's flag. Changes nothing and returns STALE when the list
+     * moved under the page (a sync or another screen), or READ_ONLY when the active profile's
+     * add-ons are inherited and the edit would change them or [addsNew] (the caller installs new
+     * add-ons only after APPLIED); APPLIED otherwise, including when nothing needed to change. Add-ons newly enabled without a manifest are refreshed, as
      * [setAddonEnabled] does.
      */
     fun applyEditedListIfUnchanged(
         expectedUrls: List<String>,
         desiredUrls: List<String>,
         enabled: Map<String, Boolean>,
-    ): Boolean {
+        addsNew: Boolean,
+    ): RemoteListEditResult {
         val readOnly = isUsingPrimaryAddonsFromSecondaryProfile()
         var matched = false
         var changed = false
+        var refusal: EditedListOutcome? = null
         var toRefresh = emptyList<String>()
         _uiState.update { current ->
             // `update` can retry its block; every attempt starts from a clean slate.
             matched = false
             changed = false
+            refusal = null
             toRefresh = emptyList()
-            when (val outcome = editedListOutcome(current.addons, expectedUrls, desiredUrls, enabled, readOnly)) {
-                EditedListOutcome.Refused -> current
+            when (val outcome = editedListOutcome(current.addons, expectedUrls, desiredUrls, enabled, readOnly, addsNew)) {
+                EditedListOutcome.Stale, EditedListOutcome.ReadOnly -> {
+                    refusal = outcome
+                    current
+                }
                 EditedListOutcome.Unchanged -> {
                     matched = true
                     current
@@ -480,13 +486,15 @@ object AddonRepository {
                 }
             }
         }
-        if (!matched) return false
+        if (!matched) {
+            return if (refusal == EditedListOutcome.ReadOnly) RemoteListEditResult.READ_ONLY else RemoteListEditResult.STALE
+        }
         if (changed) {
             persist()
             pushToServer()
         }
         toRefresh.forEach { refreshAddon(it) }
-        return true
+        return RemoteListEditResult.APPLIED
     }
 
     fun setAddonEnabled(manifestUrl: String, enabled: Boolean) {
@@ -863,10 +871,15 @@ internal fun isCurrentRefreshGeneration(generations: Map<String, Long>, manifest
     generations[manifestUrl] == generation
 
 /** [addons] with [manifestUrl] moved one place by [delta] (±1), or null when absent or at the end. */
-/** Add-ons hub v2 C1 (review r4): what applying a Remote Setup edit to [current] comes to. */
+/** Add-ons hub v2 C1: how a Remote Setup add-on edit ended. */
+enum class RemoteListEditResult { APPLIED, STALE, READ_ONLY }
+
+/** Add-ons hub v2 C1 (review r4/r5): what applying a Remote Setup edit to [current] comes to. */
 internal sealed interface EditedListOutcome {
-    /** The list moved under the page, or the edit would change a read-only list. */
-    data object Refused : EditedListOutcome
+    /** The list moved under the page. */
+    data object Stale : EditedListOutcome
+    /** The list is inherited and the edit would change it or install a new add-on. */
+    data object ReadOnly : EditedListOutcome
     data object Unchanged : EditedListOutcome
     data class Edited(val addons: List<ManagedAddon>) : EditedListOutcome
 }
@@ -877,12 +890,13 @@ internal fun editedListOutcome(
     desiredUrls: List<String>,
     enabled: Map<String, Boolean>,
     readOnly: Boolean,
+    addsNew: Boolean = false,
 ): EditedListOutcome {
-    if (current.map { it.manifestUrl } != expectedUrls) return EditedListOutcome.Refused
+    if (current.map { it.manifestUrl } != expectedUrls) return EditedListOutcome.Stale
     val edited = editedAddonList(current, desiredUrls, enabled)
     return when {
+        readOnly && (addsNew || edited != current) -> EditedListOutcome.ReadOnly
         edited == current -> EditedListOutcome.Unchanged
-        readOnly -> EditedListOutcome.Refused
         else -> EditedListOutcome.Edited(edited)
     }
 }

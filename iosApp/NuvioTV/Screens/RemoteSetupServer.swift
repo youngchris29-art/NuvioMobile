@@ -12,7 +12,7 @@ import Security
 /// - `POST /api/apply`      → proposes a change; returns `{id, status: "pending_confirmation"}`.
 ///                            Nothing is applied until the user confirms ON THE TV (alert in
 ///                            Settings) — same trust model as Android.
-/// - `GET  /api/status/{id}`→ `{status: pending|applying|confirmed|rejected|superseded|stale|invalid|not_found}` (browser polls)
+/// - `GET  /api/status/{id}`→ `{status: pending|applying|confirmed|rejected|superseded|stale|invalid|read_only|not_found}` (browser polls)
 ///
 /// Threading: the listener + connections run on a private queue. The state snapshot and the
 /// pending-change table are guarded by a lock; `onChangeProposed` is delivered on the main queue.
@@ -67,6 +67,9 @@ final class RemoteSetupServer {
         /// Refused by the TV without asking: a new add-on address is not a valid manifest URL or
         /// is already installed (the page keeps its edits).
         case invalid
+        /// Refused by the TV: the active profile's add-ons are inherited from another profile and
+        /// the change would edit them (the page keeps its edits).
+        case readOnly = "read_only"
     }
 
     final class PendingChange {
@@ -144,12 +147,12 @@ final class RemoteSetupServer {
         settle(id: id, status: .applying)
     }
 
-    /// Settles a claimed change as `confirmed`, or `stale` when the list moved under it.
-    func finishApplying(id: String, applied: Bool) {
+    /// Settles a claimed change as `confirmed`, or as the refusal that stopped it.
+    func finishApplying(id: String, status: ChangeStatus) {
         lock.lock()
         defer { lock.unlock() }
         guard let change = pending[id], change.status == .applying else { return }
-        change.status = applied ? .confirmed : .stale
+        change.status = status
     }
 
     /// Settles a still-pending change as declined or refused; a no-op for one already settled.

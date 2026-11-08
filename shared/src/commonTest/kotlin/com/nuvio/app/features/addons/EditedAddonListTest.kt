@@ -30,7 +30,7 @@ class EditedAddonListTest {
     @Test
     fun aListThatMovedUnderThePageIsRefused() {
         val current = list("B", "A")
-        assertEquals(EditedListOutcome.Refused, editedListOutcome(current, listOf("A", "B"), listOf("A"), emptyMap(), readOnly = false))
+        assertEquals(EditedListOutcome.Stale, editedListOutcome(current, listOf("A", "B"), listOf("A"), emptyMap(), readOnly = false))
     }
 
     @Test
@@ -45,9 +45,13 @@ class EditedAddonListTest {
     }
 
     @Test
-    fun aReadOnlyListRefusesAnyChangeButAcceptsANoOp() {
+    fun aReadOnlyListRefusesAnyChangeOrInstallButAcceptsANoOp() {
         val current = list("A", "B")
-        assertEquals(EditedListOutcome.Refused, editedListOutcome(current, listOf("A", "B"), listOf("B", "A"), emptyMap(), readOnly = true))
+        assertEquals(EditedListOutcome.ReadOnly,
+            editedListOutcome(current, listOf("A", "B"), listOf("A", "B"), emptyMap(), readOnly = true, addsNew = true))
+        assertEquals(EditedListOutcome.Stale,
+            editedListOutcome(current, listOf("B", "A"), listOf("A", "B"), emptyMap(), readOnly = true), "stale wins")
+        assertEquals(EditedListOutcome.ReadOnly, editedListOutcome(current, listOf("A", "B"), listOf("B", "A"), emptyMap(), readOnly = true))
         assertEquals(EditedListOutcome.Unchanged, editedListOutcome(current, listOf("A", "B"), listOf("A", "B"), mapOf("A" to true), readOnly = true))
     }
 }

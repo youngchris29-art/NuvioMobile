@@ -86,6 +86,8 @@ enum RemoteSetupWebPage {
   .toggle input:checked + span { background: var(--accent); }
   .toggle input:checked + span::after { left: 21px; }
   .empty { color: var(--dim); font-size: 14px; padding: 8px 2px; }
+  /* While the add-on list reloads, nothing on the page can be edited. */
+  main.busy { pointer-events: none; opacity: 0.5; }
 </style>
 </head>
 <body>
@@ -167,14 +169,15 @@ function setStatus(text, cls) {
   s.className = cls || "";
 }
 
-// `note`, when given, replaces the "Connected" line once the TV's list is on screen.
-async function load(note) {
+// `note`, when given, replaces the "Connected" line once the TV's list is on screen. With
+// `addonsOnly`, the staged Home-row edits are kept and only the add-on list is replaced.
+async function load(note, addonsOnly) {
   try {
     const res = await fetch("/api/state", { headers: AUTH });
     const state = await res.json();
     addons = (state.addons || []).map(a => ({ ...a, isNew: false }));
     addonBaseline = addons.map(a => a.id);
-    rows = state.rows || [];
+    if (!addonsOnly) rows = state.rows || [];
     badgePacks = state.badgePacks || [];
     if (state.mdblistKeySet) el("mdblist-key").placeholder = "Saved on TV — enter to replace";
     if (state.posterPatternSet) el("poster-pattern").placeholder = "Saved on TV — enter to replace";
@@ -311,8 +314,20 @@ async function poll(id, tries) {
       // (or the TV restarted the session): only a fresh copy can be edited.
       // Reload straight away, with Apply held until the fresh list is on screen, so nothing the
       // user edits next is replaced by the reload.
+      // Only the add-on list is replaced; the page is locked until it is on screen.
       setStatus("Not applied: the TV's add-on list changed. Reloading it…", "err");
-      await load("Not applied: the TV's add-on list changed. This is its list now, so make your changes again.");
+      const main = document.querySelector("main");
+      main.classList.add("busy");
+      try {
+        await load("Not applied: the TV's add-on list changed. This is its list now, so make your add-on changes again. Your other changes are still here.", true);
+      } finally {
+        main.classList.remove("busy");
+      }
+      return;
+    }
+    if (status === "read_only") {
+      setStatus("Not applied: this TV profile uses another profile's add-ons, so add-ons can only be changed from that profile. Your other changes are still here.", "err");
+      el("apply").disabled = false;
       return;
     }
     if (status === "invalid") {
