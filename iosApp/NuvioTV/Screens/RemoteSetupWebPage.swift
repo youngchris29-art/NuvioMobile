@@ -175,7 +175,7 @@ async function load(note, addonsOnly) {
   try {
     const res = await fetch("/api/state", { headers: AUTH });
     const state = await res.json();
-    addons = (state.addons || []).map(a => ({ ...a, isNew: false }));
+    addons = (state.addons || []).map(a => ({ ...a, isNew: false, origEnabled: a.enabled }));
     addonBaseline = addons.map(a => a.id);
     if (!addonsOnly) rows = state.rows || [];
     badgePacks = state.badgePacks || [];
@@ -266,16 +266,28 @@ function addAddon() {
   render();
 }
 
+// The reload scheduled after a confirmed change; a new send cancels it so it can never land on
+// top of the next outcome (and its staged edits).
+let reloadTimer = null;
+
 async function apply() {
+  if (reloadTimer) { clearTimeout(reloadTimer); reloadTimer = null; }
   const btn = el("apply");
   btn.disabled = true;
   setStatus("Waiting for confirmation on the TV…");
   const payload = {
-    addons: addons.map(a => a.isNew ? { url: a.url, enabled: a.enabled } : { id: a.id, enabled: a.enabled }),
-    addonBaseline: addonBaseline,
     rowOrder: rows.map(r => r.key),
     disabledRowKeys: rows.filter(r => !r.enabled).map(r => r.key)
   };
+  // The add-on list goes only when it was edited, and an installed add-on's flag only when the
+  // user changed it, so a change elsewhere never rewrites add-on state the TV has since updated.
+  const addonsEdited = addons.length !== addonBaseline.length ||
+    addons.some((a, i) => a.isNew || a.id !== addonBaseline[i] || a.enabled !== a.origEnabled);
+  if (addonsEdited) {
+    payload.addons = addons.map(a => a.isNew ? { url: a.url, enabled: a.enabled }
+      : (a.enabled !== a.origEnabled ? { id: a.id, enabled: a.enabled } : { id: a.id }));
+    payload.addonBaseline = addonBaseline;
+  }
   const mdbl = el("mdblist-key").value.trim();
   if (mdbl) payload.mdblistKey = mdbl;
   const posterPattern = el("poster-pattern").value.trim();
@@ -307,7 +319,7 @@ async function poll(id, tries) {
       el("mdblist-key").value = "";
       el("poster-pattern").value = "";
       stagedBadgeUrls = [];
-      setTimeout(load, 1500);
+      reloadTimer = setTimeout(() => { reloadTimer = null; load(); }, 1500);
       el("apply").disabled = false;
       return;
     }
