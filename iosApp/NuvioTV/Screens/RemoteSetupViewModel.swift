@@ -40,6 +40,12 @@ final class RemoteSetupViewModel: ObservableObject {
     private var badgeWatcher: FlowWatcher?
     private var posterPatternWatcher: FlowWatcher?
 
+    /// Stage C (C1): the per-session add-on ids the page sees instead of manifest URLs; a fresh
+    /// map on every start, so ids from an earlier session mean nothing.
+    private var addonIds = RemoteSetupAddonIds()
+    /// The pending proposal's add-on list resolved to manifest URLs (nil when it has none).
+    private var pendingAddons: [RemoteSetupAddonIds.Resolved]?
+
     // Cached snapshots (updated by the watchers, read when building state JSON + applying diffs).
     private var addons: [ManagedAddon] = []
     private var rows: [HomeCatalogSettingsItem] = []
@@ -60,10 +66,23 @@ final class RemoteSetupViewModel: ObservableObject {
         startFailed = false
         startAttempt += 1
         let attempt = startAttempt
+        addonIds = RemoteSetupAddonIds()
 
         server.onChangeProposed = { [weak self] change in
             Task { @MainActor in
                 guard let self else { return }
+                // C1: resolve the page's ids back to manifest URLs now; an unknown or stale id
+                // (or a malformed new URL) rejects the whole proposal, since dropping the entry
+                // would remove that add-on.
+                if let entries = change.proposal.addons {
+                    guard let resolved = self.resolveAddons(entries) else {
+                        self.server.reject(id: change.id)
+                        return
+                    }
+                    self.pendingAddons = resolved
+                } else {
+                    self.pendingAddons = nil
+                }
                 self.pendingSummary = self.summarize(change.proposal)
                 self.pendingChange = change
             }
@@ -107,6 +126,7 @@ final class RemoteSetupViewModel: ObservableObject {
         serverURL = nil
         qrImage = nil
         pendingChange = nil
+        pendingAddons = nil
         cancelWatchers()
     }
 
@@ -163,18 +183,22 @@ final class RemoteSetupViewModel: ObservableObject {
         apply(change.proposal)
         server.confirm(id: change.id)
         pendingChange = nil
+        pendingAddons = nil
     }
 
     func rejectPending() {
         guard let change = pendingChange else { return }
         server.reject(id: change.id)
         pendingChange = nil
+        pendingAddons = nil
     }
 
     // MARK: - State snapshot → server
 
+    /// C1: an add-on as the page sees it: a per-session id and the host, never the manifest URL.
     private struct StateAddon: Encodable {
-        let url: String
+        let id: String
+        let host: String
         let name: String
         let description: String
         let enabled: Bool
@@ -199,7 +223,8 @@ final class RemoteSetupViewModel: ObservableObject {
             deviceName: UIDevice.current.name,
             addons: addons.map {
                 StateAddon(
-                    url: $0.manifestUrl,
+                    id: addonIds.id(for: $0.manifestUrl),
+                    host: AddonsViewModel.host(of: $0.manifestUrl),
                     name: $0.displayTitle,
                     description: $0.manifest?.description_ ?? "",
                     enabled: $0.enabled
@@ -224,8 +249,16 @@ final class RemoteSetupViewModel: ObservableObject {
 
     // MARK: - Applying a confirmed proposal
 
+    private func resolveAddons(_ entries: [RemoteSetupServer.Proposal.AddonEntry]) -> [RemoteSetupAddonIds.Resolved]? {
+        addonIds.resolve(
+            entries.map { (id: $0.id, url: $0.url, enabled: $0.enabled) },
+            currentUrls: addons.map(\.manifestUrl),
+            sameManifest: AddonManifestURL.isSameManifest
+        )
+    }
+
     private func apply(_ proposal: RemoteSetupServer.Proposal) {
-        applyAddons(proposal)
+        if let resolved = pendingAddons { applyAddons(resolved) }
         applyRows(proposal)
         if let key = proposal.mdblistKey?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty {
             MdbListSettingsRepository.shared.setApiKey(value: key)
@@ -249,8 +282,7 @@ final class RemoteSetupViewModel: ObservableObject {
         }
     }
 
-    private func applyAddons(_ proposal: RemoteSetupServer.Proposal) {
-        guard let proposed = proposal.addons else { return }
+    private func applyAddons(_ proposed: [RemoteSetupAddonIds.Resolved]) {
         let repo = AddonRepository.shared
         let currentUrls = addons.map(\.manifestUrl)
         let proposedUrls = proposed.map(\.url)
@@ -281,7 +313,7 @@ final class RemoteSetupViewModel: ObservableObject {
         }
 
         // 3. Installs (async manifest fetch; appended by the repo when they resolve).
-        for entry in proposed where !currentUrls.contains(entry.url) {
+        for entry in proposed where entry.isNew && !currentUrls.contains(entry.url) {
             repo.addAddon(rawUrl: entry.url) { _, _ in }
         }
     }
@@ -335,7 +367,7 @@ final class RemoteSetupViewModel: ObservableObject {
     private func summarize(_ proposal: RemoteSetupServer.Proposal) -> String {
         var parts: [String] = []
 
-        if let proposed = proposal.addons {
+        if let proposed = pendingAddons {
             let currentUrls = Set(addons.map(\.manifestUrl))
             let proposedUrls = Set(proposed.map(\.url))
             let added = proposedUrls.subtracting(currentUrls).count

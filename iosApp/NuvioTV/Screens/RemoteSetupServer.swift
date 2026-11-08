@@ -23,8 +23,12 @@ final class RemoteSetupServer {
 
     /// What the web page proposes. All fields optional so old/partial pages stay compatible.
     struct Proposal: Decodable {
+        /// Stage C (C1): an installed add-on is named by its per-session `id` (the page never sees
+        /// manifest URLs, which can carry debrid keys); only a NEW add-on carries the `url` the
+        /// user typed. `RemoteSetupAddonIds.resolve` maps the list back to URLs on the TV.
         struct AddonEntry: Decodable {
-            let url: String
+            let id: String?
+            let url: String?
             let enabled: Bool?
         }
 

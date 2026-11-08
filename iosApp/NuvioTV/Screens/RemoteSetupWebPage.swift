@@ -146,7 +146,9 @@ enum RemoteSetupWebPage {
 </div>
 
 <script>
-let addons = [];   // {url, name, description, enabled, isNew}
+// Installed add-ons come as {id, host, name, description, enabled}: a per-session id and the host,
+// never the manifest URL (it can carry a debrid key). A new add-on is {url, enabled, isNew: true}.
+let addons = [];
 let badgePacks = [];      // source URLs already imported on the TV (read-only here)
 let stagedBadgeUrls = []; // pack URLs staged for import on Send
 let rows = [];     // {key, title, enabled, isCollection}
@@ -195,7 +197,7 @@ function render() {
         onchange="addons[${i}].enabled = this.checked; render()"><span></span></label>
       <div class="info">
         <div class="name">${esc(a.name || "New add-on")}${a.isNew ? " (new)" : ""}</div>
-        <div class="sub">${esc(a.url)}</div>
+        <div class="sub">${esc(a.isNew ? a.url : a.host)}</div>
       </div>
       <button class="icon" onclick="move(addons, ${i}, -1)">&#8593;</button>
       <button class="icon" onclick="move(addons, ${i}, 1)">&#8595;</button>
@@ -248,7 +250,9 @@ function addAddon() {
   const input = el("addon-url");
   const url = input.value.trim();
   if (!url) return;
-  if (addons.some(a => a.url === url)) { setStatus("That add-on is already in the list.", "err"); return; }
+  // Installed add-ons are known only by host here; the TV matches a URL it already has to that
+  // add-on instead of installing it twice.
+  if (addons.some(a => a.isNew && a.url === url)) { setStatus("That add-on is already in the list.", "err"); return; }
   addons.push({ url, name: "", description: "", enabled: true, isNew: true });
   input.value = "";
   render();
@@ -259,7 +263,7 @@ async function apply() {
   btn.disabled = true;
   setStatus("Waiting for confirmation on the TV…");
   const payload = {
-    addons: addons.map(a => ({ url: a.url, enabled: a.enabled })),
+    addons: addons.map(a => a.isNew ? { url: a.url, enabled: a.enabled } : { id: a.id, enabled: a.enabled }),
     rowOrder: rows.map(r => r.key),
     disabledRowKeys: rows.filter(r => !r.enabled).map(r => r.key)
   };
@@ -299,7 +303,10 @@ async function poll(id, tries) {
       return;
     }
     if (status === "rejected" || status === "not_found") {
-      setStatus("Declined on the TV.", "err");
+      // Declined on the TV, or refused because the TV's list changed since this page loaded (the
+      // add-on ids belong to that list): reload the TV's list either way.
+      setStatus("Not applied (declined on the TV, or its list changed). Reloading the TV's list…", "err");
+      setTimeout(load, 1500);
       el("apply").disabled = false;
       return;
     }

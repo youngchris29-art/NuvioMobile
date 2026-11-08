@@ -1,0 +1,74 @@
+import Foundation
+
+/// Add-ons hub v2, Stage C (C1): the phone page never sees add-on manifest URLs.
+///
+/// A manifest URL can carry a debrid key in its path or query (`/torbox=KEY/manifest.json`), and
+/// the Remote Setup page used to receive every one of them, protected only by the session token.
+/// Now each add-on is sent as an opaque, per-session id plus its host; the page proposes changes
+/// to existing add-ons by id and only a NEW add-on carries a URL (the one the user just typed).
+///
+/// The ids are minted per server session (a fresh random prefix on every start) and mean nothing
+/// outside it. A proposal naming an id this session never minted, or one whose add-on has since
+/// left the list, is rejected as a whole: dropping the entry would silently REMOVE that add-on.
+nonisolated struct RemoteSetupAddonIds {
+    private(set) var prefix: String
+    private var idsByUrl: [String: String] = [:]
+    private var urlsById: [String: String] = [:]
+
+    init(prefix: String = String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(10)).lowercased()) {
+        self.prefix = prefix
+    }
+
+    /// The session id for `url`, minted on first use and stable for the session.
+    mutating func id(for url: String) -> String {
+        if let existing = idsByUrl[url] { return existing }
+        let id = "\(prefix)-\(idsByUrl.count + 1)"
+        idsByUrl[url] = id
+        urlsById[id] = url
+        return id
+    }
+
+    func url(for id: String) -> String? { urlsById[id] }
+
+    /// One add-on of a resolved proposal, in the proposed order.
+    struct Resolved: Equatable {
+        let url: String
+        let enabled: Bool?
+        let isNew: Bool
+    }
+
+    /// The page's add-on list resolved to manifest URLs, or nil when the proposal must be rejected
+    /// (an unknown or stale id, an entry with neither id nor URL, or a new URL that is not
+    /// http(s)). A new URL that is the same manifest as an installed add-on resolves to that
+    /// add-on (no duplicate install). Later duplicates of an add-on are dropped.
+    func resolve(
+        _ entries: [(id: String?, url: String?, enabled: Bool?)],
+        currentUrls: [String],
+        sameManifest: (String, String) -> Bool = { $0 == $1 }
+    ) -> [Resolved]? {
+        var resolved: [Resolved] = []
+        var seen = Set<String>()
+        for entry in entries {
+            let item: Resolved
+            if let id = entry.id {
+                guard let url = urlsById[id], currentUrls.contains(url) else { return nil }
+                item = Resolved(url: url, enabled: entry.enabled, isNew: false)
+            } else if let raw = entry.url?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
+                guard let scheme = URLComponents(string: raw)?.scheme?.lowercased(),
+                      scheme == "http" || scheme == "https",
+                      URLComponents(string: raw)?.host?.isEmpty == false
+                else { return nil }
+                if let existing = currentUrls.first(where: { sameManifest($0, raw) }) {
+                    item = Resolved(url: existing, enabled: entry.enabled, isNew: false)
+                } else {
+                    item = Resolved(url: raw, enabled: entry.enabled, isNew: true)
+                }
+            } else {
+                return nil
+            }
+            guard seen.insert(item.url).inserted else { continue }
+            resolved.append(item)
+        }
+        return resolved
+    }
+}
