@@ -30,4 +30,21 @@ class RestoredCatalogOrderTest {
         assertNull(restoredCatalogOrder(listOf("k", "a"), "k", setOf("a"), setOf("k")))
         assertNull(restoredCatalogOrder(listOf("a", "b"), "k", setOf("a"), emptySet()))
     }
+
+    @Test
+    fun stepsOnePlaceOnTheOrderItIsGiven() {
+        assertEquals(listOf("a", "b", "x", "c"), steppedCatalogOrder(listOf("a", "x", "b", "c"), "x", 1, emptySet()))
+        // A synced order is what the step applies to: X moves down within the NEW order.
+        assertEquals(listOf("c", "a", "b", "x"), steppedCatalogOrder(listOf("c", "a", "x", "b"), "x", 1, emptySet()))
+        assertEquals(listOf("x", "a"), steppedCatalogOrder(listOf("a", "x"), "x", -1, emptySet()))
+    }
+
+    @Test
+    fun neverStepsPastAnEndOrAPinnedRow() {
+        assertNull(steppedCatalogOrder(listOf("x", "a"), "x", -1, emptySet()))
+        assertNull(steppedCatalogOrder(listOf("a", "x"), "x", 1, emptySet()))
+        assertNull(steppedCatalogOrder(listOf("pin", "x"), "x", -1, setOf("pin")))
+        assertNull(steppedCatalogOrder(listOf("pin", "x"), "pin", 1, setOf("pin")))
+        assertNull(steppedCatalogOrder(listOf("a"), "missing", 1, emptySet()))
+    }
 }

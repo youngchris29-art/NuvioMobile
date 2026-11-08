@@ -208,7 +208,15 @@ struct AddonsHubSplitView: View {
         // landing correction then puts focus on the selected section's row.
         .railReturnRoute {
             // A4: while an add-on is lifted a Left must not arm the rail (Left is swallowed).
-            RailReturnRoute(name: "addons", capture: {}, restore: { false }, vetoesLeftArm: { isMovingAny })
+            // A8 device check: with the default hand-off (`restore` false) the rail's own focus write
+            // came after the hub's landing correction and left focus on the TOP sidebar row
+            // (Installed) while another section was selected. The hub now restores focus onto the
+            // selected section's row itself; the rail verifies 0.5 s later and falls back to its
+            // default hand-off only if focus never left it.
+            RailReturnRoute(name: "addons", capture: {}, restore: {
+                handOffSidebar(selected)
+                return true
+            }, vetoesLeftArm: { isMovingAny })
         }
     }
 
@@ -498,8 +506,15 @@ struct AddonsHubSplitView: View {
         }
         if old == nil, new != selected {
             // Entering from outside (content column, tab bar, rail): land on the selected row.
-            // The transient landing row never starts a selection.
-            sidebarFocus = selected
+            // The transient landing row never starts a selection. A8 device check: a rail return
+            // to a hub showing Catalogs stayed on the Installed row; the write made inside the
+            // same focus update is dropped on the box (as on the content side), so it is made one
+            // turn later, as a deliberate hand-off.
+            Self.logFocus("sidebar landed \(new.rawValue) -> correcting to \(selected.rawValue)")
+            let target = selected
+            DispatchQueue.main.async {
+                if sidebarFocus == new { handOffSidebar(target) }
+            }
             return
         }
         guard !new.isAction, new != selected else {

@@ -759,26 +759,26 @@ object HomeCatalogSettingsRepository {
         direction: Int,
     ) {
         ensureLoaded()
-        val orderedKeys = allOrderedKeys().toMutableList()
-        if (orderedKeys.isEmpty()) return
-
-        val currentIndex = orderedKeys.indexOf(key)
-        if (currentIndex == -1) return
-
-        val targetIndex = currentIndex + direction
-        if (targetIndex !in orderedKeys.indices) return
-
-        val movingKey = orderedKeys.removeAt(currentIndex)
-        orderedKeys.add(targetIndex, movingKey)
-
-        synchronized(preferencesMutationLock) {
-            val updatedPreferences = preferences.toMutableMap()
-            orderedKeys.forEachIndexed { index, itemKey ->
-                val current = updatedPreferences[itemKey] ?: return@forEachIndexed
-                updatedPreferences[itemKey] = current.copy(order = index)
+        // Add-ons hub v2 (Stage A review): the order is read, stepped and written under the
+        // mutation lock, so a synced order applied between a separate read and write is never
+        // overwritten by a stale one (Move mode steps call this on every press).
+        val changed = synchronized(preferencesMutationLock) {
+            val current = allOrderedKeys()
+            val pinned = collectionDefinitions.filter { it.isPinnedToTop }.map { it.key }.toSet()
+            val stepped = steppedCatalogOrder(current, key, direction, pinned)
+            if (stepped == null) {
+                false
+            } else {
+                val updatedPreferences = preferences.toMutableMap()
+                stepped.forEachIndexed { index, itemKey ->
+                    val pref = updatedPreferences[itemKey] ?: return@forEachIndexed
+                    updatedPreferences[itemKey] = pref.copy(order = index)
+                }
+                preferences = updatedPreferences
+                true
             }
-            preferences = updatedPreferences
         }
+        if (!changed) return
 
         publish()
         persist()
@@ -1076,4 +1076,22 @@ internal fun restoredCatalogOrder(
     val belowPins = rest.indexOfLast { it in pinned } + 1
     val target = maxOf(anchor + 1, belowPins).coerceAtMost(rest.size)
     return rest.toMutableList().apply { add(target, key) }
+}
+
+/**
+ * Add-ons hub v2 (Stage A review): the order with [key] moved one place in [direction]
+ * (negative = up), or null when it cannot move: missing, off either end, itself pinned, or the
+ * neighbour it would swap with is pinned (pinned collections stay on top).
+ */
+internal fun steppedCatalogOrder(
+    order: List<String>,
+    key: String,
+    direction: Int,
+    pinned: Set<String>,
+): List<String>? {
+    val index = order.indexOf(key)
+    if (index == -1 || direction == 0 || key in pinned) return null
+    val target = index + direction.coerceIn(-1, 1)
+    if (target !in order.indices || order[target] in pinned) return null
+    return order.toMutableList().apply { add(target, removeAt(index)) }
 }
