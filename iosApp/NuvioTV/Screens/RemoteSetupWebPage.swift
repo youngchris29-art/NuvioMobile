@@ -167,7 +167,8 @@ function setStatus(text, cls) {
   s.className = cls || "";
 }
 
-async function load() {
+// `note`, when given, replaces the "Connected" line once the TV's list is on screen.
+async function load(note) {
   try {
     const res = await fetch("/api/state", { headers: AUTH });
     const state = await res.json();
@@ -178,7 +179,7 @@ async function load() {
     if (state.mdblistKeySet) el("mdblist-key").placeholder = "Saved on TV — enter to replace";
     if (state.posterPatternSet) el("poster-pattern").placeholder = "Saved on TV — enter to replace";
     render();
-    setStatus("Connected to " + (state.deviceName || "Apple TV"), "ok");
+    if (note) setStatus(note, "err"); else setStatus("Connected to " + (state.deviceName || "Apple TV"), "ok");
     el("apply").disabled = false;
   } catch (e) {
     setStatus("Couldn't reach the TV. Is Remote Setup still open?", "err");
@@ -308,9 +309,10 @@ async function poll(id, tries) {
     if (status === "stale" || status === "not_found") {
       // The add-on ids belong to the list this page loaded, and the TV's list has changed since
       // (or the TV restarted the session): only a fresh copy can be edited.
-      setStatus("Not applied: the TV's add-on list changed. Reloading it, so make your changes again.", "err");
-      setTimeout(load, 1500);
-      el("apply").disabled = false;
+      // Reload straight away, with Apply held until the fresh list is on screen, so nothing the
+      // user edits next is replaced by the reload.
+      setStatus("Not applied: the TV's add-on list changed. Reloading it…", "err");
+      await load("Not applied: the TV's add-on list changed. This is its list now, so make your changes again.");
       return;
     }
     if (status === "invalid") {

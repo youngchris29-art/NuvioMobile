@@ -71,11 +71,12 @@ final class RemoteSetupViewModel: ObservableObject {
         server.onChangeProposed = { [weak self] change in
             Task { @MainActor in
                 guard let self else { return }
-                // The server has already superseded whatever was awaiting a decision, so the
-                // alert for it goes away whether or not this proposal gets one.
+                // A callback for a proposal that was itself superseded (callbacks can run late)
+                // leaves the alert alone. A current one replaces the alert: the server has
+                // already superseded whatever it showed.
+                guard self.server.isPending(id: change.id) else { return }
                 self.pendingChange = nil
                 self.pendingAddons = nil
-                guard self.server.isPending(id: change.id) else { return }
                 // C1: resolve the page's ids back to manifest URLs now; an unknown or stale id
                 // (or a bad new URL) refuses the whole proposal, since dropping the entry would
                 // remove that add-on.
