@@ -12,7 +12,7 @@ import Security
 /// - `POST /api/apply`      → proposes a change; returns `{id, status: "pending_confirmation"}`.
 ///                            Nothing is applied until the user confirms ON THE TV (alert in
 ///                            Settings) — same trust model as Android.
-/// - `GET  /api/status/{id}`→ `{status: pending|applying|confirmed|rejected|superseded|stale|invalid|read_only|partial|not_found}` (browser polls)
+/// - `GET  /api/status/{id}`→ `{status: pending|applying|confirmed|rejected|superseded|stale|invalid|read_only|partial|stale_rows|not_found}` (browser polls)
 ///
 /// Threading: the listener + connections run on a private queue. The state snapshot and the
 /// pending-change table are guarded by a lock; `onChangeProposed` is delivered on the main queue.
@@ -72,6 +72,8 @@ final class RemoteSetupServer {
         case readOnly = "read_only"
         /// Applied, except some new add-ons whose install failed (`failedNewIndices`).
         case partial
+        /// Refused without asking: a Home-row id is unknown to this session (the page reloads all).
+        case staleRows = "stale_rows"
     }
 
     final class PendingChange {
@@ -117,6 +119,9 @@ final class RemoteSetupServer {
         }
         generation += 1
         token = Self.makeToken()
+        // Review r16: a new session never serves the previous one's snapshot (its ids mean
+        // nothing now); the page sees an empty state until the watchers publish.
+        stateJSON = Data("{}".utf8)
         let gen = generation
         lock.unlock()
         attemptStart(portOffset: 0, generation: gen, completion: completion)
@@ -134,6 +139,7 @@ final class RemoteSetupServer {
         pending.removeAll()
         pendingOrder.removeAll()
         lastProposalAt = nil
+        stateJSON = Data("{}".utf8)
         lock.unlock()
         active?.cancel()
     }
@@ -369,6 +375,13 @@ final class RemoteSetupServer {
         }
 
         send(response, on: connection)
+    }
+
+    /// Test seam: the state JSON a page would load.
+    func stateForTesting() -> Data {
+        lock.lock()
+        defer { lock.unlock() }
+        return stateJSON
     }
 
     /// Test seam: the status a page polling `id` would see (nil once evicted).

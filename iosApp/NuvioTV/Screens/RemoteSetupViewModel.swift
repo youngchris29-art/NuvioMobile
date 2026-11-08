@@ -84,6 +84,10 @@ final class RemoteSetupViewModel: ObservableObject {
                 guard self.server.isPending(id: change.id) else { return }
                 self.pendingChange = nil
                 self.pendingAddons = nil
+                guard self.rowIdsKnown(change.proposal) else {
+                    self.server.reject(id: change.id, status: .staleRows)
+                    return
+                }
                 // C1: resolve the page's ids back to manifest URLs now; an unknown or stale id
                 // (or a bad new URL) refuses the whole proposal, since dropping the entry would
                 // remove that add-on.
@@ -393,10 +397,15 @@ final class RemoteSetupViewModel: ObservableObject {
         }
     }
 
-    /// The page's opaque row ids as Home-row keys; ids this session never minted are dropped
-    /// (rows are matched leniently, as they always were).
+    /// The page's opaque row ids as Home-row keys (every id is checked by `rowIdsKnown` first).
     private func rowKeys(_ ids: [String]?) -> [String]? {
         ids?.compactMap { rowIds.url(for: $0) }
+    }
+
+    /// Review r16: a row id this session never minted means the page holds another session's
+    /// list; applying it would drop the row from the disabled set and re-enable it.
+    private func rowIdsKnown(_ proposal: RemoteSetupServer.Proposal) -> Bool {
+        ((proposal.rowOrder ?? []) + (proposal.disabledRowKeys ?? [])).allSatisfy { rowIds.url(for: $0) != nil }
     }
 
     private func applyRows(_ proposal: RemoteSetupServer.Proposal) {

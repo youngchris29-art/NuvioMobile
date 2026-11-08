@@ -190,6 +190,14 @@ final class RemoteSetupServerClaimTests: XCTestCase {
         XCTAssertFalse(server.claimForConfirm(id: "unknown"))
     }
 
+    /// Review r16: a restarted session never serves the previous session's snapshot.
+    func testRestartClearsTheStateSnapshot() {
+        let server = RemoteSetupServer()
+        server.updateState(Data(#"{"rows":[{"key":"old-1"}]}"#.utf8))
+        server.stop()
+        XCTAssertEqual(server.stateForTesting(), Data("{}".utf8))
+    }
+
     /// Review r11: a change being applied (slow installs) outlives the bounded history.
     func testAnApplyingChangeIsNotEvicted() throws {
         let server = RemoteSetupServer()

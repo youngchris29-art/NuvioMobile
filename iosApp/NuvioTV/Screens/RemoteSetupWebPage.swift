@@ -151,6 +151,8 @@ enum RemoteSetupWebPage {
 // Installed add-ons come as {id, host, name, description, enabled}: a per-session id and the host,
 // never the manifest URL (it can carry a debrid key). A new add-on is {url, enabled, isNew: true}.
 let addons = [];
+let rowBaseline = "";    // the rows' order and flags as loaded, to tell whether they were edited
+function rowSignature() { return rows.map(r => r.key + (r.enabled ? "+" : "-")).join(","); }
 let addonBaseline = []; // the TV list's ids as loaded, sent back so the TV can tell it moved
 let badgePacks = [];      // source URLs already imported on the TV (read-only here)
 let stagedBadgeUrls = []; // pack URLs staged for import on Send
@@ -187,7 +189,7 @@ async function load(note, addonsOnly) {
     const state = await res.json();
     addons = (state.addons || []).map(a => ({ ...a, isNew: false, origEnabled: a.enabled }));
     addonBaseline = addons.map(a => a.id);
-    if (!addonsOnly) rows = state.rows || [];
+    if (!addonsOnly) { rows = state.rows || []; rowBaseline = rowSignature(); }
     badgePacks = state.badgePacks || [];
     if (state.mdblistKeySet) el("mdblist-key").placeholder = "Saved on TV — enter to replace";
     if (state.posterPatternSet) el("poster-pattern").placeholder = "Saved on TV — enter to replace";
@@ -307,10 +309,13 @@ async function apply() {
   // when a stale outcome replaces the add-on list.
   setLocked(true);
   setStatus("Waiting for confirmation on the TV…");
-  const payload = {
-    rowOrder: rows.map(r => r.key),
-    disabledRowKeys: rows.filter(r => !r.enabled).map(r => r.key)
-  };
+  const payload = {};
+  // Home rows go only when they were edited (review r16), so a change elsewhere can never send
+  // an empty or outdated row list that would re-enable rows.
+  if (rowSignature() !== rowBaseline) {
+    payload.rowOrder = rows.map(r => r.key);
+    payload.disabledRowKeys = rows.filter(r => !r.enabled).map(r => r.key);
+  }
   // The add-on list goes only when it was edited, and an installed add-on's flag only when the
   // user changed it, so a change elsewhere never rewrites add-on state the TV has since updated.
   const addonsEdited = addons.length !== addonBaseline.length ||
@@ -377,6 +382,10 @@ async function poll(id, tries) {
       // The TV no longer holds this change's outcome (a long disconnect, or many later changes):
       // it may or may not have been applied, so show the TV's state as it is now.
       await reloadLocked("The TV no longer knows how this change ended. This is its current state, so check it before sending again.", false, 0);
+      return;
+    }
+    if (status === "stale_rows") {
+      await reloadLocked("Not applied: this page had an old copy of the TV's Home rows. This is the current state, so make your changes again.", false, 0);
       return;
     }
     if (status === "stale") {
