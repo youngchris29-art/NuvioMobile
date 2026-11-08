@@ -35,17 +35,20 @@ struct StreamPickerInfoPanel: View {
     nonisolated static let posterAspect: CGFloat = 1.5
     /// The VStack gaps while the poster shows: logo → facts → poster → progress → spacer.
     nonisolated static let posterGapCount: CGFloat = 4
-    /// The pane height everything but the poster takes before the facts and progress lines are
-    /// measured: logo slot 180 + two facts lines + one progress line (body, about 39 pt each) + the
-    /// four gaps. The measured heights replace the two text estimates after the first layout.
+    /// The pane height everything but the poster takes before the header, facts and progress
+    /// line are measured: the full logo slot (180) + two facts lines + one progress line (body,
+    /// about 39 pt each) + the four gaps. The measured heights replace these after the first
+    /// layout; a title drawn as text when there is no logo is shorter than the slot (review p1).
     nonisolated static let estimatedTextLineHeight: CGFloat = 39
     nonisolated static var estimatedReservedHeight: CGFloat {
-        reservedHeight(factsHeight: estimatedTextLineHeight * 2, progressHeight: estimatedTextLineHeight)
+        reservedHeight(headerHeight: logoSlotHeight, factsHeight: estimatedTextLineHeight * 2,
+                       progressHeight: estimatedTextLineHeight)
     }
 
-    /// The pane height the logo slot, the facts and progress lines and the gaps take.
-    nonisolated static func reservedHeight(factsHeight: CGFloat, progressHeight: CGFloat) -> CGFloat {
-        logoSlotHeight + factsHeight + progressHeight + posterGapCount * Theme.Spacing.lg
+    /// The pane height the title header, the facts and progress lines and the gaps take.
+    nonisolated static func reservedHeight(headerHeight: CGFloat, factsHeight: CGFloat,
+                                           progressHeight: CGFloat) -> CGFloat {
+        headerHeight + factsHeight + progressHeight + posterGapCount * Theme.Spacing.lg
     }
 
     /// The poster width for a pane `paneHeight` tall: the room left after `reserved`, at 2:3, capped
@@ -58,11 +61,13 @@ struct StreamPickerInfoPanel: View {
         return min(width, posterMaximumWidth)
     }
 
+    @State private var headerHeight: CGFloat?
     @State private var factsHeight: CGFloat?
     @State private var progressHeight: CGFloat?
 
     private var reservedHeight: CGFloat {
-        Self.reservedHeight(factsHeight: factsHeight ?? Self.estimatedTextLineHeight * 2,
+        Self.reservedHeight(headerHeight: headerHeight ?? Self.logoSlotHeight,
+                            factsHeight: factsHeight ?? Self.estimatedTextLineHeight * 2,
                             progressHeight: progressHeight ?? Self.estimatedTextLineHeight)
     }
 
@@ -78,6 +83,7 @@ struct StreamPickerInfoPanel: View {
                     upgrade: .logo
                 )
                 .frame(maxWidth: Self.logoDecodeWidth, alignment: .leading)
+                .onGeometryChange(for: CGFloat.self, of: { $0.size.height.rounded(.up) }) { headerHeight = $0 }
 
                 StreamPickerFactsText(season: season, episode: episode, episodes: episodes, meta: meta,
                                       lineLimit: 2)

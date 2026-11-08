@@ -187,7 +187,7 @@ final class StreamPickerFullWidthTests: XCTestCase {
     func testPosterFillsA1080pPaneBetweenTheOldAndTheNewSize() throws {
         typealias P = StreamPickerInfoPanel
         // The box measured ~840 pt; the facts and progress lines are one body line each (~39 pt).
-        let reserved = P.reservedHeight(factsHeight: 39, progressHeight: 39)
+        let reserved = P.reservedHeight(headerHeight: 180, factsHeight: 39, progressHeight: 39)
         XCTAssertEqual(reserved, 180 + 39 + 39 + 4 * 24)
         let width = try XCTUnwrap(P.posterWidth(paneHeight: 840, reserved: reserved))
         XCTAssertEqual(width, ((840 - reserved) / 1.5).rounded(.down))
@@ -197,6 +197,19 @@ final class StreamPickerFullWidthTests: XCTestCase {
         let twoLines = try XCTUnwrap(P.posterWidth(paneHeight: 840, reserved: P.estimatedReservedHeight))
         XCTAssertGreaterThanOrEqual(twoLines, P.posterMinimumWidth)
         XCTAssertLessThan(twoLines, width)
+    }
+
+    func testATextTitleLeavesThePosterTheSlotItDoesNotUse() throws {
+        typealias P = StreamPickerInfoPanel
+        // No logo: the title is drawn as one line of text (~60 pt) instead of the 180 pt slot, so a
+        // 700 pt pane that hides the poster under a logo still shows one (review p1).
+        let logo = P.reservedHeight(headerHeight: 180, factsHeight: 39, progressHeight: 39)
+        let text = P.reservedHeight(headerHeight: 60, factsHeight: 39, progressHeight: 39)
+        XCTAssertNil(P.posterWidth(paneHeight: 700, reserved: logo))
+        let width = try XCTUnwrap(P.posterWidth(paneHeight: 700, reserved: text))
+        XCTAssertGreaterThanOrEqual(width, P.posterMinimumWidth)
+        XCTAssertGreaterThan(try XCTUnwrap(P.posterWidth(paneHeight: 840, reserved: text)),
+                             try XCTUnwrap(P.posterWidth(paneHeight: 840, reserved: logo)))
     }
 
     func testPosterCapsAt360OnATallPane() {
