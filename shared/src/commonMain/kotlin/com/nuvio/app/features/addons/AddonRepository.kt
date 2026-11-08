@@ -369,7 +369,6 @@ object AddonRepository {
         if (!appended) {
             return AddAddonResult.Error(resourceString("That addon is already installed.", StringKey.addon_already_installed))
         }
-        AddonHealthTracker.forget(manifestUrl)
         persist()
         pushToServer()
         return AddAddonResult.Success(manifest)

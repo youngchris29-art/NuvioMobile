@@ -355,6 +355,8 @@ final class AddonsViewModel: ObservableObject {
     /// C4: the Installed pane's Check now (restarts every enabled add-on's refresh).
     func checkAll() {
         AddonRepository.shared.checkAll()
+        // C4 review r5: the same completion tracking and stamp as Refresh all.
+        trackRefresh()
     }
 
     func refreshAll() {
