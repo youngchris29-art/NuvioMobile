@@ -113,6 +113,8 @@ final class RemoteSetupChangeListTests: XCTestCase {
                           List.badgePackLabel("https://h.example.com/bob/badges.json"))
         XCTAssertNotEqual(List.badgePackLabel("https://h.example.com/pack?id=blue"),
                           List.badgePackLabel("https://h.example.com/pack?id=red"))
+        XCTAssertNotEqual(List.badgePackLabel("https://example.com/pack?variant=blue%26red"),
+                          List.badgePackLabel("https://example.com/pack?variant=blue&red"), "encoded separators")
         XCTAssertNotEqual(List.badgePackLabel("http://192.168.1.10:8080/badges.json"),
                           List.badgePackLabel("http://192.168.1.10:9090/badges.json"), "ports")
         XCTAssertLessThanOrEqual(List.badgePackLabel("https://h.example.com/" + String(repeating: "x", count: 200)).count, 82)

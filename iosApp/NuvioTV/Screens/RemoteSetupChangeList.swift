@@ -191,8 +191,9 @@ nonisolated enum RemoteSetupChangeList {
         // Review r13: the scheme too (http and https can serve different files), and a cut
         // label carries a fingerprint of the whole address.
         let scheme = (parts.scheme ?? "https").lowercased()
-        var label = scheme + "://" + host + (parts.port.map { ":\($0)" } ?? "") + parts.path
-        if let query = parts.query, !query.isEmpty { label += "?" + query }
+        // Review r15: the encoded path and query, so `%26` and `&` never read the same.
+        var label = scheme + "://" + host + (parts.port.map { ":\($0)" } ?? "") + parts.percentEncodedPath
+        if let query = parts.percentEncodedQuery, !query.isEmpty { label += "?" + query }
         guard label.count > 80 else { return label }
         return String(label.prefix(46)) + "…" + String(label.suffix(26)) + " [" + fingerprint(url) + "]"
     }
