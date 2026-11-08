@@ -1,0 +1,319 @@
+import XCTest
+import SharedCore
+@testable import NuvioTV
+
+/// GitHub #25: "Source Layout" (Two-Pane / Full Width) and "Row Text" (Nuvio / Add-on's Own). The
+/// row model's add-on text (name lines, description, size dedupe, Nuvio's own cached state only),
+/// the compact row and VoiceOver in both modes, the display flags taking part in row identity, the
+/// launch knobs, the Settings defaults and copy.
+@MainActor
+final class StreamPickerFullWidthTests: XCTestCase {
+
+    // MARK: - Builders
+
+    private func hints(size: Int64? = nil) -> StreamBehaviorHints {
+        StreamBehaviorHints(bingeGroup: nil, notWebReady: false, videoHash: nil,
+                            videoSize: size.map { KotlinLong(value: $0) }, filename: nil,
+                            proxyHeaders: nil, audioDelayMs: nil)
+    }
+
+    /// An AIOStreams-style stream: a multi-line `name` and a formatter-written `description`.
+    private func stream(
+        name: String? = "AIOStreams\n  4K ⚡ RD  \n\n",
+        title: String? = nil,
+        description: String? = "Movie (2024)\n🎞️ WEB-DL · HEVC · DV\n🔊 Atmos DD+ 5.1\n💾 1.9 GB · 👤 120",
+        url: String? = "https://cdn.example.com/movie.mkv",
+        infoHash: String? = nil,
+        size: Int64? = 2_000_000_000,
+        badges: [StreamBadge] = [],
+        cache: StreamDebridCacheStatus? = nil
+    ) -> StreamItem {
+        StreamItem(
+            name: name, title: title, description: description, url: url, infoHash: infoHash, fileIdx: nil,
+            externalUrl: nil, ytId: nil, sources: [], sourceName: nil, addonName: "AIOStreams", addonId: "aio",
+            addonLogo: nil, streamType: nil, behaviorHints: hints(size: size),
+            clientResolve: nil, debridCacheStatus: cache, externalSubtitles: [], badges: badges
+        )
+    }
+
+    private func status(_ state: StreamDebridCacheState) -> StreamDebridCacheStatus {
+        StreamDebridCacheStatus(providerId: "rd", providerName: "RD", state: state, cachedName: nil, cachedSize: nil)
+    }
+
+    private func badge(_ name: String) -> StreamBadge {
+        StreamBadge(name: name, imageURL: "", tagColor: "#222222", tagStyle: "filled",
+                    textColor: "#FFFFFF", borderColor: "")
+    }
+
+    private func make(_ stream: StreamItem, addonText: Bool, fullWidth: Bool = false,
+                      showFileSize: Bool = true, badgesOnTop: Bool = false) -> StreamRowModel {
+        StreamRowModel.make(stream: stream, facts: StreamFactsParser.shared.parse(stream: stream),
+                            key: "aio#k",
+                            display: StreamRowDisplay(showFileSize: showFileSize, badgesOnTop: badgesOnTop,
+                                                      showAddonLogo: false, instantSuffix: false,
+                                                      fullWidth: fullWidth, addonText: addonText),
+                            providerLabel: { $0.providerName })
+    }
+
+    // MARK: - Display defaults and identity
+
+    func testDisplayDefaultsChangeNothing() {
+        let display = StreamRowDisplay()
+        XCTAssertFalse(display.fullWidth)
+        XCTAssertFalse(display.addonText)
+    }
+
+    func testTheNewDisplayFlagsTakePartInEquality() {
+        XCTAssertNotEqual(StreamRowDisplay(), StreamRowDisplay(fullWidth: true))
+        XCTAssertNotEqual(StreamRowDisplay(), StreamRowDisplay(addonText: true))
+        XCTAssertNotEqual(make(stream(), addonText: false), make(stream(), addonText: true),
+                          "a Row Text flip must rebuild the row")
+        XCTAssertNotEqual(make(stream(), addonText: false), make(stream(), addonText: false, fullWidth: true),
+                          "a Source Layout flip must rebuild the row")
+    }
+
+    // MARK: - Add-on text in the row model
+
+    func testNameLinesAreSplitTrimmedAndEmptiesDropped() {
+        let model = make(stream(), addonText: true)
+        XCTAssertTrue(model.addonText)
+        XCTAssertEqual(model.nameLines, ["AIOStreams", "4K ⚡ RD"])
+        XCTAssertEqual(StreamRowModel.textLines(nil), [])
+        XCTAssertEqual(StreamRowModel.textLines(" \n \n"), [])
+        XCTAssertEqual(StreamRowModel.textLines("a\r\nb"), ["a", "b"])
+    }
+
+    func testDescriptionIsTheAddonsTextWithTheLegacyTitleFallback() {
+        XCTAssertEqual(make(stream(), addonText: true).description,
+                       "Movie (2024)\n🎞️ WEB-DL · HEVC · DV\n🔊 Atmos DD+ 5.1\n💾 1.9 GB · 👤 120")
+        let legacy = stream(title: "Movie.2024.1080p.WEB-DL", description: nil)
+        XCTAssertEqual(make(legacy, addonText: true).description, "Movie.2024.1080p.WEB-DL",
+                       "an add-on that fills only `title` still shows its text")
+        XCTAssertNil(make(legacy, addonText: false).description, "Nuvio text keeps today's description rule")
+        XCTAssertNil(make(stream(title: "  ", description: ""), addonText: true).description)
+    }
+
+    func testSizeIsNotDrawnTwiceWhenTheAddonTextHasIt() {
+        let model = make(stream(), addonText: true)
+        XCTAssertEqual(StreamFileSizeChip.label(for: 2_000_000_000), "1.9 GB")
+        XCTAssertTrue(model.sizeInAddonText)
+        XCTAssertEqual(model.sizeBytes, 2_000_000_000, "the size still drives sorting and the compact row's Nuvio mode")
+        XCTAssertNil(model.drawnSizeBytes, "already in the description")
+
+        let plain = make(stream(description: "Movie.2024.2160p.WEB-DL"), addonText: true)
+        XCTAssertFalse(plain.sizeInAddonText)
+        XCTAssertEqual(plain.drawnSizeBytes, 2_000_000_000, "not in the add-on's text: drawn")
+
+        let nuvio = make(stream(), addonText: false)
+        XCTAssertEqual(nuvio.drawnSizeBytes, 2_000_000_000, "Nuvio text always draws the size")
+        XCTAssertTrue(StreamRowModel.addonTextContains("1.9 gb", nameLines: [], description: "💾 1.9 GB"),
+                      "case-insensitive")
+    }
+
+    func testAddonCachedStateComesOnlyFromNuviosOwnDebridCheck() {
+        let torrent = stream(name: "[RD+] AIOStreams\n4K", url: nil, infoHash: "abc123")
+        XCTAssertNil(make(torrent, addonText: true).drawnCachedState,
+                     "the add-on marks its own cache in its text: not repeated")
+        XCTAssertEqual(make(stream(url: nil, infoHash: "abc123", cache: status(.cached)), addonText: true).drawnCachedState,
+                       .instant(provider: "RD"))
+        XCTAssertEqual(make(stream(url: nil, infoHash: "abc123", cache: status(.notCached)), addonText: true).drawnCachedState,
+                       .notCached)
+        XCTAssertNil(make(stream(url: nil, infoHash: "abc123", cache: status(.checking)), addonText: true).drawnCachedState)
+        XCTAssertNil(make(stream(url: nil, infoHash: "abc123", cache: status(.cached)), addonText: false).addonCachedState,
+                     "Nuvio text never fills the add-on cached state")
+    }
+
+    func testBadgesAreFilledInBothRowTextModes() {
+        let s = stream(badges: [badge("4K"), badge("DV")])
+        XCTAssertEqual(make(s, addonText: false).badges.map(\.name), ["4K", "DV"])
+        XCTAssertEqual(make(s, addonText: true).badges.map(\.name), ["4K", "DV"])
+        XCTAssertEqual(make(s, addonText: true, fullWidth: true, badgesOnTop: true).badges.map(\.name), ["4K", "DV"])
+        XCTAssertTrue(make(s, addonText: true, badgesOnTop: true).badgesOnTop, "Badge Placement is honoured")
+    }
+
+    func testParsingStillRunsInAddonText() {
+        // Ranking, tiers and Best Pick read the parsed fields; add-on text changes only what is drawn.
+        let model = make(stream(name: "AIOStreams\n2160p"), addonText: true)
+        XCTAssertEqual(model.resolution, 2160)
+        XCTAssertEqual(model.headline, "4K")
+    }
+
+    // MARK: - Wide Nuvio row
+
+    func testWideNuvioRowFoldsTheFactLines() {
+        let model = make(stream(name: "Torrentio\n4k", description: "Movie.2024.2160p.WEB-DL.DDP5.1.Atmos.DV.HEVC-GROUP"),
+                         addonText: false, fullWidth: true)
+        XCTAssertTrue(model.wide)
+        XCTAssertFalse(model.addonText)
+        XCTAssertTrue(model.hasWideFactLine)
+        XCTAssertEqual(model.hasWideFactLine, model.hasVideoLine || model.hasAudioLine)
+    }
+
+    func testCardCapAppliesOnlyOnFullWidth() {
+        XCTAssertEqual(StreamPickerWideMetrics.cardMaxWidth(fullWidth: true), 1100)
+        XCTAssertEqual(StreamPickerWideMetrics.cardMaxWidth(fullWidth: false), .infinity)
+    }
+
+    // MARK: - Compact row
+
+    func testCompactPartsInAddonText() {
+        let parts = StreamPickerCopy.compactParts(make(stream(), addonText: true))
+        XCTAssertEqual(parts.lead, "AIOStreams 4K ⚡ RD")
+        XCTAssertEqual(parts.facts, "Movie (2024)")
+        XCTAssertNil(parts.glyph)
+        XCTAssertNil(parts.size, "the description already carries the size")
+        XCTAssertEqual(parts.trailing, "AIOStreams")
+
+        let cachedPlain = make(stream(description: "Movie.2024", url: nil, infoHash: "h", cache: status(.cached)),
+                               addonText: true)
+        let p2 = StreamPickerCopy.compactParts(cachedPlain)
+        XCTAssertEqual(p2.glyph, "checkmark.circle")
+        XCTAssertEqual(p2.size, "1.9 GB")
+    }
+
+    func testCompactSpokenLabelInAddonText() {
+        XCTAssertEqual(StreamPickerCopy.compactSpokenLabel(make(stream(), addonText: true)),
+                       "AIOStreams 4K ⚡ RD, Movie (2024), AIOStreams")
+    }
+
+    func testCompactNuvioModeIsUnchanged() {
+        let parts = StreamPickerCopy.compactParts(make(stream(name: "Torrentio\n4k"), addonText: false))
+        XCTAssertEqual(parts.lead.hasPrefix("4K"), true)
+    }
+
+    // MARK: - VoiceOver
+
+    func testSpokenLabelInAddonTextReadsNameDescriptionAndTail() {
+        let model = make(stream(description: "Movie (2024)\nWEB-DL\n\n🔊 Atmos", badges: [badge("DV")]),
+                         addonText: true)
+        XCTAssertEqual(model.spokenLabel, "AIOStreams, 4K ⚡ RD, Movie (2024), WEB-DL, 🔊 Atmos, 1.9 GB, DV")
+        let onTop = make(stream(description: "💾 1.9 GB", badges: [badge("DV")], cache: status(.cached)),
+                         addonText: true, badgesOnTop: true)
+        XCTAssertEqual(onTop.spokenLabel, "DV, AIOStreams, 4K ⚡ RD, 💾 1.9 GB, RD Instant")
+        let failed = make(stream(description: nil, size: nil), addonText: true)
+            .applying(isResolving: false, failedRecently: true, players: [], defaultPlayerId: nil)
+        XCTAssertEqual(failed.spokenLabel, "AIOStreams, 4K ⚡ RD, Failed recently")
+    }
+
+    func testSpokenLabelInNuvioTextStillLeadsWithTheHeadline() {
+        let model = make(stream(name: "Torrentio\n4k", description: "Movie.2024.2160p.WEB-DL"), addonText: false)
+        XCTAssertTrue(model.spokenLabel.hasPrefix("4K"), model.spokenLabel)
+    }
+
+    // MARK: - View model
+
+    private func settings(layout: StreamSourceLayout, rowText: StreamRowText) throws -> StreamBadgeSettingsUiState {
+        StreamBadgeSettingsRepository.shared.ensureLoaded()
+        let base = try XCTUnwrap(StreamBadgeSettingsRepository.shared.uiState.value_ as? StreamBadgeSettingsUiState)
+        return StreamBadgeSettingsUiState(
+            rules: base.rules, showFileSizeBadges: base.showFileSizeBadges, showAddonLogo: base.showAddonLogo,
+            showInPlayer: base.showInPlayer, playerBadgeSource: base.playerBadgeSource,
+            badgePlacement: base.badgePlacement, backgroundMode: base.backgroundMode, groupingMode: .quality,
+            listOpensWith: .fullList, sourceLayout: layout, rowText: rowText
+        )
+    }
+
+    private func uiState(_ groups: [AddonStreamGroup]) -> StreamsUiState {
+        StreamsUiState(
+            requestToken: "t", groups: groups, activeAddonIds: [], installedAddonIds: [],
+            selectedFilter: nil, isAnyLoading: false, emptyStateReason: nil, autoPlayStream: nil,
+            autoPlayCandidates: [], isDirectAutoPlayFlow: false, showDirectAutoPlayOverlay: false,
+            overlayMessage: nil
+        )
+    }
+
+    func testViewModelDefaultsAreTwoPaneAndNuvio() {
+        let vm = StreamsViewModel(type: "movie", videoId: "tt1")
+        guard StreamSourceLayoutDebugOverride.layout() == nil, StreamRowTextDebugOverride.mode() == nil else { return }
+        XCTAssertEqual(vm.sourceLayout, .twoPane)
+        XCTAssertEqual(vm.rowText, .nuvio)
+        XCTAssertFalse(vm.isFullWidth)
+    }
+
+    func testASettingsFlipRebuildsTheRows() throws {
+        guard StreamSourceLayoutDebugOverride.layout() == nil, StreamRowTextDebugOverride.mode() == nil else { return }
+        let vm = StreamsViewModel(type: "movie", videoId: "tt1")
+        vm.listOpensWith = { .fullList }
+        vm.receive(badgeSettings: try settings(layout: .twoPane, rowText: .nuvio))
+        vm.receive(uiState([AddonStreamGroup(addonName: "AIOStreams", addonId: "aio", streams: [stream()],
+                                             isLoading: false, error: nil)]))
+        let before = try XCTUnwrap(vm.groups.first?.rows.first)
+        XCTAssertFalse(before.addonText)
+        XCTAssertFalse(before.wide)
+
+        vm.receive(badgeSettings: try settings(layout: .twoPane, rowText: .addon))
+        let addon = try XCTUnwrap(vm.groups.first?.rows.first)
+        XCTAssertTrue(addon.addonText)
+        XCTAssertEqual(addon.nameLines, ["AIOStreams", "4K ⚡ RD"])
+
+        vm.receive(badgeSettings: try settings(layout: .fullWidth, rowText: .addon))
+        XCTAssertTrue(vm.isFullWidth)
+        XCTAssertTrue(try XCTUnwrap(vm.groups.first?.rows.first).wide)
+    }
+
+    // MARK: - Launch knobs
+
+    func testDebugKeyNames() {
+        XCTAssertEqual(StreamSourceLayoutDebugOverride.debugKey, "debug.sourceLayout")
+        XCTAssertEqual(StreamRowTextDebugOverride.debugKey, "debug.rowText")
+    }
+
+    func testKnobsParseTheirSpellingsAndRejectTheRest() {
+        XCTAssertEqual(StreamSourceLayoutDebugOverride.parse(" full "), .fullWidth)
+        XCTAssertEqual(StreamSourceLayoutDebugOverride.parse("FULL_WIDTH"), .fullWidth)
+        XCTAssertEqual(StreamSourceLayoutDebugOverride.parse("two"), .twoPane)
+        XCTAssertEqual(StreamSourceLayoutDebugOverride.parse("Two_Pane"), .twoPane)
+        XCTAssertNil(StreamSourceLayoutDebugOverride.parse(nil))
+        XCTAssertNil(StreamSourceLayoutDebugOverride.parse("wide"))
+        XCTAssertEqual(StreamRowTextDebugOverride.parse("addon"), .addon)
+        XCTAssertEqual(StreamRowTextDebugOverride.parse("Add-on"), .addon)
+        XCTAssertEqual(StreamRowTextDebugOverride.parse(" NUVIO "), .nuvio)
+        XCTAssertNil(StreamRowTextDebugOverride.parse(""))
+        XCTAssertNil(StreamRowTextDebugOverride.parse("own"))
+    }
+
+    func testKnobsReadOnlyWhenPresentAndOnlyInDebug() throws {
+        let suite = "StreamPickerFullWidthTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertNil(StreamSourceLayoutDebugOverride.layout(defaults))
+        XCTAssertNil(StreamRowTextDebugOverride.mode(defaults))
+        defaults.set("FULL", forKey: StreamSourceLayoutDebugOverride.debugKey)
+        defaults.set("ADDON", forKey: StreamRowTextDebugOverride.debugKey)
+        #if DEBUG
+        XCTAssertEqual(StreamSourceLayoutDebugOverride.layout(defaults), .fullWidth)
+        XCTAssertEqual(StreamRowTextDebugOverride.mode(defaults), .addon)
+        #else
+        XCTAssertNil(StreamSourceLayoutDebugOverride.layout(defaults))
+        XCTAssertNil(StreamRowTextDebugOverride.mode(defaults))
+        #endif
+    }
+
+    // MARK: - Settings
+
+    func testSettingsViewModelReadsTheDefaultsBeforeTheRepositoryEmits() {
+        let vm = BadgeSettingsViewModel()
+        XCTAssertEqual(vm.sourceLayout, StreamSourceLayout.twoPane)
+        XCTAssertEqual(vm.rowText, StreamRowText.nuvio)
+    }
+
+    func testOptionsListTheDefaultFirst() {
+        XCTAssertEqual(SourceSettingOptions.sourceLayouts, [.twoPane, .fullWidth])
+        XCTAssertEqual(SourceSettingOptions.rowTextModes, [.nuvio, .addon])
+        XCTAssertEqual(SourceSettingOptions.sourceLayoutName(for: .twoPane), "Two-Pane")
+        XCTAssertEqual(SourceSettingOptions.sourceLayoutName(for: .fullWidth), "Full Width")
+        XCTAssertEqual(SourceSettingOptions.rowTextName(for: .nuvio), "Nuvio")
+        XCTAssertEqual(SourceSettingOptions.rowTextName(for: .addon), "Add-on's Own")
+    }
+
+    func testDescriptionCopyNamesBothOptionsAndTheDefault() {
+        let layout = String(localized: SettingsDescriptions.text(for: .sourcesLayout))
+        XCTAssertTrue(layout.hasPrefix("Two-Pane "), layout)
+        XCTAssertTrue(layout.contains("Full Width "), layout)
+        XCTAssertTrue(layout.hasSuffix("Default: Two-Pane."), layout)
+        let rowText = String(localized: SettingsDescriptions.text(for: .sourcesRowText))
+        XCTAssertTrue(rowText.hasPrefix("Nuvio "), rowText)
+        XCTAssertTrue(rowText.contains("Add-on's Own "), rowText)
+        XCTAssertTrue(rowText.hasSuffix("Default: Nuvio."), rowText)
+    }
+}

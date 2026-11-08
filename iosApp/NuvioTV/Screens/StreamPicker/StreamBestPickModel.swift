@@ -153,6 +153,7 @@ enum StreamPickerCopy {
     // MARK: - Compact row
 
     static func compactParts(_ row: StreamRowModel) -> StreamCompactParts {
+        if row.addonText { return addonCompactParts(row) }
         let lead: String
         if let headline = row.headline {
             lead = [headline, row.hdrMark].compactMap { $0 }.joined(separator: " ")
@@ -172,9 +173,37 @@ enum StreamPickerCopy {
         )
     }
 
-    /// Lead, fact terms, cached words, size, add-on, "YouTube", "Failed recently".
+    /// GitHub #25, add-on text: the lead is the name lines joined with spaces, the facts are the
+    /// description's first line, then Nuvio's own cached glyph and the size (unless the add-on's text
+    /// already has it). Same 64 pt row.
+    private static func addonCompactParts(_ row: StreamRowModel) -> StreamCompactParts {
+        let lead = row.nameLines.isEmpty ? row.title : row.nameLines.joined(separator: " ")
+        let trailing: String? = row.failedRecently
+            ? String(localized: "Failed recently")
+            : clean(row.addonName)
+        return StreamCompactParts(
+            lead: lead,
+            facts: StreamRowModel.textLines(row.description).first,
+            glyph: row.drawnCachedState.map(StreamRowFacts.cachedSymbol),
+            size: row.drawnSizeBytes.map { StreamFileSizeChip.label(for: $0) },
+            trailing: trailing
+        )
+    }
+
+    /// Lead, fact terms, cached words, size, add-on, "YouTube", "Failed recently". In add-on text:
+    /// lead, the description's first line, then the same tail.
     static func compactSpokenLabel(_ row: StreamRowModel, parts: StreamCompactParts? = nil) -> String {
         let parts = parts ?? compactParts(row)
+        if row.addonText {
+            var spoken: [String] = [parts.lead]
+            if let facts = parts.facts { spoken.append(facts) }
+            if let state = row.drawnCachedState { spoken.append(StreamRowFacts.cachedText(state)) }
+            if let size = parts.size { spoken.append(size) }
+            if let addon = clean(row.addonName) { spoken.append(addon) }
+            if row.isYouTube { spoken.append("YouTube") }
+            if row.failedRecently { spoken.append(String(localized: "Failed recently")) }
+            return spoken.joined(separator: ", ")
+        }
         var spoken: [String] = [parts.lead]
         spoken += row.videoFacts
         if let audio = clean(row.audio) { spoken.append(audio) }

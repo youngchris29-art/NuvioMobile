@@ -15,6 +15,12 @@ nonisolated struct StreamRowDisplay: Equatable {
     var showAddonLogo = false
     /// The Instant suffix on debrid-cached rows (debrid resolution on, no custom name template).
     var instantSuffix = false
+    /// GitHub #25 "Source Layout = Full Width": the list runs the screen's width, so a Nuvio row
+    /// folds its lines into two and an add-on row puts its name and description side by side.
+    var fullWidth = false
+    /// GitHub #25 "Row Text = Add-on's Own": the row draws the add-on's `name` and `description`
+    /// instead of Nuvio's headline and fact lines. Display only: ranking and grouping still parse.
+    var addonText = false
 }
 
 /// An external player the row's long-press menu can offer. A plain-Swift copy of the Kotlin
@@ -79,6 +85,18 @@ nonisolated struct StreamRowModel: Equatable, Identifiable {
     /// best-pick headline and the compact row. Nil when the release names none. Defaulted so the
     /// tests' memberwise calls keep compiling; `make` always sets it.
     var audio: String? = nil
+    /// GitHub #25: the row is laid out for the full-width list (`StreamRowDisplay.fullWidth`).
+    var wide = false
+    /// GitHub #25: the row draws the add-on's own text (`StreamRowDisplay.addonText`).
+    var addonText = false
+    /// GitHub #25: the stream's `name` split on newlines, trimmed, empties dropped (add-on text).
+    var nameLines: [String] = []
+    /// GitHub #25: in add-on text the cached part comes only from Nuvio's own debrid check
+    /// (`StreamItem.debridCacheStatus`); an add-on that marks its cache in its text is not repeated.
+    var addonCachedState: StreamRowCachedState? = nil
+    /// GitHub #25: the size label already appears in the add-on's name or description, so an
+    /// add-on text row does not draw it a second time.
+    var sizeInAddonText = false
 
     /// This row's debrid / YouTube resolve is in flight (the spinner beside the title).
     var isResolving = false
@@ -97,13 +115,36 @@ nonisolated struct StreamRowModel: Equatable, Identifiable {
     var hasVideoLine: Bool { !videoFacts.isEmpty }
     /// Fact line 2 (audio, languages, cached state) is drawn.
     var hasAudioLine: Bool { !audioFacts.isEmpty || cachedState != nil }
+    /// The cached part the row actually draws: Nuvio's parsed state, or in add-on text only
+    /// Nuvio's own debrid check.
+    var drawnCachedState: StreamRowCachedState? { addonText ? addonCachedState : cachedState }
+    /// The size the row actually draws: in add-on text, nil when the add-on's text already has it.
+    var drawnSizeBytes: Int64? { addonText && sizeInAddonText ? nil : sizeBytes }
+    /// The wide Nuvio row's second line (video facts, audio, languages, cached part) is drawn.
+    var hasWideFactLine: Bool { hasVideoLine || hasAudioLine }
 
     /// What VoiceOver reads for the row, in the order it is drawn: the badge names (when on top),
     /// the headline (or title), the HDR mark, the add-on name, the size, the fact lines, the cached
     /// words, the badge names (when below), "YouTube" and "Failed recently".
+    ///
+    /// GitHub #25, add-on text: the badge names (when on top), the name lines, the description with
+    /// its newlines read as commas, the size (when drawn), the cached words (only Nuvio's own), the
+    /// badge names (when below), "YouTube" and "Failed recently".
     @MainActor var spokenLabel: String {
         let badgeNames = badges.map(\.name)
         var parts: [String] = badgesOnTop ? badgeNames : []
+        if addonText {
+            parts += nameLines.isEmpty ? [title] : nameLines
+            if let description {
+                parts += Self.textLines(description)
+            }
+            if let bytes = drawnSizeBytes { parts.append(StreamFileSizeChip.label(for: bytes)) }
+            if let state = drawnCachedState { parts.append(StreamRowFacts.cachedText(state)) }
+            if !badgesOnTop { parts += badgeNames }
+            if isYouTube { parts.append("YouTube") }
+            if failedRecently { parts.append(String(localized: "Failed recently")) }
+            return parts.joined(separator: ", ")
+        }
         parts.append(headline ?? title)
         if let hdrMark { parts.append(hdrMark) }
         if showsAddonName { parts.append(addonName) }
@@ -115,6 +156,32 @@ nonisolated struct StreamRowModel: Equatable, Identifiable {
         if isYouTube { parts.append("YouTube") }
         if failedRecently { parts.append(String(localized: "Failed recently")) }
         return parts.joined(separator: ", ")
+    }
+
+    /// GitHub #25: `text` split on newlines, each line trimmed, empty lines dropped.
+    nonisolated static func textLines(_ text: String?) -> [String] {
+        guard let text else { return [] }
+        return text.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
+    /// GitHub #25: whether the add-on's own text already carries `label` (a plain, case-insensitive
+    /// substring check against `StreamFileSizeChip.label`, so the size is never drawn twice).
+    nonisolated static func addonTextContains(_ label: String, nameLines: [String], description: String?) -> Bool {
+        let haystack = (nameLines + [description ?? ""]).joined(separator: "\n")
+        return haystack.range(of: label, options: [.caseInsensitive]) != nil
+    }
+
+    /// GitHub #25: the add-on-text cached part, from Nuvio's own debrid check only.
+    static func addonCachedState(_ status: StreamDebridCacheStatus?,
+                                 providerLabel: (StreamDebridCacheStatus) -> String) -> StreamRowCachedState? {
+        guard let status else { return nil }
+        switch status.state {
+        case .cached: return StreamRowFacts.cachedState(cached: true, provider: providerLabel(status))
+        case .notCached: return .notCached
+        default: return nil
+        }
     }
 
     /// The part the picker's own state decides (spinner, rejected caption, players).
@@ -165,10 +232,24 @@ nonisolated struct StreamRowModel: Equatable, Identifiable {
         let rawAudio: String? = facts.audio
         let trimmedAudio = rawAudio?.trimmingCharacters(in: .whitespaces) ?? ""
         let audioLabel: String? = trimmedAudio.isEmpty ? nil : trimmedAudio
+        // GitHub #25: the add-on's own text. The description falls back to the legacy Stremio
+        // `title` field, which older add-ons still fill instead of `description`.
+        let rawName: String? = stream.name
+        let nameLines = StreamRowModel.textLines(rawName)
+        let legacyTitle: String? = stream.title
+        let addonDescription: String? = {
+            if let desc, !desc.isEmpty { return desc }
+            if let legacyTitle, !legacyTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return legacyTitle }
+            return nil
+        }()
+        let sizeInAddonText = sizeBytes.map {
+            StreamRowModel.addonTextContains(StreamFileSizeChip.label(for: $0), nameLines: nameLines,
+                                             description: addonDescription)
+        } ?? false
         return StreamRowModel(
             key: key,
             title: headline != nil ? plainTitle : fullTitle,
-            description: (desc ?? "").isEmpty ? nil : desc,
+            description: display.addonText ? addonDescription : ((desc ?? "").isEmpty ? nil : desc),
             badges: badges.map { StreamBadgeInfo($0) },
             sizeBytes: sizeBytes,
             badgesOnTop: display.badgesOnTop,
@@ -190,7 +271,13 @@ nonisolated struct StreamRowModel: Equatable, Identifiable {
                                                   locale: Locale.current),
             cachedState: titleCarriesInstant ? nil
                 : StreamRowFacts.cachedState(cached: cached, provider: provider),
-            audio: audioLabel
+            audio: audioLabel,
+            wide: display.fullWidth,
+            addonText: display.addonText,
+            nameLines: nameLines,
+            addonCachedState: display.addonText
+                ? StreamRowModel.addonCachedState(stream.debridCacheStatus, providerLabel: providerLabel) : nil,
+            sizeInAddonText: sizeInAddonText
         )
     }
 

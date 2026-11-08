@@ -135,6 +135,19 @@ final class StreamPickerUITests: XCTestCase {
         }
     }
 
+    // MARK: - Source Layout (GitHub #25)
+
+    /// `TEST_RUNNER_PICKER_LAYOUT=FULL` (seen here as `PICKER_LAYOUT`) runs every picker leg in the
+    /// Full Width layout through `-debug.sourceLayout`; absent, the legs run the default Two-Pane.
+    static var pickerLayout: String? {
+        let raw = ProcessInfo.processInfo.environment["PICKER_LAYOUT"]?.trimmingCharacters(in: .whitespaces)
+        return (raw?.isEmpty ?? true) ? nil : raw
+    }
+
+    static var layoutArgs: [String] { pickerLayout.map { ["-debug.sourceLayout", $0] } ?? [] }
+
+    static var isFullWidthRun: Bool { pickerLayout?.uppercased().hasPrefix("FULL") ?? false }
+
     // MARK: - Fixture add-ons
 
     private static let stubPrefix = "/picker-zz-"
@@ -195,7 +208,7 @@ final class StreamPickerUITests: XCTestCase {
             "-detail_trailer_autoplay", "NO", "-debug.trailerForceNoTrailer", "YES",
             "-hero_trailer_autoplay", "NO", "-debug.streamAutoPlayModeOverride", "MANUAL",
             "-debug.sourceListOpensWith", "FULL",
-        ]
+        ] + Self.layoutArgs
 
         // Cleanup launch (registered BEFORE the seed launch, review r2: `launch` itself can fail
         // after the seed applied): the remove knob alone, so the fixture never keeps the stub add-ons.
@@ -295,15 +308,20 @@ final class StreamPickerUITests: XCTestCase {
         // c. Info panel title.
         // Scoped to the info panel (review r1 P3): Detail's own logo under the cover carries the
         // same label.
-        let infoPanel = element(app, "stream_picker_info_panel")
-        XCTAssertTrue(infoPanel.waitForExistence(timeout: 10), "stream_picker_info_panel never appeared")
+        // GitHub #25: on a Full Width run the title and progress live in the header strip and the
+        // info panel is gone.
+        let infoPanel = element(app, Self.isFullWidthRun ? "stream_picker_header_strip" : "stream_picker_info_panel")
+        XCTAssertTrue(infoPanel.waitForExistence(timeout: 10), "\(infoPanel.identifier) never appeared")
+        if Self.isFullWidthRun {
+            XCTAssertFalse(element(app, "stream_picker_info_panel").exists, "Full Width still draws the info panel")
+        }
         let titleImage = infoPanel.images["Dune"]
         let titleAny = infoPanel.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Dune")).firstMatch
         XCTAssertTrue(titleAny.waitForExistence(timeout: 10),
                       "no element labelled \"Dune\" in the info panel; focused: \(focusDump(app))")
         say("title shown as \(titleImage.exists ? "image" : "text")")
         let progress = infoPanel.descendants(matching: .any)["stream_picker_progress"]
-        XCTAssertTrue(progress.waitForExistence(timeout: 5), "stream_picker_progress not under the info panel")
+        XCTAssertTrue(progress.waitForExistence(timeout: 5), "stream_picker_progress not under \(infoPanel.identifier)")
         say("progress line: \(progress.label)")
 
         // d. Chips.
@@ -494,7 +512,7 @@ final class StreamPickerUITests: XCTestCase {
             "-detail_trailer_autoplay", "NO", "-debug.trailerForceNoTrailer", "YES",
             "-hero_trailer_autoplay", "NO", "-debug.streamAutoPlayModeOverride", "MANUAL",
             "-debug.sourceListOpensWith", "FULL",
-        ]
+        ] + Self.layoutArgs
         addTeardownBlock { [self] in
             XCUIApplication().terminate()
             let cleanup = launch(common + ["-debug.addonManifestRemoveMatching", Self.stubPrefix])
@@ -639,7 +657,7 @@ final class StreamPickerUITests: XCTestCase {
             "-detail_trailer_autoplay", "NO", "-debug.trailerForceNoTrailer", "YES",
             "-hero_trailer_autoplay", "NO", "-debug.streamAutoPlayModeOverride", "MANUAL",
             "-debug.sourceListOpensWith", "BEST",
-        ]
+        ] + Self.layoutArgs
         addTeardownBlock { [self] in
             XCUIApplication().terminate()
             let cleanup = launch(common + ["-debug.addonManifestRemoveMatching", Self.stubPrefix])
@@ -836,6 +854,132 @@ final class StreamPickerUITests: XCTestCase {
         }
     }
 
+    // MARK: - Full Width with the add-on's own text (GitHub #25)
+
+    /// `-debug.sourceLayout FULL -debug.rowText ADDON`: no info panel, the header strip carries the
+    /// title and the progress line, every row reads the add-on's own name first (no Nuvio headline:
+    /// the stub names are "ZZ A\n1080p", so a Nuvio row would lead with "1080p"), and Right from a
+    /// row still steps the chips with focus kept on the list. Runs whatever `PICKER_LAYOUT` says.
+    func testFullWidthAddonTextRows() throws {
+        addTeardownBlock { [self] in
+            let attachment = XCTAttachment(string: printed.joined(separator: "\n"))
+            attachment.name = "picker-leg-log"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+        let mediaStub = DiscoveryStubServer()
+        try mediaStub.start()
+        addTeardownBlock { mediaStub.stop() }
+        let media = mediaStub.origin
+        let addonStub = DiscoveryStubServer(routes: [
+            (prefix: "/picker-zz-a/manifest.json", body: manifest(id: "zz.picker.a", name: "ZZ Picker A")),
+            (prefix: "/picker-zz-a/stream/movie/", body: streams([
+                ("ZZ A\\n1080p", "Dune 2021 1080p WEB-DL", "a1.mp4"),
+                ("ZZ A\\n720p", "Dune 2021 720p WEB", "a2.mp4"),
+                ("ZZ A\\n480p", "Dune 2021 480p", "a3.mp4"),
+            ], prefix: "/picker-zz-a/", media: media)),
+            (prefix: "/picker-zz-b/manifest.json", body: manifest(id: "zz.picker.b", name: "ZZ Picker B")),
+            (prefix: "/picker-zz-b/stream/movie/", body: streams([
+                ("ZZ B\\n2160p", "Dune 2021 2160p", "b1.mp4"),
+                ("ZZ B\\n1080p", "Dune 2021 1080p", "b2.mp4"),
+            ], prefix: "/picker-zz-b/", media: media)),
+        ])
+        try addonStub.start()
+        addTeardownBlock { addonStub.stop() }
+
+        let common = [
+            "-home_layout", "classic", "-debug.rememberLastProfile", "NO",
+            "-detail_trailer_autoplay", "NO", "-debug.trailerForceNoTrailer", "YES",
+            "-hero_trailer_autoplay", "NO", "-debug.streamAutoPlayModeOverride", "MANUAL",
+            "-debug.sourceListOpensWith", "FULL",
+            "-debug.sourceLayout", "FULL", "-debug.rowText", "ADDON",
+        ]
+        addTeardownBlock { [self] in
+            XCUIApplication().terminate()
+            let cleanup = launch(common + ["-debug.addonManifestRemoveMatching", Self.stubPrefix])
+            pause(10)
+            cleanup.terminate()
+        }
+        let seed = launch(common + [
+            "-debug.addonManifestRemoveMatching", Self.stubPrefix,
+            "-debug.addonManifestUrls",
+            "\(addonStub.origin)/picker-zz-a/manifest.json,\(addonStub.origin)/picker-zz-b/manifest.json",
+        ])
+        pause(14)
+        seed.terminate()
+        let app = launch(common + [
+            "-debug.openDeepLink", "nuviotv://title?id=tt1160419&type=movie&name=Dune",
+            "-detail_layout", "cinematic", "-home_upcoming_row_enabled", "NO",
+        ])
+
+        var detailUp = false
+        for _ in 0..<90 {
+            if element(app, "detail_hero").exists || element(app, "detail_action_play").exists { detailUp = true; break }
+            pause(0.5)
+        }
+        if !detailUp {
+            throw XCTSkip("the deep link never produced a Detail page — network or fixture, not the picker")
+        }
+        var pressed = false
+        for _ in 0..<60 {
+            let label = focusedLabel(app)
+            if label.hasPrefix("Play") || label.hasPrefix("Resume") { remote.press(.select); pressed = true; break }
+            pause(0.25)
+        }
+        guard pressed else {
+            XCTFail("focus never reached Play/Resume on Detail; focused: \(focusDump(app))")
+            return
+        }
+
+        // 1. The layout: a header strip with the title and progress, no info panel.
+        XCTAssertTrue(element(app, "stream_picker_source_panel").waitForExistence(timeout: 20),
+                      "stream_picker_source_panel never appeared; focused: \(focusDump(app))")
+        let strip = element(app, "stream_picker_header_strip")
+        XCTAssertTrue(strip.waitForExistence(timeout: 10), "stream_picker_header_strip never appeared")
+        XCTAssertFalse(element(app, "stream_picker_info_panel").exists, "Full Width still draws the info panel")
+        let progress = strip.descendants(matching: .any)["stream_picker_progress"]
+        XCTAssertTrue(progress.waitForExistence(timeout: 5), "stream_picker_progress not under the header strip")
+        XCTAssertTrue(strip.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Dune")).firstMatch
+            .waitForExistence(timeout: 10), "no element labelled \"Dune\" in the header strip")
+        say("header strip up, progress: \(progress.label)")
+
+        // 2. Rows read the add-on's own text: the name first, never a Nuvio headline.
+        XCTAssertTrue(waitRows(app, 4, atLeast: true, timeout: 20),
+                      "expected >= 4 stream_picker_row, saw \(rows(app).count); chips: \(chipLabels(app))")
+        let rowLabels = rows(app).allElementsBoundByIndex.map(\.label)
+        say("row labels = \(rowLabels)")
+        let stubRows = rowLabels.filter { $0.hasPrefix("ZZ ") }
+        XCTAssertGreaterThanOrEqual(stubRows.count, 4, "add-on text rows must lead with the add-on's name; rows: \(rowLabels)")
+        for label in rowLabels {
+            for headline in ["4K", "1440p", "1080p", "720p", "SD"] {
+                XCTAssertFalse(label.hasPrefix(headline + ","), "a row leads with Nuvio's headline: \(label)")
+            }
+        }
+        XCTAssertTrue(stubRows.contains { $0.contains("Dune 2021") },
+                      "the description (the stub's legacy title) is read after the name; rows: \(rowLabels)")
+
+        // 3. Right from a row still steps the chips, focus kept on the list.
+        XCTAssertTrue(waitFocus(rows(app).element(boundBy: 0), timeout: 10),
+                      "the first stream_picker_row never took focus; focused: \(focusDump(app))")
+        let labels = chipLabels(app)
+        guard labels.count == 2 else {
+            throw XCTSkip("fixture has extra movie stream add-ons (\(labels)): the chip step assumes the two stubs alone")
+        }
+        remote.press(.right)
+        XCTAssertTrue(waitUntil(timeout: 5) { chip(app, "0").isSelected },
+                      "Right did not select chip_0; chips: \(chipLabels(app)); focused: \(focusDump(app))")
+        XCTAssertTrue(waitFocus(rows(app).element(boundBy: 0), timeout: 5),
+                      "the chip step moved focus off the list; focused: \(focusDump(app))")
+        remote.press(.left)
+        XCTAssertTrue(waitUntil(timeout: 5) { chip(app, "all").isSelected },
+                      "Left did not step back to All; chips: \(chipLabels(app))")
+        say("chip step from a full-width row: ok")
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "full-width-addon-text"
+        shot.lifetime = .keepAlways
+        add(shot)
+    }
+
     // MARK: - Chip row overflow
 
     /// P5 device pass: with seven stub add-ons the chip row overflows the panel. Left from the first
@@ -866,7 +1010,7 @@ final class StreamPickerUITests: XCTestCase {
             "-detail_trailer_autoplay", "NO", "-debug.trailerForceNoTrailer", "YES",
             "-hero_trailer_autoplay", "NO", "-debug.streamAutoPlayModeOverride", "MANUAL",
             "-debug.sourceListOpensWith", "FULL",
-        ]
+        ] + Self.layoutArgs
         addTeardownBlock { [self] in
             XCUIApplication().terminate()
             let cleanup = launch(common + ["-debug.addonManifestRemoveMatching", Self.stubPrefix])

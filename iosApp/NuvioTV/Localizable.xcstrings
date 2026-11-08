@@ -5543,6 +5543,40 @@
         }
       }
     },
+    "Add-on's Own": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Text des Add-ons"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Texto del complemento"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Texte de l’addon"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Testo dell’add-on"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chữ của addon"
+          }
+        }
+      }
+    },
     "Add-ons": {
       "localizations": {
         "de": {
@@ -21504,6 +21538,40 @@
         }
       }
     },
+    "Full Width": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Volle Breite"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ancho completo"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pleine largeur"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Larghezza piena"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Toàn chiều rộng"
+          }
+        }
+      }
+    },
     "Full sync guide: api.simkl.org/guides/sync": {
       "localizations": {
         "de": {
@@ -31137,6 +31205,40 @@
         }
       }
     },
+    "Nuvio shows each source as Nuvio reads it: resolution, HDR, video and audio details, languages and cached state. Add-on's Own shows the name and description the add-on wrote, such as an AIOStreams formatter, without Nuvio's lines. Sorting, grouping and filters work the same either way. Default: Nuvio.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "„Nuvio“ zeigt jede Quelle so, wie Nuvio sie liest: Auflösung, HDR, Video- und Audiodetails, Sprachen und Cache-Status. „Text des Add-ons“ zeigt den Namen und die Beschreibung, die das Add-on geschrieben hat, etwa einen AIOStreams-Formatter, ohne die Zeilen von Nuvio. Sortieren, Gruppieren und Filter funktionieren in beiden Fällen gleich. Standard: Nuvio."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "«Nuvio» muestra cada fuente tal como la lee Nuvio: resolución, HDR, detalles de vídeo y audio, idiomas y estado de caché. «Texto del complemento» muestra el nombre y la descripción que escribió el complemento, como un formateador de AIOStreams, sin las líneas de Nuvio. La ordenación, la agrupación y los filtros funcionan igual en ambos casos. Por defecto: Nuvio."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "« Nuvio » affiche chaque source telle que Nuvio la lit : résolution, HDR, détails vidéo et audio, langues et état du cache. « Texte de l’addon » affiche le nom et la description écrits par l’addon, comme un formateur AIOStreams, sans les lignes de Nuvio. Le tri, le regroupement et les filtres fonctionnent de la même façon dans les deux cas. Par défaut : Nuvio."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "«Nuvio» mostra ogni fonte come la legge Nuvio: risoluzione, HDR, dettagli video e audio, lingue e stato della cache. «Testo dell’add-on» mostra il nome e la descrizione scritti dall’add-on, come un formattatore AIOStreams, senza le righe di Nuvio. Ordinamento, raggruppamento e filtri funzionano allo stesso modo in entrambi i casi. Predefinito: Nuvio."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "“Nuvio” hiển thị mỗi nguồn theo cách Nuvio đọc: độ phân giải, HDR, chi tiết video và âm thanh, ngôn ngữ và trạng thái bộ nhớ đệm. “Chữ của addon” hiển thị tên và mô tả do addon viết, chẳng hạn bộ định dạng AIOStreams, không kèm các dòng của Nuvio. Sắp xếp, nhóm và bộ lọc hoạt động như nhau trong cả hai trường hợp. Mặc định: Nuvio."
+          }
+        }
+      }
+    },
     "Nuvio-Style Hero": {
       "localizations": {
         "de": {
@@ -40375,6 +40477,40 @@
         }
       }
     },
+    "Row Text": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zeilentext"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Texto de las filas"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Texte des lignes"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Testo delle righe"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chữ trên hàng"
+          }
+        }
+      }
+    },
     "Row headings name their add-on; folders show their source count": {
       "localizations": {
         "de": {
@@ -47124,6 +47260,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Bộ lọc nguồn"
+          }
+        }
+      }
+    },
+    "Source Layout": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quellen-Layout"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diseño de fuentes"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disposition des sources"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Layout delle fonti"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bố cục nguồn"
           }
         }
       }
@@ -54541,6 +54711,74 @@
           "stringUnit": {
             "state": "translated",
             "value": "Bật hoặc tắt hàng này trên Trang chủ. Dùng các mũi tên để di chuyển lên xuống."
+          }
+        }
+      }
+    },
+    "Two-Pane": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zwei Bereiche"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dos paneles"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deux volets"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Due pannelli"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hai khung"
+          }
+        }
+      }
+    },
+    "Two-Pane shows the title, poster and search progress beside the source list. Full Width runs the list across the screen with a one-line header above it, and fits each source on fewer lines. Default: Two-Pane.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "„Zwei Bereiche“ zeigt Titel, Poster und Suchfortschritt neben der Quellenliste. „Volle Breite“ zieht die Liste über den ganzen Bildschirm, mit einer einzeiligen Kopfzeile darüber, und zeigt jede Quelle auf weniger Zeilen. Standard: Zwei Bereiche."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "«Dos paneles» muestra el título, el póster y el progreso de la búsqueda junto a la lista de fuentes. «Ancho completo» extiende la lista por toda la pantalla con un encabezado de una línea encima y muestra cada fuente en menos líneas. Por defecto: Dos paneles."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "« Deux volets » affiche le titre, l’affiche et la progression de la recherche à côté de la liste des sources. « Pleine largeur » étend la liste sur tout l’écran avec un en-tête d’une ligne au-dessus, et affiche chaque source sur moins de lignes. Par défaut : Deux volets."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "«Due pannelli» mostra il titolo, il poster e l’avanzamento della ricerca accanto all’elenco delle fonti. «Larghezza piena» estende l’elenco su tutto lo schermo con un’intestazione di una riga sopra e mostra ogni fonte su meno righe. Predefinito: Due pannelli."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "“Hai khung” hiển thị tiêu đề, áp phích và tiến trình tìm kiếm bên cạnh danh sách nguồn. “Toàn chiều rộng” trải danh sách khắp màn hình với một dòng tiêu đề phía trên, và hiển thị mỗi nguồn trên ít dòng hơn. Mặc định: Hai khung."
           }
         }
       }

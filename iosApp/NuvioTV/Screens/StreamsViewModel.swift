@@ -149,11 +149,23 @@ final class StreamsViewModel: ObservableObject {
     var badgesOnTop: Bool { badgeSettings?.badgePlacement == .top }
     /// Polish D5: how the list is sectioned; Quality until the settings watcher has emitted.
     var groupingMode: StreamGroupingMode { badgeSettings?.groupingMode ?? .quality }
+    /// GitHub #25: "Source Layout"; the launch knob wins, then the stored setting, Two-Pane until
+    /// the settings watcher has emitted.
+    var sourceLayout: StreamSourceLayout {
+        StreamSourceLayoutDebugOverride.layout() ?? badgeSettings?.sourceLayout ?? .twoPane
+    }
+    /// GitHub #25: "Row Text"; the launch knob wins, then the stored setting, Nuvio by default.
+    var rowText: StreamRowText {
+        StreamRowTextDebugOverride.mode() ?? badgeSettings?.rowText ?? .nuvio
+    }
+    /// The picker draws the full-width layout (no info pane).
+    var isFullWidth: Bool { sourceLayout == .fullWidth }
 
     /// What shapes a prebuilt row (W3-16 F4): the badge settings plus the Instant suffix.
     private var rowDisplay: StreamRowDisplay {
         StreamRowDisplay(showFileSize: showFileSizeBadges, badgesOnTop: badgesOnTop,
-                         showAddonLogo: showAddonLogo, instantSuffix: instantSuffixEnabled)
+                         showAddonLogo: showAddonLogo, instantSuffix: instantSuffixEnabled,
+                         fullWidth: isFullWidth, addonText: rowText == .addon)
     }
 
     /// The display settings the current `groups` were built with.

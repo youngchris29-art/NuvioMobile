@@ -57,6 +57,10 @@ final class BadgeSettingsViewModel: ObservableObject {
     var groupingMode: StreamGroupingMode { state?.groupingMode ?? .quality }
     /// Direction C D9: the default before the repository has emitted.
     var listOpensWith: StreamListOpensWith { state?.listOpensWith ?? .bestPick }
+    /// GitHub #25: "Source Layout", Two-Pane before the repository has emitted.
+    var sourceLayout: StreamSourceLayout { state?.sourceLayout ?? .twoPane }
+    /// GitHub #25: "Row Text", Nuvio before the repository has emitted.
+    var rowText: StreamRowText { state?.rowText ?? .nuvio }
 
     // MARK: - Actions (thin passthroughs to the shared repository)
 
@@ -120,6 +124,14 @@ final class BadgeSettingsViewModel: ObservableObject {
 
     func setListOpensWith(_ mode: StreamListOpensWith) {
         StreamBadgeSettingsRepository.shared.setListOpensWith(mode: mode)
+    }
+
+    func setSourceLayout(_ layout: StreamSourceLayout) {
+        StreamBadgeSettingsRepository.shared.setSourceLayout(layout: layout)
+    }
+
+    func setRowText(_ mode: StreamRowText) {
+        StreamBadgeSettingsRepository.shared.setRowText(mode: mode)
     }
 
     /// Short display label for an imported pack (URL tail without query noise).

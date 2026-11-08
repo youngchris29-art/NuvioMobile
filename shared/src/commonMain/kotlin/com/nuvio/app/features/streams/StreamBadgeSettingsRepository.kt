@@ -28,6 +28,8 @@ data class StreamBadgeSettingsUiState(
     val backgroundMode: StreamBackgroundMode = StreamBackgroundDefaults.platformDefault,
     val groupingMode: StreamGroupingMode = StreamGroupingMode.QUALITY,
     val listOpensWith: StreamListOpensWith = StreamListOpensWith.BEST_PICK,
+    val sourceLayout: StreamSourceLayout = StreamSourceLayout.TWO_PANE,
+    val rowText: StreamRowText = StreamRowText.NUVIO,
 )
 
 enum class StreamBackgroundMode {
@@ -45,6 +47,21 @@ enum class StreamGroupingMode {
 enum class StreamListOpensWith {
     BEST_PICK,
     FULL_LIST,
+}
+
+/** Stream picker "Source Layout" (GitHub #25): info pane beside the list, or the list alone. Profile-local: never synced. */
+enum class StreamSourceLayout {
+    TWO_PANE,
+    FULL_WIDTH,
+}
+
+/**
+ * Stream picker "Row Text" (GitHub #25): rows built from Nuvio's parsed facts, or the add-on's own
+ * `name` and `description`. Display only: parsing still drives tiers, Best Pick and filters. Profile-local.
+ */
+enum class StreamRowText {
+    NUVIO,
+    ADDON,
 }
 
 enum class StreamBadgePlacement {
@@ -72,6 +89,8 @@ object StreamBadgeSettingsRepository {
     private var backgroundMode = StreamBackgroundDefaults.platformDefault
     private var groupingMode = StreamGroupingMode.QUALITY
     private var listOpensWith = StreamListOpensWith.BEST_PICK
+    private var sourceLayout = StreamSourceLayout.TWO_PANE
+    private var rowText = StreamRowText.NUVIO
 
     fun ensureLoaded() {
         if (hasLoaded) return
@@ -93,6 +112,8 @@ object StreamBadgeSettingsRepository {
         backgroundMode = StreamBackgroundDefaults.platformDefault
         groupingMode = StreamGroupingMode.QUALITY
         listOpensWith = StreamListOpensWith.BEST_PICK
+        sourceLayout = StreamSourceLayout.TWO_PANE
+        rowText = StreamRowText.NUVIO
         _uiState.value = StreamBadgeSettingsUiState()
     }
 
@@ -230,6 +251,22 @@ object StreamBadgeSettingsRepository {
         StreamBadgeSettingsStorage.saveStreamListOpensWith(mode.name.lowercase())
     }
 
+    fun setSourceLayout(layout: StreamSourceLayout) {
+        ensureLoaded()
+        if (sourceLayout == layout) return
+        sourceLayout = layout
+        publish()
+        StreamBadgeSettingsStorage.saveStreamSourceLayout(layout.name.lowercase())
+    }
+
+    fun setRowText(mode: StreamRowText) {
+        ensureLoaded()
+        if (rowText == mode) return
+        rowText = mode
+        publish()
+        StreamBadgeSettingsStorage.saveStreamRowText(mode.name.lowercase())
+    }
+
     private fun loadFromDisk() {
         hasLoaded = true
         val storedRules = parseStreamBadgeRules(StreamBadgeSettingsStorage.loadStreamBadgeRules())
@@ -252,6 +289,12 @@ object StreamBadgeSettingsRepository {
         listOpensWith = StreamBadgeSettingsStorage.loadStreamListOpensWith()
             ?.let { stored -> StreamListOpensWith.entries.firstOrNull { it.name.equals(stored, ignoreCase = true) } }
             ?: StreamListOpensWith.BEST_PICK
+        sourceLayout = StreamBadgeSettingsStorage.loadStreamSourceLayout()
+            ?.let { stored -> StreamSourceLayout.entries.firstOrNull { it.name.equals(stored, ignoreCase = true) } }
+            ?: StreamSourceLayout.TWO_PANE
+        rowText = StreamBadgeSettingsStorage.loadStreamRowText()
+            ?.let { stored -> StreamRowText.entries.firstOrNull { it.name.equals(stored, ignoreCase = true) } }
+            ?: StreamRowText.NUVIO
         badgePlacement = StreamBadgeSettingsStorage.loadStreamBadgePlacement()
             ?.let { storedPlacement ->
                 StreamBadgePlacement.entries.firstOrNull { placement ->
@@ -277,6 +320,8 @@ object StreamBadgeSettingsRepository {
             backgroundMode = backgroundMode,
             groupingMode = groupingMode,
             listOpensWith = listOpensWith,
+            sourceLayout = sourceLayout,
+            rowText = rowText,
         )
     }
 

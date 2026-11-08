@@ -174,6 +174,8 @@ enum SettingsDescriptionID: String, CaseIterable {
     case sourcesBackground = "sources.background"
     case sourcesGrouping = "sources.grouping"
     case sourcesOpensWith = "sources.opensWith"
+    case sourcesLayout = "sources.layout"
+    case sourcesRowText = "sources.rowText"
     case sourcesTmdbEnrichment = "sources.tmdbEnrichment"
     case sourcesTmdbKey = "sources.tmdbKey"
     case sourcesTmdbReleaseDates = "sources.tmdbReleaseDates"
@@ -398,6 +400,8 @@ enum SettingsDescriptions {
         case .sourcesBackground: return LocalizedStringResource("Cinematic puts the title's artwork behind the source list, dimmed at the edges so both panes read. Normal keeps the plain app background. Default: Cinematic.")
         case .sourcesGrouping: return LocalizedStringResource("Quality lists sources under 4K, 1440p, 1080p, 720p, SD and Other headings, keeping each add-on's order inside them. Add-on lists each add-on's sources under its own name. Default: Quality.")
         case .sourcesOpensWith: return LocalizedStringResource("Best Pick opens the source list on the best source for this title, by the same order as Auto-Play Best Source, with quick picks for the best 1080p and the best direct link and each group folded to its first two sources. Full List opens every source under its heading. Default: Best Pick.")
+        case .sourcesLayout: return LocalizedStringResource("Two-Pane shows the title, poster and search progress beside the source list. Full Width runs the list across the screen with a one-line header above it, and fits each source on fewer lines. Default: Two-Pane.")
+        case .sourcesRowText: return LocalizedStringResource("Nuvio shows each source as Nuvio reads it: resolution, HDR, video and audio details, languages and cached state. Add-on's Own shows the name and description the add-on wrote, such as an AIOStreams formatter, without Nuvio's lines. Sorting, grouping and filters work the same either way. Default: Nuvio.")
         case .sourcesTmdbEnrichment: return LocalizedStringResource("Adds cast profiles, studios, collections and better artwork from TMDB to titles you open. It uses a key built into the app. Off by default.")
         case .sourcesTmdbKey: return LocalizedStringResource("Lets you use your own TMDB API key instead of the built-in one. Leave it empty to keep the built-in key. Removing your key goes back to the built-in one.")
         case .sourcesTmdbReleaseDates: return LocalizedStringResource("Uses TMDB's air dates instead of the dates your add-ons report. Off by default.")

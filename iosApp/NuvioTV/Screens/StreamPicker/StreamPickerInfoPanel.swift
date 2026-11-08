@@ -24,10 +24,13 @@ struct StreamPickerInfoPanel: View {
     /// `heroLogoMaxWidth` (520 pt), which the pane's 40 % share (768 pt at 1080p) holds with room.
     nonisolated static let logoSlotHeight: CGFloat = 180
     nonisolated static let logoDecodeWidth: CGFloat = 600
-    nonisolated static let posterWidth: CGFloat = 260
+    /// GitHub #25 (Christian on the mockup, 2026-11-08): 360 × 540, up from 260 × 390.
+    nonisolated static let posterWidth: CGFloat = 360
     nonisolated static var posterHeight: CGFloat { posterWidth * 1.5 }
     /// Below this pane height the poster is hidden (the loading cover and alerts are unaffected).
-    nonisolated static let posterMinimumHeight: CGFloat = 700
+    /// Logo slot 180 + facts (two lines) + poster 540 + progress line + the gaps: about 850, raised
+    /// from 700 with the larger poster so the progress line never falls off the pane.
+    nonisolated static let posterMinimumHeight: CGFloat = 850
 
     var body: some View {
         GeometryReader { geo in
@@ -42,12 +45,8 @@ struct StreamPickerInfoPanel: View {
                 )
                 .frame(maxWidth: Self.logoDecodeWidth, alignment: .leading)
 
-                if let facts = Self.factsLine(season: season, episode: episode, episodes: episodes, meta: meta) {
-                    Text(facts)
-                        .font(Theme.Font.body)
-                        .foregroundStyle(Theme.Palette.textSecondary)
-                        .lineLimit(2)
-                }
+                StreamPickerFactsText(season: season, episode: episode, episodes: episodes, meta: meta,
+                                      lineLimit: 2)
 
                 if geo.size.height >= Self.posterMinimumHeight, let poster, !poster.isEmpty {
                     CachedAsyncImage(
@@ -60,15 +59,7 @@ struct StreamPickerInfoPanel: View {
                     .accessibilityHidden(true)
                 }
 
-                HStack(spacing: Theme.Spacing.sm) {
-                    if progress.isLoading || !progress.hasOutcome {
-                        ProgressView()
-                    }
-                    Text(Self.progressText(progress))
-                        .font(Theme.Font.body)
-                        .foregroundStyle(Theme.Palette.textSecondary)
-                }
-                .accessibilityIdentifier("stream_picker_progress")
+                StreamPickerProgressLine(progress: progress)
 
                 Spacer(minLength: 0)
             }
@@ -126,5 +117,86 @@ struct StreamPickerInfoPanel: View {
             ? String(localized: "1 add-on")
             : String(localized: "\(progress.addonsWithSources) add-ons")
         return String(localized: "\(sources) from \(addons)")
+    }
+}
+
+/// The facts line ("S1 · E3 · Double Cross · 45 min" / "Drama · Sci-Fi · 2024"), shared by the
+/// two-pane info panel and the full-width header strip (GitHub #25) so the two never drift apart.
+/// Draws nothing when nothing is known.
+struct StreamPickerFactsText: View {
+    let season: Int?
+    let episode: Int?
+    let episodes: [MetaVideo]
+    let meta: PlaybackMeta?
+    let lineLimit: Int
+
+    var body: some View {
+        if let facts = StreamPickerInfoPanel.factsLine(season: season, episode: episode, episodes: episodes, meta: meta) {
+            Text(facts)
+                .font(Theme.Font.body)
+                .foregroundStyle(Theme.Palette.textSecondary)
+                .lineLimit(lineLimit)
+        }
+    }
+}
+
+/// The fan-out progress line ("Finding streams… 3 of 4" / "155 sources from 4 add-ons"), with the
+/// spinner while it counts. Shared by both layouts (GitHub #25); the UI legs find it by its
+/// identifier in either one.
+struct StreamPickerProgressLine: View {
+    let progress: StreamFanOutProgress
+
+    var body: some View {
+        HStack(spacing: Theme.Spacing.sm) {
+            if progress.isLoading || !progress.hasOutcome {
+                ProgressView()
+            }
+            Text(StreamPickerInfoPanel.progressText(progress))
+                .font(Theme.Font.body)
+                .foregroundStyle(Theme.Palette.textSecondary)
+                .lineLimit(1)
+        }
+        .accessibilityIdentifier("stream_picker_progress")
+    }
+}
+
+/// GitHub #25 "Source Layout = Full Width": the one-line strip above the full-width list. The title
+/// logo in a 64 pt slot (else the title text), the facts line, and the fan-out progress at the
+/// trailing edge. No poster; the backdrop stays. Static, nothing focusable, like the info panel.
+struct StreamPickerHeaderStrip: View {
+    let title: String
+    let logoUrl: String?
+    let season: Int?
+    let episode: Int?
+    let episodes: [MetaVideo]
+    let meta: PlaybackMeta?
+    let progress: StreamFanOutProgress
+
+    nonisolated static let logoSlotHeight: CGFloat = 64
+    /// A wide wordmark at 64 pt is about 360 pt across; the slot caps it there.
+    nonisolated static let logoMaxWidth: CGFloat = 360
+
+    var body: some View {
+        HStack(alignment: .center, spacing: Theme.Spacing.lg) {
+            TitleLogoHeader(
+                title: title,
+                logoUrl: logoUrl,
+                textFont: Theme.Font.sectionTitle,
+                slotHeight: Self.logoSlotHeight,
+                decodeSize: .points(width: Self.logoMaxWidth, height: Self.logoSlotHeight),
+                upgrade: .logo
+            )
+            .frame(maxWidth: Self.logoMaxWidth, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
+            StreamPickerFactsText(season: season, episode: episode, episodes: episodes, meta: meta,
+                                  lineLimit: 1)
+                .layoutPriority(-1)
+            Spacer(minLength: Theme.Spacing.lg)
+            StreamPickerProgressLine(progress: progress)
+                .fixedSize()
+        }
+        .frame(maxWidth: .infinity, minHeight: Self.logoSlotHeight, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("stream_picker_header_strip")
     }
 }

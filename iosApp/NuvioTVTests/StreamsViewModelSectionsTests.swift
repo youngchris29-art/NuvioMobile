@@ -150,7 +150,7 @@ final class StreamsViewModelSectionsTests: XCTestCase {
             rules: base.rules, showFileSizeBadges: base.showFileSizeBadges, showAddonLogo: base.showAddonLogo,
             showInPlayer: base.showInPlayer, playerBadgeSource: base.playerBadgeSource,
             badgePlacement: base.badgePlacement, backgroundMode: base.backgroundMode, groupingMode: mode,
-            listOpensWith: .bestPick
+            listOpensWith: .bestPick, sourceLayout: .twoPane, rowText: .nuvio
         )
     }
 

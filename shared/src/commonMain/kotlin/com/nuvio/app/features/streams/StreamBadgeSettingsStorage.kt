@@ -23,6 +23,14 @@ expect object StreamBadgeSettingsStorage {
     fun saveStreamListOpensWith(mode: String)
     /** Test reset: the key is profile-local, so `replaceFromSyncPayload` does not clear it. */
     fun clearStreamListOpensWith()
+    fun loadStreamSourceLayout(): String?
+    fun saveStreamSourceLayout(layout: String)
+    /** Test reset: the key is profile-local, so `replaceFromSyncPayload` does not clear it. */
+    fun clearStreamSourceLayout()
+    fun loadStreamRowText(): String?
+    fun saveStreamRowText(mode: String)
+    /** Test reset: the key is profile-local, so `replaceFromSyncPayload` does not clear it. */
+    fun clearStreamRowText()
     fun loadStreamBadgePlacement(): String?
     fun saveStreamBadgePlacement(placement: String)
     fun loadLegacyDebridStreamBadgeRules(): String?

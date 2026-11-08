@@ -357,7 +357,7 @@ struct StreamPickerView: View {
     }
 
     /// Stream picker A, P1 (`docs/stream-picker-addons-plan-2026-10-25.md` §2): two panes over a
-    /// backdrop. Left, `StreamPickerInfoPanel` (static: logo, facts, poster, fan-out progress);
+    /// backdrop (Full Width, GitHub #25: a header strip over the list alone). Left, `StreamPickerInfoPanel` (static: logo, facts, poster, fan-out progress);
     /// right, `StreamPickerSourcePanel` (one material panel holding the header, the scrolling list
     /// and a footer). The loading cover, the toast and the alerts sit above both, unchanged.
     var body: some View {
@@ -365,27 +365,54 @@ struct StreamPickerView: View {
             ZStack {
                 StreamPickerBackdrop(mode: model.backgroundMode,
                                      imageURL: backdropArt.primary, fallbackURL: backdropArt.fallback)
-                GeometryReader { geo in
-                    HStack(spacing: 0) {
-                        StreamPickerInfoPanel(
+                if model.isFullWidth {
+                    // GitHub #25 "Source Layout = Full Width": a one-line header strip above the
+                    // list, no info pane. The panel stays one focus section, so the focus map is
+                    // the two-pane one (the info pane was never focusable).
+                    VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                        StreamPickerHeaderStrip(
                             title: title,
                             logoUrl: logoUrl,
-                            poster: poster,
                             season: season,
                             episode: episode,
                             episodes: episodes.isEmpty ? fetchedEpisodes : episodes,
                             meta: meta,
                             progress: model.fanOut
                         )
-                        .frame(width: geo.size.width * Self.infoPaneFraction)
-                        StreamPickerSourcePanel(content: model.panelBody.mode) {
+                        .padding(.horizontal, Theme.Spacing.screen)
+                        .padding(.top, Theme.Spacing.screen)
+                        StreamPickerSourcePanel(content: model.panelBody.mode, fullWidth: true) {
                             sourceHeader
                         } panelBody: {
                             sourceList
                         } footer: {
                             EmptyView()
                         }
-                        .frame(width: geo.size.width * (1 - Self.infoPaneFraction))
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                } else {
+                    GeometryReader { geo in
+                        HStack(spacing: 0) {
+                            StreamPickerInfoPanel(
+                                title: title,
+                                logoUrl: logoUrl,
+                                poster: poster,
+                                season: season,
+                                episode: episode,
+                                episodes: episodes.isEmpty ? fetchedEpisodes : episodes,
+                                meta: meta,
+                                progress: model.fanOut
+                            )
+                            .frame(width: geo.size.width * Self.infoPaneFraction)
+                            StreamPickerSourcePanel(content: model.panelBody.mode) {
+                                sourceHeader
+                            } panelBody: {
+                                sourceList
+                            } footer: {
+                                EmptyView()
+                            }
+                            .frame(width: geo.size.width * (1 - Self.infoPaneFraction))
+                        }
                     }
                 }
             }
@@ -1022,10 +1049,16 @@ struct StreamPickerView: View {
                     .equatable()
                     .focused($focusedRow, equals: StreamBestPickModel.focusKey)
                     .id(StreamBestPickModel.focusKey)
+                    // GitHub #25: on Full Width the card stops at about 1100 pt, leading-aligned,
+                    // so it does not stretch into a thin bar across the screen.
+                    .frame(maxWidth: StreamPickerWideMetrics.cardMaxWidth(fullWidth: model.isFullWidth),
+                           alignment: .leading)
             case .alternatives(let alternatives):
                 StreamAlternativesRow(alternatives: alternatives, resolvingKey: resolvingKey, focus: $focusedRow,
                                       onSelect: { handleAlternative($0) })
                     .id("alternatives")
+                    .frame(maxWidth: StreamPickerWideMetrics.cardMaxWidth(fullWidth: model.isFullWidth),
+                           alignment: .leading)
             case .header(let section):
                 StreamSectionLabel(name: section.title, isLoading: section.isLoading, count: section.count)
             case .row(let row):

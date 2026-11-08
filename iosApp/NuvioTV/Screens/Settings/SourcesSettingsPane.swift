@@ -139,6 +139,24 @@ struct SourcesSettingsPane: View {
                     descriptionID: .sourcesOpensWith,
                     label: SourceSettingOptions.listOpensWithName(for:)
                 )
+                // GitHub #25: the info pane beside the list, or the list alone across the screen.
+                // Default Two-Pane, stored with the badge settings (per profile, not synced).
+                SettingsPickerRow(
+                    title: String(localized: "Source Layout"),
+                    selection: Binding(get: { badges.sourceLayout }, set: { badges.setSourceLayout($0) }),
+                    options: SourceSettingOptions.sourceLayouts,
+                    descriptionID: .sourcesLayout,
+                    label: SourceSettingOptions.sourceLayoutName(for:)
+                )
+                // GitHub #25: Nuvio's headline and fact lines, or the add-on's own name and
+                // description. Default Nuvio, per profile, not synced.
+                SettingsPickerRow(
+                    title: String(localized: "Row Text"),
+                    selection: Binding(get: { badges.rowText }, set: { badges.setRowText($0) }),
+                    options: SourceSettingOptions.rowTextModes,
+                    descriptionID: .sourcesRowText,
+                    label: SourceSettingOptions.rowTextName(for:)
+                )
             }
 
             SettingsSection(String(localized: "Metadata (TMDB)")) {
@@ -448,6 +466,26 @@ private enum SourceSettingOptions {
         switch mode {
         case .fullList: return String(localized: "Full List")
         default: return String(localized: "Best Pick")
+        }
+    }
+
+    /// GitHub #25: Two-Pane first (the default).
+    static let sourceLayouts: [StreamSourceLayout] = [.twoPane, .fullWidth]
+
+    static func sourceLayoutName(for layout: StreamSourceLayout) -> String {
+        switch layout {
+        case .fullWidth: return String(localized: "Full Width")
+        default: return String(localized: "Two-Pane")
+        }
+    }
+
+    /// GitHub #25: Nuvio first (the default).
+    static let rowTextModes: [StreamRowText] = [.nuvio, .addon]
+
+    static func rowTextName(for mode: StreamRowText) -> String {
+        switch mode {
+        case .addon: return String(localized: "Add-on's Own")
+        default: return String(localized: "Nuvio")
         }
     }
 

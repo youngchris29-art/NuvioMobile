@@ -190,7 +190,8 @@ final class PlayerBadgeMatchTests: XCTestCase {
         return StreamBadgeSettingsUiState(
             rules: StreamBadgeRules(imports: [pack]), showFileSizeBadges: true, showAddonLogo: false,
             showInPlayer: true, playerBadgeSource: "", badgePlacement: .bottom,
-            backgroundMode: .cinematic, groupingMode: .quality, listOpensWith: .bestPick)
+            backgroundMode: .cinematic, groupingMode: .quality, listOpensWith: .bestPick,
+            sourceLayout: .twoPane, rowText: .nuvio)
     }
 
     private func names(_ facts: PlayerBadgeFacts, _ settings: StreamBadgeSettingsUiState) -> [String] {
@@ -257,7 +258,8 @@ final class PlayerBadgeMatchTests: XCTestCase {
         return StreamBadgeSettingsUiState(
             rules: StreamBadgeRules(imports: [pack]), showFileSizeBadges: true, showAddonLogo: false,
             showInPlayer: showInPlayer, playerBadgeSource: playerSource, badgePlacement: .bottom,
-            backgroundMode: .cinematic, groupingMode: .quality, listOpensWith: .bestPick)
+            backgroundMode: .cinematic, groupingMode: .quality, listOpensWith: .bestPick,
+            sourceLayout: .twoPane, rowText: .nuvio)
     }
 
     private func model() -> PlayerTopPanelModel {

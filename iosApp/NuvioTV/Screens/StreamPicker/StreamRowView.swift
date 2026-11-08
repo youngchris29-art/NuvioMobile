@@ -32,21 +32,36 @@ struct StreamRowView: View, Equatable {
         #endif
         Button(action: onSelect) {
             VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                if model.hasBadgeRow && model.badgesOnTop {
-                    StreamRowBadges(badges: model.badges)
-                }
-                headlineLine
-                if model.hasVideoLine {
-                    StreamRowFactLine.video(model.videoFacts)
-                }
-                if model.hasAudioLine {
-                    StreamRowFactLine.audio(model.audioFacts, cached: model.cachedState)
-                }
-                if fileLineShown, let description = model.description {
-                    StreamRowFileLine(text: description)
-                }
-                if model.hasBadgeRow && !model.badgesOnTop {
-                    StreamRowBadges(badges: model.badges)
+                if model.addonText {
+                    // GitHub #25 "Row Text = Add-on's Own": the add-on's name and description, no
+                    // Nuvio headline or fact lines. The badge row sits inside the content.
+                    if model.wide { addonWideContent } else { addonStackedContent }
+                } else {
+                    if model.hasBadgeRow && model.badgesOnTop {
+                        StreamRowBadges(badges: model.badges)
+                    }
+                    headlineLine
+                    if model.wide {
+                        // GitHub #25 Full Width: the two fact lines fold into one, with the cached
+                        // part pinned to the trailing edge so it lines up down the screen.
+                        if model.hasWideFactLine {
+                            StreamRowFactLine.wide(video: model.videoFacts, audio: model.audioFacts,
+                                                   cached: model.cachedState)
+                        }
+                    } else {
+                        if model.hasVideoLine {
+                            StreamRowFactLine.video(model.videoFacts)
+                        }
+                        if model.hasAudioLine {
+                            StreamRowFactLine.audio(model.audioFacts, cached: model.cachedState)
+                        }
+                    }
+                    if fileLineShown, let description = model.description {
+                        StreamRowFileLine(text: description)
+                    }
+                    if model.hasBadgeRow && !model.badgesOnTop {
+                        StreamRowBadges(badges: model.badges)
+                    }
                 }
                 // Batch D U2: the add-on gave only a YouTube video id — the row plays after an
                 // on-device resolve (the spinner above), so say where the video comes from.
@@ -93,6 +108,95 @@ struct StreamRowView: View, Equatable {
             onExternal: onExternal,
             onBuiltIn: onBuiltIn
         ))
+    }
+
+    // MARK: - Add-on text (GitHub #25)
+
+    /// The name lines, or the title when the add-on sent no name.
+    private var addonNameText: String {
+        model.nameLines.isEmpty ? model.title : model.nameLines.joined(separator: "\n")
+    }
+
+    /// The description: `descriptionRestLines` lines at rest, the whole text once the row has
+    /// dwelled (the same `StreamRowDwell` that reveals the Nuvio row's file line).
+    @ViewBuilder
+    private var addonDescription: some View {
+        if let description = model.description {
+            Text(verbatim: description)
+                .font(Theme.Font.meta)
+                .rowTextColor(secondary: true)
+                .multilineTextAlignment(.leading)
+                .lineLimit(fileLineShown ? nil : StreamPickerWideMetrics.descriptionRestLines)
+                .fixedSize(horizontal: false, vertical: fileLineShown)
+        }
+    }
+
+    /// The badge row in its Badge Placement slot of the add-on text column.
+    @ViewBuilder
+    private func addonBadges(top: Bool) -> some View {
+        if model.hasBadgeRow && model.badgesOnTop == top {
+            StreamRowBadges(badges: model.badges)
+        }
+    }
+
+    /// The trailing column: spinner, size (unless the add-on's text has it), Nuvio's cached part.
+    private var addonTrailing: some View {
+        VStack(alignment: .trailing, spacing: Theme.Spacing.xs) {
+            HStack(spacing: Theme.Spacing.sm) {
+                if model.isResolving {
+                    ProgressView().scaleEffect(0.7)
+                }
+                if let bytes = model.drawnSizeBytes {
+                    Text(verbatim: StreamFileSizeChip.label(for: bytes))
+                        .font(Theme.Font.metaStrong)
+                        .rowTextColor()
+                        .lineLimit(1)
+                }
+            }
+            if let cached = model.drawnCachedState {
+                StreamRowFactLine.cached(cached)
+            }
+        }
+        .fixedSize()
+    }
+
+    /// Full Width: two columns like the classic Stremio list. The name in a fixed column (up to
+    /// three lines), the description filling the rest, the trailing column at the edge.
+    private var addonWideContent: some View {
+        HStack(alignment: .top, spacing: Theme.Spacing.lg) {
+            Text(verbatim: addonNameText)
+                .font(Theme.Font.metaStrong)
+                .rowTextColor()
+                .multilineTextAlignment(.leading)
+                .lineLimit(3)
+                .frame(width: StreamPickerWideMetrics.nameColumnWidth, alignment: .leading)
+            VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                addonBadges(top: true)
+                addonDescription
+                addonBadges(top: false)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            addonTrailing
+        }
+    }
+
+    /// Two-Pane: the same content stacked, the name lines first, the description under them.
+    private var addonStackedContent: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+            addonBadges(top: true)
+            HStack(alignment: .top, spacing: Theme.Spacing.sm) {
+                Text(verbatim: addonNameText)
+                    .font(Theme.Font.metaStrong)
+                    .rowTextColor()
+                    .multilineTextAlignment(.leading)
+                    .lineLimit(3)
+                    .layoutPriority(1)
+                Spacer(minLength: Theme.Spacing.sm)
+                addonTrailing
+            }
+            addonDescription
+            addonBadges(top: false)
+        }
     }
 
     /// Line 1: headline (or the title when the release names no resolution), HDR mark, spinner,
@@ -249,6 +353,41 @@ private enum StreamRowFactLine {
             .rowTextColor(secondary: true)
             .lineLimit(1)
             .truncationMode(.tail)
+    }
+
+    /// GitHub #25, the wide Nuvio row's second line: video facts (bold) then audio and languages as
+    /// one truncating run, and the cached part pinned to the trailing edge.
+    static func wide(video: [String], audio: [String], cached: StreamRowCachedState?) -> some View {
+        var line = joined(video, termFont: Theme.Font.metaStrong, separatorFont: Theme.Font.meta)
+        if !video.isEmpty && !audio.isEmpty {
+            var sep = AttributedString(separator)
+            sep.font = Theme.Font.meta
+            line.append(sep)
+        }
+        line.append(joined(audio, termFont: Theme.Font.meta, separatorFont: Theme.Font.meta))
+        return HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.sm) {
+            Text(line)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: Theme.Spacing.sm)
+            if let cached {
+                Self.cached(cached)
+            }
+        }
+        .font(Theme.Font.meta)
+        .rowTextColor(secondary: true)
+    }
+
+    /// The cached glyph and words alone ("RD Instant"), never truncated.
+    static func cached(_ state: StreamRowCachedState) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.xs) {
+            Text(Image(systemName: StreamRowFacts.cachedSymbol(state)))
+            Text(verbatim: StreamRowFacts.cachedText(state))
+                .lineLimit(1)
+        }
+        .font(Theme.Font.meta)
+        .rowTextColor(secondary: true)
+        .fixedSize()
     }
 
     /// Fact line 2: audio and languages, then the cached glyph and words (D3). An attributed string
