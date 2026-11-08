@@ -593,7 +593,9 @@ struct MainTabView: View {
         .onReceive(NotificationCenter.default.publisher(for: AddonsHubRequests.notification)) { _ in
             selectedTab = 3
         }
+        .onAppear { AddonsTabActivity.shared.isActive = selectedTab == AddonsHubSplitView.railTabIndex }
         .onChange(of: selectedTab) { _, tab in
+            AddonsTabActivity.shared.isActive = tab == AddonsHubSplitView.railTabIndex
             tabBarVisibility.setHomeTabSelected(tab == 0)
             // beta.18 verdict (BUG-66): `r=tab` now and `r=tab2` 0.6 s later in the Tab Bar
             // Geometry pane — what the bar tracks after a switch is the half of BUG-66 the cold

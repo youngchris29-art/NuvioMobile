@@ -13,6 +13,9 @@ struct ManageFromPhonePane: View {
     let focus: FocusState<String?>.Binding
 
     @StateObject private var remote = RemoteSetupViewModel()
+    /// Review r1: the server runs only while the Add-ons tab is selected (a mounted tab subtree
+    /// survives a tab switch, so `onDisappear` alone is not enough).
+    @ObservedObject private var tab = AddonsTabActivity.shared
 
     nonisolated static let primaryKey = "phone:primary"
     static let startDelay: Duration = .milliseconds(600)
@@ -58,9 +61,15 @@ struct ManageFromPhonePane: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("addons_phone_pane")
-        .task {
+        .task(id: tab.isActive) {
+            // Leaving the tab stops the server at once; coming back (or opening the section)
+            // starts it after the delay, unless the tab or the section is left meanwhile.
+            guard tab.isActive else {
+                remote.stop()
+                return
+            }
             try? await Task.sleep(for: Self.startDelay)
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, tab.isActive else { return }
             remote.start()
         }
         .onDisappear { remote.stop() }

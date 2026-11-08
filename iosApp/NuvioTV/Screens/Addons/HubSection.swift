@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 
 /// Add-ons hub v2 (A1): the sidebar sections of the two-column Add-ons page, in display order.
@@ -94,4 +95,13 @@ enum AddonsHubRequests {
         defer { pending = nil }
         return pending
     }
+}
+
+/// Add-ons hub v2 C2 (review r1): whether the Add-ons tab is the selected tab, set by the shell.
+/// Tab subtrees can stay mounted after a switch, so `onDisappear` alone does not end the phone
+/// section's server; the pane runs it only while this is true.
+@MainActor
+final class AddonsTabActivity: ObservableObject {
+    static let shared = AddonsTabActivity()
+    @Published var isActive = false
 }
