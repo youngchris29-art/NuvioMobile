@@ -380,7 +380,9 @@ final class AddonsSplitUITests: XCTestCase {
         // The cap (520) plus the stack's spacing above and below the list.
         XCTAssertLessThanOrEqual(longHeight, 620, "the long box passes its cap")
         // Review r5: the list must be at its cap, so the scrolling branch is the one under test.
-        XCTAssertGreaterThanOrEqual(longHeight, 520, "the long box is under its cap; the fixture is too small to test scrolling")
+        // Review (Opus r1): the box is the list plus the stack's spacing (24) above and below, so
+        // "at the cap" is listHeight + 48 (a few points of slack).
+        XCTAssertGreaterThanOrEqual(longHeight, 520 + 48 - 4, "the long box is under its cap; the fixture is too small to test scrolling")
         // Up walks the lines to the first one, which scrolls into the list's frame. Review r2:
         // the line is found by its index (a title shared by two rows is disambiguated in the text).
         let line = element(app, "phone_confirm_line_0").firstMatch
