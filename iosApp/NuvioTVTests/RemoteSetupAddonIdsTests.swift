@@ -240,6 +240,16 @@ final class RemoteSetupServerClaimTests: XCTestCase {
     }
 }
 
+/// C3 review r4: each new add-on's install result.
+final class RemoteSetupInstallResultTests: XCTestCase {
+    func testOutcomes() {
+        XCTAssertEqual(RemoteSetupViewModel.installOutcome(succeeded: true, wanted: false, landedEnabled: false), .installed)
+        XCTAssertEqual(RemoteSetupViewModel.installOutcome(succeeded: false, wanted: true, landedEnabled: nil), .failed)
+        XCTAssertEqual(RemoteSetupViewModel.installOutcome(succeeded: false, wanted: true, landedEnabled: true), .installed)
+        XCTAssertEqual(RemoteSetupViewModel.installOutcome(succeeded: false, wanted: false, landedEnabled: true), .conflict)
+    }
+}
+
 /// C1 review r15: an install that lost the duplicate race still counts.
 final class RemoteSetupInstallOutcomeTests: XCTestCase {
     func testAnInstallIsSatisfiedWhenItSucceededOrTheManifestIsPresent() {

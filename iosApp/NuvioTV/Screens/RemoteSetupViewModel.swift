@@ -413,6 +413,19 @@ final class RemoteSetupViewModel: ObservableObject {
         succeeded || installed.contains { AddonManifestURL.isSameManifest($0, url) }
     }
 
+    enum InstallOutcome: Equatable { case installed, failed, conflict }
+
+    /// Review r3/r4: one new add-on's result. Installed by this change (with its flag, set in the
+    /// same step): installed. Not installed and absent: failed (the phone gets it back to retry).
+    /// Lost the race to another change with the same flag: installed. With the other flag: a
+    /// conflict. Its flag is left alone and the entry is not sent back (it is installed, so a
+    /// resend would only be refused as a duplicate); the phone is told to check its switch.
+    nonisolated static func installOutcome(succeeded: Bool, wanted: Bool, landedEnabled: Bool?) -> InstallOutcome {
+        if succeeded { return .installed }
+        guard let landedEnabled else { return .failed }
+        return landedEnabled == wanted ? .installed : .conflict
+    }
+
     /// Installs the proposal's new add-ons (async manifest fetches) and settles the change only
     /// when every one has finished, so the page, which keeps polling while the change is
     /// `applying`, reloads a list that already holds them. A read-only list was refused before
@@ -425,31 +438,27 @@ final class RemoteSetupViewModel: ObservableObject {
         }
         var remaining = urls.count
         var failed: [Int] = []
+        var conflicts = 0
         for (index, url) in urls.enumerated() {
-            AddonRepository.shared.addAddon(rawUrl: url) { [weak self] result, _ in
+            // Review r4: the requested flag is set inside the install's own state update.
+            let wanted = entries[index].enabled ?? true
+            AddonRepository.shared.addAddon(rawUrl: url, enabled: wanted) { [weak self] result, _ in
                 let succeeded = result is AddAddonResultSuccess
                 Task { @MainActor in
-                    let installed = (AddonRepository.shared.uiState.value_ as? AddonsUiState)?.addons.map(\.manifestUrl) ?? []
                     let current = (AddonRepository.shared.uiState.value_ as? AddonsUiState)?.addons ?? []
                     let landed = current.first(where: { AddonManifestURL.isSameManifest($0.manifestUrl, url) })
-                    if !Self.installSatisfied(succeeded: succeeded, url: url, installed: installed) {
-                        failed.append(index)
-                    } else if succeeded, entries[index].enabled == false, let landed {
-                        // C3 review r1: a new add-on sent turned off is installed turned off, as
-                        // the dialog said.
-                        AddonRepository.shared.setAddonEnabled(manifestUrl: landed.manifestUrl, enabled: false)
-                    } else if !succeeded, let wanted = entries[index].enabled, let landed, landed.enabled != wanted {
-                        // Review r3: another change installed it first with the other setting.
-                        // Its flag is not overridden; this entry is reported back to the phone.
-                        failed.append(index)
+                    switch Self.installOutcome(succeeded: succeeded, wanted: wanted, landedEnabled: landed?.enabled) {
+                    case .installed: break
+                    case .failed: failed.append(index)
+                    case .conflict: conflicts += 1
                     }
                     remaining -= 1
                     guard remaining == 0 else { return }
                     // Review r14: a failed install is reported, not hidden behind "confirmed".
-                    if failed.isEmpty {
+                    if failed.isEmpty && conflicts == 0 {
                         self?.server.finishApplying(id: changeId, status: status)
                     } else {
-                        self?.server.finishApplying(id: changeId, status: .partial, failedNewIndices: failed.sorted())
+                        self?.server.finishApplying(id: changeId, status: .partial, failedNewIndices: failed.sorted(), conflicts: conflicts)
                     }
                 }
             }

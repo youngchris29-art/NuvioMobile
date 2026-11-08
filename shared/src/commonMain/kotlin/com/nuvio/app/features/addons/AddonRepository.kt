@@ -316,7 +316,13 @@ object AddonRepository {
         }
     }
 
-    suspend fun addAddon(rawUrl: String): AddAddonResult {
+    /**
+     * [enabled] (hub v2 C3 review r4): the new add-on's initial flag, set in the same state update
+     * that appends it, so it applies only to the instance this call inserted.
+     */
+    suspend fun addAddon(rawUrl: String): AddAddonResult = addAddon(rawUrl, enabled = true)
+
+    suspend fun addAddon(rawUrl: String, enabled: Boolean): AddAddonResult {
         if (isUsingPrimaryAddonsFromSecondaryProfile()) {
             return AddAddonResult.Error(resourceString("This profile uses primary addons.", StringKey.profile_primary_addons_required))
         }
@@ -354,6 +360,7 @@ object AddonRepository {
                 addons = current.addons + ManagedAddon(
                     manifestUrl = manifestUrl,
                     manifest = manifest,
+                    enabled = enabled,
                     isRefreshing = false,
                     errorMessage = null,
                 ),
