@@ -79,7 +79,7 @@ final class RemoteSetupViewModel: ObservableObject {
                 // C1: resolve the page's ids back to manifest URLs now; an unknown or stale id
                 // (or a bad new URL) refuses the whole proposal, since dropping the entry would
                 // remove that add-on.
-                switch self.resolveAddons(change.proposal.addons) {
+                switch self.resolveAddons(change.proposal) {
                 case .failure(let refusal):
                     self.server.reject(id: change.id, status: Self.status(for: refusal))
                 case .success(let resolved):
@@ -188,12 +188,14 @@ final class RemoteSetupViewModel: ObservableObject {
         guard server.isPending(id: change.id) else { return }
         // The add-on list can change under the alert (sync, another screen): resolve the ids
         // again against the list as it is now, and refuse the whole proposal if one went stale.
-        switch resolveAddons(change.proposal.addons) {
+        switch resolveAddons(change.proposal) {
         case .failure(let refusal):
             server.reject(id: change.id, status: Self.status(for: refusal))
         case .success(let resolved):
+            // Claimed atomically with supersession: a newer proposal that lands after the check
+            // above wins, and this one is not applied.
+            guard server.claimForConfirm(id: change.id) else { return }
             apply(change.proposal, addons: resolved)
-            server.confirm(id: change.id)
         }
     }
 
@@ -263,11 +265,12 @@ final class RemoteSetupViewModel: ObservableObject {
     /// The proposal's add-on list resolved against the current list; nil inside `.success` when
     /// the proposal leaves add-ons alone.
     private func resolveAddons(
-        _ entries: [RemoteSetupServer.Proposal.AddonEntry]?
+        _ proposal: RemoteSetupServer.Proposal
     ) -> Result<[RemoteSetupAddonIds.Resolved]?, RemoteSetupAddonIds.Refusal> {
-        guard let entries else { return .success(nil) }
+        guard let entries = proposal.addons else { return .success(nil) }
         return addonIds.resolve(
             entries.map { (id: $0.id, url: $0.url, enabled: $0.enabled) },
+            baseline: proposal.addonBaseline,
             currentUrls: addons.map(\.manifestUrl),
             sameManifest: AddonManifestURL.isSameManifest
         ).map { Optional($0) }

@@ -39,8 +39,8 @@ nonisolated struct RemoteSetupAddonIds {
 
     /// Why a proposal's add-on list cannot be applied as sent.
     enum Refusal: Error, Equatable {
-        /// An id this session never minted, an id whose add-on left the list since, or an entry
-        /// with neither id nor URL: the page's list is out of date.
+        /// The TV's list is no longer the one the page loaded (an add-on arrived, left or moved),
+        /// an id this session never minted, or an entry with neither id nor URL.
         case stale
         /// A new add-on address is not a valid http(s) manifest URL.
         case invalidUrl
@@ -50,15 +50,20 @@ nonisolated struct RemoteSetupAddonIds {
     }
 
     /// The page's add-on list resolved to manifest URLs, in the proposed order, or why it must be
-    /// refused as a whole. A new URL is normalised the way the repository normalises it
+    /// refused as a whole. `baseline` is the id list the page loaded; it must equal the TV's list
+    /// now, in order. A new URL is normalised the way the repository normalises it
     /// (`stremio://` and bare hosts are accepted) and must come out as http(s) with a host. Later
     /// duplicates of an existing add-on are dropped; two new rows for one manifest are refused.
     func resolve(
         _ entries: [(id: String?, url: String?, enabled: Bool?)],
+        baseline: [String]?,
         currentUrls: [String],
         normalize: (String) -> String? = { AddonManifestURL.normalizeOrNil($0) },
         sameManifest: (String, String) -> Bool = { $0 == $1 }
     ) -> Result<[Resolved], Refusal> {
+        // The list the page edited must still be the TV's list: an add-on that arrived since
+        // (sync, another screen) is absent from the proposal and would be removed by omission.
+        guard let baseline, baseline == currentUrls.map({ idsByUrl[$0] ?? "" }) else { return .failure(.stale) }
         var resolved: [Resolved] = []
         var seen = Set<String>()
         for entry in entries {

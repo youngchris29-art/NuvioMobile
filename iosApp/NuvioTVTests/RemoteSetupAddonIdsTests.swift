@@ -37,7 +37,7 @@ final class RemoteSetupAddonIdsTests: XCTestCase {
     func testResolveMapsIdsBackAndKeepsOrderAndFlags() {
         var ids = RemoteSetupAddonIds(prefix: "s")
         let k = ids.id(for: keyed), p = ids.id(for: plain)
-        XCTAssertEqual(ok(ids.resolve([(p, nil, true), (k, nil, false)], currentUrls: [keyed, plain])), [
+        XCTAssertEqual(ok(ids.resolve([(p, nil, true), (k, nil, false)], baseline: [k, p], currentUrls: [keyed, plain])), [
             .init(url: plain, enabled: true, isNew: false),
             .init(url: keyed, enabled: false, isNew: false),
         ])
@@ -50,7 +50,7 @@ final class RemoteSetupAddonIdsTests: XCTestCase {
             [(k, nil, true),
              (nil, "  https://new.example.com/manifest.json ", true),
              (nil, "stremio://deep.example.com/manifest.json", false),
-             (nil, "bare.example.com", nil)],
+             (nil, "bare.example.com", nil)], baseline: [k],
             currentUrls: [keyed],
             sameManifest: AddonManifestURL.isSameManifest
         ))
@@ -68,12 +68,12 @@ final class RemoteSetupAddonIdsTests: XCTestCase {
         var ids = RemoteSetupAddonIds(prefix: "s")
         let p = ids.id(for: plain)
         XCTAssertEqual(refusal(ids.resolve(
-            [(p, nil, true), (nil, "https://v3-cinemeta.strem.io/", false)],
+            [(p, nil, true), (nil, "https://v3-cinemeta.strem.io/", false)], baseline: [p],
             currentUrls: [plain],
             sameManifest: AddonManifestURL.isSameManifest
         )), .alreadyInstalled)
         XCTAssertEqual(refusal(ids.resolve(
-            [(nil, "https://a.example.com", true), (nil, "https://a.example.com/manifest.json", false)],
+            [(nil, "https://a.example.com", true), (nil, "https://a.example.com/manifest.json", false)], baseline: [],
             currentUrls: [],
             sameManifest: AddonManifestURL.isSameManifest
         )), .invalidUrl, "two new rows for one manifest")
@@ -83,21 +83,55 @@ final class RemoteSetupAddonIdsTests: XCTestCase {
     func testUnknownOrStaleIdsRefuseTheProposal() {
         var ids = RemoteSetupAddonIds(prefix: "s")
         let k = ids.id(for: keyed)
-        XCTAssertEqual(refusal(ids.resolve([(k, nil, true), ("s-99", nil, true)], currentUrls: [keyed])), .stale)
-        XCTAssertEqual(refusal(ids.resolve([(k, nil, true)], currentUrls: [plain])), .stale, "the add-on left the list since")
-        XCTAssertEqual(refusal(ids.resolve([(nil, nil, true)], currentUrls: [])), .stale)
+        XCTAssertEqual(refusal(ids.resolve([(k, nil, true), ("s-99", nil, true)], baseline: [k], currentUrls: [keyed])), .stale)
+        XCTAssertEqual(refusal(ids.resolve([(k, nil, true)], baseline: [k], currentUrls: [plain])), .stale, "the add-on left the list since")
+        XCTAssertEqual(refusal(ids.resolve([(nil, nil, true)], baseline: [], currentUrls: [])), .stale)
+    }
+
+    /// An add-on that reached the TV after the page loaded is absent from the proposal and would
+    /// be removed by omission, so a list that moved under the page refuses the proposal.
+    func testAListThatChangedSinceThePageLoadedRefusesTheProposal() {
+        var ids = RemoteSetupAddonIds(prefix: "s")
+        let k = ids.id(for: keyed)
+        XCTAssertEqual(refusal(ids.resolve([(k, nil, false)], baseline: [k], currentUrls: [keyed, plain])), .stale,
+                       "an add-on arrived during the alert")
+        let p = ids.id(for: plain)
+        XCTAssertEqual(refusal(ids.resolve([(k, nil, false)], baseline: [k, p], currentUrls: [plain, keyed])), .stale,
+                       "the list was reordered")
+        XCTAssertEqual(refusal(ids.resolve([(k, nil, false)], baseline: nil, currentUrls: [keyed])), .stale,
+                       "no baseline")
+        XCTAssertNotNil(ok(ids.resolve([(k, nil, false)], baseline: [k, p], currentUrls: [keyed, plain])),
+                        "removing an add-on the page saw is fine")
     }
 
     func testBadNewAddressesRefuseTheProposal() {
         let ids = RemoteSetupAddonIds(prefix: "s")
-        XCTAssertEqual(refusal(ids.resolve([(nil, "ftp://x.example.com/manifest.json", true)], currentUrls: [])), .invalidUrl)
-        XCTAssertEqual(refusal(ids.resolve([(nil, "not a url", true)], currentUrls: [])), .invalidUrl)
+        XCTAssertEqual(refusal(ids.resolve([(nil, "ftp://x.example.com/manifest.json", true)], baseline: [], currentUrls: [])), .invalidUrl)
+        XCTAssertEqual(refusal(ids.resolve([(nil, "not a url", true)], baseline: [], currentUrls: [])), .invalidUrl)
     }
 
     func testDuplicateIdsAreDropped() {
         var ids = RemoteSetupAddonIds(prefix: "s")
         let k = ids.id(for: keyed)
-        XCTAssertEqual(ok(ids.resolve([(k, nil, true), (k, nil, false)], currentUrls: [keyed])),
+        XCTAssertEqual(ok(ids.resolve([(k, nil, true), (k, nil, false)], baseline: [k], currentUrls: [keyed])),
                        [.init(url: keyed, enabled: true, isNew: false)])
+    }
+}
+
+/// C1 review r2: confirming claims the change atomically with supersession.
+final class RemoteSetupServerClaimTests: XCTestCase {
+    func testASupersededChangeCannotBeClaimedAndSettledChangesStaySettled() throws {
+        let server = RemoteSetupServer()
+        server.minProposalInterval = 0
+        let body = Data(#"{"rowOrder":["a"]}"#.utf8)
+        let first = try XCTUnwrap(server.submitForTesting(body))
+        let second = try XCTUnwrap(server.submitForTesting(body))
+        XCTAssertFalse(server.isPending(id: first), "the newer proposal superseded it")
+        XCTAssertFalse(server.claimForConfirm(id: first))
+        XCTAssertTrue(server.claimForConfirm(id: second))
+        XCTAssertFalse(server.claimForConfirm(id: second), "claimed once")
+        server.reject(id: second, status: .stale)
+        XCTAssertFalse(server.isPending(id: second))
+        XCTAssertFalse(server.claimForConfirm(id: "unknown"))
     }
 }

@@ -34,6 +34,10 @@ final class RemoteSetupServer {
 
         /// Full desired addon list, in order. Missing = leave addons untouched.
         let addons: [AddonEntry]?
+        /// C1: the add-on ids of the TV list the page loaded, in order. An add-on list is applied
+        /// only while the TV's list still matches it, so an add-on that arrived after the page
+        /// loaded is never removed by omission.
+        let addonBaseline: [String]?
         /// Full desired Home-row key order. Missing = leave order untouched.
         let rowOrder: [String]?
         /// Keys of rows that should be disabled (everything else in `rowOrder` is enabled).
@@ -130,12 +134,16 @@ final class RemoteSetupServer {
         lock.unlock()
     }
 
-    func confirm(id: String) {
-        setStatus(id: id, status: .confirmed)
+    /// Claims `id` for applying: true, and the change is marked confirmed, only if it was still
+    /// pending. Atomic with supersession, so a change replaced by a newer proposal is never
+    /// applied after the fact.
+    func claimForConfirm(id: String) -> Bool {
+        settle(id: id, status: .confirmed)
     }
 
+    /// Settles a still-pending change as declined or refused; a no-op for one already settled.
     func reject(id: String, status: ChangeStatus = .rejected) {
-        setStatus(id: id, status: status)
+        _ = settle(id: id, status: status)
     }
 
     /// True while `id` is still awaiting a decision (not superseded, refused or decided).
@@ -155,6 +163,8 @@ final class RemoteSetupServer {
     /// Insertion order of `pending` ids, oldest first, so the table stays bounded (ME-003).
     private var pendingOrder: [String] = []
     private var lastProposalAt: Date?
+    /// Seconds between accepted proposals (ME-003); lowered only by tests.
+    var minProposalInterval: TimeInterval = 1.0
     private var token: String?
     /// Bumped by `start()` and `stop()`; callbacks from a superseded attempt see a stale value
     /// and bail (HI-002).
@@ -175,10 +185,12 @@ final class RemoteSetupServer {
         return String(bytes.map { alphabet[Int($0) % alphabet.count] })
     }
 
-    private func setStatus(id: String, status: ChangeStatus) {
+    private func settle(id: String, status: ChangeStatus) -> Bool {
         lock.lock()
-        pending[id]?.status = status
-        lock.unlock()
+        defer { lock.unlock() }
+        guard let change = pending[id], change.status == .pending else { return false }
+        change.status = status
+        return true
     }
 
     private func attemptStart(portOffset: UInt16, generation: Int, completion: @escaping (UInt16?) -> Void) {
@@ -336,6 +348,14 @@ final class RemoteSetupServer {
         send(response, on: connection)
     }
 
+    /// Test seam: submits a proposal body as `POST /api/apply` would and returns its change id
+    /// (nil when refused), without a listener.
+    func submitForTesting(_ body: Data) -> String? {
+        let response = handleApply(body: body)
+        let json = try? JSONSerialization.jsonObject(with: response.body) as? [String: Any]
+        return json?["id"] as? String
+    }
+
     private func handleApply(body: Data) -> HttpResponse {
         guard let proposal = try? JSONDecoder().decode(Proposal.self, from: body) else {
             return HttpResponse.json(["error": "Invalid request body"], status: "400 Bad Request")
@@ -345,7 +365,7 @@ final class RemoteSetupServer {
         lock.lock()
         // Simple rate limit: one proposal per second. Stops a misbehaving peer from replacing the
         // on-TV confirmation alert in a loop (ME-003).
-        if let last = lastProposalAt, now.timeIntervalSince(last) < 1.0 {
+        if let last = lastProposalAt, now.timeIntervalSince(last) < minProposalInterval {
             lock.unlock()
             return HttpResponse.json(["error": "Too many requests"], status: "429 Too Many Requests")
         }

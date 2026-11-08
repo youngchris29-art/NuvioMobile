@@ -149,6 +149,7 @@ enum RemoteSetupWebPage {
 // Installed add-ons come as {id, host, name, description, enabled}: a per-session id and the host,
 // never the manifest URL (it can carry a debrid key). A new add-on is {url, enabled, isNew: true}.
 let addons = [];
+let addonBaseline = []; // the TV list's ids as loaded, sent back so the TV can tell it moved
 let badgePacks = [];      // source URLs already imported on the TV (read-only here)
 let stagedBadgeUrls = []; // pack URLs staged for import on Send
 let rows = [];     // {key, title, enabled, isCollection}
@@ -171,6 +172,7 @@ async function load() {
     const res = await fetch("/api/state", { headers: AUTH });
     const state = await res.json();
     addons = (state.addons || []).map(a => ({ ...a, isNew: false }));
+    addonBaseline = addons.map(a => a.id);
     rows = state.rows || [];
     badgePacks = state.badgePacks || [];
     if (state.mdblistKeySet) el("mdblist-key").placeholder = "Saved on TV — enter to replace";
@@ -264,6 +266,7 @@ async function apply() {
   setStatus("Waiting for confirmation on the TV…");
   const payload = {
     addons: addons.map(a => a.isNew ? { url: a.url, enabled: a.enabled } : { id: a.id, enabled: a.enabled }),
+    addonBaseline: addonBaseline,
     rowOrder: rows.map(r => r.key),
     disabledRowKeys: rows.filter(r => !r.enabled).map(r => r.key)
   };
