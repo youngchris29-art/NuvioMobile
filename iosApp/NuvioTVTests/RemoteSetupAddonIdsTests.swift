@@ -160,6 +160,13 @@ final class RemoteSetupPageSafeTextTests: XCTestCase {
         XCTAssertFalse(text.contains("USERPASS9876"))
     }
 
+    /// Review r14: short credentials are cut as whole words; text merely containing them is not.
+    func testShortCredentialsAreCutAsWholeWords() {
+        let short = "https://alice:hunter2@addon.example.com/manifest.json"
+        XCTAssertEqual(RemoteSetupAddonIds.pageSafe("password hunter2", manifestUrl: short), "password <redacted>")
+        XCTAssertEqual(RemoteSetupAddonIds.pageSafe("hunter22 hunters", manifestUrl: short), "hunter22 hunters")
+    }
+
     func testPlainTextIsUntouched() {
         XCTAssertEqual(RemoteSetupAddonIds.pageSafe("Torrentio — streams from many sources", manifestUrl: url),
                        "Torrentio — streams from many sources")

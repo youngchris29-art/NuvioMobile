@@ -102,7 +102,14 @@ nonisolated struct RemoteSetupAddonIds {
         var out = text
         let pieces = Set(manifestUrls.flatMap(secretPieces(of:))).sorted { $0.count > $1.count }
         for piece in pieces {
-            out = out.replacingOccurrences(of: piece, with: "<redacted>")
+            if piece.count >= longPiece {
+                out = out.replacingOccurrences(of: piece, with: "<redacted>")
+            } else {
+                // Review r14: a short value is matched as a whole word only, so ordinary text that
+                // merely contains its letters stays readable.
+                let pattern = "(?<![A-Za-z0-9])" + NSRegularExpression.escapedPattern(for: piece) + "(?![A-Za-z0-9])"
+                out = out.replacingOccurrences(of: pattern, with: "<redacted>", options: .regularExpression)
+            }
         }
         out = out.replacingOccurrences(
             of: #"(?i)\b(?:https?|stremio)://[^\s"'<>]+"#, with: "<link>", options: .regularExpression)
@@ -111,6 +118,9 @@ nonisolated struct RemoteSetupAddonIds {
             with: "$1=<redacted>", options: .regularExpression)
         return out
     }
+
+    /// Pieces at least this long are cut wherever they appear; shorter ones only as whole words.
+    private static let longPiece = 8
 
     /// The pieces of `manifestUrl` long enough to hold a key, longest first: each path segment and
     /// the query, and (review r11) each value inside them (`torbox=KEY`, `a=1|b=KEY`, query items),
@@ -147,6 +157,8 @@ nonisolated struct RemoteSetupAddonIds {
         for piece in pieces {
             if let decoded = piece.removingPercentEncoding { pieces.insert(decoded) }
         }
-        return pieces.filter { $0.count >= 8 }.sorted { $0.count > $1.count }
+        // Whole chunks need 8+ characters; a parsed value or userinfo credential counts from 4
+        // (review r14: short passwords and keys), shorter ones are flags like `rd` or `en`.
+        return pieces.filter { $0.count >= 4 }.sorted { $0.count > $1.count }
     }
 }

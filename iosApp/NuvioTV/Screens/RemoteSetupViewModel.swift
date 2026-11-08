@@ -46,6 +46,8 @@ final class RemoteSetupViewModel: ObservableObject {
     /// Review r12: Home-row keys are built from add-on-authored ids, so the page gets per-session
     /// opaque row ids too, translated back to keys at the proposal boundary.
     private var rowIds = RemoteSetupAddonIds()
+    /// Every manifest URL seen this session, kept for redaction after its add-on is removed.
+    private var seenUrls = Set<String>()
     /// The pending proposal's add-on list resolved to manifest URLs (nil when it has none).
     private var pendingAddons: [RemoteSetupAddonIds.Resolved]?
 
@@ -71,6 +73,7 @@ final class RemoteSetupViewModel: ObservableObject {
         let attempt = startAttempt
         addonIds = RemoteSetupAddonIds()
         rowIds = RemoteSetupAddonIds()
+        seenUrls = []
 
         server.onChangeProposed = { [weak self] change in
             Task { @MainActor in
@@ -239,8 +242,10 @@ final class RemoteSetupViewModel: ObservableObject {
     }
 
     private func pushState() {
-        // Any add-on's text can quote any add-on's key, so every text is checked against all URLs.
-        let allUrls = addons.map(\.manifestUrl)
+        // Any add-on's text can quote any add-on's key, so every text is checked against every URL
+        // seen this session (review r14: a removed add-on's rows can outlive it).
+        seenUrls.formUnion(addons.map(\.manifestUrl))
+        let allUrls = Array(seenUrls)
         let snapshot = StateSnapshot(
             deviceName: UIDevice.current.name,
             addons: addons.map {
@@ -362,11 +367,20 @@ final class RemoteSetupViewModel: ObservableObject {
             return
         }
         var remaining = urls.count
-        for url in urls {
-            AddonRepository.shared.addAddon(rawUrl: url) { [weak self] _, _ in
+        var failed: [Int] = []
+        for (index, url) in urls.enumerated() {
+            AddonRepository.shared.addAddon(rawUrl: url) { [weak self] result, _ in
+                let ok = result is AddAddonResultSuccess
                 Task { @MainActor in
+                    if !ok { failed.append(index) }
                     remaining -= 1
-                    if remaining == 0 { self?.server.finishApplying(id: changeId, status: status) }
+                    guard remaining == 0 else { return }
+                    // Review r14: a failed install is reported, not hidden behind "confirmed".
+                    if failed.isEmpty {
+                        self?.server.finishApplying(id: changeId, status: status)
+                    } else {
+                        self?.server.finishApplying(id: changeId, status: .partial, failedNewIndices: failed.sorted())
+                    }
                 }
             }
         }

@@ -297,6 +297,9 @@ function setLocked(locked) {
   main.inert = locked;
 }
 
+// The new add-ons of the change in flight, so a partial outcome can put back the ones that failed.
+let sentNew = [];
+
 async function apply() {
   const btn = el("apply");
   btn.disabled = true;
@@ -312,6 +315,7 @@ async function apply() {
   // user changed it, so a change elsewhere never rewrites add-on state the TV has since updated.
   const addonsEdited = addons.length !== addonBaseline.length ||
     addons.some((a, i) => a.isNew || a.id !== addonBaseline[i] || a.enabled !== a.origEnabled);
+  sentNew = addons.filter(a => a.isNew).map(a => ({ ...a }));
   if (addonsEdited) {
     payload.addons = addons.map(a => a.isNew ? { url: a.url, enabled: a.enabled }
       : (a.enabled !== a.origEnabled ? { id: a.id, enabled: a.enabled } : { id: a.id }));
@@ -346,7 +350,19 @@ async function poll(id, tries) {
   try {
     const res = await fetch("/api/status/" + id, { headers: AUTH });
     if (res.status === 403) { endPairing(); return; }
-    const { status } = await res.json();
+    const { status, failedNew } = await res.json();
+    if (status === "partial") {
+      // Applied, except new add-ons whose install failed: the TV's state is reloaded and exactly
+      // those entries are put back so they can be fixed and sent again.
+      const failed = (failedNew || "").split(",").filter(Boolean).map(Number).map(i => sentNew[i]).filter(Boolean);
+      el("mdblist-key").value = "";
+      el("poster-pattern").value = "";
+      stagedBadgeUrls = [];
+      await reloadLocked("Applied on the TV, but " + failed.length + " new add-on(s) couldn't be installed. Check the address; they're still in the list to send again.", false, 1500);
+      addons.push(...failed);
+      render();
+      return;
+    }
     if (status === "confirmed") {
       setStatus("Applied on the TV ✓", "ok");
       el("mdblist-key").value = "";
