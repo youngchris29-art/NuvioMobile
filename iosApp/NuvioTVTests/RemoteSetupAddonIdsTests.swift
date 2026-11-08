@@ -171,6 +171,7 @@ final class RemoteSetupPageSafeTextTests: XCTestCase {
     func testOrdinaryShortRoutesAreNotRedacted() {
         let route = "https://example.com/anime/manifest.json"
         XCTAssertEqual(RemoteSetupAddonIds.pageSafe("anime", manifestUrl: route), "anime")
+        XCTAssertEqual(RemoteSetupAddonIds.pageSafe("sci fi", manifestUrl: "https://example.com/sci%20fi/manifest.json"), "sci fi")
         let keyed = "https://example.com/anime/token=abcd/manifest.json"
         XCTAssertEqual(RemoteSetupAddonIds.pageSafe("anime abcd", manifestUrl: keyed), "anime <redacted>")
     }

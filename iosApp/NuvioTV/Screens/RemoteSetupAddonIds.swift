@@ -158,10 +158,13 @@ nonisolated struct RemoteSetupAddonIds {
                 if let eq = part.firstIndex(of: "=") { valued.insert(String(part[part.index(after: eq)...])) }
             }
         }
-        var pieces = long.filter { $0.count >= longPiece }.union(valued.filter { $0.count >= 4 })
-        for piece in pieces {
-            if let decoded = piece.removingPercentEncoding, decoded.count >= 4 { pieces.insert(decoded) }
+        // Decoded forms keep their kind's threshold (review r18: `sci%20fi` must not turn into a
+        // short `sci fi` candidate).
+        func withDecoded(_ set: Set<String>) -> Set<String> {
+            set.union(set.compactMap { $0.removingPercentEncoding })
         }
+        let pieces = withDecoded(long).filter { $0.count >= longPiece }
+            .union(withDecoded(valued).filter { $0.count >= 4 })
         return pieces.sorted { $0.count > $1.count }
     }
 }
