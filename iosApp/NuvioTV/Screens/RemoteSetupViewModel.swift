@@ -216,6 +216,9 @@ final class RemoteSetupViewModel: ObservableObject {
             pendingAddons = nil
             return
         }
+        // C3 review r2: judge the change against the repositories as they are now, not the
+        // watchers' copies (an update can still be on its way to them).
+        refreshFromRepositories()
         // The add-on list can change under the dialog (sync, another screen): resolve the ids
         // again against the list as it is now, and refuse the whole proposal if one went stale.
         switch resolveAddons(change.proposal) {
@@ -377,11 +380,20 @@ final class RemoteSetupViewModel: ObservableObject {
         for entry in existing {
             if let flag = entry.enabled { enabled[entry.url] = KotlinBoolean(value: flag) }
         }
+        // C3 review r2: the flags the dialog judged must still hold inside the repository's
+        // atomic step, or what the user approved is not what applies.
+        var expectedEnabled: [String: KotlinBoolean] = [:]
+        for entry in existing where entry.enabled != nil {
+            if let current = addons.first(where: { $0.manifestUrl == entry.url }) {
+                expectedEnabled[entry.url] = KotlinBoolean(value: current.enabled)
+            }
+        }
         let result = repo.applyEditedListIfUnchanged(
             expectedUrls: expected,
             desiredUrls: existing.map(\.url),
             enabled: enabled,
-            addsNew: proposed.contains(where: \.isNew)
+            addsNew: proposed.contains(where: \.isNew),
+            expectedEnabled: expectedEnabled
         )
         switch result {
         case .stale: return .stale
@@ -445,6 +457,13 @@ final class RemoteSetupViewModel: ObservableObject {
     /// list; applying it would drop the row from the disabled set and re-enable it.
     private func rowIdsKnown(_ proposal: RemoteSetupServer.Proposal) -> Bool {
         ((proposal.rowOrder ?? []) + (proposal.disabledRowKeys ?? [])).allSatisfy { rowIds.url(for: $0) != nil }
+            && Self.hasNoDuplicates(proposal.rowOrder) && Self.hasNoDuplicates(proposal.disabledRowKeys)
+    }
+
+    /// C3 review r2: a repeated row id makes the order simulation insert past the end.
+    nonisolated static func hasNoDuplicates(_ ids: [String]?) -> Bool {
+        guard let ids else { return true }
+        return Set(ids).count == ids.count
     }
 
     private func applyRows(_ proposal: RemoteSetupServer.Proposal) {
@@ -462,7 +481,9 @@ final class RemoteSetupViewModel: ObservableObject {
 
         if let order = rowKeys(proposal.rowOrder) {
             var simulated = rows.map(\.key)
-            let desired = order.filter { simulated.contains($0) }
+            // Each key once (review r2: a repeat made a move target past the end of the list).
+            var seen = Set<String>()
+            let desired = order.filter { simulated.contains($0) && seen.insert($0).inserted }
             for targetIndex in desired.indices {
                 guard let fromIndex = simulated.firstIndex(of: desired[targetIndex]),
                       fromIndex != targetIndex
@@ -492,6 +513,12 @@ final class RemoteSetupViewModel: ObservableObject {
     }
 
     // MARK: - Alert summary
+
+    /// C3 review r2: the add-on and Home-row lists straight from the repositories.
+    private func refreshFromRepositories() {
+        if let state = AddonRepository.shared.uiState.value_ as? AddonsUiState { addons = state.addons }
+        if let state = HomeCatalogSettingsRepository.shared.uiState.value_ as? HomeCatalogSettingsUiState { rows = state.items }
+    }
 
     /// C3: the proposal's changes against the lists as they are now (names, never URLs).
     private func changeLines(

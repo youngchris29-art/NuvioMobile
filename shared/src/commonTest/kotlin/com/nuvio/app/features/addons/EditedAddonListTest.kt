@@ -64,4 +64,15 @@ class EditedAddonListTest {
         kotlin.test.assertTrue(isSameManifestUrl("stremio://example.com/manifest.json", "https://example.com/manifest.json"))
         kotlin.test.assertFalse(isSameManifestUrl("http://example.com/manifest.json", "https://example.com/manifest.json"))
     }
+
+    @Test
+    fun aFlagThatChangedSinceTheDialogIsStale() {
+        val current = listOf(ManagedAddon(manifestUrl = "A", enabled = true), ManagedAddon(manifestUrl = "B"))
+        assertEquals(EditedListOutcome.Stale,
+            editedListOutcome(current, listOf("A", "B"), listOf("A", "B"), mapOf("A" to false), readOnly = false,
+                expectedEnabled = mapOf("A" to false)))
+        assertEquals(EditedListOutcome.Unchanged,
+            editedListOutcome(current, listOf("A", "B"), listOf("A", "B"), emptyMap(), readOnly = false,
+                expectedEnabled = mapOf("A" to true, "B" to true)))
+    }
 }

@@ -43,7 +43,7 @@ final class RemoteSetupChangeListTests: XCTestCase {
     func testAMoveListsOnlyTheItemThatMoved() {
         let addons = ["a", "b", "c", "d"].map { item($0, $0.uppercased()) }
         let out = lines(addons: addons, proposed: ["d", "a", "b", "c"].map { kept($0, $0.uppercased()) })
-        XCTAssertEqual(out, [.init(kind: .move, text: "Move add-on D to position 1")])
+        XCTAssertEqual(out, [.init(kind: .move, text: "Move add-on D to position 1", subject: "d")])
     }
 
     func testRowsMoveAndToggle() {
@@ -69,7 +69,23 @@ final class RemoteSetupChangeListTests: XCTestCase {
     func testRowsTheProposalDidNotListFallBehind() {
         let rows = [item("x", "New Row"), item("a", "A"), item("b", "B")]
         let out = lines(rows: rows, rowOrder: ["a", "b"], disabled: nil)
-        XCTAssertEqual(out, [.init(kind: .move, text: "Move Home row New Row to position 3")])
+        XCTAssertEqual(out, [.init(kind: .move, text: "Move Home row New Row to position 3", subject: "x")])
+    }
+
+    /// Review r2: same-titled items are told apart, and their lines never compare equal.
+    func testSameTitledItemsAreToldApart() {
+        let rows = [item("r1", "Popular"), item("r2", "Popular", on: false)]
+        let out = lines(rows: rows, rowOrder: nil, disabled: ["r1"])
+        XCTAssertEqual(out.map(\.text), ["Turn off Home row Popular (#1)", "Turn on Home row Popular (#2)"])
+        XCTAssertNotEqual(List.Line(kind: .turnOff, text: "x", subject: "r1"), List.Line(kind: .turnOff, text: "x", subject: "r2"))
+        XCTAssertEqual(Set(out.map(\.id)).count, out.count)
+    }
+
+    /// Review r2: a repeated row id is refused before it reaches the order simulation.
+    func testRepeatedRowIdsAreRefused() {
+        XCTAssertTrue(RemoteSetupViewModel.hasNoDuplicates(nil))
+        XCTAssertTrue(RemoteSetupViewModel.hasNoDuplicates(["a", "b"]))
+        XCTAssertFalse(RemoteSetupViewModel.hasNoDuplicates(["a", "a", "b"]))
     }
 
     func testKeysPatternAndBadges() {

@@ -15,7 +15,10 @@ nonisolated enum RemoteSetupChangeList {
         }
         let kind: Kind
         let text: String
-        var id: String { "\(kind)|\(text)" }
+        /// Review r2: the add-on or row the line is about (empty for settings lines), so two lines
+        /// for same-titled items never compare equal or share an id.
+        var subject: String = ""
+        var id: String { "\(kind)|\(subject)|\(text)" }
     }
 
     /// An installed add-on or a Home row as it is now.
@@ -48,31 +51,43 @@ nonisolated enum RemoteSetupChangeList {
         badgePackCount: Int
     ) -> [Line] {
         var out: [Line] = []
+        // Review r2: same-titled items get their current position, so the user can tell them apart.
+        func named(_ items: [Item]) -> [String: String] {
+            let counts = Dictionary(items.map { ($0.title, 1) }, uniquingKeysWith: +)
+            var names: [String: String] = [:]
+            for (index, item) in items.enumerated() {
+                names[item.id] = counts[item.title, default: 0] > 1 ? "\(item.title) (#\(index + 1))" : item.title
+            }
+            return names
+        }
+        let addonName = named(addons)
+        let rowName = named(rows)
 
         if let proposed = proposedAddons {
             let keptIds = Set(proposed.filter { !$0.isNew }.map(\.id))
             for addon in addons where !keptIds.contains(addon.id) {
-                out.append(Line(kind: .remove, text: String(localized: "Remove add-on \(addon.title)")))
+                out.append(Line(kind: .remove, text: String(localized: "Remove add-on \(addonName[addon.id] ?? addon.title)"), subject: addon.id))
             }
             for entry in proposed where entry.isNew {
                 let off = entry.enabled == false
                 out.append(Line(kind: .install, text: off
                     ? String(localized: "Install add-on \(entry.title) (turned off)")
-                    : String(localized: "Install add-on \(entry.title)")))
+                    : String(localized: "Install add-on \(entry.title)"), subject: entry.id))
             }
             let kept = proposed.filter { !$0.isNew }
             for id in movedIds(before: addons.map(\.id).filter(keptIds.contains), after: kept.map(\.id)) {
-                guard let title = addons.first(where: { $0.id == id })?.title,
+                guard let title = addonName[id],
                       let position = kept.firstIndex(where: { $0.id == id }) else { continue }
-                out.append(Line(kind: .move, text: String(localized: "Move add-on \(title) to position \(position + 1)")))
+                out.append(Line(kind: .move, text: String(localized: "Move add-on \(title) to position \(position + 1)"), subject: id))
             }
             for entry in kept {
                 guard let enabled = entry.enabled,
                       let current = addons.first(where: { $0.id == entry.id }),
                       current.enabled != enabled else { continue }
+                let title = addonName[current.id] ?? current.title
                 out.append(enabled
-                    ? Line(kind: .turnOn, text: String(localized: "Turn on add-on \(current.title)"))
-                    : Line(kind: .turnOff, text: String(localized: "Turn off add-on \(current.title)")))
+                    ? Line(kind: .turnOn, text: String(localized: "Turn on add-on \(title)"), subject: current.id)
+                    : Line(kind: .turnOff, text: String(localized: "Turn off add-on \(title)"), subject: current.id))
             }
         }
 
@@ -85,9 +100,9 @@ nonisolated enum RemoteSetupChangeList {
             let listed = order.filter { known.contains($0) && seen.insert($0).inserted }
             let result = listed + current.filter { !seen.contains($0) }
             for id in movedIds(before: current, after: result) {
-                guard let title = rows.first(where: { $0.id == id })?.title,
+                guard let title = rowName[id],
                       let position = result.firstIndex(of: id) else { continue }
-                out.append(Line(kind: .move, text: String(localized: "Move Home row \(title) to position \(position + 1)")))
+                out.append(Line(kind: .move, text: String(localized: "Move Home row \(title) to position \(position + 1)"), subject: id))
             }
         }
         // Review r1: on/off is applied whenever the proposal carries the disabled set, with or
@@ -96,9 +111,10 @@ nonisolated enum RemoteSetupChangeList {
             for row in rows {
                 let shouldBeOn = !disabled.contains(row.id)
                 guard row.enabled != shouldBeOn else { continue }
+                let title = rowName[row.id] ?? row.title
                 out.append(shouldBeOn
-                    ? Line(kind: .turnOn, text: String(localized: "Turn on Home row \(row.title)"))
-                    : Line(kind: .turnOff, text: String(localized: "Turn off Home row \(row.title)")))
+                    ? Line(kind: .turnOn, text: String(localized: "Turn on Home row \(title)"), subject: row.id)
+                    : Line(kind: .turnOff, text: String(localized: "Turn off Home row \(title)"), subject: row.id))
             }
         }
 

@@ -452,7 +452,8 @@ object AddonRepository {
      * state update, and only if the list is still exactly [expectedUrls] (the list the page
      * edited). The result is [desiredUrls] in that order (add-ons left out are removed), with
      * [enabled] overriding each add-on's flag. Changes nothing and returns STALE when the list
-     * moved under the page (a sync or another screen), or READ_ONLY when the active profile's
+     * moved under the page (a sync or another screen) or an add-on's flag no longer matches
+     * [expectedEnabled] (the state the confirm dialog showed), or READ_ONLY when the active profile's
      * add-ons are inherited and the edit would change them or [addsNew] (the caller installs new
      * add-ons only after APPLIED); APPLIED otherwise, including when nothing needed to change. Add-ons newly enabled without a manifest are refreshed, as
      * [setAddonEnabled] does.
@@ -462,6 +463,7 @@ object AddonRepository {
         desiredUrls: List<String>,
         enabled: Map<String, Boolean>,
         addsNew: Boolean,
+        expectedEnabled: Map<String, Boolean> = emptyMap(),
     ): RemoteListEditResult {
         val readOnly = isUsingPrimaryAddonsFromSecondaryProfile()
         var matched = false
@@ -474,7 +476,7 @@ object AddonRepository {
             changed = false
             refusal = null
             toRefresh = emptyList()
-            when (val outcome = editedListOutcome(current.addons, expectedUrls, desiredUrls, enabled, readOnly, addsNew)) {
+            when (val outcome = editedListOutcome(current.addons, expectedUrls, desiredUrls, enabled, readOnly, addsNew, expectedEnabled)) {
                 EditedListOutcome.Stale, EditedListOutcome.ReadOnly -> {
                     refusal = outcome
                     current
@@ -899,8 +901,14 @@ internal fun editedListOutcome(
     enabled: Map<String, Boolean>,
     readOnly: Boolean,
     addsNew: Boolean = false,
+    expectedEnabled: Map<String, Boolean> = emptyMap(),
 ): EditedListOutcome {
     if (current.map { it.manifestUrl } != expectedUrls) return EditedListOutcome.Stale
+    // C3 review r2: the flags the confirm dialog was built from must still hold, or what the user
+    // approved is not what would apply.
+    if (current.any { addon -> expectedEnabled[addon.manifestUrl]?.let { it != addon.enabled } == true }) {
+        return EditedListOutcome.Stale
+    }
     val edited = editedAddonList(current, desiredUrls, enabled)
     return when {
         readOnly && (addsNew || edited != current) -> EditedListOutcome.ReadOnly
