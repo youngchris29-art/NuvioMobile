@@ -266,12 +266,24 @@ function addAddon() {
   render();
 }
 
-// The reload scheduled after a confirmed change; a new send cancels it so it can never land on
-// top of the next outcome (and its staged edits).
-let reloadTimer = null;
+// Reloads the TV's state with the page locked (`inert` also blocks keyboard input) and Send off
+// until it is on screen, retrying while the TV can't be reached, so no edit is made or sent
+// against a list or baseline the TV has moved past.
+async function reloadLocked(note, addonsOnly, delayMs) {
+  const main = document.querySelector("main");
+  el("apply").disabled = true;
+  main.classList.add("busy");
+  main.inert = true;
+  if (delayMs) await new Promise(r => setTimeout(r, delayMs));
+  while (!(await load(note, addonsOnly))) {
+    setStatus("Couldn't reach the TV to reload its list. Trying again… (is Remote Setup still open?)", "err");
+    await new Promise(r => setTimeout(r, 3000));
+  }
+  main.inert = false;
+  main.classList.remove("busy");
+}
 
 async function apply() {
-  if (reloadTimer) { clearTimeout(reloadTimer); reloadTimer = null; }
   const btn = el("apply");
   btn.disabled = true;
   setStatus("Waiting for confirmation on the TV…");
@@ -319,8 +331,9 @@ async function poll(id, tries) {
       el("mdblist-key").value = "";
       el("poster-pattern").value = "";
       stagedBadgeUrls = [];
-      reloadTimer = setTimeout(() => { reloadTimer = null; load(); }, 1500);
-      el("apply").disabled = false;
+      // Give the TV a moment to publish the applied state, then take it as the new baseline.
+      await reloadLocked("Applied on the TV ✓", false, 1500);
+      el("status").className = "ok";
       return;
     }
     if (status === "stale" || status === "not_found") {
@@ -330,18 +343,7 @@ async function poll(id, tries) {
       // user edits next is replaced by the reload.
       // Only the add-on list is replaced; the page is locked until it is on screen.
       setStatus("Not applied: the TV's add-on list changed. Reloading it…", "err");
-      // `inert` also blocks keyboard focus and activation. If the TV can't be reached, the
-      // reload retries every few seconds with the page still locked, keeping the staged edits.
-      const main = document.querySelector("main");
-      main.classList.add("busy");
-      main.inert = true;
-      const note = "Not applied: the TV's add-on list changed. This is its list now, so make your add-on changes again. Your other changes are still here.";
-      while (!(await load(note, true))) {
-        setStatus("Couldn't reach the TV to reload its add-on list. Trying again… (is Remote Setup still open?)", "err");
-        await new Promise(r => setTimeout(r, 3000));
-      }
-      main.inert = false;
-      main.classList.remove("busy");
+      await reloadLocked("Not applied: the TV's add-on list changed. This is its list now, so make your add-on changes again. Your other changes are still here.", true, 0);
       return;
     }
     if (status === "read_only") {
