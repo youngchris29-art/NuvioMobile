@@ -138,7 +138,10 @@ final class AddonsSplitUITests: XCTestCase {
 
     /// `NavigationRailUITests`' route: Left until `rail_state` reads expanded, rail focus to item 3
     /// (Add-ons with Discover placement Off), Select.
-    private func openAddonsViaRail(_ app: XCUIApplication) {
+    private func openAddonsViaRail(_ app: XCUIApplication) { openViaRail(app, index: 3, name: "Add-ons") }
+
+    /// Opens the rail and selects entry `index` (Discover is off: 3 = Add-ons, 4 = Settings).
+    private func openViaRail(_ app: XCUIApplication, index target: Int, name: String) {
         func token(_ key: String) -> String? {
             let state = element(app, "rail_state").firstMatch
             guard state.exists else { return nil }
@@ -152,11 +155,11 @@ final class AddonsSplitUITests: XCTestCase {
         XCTAssertEqual(token("expanded"), "1", "the rail never opened; focused: \(focusDump(app))")
         for _ in 0..<10 {
             let current = Int(token("focused") ?? "") ?? -1
-            if current == 3 { break }
-            if current >= 0 { remote.press(current < 3 ? .down : .up) }
+            if current == target { break }
+            if current >= 0 { remote.press(current < target ? .down : .up) }
             pause(0.5)
         }
-        XCTAssertEqual(token("focused"), "3", "rail focus never reached Add-ons")
+        XCTAssertEqual(token("focused"), String(target), "rail focus never reached \(name)")
         press(.select, settle: 2.5)
     }
 
@@ -348,15 +351,20 @@ final class AddonsSplitUITests: XCTestCase {
         XCTAssertFalse(dialog.exists, "Menu did not close the dialog")
         XCTAssertEqual(proposalStatus(page, first), "rejected")
 
-        // Every row flipped: a long list, capped and scrollable.
-        try XCTSkipIf(rows.count < 10, "the fixture has \(rows.count) Home rows, too few for the cap")
+        // Review r3: a long list from any fixture: every row flipped and the order reversed (a
+        // line per row each, up to 2 x rows), plus a poster pattern and a badge pack line.
+        let lineCount = rows.count * 2 + 2
+        try XCTSkipIf(lineCount < 8, "the fixture has \(rows.count) Home rows, too few for a long list")
         pause(1.2)
-        let all = rows.filter(\.enabled).map(\.id)
-        let second = try XCTUnwrap(postProposal(page, body(all)), "the long proposal was not accepted")
+        let flipped = rows.filter(\.enabled).map(\.id)
+        let order = rows.reversed().map { "\"\($0.id)\"" }.joined(separator: ",")
+        let long = "{\"rowOrder\":[\(order)],\"disabledRowKeys\":[\(flipped.map { "\"\($0)\"" }.joined(separator: ","))],"
+            + "\"posterPattern\":\"https://example.invalid/{imdb}.jpg\",\"badgeUrls\":[\"https://example.invalid/pack.json\"]}"
+        let second = try XCTUnwrap(postProposal(page, long), "the long proposal was not accepted")
         XCTAssertTrue(dialog.waitForExistence(timeout: 5), "the confirm dialog never opened again")
         XCTAssertTrue(waitLabelFocus(app, "Confirm"), "focus is not on Confirm; focused: \(focusDump(app))")
         let longHeight = list.frame.height
-        say("dialog: \(rows.count) lines, list height \(Int(longHeight))")
+        say("dialog: about \(lineCount) lines, list height \(Int(longHeight))")
         XCTAssertGreaterThan(longHeight, shortHeight, "the long list is no taller than one line")
         XCTAssertLessThanOrEqual(longHeight, 540, "the long list passes its cap")
         // Up walks the lines to the first one, which scrolls into the list's frame. Review r2:
@@ -365,7 +373,7 @@ final class AddonsSplitUITests: XCTestCase {
         XCTAssertTrue(line.waitForExistence(timeout: 3), "the first line is missing")
         let firstLine = line.label
         var reached = false
-        for _ in 0..<(rows.count + 3) {
+        for _ in 0..<(lineCount + 3) {
             press(.up, settle: 0.5)
             if labelHasFocus(app, firstLine) { reached = true; break }
         }
@@ -426,15 +434,29 @@ final class AddonsSplitUITests: XCTestCase {
     /// selects the phone section and leaves focus on its sidebar row (hub already visited, Tabs).
     /// Never presses Select on any row other than the target (Sign Out sits first in that pane).
     func testSettingsRowOpensManageFromPhone() throws {
-        let app = launch(rail: false)
+        try settingsRowOpensManageFromPhone(rail: false)
+    }
+
+    /// C5 device note (review r3): with the rail, the tab switch leaves focus on the rail's
+    /// Add-ons entry; the hub must hand it to the phone row.
+    func testSettingsRowOpensManageFromPhoneRail() throws {
+        try settingsRowOpensManageFromPhone(rail: true)
+    }
+
+    private func settingsRowOpensManageFromPhone(rail: Bool) throws {
+        let app = launch(rail: rail)
         XCTAssertTrue(waitSidebarFocus(app, "installed"), "entry focus is not Installed; focused: \(focusDump(app))")
-        let tabNames = ["Home", "Search", "Discover", "Library", "Add-ons", "Settings", "Profile"]
-        for _ in 0..<20 {
-            if tabNames.contains(where: { app.buttons[$0].exists && app.buttons[$0].hasFocus }) { break }
-            press(.up, settle: 0.4)
+        if rail {
+            openViaRail(app, index: 4, name: "Settings")
+        } else {
+            let tabNames = ["Home", "Search", "Discover", "Library", "Add-ons", "Settings", "Profile"]
+            for _ in 0..<20 {
+                if tabNames.contains(where: { app.buttons[$0].exists && app.buttons[$0].hasFocus }) { break }
+                press(.up, settle: 0.4)
+            }
+            XCTAssertTrue(moveFocus(.right, until: app.buttons["Settings"], max: 4), "Settings tab never took focus")
+            press(.select, settle: 2)
         }
-        XCTAssertTrue(moveFocus(.right, until: app.buttons["Settings"], max: 4), "Settings tab never took focus")
-        press(.select, settle: 2)
         // List focus sits on the cell, so rows are matched by label (the row's identifier is on
         // its content, and the lazy List builds it only once scrolled into view).
         // Account & Profiles is the first category: Down from the tab bar until it holds focus.
@@ -457,7 +479,7 @@ final class AddonsSplitUITests: XCTestCase {
         XCTAssertTrue(element(app, "addons_content_phone").waitForExistence(timeout: 5), "the hub did not show Manage from phone")
         XCTAssertTrue(waitSidebarFocus(app, "phone"), "focus is not on the phone row; focused: \(focusDump(app))")
         XCTAssertTrue(element(app, "addons_phone_url").firstMatch.waitForExistence(timeout: 8), "Remote Setup never started")
-        say("phone: opened from Settings")
+        say("phone: opened from Settings (\(rail ? "rail" : "tabs"))")
     }
 
     /// Sidebar rows, entry focus on Installed, selection follows focus after the dwell.
