@@ -49,7 +49,7 @@ nonisolated enum RemoteSetupChangeList {
         mdbListEnabled: Bool = true,
         posterPattern: String?,
         posterPatternValid: (String) -> Bool,
-        badgePackCount: Int
+        badgePackUrls: [String]
     ) -> [Line] {
         var out: [Line] = []
         // Review r2: same-titled items get their current position, so the user can tell them apart.
@@ -139,12 +139,24 @@ nonisolated enum RemoteSetupChangeList {
                 out.append(Line(kind: .rejected, text: String(localized: "Ignore the poster pattern (it must be an http(s) URL)")))
             }
         }
-        if badgePackCount > 0 {
-            out.append(Line(kind: .badges, text: badgePackCount == 1
-                ? String(localized: "Import 1 badge pack")
-                : String(localized: "Import \(badgePackCount) badge packs")))
+        // Review r6: one line per pack (host and file name; a pack URL is a public file), and an
+        // import makes that pack the active one.
+        for url in badgePackUrls {
+            out.append(Line(kind: .badges,
+                            text: String(localized: "Import and use badge pack \(badgePackLabel(url))"),
+                            subject: url))
         }
         return out
+    }
+
+    /// `host/file.json` for a badge pack URL (the query is dropped), or the trimmed text when it
+    /// does not parse.
+    static func badgePackLabel(_ url: String) -> String {
+        guard let parts = URLComponents(string: url), let host = parts.host, !host.isEmpty else {
+            return String(url.prefix(60))
+        }
+        let file = parts.path.split(separator: "/").last.map(String.init) ?? ""
+        return file.isEmpty ? host : "\(host)/\(file)"
     }
 
     /// The ids that moved from `before` to `after` (same set of ids): everything outside a longest

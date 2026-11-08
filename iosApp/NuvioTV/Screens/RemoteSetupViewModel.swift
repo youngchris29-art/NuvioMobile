@@ -563,7 +563,7 @@ final class RemoteSetupViewModel: ObservableObject {
             mdbListEnabled: mdbListEnabled,
             posterPattern: proposal.posterPattern,
             posterPatternValid: Self.isValidPosterPattern,
-            badgePackCount: (proposal.badgeUrls ?? []).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.count
+            badgePackUrls: (proposal.badgeUrls ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
         )
     }
 

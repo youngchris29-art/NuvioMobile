@@ -12,11 +12,11 @@ final class RemoteSetupChangeListTests: XCTestCase {
     private func lines(
         addons: [List.Item] = [], proposed: [List.ProposedAddon]? = nil,
         rows: [List.Item] = [], rowOrder: [String]? = nil, disabled: Set<String>? = nil,
-        key: Bool = false, pattern: String? = nil, badges: Int = 0
+        key: Bool = false, pattern: String? = nil, badges: [String] = []
     ) -> [List.Line] {
         List.lines(addons: addons, proposedAddons: proposed, rows: rows, rowOrder: rowOrder, disabledRows: disabled,
                    setsMdbListKey: key, posterPattern: pattern,
-                   posterPatternValid: { $0.hasPrefix("https://") }, badgePackCount: badges)
+                   posterPatternValid: { $0.hasPrefix("https://") }, badgePackUrls: badges)
     }
 
     func testNothingChangedGivesNoLines() {
@@ -97,7 +97,7 @@ final class RemoteSetupChangeListTests: XCTestCase {
         XCTAssertEqual(out.map(\.text), ["Install add-on addon.example.com (#1)", "Install add-on addon.example.com (#2) (turned off)"])
         let off = List.lines(addons: [], proposedAddons: nil, rows: [], rowOrder: nil, disabledRows: nil,
                              setsMdbListKey: true, mdbListEnabled: false, posterPattern: nil,
-                             posterPatternValid: { _ in true }, badgePackCount: 0)
+                             posterPatternValid: { _ in true }, badgePackUrls: [])
         XCTAssertEqual(off.map(\.text), ["Set the MDBList API key and turn MDBList on"])
     }
 
@@ -106,7 +106,8 @@ final class RemoteSetupChangeListTests: XCTestCase {
         XCTAssertEqual(lines(pattern: "  ").map(\.text), ["Clear the custom poster pattern"])
         XCTAssertEqual(lines(pattern: "https://img.example.com/{id}.jpg").map(\.kind), [.pattern])
         XCTAssertEqual(lines(pattern: "ftp://x").map(\.kind), [.rejected])
-        XCTAssertEqual(lines(badges: 2).map(\.text), ["Import 2 badge packs"])
+        XCTAssertEqual(lines(badges: ["https://cdn.example.com/packs/neon.json?v=2", "https://other.example.org/a/b.json"]).map(\.text),
+                       ["Import and use badge pack cdn.example.com/neon.json", "Import and use badge pack other.example.org/b.json"])
     }
 
     func testMovedIdsKeepsTheLongestOrderedRun() {
