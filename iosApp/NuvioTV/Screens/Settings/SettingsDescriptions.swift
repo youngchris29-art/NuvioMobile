@@ -261,7 +261,7 @@ enum SettingsDescriptions {
         case .accountConnectServer: return LocalizedStringResource("Points this Apple TV at a self-hosted Nuvio backend instead of the official one. Switching servers signs you out and clears local data on this Apple TV.")
         case .accountUseOfficialServer: return LocalizedStringResource("Switches back to the official Nuvio server at api.nuvio.tv. You are signed out and local data on this Apple TV is cleared.")
         case .accountRememberLastProfile: return LocalizedStringResource("Skips the profile picker and opens the profile you used last. Profiles with a PIN still ask for it. Default: Off.")
-        case .accountRemoteSetup: return LocalizedStringResource("Starts a small web page on your home network so you can manage add-ons, Home rows, API keys and badge packs from a phone or laptop. Nothing changes until you confirm it here on the TV.")
+        case .accountRemoteSetup: return LocalizedStringResource("Remote Setup moved to Add-ons › Manage from phone. Opening that section starts a small web page on your home network, so a phone or laptop can manage add-ons, Home rows, API keys and badge packs. Nothing changes until you confirm it on the TV.")
 
         // Services
         case .servicesTrakt: return LocalizedStringResource("Connect shows a short code to enter at trakt.tv/activate. Once connected, what you watch here is marked watched on Trakt automatically. Press again to disconnect.")

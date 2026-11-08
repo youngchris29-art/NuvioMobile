@@ -96,6 +96,9 @@ final class RemoteSetupServer {
     /// Fired (on main) when a browser POSTs a proposal. The host UI shows a confirm alert and
     /// then calls `confirm(id:)` or `reject(id:)`.
     var onChangeProposed: ((PendingChange) -> Void)?
+    /// C2: called on the main queue for every request that presented this session's token, so
+    /// the TV can show "Phone connected".
+    var onAuthorizedRequest: (() -> Void)?
 
     private(set) var port: UInt16?
 
@@ -341,6 +344,7 @@ final class RemoteSetupServer {
             )
             return
         }
+        if let onAuthorizedRequest { DispatchQueue.main.async(execute: onAuthorizedRequest) }
 
         let response: HttpResponse
         switch (request.method, request.path) {

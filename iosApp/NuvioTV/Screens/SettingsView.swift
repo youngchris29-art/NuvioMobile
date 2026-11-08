@@ -43,7 +43,6 @@ struct SettingsView: View {
     @StateObject private var trakt = TraktViewModel()
     @StateObject private var simkl = SimklViewModel()
     @StateObject private var debrid = DebridViewModel()
-    @StateObject private var remote = RemoteSetupViewModel()
     @StateObject private var plugins = PluginsViewModel()
     @StateObject private var badges = BadgeSettingsViewModel()
     @EnvironmentObject private var auth: AuthViewModel
@@ -104,19 +103,6 @@ struct SettingsView: View {
             debrid.stop()
             plugins.stop()
             badges.stop()
-            remote.stop()
-        }
-        .alert(
-            "Apply changes from browser?",
-            isPresented: Binding(
-                get: { remote.pendingChange != nil },
-                set: { if !$0 { remote.rejectPending() } }
-            )
-        ) {
-            Button("Apply") { remote.confirmPending() }
-            Button("Decline", role: .cancel) { remote.rejectPending() }
-        } message: {
-            Text(remote.pendingSummary)
         }
         .alert("Disconnect Trakt?", isPresented: $confirmingTraktDisconnect) {
             Button("Disconnect", role: .destructive) { trakt.disconnect() }
@@ -183,7 +169,6 @@ struct SettingsView: View {
         switch category {
         case .accountProfiles:
             AccountProfilesSettingsPane(
-                remote: remote,
                 confirmingSignOut: $confirmingSignOut,
                 confirmingUseOfficial: $confirmingUseOfficial
             )

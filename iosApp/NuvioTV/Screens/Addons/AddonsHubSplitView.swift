@@ -172,7 +172,14 @@ struct AddonsHubSplitView: View {
             // The lifted add-on went away (sync, another device): end the mode.
             if let url = moveMode.movingUrl, !urls.contains(url) { endMoveBecauseRemoved() }
         }
-        .onAppear { restoreSection(visible: visible) }
+        .onAppear {
+            restoreSection(visible: visible)
+            showRequestedSection(visible: visible)
+        }
+        // C2: a request while the hub is mounted (Settings' "Manage from phone" row).
+        .onReceive(NotificationCenter.default.publisher(for: AddonsHubRequests.notification)) { _ in
+            showRequestedSection(visible: visible)
+        }
         // Review A5-r3: leaving the hub cancels a detail page's pending Move lift.
         .onDisappear {
             pendingLiftUrl = nil
@@ -447,6 +454,15 @@ struct AddonsHubSplitView: View {
         }
     }
 
+    /// C2: shows a section another screen asked for (`AddonsHubRequests`) and puts focus on its
+    /// sidebar row, so Right enters it. A request for a hidden section is dropped.
+    private func showRequestedSection(visible: [HubSection]) {
+        guard let section = AddonsHubRequests.take(), visible.contains(section), !section.isAction else { return }
+        if moveMode.isMoving { cancelMove() }
+        select(section)
+        DispatchQueue.main.async { handOffSidebar(section) }
+    }
+
     private func select(_ section: HubSection) {
         dwell?.cancel()
         dwell = nil
@@ -664,6 +680,7 @@ struct AddonsHubSplitView: View {
     private func contentKeys(for section: HubSection) -> Set<String> {
         switch section {
         case .install: return [InstallAddonPane.fieldKey, InstallAddonPane.buttonKey]
+        case .phone: return [ManageFromPhonePane.primaryKey]
         case .catalogs:
             let visible = CatalogOrderView.visibleRows(settings.catalogs, filter: catalogFilter)
             var keys = Set(visible.map { CatalogOrderView.rowKey($0.key) })
@@ -691,6 +708,7 @@ struct AddonsHubSplitView: View {
         switch section {
         case .installed: return addons.first.map { InstalledAddonsPane.rowKey($0.manifestUrl) } ?? InstalledAddonsPane.emptyKey
         case .install: return InstallAddonPane.fieldKey
+        case .phone: return ManageFromPhonePane.primaryKey
         default: return nil
         }
     }
@@ -1076,10 +1094,12 @@ private struct HubContentColumn: View {
                 url: $installDraft,
                 onInstalled: onInstalled
             )
-        case .refresh, .phone:
-            kitList {
-                SettingsValueRow(title: String(localized: "Manage from phone"), value: String(localized: "Coming in a later beta"), focusable: true)
-            }
+        case .phone:
+            // C2: Remote Setup's home; it starts shortly after the section opens and stops on leaving.
+            ManageFromPhonePane(focus: contentFocus)
+        case .refresh:
+            // An action row; never the content section (`HubSection.resolved` and `select`).
+            Color.clear
         }
     }
 

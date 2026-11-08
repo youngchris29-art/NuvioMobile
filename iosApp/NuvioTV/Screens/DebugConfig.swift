@@ -10,9 +10,9 @@ enum DebugConfig {
     /// e.g. "https://torrentio.strem.fun/...|torbox=YOUR_KEY/manifest.json"
     static let manifestURL = ""
 
-    /// Add-ons hub C, H2: shows the "Manage from phone" card on the Sources hub. Off until H6 ships
-    /// the phone-management flow (the card then only reads "Coming in a later beta").
-    static let showsPhoneManagement = false
+    /// Add-ons hub C, H2: shows the "Manage from phone" section in the Add-ons hub. On since hub v2
+    /// C2, which hosts Remote Setup there.
+    static let showsPhoneManagement = true
 
     static var hasManifestURL: Bool {
         #if DEBUG

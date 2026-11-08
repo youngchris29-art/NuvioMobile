@@ -589,6 +589,10 @@ struct MainTabView: View {
                 settingsLastCategory = category
             }
         }
+        // Add-ons hub v2 C2: Settings' "Manage from phone" row opens that hub section.
+        .onReceive(NotificationCenter.default.publisher(for: AddonsHubRequests.notification)) { _ in
+            selectedTab = 3
+        }
         .onChange(of: selectedTab) { _, tab in
             tabBarVisibility.setHomeTabSelected(tab == 0)
             // beta.18 verdict (BUG-66): `r=tab` now and `r=tab2` 0.6 s later in the Tab Bar

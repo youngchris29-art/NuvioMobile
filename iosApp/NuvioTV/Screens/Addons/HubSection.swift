@@ -74,3 +74,24 @@ nonisolated enum HubSection: String, CaseIterable, Hashable, Sendable {
         return section
     }
 }
+
+/// Add-ons hub v2 C2: another screen (Settings › Account & Profiles) asks for a hub section. The
+/// shell switches to the Add-ons tab on the notification; the hub selects the section at once
+/// when it is mounted, or on its next appearance from `pending`.
+@MainActor
+enum AddonsHubRequests {
+    static let notification = Notification.Name("com.nuvio.tv.openAddonsSection")
+    /// The section asked for and not yet shown.
+    static var pending: HubSection?
+
+    static func open(_ section: HubSection) {
+        pending = section
+        NotificationCenter.default.post(name: notification, object: nil, userInfo: ["section": section.rawValue])
+    }
+
+    /// The pending section, once (the hub calls this when it shows it).
+    static func take() -> HubSection? {
+        defer { pending = nil }
+        return pending
+    }
+}

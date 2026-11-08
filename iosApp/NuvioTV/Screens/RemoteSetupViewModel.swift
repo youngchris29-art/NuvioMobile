@@ -15,6 +15,8 @@ final class RemoteSetupViewModel: ObservableObject {
     @Published private(set) var serverURL: String?
     @Published private(set) var qrImage: UIImage?
     @Published private(set) var startFailed = false
+    /// C2: a browser has presented this session's token (cleared on every start and stop).
+    @Published private(set) var phoneConnected = false
     /// Non-nil while a browser proposal awaits the user's decision (drives the alert).
     @Published var pendingChange: RemoteSetupServer.PendingChange?
     @Published private(set) var pendingSummary: String = ""
@@ -24,7 +26,7 @@ final class RemoteSetupViewModel: ObservableObject {
     /// True between `start()` and the server's bind completion. Blocks re-entrant starts so a
     /// Retry tap can't stack a second attempt (and a second set of watchers) on an unresolved
     /// one (ME-002).
-    private var isStarting = false
+    @Published private(set) var isStarting = false
     /// Bumped by `start()` and `stop()`; a bind completion from a superseded attempt is ignored
     /// so it can't republish the URL/QR after the user pressed Stop (HI-002/ME-002).
     private var startAttempt = 0
@@ -72,6 +74,11 @@ final class RemoteSetupViewModel: ObservableObject {
         startAttempt += 1
         let attempt = startAttempt
         addonIds = RemoteSetupAddonIds()
+        phoneConnected = false
+        server.onAuthorizedRequest = { [weak self] in
+            guard let self, self.serverURL != nil else { return }
+            if !self.phoneConnected { self.phoneConnected = true }
+        }
         rowIds = RemoteSetupAddonIds()
         seenUrls = []
 
@@ -139,6 +146,7 @@ final class RemoteSetupViewModel: ObservableObject {
         server.stop()
         serverURL = nil
         qrImage = nil
+        phoneConnected = false
         pendingChange = nil
         pendingAddons = nil
         cancelWatchers()

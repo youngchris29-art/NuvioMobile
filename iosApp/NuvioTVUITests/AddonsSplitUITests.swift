@@ -22,7 +22,8 @@ final class AddonsSplitUITests: XCTestCase {
     private func sidebar(_ app: XCUIApplication, _ section: String) -> XCUIElement { element(app, "addons_sidebar_\(section)") }
 
     private static let titles = ["installed": "Installed", "catalogs": "Catalogs", "debrid": "Debrid",
-                                 "plugins": "Plugins", "install": "Install add-on", "refresh": "Refresh all"]
+                                 "plugins": "Plugins", "install": "Install add-on", "refresh": "Refresh all",
+                                 "phone": "Manage from phone"]
 
     /// A focused element whose label is `label` or starts with it and a comma (List cells carry
     /// the row's label, toggles add their value).
@@ -169,13 +170,38 @@ final class AddonsSplitUITests: XCTestCase {
 
     // MARK: - Legs
 
+    /// C2: Manage from phone hosts Remote Setup: it starts shortly after the section opens (status
+    /// and address appear) and closes when the section is left. Prints no address (it carries the
+    /// pairing token).
+    func testManageFromPhoneStartsAndStops() throws {
+        let app = launch(rail: false)
+        XCTAssertTrue(waitSidebarFocus(app, "installed"), "entry focus is not Installed; focused: \(focusDump(app))")
+        selectSection(app, "phone")
+        XCTAssertTrue(element(app, "addons_phone_pane").waitForExistence(timeout: 3), "phone pane missing")
+        XCTAssertTrue(element(app, "addons_phone_url").waitForExistence(timeout: 8), "Remote Setup never started")
+        let status = element(app, "addons_phone_status")
+        XCTAssertTrue(status.exists)
+        XCTAssertTrue(status.label.contains("Ready") || status.label.contains("Phone connected"), "status: \(status.label)")
+        say("phone: started, status \(status.label)")
+        // Right enters the pane on its one control.
+        press(.right)
+        XCTAssertTrue(waitLabelFocus(app, "New code"), "the pane's control did not take focus; focused: \(focusDump(app))")
+        // Back to the sidebar and up a section: the pane (and its server) goes away.
+        press(.menu)
+        XCTAssertTrue(moveSidebar(app, to: "refresh"), "could not move up to Refresh all")
+        XCTAssertTrue(moveSidebar(app, to: "install"), "could not move up to Install add-on")
+        pause(1.0)
+        XCTAssertFalse(element(app, "addons_phone_pane").exists, "the phone pane outlived its section")
+        say("phone: closed on leaving")
+    }
+
     /// Sidebar rows, entry focus on Installed, selection follows focus after the dwell.
     func testSplitShellSelectsSectionByFocus() throws {
         let app = launch(rail: false)
         for section in ["installed", "catalogs", "debrid", "install", "refresh"] {
             XCTAssertTrue(sidebar(app, section).exists, "addons_sidebar_\(section) missing")
         }
-        XCTAssertFalse(sidebar(app, "phone").exists, "Manage from phone must stay hidden until Stage C")
+        XCTAssertTrue(sidebar(app, "phone").exists, "Manage from phone is visible since C2")
         XCTAssertTrue(waitSidebarFocus(app, "installed"), "entry focus is not Installed; focused: \(focusDump(app))")
         XCTAssertTrue(element(app, "addons_content_installed").exists)
         selectSection(app, "catalogs")
