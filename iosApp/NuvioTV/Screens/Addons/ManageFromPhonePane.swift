@@ -37,10 +37,12 @@ struct ManageFromPhonePane: View {
             HStack(alignment: .top, spacing: Theme.Spacing.xl) {
                 qrBlock
                 VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                    Label(status.title, systemImage: status.systemImage)
-                        .font(Theme.Font.screenTitle.weight(.semibold))
-                        .foregroundStyle(Theme.Palette.textPrimary)
-                        .accessibilityIdentifier("addons_phone_status")
+                    HStack(spacing: Theme.Spacing.sm) {
+                        Image(systemName: status.systemImage).accessibilityHidden(true)
+                        Text(status.title).accessibilityIdentifier("addons_phone_status")
+                    }
+                    .font(Theme.Font.screenTitle.weight(.semibold))
+                    .foregroundStyle(Theme.Palette.textPrimary)
                     if let detail = status.detail {
                         Text(detail)
                             .font(Theme.Font.body)

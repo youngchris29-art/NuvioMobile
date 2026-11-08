@@ -178,8 +178,8 @@ final class AddonsSplitUITests: XCTestCase {
         XCTAssertTrue(waitSidebarFocus(app, "installed"), "entry focus is not Installed; focused: \(focusDump(app))")
         selectSection(app, "phone")
         XCTAssertTrue(element(app, "addons_phone_pane").waitForExistence(timeout: 3), "phone pane missing")
-        XCTAssertTrue(element(app, "addons_phone_url").waitForExistence(timeout: 8), "Remote Setup never started")
-        let status = element(app, "addons_phone_status")
+        XCTAssertTrue(element(app, "addons_phone_url").firstMatch.waitForExistence(timeout: 8), "Remote Setup never started")
+        let status = element(app, "addons_phone_status").firstMatch
         XCTAssertTrue(status.exists)
         XCTAssertTrue(status.label.contains("Ready") || status.label.contains("Phone connected"), "status: \(status.label)")
         say("phone: started, status \(status.label)")
@@ -216,7 +216,7 @@ final class AddonsSplitUITests: XCTestCase {
         let app = launch(rail: false)
         XCTAssertTrue(waitSidebarFocus(app, "installed"), "entry focus is not Installed; focused: \(focusDump(app))")
         selectSection(app, "phone")
-        let urlLabel = element(app, "addons_phone_url")
+        let urlLabel = element(app, "addons_phone_url").firstMatch
         XCTAssertTrue(urlLabel.waitForExistence(timeout: 8), "Remote Setup never started")
         let first = urlLabel.label
         XCTAssertEqual(httpStatus(first), 200, "the first session does not answer")
@@ -237,10 +237,20 @@ final class AddonsSplitUITests: XCTestCase {
         }
         XCTAssertTrue(moveFocus(.right, until: app.buttons["Add-ons"], max: 4), "Add-ons tab never took focus")
         press(.select, settle: 2)
+        let contents = ["installed", "catalogs", "debrid", "plugins", "install", "phone"].filter { element(app, "addons_content_\($0)").exists }
+        say("back on Add-ons: sections showing \(contents)")
+        // The old session stays closed whatever the hub restored to.
+        XCTAssertNotEqual(httpStatus(first), 200, "the old session answers again after coming back")
+        // The tab can rebuild the hub on return; open the section again if it is not showing.
+        if !element(app, "addons_content_phone").exists {
+            enterSidebar(app)
+            selectSection(app, "phone")
+        }
+        let fresh = element(app, "addons_phone_url").firstMatch
         let restarted = NSPredicate(format: "exists == true AND label != %@", first)
-        let wait = XCTNSPredicateExpectation(predicate: restarted, object: urlLabel)
+        let wait = XCTNSPredicateExpectation(predicate: restarted, object: fresh)
         XCTAssertEqual(XCTWaiter().wait(for: [wait], timeout: 10), .completed, "no fresh session after coming back")
-        XCTAssertEqual(httpStatus(urlLabel.label), 200, "the fresh session does not answer")
+        XCTAssertEqual(httpStatus(fresh.label), 200, "the fresh session does not answer")
         say("phone: fresh session on return")
     }
 
@@ -257,18 +267,28 @@ final class AddonsSplitUITests: XCTestCase {
         }
         XCTAssertTrue(moveFocus(.right, until: app.buttons["Settings"], max: 4), "Settings tab never took focus")
         press(.select, settle: 2)
-        let category = element(app, "settings_category_accountProfiles")
-        XCTAssertTrue(category.waitForExistence(timeout: 5), "Account & Profiles missing")
-        XCTAssertTrue(moveFocus(.down, until: category, max: 4) || category.hasFocus, "Account & Profiles never took focus")
+        // List focus sits on the cell, so rows are matched by label (the row's identifier is on
+        // its content, and the lazy List builds it only once scrolled into view).
+        // Account & Profiles is the first category: Down from the tab bar until it holds focus.
+        var onCategory = waitLabelFocus(app, "Account & Profiles", timeout: 2)
+        for _ in 0..<3 where !onCategory {
+            press(.down, settle: 1.0)
+            onCategory = labelHasFocus(app, "Account & Profiles")
+        }
+        XCTAssertTrue(onCategory, "Account & Profiles never took focus; focused: \(focusDump(app))")
+        guard onCategory else { return }
         press(.select, settle: 1.5)
-        let row = element(app, "settings_manage_from_phone")
-        XCTAssertTrue(row.waitForExistence(timeout: 5), "the Manage from phone row is missing")
-        XCTAssertTrue(moveFocus(.down, until: row, max: 8), "the Manage from phone row never took focus; focused: \(focusDump(app))")
-        XCTAssertTrue(row.hasFocus)
+        var onRow = false
+        for _ in 0..<10 {
+            if labelHasFocus(app, "Manage from phone") { onRow = true; break }
+            press(.down, settle: 0.8)
+        }
+        XCTAssertTrue(onRow, "the Manage from phone row never took focus; focused: \(focusDump(app))")
+        guard onRow else { return }
         press(.select, settle: 2.5)
         XCTAssertTrue(element(app, "addons_content_phone").waitForExistence(timeout: 5), "the hub did not show Manage from phone")
         XCTAssertTrue(waitSidebarFocus(app, "phone"), "focus is not on the phone row; focused: \(focusDump(app))")
-        XCTAssertTrue(element(app, "addons_phone_url").waitForExistence(timeout: 8), "Remote Setup never started")
+        XCTAssertTrue(element(app, "addons_phone_url").firstMatch.waitForExistence(timeout: 8), "Remote Setup never started")
         say("phone: opened from Settings")
     }
 
