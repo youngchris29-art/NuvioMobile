@@ -93,21 +93,24 @@ final class StreamPickerFullWidthTests: XCTestCase {
         XCTAssertNil(make(stream(title: "  ", description: ""), addonText: true).description)
     }
 
-    func testSizeIsNotDrawnTwiceWhenTheAddonTextHasIt() {
-        let model = make(stream(), addonText: true)
+    func testTheSizeIsAlwaysDrawn() {
+        // Review r3: the add-on's text may carry the size past the resting line limit, so the row
+        // keeps its own size rather than risk showing none.
         XCTAssertEqual(StreamFileSizeChip.label(for: 2_000_000_000), "1.9 GB")
-        XCTAssertTrue(model.sizeInAddonText)
-        XCTAssertEqual(model.sizeBytes, 2_000_000_000, "the size still drives sorting and the compact row's Nuvio mode")
-        XCTAssertNil(model.drawnSizeBytes, "already in the description")
+        XCTAssertEqual(make(stream(), addonText: true).sizeBytes, 2_000_000_000)
+        XCTAssertEqual(make(stream(description: "Movie.2024.2160p.WEB-DL"), addonText: true).sizeBytes, 2_000_000_000)
+        XCTAssertNil(make(stream(), addonText: true, showFileSize: false).sizeBytes, "File Size Badges off")
+    }
 
-        let plain = make(stream(description: "Movie.2024.2160p.WEB-DL"), addonText: true)
-        XCTAssertFalse(plain.sizeInAddonText)
-        XCTAssertEqual(plain.drawnSizeBytes, 2_000_000_000, "not in the add-on's text: drawn")
-
-        let nuvio = make(stream(), addonText: false)
-        XCTAssertEqual(nuvio.drawnSizeBytes, 2_000_000_000, "Nuvio text always draws the size")
-        XCTAssertTrue(StreamRowModel.addonTextContains("1.9 gb", nameLines: [], description: "💾 1.9 GB"),
-                      "case-insensitive")
+    func testTheNameShowsItsSourceOnlyAsALeadingWholeWordOnAVisibleLine() {
+        XCTAssertTrue(StreamRowModel.nameShowsSource("AIOStreams", nameLines: ["AIOStreams", "4K"]))
+        XCTAssertTrue(StreamRowModel.nameShowsSource("aiostreams", nameLines: ["AIOStreams 4K ⚡"]))
+        XCTAssertTrue(StreamRowModel.nameShowsSource("Torrentio", nameLines: ["4K", "Torrentio: RD+"]))
+        XCTAssertFalse(StreamRowModel.nameShowsSource("RD", nameLines: ["4K HDR", "RDX"]), "never a substring")
+        XCTAssertFalse(StreamRowModel.nameShowsSource("RD", nameLines: ["HDR RD"]), "only at the start of a line")
+        XCTAssertFalse(StreamRowModel.nameShowsSource("Comet", nameLines: ["a", "b", "c", "Comet"]),
+                       "a fourth line is hidden at rest")
+        XCTAssertFalse(StreamRowModel.nameShowsSource(" ", nameLines: ["x"]))
     }
 
     func testAddonCachedStateComesOnlyFromNuviosOwnDebridCheck() {
@@ -200,7 +203,7 @@ final class StreamPickerFullWidthTests: XCTestCase {
         XCTAssertEqual(model.spokenLabel, "AIOStreams, 4K ⚡ RD, Movie (2024), WEB-DL, 🔊 Atmos, 1.9 GB, DV")
         let onTop = make(stream(description: "💾 1.9 GB", badges: [badge("DV")], cache: status(.cached)),
                          addonText: true, badgesOnTop: true)
-        XCTAssertEqual(onTop.spokenLabel, "DV, AIOStreams, 4K ⚡ RD, 💾 1.9 GB, RD Instant")
+        XCTAssertEqual(onTop.spokenLabel, "DV, AIOStreams, 4K ⚡ RD, 💾 1.9 GB, 1.9 GB, RD Instant")
         let failed = make(stream(description: nil, size: nil), addonText: true)
             .applying(isResolving: false, failedRecently: true, players: [], defaultPlayerId: nil)
         XCTAssertEqual(failed.spokenLabel, "AIOStreams, 4K ⚡ RD, Failed recently")

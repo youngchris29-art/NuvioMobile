@@ -139,14 +139,15 @@ struct StreamRowView: View, Equatable {
         }
     }
 
-    /// The trailing column: spinner, size (unless the add-on's text has it), Nuvio's cached part.
+    /// The trailing column: spinner, size (always: the add-on's text may hold it past the resting
+    /// line limit, review r3), Nuvio's cached part.
     private var addonTrailing: some View {
         VStack(alignment: .trailing, spacing: Theme.Spacing.xs) {
             HStack(spacing: Theme.Spacing.sm) {
                 if model.isResolving {
                     ProgressView().scaleEffect(0.7)
                 }
-                if let bytes = model.drawnSizeBytes {
+                if let bytes = model.sizeBytes {
                     Text(verbatim: StreamFileSizeChip.label(for: bytes))
                         .font(Theme.Font.metaStrong)
                         .rowTextColor()

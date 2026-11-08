@@ -326,7 +326,7 @@ final class StreamRowModelTests: XCTestCase {
             hdrMark: hdrMark ?? m.hdrMark, videoFacts: videoFacts ?? m.videoFacts,
             audioFacts: audioFacts ?? m.audioFacts, cachedState: cachedState ?? m.cachedState,
             audio: audio ?? m.audio, wide: m.wide, addonText: m.addonText, nameLines: m.nameLines,
-            addonCachedState: m.addonCachedState, sizeInAddonText: m.sizeInAddonText
+            addonCachedState: m.addonCachedState
         )
     }
 

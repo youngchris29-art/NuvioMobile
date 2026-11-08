@@ -94,9 +94,6 @@ nonisolated struct StreamRowModel: Equatable, Identifiable {
     /// GitHub #25: in add-on text the cached part comes only from Nuvio's own debrid check
     /// (`StreamItem.debridCacheStatus`); an add-on that marks its cache in its text is not repeated.
     var addonCachedState: StreamRowCachedState? = nil
-    /// GitHub #25: the size label already appears in the add-on's name or description, so an
-    /// add-on text row does not draw it a second time.
-    var sizeInAddonText = false
 
     /// This row's debrid / YouTube resolve is in flight (the spinner beside the title).
     var isResolving = false
@@ -118,8 +115,6 @@ nonisolated struct StreamRowModel: Equatable, Identifiable {
     /// The cached part the row actually draws: Nuvio's parsed state, or in add-on text only
     /// Nuvio's own debrid check.
     var drawnCachedState: StreamRowCachedState? { addonText ? addonCachedState : cachedState }
-    /// The size the row actually draws: in add-on text, nil when the add-on's text already has it.
-    var drawnSizeBytes: Int64? { addonText && sizeInAddonText ? nil : sizeBytes }
     /// The wide Nuvio row's second line (video facts, audio, languages, cached part) is drawn.
     var hasWideFactLine: Bool { hasVideoLine || hasAudioLine }
 
@@ -140,7 +135,7 @@ nonisolated struct StreamRowModel: Equatable, Identifiable {
             if let description {
                 parts += Self.textLines(description)
             }
-            if let bytes = drawnSizeBytes { parts.append(StreamFileSizeChip.label(for: bytes)) }
+            if let sizeBytes { parts.append(StreamFileSizeChip.label(for: sizeBytes)) }
             if let state = drawnCachedState { parts.append(StreamRowFacts.cachedText(state)) }
             if !badgesOnTop { parts += badgeNames }
             if isYouTube { parts.append("YouTube") }
@@ -168,11 +163,19 @@ nonisolated struct StreamRowModel: Equatable, Identifiable {
             .filter { !$0.isEmpty }
     }
 
-    /// GitHub #25: whether the add-on's own text already carries `label` (a plain, case-insensitive
-    /// substring check against `StreamFileSizeChip.label`, so the size is never drawn twice).
-    nonisolated static func addonTextContains(_ label: String, nameLines: [String], description: String?) -> Bool {
-        let haystack = (nameLines + [description ?? ""]).joined(separator: "\n")
-        return haystack.range(of: label, options: [.caseInsensitive]) != nil
+    /// GitHub #25 review r3: the add-on's name already names its source when one of the name lines
+    /// visible at rest STARTS with the source label as a whole word ("AIOStreams" in "AIOStreams 4K",
+    /// never "RD" in "HDR"), case-insensitive. Only then does the row leave its own source label out.
+    nonisolated static func nameShowsSource(_ label: String, nameLines: [String],
+                                            visibleLines: Int = StreamPickerWideMetrics.nameRestLines) -> Bool {
+        let source = label.trimmingCharacters(in: .whitespaces)
+        guard !source.isEmpty else { return false }
+        return nameLines.prefix(visibleLines).contains { line in
+            guard let range = line.range(of: source, options: [.caseInsensitive, .anchored]) else { return false }
+            guard range.upperBound < line.endIndex else { return true }
+            let next = line[range.upperBound]
+            return !(next.isLetter || next.isNumber)
+        }
     }
 
     /// GitHub #25: the add-on-text cached part, from Nuvio's own debrid check only.
@@ -244,10 +247,6 @@ nonisolated struct StreamRowModel: Equatable, Identifiable {
             if let legacyTitle, !legacyTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return legacyTitle }
             return nil
         }()
-        let sizeInAddonText = sizeBytes.map {
-            StreamRowModel.addonTextContains(StreamFileSizeChip.label(for: $0), nameLines: nameLines,
-                                             description: addonDescription)
-        } ?? false
         return StreamRowModel(
             key: key,
             title: headline != nil ? plainTitle : fullTitle,
@@ -263,7 +262,7 @@ nonisolated struct StreamRowModel: Equatable, Identifiable {
             // same name under one quality heading; #16's provider name under a repository group),
             // unless the add-on's own name lines already carry it.
             showsAddonName: display.addonText
-                ? !sourceLabel.isEmpty && !StreamRowModel.addonTextContains(sourceLabel, nameLines: nameLines, description: nil)
+                ? !sourceLabel.isEmpty && !StreamRowModel.nameShowsSource(sourceLabel, nameLines: nameLines)
                 : (headline != nil || display.showAddonLogo || stream.isPluginRepositoryGroup) && !sourceLabel.isEmpty,
             addonName: sourceLabel,
             addonLogo: (logo ?? "").isEmpty ? nil : logo,
@@ -283,8 +282,7 @@ nonisolated struct StreamRowModel: Equatable, Identifiable {
             // Add-on-text fields stay at their defaults on a Nuvio row, so it is the value it was.
             nameLines: display.addonText ? nameLines : [],
             addonCachedState: display.addonText
-                ? StreamRowModel.addonCachedState(stream.debridCacheStatus, providerLabel: providerLabel) : nil,
-            sizeInAddonText: display.addonText && sizeInAddonText
+                ? StreamRowModel.addonCachedState(stream.debridCacheStatus, providerLabel: providerLabel) : nil
         )
     }
 
