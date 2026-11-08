@@ -35,7 +35,7 @@ final class RemoteSetupChangeListTests: XCTestCase {
         ])
         XCTAssertEqual(out.map(\.kind), [.remove, .install, .turnOff, .turnOn])
         XCTAssertEqual(out[0].text, "Remove add-on Torrentio")
-        XCTAssertEqual(out[1].text, "Install add-on new.example.com")
+        XCTAssertEqual(out[1].text, "Install add-on new.example.com at the end of the list")
         XCTAssertFalse(out.contains { $0.text.contains("SECRET") || $0.text.contains("://") }, "no URL reaches the dialog")
     }
 
@@ -94,11 +94,24 @@ final class RemoteSetupChangeListTests: XCTestCase {
             .init(id: "u1", title: "addon.example.com", enabled: true, isNew: true),
             .init(id: "u2", title: "addon.example.com", enabled: false, isNew: true),
         ])
-        XCTAssertEqual(out.map(\.text), ["Install add-on addon.example.com (#1)", "Install add-on addon.example.com (#2) (turned off)"])
+        XCTAssertEqual(out.map(\.text), ["Install add-on addon.example.com (new #1) at the end of the list",
+                                          "Install add-on addon.example.com (new #2) at the end of the list (turned off)"])
         let off = List.lines(addons: [], proposedAddons: nil, rows: [], rowOrder: nil, disabledRows: nil,
                              setsMdbListKey: true, mdbListEnabled: false, posterPattern: nil,
                              posterPatternValid: { _ in true }, badgePackUrls: [])
         XCTAssertEqual(off.map(\.text), ["Set the MDBList API key and turn MDBList on"])
+    }
+
+    /// Review r17: new add-ons are numbered in the order they are appended, whatever their place
+    /// among the installed ones on the phone.
+    func testNewAddonsAreNumberedInTheOrderTheyAreAdded() {
+        let out = lines(addons: [item("a", "A")], proposed: [
+            .init(id: "x", title: "h.example.com", enabled: true, isNew: true),
+            kept("a", "A"),
+            .init(id: "y", title: "h.example.com", enabled: false, isNew: true),
+        ])
+        XCTAssertEqual(out.map(\.text), ["Install add-on h.example.com (new #1) at the end of the list",
+                                          "Install add-on h.example.com (new #2) at the end of the list (turned off)"])
     }
 
     func testKeysPatternAndBadges() {

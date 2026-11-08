@@ -494,6 +494,11 @@ final class RemoteSetupViewModel: ObservableObject {
             finish(failed, conflictIds)
             return
         }
+        // Review r17: after a profile switch nothing more starts; the rest go back to the phone.
+        guard ProfileRepository.shared.activeProfileId == profile else {
+            finish(failed + Array(index..<entries.count), conflictIds)
+            return
+        }
         let url = entries[index].url
         let wanted = entries[index].enabled ?? true
         AddonRepository.shared.addAddon(rawUrl: url, enabled: wanted) { result, _ in

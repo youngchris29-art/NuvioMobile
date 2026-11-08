@@ -69,15 +69,17 @@ nonisolated enum RemoteSetupChangeList {
             for addon in addons where !keptIds.contains(addon.id) {
                 out.append(Line(kind: .remove, text: String(localized: "Remove add-on \(addonName[addon.id] ?? addon.title)"), subject: addon.id))
             }
-            // Review r3: new add-ons sharing a host are told apart by their place in the
-            // proposed list (the URL itself never shows).
-            let newHosts = Dictionary(proposed.filter(\.isNew).map { ($0.title, 1) }, uniquingKeysWith: +)
-            for (position, entry) in proposed.enumerated() where entry.isNew {
+            // Review r3/r17: new add-ons are added at the end of the list, in the order the phone
+            // listed them (wherever it placed them among the installed ones), so the dialog says so
+            // and numbers same-host ones in that order.
+            let fresh = proposed.filter(\.isNew)
+            let newHosts = Dictionary(fresh.map { ($0.title, 1) }, uniquingKeysWith: +)
+            for (order, entry) in fresh.enumerated() {
                 let off = entry.enabled == false
-                let title = newHosts[entry.title, default: 0] > 1 ? "\(entry.title) (#\(position + 1))" : entry.title
+                let title = newHosts[entry.title, default: 0] > 1 ? "\(entry.title) (new #\(order + 1))" : entry.title
                 out.append(Line(kind: .install, text: off
-                    ? String(localized: "Install add-on \(title) (turned off)")
-                    : String(localized: "Install add-on \(title)"), subject: entry.id))
+                    ? String(localized: "Install add-on \(title) at the end of the list (turned off)")
+                    : String(localized: "Install add-on \(title) at the end of the list"), subject: entry.id))
             }
             let kept = proposed.filter { !$0.isNew }
             for id in movedIds(before: addons.map(\.id).filter(keptIds.contains), after: kept.map(\.id)) {
