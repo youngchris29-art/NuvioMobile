@@ -344,7 +344,12 @@ object AddonRepository {
             return AddAddonResult.Error(manifestFailureMessage(error))
         }
 
+        // C1 review r9: the duplicate check above runs before the (slow) fetch, so two installs of
+        // one URL can both pass it; the append re-checks inside the update and only one lands.
+        var appended = false
         _uiState.update { current ->
+            appended = current.addons.none { it.manifestUrl == manifestUrl }
+            if (!appended) return@update current
             current.copy(
                 addons = current.addons + ManagedAddon(
                     manifestUrl = manifestUrl,
@@ -353,6 +358,9 @@ object AddonRepository {
                     errorMessage = null,
                 ),
             )
+        }
+        if (!appended) {
+            return AddAddonResult.Error(resourceString("That addon is already installed.", StringKey.addon_already_installed))
         }
         persist()
         pushToServer()

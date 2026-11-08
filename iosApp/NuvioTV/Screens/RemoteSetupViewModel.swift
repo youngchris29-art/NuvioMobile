@@ -196,7 +196,9 @@ final class RemoteSetupViewModel: ObservableObject {
             // Claimed atomically with supersession: a newer proposal that lands after the check
             // above wins, and this one is not applied.
             guard server.claimForConfirm(id: change.id) else { return }
-            server.finishApplying(id: change.id, status: apply(change.proposal, addons: resolved))
+            let status = apply(change.proposal, addons: resolved)
+            let installs = status == .confirmed ? (resolved ?? []).filter(\.isNew).map(\.url) : []
+            installThenFinish(installs, changeId: change.id, status: status)
         }
     }
 
@@ -340,12 +342,28 @@ final class RemoteSetupViewModel: ObservableObject {
         case .readOnly: return .readOnly
         default: break
         }
-        // Installs (async manifest fetch; appended by the repo when they resolve). A read-only
-        // list was refused above, so the repository accepts these.
-        for entry in proposed where entry.isNew {
-            repo.addAddon(rawUrl: entry.url) { _, _ in }
-        }
+        // New add-ons are installed by `installThenFinish` once the rest has applied.
         return .confirmed
+    }
+
+    /// Installs the proposal's new add-ons (async manifest fetches) and settles the change only
+    /// when every one has finished, so the page, which keeps polling while the change is
+    /// `applying`, reloads a list that already holds them. A read-only list was refused before
+    /// this, so the repository accepts them (a failed fetch simply leaves that one out).
+    private func installThenFinish(_ urls: [String], changeId: String, status: RemoteSetupServer.ChangeStatus) {
+        guard !urls.isEmpty else {
+            server.finishApplying(id: changeId, status: status)
+            return
+        }
+        var remaining = urls.count
+        for url in urls {
+            AddonRepository.shared.addAddon(rawUrl: url) { [weak self] _, _ in
+                Task { @MainActor in
+                    remaining -= 1
+                    if remaining == 0 { self?.server.finishApplying(id: changeId, status: status) }
+                }
+            }
+        }
     }
 
     private func applyRows(_ proposal: RemoteSetupServer.Proposal) {

@@ -270,22 +270,28 @@ function addAddon() {
 // until it is on screen, retrying while the TV can't be reached, so no edit is made or sent
 // against a list or baseline the TV has moved past.
 async function reloadLocked(note, addonsOnly, delayMs) {
-  const main = document.querySelector("main");
   el("apply").disabled = true;
-  main.classList.add("busy");
-  main.inert = true;
+  setLocked(true);
   if (delayMs) await new Promise(r => setTimeout(r, delayMs));
   while (!(await load(note, addonsOnly))) {
     setStatus("Couldn't reach the TV to reload its list. Trying again… (is Remote Setup still open?)", "err");
     await new Promise(r => setTimeout(r, 3000));
   }
-  main.inert = false;
-  main.classList.remove("busy");
+  setLocked(false);
+}
+
+function setLocked(locked) {
+  const main = document.querySelector("main");
+  main.classList.toggle("busy", locked);
+  main.inert = locked;
 }
 
 async function apply() {
   const btn = el("apply");
   btn.disabled = true;
+  // Locked until the outcome is handled: an edit made against the sent snapshot could be lost
+  // when a stale outcome replaces the add-on list.
+  setLocked(true);
   setStatus("Waiting for confirmation on the TV…");
   const payload = {
     rowOrder: rows.map(r => r.key),
@@ -317,12 +323,12 @@ async function apply() {
     poll(id, 0);
   } catch (e) {
     setStatus("Couldn't send changes to the TV.", "err");
-    btn.disabled = false;
+    btn.disabled = false; setLocked(false);
   }
 }
 
 async function poll(id, tries) {
-  if (tries > 120) { setStatus("Timed out waiting for the TV.", "err"); el("apply").disabled = false; return; }
+  if (tries > 120) { setStatus("Timed out waiting for the TV.", "err"); el("apply").disabled = false; setLocked(false); return; }
   try {
     const res = await fetch("/api/status/" + id, { headers: AUTH });
     const { status } = await res.json();
@@ -348,22 +354,22 @@ async function poll(id, tries) {
     }
     if (status === "read_only") {
       setStatus("Not applied: this TV profile uses another profile's add-ons, so add-ons can only be changed from that profile. Your other changes are still here.", "err");
-      el("apply").disabled = false;
+      el("apply").disabled = false; setLocked(false);
       return;
     }
     if (status === "invalid") {
       setStatus("Not applied: a new add-on address isn't valid, or that add-on is already installed. Your other changes are still here.", "err");
-      el("apply").disabled = false;
+      el("apply").disabled = false; setLocked(false);
       return;
     }
     if (status === "superseded") {
       setStatus("Not applied: a newer change reached the TV first. Your changes are still here.", "err");
-      el("apply").disabled = false;
+      el("apply").disabled = false; setLocked(false);
       return;
     }
     if (status === "rejected") {
       setStatus("Declined on the TV. Your changes are still here.", "err");
-      el("apply").disabled = false;
+      el("apply").disabled = false; setLocked(false);
       return;
     }
   } catch (e) { /* transient; keep polling */ }
