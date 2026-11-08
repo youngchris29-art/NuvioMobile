@@ -176,6 +176,12 @@ final class RemoteSetupPageSafeTextTests: XCTestCase {
         XCTAssertEqual(RemoteSetupAddonIds.pageSafe("anime abcd", manifestUrl: keyed), "anime <redacted>")
     }
 
+    /// Review r19: a schemeless synced URL is parsed from its host.
+    func testSchemelessUrlsAreCovered() {
+        let bare = "addon.example.com/torbox=SCHEMELESS42/manifest.json"
+        XCTAssertFalse(RemoteSetupAddonIds.pageSafe("key SCHEMELESS42", manifestUrl: bare).contains("SCHEMELESS42"))
+    }
+
     func testPlainTextIsUntouched() {
         XCTAssertEqual(RemoteSetupAddonIds.pageSafe("Torrentio — streams from many sources", manifestUrl: url),
                        "Torrentio — streams from many sources")

@@ -127,8 +127,9 @@ nonisolated struct RemoteSetupAddonIds {
     /// plain and percent-decoded, so a key quoted on its own is cut too.
     static func secretPieces(of manifestUrl: String) -> [String] {
         // Parsed by hand: a literal `|` (common in debrid add-on paths) makes URLComponents fail.
-        guard let sep = manifestUrl.range(of: "://") else { return [] }
-        let afterScheme = manifestUrl[sep.upperBound...]
+        // Review r19: a synced URL can lack a scheme (`host/torbox=KEY/manifest.json`); it then
+        // starts at its host.
+        let afterScheme = manifestUrl.range(of: "://").map { manifestUrl[$0.upperBound...] } ?? manifestUrl[...]
         let afterHost = afterScheme.drop(while: { $0 != "/" && $0 != "?" })
         // Review r13: `user:password@` credentials in the authority are pieces too.
         let authority = afterScheme[..<afterHost.startIndex]
