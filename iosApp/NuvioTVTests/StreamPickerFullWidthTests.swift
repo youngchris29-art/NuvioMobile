@@ -161,7 +161,9 @@ final class StreamPickerFullWidthTests: XCTestCase {
         XCTAssertEqual(parts.lead, "AIOStreams 4K ⚡ RD")
         XCTAssertEqual(parts.facts, "Movie (2024)")
         XCTAssertNil(parts.glyph)
-        XCTAssertNil(parts.size, "the description already carries the size")
+        XCTAssertEqual(parts.size, "1.9 GB", "the size is on description line four, which the one line does not show")
+        let onFirstLine = StreamPickerCopy.compactParts(make(stream(description: "💾 1.9 GB · WEB-DL"), addonText: true))
+        XCTAssertNil(onFirstLine.size, "the shown first line already carries the size")
         XCTAssertEqual(parts.trailing, "AIOStreams")
 
         let cachedPlain = make(stream(description: "Movie.2024", url: nil, infoHash: "h", cache: status(.cached)),
@@ -173,7 +175,8 @@ final class StreamPickerFullWidthTests: XCTestCase {
 
     func testCompactSpokenLabelInAddonText() {
         XCTAssertEqual(StreamPickerCopy.compactSpokenLabel(make(stream(), addonText: true)),
-                       "AIOStreams 4K ⚡ RD, Movie (2024), AIOStreams")
+                       "AIOStreams 4K ⚡ RD, Movie (2024), 🎞️ WEB-DL · HEVC · DV, 🔊 Atmos DD+ 5.1, 💾 1.9 GB · 👤 120, 1.9 GB, AIOStreams",
+                       "every description line is read, not only the one drawn")
     }
 
     func testCompactNuvioModeIsUnchanged() {

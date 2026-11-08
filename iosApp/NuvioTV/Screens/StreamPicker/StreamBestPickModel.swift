@@ -178,25 +178,32 @@ enum StreamPickerCopy {
     /// already has it). Same 64 pt row.
     private static func addonCompactParts(_ row: StreamRowModel) -> StreamCompactParts {
         let lead = row.nameLines.isEmpty ? row.title : row.nameLines.joined(separator: " ")
+        let facts = StreamRowModel.textLines(row.description).first
         let trailing: String? = row.failedRecently
             ? String(localized: "Failed recently")
             : clean(row.addonName)
+        // Review r1: the one line shows only the lead and the description's first line, so the size
+        // is dropped only when THAT text carries it (a size on line four would otherwise vanish).
+        let size: String? = row.sizeBytes.map { StreamFileSizeChip.label(for: $0) }.flatMap { label in
+            StreamRowModel.addonTextContains(label, nameLines: [lead], description: facts) ? nil : label
+        }
         return StreamCompactParts(
             lead: lead,
-            facts: StreamRowModel.textLines(row.description).first,
+            facts: facts,
             glyph: row.drawnCachedState.map(StreamRowFacts.cachedSymbol),
-            size: row.drawnSizeBytes.map { StreamFileSizeChip.label(for: $0) },
+            size: size,
             trailing: trailing
         )
     }
 
     /// Lead, fact terms, cached words, size, add-on, "YouTube", "Failed recently". In add-on text:
-    /// lead, the description's first line, then the same tail.
+    /// lead, every description line (review r1: VoiceOver is not bound by the visual one line), then
+    /// the same tail.
     static func compactSpokenLabel(_ row: StreamRowModel, parts: StreamCompactParts? = nil) -> String {
         let parts = parts ?? compactParts(row)
         if row.addonText {
             var spoken: [String] = [parts.lead]
-            if let facts = parts.facts { spoken.append(facts) }
+            spoken += StreamRowModel.textLines(row.description)
             if let state = row.drawnCachedState { spoken.append(StreamRowFacts.cachedText(state)) }
             if let size = parts.size { spoken.append(size) }
             if let addon = clean(row.addonName) { spoken.append(addon) }

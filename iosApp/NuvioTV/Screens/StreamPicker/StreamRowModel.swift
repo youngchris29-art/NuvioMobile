@@ -274,10 +274,11 @@ nonisolated struct StreamRowModel: Equatable, Identifiable {
             audio: audioLabel,
             wide: display.fullWidth,
             addonText: display.addonText,
-            nameLines: nameLines,
+            // Add-on-text fields stay at their defaults on a Nuvio row, so it is the value it was.
+            nameLines: display.addonText ? nameLines : [],
             addonCachedState: display.addonText
                 ? StreamRowModel.addonCachedState(stream.debridCacheStatus, providerLabel: providerLabel) : nil,
-            sizeInAddonText: sizeInAddonText
+            sizeInAddonText: display.addonText && sizeInAddonText
         )
     }
 

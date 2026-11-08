@@ -434,7 +434,7 @@ struct SourcesSettingsPane: View {
 /// Picker keys + labels for the "Source Filters" section: the Swift string keys `SettingsViewModel`
 /// maps to `DebridStreamSortMode` / `DebridStreamMinimumQuality` / `DebridStreamFeatureFilter` (a
 /// `Menu` row binds a plain key, not a bridged Kotlin enum).
-private enum SourceSettingOptions {
+enum SourceSettingOptions {
     static let sortKeys = ["default", "quality", "sizeDesc", "sizeAsc"]
     static let minimumQualityKeys = ["any", "720", "1080", "2160"]
     static let featureFilterKeys = ["any", "only", "exclude"]

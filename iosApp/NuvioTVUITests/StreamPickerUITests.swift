@@ -944,19 +944,20 @@ final class StreamPickerUITests: XCTestCase {
         say("header strip up, progress: \(progress.label)")
 
         // 2. Rows read the add-on's own text: the name first, never a Nuvio headline.
-        XCTAssertTrue(waitRows(app, 4, atLeast: true, timeout: 20),
-                      "expected >= 4 stream_picker_row, saw \(rows(app).count); chips: \(chipLabels(app))")
-        let rowLabels = rows(app).allElementsBoundByIndex.map(\.label)
-        say("row labels = \(rowLabels)")
-        let stubRows = rowLabels.filter { $0.hasPrefix("ZZ ") }
-        XCTAssertGreaterThanOrEqual(stubRows.count, 4, "add-on text rows must lead with the add-on's name; rows: \(rowLabels)")
-        for label in rowLabels {
+        // Review r1 (P3): wait for the stub rows themselves, not any four rows (another installed
+        // add-on may answer first), and check only the stub rows' text.
+        let stubQuery = rows(app).matching(NSPredicate(format: "label BEGINSWITH %@", "ZZ "))
+        XCTAssertTrue(waitUntil(timeout: 30) { stubQuery.count >= 4 },
+                      "expected >= 4 stub rows leading with the add-on's name, saw \(stubQuery.count); rows: \(rows(app).allElementsBoundByIndex.map(\.label))")
+        let stubRows = stubQuery.allElementsBoundByIndex.map(\.label)
+        say("stub row labels = \(stubRows)")
+        for label in stubRows {
             for headline in ["4K", "1440p", "1080p", "720p", "SD"] {
                 XCTAssertFalse(label.hasPrefix(headline + ","), "a row leads with Nuvio's headline: \(label)")
             }
         }
         XCTAssertTrue(stubRows.contains { $0.contains("Dune 2021") },
-                      "the description (the stub's legacy title) is read after the name; rows: \(rowLabels)")
+                      "the description (the stub's legacy title) is read after the name; rows: \(stubRows)")
 
         // 3. Right from a row still steps the chips, focus kept on the list.
         XCTAssertTrue(waitFocus(rows(app).element(boundBy: 0), timeout: 10),

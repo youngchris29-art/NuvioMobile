@@ -80,7 +80,7 @@ struct StreamRowView: View, Equatable {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             // The dwell host: always present, no layout space, the only view that reads focus.
-            .background(StreamRowDwell(isShown: $fileLineShown, hasText: model.description != nil,
+            .background(StreamRowDwell(isShown: $fileLineShown, hasText: model.description != nil || model.addonText,
                                        onExpanded: onExpanded))
             .padding(Theme.Spacing.md)
         }
@@ -168,7 +168,8 @@ struct StreamRowView: View, Equatable {
                 .font(Theme.Font.metaStrong)
                 .rowTextColor()
                 .multilineTextAlignment(.leading)
-                .lineLimit(3)
+                .lineLimit(fileLineShown ? nil : StreamPickerWideMetrics.nameRestLines)
+                .fixedSize(horizontal: false, vertical: fileLineShown)
                 .frame(width: StreamPickerWideMetrics.nameColumnWidth, alignment: .leading)
             VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
                 addonBadges(top: true)
@@ -189,7 +190,8 @@ struct StreamRowView: View, Equatable {
                     .font(Theme.Font.metaStrong)
                     .rowTextColor()
                     .multilineTextAlignment(.leading)
-                    .lineLimit(3)
+                    .lineLimit(fileLineShown ? nil : StreamPickerWideMetrics.nameRestLines)
+                    .fixedSize(horizontal: false, vertical: fileLineShown)
                     .layoutPriority(1)
                 Spacer(minLength: Theme.Spacing.sm)
                 addonTrailing

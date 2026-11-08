@@ -72,8 +72,10 @@ nonisolated enum StreamPickerWideMetrics {
         fullWidth ? cardMaxWidth : .infinity
     }
 
-    /// The add-on name column of a wide add-on-text row (up to three lines).
+    /// The add-on name column of a wide add-on-text row.
     static let nameColumnWidth: CGFloat = 300
+    /// Name lines an add-on-text row shows at rest; the whole name after the focus dwell (review r1).
+    static let nameRestLines = 3
     /// Description lines an add-on-text row shows at rest; the whole text after the focus dwell.
     static let descriptionRestLines = 4
 }
