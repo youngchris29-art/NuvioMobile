@@ -184,8 +184,10 @@ async function load(note, addonsOnly) {
     render();
     if (note) setStatus(note, "err"); else setStatus("Connected to " + (state.deviceName || "Apple TV"), "ok");
     el("apply").disabled = false;
+    return true;
   } catch (e) {
     setStatus("Couldn't reach the TV. Is Remote Setup still open?", "err");
+    return false;
   }
 }
 
@@ -316,13 +318,18 @@ async function poll(id, tries) {
       // user edits next is replaced by the reload.
       // Only the add-on list is replaced; the page is locked until it is on screen.
       setStatus("Not applied: the TV's add-on list changed. Reloading it…", "err");
+      // `inert` also blocks keyboard focus and activation. If the TV can't be reached, the
+      // reload retries every few seconds with the page still locked, keeping the staged edits.
       const main = document.querySelector("main");
       main.classList.add("busy");
-      try {
-        await load("Not applied: the TV's add-on list changed. This is its list now, so make your add-on changes again. Your other changes are still here.", true);
-      } finally {
-        main.classList.remove("busy");
+      main.inert = true;
+      const note = "Not applied: the TV's add-on list changed. This is its list now, so make your add-on changes again. Your other changes are still here.";
+      while (!(await load(note, true))) {
+        setStatus("Couldn't reach the TV to reload its add-on list. Trying again… (is Remote Setup still open?)", "err");
+        await new Promise(r => setTimeout(r, 3000));
       }
+      main.inert = false;
+      main.classList.remove("busy");
       return;
     }
     if (status === "read_only") {
