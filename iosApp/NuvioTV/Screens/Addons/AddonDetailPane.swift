@@ -272,10 +272,13 @@ struct AddonDetailPane: View {
                 case .code: configureSection(addon)
                 }
             }
-            SettingsValueRow(
-                title: String(localized: "Last checked"),
-                value: AddonHealthText.lastChecked(healthStore.snapshot(for: addon.manifestUrl))
-            )
+            // C4 review r8: re-rendered every 30 s (as the hub's refresh stamp is), so "now" ages.
+            TimelineView(.periodic(from: .now, by: 30)) { context in
+                SettingsValueRow(
+                    title: String(localized: "Last checked"),
+                    value: AddonHealthText.lastChecked(healthStore.snapshot(for: addon.manifestUrl), now: context.date)
+                )
+            }
             .accessibilityIdentifier("addons_detail_last_checked")
             if configureFirst { details(addon) }
             Text(Self.locationLine(addon.manifestUrl))
