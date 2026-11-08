@@ -820,8 +820,13 @@ object AddonRepository {
                 installed = now
                 if (left.isEmpty()) return@collect
                 val cancelled = synchronized(refreshJobsLock) {
-                    left.forEach(AddonHealthTracker::forget)
-                    left.mapNotNull { activeRefreshJobs.remove(it) }
+                    // Review r4: this runs after the transition; a URL that is back in the list
+                    // by now (a profile load, a reinstall) belongs to a new instance whose refresh
+                    // and health must not be touched.
+                    val current = _uiState.value.addons.mapTo(mutableSetOf()) { it.manifestUrl }
+                    val gone = left.filterNot(current::contains)
+                    gone.forEach(AddonHealthTracker::forget)
+                    gone.mapNotNull { activeRefreshJobs.remove(it) }
                 }
                 cancelled.forEach(Job::cancel)
             }
