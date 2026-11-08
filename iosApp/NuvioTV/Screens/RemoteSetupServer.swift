@@ -97,7 +97,7 @@ final class RemoteSetupServer {
     /// then calls `confirm(id:)` or `reject(id:)`.
     var onChangeProposed: ((PendingChange) -> Void)?
     /// C2: called on the main queue for every request that presented this session's token, so
-    /// the TV can show "Phone connected". Review r2: stored under `lock` (the listener queue reads
+    /// the TV can show "Page opened". Review r2: stored under `lock` (the listener queue reads
     /// it), and a call from a session that has since ended (New code, Stop) is dropped.
     var onAuthorizedRequest: (() -> Void)? {
         get { lock.lock(); defer { lock.unlock() }; return authorizedRequestHandler }

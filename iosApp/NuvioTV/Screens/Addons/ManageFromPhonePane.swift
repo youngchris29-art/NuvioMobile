@@ -155,7 +155,9 @@ enum ManageFromPhoneStatus: Equatable {
         switch self {
         case .starting: return String(localized: "Starting…")
         case .ready: return String(localized: "Ready")
-        case .connected: return String(localized: "Phone connected")
+        // Review r5: past tense. The page sends nothing while the user edits, so the TV cannot
+        // tell a phone that is still there from one that closed the page.
+        case .connected: return String(localized: "Page opened")
         case .failed: return String(localized: "Couldn't start")
         }
     }
@@ -164,7 +166,7 @@ enum ManageFromPhoneStatus: Equatable {
         switch self {
         case .starting: return nil
         case .ready: return String(localized: "Scan the code with your phone's camera, or open the address in any browser on this network.")
-        case .connected: return String(localized: "Make your changes on the phone, then confirm them here. Leaving this section closes the page.")
+        case .connected: return String(localized: "The setup page was opened on a phone or laptop. Make your changes there, then confirm them here. Leaving this section closes the page.")
         case .failed: return String(localized: "Couldn't start the local server. Check the network connection and try again.")
         }
     }

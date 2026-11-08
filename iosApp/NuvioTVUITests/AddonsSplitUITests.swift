@@ -181,7 +181,7 @@ final class AddonsSplitUITests: XCTestCase {
         XCTAssertTrue(element(app, "addons_phone_url").firstMatch.waitForExistence(timeout: 8), "Remote Setup never started")
         let status = element(app, "addons_phone_status").firstMatch
         XCTAssertTrue(status.exists)
-        XCTAssertTrue(status.label.contains("Ready") || status.label.contains("Phone connected"), "status: \(status.label)")
+        XCTAssertTrue(status.label.contains("Ready") || status.label.contains("Page opened"), "status: \(status.label)")
         say("phone: started, status \(status.label)")
         // Right enters the pane on its one control.
         press(.right)

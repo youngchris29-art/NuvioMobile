@@ -15,7 +15,8 @@ final class RemoteSetupViewModel: ObservableObject {
     @Published private(set) var serverURL: String?
     @Published private(set) var qrImage: UIImage?
     @Published private(set) var startFailed = false
-    /// C2: a browser has presented this session's token (cleared on every start and stop).
+    /// C2: a browser has presented this session's token (cleared on every start and stop). The TV
+    /// cannot tell when the page closes, so the pane words this in the past tense ("Page opened").
     @Published private(set) var phoneConnected = false
     /// Non-nil while a browser proposal awaits the user's decision (drives the alert).
     @Published var pendingChange: RemoteSetupServer.PendingChange?
