@@ -184,17 +184,22 @@ final class StreamPickerFullWidthTests: XCTestCase {
 
     // MARK: - Two-Pane poster (option (a) after the device pass)
 
+    /// A Two-Pane info pane inside its padding: 40 % of 1920 less the 60 + 24 side padding.
+    private func pane(_ height: CGFloat, width: CGFloat = 768 - 60 - 24) -> CGSize {
+        CGSize(width: width, height: height)
+    }
+
     func testPosterFillsA1080pPaneBetweenTheOldAndTheNewSize() throws {
         typealias P = StreamPickerInfoPanel
         // The box measured ~840 pt; the facts and progress lines are one body line each (~39 pt).
         let reserved = P.reservedHeight(headerHeight: 180, factsHeight: 39, progressHeight: 39)
         XCTAssertEqual(reserved, 180 + 39 + 39 + 4 * 24)
-        let width = try XCTUnwrap(P.posterWidth(paneHeight: 840, reserved: reserved))
+        let width = try XCTUnwrap(P.posterWidth(paneSize: pane(840), reserved: reserved))
         XCTAssertEqual(width, ((840 - reserved) / 1.5).rounded(.down))
         XCTAssertGreaterThanOrEqual(width, 300)
         XCTAssertLessThan(width, 360)
         // Two facts lines (an episode with a long name) still leave a poster on the box.
-        let twoLines = try XCTUnwrap(P.posterWidth(paneHeight: 840, reserved: P.estimatedReservedHeight))
+        let twoLines = try XCTUnwrap(P.posterWidth(paneSize: pane(840), reserved: P.estimatedReservedHeight))
         XCTAssertGreaterThanOrEqual(twoLines, P.posterMinimumWidth)
         XCTAssertLessThan(twoLines, width)
     }
@@ -205,28 +210,38 @@ final class StreamPickerFullWidthTests: XCTestCase {
         // 700 pt pane that hides the poster under a logo still shows one (review p1).
         let logo = P.reservedHeight(headerHeight: 180, factsHeight: 39, progressHeight: 39)
         let text = P.reservedHeight(headerHeight: 60, factsHeight: 39, progressHeight: 39)
-        XCTAssertNil(P.posterWidth(paneHeight: 700, reserved: logo))
-        let width = try XCTUnwrap(P.posterWidth(paneHeight: 700, reserved: text))
+        XCTAssertNil(P.posterWidth(paneSize: pane(700), reserved: logo))
+        let width = try XCTUnwrap(P.posterWidth(paneSize: pane(700), reserved: text))
         XCTAssertGreaterThanOrEqual(width, P.posterMinimumWidth)
-        XCTAssertGreaterThan(try XCTUnwrap(P.posterWidth(paneHeight: 840, reserved: text)),
-                             try XCTUnwrap(P.posterWidth(paneHeight: 840, reserved: logo)))
+        XCTAssertGreaterThan(try XCTUnwrap(P.posterWidth(paneSize: pane(840), reserved: text)),
+                             try XCTUnwrap(P.posterWidth(paneSize: pane(840), reserved: logo)))
     }
 
     func testPosterCapsAt360OnATallPane() {
         typealias P = StreamPickerInfoPanel
-        XCTAssertEqual(P.posterWidth(paneHeight: 2000, reserved: P.estimatedReservedHeight), 360)
-        XCTAssertEqual(P.posterWidth(paneHeight: 540 + 400, reserved: 400), 360)
+        XCTAssertEqual(P.posterWidth(paneSize: pane(2000), reserved: P.estimatedReservedHeight), 360)
+        XCTAssertEqual(P.posterWidth(paneSize: pane(540 + 400), reserved: 400), 360)
+    }
+
+    func testPosterNeverOutgrowsThePanesWidth() {
+        typealias P = StreamPickerInfoPanel
+        let reserved = P.reservedHeight(headerHeight: 60, factsHeight: 39, progressHeight: 39)
+        // A narrow window: 300 pt of content width, room for a 360 pt poster by height.
+        XCTAssertEqual(P.posterWidth(paneSize: pane(840, width: 300), reserved: reserved), 300)
+        XCTAssertEqual(P.posterWidth(paneSize: pane(840, width: 300.7), reserved: reserved), 300)
+        XCTAssertNil(P.posterWidth(paneSize: pane(840, width: 259), reserved: reserved))
+        XCTAssertNil(P.posterWidth(paneSize: pane(840, width: 0), reserved: reserved))
     }
 
     func testPosterHidesWhenEvenTheOldSizeDoesNotFit() {
         typealias P = StreamPickerInfoPanel
         let reserved = P.estimatedReservedHeight
         // Exactly 260 × 390 fits; one point less does not.
-        XCTAssertEqual(P.posterWidth(paneHeight: reserved + 390, reserved: reserved), 260)
-        XCTAssertNil(P.posterWidth(paneHeight: reserved + 389, reserved: reserved))
-        XCTAssertNil(P.posterWidth(paneHeight: 500, reserved: reserved))
-        XCTAssertNil(P.posterWidth(paneHeight: 0, reserved: reserved))
-        XCTAssertNil(P.posterWidth(paneHeight: .infinity, reserved: reserved))
+        XCTAssertEqual(P.posterWidth(paneSize: pane(reserved + 390), reserved: reserved), 260)
+        XCTAssertNil(P.posterWidth(paneSize: pane(reserved + 389), reserved: reserved))
+        XCTAssertNil(P.posterWidth(paneSize: pane(500), reserved: reserved))
+        XCTAssertNil(P.posterWidth(paneSize: pane(0), reserved: reserved))
+        XCTAssertNil(P.posterWidth(paneSize: pane(.infinity), reserved: reserved))
     }
 
     // MARK: - Compact row

@@ -324,6 +324,14 @@ final class StreamPickerUITests: XCTestCase {
         let progress = infoPanel.descendants(matching: .any)["stream_picker_progress"]
         XCTAssertTrue(progress.waitForExistence(timeout: 5), "stream_picker_progress not under \(infoPanel.identifier)")
         say("progress line: \(progress.label)")
+        if !Self.isFullWidthRun {
+            // GitHub #25 poster fit (review p2): whatever size the poster takes, the progress line
+            // under it stays inside the info panel.
+            let pane = infoPanel.frame, line = progress.frame
+            XCTAssertLessThanOrEqual(line.maxY, pane.maxY + 1, "progress line \(line) falls off the info panel \(pane)")
+            XCTAssertLessThanOrEqual(line.minX, pane.maxX, "progress line \(line) outside the info panel \(pane)")
+            say("info panel \(pane), progress line \(line)")
+        }
 
         // d. Chips.
         let all = chip(app, "all")

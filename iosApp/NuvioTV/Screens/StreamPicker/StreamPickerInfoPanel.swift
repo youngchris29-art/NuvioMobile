@@ -6,8 +6,8 @@ import SharedCore
 /// the poster, and a live progress line that counts the fan-out ("Finding streams… 3 of 4") and
 /// settles on the result ("155 sources from 4 add-ons").
 ///
-/// The poster takes the height the rest of the pane leaves (`posterWidth(paneHeight:reserved:)`,
-/// 2:3, up to 360 pt wide) and is dropped when even `posterMinimumWidth` doesn't fit, so a small
+/// The poster takes the height the rest of the pane leaves (`posterWidth(paneSize:reserved:)`,
+/// 2:3, up to 360 pt and never wider than the pane) and is dropped when even `posterMinimumWidth` doesn't fit, so a small
 /// window (the simulator at a reduced scale, a sheet) never pushes the progress line off the pane.
 struct StreamPickerInfoPanel: View {
     let title: String
@@ -51,14 +51,15 @@ struct StreamPickerInfoPanel: View {
         headerHeight + factsHeight + progressHeight + posterGapCount * Theme.Spacing.lg
     }
 
-    /// The poster width for a pane `paneHeight` tall: the room left after `reserved`, at 2:3, capped
-    /// at `posterMaximumWidth`, whole points; nil (no poster) when that is under `posterMinimumWidth`.
-    nonisolated static func posterWidth(paneHeight: CGFloat, reserved: CGFloat) -> CGFloat? {
-        let room = paneHeight - reserved
-        guard room.isFinite, room > 0 else { return nil }
-        let width = (room / posterAspect).rounded(.down)
-        guard width >= posterMinimumWidth else { return nil }
-        return min(width, posterMaximumWidth)
+    /// The poster width for a pane of `paneSize` (inside its padding): the height left after
+    /// `reserved`, at 2:3, capped at `posterMaximumWidth` and at the pane's own width (review p2: a
+    /// narrow window must not push the poster into the source list), whole points; nil (no poster)
+    /// when that is under `posterMinimumWidth`.
+    nonisolated static func posterWidth(paneSize: CGSize, reserved: CGFloat) -> CGFloat? {
+        let room = paneSize.height - reserved
+        guard room.isFinite, room > 0, paneSize.width.isFinite, paneSize.width > 0 else { return nil }
+        let width = min((room / posterAspect).rounded(.down), posterMaximumWidth, paneSize.width.rounded(.down))
+        return width >= posterMinimumWidth ? width : nil
     }
 
     @State private var headerHeight: CGFloat?
@@ -90,7 +91,7 @@ struct StreamPickerInfoPanel: View {
                     .onGeometryChange(for: CGFloat.self, of: { $0.size.height.rounded(.up) }) { factsHeight = $0 }
 
                 if let poster, !poster.isEmpty,
-                   let width = Self.posterWidth(paneHeight: geo.size.height, reserved: reservedHeight) {
+                   let width = Self.posterWidth(paneSize: geo.size, reserved: reservedHeight) {
                     let height = width * Self.posterAspect
                     CachedAsyncImage(
                         string: poster,
