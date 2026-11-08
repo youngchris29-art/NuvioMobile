@@ -106,14 +106,14 @@ final class RemoteSetupChangeListTests: XCTestCase {
         XCTAssertEqual(lines(pattern: "  ").map(\.text), ["Clear the custom poster pattern"])
         XCTAssertEqual(lines(pattern: "https://img.example.com/{id}.jpg").map(\.kind), [.pattern])
         XCTAssertEqual(lines(pattern: "ftp://x").map(\.kind), [.rejected])
-        XCTAssertEqual(lines(badges: ["https://cdn.example.com/packs/neon.json?v=2", "https://other.example.org/a/b.json"]).map(\.text),
-                       ["Import badge pack cdn.example.com/neon.json",
-                        "Import badge pack other.example.org/b.json and make it the active pack"])
-        // Review r7: packs that would read the same show their whole path.
-        XCTAssertEqual(List.badgePackLabels(["https://h.example.com/alice/badges.json", "https://h.example.com/bob/badges.json"]),
-                       ["h.example.com/alice/badges.json", "h.example.com/bob/badges.json"])
-        XCTAssertEqual(List.badgePackLabels(["https://h.example.com/pack?id=blue", "https://h.example.com/pack?id=red"]),
-                       ["h.example.com/pack (#1)", "h.example.com/pack (#2)"], "query-only differences")
+        XCTAssertEqual(lines(badges: ["https://cdn.example.com/packs/neon.json?v=2"]).map(\.text),
+                       ["Import badge pack cdn.example.com/packs/neon.json?v=2 and make it the active pack"])
+        // Review r11: one pack per change, so the label alone tells packs apart.
+        XCTAssertNotEqual(List.badgePackLabel("https://h.example.com/alice/badges.json"),
+                          List.badgePackLabel("https://h.example.com/bob/badges.json"))
+        XCTAssertNotEqual(List.badgePackLabel("https://h.example.com/pack?id=blue"),
+                          List.badgePackLabel("https://h.example.com/pack?id=red"))
+        XCTAssertLessThanOrEqual(List.badgePackLabel("https://h.example.com/" + String(repeating: "x", count: 200)).count, 81)
     }
 
     func testMovedIdsKeepsTheLongestOrderedRun() {

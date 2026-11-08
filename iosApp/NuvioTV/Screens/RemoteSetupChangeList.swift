@@ -153,31 +153,26 @@ nonisolated enum RemoteSetupChangeList {
         return out
     }
 
-    /// Labels for `urls` in order: `host/file.json`, or the whole path where two would read the
-    /// same (review r7).
+    /// Labels for `urls` in order; any that would still read the same show their place in the list.
     static func badgePackLabels(_ urls: [String]) -> [String] {
-        let short = urls.map(badgePackLabel)
-        let counts = Dictionary(short.map { ($0, 1) }, uniquingKeysWith: +)
-        let longer = urls.enumerated().map { index, url -> String in
-            guard counts[short[index], default: 0] > 1,
-                  let parts = URLComponents(string: url), let host = parts.host else { return short[index] }
-            return host + parts.path
-        }
-        // Review r8: still the same (they differ only in the query): add their place in the list.
-        let longCounts = Dictionary(longer.map { ($0, 1) }, uniquingKeysWith: +)
-        return longer.enumerated().map { index, label in
-            longCounts[label, default: 0] > 1 ? "\(label) (#\(index + 1))" : label
+        let labels = urls.map(badgePackLabel)
+        let counts = Dictionary(labels.map { ($0, 1) }, uniquingKeysWith: +)
+        return labels.enumerated().map { index, label in
+            counts[label, default: 0] > 1 ? "\(label) (#\(index + 1))" : label
         }
     }
 
-    /// `host/file.json` for a badge pack URL (the query is dropped), or the trimmed text when it
-    /// does not parse.
+    /// `host/path` for a badge pack URL, with the query when there is one (review r11: a change
+    /// carries one pack, so the label alone must tell it apart from any other pack). A pack URL is
+    /// a public file; long labels are cut in the middle.
     static func badgePackLabel(_ url: String) -> String {
         guard let parts = URLComponents(string: url), let host = parts.host, !host.isEmpty else {
-            return String(url.prefix(60))
+            return String(url.prefix(80))
         }
-        let file = parts.path.split(separator: "/").last.map(String.init) ?? ""
-        return file.isEmpty ? host : "\(host)/\(file)"
+        var label = host + parts.path
+        if let query = parts.query, !query.isEmpty { label += "?" + query }
+        guard label.count > 80 else { return label }
+        return String(label.prefix(50)) + "…" + String(label.suffix(29))
     }
 
     /// The ids that moved from `before` to `after` (same set of ids): everything outside a longest
