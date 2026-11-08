@@ -271,9 +271,7 @@ private struct AddonRow: View {
                         .font(SettingsRowFont.title)
                         .lineLimit(1)
                     if let level = AddonHealthLevel.of(health) {
-                        Circle()
-                            .fill(Self.color(level))
-                            .frame(width: 14, height: 14)
+                        AddonHealthDot(level: level)
                             .accessibilityHidden(true)
                             .accessibilityIdentifier("addons_row_\(index)_health_dot")
                     }
@@ -292,13 +290,6 @@ private struct AddonRow: View {
         }
     }
 
-    private static func color(_ level: AddonHealthLevel) -> Color {
-        switch level {
-        case .good: return .green
-        case .slow: return .orange
-        case .bad: return .red
-        }
-    }
 
     /// A4: the lifted row's trailing badge.
     private var movingBadge: some View {
@@ -380,6 +371,37 @@ private struct MoveActions: ViewModifier {
         content.accessibilityActions {
             if allowed.contains(.moveUp) { Button("Move up") { move(-1) } }
             if allowed.contains(.moveDown) { Button("Move down") { move(1) } }
+        }
+    }
+}
+
+/// C4 health dot. C5 device note: the system green/orange washed out on the focused row's white
+/// platter, so a focused row gets deeper shades and a thin dark ring.
+struct AddonHealthDot: View {
+    let level: AddonHealthLevel
+    @Environment(\.isFocused) private var isFocused
+    @Environment(\.settingsRowIsFocused) private var rowFocused
+
+    var body: some View {
+        let focused = isFocused || rowFocused
+        Circle()
+            .fill(Self.color(level, onPlatter: focused))
+            .overlay {
+                if focused {
+                    Circle().strokeBorder(Theme.Palette.onFocusPlatter.opacity(0.45), lineWidth: 2)
+                }
+            }
+            .frame(width: 14, height: 14)
+    }
+
+    static func color(_ level: AddonHealthLevel, onPlatter: Bool) -> Color {
+        switch (level, onPlatter) {
+        case (.good, false): return .green
+        case (.slow, false): return .orange
+        case (.bad, false): return .red
+        case (.good, true): return Color(red: 0.0, green: 0.52, blue: 0.2)
+        case (.slow, true): return Color(red: 0.8, green: 0.4, blue: 0.0)
+        case (.bad, true): return Color(red: 0.78, green: 0.1, blue: 0.1)
         }
     }
 }
