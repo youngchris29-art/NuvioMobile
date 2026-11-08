@@ -59,6 +59,18 @@ nonisolated enum HubAccessibility {
         }
     }
 
+    /// Review VO-r7: the "still current" rule both panes use when a move announcement fires.
+    /// Focus must still be on the moved row (`rowKey`), in the pane's own section, with no page
+    /// pushed over it; for `.started` the row (`key`) must still be the lifted one, for the
+    /// results nothing may be lifted any more.
+    static func isMoveAnnouncementCurrent(
+        _ event: MoveEvent, key: String, rowKey: String,
+        focusedKey: String?, liftedKey: String?, pageOpen: Bool, inSection: Bool
+    ) -> Bool {
+        guard inSection, !pageOpen, focusedKey == rowKey else { return false }
+        return event == .started ? liftedKey == key : liftedKey == nil
+    }
+
     /// Drops an announcement still waiting (the pane that scheduled it went away).
     @MainActor
     static func invalidatePending() {

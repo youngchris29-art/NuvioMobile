@@ -87,4 +87,33 @@ final class HubAccessibilityTests: XCTestCase {
         }
         XCTAssertTrue(said.isEmpty)
     }
+
+    // MARK: - The panes' "still current" rule (review VO-r7)
+
+    private func current(
+        _ event: HubAccessibility.MoveEvent, focused: String? = "row:a", lifted: String? = nil,
+        pageOpen: Bool = false, inSection: Bool = true
+    ) -> Bool {
+        HubAccessibility.isMoveAnnouncementCurrent(
+            event, key: "a", rowKey: "row:a", focusedKey: focused, liftedKey: lifted,
+            pageOpen: pageOpen, inSection: inSection
+        )
+    }
+
+    func testStartIsCurrentOnlyWhileThatRowIsLiftedAndFocused() {
+        XCTAssertTrue(current(.started, lifted: "a"))
+        XCTAssertFalse(current(.started, lifted: nil), "the move already ended")
+        XCTAssertFalse(current(.started, lifted: "b"), "another row is lifted")
+        XCTAssertFalse(current(.started, focused: "row:b", lifted: "a"), "focus moved to another row")
+        XCTAssertFalse(current(.started, focused: nil, lifted: "a"), "focus left the content (sidebar, tab bar)")
+    }
+
+    func testResultsAreCurrentOnlyOnTheMovedRowWithNothingLifted() {
+        XCTAssertTrue(current(.committed))
+        XCTAssertTrue(current(.cancelled))
+        XCTAssertFalse(current(.committed, lifted: "b"), "another move started")
+        XCTAssertFalse(current(.committed, focused: "row:b"), "focus moved to another row")
+        XCTAssertFalse(current(.cancelled, pageOpen: true), "a page was pushed over the list")
+        XCTAssertFalse(current(.cancelled, inSection: false), "the section changed")
+    }
 }

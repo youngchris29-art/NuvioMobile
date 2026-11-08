@@ -806,8 +806,10 @@ struct AddonsHubSplitView: View {
     private func announceMove(_ event: HubAccessibility.MoveEvent, url: String) {
         let key = InstalledAddonsPane.rowKey(url)
         HubAccessibility.announceWhenSettled(event) {
-            guard contentFocus == key, contentPath.isEmpty, selected == .installed else { return false }
-            return event == .started ? moveMode.movingUrl == url : !moveMode.isMoving
+            HubAccessibility.isMoveAnnouncementCurrent(
+                event, key: url, rowKey: key, focusedKey: contentFocus, liftedKey: moveMode.movingUrl,
+                pageOpen: !contentPath.isEmpty, inSection: selected == .installed
+            )
         }
     }
 

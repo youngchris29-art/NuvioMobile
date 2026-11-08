@@ -313,8 +313,11 @@ struct CatalogOrderView: View {
     private func announceMove(_ event: HubAccessibility.MoveEvent, key: String) {
         let rowKey = Self.rowKey(key)
         HubAccessibility.announceWhenSettled(event) {
-            guard (focus?.wrappedValue ?? ownFocus) == rowKey else { return false }
-            return event == .started ? moveMode.movingUrl == key : !moveMode.isMoving
+            // The pane is the Catalogs section (no pushes inside it); it invalidates on teardown.
+            HubAccessibility.isMoveAnnouncementCurrent(
+                event, key: key, rowKey: rowKey, focusedKey: focus?.wrappedValue ?? ownFocus,
+                liftedKey: moveMode.movingUrl, pageOpen: false, inSection: true
+            )
         }
     }
 
