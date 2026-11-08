@@ -163,19 +163,17 @@ nonisolated struct StreamRowModel: Equatable, Identifiable {
             .filter { !$0.isEmpty }
     }
 
-    /// GitHub #25 review r3: the add-on's name already names its source when one of the name lines
-    /// visible at rest STARTS with the source label as a whole word ("AIOStreams" in "AIOStreams 4K",
-    /// never "RD" in "HDR"), case-insensitive. Only then does the row leave its own source label out.
-    nonisolated static func nameShowsSource(_ label: String, nameLines: [String],
-                                            visibleLines: Int = StreamPickerWideMetrics.nameRestLines) -> Bool {
+    /// GitHub #25 review r3/r4: the add-on's name already names its source when its FIRST line (the
+    /// one always drawn first, whatever wraps after it) starts with the source label as a whole word
+    /// ("AIOStreams" in "AIOStreams 4K", never "RD" in "HDR"), case-insensitive. Only then may the row
+    /// leave its own source label out.
+    nonisolated static func nameShowsSource(_ label: String, nameLines: [String]) -> Bool {
         let source = label.trimmingCharacters(in: .whitespaces)
-        guard !source.isEmpty else { return false }
-        return nameLines.prefix(visibleLines).contains { line in
-            guard let range = line.range(of: source, options: [.caseInsensitive, .anchored]) else { return false }
-            guard range.upperBound < line.endIndex else { return true }
-            let next = line[range.upperBound]
-            return !(next.isLetter || next.isNumber)
-        }
+        guard !source.isEmpty, let line = nameLines.first,
+              let range = line.range(of: source, options: [.caseInsensitive, .anchored]) else { return false }
+        guard range.upperBound < line.endIndex else { return true }
+        let next = line[range.upperBound]
+        return !(next.isLetter || next.isNumber)
     }
 
     /// GitHub #25: the add-on-text cached part, from Nuvio's own debrid check only.
@@ -261,8 +259,10 @@ nonisolated struct StreamRowModel: Equatable, Identifiable {
             // GitHub #25 review r2: an add-on-text row names its source too (two add-ons can send the
             // same name under one quality heading; #16's provider name under a repository group),
             // unless the add-on's own name lines already carry it.
+            // Show Add-on Logo keeps the label (and its logo) whatever the name says (review r4).
             showsAddonName: display.addonText
-                ? !sourceLabel.isEmpty && !StreamRowModel.nameShowsSource(sourceLabel, nameLines: nameLines)
+                ? !sourceLabel.isEmpty && (display.showAddonLogo
+                    || !StreamRowModel.nameShowsSource(sourceLabel, nameLines: nameLines))
                 : (headline != nil || display.showAddonLogo || stream.isPluginRepositoryGroup) && !sourceLabel.isEmpty,
             addonName: sourceLabel,
             addonLogo: (logo ?? "").isEmpty ? nil : logo,

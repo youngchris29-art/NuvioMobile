@@ -102,15 +102,25 @@ final class StreamPickerFullWidthTests: XCTestCase {
         XCTAssertNil(make(stream(), addonText: true, showFileSize: false).sizeBytes, "File Size Badges off")
     }
 
-    func testTheNameShowsItsSourceOnlyAsALeadingWholeWordOnAVisibleLine() {
+    func testTheNameShowsItsSourceOnlyAsALeadingWholeWordOfTheFirstLine() {
         XCTAssertTrue(StreamRowModel.nameShowsSource("AIOStreams", nameLines: ["AIOStreams", "4K"]))
         XCTAssertTrue(StreamRowModel.nameShowsSource("aiostreams", nameLines: ["AIOStreams 4K ⚡"]))
-        XCTAssertTrue(StreamRowModel.nameShowsSource("Torrentio", nameLines: ["4K", "Torrentio: RD+"]))
-        XCTAssertFalse(StreamRowModel.nameShowsSource("RD", nameLines: ["4K HDR", "RDX"]), "never a substring")
-        XCTAssertFalse(StreamRowModel.nameShowsSource("RD", nameLines: ["HDR RD"]), "only at the start of a line")
-        XCTAssertFalse(StreamRowModel.nameShowsSource("Comet", nameLines: ["a", "b", "c", "Comet"]),
-                       "a fourth line is hidden at rest")
+        XCTAssertTrue(StreamRowModel.nameShowsSource("Torrentio", nameLines: ["Torrentio: RD+", "4K"]))
+        XCTAssertFalse(StreamRowModel.nameShowsSource("Torrentio", nameLines: ["4K", "Torrentio: RD+"]),
+                       "a later line may be pushed out of view by a wrapping first line")
+        XCTAssertFalse(StreamRowModel.nameShowsSource("RD", nameLines: ["RDX 4K"]), "never a word prefix")
+        XCTAssertFalse(StreamRowModel.nameShowsSource("RD", nameLines: ["HDR RD"]), "only at the start of the line")
         XCTAssertFalse(StreamRowModel.nameShowsSource(" ", nameLines: ["x"]))
+        XCTAssertFalse(StreamRowModel.nameShowsSource("A", nameLines: []))
+    }
+
+    func testShowAddonLogoKeepsTheSourceLabelOnAnAddonTextRow() {
+        let model = StreamRowModel.make(stream: stream(), facts: StreamFactsParser.shared.parse(stream: stream()),
+                                        key: "aio#k",
+                                        display: StreamRowDisplay(showAddonLogo: true, addonText: true),
+                                        providerLabel: { $0.providerName })
+        XCTAssertTrue(model.showsAddonName, "the logo setting wins over the name dedupe")
+        XCTAssertTrue(model.showsAddonColumn)
     }
 
     func testAddonCachedStateComesOnlyFromNuviosOwnDebridCheck() {
