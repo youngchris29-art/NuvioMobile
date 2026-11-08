@@ -37,29 +37,13 @@ struct ConfirmPhoneChangesDialog: View {
                 } else {
                     // Review r1: every line can be reached. Lines take focus (tvOS scrolls only
                     // through focusable content), so Up from the buttons walks the whole list.
-                    ScrollView(.vertical) {
-                        VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                            ForEach(lines) { line in
-                                Button(action: {}) {
-                                    HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.md) {
-                                        Image(systemName: Self.symbol(for: line.kind))
-                                            .foregroundStyle(line.kind == .rejected ? Color.orange : Theme.Palette.textSecondary)
-                                            .accessibilityHidden(true)
-                                        Text(line.text)
-                                            .font(Theme.Font.body)
-                                            .foregroundStyle(Theme.Palette.textPrimary)
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                    }
-                                    .padding(.horizontal, Theme.Spacing.md)
-                                    .padding(.vertical, Theme.Spacing.xs)
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityElement(children: .combine)
-                            }
-                        }
-                        .padding(.vertical, Theme.Spacing.xs)
+                    // C5 device note: the list is as tall as its lines up to `listHeight`, and
+                    // scrolls only past that (one line no longer leaves a tall empty box).
+                    ViewThatFits(in: .vertical) {
+                        linesStack
+                        ScrollView(.vertical) { linesStack }
+                            .scrollClipDisabled()
                     }
-                    .scrollClipDisabled()
                     .frame(maxHeight: Self.listHeight)
                     .accessibilityIdentifier("phone_confirm_lines")
                     Text(lines.count == 1 ? String(localized: "1 change") : String(localized: "\(lines.count) changes"))
@@ -92,6 +76,29 @@ struct ConfirmPhoneChangesDialog: View {
         .onExitCommand(perform: onReject)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("phone_confirm_dialog")
+    }
+
+    private var linesStack: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+            ForEach(lines) { line in
+                Button(action: {}) {
+                    HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.md) {
+                        Image(systemName: Self.symbol(for: line.kind))
+                            .foregroundStyle(line.kind == .rejected ? Color.orange : Theme.Palette.textSecondary)
+                            .accessibilityHidden(true)
+                        Text(line.text)
+                            .font(Theme.Font.body)
+                            .foregroundStyle(Theme.Palette.textPrimary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(.horizontal, Theme.Spacing.md)
+                    .padding(.vertical, Theme.Spacing.xs)
+                }
+                .buttonStyle(.plain)
+                .accessibilityElement(children: .combine)
+            }
+        }
+        .padding(.vertical, Theme.Spacing.xs)
     }
 
     nonisolated static func symbol(for kind: RemoteSetupChangeList.Line.Kind) -> String {
