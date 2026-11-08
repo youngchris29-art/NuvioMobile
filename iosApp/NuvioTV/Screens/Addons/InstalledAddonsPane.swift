@@ -158,7 +158,7 @@ struct InstalledAddonsPane: View {
                 SettingsActionRow(
                     title: String(localized: "Check now"),
                     subtitle: String(localized: "Re-check every enabled add-on and update its response time")
-                ) { model.refreshAll() }
+                ) { model.checkAll() }
                 .focused(focus, equals: InstalledAddonsPane.checkNowKey)
                 .id(InstalledAddonsPane.checkNowKey)
                 .disabled(movingUrl != nil)

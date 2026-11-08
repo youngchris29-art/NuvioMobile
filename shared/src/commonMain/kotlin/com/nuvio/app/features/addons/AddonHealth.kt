@@ -30,6 +30,11 @@ object AddonHealthTracker {
         _health.update { it + (manifestUrl to AddonHealth(latencyMs, failed, nowEpochMs)) }
     }
 
+    /** C4 review r2: an add-on (re)installed starts without the old result for its URL. */
+    fun forget(manifestUrl: String) {
+        _health.update { it - manifestUrl }
+    }
+
     fun clear() {
         _health.value = emptyMap()
     }

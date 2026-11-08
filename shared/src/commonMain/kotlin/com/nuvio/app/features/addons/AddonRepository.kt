@@ -369,6 +369,7 @@ object AddonRepository {
         if (!appended) {
             return AddAddonResult.Error(resourceString("That addon is already installed.", StringKey.addon_already_installed))
         }
+        AddonHealthTracker.forget(manifestUrl)
         persist()
         pushToServer()
         return AddAddonResult.Success(manifest)
@@ -548,6 +549,16 @@ object AddonRepository {
         startRefresh(manifestUrl = manifestUrl, forceRefresh = true, replaceExisting = true)
     }
 
+    /**
+     * C4 review r2: the hub's Check now. Every enabled add-on gets a fresh, cache-bypassing
+     * fetch, replacing a refresh that is still running (a stalled one would otherwise block it).
+     */
+    fun checkAll() {
+        _uiState.value.addons.filter { it.enabled }.distinctBy { it.manifestUrl }.forEach { addon ->
+            restartRefresh(addon.manifestUrl)
+        }
+    }
+
     fun refreshAll() {
         _uiState.value.addons.filter { it.enabled }.distinctBy { it.manifestUrl }.forEach { addon ->
             refreshAddon(
@@ -619,17 +630,10 @@ object AddonRepository {
                 result.exceptionOrNull()?.let { if (it is CancellationException) throw it }
                 val elapsedMs = startMark.elapsedNow().inWholeMilliseconds
 
-                // C4 review r1: health is recorded inside the same state update that checks the
-                // generation, so a superseded job or one cut off by a reset never publishes it.
                 _uiState.update { current ->
                     if (!isCurrentRefreshGeneration(current.refreshGenerations, manifestUrl, generation)) {
                         return@update current
                     }
-                    AddonHealthTracker.record(
-                        manifestUrl = manifestUrl,
-                        latencyMs = elapsedMs,
-                        failed = result.isFailure,
-                    )
                     current.copy(
                         addons = current.addons.map { addon ->
                             if (addon.manifestUrl != manifestUrl) {
@@ -654,6 +658,25 @@ object AddonRepository {
                             }
                         },
                     )
+                }
+                // C4 review r1/r2: health is published under the lock that refresh replacement and
+                // reset use, and only while this job is still the add-on's current refresh and the
+                // add-on is still installed, so a superseded job or one cut off by a reset never
+                // publishes it. Only forced refreshes count: a cached manifest says nothing about
+                // the server.
+                if (forceRefresh) {
+                    synchronized(refreshJobsLock) {
+                        val now = _uiState.value
+                        if (isCurrentRefreshGeneration(now.refreshGenerations, manifestUrl, generation) &&
+                            now.addons.any { it.manifestUrl == manifestUrl }
+                        ) {
+                            AddonHealthTracker.record(
+                                manifestUrl = manifestUrl,
+                                latencyMs = elapsedMs,
+                                failed = result.isFailure,
+                            )
+                        }
+                    }
                 }
             } finally {
                 val self = coroutineContext[Job]

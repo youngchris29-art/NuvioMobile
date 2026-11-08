@@ -41,4 +41,14 @@ class AddonHealthTrackerTest {
         assertTrue(AddonHealthTracker.health.value.isEmpty())
         assertNull(AddonHealthTracker.health.value[a])
     }
+
+    @Test
+    fun forgetDropsOneUrl() {
+        AddonHealthTracker.clear()
+        AddonHealthTracker.record("https://a.example.com/manifest.json", 100, failed = false, nowEpochMs = 1)
+        AddonHealthTracker.record("https://b.example.com/manifest.json", 200, failed = true, nowEpochMs = 2)
+        AddonHealthTracker.forget("https://a.example.com/manifest.json")
+        kotlin.test.assertEquals(setOf("https://b.example.com/manifest.json"), AddonHealthTracker.health.value.keys)
+        AddonHealthTracker.clear()
+    }
 }

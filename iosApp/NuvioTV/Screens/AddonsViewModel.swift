@@ -352,6 +352,11 @@ final class AddonsViewModel: ObservableObject {
     }
 
     /// Re-fetches every enabled add-on's manifest.
+    /// C4: the Installed pane's Check now (restarts every enabled add-on's refresh).
+    func checkAll() {
+        AddonRepository.shared.checkAll()
+    }
+
     func refreshAll() {
         AddonRepository.shared.refreshAll()
         trackRefresh()
