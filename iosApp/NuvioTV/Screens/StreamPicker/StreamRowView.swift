@@ -164,13 +164,18 @@ struct StreamRowView: View, Equatable {
     /// three lines), the description filling the rest, the trailing column at the edge.
     private var addonWideContent: some View {
         HStack(alignment: .top, spacing: Theme.Spacing.lg) {
-            Text(verbatim: addonNameText)
-                .font(Theme.Font.metaStrong)
-                .rowTextColor()
-                .multilineTextAlignment(.leading)
-                .lineLimit(fileLineShown ? nil : StreamPickerWideMetrics.nameRestLines)
-                .fixedSize(horizontal: false, vertical: fileLineShown)
-                .frame(width: StreamPickerWideMetrics.nameColumnWidth, alignment: .leading)
+            VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                Text(verbatim: addonNameText)
+                    .font(Theme.Font.metaStrong)
+                    .rowTextColor()
+                    .multilineTextAlignment(.leading)
+                    .lineLimit(fileLineShown ? nil : StreamPickerWideMetrics.nameRestLines)
+                    .fixedSize(horizontal: false, vertical: fileLineShown)
+                if model.showsAddonName {
+                    StreamRowAddonLabel(name: model.addonName, logo: model.showsAddonColumn ? model.addonLogo : nil)
+                }
+            }
+            .frame(width: StreamPickerWideMetrics.nameColumnWidth, alignment: .leading)
             VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
                 addonBadges(top: true)
                 addonDescription
@@ -193,6 +198,9 @@ struct StreamRowView: View, Equatable {
                     .lineLimit(fileLineShown ? nil : StreamPickerWideMetrics.nameRestLines)
                     .fixedSize(horizontal: false, vertical: fileLineShown)
                     .layoutPriority(1)
+                if model.showsAddonName {
+                    StreamRowAddonLabel(name: model.addonName, logo: model.showsAddonColumn ? model.addonLogo : nil)
+                }
                 Spacer(minLength: Theme.Spacing.sm)
                 addonTrailing
             }

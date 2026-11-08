@@ -174,19 +174,16 @@ enum StreamPickerCopy {
     }
 
     /// GitHub #25, add-on text: the lead is the name lines joined with spaces, the facts are the
-    /// description's first line, then Nuvio's own cached glyph and the size (unless the add-on's text
-    /// already has it). Same 64 pt row.
+    /// description's first line, then Nuvio's own cached glyph and the size. Same 64 pt row.
     private static func addonCompactParts(_ row: StreamRowModel) -> StreamCompactParts {
         let lead = row.nameLines.isEmpty ? row.title : row.nameLines.joined(separator: " ")
         let facts = StreamRowModel.textLines(row.description).first
         let trailing: String? = row.failedRecently
             ? String(localized: "Failed recently")
             : clean(row.addonName)
-        // Review r1: the one line shows only the lead and the description's first line, so the size
-        // is dropped only when THAT text carries it (a size on line four would otherwise vanish).
-        let size: String? = row.sizeBytes.map { StreamFileSizeChip.label(for: $0) }.flatMap { label in
-            StreamRowModel.addonTextContains(label, nameLines: [lead], description: facts) ? nil : label
-        }
+        // Review r1/r2: the one line truncates, so text that "carries" the size may not show it; the
+        // compact row always keeps its own size.
+        let size: String? = row.sizeBytes.map { StreamFileSizeChip.label(for: $0) }
         return StreamCompactParts(
             lead: lead,
             facts: facts,

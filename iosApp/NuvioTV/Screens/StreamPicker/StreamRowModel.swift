@@ -127,7 +127,8 @@ nonisolated struct StreamRowModel: Equatable, Identifiable {
     /// the headline (or title), the HDR mark, the add-on name, the size, the fact lines, the cached
     /// words, the badge names (when below), "YouTube" and "Failed recently".
     ///
-    /// GitHub #25, add-on text: the badge names (when on top), the name lines, the description with
+    /// GitHub #25, add-on text: the badge names (when on top), the name lines, the source name (when
+    /// drawn), the description with
     /// its newlines read as commas, the size (when drawn), the cached words (only Nuvio's own), the
     /// badge names (when below), "YouTube" and "Failed recently".
     @MainActor var spokenLabel: String {
@@ -135,6 +136,7 @@ nonisolated struct StreamRowModel: Equatable, Identifiable {
         var parts: [String] = badgesOnTop ? badgeNames : []
         if addonText {
             parts += nameLines.isEmpty ? [title] : nameLines
+            if showsAddonName { parts.append(addonName) }
             if let description {
                 parts += Self.textLines(description)
             }
@@ -257,8 +259,12 @@ nonisolated struct StreamRowModel: Equatable, Identifiable {
             // #16 (review r1): under a repository header the row is the only place the provider
             // can be read, so a repository-group row names it even with no headline and the logo
             // column off (other rows keep the setting: their group header already names the add-on).
-            showsAddonName: (headline != nil || display.showAddonLogo || stream.isPluginRepositoryGroup)
-                && !sourceLabel.isEmpty,
+            // GitHub #25 review r2: an add-on-text row names its source too (two add-ons can send the
+            // same name under one quality heading; #16's provider name under a repository group),
+            // unless the add-on's own name lines already carry it.
+            showsAddonName: display.addonText
+                ? !sourceLabel.isEmpty && !StreamRowModel.addonTextContains(sourceLabel, nameLines: nameLines, description: nil)
+                : (headline != nil || display.showAddonLogo || stream.isPluginRepositoryGroup) && !sourceLabel.isEmpty,
             addonName: sourceLabel,
             addonLogo: (logo ?? "").isEmpty ? nil : logo,
             isYouTube: StreamPickerView.isYouTubeResolved(stream),

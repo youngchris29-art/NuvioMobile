@@ -123,6 +123,14 @@ final class StreamPickerFullWidthTests: XCTestCase {
                      "Nuvio text never fills the add-on cached state")
     }
 
+    func testAnAddonTextRowNamesItsSourceUnlessItsNameDoes() {
+        XCTAssertFalse(make(stream(), addonText: true).showsAddonName, "\"AIOStreams\" is already in the name")
+        let bare = make(stream(name: "4K ⚡ RD"), addonText: true)
+        XCTAssertTrue(bare.showsAddonName, "two add-ons can send the same name under one heading")
+        XCTAssertEqual(bare.addonName, "AIOStreams")
+        XCTAssertTrue(bare.spokenLabel.hasPrefix("4K ⚡ RD, AIOStreams, "), bare.spokenLabel)
+    }
+
     func testBadgesAreFilledInBothRowTextModes() {
         let s = stream(badges: [badge("4K"), badge("DV")])
         XCTAssertEqual(make(s, addonText: false).badges.map(\.name), ["4K", "DV"])
@@ -161,9 +169,9 @@ final class StreamPickerFullWidthTests: XCTestCase {
         XCTAssertEqual(parts.lead, "AIOStreams 4K ⚡ RD")
         XCTAssertEqual(parts.facts, "Movie (2024)")
         XCTAssertNil(parts.glyph)
-        XCTAssertEqual(parts.size, "1.9 GB", "the size is on description line four, which the one line does not show")
+        XCTAssertEqual(parts.size, "1.9 GB", "the compact row always keeps its size (its one line truncates)")
         let onFirstLine = StreamPickerCopy.compactParts(make(stream(description: "💾 1.9 GB · WEB-DL"), addonText: true))
-        XCTAssertNil(onFirstLine.size, "the shown first line already carries the size")
+        XCTAssertEqual(onFirstLine.size, "1.9 GB")
         XCTAssertEqual(parts.trailing, "AIOStreams")
 
         let cachedPlain = make(stream(description: "Movie.2024", url: nil, infoHash: "h", cache: status(.cached)),
