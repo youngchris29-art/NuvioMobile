@@ -195,7 +195,7 @@ final class RemoteSetupViewModel: ObservableObject {
             // Claimed atomically with supersession: a newer proposal that lands after the check
             // above wins, and this one is not applied.
             guard server.claimForConfirm(id: change.id) else { return }
-            apply(change.proposal, addons: resolved)
+            server.finishApplying(id: change.id, applied: apply(change.proposal, addons: resolved))
         }
     }
 
@@ -283,8 +283,13 @@ final class RemoteSetupViewModel: ObservableObject {
         }
     }
 
-    private func apply(_ proposal: RemoteSetupServer.Proposal, addons resolved: [RemoteSetupAddonIds.Resolved]?) {
-        if let resolved { applyAddons(resolved) }
+    /// Applies a confirmed proposal; false, with nothing applied, when the add-on list moved
+    /// under it between the check and the repository's own atomic one.
+    private func apply(_ proposal: RemoteSetupServer.Proposal, addons resolved: [RemoteSetupAddonIds.Resolved]?) -> Bool {
+        if let resolved {
+            let expected = (proposal.addonBaseline ?? []).compactMap { addonIds.url(for: $0) }
+            guard applyAddons(resolved, expected: expected) else { return false }
+        }
         applyRows(proposal)
         if let key = proposal.mdblistKey?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty {
             MdbListSettingsRepository.shared.setApiKey(value: key)
@@ -306,42 +311,29 @@ final class RemoteSetupViewModel: ObservableObject {
             guard !trimmed.isEmpty else { continue }
             StreamBadgeSettingsRepository.shared.importStreamBadgeRulesFromUrl(url: trimmed) { _, _ in }
         }
+        return true
     }
 
-    private func applyAddons(_ proposed: [RemoteSetupAddonIds.Resolved]) {
+    /// Removals, enabled flips and the order go to the repository as ONE atomic step that checks
+    /// the list is still `expected` (the list the page edited) against the repository's own
+    /// state, not this screen's watcher copy; installs follow only when it applied.
+    private func applyAddons(_ proposed: [RemoteSetupAddonIds.Resolved], expected: [String]) -> Bool {
         let repo = AddonRepository.shared
-        let currentUrls = addons.map(\.manifestUrl)
-        let proposedUrls = proposed.map(\.url)
-
-        // 1. Removals (synchronous repo mutations).
-        for url in currentUrls where !proposedUrls.contains(url) {
-            repo.removeAddon(manifestUrl: url)
+        let existing = proposed.filter { !$0.isNew }
+        var enabled: [String: KotlinBoolean] = [:]
+        for entry in existing {
+            if let flag = entry.enabled { enabled[entry.url] = KotlinBoolean(value: flag) }
         }
-
-        // 2. Enabled flips + reordering, simulated over the post-removal list. Repo indices track
-        //    the simulation because removeAddon/moveAddon mutate the list synchronously.
-        var simulated = currentUrls.filter { proposedUrls.contains($0) }
-        for entry in proposed {
-            guard let enabled = entry.enabled,
-                  let existing = addons.first(where: { $0.manifestUrl == entry.url }),
-                  existing.enabled != enabled
-            else { continue }
-            repo.setAddonEnabled(manifestUrl: entry.url, enabled: enabled)
-        }
-        let desired = proposedUrls.filter { simulated.contains($0) }
-        for targetIndex in desired.indices {
-            guard let fromIndex = simulated.firstIndex(of: desired[targetIndex]),
-                  fromIndex != targetIndex
-            else { continue }
-            repo.moveAddon(fromIndex: Int32(fromIndex), toIndex: Int32(targetIndex))
-            simulated.remove(at: fromIndex)
-            simulated.insert(desired[targetIndex], at: targetIndex)
-        }
-
-        // 3. Installs (async manifest fetch; appended by the repo when they resolve).
-        for entry in proposed where entry.isNew && !currentUrls.contains(entry.url) {
+        guard repo.applyEditedListIfUnchanged(
+            expectedUrls: expected,
+            desiredUrls: existing.map(\.url),
+            enabled: enabled
+        ) else { return false }
+        // Installs (async manifest fetch; appended by the repo when they resolve).
+        for entry in proposed where entry.isNew {
             repo.addAddon(rawUrl: entry.url) { _, _ in }
         }
+        return true
     }
 
     private func applyRows(_ proposal: RemoteSetupServer.Proposal) {

@@ -12,7 +12,7 @@ import Security
 /// - `POST /api/apply`      → proposes a change; returns `{id, status: "pending_confirmation"}`.
 ///                            Nothing is applied until the user confirms ON THE TV (alert in
 ///                            Settings) — same trust model as Android.
-/// - `GET  /api/status/{id}`→ `{status: pending|confirmed|rejected|superseded|stale|invalid|not_found}` (browser polls)
+/// - `GET  /api/status/{id}`→ `{status: pending|applying|confirmed|rejected|superseded|stale|invalid|not_found}` (browser polls)
 ///
 /// Threading: the listener + connections run on a private queue. The state snapshot and the
 /// pending-change table are guarded by a lock; `onChangeProposed` is delivered on the main queue.
@@ -53,6 +53,9 @@ final class RemoteSetupServer {
 
     enum ChangeStatus: String {
         case pending
+        /// Claimed by the TV's confirm and being applied; no longer supersedable. The page keeps
+        /// polling until it settles as `confirmed` or `stale`.
+        case applying
         case confirmed
         /// Declined by the user on the TV.
         case rejected
@@ -134,11 +137,19 @@ final class RemoteSetupServer {
         lock.unlock()
     }
 
-    /// Claims `id` for applying: true, and the change is marked confirmed, only if it was still
+    /// Claims `id` for applying: true, and the change is marked `applying`, only if it was still
     /// pending. Atomic with supersession, so a change replaced by a newer proposal is never
-    /// applied after the fact.
+    /// applied after the fact. The caller settles it with `finishApplying`.
     func claimForConfirm(id: String) -> Bool {
-        settle(id: id, status: .confirmed)
+        settle(id: id, status: .applying)
+    }
+
+    /// Settles a claimed change as `confirmed`, or `stale` when the list moved under it.
+    func finishApplying(id: String, applied: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let change = pending[id], change.status == .applying else { return }
+        change.status = applied ? .confirmed : .stale
     }
 
     /// Settles a still-pending change as declined or refused; a no-op for one already settled.

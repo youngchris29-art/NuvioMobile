@@ -439,6 +439,44 @@ object AddonRepository {
         return true
     }
 
+    /**
+     * Add-ons hub v2 C1 (review r3): applies a list edited on the Remote Setup phone page in ONE
+     * state update, and only if the list is still exactly [expectedUrls] (the list the page
+     * edited). The result is [desiredUrls] in that order (add-ons left out are removed), with
+     * [enabled] overriding each add-on's flag. Returns false, changing nothing, when the list
+     * moved under the page (a sync or another screen); true otherwise, including when nothing
+     * needed to change. Add-ons newly enabled without a manifest are refreshed, as
+     * [setAddonEnabled] does.
+     */
+    fun applyEditedListIfUnchanged(
+        expectedUrls: List<String>,
+        desiredUrls: List<String>,
+        enabled: Map<String, Boolean>,
+    ): Boolean {
+        if (isUsingPrimaryAddonsFromSecondaryProfile()) return true
+        var matched = false
+        var changed = false
+        var toRefresh = emptyList<String>()
+        _uiState.update { current ->
+            matched = current.addons.map { it.manifestUrl } == expectedUrls
+            if (!matched) return@update current
+            val edited = editedAddonList(current.addons, desiredUrls, enabled)
+            changed = edited != current.addons
+            toRefresh = edited.filter { addon ->
+                addon.enabled && addon.manifest == null && !addon.isRefreshing &&
+                    current.addons.firstOrNull { it.manifestUrl == addon.manifestUrl }?.enabled == false
+            }.map { it.manifestUrl }
+            if (changed) current.copy(addons = edited) else current
+        }
+        if (!matched) return false
+        if (changed) {
+            persist()
+            pushToServer()
+        }
+        toRefresh.forEach { refreshAddon(it) }
+        return true
+    }
+
     fun setAddonEnabled(manifestUrl: String, enabled: Boolean) {
         if (isUsingPrimaryAddonsFromSecondaryProfile()) return
         var shouldRefresh = false
@@ -813,6 +851,23 @@ internal fun isCurrentRefreshGeneration(generations: Map<String, Long>, manifest
     generations[manifestUrl] == generation
 
 /** [addons] with [manifestUrl] moved one place by [delta] (±1), or null when absent or at the end. */
+/**
+ * Add-ons hub v2 C1: [addons] reduced and reordered to [desiredUrls] (unknown urls ignored, later
+ * duplicates dropped), each flag overridden by [enabled] where given.
+ */
+internal fun editedAddonList(
+    addons: List<ManagedAddon>,
+    desiredUrls: List<String>,
+    enabled: Map<String, Boolean>,
+): List<ManagedAddon> {
+    val byUrl = addons.associateBy { it.manifestUrl }
+    return desiredUrls.distinct().mapNotNull { url ->
+        val addon = byUrl[url] ?: return@mapNotNull null
+        val flag = enabled[url]
+        if (flag == null || flag == addon.enabled) addon else addon.copy(enabled = flag)
+    }
+}
+
 internal fun steppedOrder(addons: List<ManagedAddon>, manifestUrl: String, delta: Int): List<ManagedAddon>? {
     val from = addons.indexOfFirst { it.manifestUrl == manifestUrl }
     if (from < 0 || delta == 0) return null
