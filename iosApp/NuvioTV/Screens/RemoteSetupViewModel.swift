@@ -65,6 +65,8 @@ final class RemoteSetupViewModel: ObservableObject {
     // Upstream 60ee0160: TMDB has no user-facing key any more (bundled at compile time), so
     // there's nothing for the remote-setup page to report or accept here.
     private var mdbListKeySet = false
+    /// C3 review r3: setting a key also turns MDBList on, so the dialog needs to know if it is off.
+    private var mdbListEnabled = false
     /// Whether a custom poster pattern is saved. Only the flag goes to the web page; the pattern
     /// itself may embed an API key and is never echoed or logged.
     private var posterPatternSet = false
@@ -175,6 +177,7 @@ final class RemoteSetupViewModel: ObservableObject {
         mdbListWatcher = FlowWatcherKt.watch(MdbListSettingsRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? MdbListSettings else { return }
             self.mdbListKeySet = state.hasApiKey
+            self.mdbListEnabled = state.enabled
             self.pushState()
         }
         badgeWatcher = FlowWatcherKt.watch(StreamBadgeSettingsRepository.shared.uiState) { [weak self] emitted in
@@ -427,13 +430,18 @@ final class RemoteSetupViewModel: ObservableObject {
                 let succeeded = result is AddAddonResultSuccess
                 Task { @MainActor in
                     let installed = (AddonRepository.shared.uiState.value_ as? AddonsUiState)?.addons.map(\.manifestUrl) ?? []
+                    let current = (AddonRepository.shared.uiState.value_ as? AddonsUiState)?.addons ?? []
+                    let landed = current.first(where: { AddonManifestURL.isSameManifest($0.manifestUrl, url) })
                     if !Self.installSatisfied(succeeded: succeeded, url: url, installed: installed) {
                         failed.append(index)
-                    } else if entries[index].enabled == false,
-                              let landed = installed.first(where: { AddonManifestURL.isSameManifest($0, url) }) {
+                    } else if succeeded, entries[index].enabled == false, let landed {
                         // C3 review r1: a new add-on sent turned off is installed turned off, as
                         // the dialog said.
-                        AddonRepository.shared.setAddonEnabled(manifestUrl: landed, enabled: false)
+                        AddonRepository.shared.setAddonEnabled(manifestUrl: landed.manifestUrl, enabled: false)
+                    } else if !succeeded, let wanted = entries[index].enabled, let landed, landed.enabled != wanted {
+                        // Review r3: another change installed it first with the other setting.
+                        // Its flag is not overridden; this entry is reported back to the phone.
+                        failed.append(index)
                     }
                     remaining -= 1
                     guard remaining == 0 else { return }
@@ -518,6 +526,7 @@ final class RemoteSetupViewModel: ObservableObject {
     private func refreshFromRepositories() {
         if let state = AddonRepository.shared.uiState.value_ as? AddonsUiState { addons = state.addons }
         if let state = HomeCatalogSettingsRepository.shared.uiState.value_ as? HomeCatalogSettingsUiState { rows = state.items }
+        if let state = MdbListSettingsRepository.shared.uiState.value_ as? MdbListSettings { mdbListEnabled = state.enabled }
     }
 
     /// C3: the proposal's changes against the lists as they are now (names, never URLs).
@@ -539,6 +548,7 @@ final class RemoteSetupViewModel: ObservableObject {
             rowOrder: rowKeys(proposal.rowOrder),
             disabledRows: rowKeys(proposal.disabledRowKeys).map(Set.init),
             setsMdbListKey: proposal.mdblistKey?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
+            mdbListEnabled: mdbListEnabled,
             posterPattern: proposal.posterPattern,
             posterPatternValid: Self.isValidPosterPattern,
             badgePackCount: (proposal.badgeUrls ?? []).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.count

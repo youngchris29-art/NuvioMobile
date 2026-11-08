@@ -88,6 +88,19 @@ final class RemoteSetupChangeListTests: XCTestCase {
         XCTAssertFalse(RemoteSetupViewModel.hasNoDuplicates(["a", "a", "b"]))
     }
 
+    /// Review r3: same-host new add-ons are told apart; a key on a disabled MDBList says it turns it on.
+    func testSameHostInstallsAndTheMdbListSwitch() {
+        let out = lines(proposed: [
+            .init(id: "u1", title: "addon.example.com", enabled: true, isNew: true),
+            .init(id: "u2", title: "addon.example.com", enabled: false, isNew: true),
+        ])
+        XCTAssertEqual(out.map(\.text), ["Install add-on addon.example.com (#1)", "Install add-on addon.example.com (#2) (turned off)"])
+        let off = List.lines(addons: [], proposedAddons: nil, rows: [], rowOrder: nil, disabledRows: nil,
+                             setsMdbListKey: true, mdbListEnabled: false, posterPattern: nil,
+                             posterPatternValid: { _ in true }, badgePackCount: 0)
+        XCTAssertEqual(off.map(\.text), ["Set the MDBList API key and turn MDBList on"])
+    }
+
     func testKeysPatternAndBadges() {
         XCTAssertEqual(lines(key: true).map(\.kind), [.key])
         XCTAssertEqual(lines(pattern: "  ").map(\.text), ["Clear the custom poster pattern"])

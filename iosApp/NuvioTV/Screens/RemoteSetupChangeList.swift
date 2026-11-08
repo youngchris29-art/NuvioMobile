@@ -46,6 +46,7 @@ nonisolated enum RemoteSetupChangeList {
         rowOrder: [String]?,
         disabledRows: Set<String>?,
         setsMdbListKey: Bool,
+        mdbListEnabled: Bool = true,
         posterPattern: String?,
         posterPatternValid: (String) -> Bool,
         badgePackCount: Int
@@ -68,11 +69,15 @@ nonisolated enum RemoteSetupChangeList {
             for addon in addons where !keptIds.contains(addon.id) {
                 out.append(Line(kind: .remove, text: String(localized: "Remove add-on \(addonName[addon.id] ?? addon.title)"), subject: addon.id))
             }
-            for entry in proposed where entry.isNew {
+            // Review r3: new add-ons sharing a host are told apart by their place in the
+            // proposed list (the URL itself never shows).
+            let newHosts = Dictionary(proposed.filter(\.isNew).map { ($0.title, 1) }, uniquingKeysWith: +)
+            for (position, entry) in proposed.enumerated() where entry.isNew {
                 let off = entry.enabled == false
+                let title = newHosts[entry.title, default: 0] > 1 ? "\(entry.title) (#\(position + 1))" : entry.title
                 out.append(Line(kind: .install, text: off
-                    ? String(localized: "Install add-on \(entry.title) (turned off)")
-                    : String(localized: "Install add-on \(entry.title)"), subject: entry.id))
+                    ? String(localized: "Install add-on \(title) (turned off)")
+                    : String(localized: "Install add-on \(title)"), subject: entry.id))
             }
             let kept = proposed.filter { !$0.isNew }
             for id in movedIds(before: addons.map(\.id).filter(keptIds.contains), after: kept.map(\.id)) {
@@ -119,7 +124,10 @@ nonisolated enum RemoteSetupChangeList {
         }
 
         if setsMdbListKey {
-            out.append(Line(kind: .key, text: String(localized: "Set the MDBList API key")))
+            // Review r3: applying a key also turns MDBList on.
+            out.append(Line(kind: .key, text: mdbListEnabled
+                ? String(localized: "Set the MDBList API key")
+                : String(localized: "Set the MDBList API key and turn MDBList on")))
         }
         if let raw = posterPattern {
             let pattern = raw.trimmingCharacters(in: .whitespacesAndNewlines)
