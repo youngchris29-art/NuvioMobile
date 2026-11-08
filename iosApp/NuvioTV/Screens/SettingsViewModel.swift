@@ -951,15 +951,13 @@ final class SettingsViewModel: ObservableObject {
         return moves.count
     }
 
-    /// A6: Move mode's cancel. Puts the catalog `key` at `toIndex` of the repository's full ordered
-    /// list (collections included) in one `moveByIndex`. Reads the repository's current items, else
-    /// this model's. No-op when the key is missing or already there.
-    func moveCatalog(key: String, toIndex: Int) {
-        let repoItems = (HomeCatalogSettingsRepository.shared.uiState.value_ as? HomeCatalogSettingsUiState)?.items ?? []
-        let keys = (repoItems.isEmpty ? catalogs : repoItems).map(\.key)
-        guard let from = keys.firstIndex(of: key), keys.indices.contains(toIndex), from != toIndex else { return }
-        HomeCatalogSettingsRepository.shared.moveByIndex(fromIndex: Int32(from), toIndex: Int32(toIndex))
-        refreshHome()
+    /// Move mode's cancel (Stage A review): puts the catalog `key` back after the last of its
+    /// original `predecessors` still on Home, below pinned collections, in ONE atomic repository
+    /// update (`restoreKeyAfter`), so a sync landing mid-cancel cannot move a different row.
+    func restoreCatalog(key: String, after predecessors: Set<String>) {
+        if HomeCatalogSettingsRepository.shared.restoreKeyAfter(key: key, predecessors: predecessors) {
+            refreshHome()
+        }
     }
 
     /// The manifest id at the front of a catalog key `"<manifest.id>:<type>:<catalogId>"`: the key

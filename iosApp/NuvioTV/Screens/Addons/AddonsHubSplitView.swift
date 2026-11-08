@@ -91,6 +91,9 @@ struct AddonsHubSplitView: View {
     /// sidebar, tab bar and rail locks).
     @State private var catalogsMoving = false
     @State private var catalogsScrollTarget: String?
+    /// Stage A review: the Install pane's URL draft lives here, so leaving the section (the pane
+    /// is rebuilt per section) does not drop a half-typed keyed URL. Cleared after an install.
+    @State private var installDraft = ""
     /// The content column's stack (D2): an add-on's detail page is pushed here, not a sheet.
     @State private var contentPath: [HubAddonRoute] = []
     /// A5 device check: the next pop is the hub's own (Move, Remove, a section change, a removed
@@ -189,6 +192,8 @@ struct AddonsHubSplitView: View {
             guard let outcome else { return }
             // A6: the inline Install pane shows its own status modal (and its Done lands on the new
             // row); a result that arrives while another section is showing is toasted here.
+            // Stage A review: a landed install clears the draft even when the pane is not showing.
+            if case .installed = outcome { installDraft = "" }
             if selected == .install { return }
             installHandledSerial = InstallFlow.serial(of: outcome)
             switch outcome {
@@ -336,6 +341,7 @@ struct AddonsHubSplitView: View {
                     onCatalogsMovingChange: catalogsMovingChanged,
                     catalogsScrollTarget: $catalogsScrollTarget,
                     installHandledSerial: $installHandledSerial,
+                    installDraft: $installDraft,
                     onInstalled: focusNewestCard
                 )
                 // A second child: a one-child stack forwarded its identifier to the pane's
@@ -400,7 +406,15 @@ struct AddonsHubSplitView: View {
         guard !didRestoreSection else { return }
         didRestoreSection = true
         let restored = HubSection.resolved(raw: storedSection, visible: visible)
-        if restored != selected { selected = restored }
+        guard restored != selected else { return }
+        selected = restored
+        // A8 device check: re-entering the hub (rail or tab) with a stored section other than
+        // Installed left focus on the Installed row: the engine had already landed on the
+        // sidebar's initial default before this ran, so the landing correction never saw the
+        // restored section. Hand the sidebar's focus to the restored row.
+        if sidebarFocus != nil {
+            DispatchQueue.main.async { handOffSidebar(restored) }
+        }
     }
 
     private func select(_ section: HubSection) {
@@ -877,8 +891,13 @@ struct AddonsHubSplitView: View {
 
     /// After an install: the Installed section, focus on the new card (else the last card).
     private func focusNewestCard() {
+        // Stage A review: a lifted row (Installed or Catalogs) keeps focus; the toast announces
+        // the install. A pushed detail page pops first, so the new row exists to take focus.
+        if isMovingAny { return }
+        let popped = !contentPath.isEmpty
+        popProgrammatically()
         select(.installed)
-        DispatchQueue.main.async {
+        DispatchQueue.main.asyncAfter(deadline: .now() + (popped ? Self.popSettle : 0)) {
             let installed = model.lastInstalledManifestUrl.flatMap { url in
                 model.addons.first { AddonManifestURL.isSameManifest($0.manifestUrl, url) }
             }
@@ -958,6 +977,7 @@ private struct HubContentColumn: View {
     let onCatalogsMovingChange: (Bool) -> Void
     @Binding var catalogsScrollTarget: String?
     @Binding var installHandledSerial: Int?
+    @Binding var installDraft: String
     let onInstalled: () -> Void
 
     var body: some View {
@@ -993,6 +1013,7 @@ private struct HubContentColumn: View {
             InstallAddonPane(
                 model: model, focus: contentFocus,
                 handledSerial: $installHandledSerial,
+                url: $installDraft,
                 onInstalled: onInstalled
             )
         case .refresh, .phone:

@@ -467,6 +467,40 @@ object HomeCatalogSettingsRepository {
         HomeCatalogSettingsSyncService.triggerPush()
     }
 
+    /**
+     * Add-ons hub v2 (Stage A review): Move mode's cancel. Puts [key] back right after the last
+     * of its original [predecessors] still in the order, below every pinned collection, with the
+     * whole read-compute-write under the mutation lock (a sync landing between a separate read
+     * and write could otherwise move a different row). A pinned [key], or a key no longer in the
+     * order, is left alone. Returns whether the order changed.
+     */
+    fun restoreKeyAfter(key: String, predecessors: Set<String>): Boolean {
+        ensureLoaded()
+        val changed = synchronized(preferencesMutationLock) {
+            val current = allOrderedKeys()
+            val pinned = collectionDefinitions.filter { it.isPinnedToTop }.map { it.key }.toSet()
+            val restored = restoredCatalogOrder(current, key, predecessors, pinned)
+            if (restored == null || restored == current) {
+                false
+            } else {
+                val updatedPreferences = preferences.toMutableMap()
+                restored.forEachIndexed { index, itemKey ->
+                    val pref = updatedPreferences[itemKey] ?: return@forEachIndexed
+                    updatedPreferences[itemKey] = pref.copy(order = index)
+                }
+                preferences = updatedPreferences
+                true
+            }
+        }
+        if (changed) {
+            publish()
+            persist()
+            HomeRepository.applyCurrentSettings()
+            HomeCatalogSettingsSyncService.triggerPush()
+        }
+        return changed
+    }
+
     private fun ensureLoaded() {
         if (hasLoaded) return
         hasLoaded = true
@@ -1024,3 +1058,22 @@ internal fun collectionsHeroContentSignature(collections: List<Collection>): Str
 /// clear definitions through onProfileChanged()/clearLocalState(), never through syncCatalogs().
 internal fun shouldReplaceCatalogDefinitions(currentCount: Int, incomingCount: Int): Boolean =
     incomingCount > 0 || currentCount == 0
+
+/**
+ * Add-ons hub v2 (Stage A review): the order with [key] moved to just after the last of
+ * [predecessors] still present, and never above a [pinned] key (pinned collections stay on top).
+ * Null when [key] is missing or is itself pinned (the pin already decided its place).
+ */
+internal fun restoredCatalogOrder(
+    order: List<String>,
+    key: String,
+    predecessors: Set<String>,
+    pinned: Set<String>,
+): List<String>? {
+    if (key !in order || key in pinned) return null
+    val rest = order.filter { it != key }
+    val anchor = rest.indexOfLast { it in predecessors }
+    val belowPins = rest.indexOfLast { it in pinned } + 1
+    val target = maxOf(anchor + 1, belowPins).coerceAtMost(rest.size)
+    return rest.toMutableList().apply { add(target, key) }
+}

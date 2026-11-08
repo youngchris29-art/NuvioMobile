@@ -18,13 +18,14 @@ struct InstallAddonPane: View {
     /// The newest install outcome serial already handled (owned by the hub, so a stale outcome
     /// never shows when the pane is rebuilt).
     @Binding var handledSerial: Int?
+    /// Stage A review: the URL draft, owned by the hub so it survives a section change.
+    @Binding var url: String
     /// Installed -> Done: the hub switches to Installed and focuses the new row.
     let onInstalled: () -> Void
 
     nonisolated static let fieldKey = "install:field"
     nonisolated static let buttonKey = "install:button"
 
-    @State private var newUrl = ""
     @State private var phase: InstallPhase = .idle
 
     var body: some View {
@@ -49,8 +50,8 @@ struct InstallAddonPane: View {
                 #if DEBUG
                 // `-debug.installPrefillUrl <url>` prefills the field (never persisted, never
                 // written back); the UI tests use it.
-                if newUrl.isEmpty, let prefill = UserDefaults.standard.string(forKey: "debug.installPrefillUrl"), !prefill.isEmpty {
-                    newUrl = prefill
+                if url.isEmpty, let prefill = UserDefaults.standard.string(forKey: "debug.installPrefillUrl"), !prefill.isEmpty {
+                    url = prefill
                 }
                 #endif
             }
@@ -61,7 +62,7 @@ struct InstallAddonPane: View {
                 if let outcome { handledSerial = InstallFlow.serial(of: outcome) }
                 phase = InstallFlow.installPhase(isInstalling: model.isInstalling, outcome: outcome)
                 // The typed URL survives a failure; it clears only once the add-on is in.
-                if case .installed? = outcome { newUrl = "" }
+                if case .installed? = outcome { url = "" }
             }
     }
 
@@ -95,7 +96,7 @@ struct InstallAddonPane: View {
 
             HStack(spacing: Theme.Spacing.md) {
                 Image(systemName: "link").foregroundStyle(.secondary)
-                TextField("https://\u{2026}/manifest.json", text: $newUrl)
+                TextField("https://\u{2026}/manifest.json", text: $url)
                     .textFieldStyle(.plain)
                     .font(Theme.Font.screenTitle.weight(.regular))
                     .focused(focus, equals: Self.fieldKey)
@@ -109,7 +110,7 @@ struct InstallAddonPane: View {
                 // pressed and focus jumped away. Guarded in the action instead.
                 Button {
                     guard !model.isInstalling else { return }
-                    model.install(newUrl)
+                    model.install(url)
                 } label: {
                     Label("Install", systemImage: "plus.circle.fill")
                         .padding(.horizontal, Theme.Spacing.md).padding(.vertical, Theme.Spacing.xxs)

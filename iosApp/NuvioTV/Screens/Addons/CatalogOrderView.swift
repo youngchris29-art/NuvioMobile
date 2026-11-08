@@ -116,15 +116,6 @@ struct CatalogOrderView: View {
     /// Whether the row at `index` can move one step in `direction` and change what the page shows:
     /// the neighbour must exist and must not be pinned to the top (the repository re-pins pinned
     /// collections), and a pinned row itself never moves.
-    /// Review A6-r1: a cancel never lands above a collection pinned to the top (one may have
-    /// been pinned by a sync during the move): the destination is clamped below every pinned key.
-    /// Review A6-r2: nil when the moving row itself was pinned meanwhile (the repository already
-    /// put it at the top; restoring would pull a pinned row below unpinned ones).
-    nonisolated static func cancelDestination(key: String, origin: Int, pinnedKeys: Set<String>) -> Int? {
-        guard !pinnedKeys.contains(key) else { return nil }
-        return max(origin, pinnedKeys.count)
-    }
-
     nonisolated static func canMove(index: Int, direction: Int, orderedKeys: [String], pinnedKeys: Set<String>) -> Bool {
         guard orderedKeys.indices.contains(index), !pinnedKeys.contains(orderedKeys[index]) else { return false }
         let target = index + direction
@@ -349,12 +340,11 @@ struct CatalogOrderView: View {
     /// Menu while moving: puts the catalog back where it started (relative to the survivors), in
     /// one `moveByIndex`, only when a step actually happened.
     private func cancelMove() {
-        let items = liveItems()
-        if let (key, origin) = moveMode.cancel(currentOrder: items.map(\.key)) {
-            let pinned = Set(items.filter(\.isPinnedToTop).map(\.key))
-            if moveDidStep, let destination = Self.cancelDestination(key: key, origin: origin, pinnedKeys: pinned) {
-                model.moveCatalog(key: key, toIndex: destination)
-            }
+        let predecessors = moveMode.predecessors
+        if let (key, _) = moveMode.cancel(currentOrder: liveKeys()) {
+            // Stage A review: resolved by key inside the repository's atomic update (pinned rows
+            // and a row pinned during its own move handled there).
+            if moveDidStep { model.restoreCatalog(key: key, after: predecessors) }
             onMovingChange(false)
             focusRowSoon(key)
         }
