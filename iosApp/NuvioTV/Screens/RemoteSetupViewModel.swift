@@ -476,38 +476,43 @@ final class RemoteSetupViewModel: ObservableObject {
                 }
             }
         }
-        let urls = entries.map(\.url)
-        guard !urls.isEmpty else {
-            finish([], [])
+        installInOrder(entries, index: 0, profile: profile, failed: [], conflictIds: [], then: finish)
+    }
+
+    /// Review r16: new add-ons install one after another, in the order the phone proposed them,
+    /// so they land in that order (the dialog's "#n" labels name them by it). Each sets its flag in
+    /// its own state update (review r4); a profile switch reports the rest back (review r9).
+    private func installInOrder(
+        _ entries: [RemoteSetupAddonIds.Resolved],
+        index: Int,
+        profile: Int32,
+        failed: [Int],
+        conflictIds: [String],
+        then finish: @escaping ([Int], [String]) -> Void
+    ) {
+        guard index < entries.count else {
+            finish(failed, conflictIds)
             return
         }
-        var remaining = urls.count
-        var failed: [Int] = []
-        var conflictIds: [String] = []
-        for (index, url) in urls.enumerated() {
-            // Review r4: the requested flag is set inside the install's own state update.
-            let wanted = entries[index].enabled ?? true
-            AddonRepository.shared.addAddon(rawUrl: url, enabled: wanted) { result, _ in
-                let succeeded = result is AddAddonResultSuccess
-                Task { @MainActor in
-                    let current = (AddonRepository.shared.uiState.value_ as? AddonsUiState)?.addons ?? []
-                    let landed = current.first(where: { AddonManifestURL.isSameManifest($0.manifestUrl, url) })
-                    // Review r9: a profile switch while the fetch ran means the add-on may have
-                    // landed in the other profile; it is reported back, not counted as done.
-                    let sameProfile = ProfileRepository.shared.activeProfileId == profile
-                    switch sameProfile ? Self.installOutcome(succeeded: succeeded, wanted: wanted, landedEnabled: landed?.enabled) : .failed {
-                    case .installed: break
-                    case .failed: failed.append(index)
-                    case .conflict:
-                        // Review r5: name the installed add-on by its session id, so the page can
-                        // mark exactly that row (two variants from one host look alike).
-                        if let landed { conflictIds.append(self.addonIds.id(for: landed.manifestUrl)) }
-                    }
-                    remaining -= 1
-                    guard remaining == 0 else { return }
-                    // Review r14: a failed install is reported, not hidden behind "confirmed".
-                    finish(failed, conflictIds.filter { !$0.isEmpty })
+        let url = entries[index].url
+        let wanted = entries[index].enabled ?? true
+        AddonRepository.shared.addAddon(rawUrl: url, enabled: wanted) { result, _ in
+            let succeeded = result is AddAddonResultSuccess
+            Task { @MainActor in
+                var failed = failed
+                var conflictIds = conflictIds
+                let current = (AddonRepository.shared.uiState.value_ as? AddonsUiState)?.addons ?? []
+                let landed = current.first(where: { AddonManifestURL.isSameManifest($0.manifestUrl, url) })
+                let sameProfile = ProfileRepository.shared.activeProfileId == profile
+                switch sameProfile ? Self.installOutcome(succeeded: succeeded, wanted: wanted, landedEnabled: landed?.enabled) : .failed {
+                case .installed: break
+                case .failed: failed.append(index)
+                case .conflict:
+                    // Review r5: the installed add-on's session id, so the page marks that row.
+                    if let landed { conflictIds.append(self.addonIds.id(for: landed.manifestUrl)) }
                 }
+                self.installInOrder(entries, index: index + 1, profile: profile,
+                                    failed: failed, conflictIds: conflictIds, then: finish)
             }
         }
     }
