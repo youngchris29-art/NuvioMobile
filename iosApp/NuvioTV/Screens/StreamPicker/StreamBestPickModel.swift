@@ -178,8 +178,10 @@ enum StreamPickerCopy {
     private static func addonCompactParts(_ row: StreamRowModel) -> StreamCompactParts {
         let lead = row.nameLines.isEmpty ? row.title : row.nameLines.joined(separator: " ")
         let facts = StreamRowModel.textLines(row.description).first
+        // Review r5: an add-on's generic name ("4K ⚡ RD") does not tell sources apart, so a failed
+        // row keeps its source beside the caption.
         let trailing: String? = row.failedRecently
-            ? String(localized: "Failed recently")
+            ? [String(localized: "Failed recently"), clean(row.addonName)].compactMap { $0 }.joined(separator: separator)
             : clean(row.addonName)
         // Review r1/r2: the one line truncates, so text that "carries" the size may not show it; the
         // compact row always keeps its own size.

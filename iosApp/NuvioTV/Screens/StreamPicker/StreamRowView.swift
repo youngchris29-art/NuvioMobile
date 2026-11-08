@@ -476,6 +476,12 @@ private struct StreamRowFileLine: View {
 /// scrolls only when the grown row overflows, so a row near the bottom edge does not leave its file
 /// name below the fold.
 struct StreamRowDwell: View {
+    /// The dwell task's identity: focus and whether there is anything to reveal.
+    struct DwellKey: Equatable {
+        let focused: Bool
+        let hasText: Bool
+    }
+
     @Binding var isShown: Bool
     let hasText: Bool
     let onExpanded: () -> Void
@@ -494,7 +500,8 @@ struct StreamRowDwell: View {
 
     var body: some View {
         Color.clear
-            .task(id: focused) {
+            // Review r5: keyed by `hasText` too, so a Row Text flip on the focused row re-arms the dwell.
+            .task(id: DwellKey(focused: focused, hasText: hasText)) {
                 var transaction = Transaction()
                 transaction.disablesAnimations = true
                 guard focused else {

@@ -138,13 +138,14 @@ final class StreamPickerUITests: XCTestCase {
     // MARK: - Source Layout (GitHub #25)
 
     /// `TEST_RUNNER_PICKER_LAYOUT=FULL` (seen here as `PICKER_LAYOUT`) runs every picker leg in the
-    /// Full Width layout through `-debug.sourceLayout`; absent, the legs run the default Two-Pane.
+    /// Full Width layout through `-debug.sourceLayout`; absent, the legs pin Two-Pane (review r5: a
+    /// profile that saved Full Width must not move the default legs). Row Text is pinned to Nuvio.
     static var pickerLayout: String? {
         let raw = ProcessInfo.processInfo.environment["PICKER_LAYOUT"]?.trimmingCharacters(in: .whitespaces)
         return (raw?.isEmpty ?? true) ? nil : raw
     }
 
-    static var layoutArgs: [String] { pickerLayout.map { ["-debug.sourceLayout", $0] } ?? [] }
+    static var layoutArgs: [String] { ["-debug.sourceLayout", pickerLayout ?? "TWO", "-debug.rowText", "NUVIO"] }
 
     static var isFullWidthRun: Bool { pickerLayout?.uppercased().hasPrefix("FULL") ?? false }
 

@@ -194,6 +194,18 @@ final class StreamPickerFullWidthTests: XCTestCase {
         XCTAssertEqual(p2.size, "1.9 GB")
     }
 
+    func testAFailedCompactAddonRowKeepsItsSource() {
+        let failed = make(stream(name: "4K ⚡ RD"), addonText: true)
+            .applying(isResolving: false, failedRecently: true, players: [], defaultPlayerId: nil)
+        XCTAssertEqual(StreamPickerCopy.compactParts(failed).trailing, "Failed recently · AIOStreams")
+    }
+
+    func testDwellKeyChangesWithTheText() {
+        XCTAssertNotEqual(StreamRowDwell.DwellKey(focused: true, hasText: false),
+                          StreamRowDwell.DwellKey(focused: true, hasText: true),
+                          "a Row Text flip on the focused row re-arms the dwell")
+    }
+
     func testCompactSpokenLabelInAddonText() {
         XCTAssertEqual(StreamPickerCopy.compactSpokenLabel(make(stream(), addonText: true)),
                        "AIOStreams 4K ⚡ RD, Movie (2024), 🎞️ WEB-DL · HEVC · DV, 🔊 Atmos DD+ 5.1, 💾 1.9 GB · 👤 120, 1.9 GB, AIOStreams",
