@@ -83,8 +83,9 @@ final class RemoteSetupServer {
         /// Indices (among the proposal's NEW add-ons, in order) whose install failed; set with a
         /// `partial` outcome so the page can keep exactly those entries for a retry.
         var failedNewIndices: [Int] = []
-        /// Review r4: new add-ons another change installed first with the other on/off setting.
-        var conflicts = 0
+        /// Review r4/r5: the session ids of new add-ons another change installed first with the other
+        /// on/off setting (the page marks those rows).
+        var conflictIds: [String] = []
         let createdAt = Date()
 
         init(proposal: Proposal) {
@@ -169,13 +170,13 @@ final class RemoteSetupServer {
     }
 
     /// Settles a claimed change as `confirmed`, or as the refusal that stopped it.
-    func finishApplying(id: String, status: ChangeStatus, failedNewIndices: [Int] = [], conflicts: Int = 0) {
+    func finishApplying(id: String, status: ChangeStatus, failedNewIndices: [Int] = [], conflictIds: [String] = []) {
         lock.lock()
         defer { lock.unlock() }
         guard let change = pending[id], change.status == .applying else { return }
         change.status = status
         change.failedNewIndices = failedNewIndices
-        change.conflicts = conflicts
+        change.conflictIds = conflictIds
     }
 
     /// Settles a still-pending change as declined or refused; a no-op for one already settled.
@@ -384,11 +385,11 @@ final class RemoteSetupServer {
             lock.lock()
             let status = pending[id]?.status.rawValue ?? "not_found"
             let failed = pending[id]?.failedNewIndices ?? []
-            let conflicts = pending[id]?.conflicts ?? 0
+            let conflictIds = pending[id]?.conflictIds ?? []
             lock.unlock()
             var fields = ["status": status]
             if !failed.isEmpty { fields["failedNew"] = failed.map(String.init).joined(separator: ",") }
-            if conflicts > 0 { fields["conflicts"] = String(conflicts) }
+            if !conflictIds.isEmpty { fields["conflictIds"] = conflictIds.joined(separator: ",") }
             response = HttpResponse.json(fields)
         default:
             response = HttpResponse(

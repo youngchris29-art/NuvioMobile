@@ -438,7 +438,7 @@ final class RemoteSetupViewModel: ObservableObject {
         }
         var remaining = urls.count
         var failed: [Int] = []
-        var conflicts = 0
+        var conflictIds: [String] = []
         for (index, url) in urls.enumerated() {
             // Review r4: the requested flag is set inside the install's own state update.
             let wanted = entries[index].enabled ?? true
@@ -450,15 +450,18 @@ final class RemoteSetupViewModel: ObservableObject {
                     switch Self.installOutcome(succeeded: succeeded, wanted: wanted, landedEnabled: landed?.enabled) {
                     case .installed: break
                     case .failed: failed.append(index)
-                    case .conflict: conflicts += 1
+                    case .conflict:
+                        // Review r5: name the installed add-on by its session id, so the page can
+                        // mark exactly that row (two variants from one host look alike).
+                        if let landed { conflictIds.append(self?.addonIds.id(for: landed.manifestUrl) ?? "") }
                     }
                     remaining -= 1
                     guard remaining == 0 else { return }
                     // Review r14: a failed install is reported, not hidden behind "confirmed".
-                    if failed.isEmpty && conflicts == 0 {
+                    if failed.isEmpty && conflictIds.isEmpty {
                         self?.server.finishApplying(id: changeId, status: status)
                     } else {
-                        self?.server.finishApplying(id: changeId, status: .partial, failedNewIndices: failed.sorted(), conflicts: conflicts)
+                        self?.server.finishApplying(id: changeId, status: .partial, failedNewIndices: failed.sorted(), conflictIds: conflictIds.filter { !$0.isEmpty })
                     }
                 }
             }

@@ -128,19 +128,23 @@ struct CustomPostersSettingsView: View {
         .onAppear { model.start() }
         .onDisappear {
             model.stop()
+            // Hub v2 C3: the confirm dialog (a full-screen cover) can report the screen as gone;
+            // the server must outlive it, or the change it is confirming dies with it.
+            guard remote.pendingChange == nil else { return }
             remote.stop()
         }
-        .alert(
-            "Apply changes from browser?",
-            isPresented: Binding(
-                get: { remote.pendingChange != nil },
-                set: { if !$0 { remote.rejectPending() } }
+        // Hub v2 C3 review r5: the same per-change dialog as the hub (a Confirm that finds the
+        // lists changed shows the new lines and asks again, which an alert cannot).
+        .fullScreenCover(isPresented: Binding(
+            get: { remote.pendingChange != nil },
+            set: { if !$0 && remote.pendingChange != nil { remote.rejectPending() } }
+        )) {
+            ConfirmPhoneChangesDialog(
+                lines: remote.pendingLines,
+                refreshed: remote.pendingLinesRefreshed,
+                onConfirm: { remote.confirmPending() },
+                onReject: { remote.rejectPending() }
             )
-        ) {
-            Button("Apply") { remote.confirmPending() }
-            Button("Decline", role: .cancel) { remote.rejectPending() }
-        } message: {
-            Text(remote.pendingSummary)
         }
     }
 
