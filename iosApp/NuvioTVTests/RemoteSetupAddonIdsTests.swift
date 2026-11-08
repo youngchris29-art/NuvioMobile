@@ -180,6 +180,8 @@ final class RemoteSetupPageSafeTextTests: XCTestCase {
     func testSchemelessUrlsAreCovered() {
         let bare = "addon.example.com/torbox=SCHEMELESS42/manifest.json"
         XCTAssertFalse(RemoteSetupAddonIds.pageSafe("key SCHEMELESS42", manifestUrl: bare).contains("SCHEMELESS42"))
+        let nested = "addon.example.com/torbox=NESTEDKEY77/manifest.json?callback=https://example.org"
+        XCTAssertFalse(RemoteSetupAddonIds.pageSafe("key NESTEDKEY77", manifestUrl: nested).contains("NESTEDKEY77"))
     }
 
     func testPlainTextIsUntouched() {

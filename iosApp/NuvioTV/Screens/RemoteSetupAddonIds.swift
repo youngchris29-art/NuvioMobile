@@ -129,7 +129,15 @@ nonisolated struct RemoteSetupAddonIds {
         // Parsed by hand: a literal `|` (common in debrid add-on paths) makes URLComponents fail.
         // Review r19: a synced URL can lack a scheme (`host/torbox=KEY/manifest.json`); it then
         // starts at its host.
-        let afterScheme = manifestUrl.range(of: "://").map { manifestUrl[$0.upperBound...] } ?? manifestUrl[...]
+        // Review r20: only a `://` before the first `/`, `?` or `#` is the scheme separator (a
+        // nested `?callback=https://…` is not), the rule `AddonsViewModel.host(of:)` uses.
+        let firstBreak = manifestUrl.firstIndex(where: { $0 == "/" || $0 == "?" || $0 == "#" }) ?? manifestUrl.endIndex
+        let afterScheme: Substring
+        if let sep = manifestUrl.range(of: "://"), sep.lowerBound < firstBreak {
+            afterScheme = manifestUrl[sep.upperBound...]
+        } else {
+            afterScheme = manifestUrl[...]
+        }
         let afterHost = afterScheme.drop(while: { $0 != "/" && $0 != "?" })
         // Review r13: `user:password@` credentials in the authority are pieces too.
         let authority = afterScheme[..<afterHost.startIndex]
