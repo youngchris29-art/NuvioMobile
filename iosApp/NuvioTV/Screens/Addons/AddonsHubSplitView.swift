@@ -691,6 +691,7 @@ struct AddonsHubSplitView: View {
         case .installed:
             if model.isInitialized && model.addons.isEmpty { return [InstalledAddonsPane.emptyKey] }
             return Self.installedFocusKeys(urls: model.addons.map(\.manifestUrl))
+                .union([InstalledAddonsPane.checkNowKey])
         default: return []
         }
     }

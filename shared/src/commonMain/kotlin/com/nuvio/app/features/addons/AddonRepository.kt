@@ -602,6 +602,7 @@ object AddonRepository {
     ): Job =
         scope.launch(start = CoroutineStart.LAZY) {
             try {
+                val startMark = kotlin.time.TimeSource.Monotonic.markNow()
                 val result = runCatching {
                     val payload = fetchAddonResponseText(
                         url = manifestUrl,
@@ -616,9 +617,13 @@ object AddonRepository {
                 // failure over its replacement, and a job that finished after being superseded
                 // must not overwrite the newer one's state.
                 result.exceptionOrNull()?.let { if (it is CancellationException) throw it }
+                val elapsedMs = startMark.elapsedNow().inWholeMilliseconds
 
+                // C4: health is recorded only by the current generation, like the state below.
+                var isCurrent = true
                 _uiState.update { current ->
-                    if (!isCurrentRefreshGeneration(current.refreshGenerations, manifestUrl, generation)) {
+                    isCurrent = isCurrentRefreshGeneration(current.refreshGenerations, manifestUrl, generation)
+                    if (!isCurrent) {
                         return@update current
                     }
                     current.copy(
@@ -644,6 +649,13 @@ object AddonRepository {
                                 )
                             }
                         },
+                    )
+                }
+                if (isCurrent) {
+                    AddonHealthTracker.record(
+                        manifestUrl = manifestUrl,
+                        latencyMs = elapsedMs,
+                        failed = result.isFailure,
                     )
                 }
             } finally {
@@ -752,6 +764,7 @@ object AddonRepository {
             val running = activeRefreshJobs.values.toList()
             activeRefreshJobs.clear()
             _uiState.value = AddonsUiState()
+            AddonHealthTracker.clear()
             running
         }
         jobs.forEach(Job::cancel)

@@ -31,6 +31,8 @@ struct InstalledAddonsPane: View {
     nonisolated static func rowKey(_ manifestUrl: String) -> String { "row:" + manifestUrl }
     /// The empty state's row (review A3-r1: Select on Installed hands focus to it).
     nonisolated static let emptyKey = "installed:empty"
+    /// C4: the "Check now" row after the add-on rows.
+    nonisolated static let checkNowKey = "installed:checkNow"
 
     // MARK: Pure rules
 
@@ -145,6 +147,15 @@ struct InstalledAddonsPane: View {
                     onStartMove: onStartMove, onMoveStep: onMoveStep, onCommitMove: onCommitMove
                 )
             }
+            if model.isInitialized && !model.addons.isEmpty {
+                SettingsActionRow(
+                    title: String(localized: "Check now"),
+                    subtitle: String(localized: "Re-check every enabled add-on and update its response time")
+                ) { model.refreshAll() }
+                .focused(focus, equals: InstalledAddonsPane.checkNowKey)
+                .disabled(movingUrl != nil)
+                .accessibilityIdentifier("addons_installed_check_now")
+            }
         }
         .environment(\.settingsUsesNativeList, true)
         .scrollClipDisabled()
@@ -160,6 +171,7 @@ struct InstalledAddonsPane: View {
             }
         }
         .accessibilityIdentifier("addons_installed_list")
+        .onAppear { AddonHealthStore.shared.start() }
     }
 }
 
@@ -197,6 +209,8 @@ private struct AddonRow: View {
     /// on the row and in its accessibility value, as v1's card did.
     private var host: String { AddonsViewModel.host(of: addon.manifestUrl) }
     private var statusText: String { InstalledAddonsPane.trailingText(status) }
+    @ObservedObject private var healthStore = AddonHealthStore.shared
+    private var health: AddonHealthSnapshot? { healthStore.snapshot(for: addon.manifestUrl) }
 
     var body: some View {
         // While moving there is no context menu (the long press would fight the mode).
@@ -219,7 +233,10 @@ private struct AddonRow: View {
             }
         }
         .accessibilityLabel(title)
-        .accessibilityValue(HubAccessibility.rowValue("\(statusText), \(host)", isMoving: isMoving))
+        .accessibilityValue(HubAccessibility.rowValue(
+            ([statusText] + [AddonHealthText.spoken(health)].compactMap { $0 } + [host]).joined(separator: ", "),
+            isMoving: isMoving
+        ))
         .accessibilityIdentifier("addons_row_\(index)")
         .modifier(MoveActions(allowed: isLocked ? [] : InstalledAddonsPane.voiceOverMoves(index: index, count: count, isReadOnly: isReadOnly)) { delta in
             // Review A4-r5: on the lifted row the actions are Move mode's own (tracked) steps, so
@@ -241,10 +258,19 @@ private struct AddonRow: View {
             .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.chip))
 
             VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
-                Text(title)
-                    .font(SettingsRowFont.title)
-                    .lineLimit(1)
-                Text(metaLine)
+                HStack(spacing: Theme.Spacing.sm) {
+                    Text(title)
+                        .font(SettingsRowFont.title)
+                        .lineLimit(1)
+                    if let level = AddonHealthLevel.of(health) {
+                        Circle()
+                            .fill(Self.color(level))
+                            .frame(width: 14, height: 14)
+                            .accessibilityHidden(true)
+                            .accessibilityIdentifier("addons_row_\(index)_health_dot")
+                    }
+                }
+                Text(metaLine + AddonHealthText.rowSuffix(health))
                     .font(SettingsRowFont.subtitle)
                     .rowTextColor(secondary: true)
                     .lineLimit(1)
@@ -255,6 +281,14 @@ private struct AddonRow: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
+        }
+    }
+
+    private static func color(_ level: AddonHealthLevel) -> Color {
+        switch level {
+        case .good: return .green
+        case .slow: return .orange
+        case .bad: return .red
         }
     }
 

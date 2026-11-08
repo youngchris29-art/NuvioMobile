@@ -233,6 +233,8 @@ struct AddonDetailPane: View {
 
     // MARK: Live state
 
+    @ObservedObject private var healthStore = AddonHealthStore.shared
+
     private var addon: ManagedAddon {
         model.addons.first { $0.manifestUrl == snapshot.manifestUrl } ?? snapshot
     }
@@ -270,6 +272,11 @@ struct AddonDetailPane: View {
                 case .code: configureSection(addon)
                 }
             }
+            SettingsValueRow(
+                title: String(localized: "Last checked"),
+                value: AddonHealthText.lastChecked(healthStore.snapshot(for: addon.manifestUrl))
+            )
+            .accessibilityIdentifier("addons_detail_last_checked")
             if configureFirst { details(addon) }
             Text(Self.locationLine(addon.manifestUrl))
                 .font(Theme.Font.caption)
@@ -296,6 +303,7 @@ struct AddonDetailPane: View {
                 focus = Self.defaultRow(currentRows, configureFirst: configureFirst)
             }
         }
+        .onAppear { healthStore.start() }
         .task(id: qrKey(addon)) {
             let key = qrKey(addon)
             guard !key.isEmpty, key != qrFor else { return }
