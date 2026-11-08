@@ -174,10 +174,7 @@ struct AddonsHubSplitView: View {
         }
         .onAppear { restoreSection(visible: visible) }
         // Review A5-r3: leaving the hub cancels a detail page's pending Move lift.
-        .onDisappear {
-            pendingLiftUrl = nil
-            HubAccessibility.invalidatePending()
-        }
+        .onDisappear { pendingLiftUrl = nil }
         .onChange(of: visible) { _, now in
             // A section that disappears (Plugins switched off) falls back to Installed.
             if !now.contains(selected) { select(.installed) }
@@ -453,9 +450,6 @@ struct AddonsHubSplitView: View {
         guard !section.isAction, section != selected else { return }
         pendingLiftUrl = nil
         catalogFilterUrl = nil
-        // Review VO-r2: a section change drops a move announcement still waiting (it described
-        // the pane being replaced).
-        HubAccessibility.invalidatePending()
         // Review A6-r1: a programmatic switch away from Catalogs mid-move (an install landing)
         // must not leave the hub locked; the pane also ends its mode when torn down.
         if catalogsMoving {
@@ -524,9 +518,6 @@ struct AddonsHubSplitView: View {
             handOffContent(key)
             return
         }
-        // Review VO-r3: focus reached the sidebar for real (the post-move grab was handed back
-        // above): a waiting move announcement no longer describes what has focus.
-        HubAccessibility.invalidatePending()
         if new == deliberateSidebar {
             deliberateSidebar = nil
             if !new.isAction, new != selected { select(new) }
@@ -560,9 +551,6 @@ struct AddonsHubSplitView: View {
 
     private func contentFocusChanged(from old: String?, to new: String?) {
         guard let new else { return }
-        // Review VO-r4: focus moved on to another row: a waiting move announcement about the
-        // moved row is dropped (the hand-back onto that row keeps it).
-        HubAccessibility.focusLanded(on: new)
         // Review A5-r3: pop recovery ends as soon as the row has focus, however it got there (the
         // engine can land it before the queued reclaim writes it).
         if let url = popReturnUrl, new == InstalledAddonsPane.rowKey(url) { poppedAt = nil }
@@ -730,11 +718,7 @@ struct AddonsHubSplitView: View {
     /// box dropped it onto the sidebar; the simulator did not).
     private func contentPathChanged(from old: [HubAddonRoute], to new: [HubAddonRoute]) {
         // Review A5-r3: a push (another detail page) cancels a pending lift.
-        if new.count > old.count {
-            pendingLiftUrl = nil
-            // Review VO-r3: a detail page pushed right after a move must not hear its "Moved".
-            HubAccessibility.invalidatePending()
-        }
+        if new.count > old.count { pendingLiftUrl = nil }
         guard new.isEmpty, let route = old.last else { return }
         if programmaticPop {
             programmaticPop = false
@@ -821,10 +805,10 @@ struct AddonsHubSplitView: View {
         moveMode.start(manifestUrl: addon.manifestUrl, index: order.firstIndex(of: addon.manifestUrl) ?? index, order: order)
         Self.logFocus("move start at \(index)")
         DispatchQueue.main.async { handOffContent(InstalledAddonsPane.rowKey(addon.manifestUrl)) }
-        // VoiceOver check (2026-11-08): the badge alone was never spoken. Said a moment later, so
-        // the focus hand-off's own announcement does not cut it off. Covers the context menu's
-        // Move and the add-on page's Move (it lifts the row through here).
-        HubAccessibility.announceSoon(.started, rowKey: InstalledAddonsPane.rowKey(addon.manifestUrl))
+        // VoiceOver check (2026-11-08): the badge alone was never spoken. Queued behind the focus
+        // hand-off's own speech. Covers the context menu's Move and the add-on page's Move (it
+        // lifts the row through here).
+        HubAccessibility.announce(.started)
     }
 
 
@@ -846,7 +830,7 @@ struct AddonsHubSplitView: View {
     private func commitMove() {
         guard let url = moveMode.commit() else { return }
         Self.logFocus("move commit")
-        HubAccessibility.announceSoon(.committed, rowKey: InstalledAddonsPane.rowKey(url))
+        HubAccessibility.announce(.committed)
         refocusRowAfterMove(url)
     }
 
@@ -896,7 +880,6 @@ struct AddonsHubSplitView: View {
         suppressSidebarDefaultFocus = false
         moveEndedAt = nil
         Self.logFocus("move ended: lifted add-on removed")
-        HubAccessibility.invalidatePending()
         DispatchQueue.main.async {
             if let first = model.addons.first {
                 handOffContent(InstalledAddonsPane.rowKey(first.manifestUrl))
@@ -915,7 +898,7 @@ struct AddonsHubSplitView: View {
         if moveDidStep { model.restore(manifestUrl: url, after: predecessors) }
         moveDidStep = false
         Self.logFocus("move cancel back to \(origin)")
-        HubAccessibility.announceSoon(.cancelled, rowKey: InstalledAddonsPane.rowKey(url))
+        HubAccessibility.announce(.cancelled)
         refocusRowAfterMove(url)
     }
 

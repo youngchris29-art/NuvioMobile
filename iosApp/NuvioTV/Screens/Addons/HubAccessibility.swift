@@ -1,3 +1,4 @@
+import Accessibility
 import SwiftUI
 
 /// Add-ons hub v2: VoiceOver wording, from Christian's check on the Apple TV (2026-11-08).
@@ -36,50 +37,20 @@ nonisolated enum HubAccessibility {
         }
     }
 
+    /// The speech priority of each event: the start instructions queue behind the focus
+    /// change's own speech; "Moved" and "Move cancelled" are low priority, so VoiceOver drops them
+    /// when other speech (the next row, the tab bar, a page) takes over.
+    static func priority(_ event: MoveEvent) -> AttributeScopes.AccessibilityAttributes.AnnouncementPriorityAttribute.AnnouncementPriority {
+        event == .started ? .default : .low
+    }
+
+    /// Posts the announcement now. Review VO-r5: no timer (an earlier 350 ms delay could outlive
+    /// every kind of focus change); VoiceOver's own queue orders it after the focus change and,
+    /// for the low-priority results, drops it when the user has moved on.
     @MainActor
     static func announce(_ event: MoveEvent) {
-        AccessibilityNotification.Announcement(announcement(event)).post()
-    }
-
-    /// Bumped by every scheduled announcement and by `invalidatePending()`; a scheduled one posts
-    /// only if nothing came after it (review VO-r1: a Menu inside the delay must not let the
-    /// start instructions follow the move's end).
-    @MainActor private(set) static var generation = 0
-
-    /// How long after the focus change a move announcement is posted, so the focus change's own
-    /// speech does not cut it off.
-    static let announceDelay: TimeInterval = 0.35
-
-    /// The focus key of the row a waiting announcement describes (review VO-r4).
-    @MainActor private(set) static var pendingRowKey: String?
-
-    /// Posts `event` after `announceDelay` unless another announcement, `invalidatePending()` or
-    /// focus landing on a row other than `rowKey` (`focusLanded(on:)`) came first.
-    @MainActor
-    static func announceSoon(_ event: MoveEvent, rowKey: String) {
-        generation += 1
-        pendingRowKey = rowKey
-        let scheduled = generation
-        DispatchQueue.main.asyncAfter(deadline: .now() + announceDelay) {
-            guard scheduled == generation else { return }
-            pendingRowKey = nil
-            announce(event)
-        }
-    }
-
-    /// Content focus landed on `key`: a waiting announcement about another row is dropped (the
-    /// user moved on), one about this row (the post-move hand-back) is kept.
-    @MainActor
-    static func focusLanded(on key: String) {
-        guard let pending = pendingRowKey, pending != key else { return }
-        invalidatePending()
-    }
-
-    /// Drops any announcement still waiting (the move's pane went away, the lifted row was
-    /// removed).
-    @MainActor
-    static func invalidatePending() {
-        generation += 1
-        pendingRowKey = nil
+        var text = AttributedString(announcement(event))
+        text.accessibilitySpeechAnnouncementPriority = priority(event)
+        AccessibilityNotification.Announcement(text).post()
     }
 }
