@@ -160,8 +160,10 @@ struct CatalogOrderView: View {
                     if moveMode.isMoving {
                         moveMode.commit()
                         onMovingChange(false)
-                        HubAccessibility.invalidatePending()
                     }
+                    // Review VO-r2: also after a move has ended, its "Moved" / "Move cancelled" may
+                    // still be waiting; it must not play over whatever replaces this pane.
+                    HubAccessibility.invalidatePending()
                 }
                 .onChange(of: scrollTarget?.wrappedValue) { _, target in
                     guard let target, target.hasPrefix("catalog:") else { return }

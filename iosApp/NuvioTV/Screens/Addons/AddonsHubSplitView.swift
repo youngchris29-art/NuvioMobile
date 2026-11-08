@@ -453,6 +453,9 @@ struct AddonsHubSplitView: View {
         guard !section.isAction, section != selected else { return }
         pendingLiftUrl = nil
         catalogFilterUrl = nil
+        // Review VO-r2: a section change drops a move announcement still waiting (it described
+        // the pane being replaced).
+        HubAccessibility.invalidatePending()
         // Review A6-r1: a programmatic switch away from Catalogs mid-move (an install landing)
         // must not leave the hub locked; the pane also ends its mode when torn down.
         if catalogsMoving {
