@@ -209,6 +209,7 @@ final class StreamPickerUITests: XCTestCase {
             "-detail_trailer_autoplay", "NO", "-debug.trailerForceNoTrailer", "YES",
             "-hero_trailer_autoplay", "NO", "-debug.streamAutoPlayModeOverride", "MANUAL",
             "-debug.sourceListOpensWith", "FULL",
+            "-debug.exposePickerPoster", "YES",
         ] + Self.layoutArgs
 
         // Cleanup launch (registered BEFORE the seed launch, review r2: `launch` itself can fail
@@ -324,13 +325,23 @@ final class StreamPickerUITests: XCTestCase {
         let progress = infoPanel.descendants(matching: .any)["stream_picker_progress"]
         XCTAssertTrue(progress.waitForExistence(timeout: 5), "stream_picker_progress not under \(infoPanel.identifier)")
         say("progress line: \(progress.label)")
-        if !Self.isFullWidthRun {
-            // GitHub #25 poster fit (review p2): whatever size the poster takes, the progress line
-            // under it stays inside the info panel.
-            let pane = infoPanel.frame, line = progress.frame
+        if Self.isFullWidthRun {
+            XCTAssertFalse(element(app, "stream_picker_poster").exists, "Full Width still draws the poster")
+        } else {
+            // GitHub #25 poster fit (review p2/p3): on the 1080p sim the poster shows, scaled
+            // between 260 and 360 pt at 2:3 inside the panel, and the progress line under it stays
+            // inside the panel. Dune always has Cinemeta poster art.
+            let poster = infoPanel.descendants(matching: .any)["stream_picker_poster"]
+            XCTAssertTrue(poster.waitForExistence(timeout: 10), "no poster in the info panel on a 1080p sim")
+            pause(1) // let the header/facts/progress measurements settle
+            let pane = infoPanel.frame, art = poster.frame, line = progress.frame
+            XCTAssertGreaterThanOrEqual(art.width, 260, "poster \(art) under the 260 pt floor")
+            XCTAssertLessThanOrEqual(art.width, 360, "poster \(art) over the 360 pt cap")
+            XCTAssertEqual(art.height, art.width * 1.5, accuracy: 1, "poster \(art) not 2:3")
+            XCTAssertTrue(pane.contains(art.insetBy(dx: 1, dy: 1)), "poster \(art) outside the info panel \(pane)")
+            XCTAssertGreaterThanOrEqual(line.minY, art.maxY - 1, "progress line \(line) not under the poster \(art)")
             XCTAssertLessThanOrEqual(line.maxY, pane.maxY + 1, "progress line \(line) falls off the info panel \(pane)")
-            XCTAssertLessThanOrEqual(line.minX, pane.maxX, "progress line \(line) outside the info panel \(pane)")
-            say("info panel \(pane), progress line \(line)")
+            say("info panel \(pane), poster \(art), progress line \(line)")
         }
 
         // d. Chips.

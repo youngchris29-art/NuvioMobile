@@ -223,6 +223,15 @@ final class StreamPickerFullWidthTests: XCTestCase {
         XCTAssertEqual(P.posterWidth(paneSize: pane(540 + 400), reserved: 400), 360)
     }
 
+    func testPosterProbeIsOffUnlessTheLaunchAsks() throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "StreamPickerPosterDebugProbeTests"))
+        defer { defaults.removePersistentDomain(forName: "StreamPickerPosterDebugProbeTests") }
+        XCTAssertEqual(StreamPickerPosterDebugProbe.debugKey, "debug.exposePickerPoster")
+        XCTAssertFalse(StreamPickerPosterDebugProbe.isOn(defaults))
+        defaults.set(true, forKey: StreamPickerPosterDebugProbe.debugKey)
+        XCTAssertTrue(StreamPickerPosterDebugProbe.isOn(defaults)) // the unit tests run DEBUG
+    }
+
     func testPosterNeverOutgrowsThePanesWidth() {
         typealias P = StreamPickerInfoPanel
         let reserved = P.reservedHeight(headerHeight: 60, factsHeight: 39, progressHeight: 39)

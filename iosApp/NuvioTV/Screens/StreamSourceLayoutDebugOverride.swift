@@ -52,3 +52,18 @@ nonisolated enum StreamRowTextDebugOverride {
         #endif
     }
 }
+
+/// DEBUG harness knob (GitHub #25 poster fit, review p3): `-debug.exposePickerPoster YES` lets the UI
+/// legs find the Two-Pane poster (`stream_picker_poster`) and read its drawn frame. The poster is
+/// decorative and hidden from VoiceOver otherwise; always false in Release.
+nonisolated enum StreamPickerPosterDebugProbe {
+    static let debugKey = "debug.exposePickerPoster"
+
+    static func isOn(_ defaults: UserDefaults = .standard) -> Bool {
+        #if DEBUG
+        return defaults.bool(forKey: debugKey)
+        #else
+        return false
+        #endif
+    }
+}

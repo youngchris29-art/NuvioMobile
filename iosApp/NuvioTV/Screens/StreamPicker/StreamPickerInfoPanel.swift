@@ -62,6 +62,8 @@ struct StreamPickerInfoPanel: View {
         return width >= posterMinimumWidth ? width : nil
     }
 
+    /// The UI legs' probe (`StreamPickerPosterDebugProbe`), read once per panel.
+    private let exposesPoster = StreamPickerPosterDebugProbe.isOn()
     @State private var headerHeight: CGFloat?
     @State private var factsHeight: CGFloat?
     @State private var progressHeight: CGFloat?
@@ -102,7 +104,8 @@ struct StreamPickerInfoPanel: View {
                     )
                     .frame(width: width, height: height)
                     .clipShape(RoundedRectangle(cornerRadius: posterStyle.cornerRadius, style: .continuous))
-                    .accessibilityHidden(true)
+                    .accessibilityHidden(!exposesPoster)
+                    .accessibilityIdentifier("stream_picker_poster")
                 }
 
                 StreamPickerProgressLine(progress: progress)
