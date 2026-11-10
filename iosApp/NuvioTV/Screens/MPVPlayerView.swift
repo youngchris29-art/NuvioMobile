@@ -378,6 +378,12 @@ final class MPVTVPlayerViewController: UIViewController {
     private var startedSeekGeneration: Int?
     /// Last raw eof-reached value (edge detection for the post-play cover).
     private var lastEofFlag = false
+    /// GitHub #26: the cap on live reconnects (`reconnectLiveStreamIfNeeded`). Main only.
+    private var liveReconnects = LiveReconnectPolicy()
+    /// A live reconnect's `loadfile` is out and its FILE_LOADED has not come back. That load is a
+    /// reopen of a stream that already played: it skips the placeholder-clip check and the resume
+    /// seek, and side-loads the subtitle tracks again (`loadfile replace` drops them). Main only.
+    private var liveReconnectLoading = false
 
     // MARK: Event-driven property cache
     //
@@ -825,6 +831,11 @@ final class MPVTVPlayerViewController: UIViewController {
             // the behaviour without it. The four vulkan-* options above are still valid in 0.41.
             ("video-rotate", "no"),
             ("keep-open", "yes"),
+            // Live HLS: FFmpeg's defaults give up on a channel after one failed segment download
+            // (`seg_max_retry` 0) or three failed playlist reloads (`max_reload` 3), and the stream
+            // then ends ("That's the end of"). Retry a little before giving up. Other demuxers
+            // ignore these keys (mpv logs unused AVOptions at verbose level only).
+            ("demuxer-lavf-o", "seg_max_retry=3,max_reload=10"),
             ("target-colorspace-hint", "yes"),
             ("tone-mapping", "auto"),
             ("hdr-compute-peak", "yes"),
@@ -2295,7 +2306,9 @@ final class MPVTVPlayerViewController: UIViewController {
         // only propagate transitions — otherwise a dismissed post-play cover re-presents each tick.
         if snap.eof != lastEofFlag {
             lastEofFlag = snap.eof
-            if !(snap.eof && handleEarlyEndOfFile(snap)) {
+            if snap.eof, reconnectLiveStreamIfNeeded() {
+                // Live: reopened at the live edge instead of "That's the end of".
+            } else if !(snap.eof && handleEarlyEndOfFile(snap)) {
                 state.isEnded = snap.eof
             }
         }
@@ -3121,6 +3134,57 @@ final class MPVTVPlayerViewController: UIViewController {
         playClock.note(playing: playing, at: ProcessInfo.processInfo.systemUptime)
     }
 
+    /// GitHub #26. A live stream has no end: an `eof-reached` on one means FFmpeg's HLS demuxer
+    /// gave up on it, and mpv parks on the last frame. Before this, that raised the post-play card
+    /// ("That's the end of") in the middle of a channel. Reopen the same URL instead, which lands
+    /// at the live edge again; `LiveReconnectPolicy` decides and caps it, so a channel that has
+    /// really gone off air still ends. The reopen is watched like the first load: a load that
+    /// never answers goes to the start watchdog, one that fails to the end-file report.
+    /// Returns true when a reconnect was issued (the caller must not raise the post-play card).
+    private func reconnectLiveStreamIfNeeded() -> Bool {
+        let inputs = LiveReconnectPolicy.Inputs(
+            isLive: isLiveStream,
+            growthUndecided: durationGrowth.undecided,
+            adaptiveFormat: LivePlaybackPolicy.needsSettleHold(fileFormat: cachedProps().fileFormat, url: context.url),
+            fileLoaded: fileLoaded,
+            closingOrSwapping: failoverClosed || state.playbackFailoverSuppressed,
+            secondsPlayed: failoverSecondsPlayed)
+        switch liveReconnects.decide(inputs, nowSec: ProcessInfo.processInfo.systemUptime) {
+        case .notEligible:
+            return false
+        case .capReached(let reconnects):
+            print("[Live] end of stream after \(reconnects) reconnects that did not bring the channel back, ending")
+            return false
+        case .reconnect(let attempt):
+            print("[Live] end of stream on a live channel, reconnect \(attempt)/\(LiveReconnectPolicy.limit)")
+            liveReconnectLoading = true
+            applyRequestHeaders(context.requestHeaders)
+            command("loadfile", args: [context.url.absoluteString, "replace"])
+            // `keep-open` paused the player when it reached the end, and a pause outlives
+            // `loadfile`: without this the reopened channel sits on its first frame, paused.
+            // (Nobody can reach an end-of-file while paused, so this never undoes a viewer's pause.)
+            eventQueue.async { [weak self] in self?.setFlag("pause", false) }
+            armStartWatchdog()
+            return true
+        }
+    }
+
+    /// The FILE_LOADED of a live reconnect: `loadfile replace` dropped every side-loaded subtitle
+    /// track, so hand them to mpv again (the same sources `onFileLoaded` adds). The viewer's pick
+    /// among them is not restored (best-effort, rare on a live channel): the tracks are back in
+    /// the list to choose from.
+    private func restoreSideLoadedSubtitlesAfterLiveReconnect() {
+        addedSubtitleUrls.removeAll()
+        for sub in context.externalSubtitles {
+            subAdd(url: sub.url, title: sub.name ?? sub.language, lang: sub.language, rank: 0)
+        }
+        if (SubtitleRepository.shared.completedRequest.value_ as? String)
+            == SubtitleRepository.shared.requestKey(type: context.contentType, videoId: context.videoId),
+           let fetched = SubtitleRepository.shared.addonSubtitles.value_ as? [AddonSubtitle], !fetched.isEmpty {
+            addAddonSubtitles(fetched)
+        }
+    }
+
     /// (d) `eof-reached` just rose (keep-open holds the last frame). A stream that ran dry well
     /// before its declared end is a failure for the failover to handle, not a finished movie
     /// (`PlaybackEndPolicy`). Returns true when the caller must NOT raise the post-play card: the
@@ -3173,9 +3237,18 @@ final class MPVTVPlayerViewController: UIViewController {
 
     /// (a) `MPV_END_FILE_REASON_ERROR`: mpv could not open or keep decoding the stream.
     private func reportEndFileError(_ message: String, logs: [String]) {
-        reportPlaybackFailure(reason: "mpv: \(message)", startedPlaying: failoverLoadedUptime != nil,
-                              secondsPlayed: failoverSecondsPlayed,
-                              verdict: PlaybackFailureClassifier.fromMpvLog(logs, endFileError: message, watchdogFired: false))
+        let wasLiveReconnect = liveReconnectLoading
+        liveReconnectLoading = false
+        let told = reportPlaybackFailure(reason: "mpv: \(message)", startedPlaying: failoverLoadedUptime != nil,
+                                         secondsPlayed: failoverSecondsPlayed,
+                                         verdict: PlaybackFailureClassifier.fromMpvLog(logs, endFileError: message, watchdogFired: false))
+        // GitHub #26: a live reconnect whose reopen failed (the channel is gone). With no host to
+        // take the failure, or one that refused it, end the stream as it ended before reconnects
+        // existed, so the player never sits on a frozen frame with nothing on screen to act on.
+        if wasLiveReconnect, !told, !failoverReported {
+            print("[Live] reconnect failed (\(message)), ending")
+            state.isEnded = true
+        }
     }
 
     /// (b) Arm the start watchdog when `loadfile` is issued: nothing loading within the budget is a
@@ -3350,6 +3423,13 @@ final class MPVTVPlayerViewController: UIViewController {
                 let loadedDuration = self.getDouble("duration")
                 DispatchQueue.main.async {
                     self.noteMediaLoaded(at: loadedAt)
+                    // GitHub #26: a live reconnect reopened a stream that already played. Its
+                    // window is short by nature (never a placeholder clip) and it has no resume.
+                    if self.liveReconnectLoading {
+                        self.liveReconnectLoading = false
+                        self.restoreSideLoadedSubtitlesAfterLiveReconnect()
+                        return
+                    }
                     // Auto flows: a stub clip is a failed source, not an episode — no resume,
                     // no scrobble, no subtitle fetch.
                     if self.rejectPlaceholderClip(durationSec: loadedDuration) { return }
