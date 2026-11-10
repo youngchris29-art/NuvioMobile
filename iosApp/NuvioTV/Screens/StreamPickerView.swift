@@ -54,7 +54,8 @@ struct StreamPickerView: View {
     let meta: PlaybackMeta?
     /// FEAT-42: the title's configured logo (series/movie `MetaDetails.logo`), shown in place of
     /// the plain text heading when it loads — mobile parity for the stream picker screen. `nil`
-    /// on launch paths with no meta at hand (Home continue-watching, Top Shelf).
+    /// on launch paths with no meta at hand (Top Shelf); the picker then reads it from the details
+    /// record itself (`peekedLogo`, `resolvedLogoUrl`).
     let logoUrl: String?
     /// Never auto-start, whatever the auto-play setting says ("Choose Source…", "Play Manually").
     let forceManual: Bool
@@ -146,6 +147,13 @@ struct StreamPickerView: View {
     @FocusState private var focusedRow: String?
     /// P1: the backdrop read from the details cache when the presenter passed no `background`.
     @State private var peekedBackground: String?
+    /// The title logo read from the details record when the presenter passed none (a Top Shelf
+    /// link, a Continue Watching entry saved without one): the cache on appear, else the fetch.
+    @State private var peekedLogo: String?
+    /// What every logo slot of the picker draws (both layouts, the loading cover, the player).
+    private var resolvedLogoUrl: String? {
+        StreamPickerLogo.resolve(passed: logoUrl, peeked: peekedLogo)
+    }
     /// P2: error chips dropped after the fan-out finished (`SourceChipRow.chipsToDrop`); cleared
     /// when a fan-out starts again.
     @State private var hiddenErrorChips: Set<String> = []
@@ -296,7 +304,7 @@ struct StreamPickerView: View {
             episodes: episodes.isEmpty ? fetchedEpisodes : episodes,
             synopsis: synopsis,
             episodeStill: episodeStill,
-            logo: logoUrl,
+            logo: resolvedLogoUrl,
             meta: meta,
             fileSizeBytes: { let n: Int64? = stream?.behaviorHints.videoSize?.int64Value; return n }(),
             streamFilename: { let f: String? = stream?.behaviorHints.filename; return f }(),
@@ -328,7 +336,12 @@ struct StreamPickerView: View {
             isSeries: isSeries, hasMeta: meta != nil || fetchedRuntime != nil,
             hasEpisodes: !episodes.isEmpty || !fetchedEpisodes.isEmpty,
             resumePositionMs: resumePositionMs)
-        guard needsEpisodes || needsRuntime else { return }
+        // A title opened with no logo at hand and none in the details cache fetches the record for
+        // it (one request, cached for Detail), so both layouts draw the logo instead of the text.
+        let needsLogo = StreamPickerLogo.needsFetch(
+            passed: logoUrl, peeked: peekedLogo,
+            cached: MetaDetailsRepository.shared.peek(type: type, id: parentMetaId)?.logo)
+        guard needsEpisodes || needsRuntime || needsLogo else { return }
         // Review r3: a series from Continue Watching needs the episode runtime from this fetch too.
         runtimeFetchPending = needsRuntime
         // The `@Throws` twin: a Kotlin exception out of the plain suspend export aborts the process.
@@ -342,6 +355,10 @@ struct StreamPickerView: View {
                 if background == nil {
                     let fetchedBackground: String? = details?.background
                     if let fetchedBackground, !fetchedBackground.isEmpty { peekedBackground = fetchedBackground }
+                }
+                if resolvedLogoUrl == nil {
+                    let fetchedLogo: String? = details?.logo
+                    if let fetchedLogo, !fetchedLogo.isEmpty { peekedLogo = fetchedLogo }
                 }
                 if meta == nil, fetchedRuntime == nil {
                     let runtime: String? = details?.runtime
@@ -372,7 +389,7 @@ struct StreamPickerView: View {
                     VStack(alignment: .leading, spacing: Theme.Spacing.md) {
                         StreamPickerHeaderStrip(
                             title: title,
-                            logoUrl: logoUrl,
+                            logoUrl: resolvedLogoUrl,
                             season: season,
                             episode: episode,
                             episodes: episodes.isEmpty ? fetchedEpisodes : episodes,
@@ -395,7 +412,7 @@ struct StreamPickerView: View {
                         HStack(spacing: 0) {
                             StreamPickerInfoPanel(
                                 title: title,
-                                logoUrl: logoUrl,
+                                logoUrl: resolvedLogoUrl,
                                 poster: poster,
                                 season: season,
                                 episode: episode,
@@ -530,6 +547,10 @@ struct StreamPickerView: View {
                     let cached: String? = MetaDetailsRepository.shared.peek(type: type, id: parentMetaId)?.background
                     peekedBackground = (cached ?? "").isEmpty ? nil : cached
                 }
+                if resolvedLogoUrl == nil {
+                    let cached: String? = MetaDetailsRepository.shared.peek(type: type, id: parentMetaId)?.logo
+                    peekedLogo = (cached ?? "").isEmpty ? nil : cached
+                }
                 // Main-thread only (UIApplication.canOpenURL); cheap enough to re-probe every
                 // appearance so an Infuse install mid-session is picked up next time the picker
                 // opens instead of requiring an app relaunch. First, so an auto-play start already
@@ -638,7 +659,7 @@ struct StreamPickerView: View {
                 episodeStill: target.context.episodeStill,
                 synopsis: target.context.synopsis,
                 meta: target.context.meta,
-                logoUrl: logoUrl,
+                logoUrl: resolvedLogoUrl,
                 forceManual: target.forceManual,
                 startFromBeginning: false,
                 notice: String(localized: "The next episode\u{2019}s source failed. Choose one below.")
@@ -665,7 +686,7 @@ struct StreamPickerView: View {
         return FirstPlayAutoPlayOverlay(
             title: title,
             parentMetaId: parentMetaId,
-            logoUrl: logoUrl,
+            logoUrl: resolvedLogoUrl,
             episodeLine: line,
             pulseKey: videoId,
             message: loadingCoverMessage,

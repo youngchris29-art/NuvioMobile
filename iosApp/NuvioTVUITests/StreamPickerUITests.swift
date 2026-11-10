@@ -1102,4 +1102,43 @@ final class StreamPickerUITests: XCTestCase {
                           "the row did not scroll: refresh.minX \(refreshBefore) -> \(refresh.frame.minX)")
         XCTAssertTrue(waitFocus(rows(app).element(boundBy: 0), timeout: 5), "the step moved focus off the list; focused: \(focusDump(app))")
     }
+
+    /// The title logo on a launch path that hands the picker no logo: a resume link (Top Shelf's
+    /// route, and what a Continue Watching entry saved without a logo amounts to) opens the picker
+    /// with a title only, and the picker reads the logo from the title's details record. Both
+    /// layouts, one after the other: the logo image (`title_logo_image`), not the text title, sits
+    /// in the info panel (Two-Pane) and in the header strip (Full Width).
+    func testResumeLinkPickerDrawsTheTitleLogoInBothLayouts() throws {
+        addTeardownBlock { [self] in
+            let attachment = XCTAttachment(string: printed.joined(separator: "\n"))
+            attachment.name = "picker-leg-log"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+            XCUIApplication().terminate()
+        }
+        let common = [
+            "-home_layout", "classic", "-debug.rememberLastProfile", "NO",
+            "-hero_trailer_autoplay", "NO", "-debug.streamAutoPlayModeOverride", "MANUAL",
+            "-home_upcoming_row_enabled", "NO",
+            "-debug.openDeepLink", "nuviotv://resume?videoId=tt1160419&type=movie&title=Dune&parentMetaId=tt1160419",
+        ]
+        for (layout, container) in [("TWO", "stream_picker_info_panel"), ("FULL", "stream_picker_header_strip")] {
+            let app = launch(common + ["-debug.sourceLayout", layout])
+            let host = element(app, container)
+            guard host.waitForExistence(timeout: 60) else {
+                XCTFail("\(layout): \(container) never appeared; focused: \(focusDump(app))")
+                app.terminate()
+                continue
+            }
+            let logo = host.descendants(matching: .any)["title_logo_image"]
+            let drawn = logo.waitForExistence(timeout: 45)
+            say("\(layout): \(container)=\(host.frame) logo drawn=\(drawn) frame=\(drawn ? "\(logo.frame)" : "none")")
+            XCTAssertTrue(drawn, "\(layout): no title logo under \(container) on a resume link (the text title stayed)")
+            if drawn {
+                XCTAssertEqual(logo.label, "Dune", "\(layout): the logo does not carry the title for VoiceOver")
+            }
+            app.terminate()
+            pause(2)
+        }
+    }
 }

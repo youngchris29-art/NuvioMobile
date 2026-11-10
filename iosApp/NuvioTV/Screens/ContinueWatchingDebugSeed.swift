@@ -16,7 +16,7 @@ import SharedCore
 ///      "positionMin":60,"durationMin":142}
 ///
 /// plus, optionally, `"videoId"` (default: `id` for a movie, `"<id>:<season>:<episode>"` for an
-/// episode), `"season"`, `"episode"`, `"episodeTitle"`, `"poster"`, `"background"`, and
+/// episode), `"season"`, `"episode"`, `"episodeTitle"`, `"logo"`, `"poster"`, `"background"`, and
 /// `"remove": true`, which clears that entry instead of writing it (the tests' cleanup relaunch).
 ///
 /// Entries go through the shared repository's own write path (`upsertPlaybackProgress`, exactly as
@@ -86,7 +86,7 @@ enum ContinueWatchingDebugSeed {
                 parentMetaType: type,
                 videoId: videoId,
                 title: (entry["title"] as? String) ?? id,
-                logo: nil,
+                logo: entry["logo"] as? String,
                 poster: entry["poster"] as? String,
                 background: entry["background"] as? String,
                 seasonNumber: season.map { KotlinInt(int: Int32($0)) },

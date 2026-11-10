@@ -76,6 +76,8 @@ struct TitleLogoHeader: View {
                     .aspectRatio(contentMode: .fit)
                     .frame(maxWidth: Theme.Size.heroLogoMaxWidth, maxHeight: slotHeight, alignment: alignment)
                     .accessibilityLabel(title)
+                    // The UI legs tell the drawn logo from the text fallback by this (both carry the title).
+                    .accessibilityIdentifier("title_logo_image")
             } else {
                 Text(title)
                     .font(textFont)

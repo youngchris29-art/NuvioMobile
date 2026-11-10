@@ -42,6 +42,32 @@ final class StreamPickerLayoutTests: XCTestCase {
         XCTAssertNil(plan.fallback)
     }
 
+    // MARK: - Title logo
+
+    func testPassedLogoWinsOverTheDetailsRecord() {
+        XCTAssertEqual(StreamPickerLogo.resolve(passed: "https://img/passed.png", peeked: "https://img/record.png"),
+                       "https://img/passed.png")
+    }
+
+    func testDetailsRecordLogoStandsInWhenNoneWasPassed() {
+        // Continue Watching entries saved without a logo, Top Shelf links.
+        XCTAssertEqual(StreamPickerLogo.resolve(passed: nil, peeked: "https://img/record.png"), "https://img/record.png")
+        XCTAssertEqual(StreamPickerLogo.resolve(passed: "", peeked: "https://img/record.png"), "https://img/record.png")
+    }
+
+    func testNoLogoAnywhereKeepsTheTextTitle() {
+        XCTAssertNil(StreamPickerLogo.resolve(passed: nil, peeked: nil))
+        XCTAssertNil(StreamPickerLogo.resolve(passed: "", peeked: ""))
+    }
+
+    func testDetailsFetchIsWantedOnlyWhenNoLogoIsKnown() {
+        XCTAssertTrue(StreamPickerLogo.needsFetch(passed: nil, peeked: nil, cached: nil))
+        XCTAssertTrue(StreamPickerLogo.needsFetch(passed: "", peeked: "", cached: ""))
+        XCTAssertFalse(StreamPickerLogo.needsFetch(passed: "https://img/a.png", peeked: nil, cached: nil))
+        XCTAssertFalse(StreamPickerLogo.needsFetch(passed: nil, peeked: "https://img/a.png", cached: nil))
+        XCTAssertFalse(StreamPickerLogo.needsFetch(passed: nil, peeked: nil, cached: "https://img/a.png"))
+    }
+
     // MARK: - Facts line
 
     func testEpisodeFactsLineCarriesMarkerNameAndRuntime() {

@@ -1331,6 +1331,8 @@ struct HomeView: View {
                     background: { let b: String? = target.entry.background; return (b ?? "").isEmpty ? nil : b }(),
                     episodeStill: { let still: String? = target.entry.episodeThumbnail; return (still ?? "").isEmpty ? nil : still }(),
                     synopsis: { let d: String? = target.entry.pauseDescription; return (d ?? "").isEmpty ? nil : d }(),
+                    // The entry's saved title logo (blank counts as missing; the picker then reads the details record).
+                    logoUrl: { let logo: String? = target.entry.logo; return (logo ?? "").isEmpty ? nil : logo }(),
                     forceManual: target.forceManual,
                     startFromBeginning: target.startFromBeginning,
                     resumePositionMs: target.entry.lastPositionMs > 0 ? target.entry.lastPositionMs : nil,

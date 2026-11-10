@@ -256,3 +256,18 @@ struct StreamPickerHeaderStrip: View {
         .accessibilityIdentifier("stream_picker_header_strip")
     }
 }
+
+/// Which title logo the picker draws: the one the presenter passed (Detail, an episode row, a
+/// Continue Watching entry), else the one read from the title's details record. Blank counts as
+/// missing, so a blank passed value never hides a logo the record has.
+enum StreamPickerLogo {
+    nonisolated static func resolve(passed: String?, peeked: String?) -> String? {
+        func nonEmpty(_ value: String?) -> String? { (value ?? "").isEmpty ? nil : value }
+        return nonEmpty(passed) ?? nonEmpty(peeked)
+    }
+
+    /// True when no logo is known from any source at hand, so the details record is worth a fetch.
+    nonisolated static func needsFetch(passed: String?, peeked: String?, cached: String?) -> Bool {
+        resolve(passed: passed, peeked: resolve(passed: peeked, peeked: cached)) == nil
+    }
+}
