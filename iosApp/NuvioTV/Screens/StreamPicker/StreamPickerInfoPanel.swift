@@ -217,7 +217,7 @@ struct StreamPickerProgressLine: View {
 }
 
 /// GitHub #25 "Source Layout = Full Width": the one-line strip above the full-width list. The title
-/// logo in a 64 pt slot (else the title text), the facts line, and the fan-out progress at the
+/// logo in a 96 pt slot (else the title text), the facts line, and the fan-out progress at the
 /// trailing edge. No poster; the backdrop stays. Static, nothing focusable, like the info panel.
 struct StreamPickerHeaderStrip: View {
     let title: String
@@ -228,9 +228,13 @@ struct StreamPickerHeaderStrip: View {
     let meta: PlaybackMeta?
     let progress: StreamFanOutProgress
 
-    nonisolated static let logoSlotHeight: CGFloat = 64
-    /// A wide wordmark at 64 pt is about 360 pt across; the slot caps it there.
-    nonisolated static let logoMaxWidth: CGFloat = 360
+    /// 96 pt (was 64): at 64 the wordmark read as a badge beside the 180 pt Two-Pane logo. The
+    /// strip is this tall with a logo or a text title (two lines at most), so the list starts at
+    /// the same place.
+    nonisolated static let logoSlotHeight: CGFloat = 96
+    /// A wide wordmark at 96 pt runs past 500 pt; the slot caps it at `TitleLogoHeader`'s own
+    /// image cap (`Theme.Size.heroLogoMaxWidth`), so the two limits agree.
+    nonisolated static let logoMaxWidth: CGFloat = 520
 
     var body: some View {
         HStack(alignment: .center, spacing: Theme.Spacing.lg) {
@@ -242,6 +246,10 @@ struct StreamPickerHeaderStrip: View {
                 decodeSize: .points(width: Self.logoMaxWidth, height: Self.logoSlotHeight),
                 upgrade: .logo
             )
+            // Review r1 (P2): a text title (no logo, or one still loading) stops at two lines. Three
+            // lines of the system font are taller than the slot: the strip grew, then shrank under
+            // the list when a late logo landed.
+            .lineLimit(2)
             .frame(maxWidth: Self.logoMaxWidth, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
             StreamPickerFactsText(season: season, episode: episode, episodes: episodes, meta: meta,

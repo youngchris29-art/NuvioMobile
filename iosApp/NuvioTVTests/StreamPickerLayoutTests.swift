@@ -1,3 +1,5 @@
+import SwiftUI
+import UIKit
 import XCTest
 import SharedCore
 @testable import NuvioTV
@@ -58,6 +60,39 @@ final class StreamPickerLayoutTests: XCTestCase {
     func testNoLogoAnywhereKeepsTheTextTitle() {
         XCTAssertNil(StreamPickerLogo.resolve(passed: nil, peeked: nil))
         XCTAssertNil(StreamPickerLogo.resolve(passed: "", peeked: ""))
+    }
+
+    /// Full Width header strip: 96 pt tall at the picker's real width (1640 pt in the 1080p pane:
+    /// 1920 less the 80 pt safe area and the 60 pt screen padding on each side), in both font
+    /// families, with a text title that needs more than two lines, with a logo that never loads,
+    /// and with no facts, so the list below starts at the same place for every title. Measures the
+    /// laid-out view. Only the long title can fail (the short ones sit on the 96 pt floor).
+    @MainActor
+    func testFullWidthHeaderStripIsNinetySixPointsTall() {
+        XCTAssertEqual(StreamPickerHeaderStrip.logoSlotHeight, 96)
+        XCTAssertEqual(StreamPickerHeaderStrip.logoMaxWidth, Theme.Size.heroLogoMaxWidth)
+        func height(title: String, logoUrl: String? = nil, meta: PlaybackMeta?) -> CGFloat {
+            let strip = StreamPickerHeaderStrip(
+                title: title, logoUrl: logoUrl, season: nil, episode: nil, episodes: [], meta: meta,
+                progress: StreamFanOutProgress(answered: 3, expected: 4, sources: 90, addonsWithSources: 2,
+                                               isLoading: true, hasOutcome: true)
+            )
+            let host = UIHostingController(rootView: strip.frame(width: 1640))
+            return host.sizeThatFits(in: CGSize(width: 1640, height: 4000)).height
+        }
+        let meta = PlaybackMeta(year: "2021", runtime: "155 min", genres: ["Science Fiction", "Adventure"])
+        let long = "The Lord of the Rings: The Fellowship of the Ring Extended Edition"
+        let before = Theme.Font.family
+        defer { Theme.Font.apply(before) }
+        for family in Theme.AppFontFamily.allCases {
+            Theme.Font.apply(family)
+            XCTAssertEqual(height(title: "Dune", meta: meta), 96, accuracy: 0.5, "\(family)")
+            XCTAssertEqual(height(title: "Dune", meta: nil), 96, accuracy: 0.5, "\(family): no facts line")
+            XCTAssertEqual(height(title: long, meta: meta), 96, accuracy: 0.5,
+                           "\(family): a long text title stops at two lines, inside the slot")
+            XCTAssertEqual(height(title: long, logoUrl: "https://img.invalid/logo.png", meta: meta), 96,
+                           accuracy: 0.5, "\(family): the text shown while a logo loads")
+        }
     }
 
     // MARK: - Facts line

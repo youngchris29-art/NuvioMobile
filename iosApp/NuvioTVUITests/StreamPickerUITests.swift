@@ -972,8 +972,12 @@ final class StreamPickerUITests: XCTestCase {
         // Review r1 (P3): wait for the stub rows themselves, not any four rows (another installed
         // add-on may answer first), and check only the stub rows' text.
         let stubQuery = rows(app).matching(NSPredicate(format: "label BEGINSWITH %@", "ZZ "))
-        XCTAssertTrue(waitUntil(timeout: 30) { stubQuery.count >= 4 },
-                      "expected >= 4 stub rows leading with the add-on's name, saw \(stubQuery.count); rows: \(rows(app).allElementsBoundByIndex.map(\.label))")
+        // Three, not four: with the 96 pt header strip three add-on text rows (130 pt each, under
+        // their quality headers) fit the panel in the 1080p pane and the fourth is below the fold,
+        // so the lazy list has not built it. At 64 pt the fourth peeked in by about 30 pt.
+        XCTAssertTrue(waitUntil(timeout: 30) { stubQuery.count >= 3 },
+                      "expected >= 3 stub rows leading with the add-on's name, saw \(stubQuery.count); rows: \(rows(app).allElementsBoundByIndex.map(\.label))")
+        say("strip \(strip.frame) rows \(stubQuery.allElementsBoundByIndex.map(\.frame))")
         let stubRows = stubQuery.allElementsBoundByIndex.map(\.label)
         say("stub row labels = \(stubRows)")
         for label in stubRows {
