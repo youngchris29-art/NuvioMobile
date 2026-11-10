@@ -4289,6 +4289,22 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertFalse(app.descendants(matching: .any)["settings_root_list"].exists,
                        "the root list must leave the screen while a pane is pushed")
 
+        // About › Support: the seventh row. tvOS cannot open a link, so the explainer swaps its
+        // symbol tile for a QR code of the tip-jar address while this row has focus.
+        XCTAssertFalse(app.descendants(matching: .any)["settings_explainer_qr"].exists,
+                       "no QR code before the Support row has focus")
+        press(.down, times: 6, gap: 0.6)
+        pause(0.8)
+        shot(app, "40c2_about_support_qr")
+        XCTAssertEqual(app.staticTexts["settings_explainer_title"].label, "Support",
+                       "Down ×6 from Version must land on Support")
+        XCTAssertTrue(app.descendants(matching: .any)["settings_explainer_qr"].exists,
+                      "the Support row must show its QR code in the explainer")
+        press(.up, times: 1)
+        pause(0.8)
+        XCTAssertFalse(app.descendants(matching: .any)["settings_explainer_qr"].exists,
+                       "the QR code must leave when focus moves to another row")
+
         // Menu pops back to the root, focus on About (pop focus return).
         remote.press(.menu)
         pause(1.5)

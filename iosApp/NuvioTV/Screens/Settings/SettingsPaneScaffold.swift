@@ -1,4 +1,6 @@
+import CoreImage
 import SwiftUI
+import UIKit
 
 // MARK: - Pane scaffold (FEAT-50, detail-settings-revamp W1-B)
 
@@ -87,7 +89,8 @@ private struct SettingsPaneExplainer: View {
                 systemImage: entry.systemImage ?? category.icon,
                 title: entry.title,
                 text: Text(SettingsDescriptions.text(for: entry.id)),
-                footnote: SettingsDescriptions.footnote(for: entry.id).map { Text($0) }
+                footnote: SettingsDescriptions.footnote(for: entry.id).map { Text($0) },
+                qrPayload: entry.id == .aboutSupport ? AboutSettingsPane.supportURLString : nil
             )
         } else {
             SettingsExplainerColumn(
@@ -115,14 +118,21 @@ struct SettingsExplainerColumn: View {
     let title: String
     let text: Text
     var footnote: Text? = nil
+    /// When set, the tile is a QR code for this string instead of the symbol (About › Support:
+    /// tvOS cannot open a link, so the phone scans it).
+    var qrPayload: String? = nil
 
     static let tileSide: CGFloat = 240
     static let symbolSide: CGFloat = 112
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
-            tile
-                .accessibilityHidden(true)
+            if let qrPayload, let code = SettingsQRCode.image(for: qrPayload) {
+                qrTile(code, label: qrPayload)
+            } else {
+                tile
+                    .accessibilityHidden(true)
+            }
 
             Text(title)
                 .font(Theme.Font.screenTitle)
@@ -150,6 +160,29 @@ struct SettingsExplainerColumn: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
+    /// Dark modules on a white card on every theme: phone cameras read that most reliably. The
+    /// card's padding is the code's quiet zone. `.interpolation(.none)` keeps module edges sharp.
+    /// Not hidden from accessibility like the symbol tile: VoiceOver reads the address the code
+    /// stands for, and the UI leg finds the code by its identifier.
+    private func qrTile(_ code: UIImage, label: String) -> some View {
+        Image(uiImage: code)
+            .interpolation(.none)
+            .resizable()
+            .scaledToFit()
+            .padding(Self.qrQuietZone)
+            .frame(width: Self.tileSide, height: Self.tileSide)
+            .background(
+                Color.white,
+                in: RoundedRectangle(cornerRadius: Self.qrCornerRadius, style: .continuous)
+            )
+            .accessibilityElement()
+            .accessibilityLabel(Text(verbatim: label))
+            .accessibilityIdentifier("settings_explainer_qr")
+    }
+
+    static let qrQuietZone: CGFloat = 18
+    static let qrCornerRadius: CGFloat = 20
+
     private var tile: some View {
         let shape = RoundedRectangle(cornerRadius: Self.tileSide * 0.2, style: .continuous)
         return shape
@@ -174,4 +207,23 @@ struct SettingsExplainerColumn: View {
                     .foregroundStyle(Theme.Palette.accentText)
             )
     }
+}
+
+/// QR codes for the Settings explainer, generated on-device with Core Image (no network, no
+/// bundled asset to drift from the address in the row).
+enum SettingsQRCode {
+    /// One point per module; the view scales it up without interpolation. `nil` if Core Image
+    /// cannot produce a code, in which case the explainer keeps its symbol tile.
+    static func image(for payload: String) -> UIImage? {
+        guard let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
+        filter.setValue(Data(payload.utf8), forKey: "inputMessage")
+        // Medium error correction: the code is shown large on a TV and scanned from the sofa.
+        filter.setValue("M", forKey: "inputCorrectionLevel")
+        guard let output = filter.outputImage,
+              let cgImage = context.createCGImage(output, from: output.extent)
+        else { return nil }
+        return UIImage(cgImage: cgImage)
+    }
+
+    private static let context = CIContext()
 }

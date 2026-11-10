@@ -31307,6 +31307,40 @@
         }
       }
     },
+    "NuvioTV is free, and every feature is in every build. If you’d like to leave a tip for the work on this app, scan the code with your phone. Tips are optional and go to this app’s developer, not the Nuvio team.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NuvioTV ist kostenlos, und jede Funktion steckt in jedem Build. Wenn du für die Arbeit an dieser App ein Trinkgeld geben möchtest, scanne den Code mit deinem Smartphone. Trinkgelder sind freiwillig und gehen an den Entwickler dieser App, nicht an das Nuvio-Team."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NuvioTV es gratis y todas las funciones están en todas las versiones. Si quieres dejar una propina por el trabajo en esta app, escanea el código con tu teléfono. Las propinas son opcionales y van al desarrollador de esta app, no al equipo de Nuvio."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NuvioTV est gratuit, et chaque fonctionnalité est présente dans chaque version. Si vous souhaitez laisser un pourboire pour le travail sur cette app, scannez le code avec votre téléphone. Les pourboires sont facultatifs et vont au développeur de cette app, pas à l’équipe Nuvio."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NuvioTV è gratuito e ogni funzione è presente in ogni build. Se vuoi lasciare una mancia per il lavoro su questa app, inquadra il codice con il telefono. Le mance sono facoltative e vanno allo sviluppatore di questa app, non al team di Nuvio."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NuvioTV miễn phí và mọi tính năng đều có trong mọi bản dựng. Nếu bạn muốn gửi một khoản ủng hộ cho công sức làm ứng dụng này, hãy quét mã bằng điện thoại. Việc ủng hộ là tùy ý và được gửi đến nhà phát triển ứng dụng này, không phải nhóm Nuvio."
+          }
+        }
+      }
+    },
     "OK": {
       "localizations": {
         "fr": {
@@ -49180,6 +49214,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Gợi ý"
+          }
+        }
+      }
+    },
+    "Support": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unterstützen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Apoyar"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Soutenir"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sostieni"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ủng hộ"
           }
         }
       }

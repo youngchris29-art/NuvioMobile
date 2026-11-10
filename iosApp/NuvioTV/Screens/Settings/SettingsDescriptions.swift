@@ -215,6 +215,7 @@ enum SettingsDescriptionID: String, CaseIterable {
     case aboutTvos = "about.tvos"
     case aboutDevice = "about.device"
     case aboutSource = "about.source"
+    case aboutSupport = "about.support"
     case aboutFonts = "about.fonts"
 
     // MARK: Developer
@@ -441,6 +442,7 @@ enum SettingsDescriptions {
         case .aboutTvos: return LocalizedStringResource("The tvOS version installed on this Apple TV.")
         case .aboutDevice: return LocalizedStringResource("The model identifier of this Apple TV.")
         case .aboutSource: return LocalizedStringResource("Where the source code for this app is published.")
+        case .aboutSupport: return LocalizedStringResource("NuvioTV is free, and every feature is in every build. If you’d like to leave a tip for the work on this app, scan the code with your phone. Tips are optional and go to this app’s developer, not the Nuvio team.")
         case .aboutFonts: return LocalizedStringResource("The Open Sans typeface is bundled with the app and used under the SIL Open Font License 1.1.")
 
         // Developer

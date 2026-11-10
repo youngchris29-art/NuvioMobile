@@ -47,6 +47,14 @@ struct AboutSettingsPane: View {
                 descriptionID: .aboutSource,
                 focusable: true
             )
+            // Optional tip jar. tvOS has no browser, so the explainer shows a QR code for this
+            // address while the row is focused (`SettingsPaneExplainer`). Never prompted anywhere.
+            SettingsValueRow(
+                title: String(localized: "Support"),
+                value: Self.supportDisplayAddress,
+                descriptionID: .aboutSupport,
+                focusable: true
+            )
             // FEAT-31 attribution: the font ships in this same branch (Theme.Font.uiFont).
             SettingsValueRow(
                 title: String(localized: "Fonts"),
@@ -56,6 +64,12 @@ struct AboutSettingsPane: View {
             )
         }
     }
+
+    /// The tip jar, as shown in the row.
+    static let supportDisplayAddress = "ko-fi.com/youngchris2989"
+
+    /// The same address as a URL, encoded in the explainer's QR code.
+    static let supportURLString = "https://ko-fi.com/youngchris2989"
 
     private static var marketingVersion: String {
         (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0.0"
