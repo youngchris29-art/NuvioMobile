@@ -2,8 +2,7 @@ import XCTest
 @testable import NuvioTV
 
 /// Polish D2: a text chip with no parseable `tagColor` is the monochrome outline chip; a pack that
-/// sets one keeps its colours. (The UI target's `StreamBadgeColorTests` tests a hand-copied mirror of
-/// the BUG-43 logic; these call the production function.)
+/// sets one keeps its colours. (The colour decisions are pinned in `StreamBadgeColorTests`, in this target.)
 final class StreamBadgeTextChipStyleTests: XCTestCase {
     func testNoTagColorFallsBackToTheOutlineChip() {
         XCTAssertEqual(StreamBadgeChipView.textChipStyle(tagColorHex: ""), .outline)

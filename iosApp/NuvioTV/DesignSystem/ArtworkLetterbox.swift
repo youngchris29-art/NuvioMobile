@@ -20,7 +20,7 @@ import UIKit
 /// per URL and memoized. Callers run it off the main actor (`CachedAsyncImage`'s `.task`).
 ///
 /// Mirrored by `ArtworkLetterboxTests` in `NuvioTVUITests` (a UI-test bundle can't link app code —
-/// see `StreamBadgeColorTests`' type doc for the precedent). Keep the two in sync by hand.
+/// see `TabChipContrastTests`' type doc for the precedent). Keep the two in sync by hand.
 /// `nonisolated`: the target defaults to MainActor isolation, which would pull this scan back onto the
 /// main thread even from `Task.detached` (Batch P, P1-1).
 nonisolated enum ArtworkLetterbox {

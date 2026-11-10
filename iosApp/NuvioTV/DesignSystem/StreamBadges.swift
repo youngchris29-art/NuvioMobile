@@ -59,14 +59,18 @@ struct StreamBadgeChipView: View {
 
     // BUG-28: `.settingsRow`-styled rows force `.environment(\.colorScheme, .light)` while
     // focused (see FlatControlStyles.swift), which flips SEMANTIC colors (`Theme.Palette
-    // .textPrimary`/`.textSecondary`) but leaves FIXED pack-supplied hex colors untouched —
-    // producing white-on-white when a pack's `textColor`/`tagColor` happen to both be light.
+    // .textPrimary`/`.textSecondary`) but leaves FIXED pack-supplied hex colors untouched.
     // This environment value propagates into button labels (proven by `RowAccentTint` in
-    // FlatControlStyles.swift), so reading it here lets the chip pick focus-safe fixed colors
-    // instead of trusting the pack.
+    // FlatControlStyles.swift), so reading it here tells the chip it sits on the near-white
+    // focus platter (GitHub #25: it then recreates the dark surface under itself and stops
+    // using semantic colours; it no longer drops the pack's own colours).
     @Environment(\.isFocused) private var isFocused
-    /// BUG-65: like `RowTextColor`, the outline chip also reads the row style's focus key.
+    /// BUG-65: like `RowTextColor`, the chip also reads the row style's focus key.
     @Environment(\.settingsRowIsFocused) private var rowFocused
+    /// The row's platter is showing. Either source counts (BUG-65: `\.isFocused` is the read that
+    /// can fail on hardware, and the row style paints its platter from both). Both are false in
+    /// the player's info views, which hold nothing focusable.
+    private var onPlatter: Bool { isFocused || rowFocused }
 
     /// How a text chip is drawn (polish D2).
     enum TextChipStyle: Equatable {
@@ -94,22 +98,25 @@ struct StreamBadgeChipView: View {
     private var imageChip: some View {
         let shape = RoundedRectangle(cornerRadius: StreamBadgeMetrics.cornerRadius)
         let filled = badge.tagStyle.caseInsensitiveCompare("filled") == .orderedSame
-        // Non-filled badge images are authored to sit on a dark surface (transparent PNGs).
-        // On the white focus platter they vanish, so recreate that dark context while focused.
-        let background: Color? = filled
-            ? Color(hexString: badge.tagColor)
-            : (isFocused ? Theme.Palette.surfaceElevated : nil)
+        // Badge art is authored to sit on a dark surface: transparent PNGs, and since the tinted
+        // packs (GitHub #25) translucent fills too. On the white focus platter both wash out, so
+        // the chip recreates that dark surface while focused (`imageChipSurface`).
+        let surface = Self.imageChipSurface(filled: filled, tagColorHex: badge.tagColor, isFocused: onPlatter)
+        let fill: Color = surface.drawsPackFill ? (Color(hexString: badge.tagColor) ?? .clear) : .clear
         let border = Color(hexString: badge.borderColor)
+            ?? (Self.needsPlatterEdge(drawsPackFill: surface.drawsPackFill, darkBase: surface.darkBase,
+                                      tagColorHex: badge.tagColor, isFocused: onPlatter)
+                    ? Theme.Palette.onFocusPlatter.opacity(Self.platterEdgeOpacity) : nil)
         // BUG-43 (beta.12): the fallback text sits on the background THIS chip actually draws —
         // the pack fill only when `filled`; otherwise the clear/dark row (empty hex routes the
         // decision through its dark semantic default). Computing against `tagColor` regardless
         // gave a non-filled badge with a light `tagColor` near-black fallback text on a dark
         // row — invisible in the opposite direction from the reported defect.
-        let effectiveBgHex = filled ? badge.tagColor : ""
+        let effectiveBgHex = surface.drawsPackFill ? badge.tagColor : ""
         let fallbackDecision = Self.effectiveTextChipColors(
             textColorHex: badge.textColor,
             tagColorHex: effectiveBgHex,
-            isFocused: isFocused
+            isFocused: onPlatter
         )
         let fallbackForeground = Self.resolvedForeground(
             fallbackDecision,
@@ -128,9 +135,42 @@ struct StreamBadgeChipView: View {
         .frame(minWidth: StreamBadgeMetrics.minImageWidth, maxWidth: StreamBadgeMetrics.maxImageWidth)
         .padding(.horizontal, 6)
         .frame(height: StreamBadgeMetrics.containerHeight)
-        .background(background ?? .clear, in: shape)
+        .background(fill, in: shape)
+        .background(surface.darkBase ? Theme.Palette.surfaceElevated : .clear, in: shape)
         .overlay(shape.stroke(border ?? .clear, lineWidth: border == nil ? 0 : 1))
         .clipShape(shape)
+    }
+
+    // MARK: - GitHub #25: the chip's surface on the focus platter
+
+    /// What an image chip paints behind its artwork.
+    struct ImageChipSurface: Equatable {
+        /// The opaque dark surface (`surfaceElevated`) under everything else.
+        var darkBase: Bool
+        /// The pack's `tagColor` fill, over the dark base when both are set.
+        var drawsPackFill: Bool
+    }
+
+    /// At rest the chip draws only what the pack asked for: its fill when `filled` and the colour
+    /// parses, nothing otherwise (the dark row shows through). On the focus platter a chip with no
+    /// fill, or with a translucent one, also gets the dark base, so the artwork and a tint sit on
+    /// the surface they were authored for instead of on white. An opaque fill needs no base.
+    static func imageChipSurface(filled: Bool, tagColorHex: String, isFocused: Bool) -> ImageChipSurface {
+        let alpha = filled ? Theme.Palette.alpha(fromHexString: tagColorHex) : nil
+        guard let alpha else { return ImageChipSurface(darkBase: isFocused, drawsPackFill: false) }
+        return ImageChipSurface(darkBase: isFocused && alpha < 1, drawsPackFill: true)
+    }
+
+    /// Stroke opacity of the hairline `needsPlatterEdge` asks for.
+    static let platterEdgeOpacity: Double = 0.18
+
+    /// A near-white opaque fill (the "mono white" packs) has no edge on the near-white platter.
+    /// When the pack sets no border of its own, the chip gets a hairline so it still reads as a
+    /// chip. Only on the platter, only for a light fill the chip actually draws without a base.
+    static func needsPlatterEdge(drawsPackFill: Bool, darkBase: Bool, tagColorHex: String, isFocused: Bool) -> Bool {
+        guard isFocused, drawsPackFill, !darkBase,
+              let luminance = Theme.Palette.luminance(fromHexString: tagColorHex) else { return false }
+        return luminance > 0.8
     }
 
     @ViewBuilder
@@ -144,7 +184,7 @@ struct StreamBadgeChipView: View {
     /// D2 outline chip. Reads BOTH focus sources (BUG-65): the stroke flips on the white platter,
     /// where a white 0.18 stroke would vanish; the text follows `rowTextColor`.
     private var outlineChip: some View {
-        let focused = isFocused || rowFocused
+        let focused = onPlatter
         return Text(badge.name)
             .font(Theme.Font.caption.weight(.semibold))
             .tracking(StreamBadgeMetrics.outlineTracking)
@@ -165,11 +205,14 @@ struct StreamBadgeChipView: View {
         let decision = Self.effectiveTextChipColors(
             textColorHex: badge.textColor,
             tagColorHex: badge.tagColor,
-            isFocused: isFocused
+            isFocused: onPlatter
         )
         let foreground = Self.resolvedForeground(decision, textColorHex: badge.textColor, tagColorHex: badge.tagColor)
         let background = Self.resolvedBackground(decision, tagColorHex: badge.tagColor)
-        let border = decision.showBorder ? Color(hexString: badge.borderColor) : nil
+        let border = Color(hexString: badge.borderColor)
+            ?? (Self.needsPlatterEdge(drawsPackFill: decision.bg == .pack, darkBase: decision.darkBase,
+                                      tagColorHex: badge.tagColor, isFocused: onPlatter)
+                    ? Theme.Palette.onFocusPlatter.opacity(Self.platterEdgeOpacity) : nil)
 
         return Text(badge.name)
             .font(Theme.Font.caption)
@@ -179,6 +222,7 @@ struct StreamBadgeChipView: View {
             .padding(.vertical, Theme.Spacing.xxs)
             .frame(height: StreamBadgeMetrics.containerHeight)
             .background(background, in: Capsule())
+            .background(decision.darkBase ? Theme.Palette.surfaceElevated : .clear, in: Capsule())
             .overlay(
                 Capsule().stroke(border ?? .clear, lineWidth: border == nil ? 0 : 1)
             )
@@ -189,14 +233,17 @@ struct StreamBadgeChipView: View {
     /// Where a text chip's foreground should come from. Kept as a plain enum (no `Color`) so the
     /// decision is testable with simple `==` — see `StreamBadgeColorTests`.
     enum ChipFgSource: Equatable {
-        /// `Theme.Palette.textPrimary` — semantic, tracks the row's colorScheme flip.
+        /// `Theme.Palette.textPrimary` — semantic. At rest only: on the focus platter it would
+        /// flip dark, so `fixedLight` takes its place there.
         case semantic
         /// The pack's own `textColor` hex.
         case pack
-        /// Dark/light pick computed against the effective background (pack guard triggered).
+        /// The pack guard triggered on a LIGHT background: fixed near-black text. (On a dark
+        /// background the guard answers with the light text, `semantic` or `fixedLight`.)
         case computedOnBg
-        /// Fixed light color used while the row's focus platter is showing.
-        case focusedFixed
+        /// A fixed near-white, standing in for `semantic` while the row's focus platter is
+        /// showing: the platter flips semantic colours dark, and this text sits on a dark chip.
+        case fixedLight
     }
 
     /// Where a text chip's background should come from.
@@ -205,15 +252,17 @@ struct StreamBadgeChipView: View {
         case semantic
         /// The pack's own `tagColor` hex.
         case pack
-        /// Fixed translucent fill used while the row's focus platter is showing.
-        case focusedFixed
     }
 
     struct ChipColorDecision: Equatable {
         var fg: ChipFgSource
         var bg: ChipBgSource
-        /// Whether the pack's `borderColor` should still be drawn.
+        /// Whether the pack's `borderColor` is drawn. Always true since GitHub #25 (a focused
+        /// chip used to drop it); kept so the decision value still states it.
         var showBorder: Bool
+        /// GitHub #25: paint the opaque dark surface under a translucent pack fill while the row's
+        /// focus platter is showing (see `imageChipSurface`).
+        var darkBase: Bool = false
     }
 
     /// Default effective background hex used for the fg/bg contrast guard when the pack supplies
@@ -228,55 +277,70 @@ struct StreamBadgeChipView: View {
     /// needs to know "this resolves light."
     private static let semanticFgApproxHex = "F5F7F8"
 
-    /// Pure decision function for a text chip's colors — see BUG-28 and BUG-43.
+    /// Pure decision function for a text chip's colors — see BUG-28, BUG-43 and GitHub #25.
     ///
-    /// FOCUSED: ignore the pack entirely. The row's focus platter is near-white, so pack hexes
-    /// (authored against the app's normal dark surfaces) are never trustworthy here — use fixed
-    /// colors instead, with no pack border.
+    /// The chip draws its own background, so its colours are judged against THAT, focused or not.
+    /// The background's luminance is the pack's `tagColor` blended over the dark surface by its
+    /// alpha (`effectiveBackgroundLuminance`): a 12 % tint is a dark chip, whatever its hue.
     ///
-    /// UNFOCUSED, `textColor` present: keep the pack's colors. But if the pack's `textColor` and
-    /// effective `tagColor` (or the semantic default when `tagColor` is missing) are both light or
-    /// both dark — luminance difference under 0.3 — the pair is illegible (BUG-28's reported
-    /// white-on-white case), so replace the foreground with a computed dark/light pick against
-    /// that background.
+    /// `textColor` present: keep the pack's colors. But if the pack's `textColor` and the
+    /// effective background are both light or both dark — luminance difference under 0.3 — the
+    /// pair is illegible (BUG-28's reported white-on-white case), so replace the foreground with a
+    /// computed dark/light pick against that background.
     ///
-    /// UNFOCUSED, `textColor` missing/unparseable (BUG-43): mobile never renders a text chip at
-    /// all (`StreamBadgeChip.kt` only draws `imageURL`), so plenty of imported packs set `tagColor`
+    /// `textColor` missing/unparseable (BUG-43): mobile never renders a text chip at all
+    /// (`StreamBadgeChip.kt` only draws `imageURL`), so plenty of imported packs set `tagColor`
     /// alone and leave `textColor` blank — nothing on mobile ever needed it. Naively defaulting to
     /// the semantic foreground here ignores what it will actually sit on: `Theme.Palette
     /// .textPrimary` (`Color.primary`) resolves near-white in this app's pinned dark scheme, and
     /// pairing that with a LIGHT pack `tagColor` (a language badge's flag-style fill, say)
-    /// produces a near-invisible near-white-on-light chip — the reported "badge appears in the
-    /// light theme" while sibling badges (which supply both colors and go through the guard above)
-    /// render dark correctly. So this path runs the identical luminance guard, using
-    /// `semanticFgApproxHex` to stand in for the un-measurable `Color.primary`: a light effective
-    /// background swaps in the same `.computedOnBg` dark-text pick the explicit-`textColor` path
-    /// already uses; a dark/default background keeps today's `.semantic` behavior unchanged.
+    /// produces a near-invisible near-white-on-light chip. So this path runs the identical
+    /// luminance guard, using `semanticFgApproxHex` to stand in for the un-measurable
+    /// `Color.primary`: a light effective background swaps in the same `.computedOnBg` dark-text
+    /// pick the explicit-`textColor` path already uses; a dark/default background keeps the
+    /// near-white text.
+    ///
+    /// FOCUSED (GitHub #25): the same decision, with two changes. Until beta 22 a focused chip
+    /// dropped the pack entirely for a fixed 8 % black fill and dark text, which turned every
+    /// coloured badge on the highlighted row into the same grey. Now (1) a translucent pack fill
+    /// gets the opaque dark base under it (`darkBase`), so it looks as it does at rest instead of
+    /// tinting the white platter; and (2) the semantic near-white becomes `.fixedLight`, because
+    /// the focused row flips semantic colours dark (BUG-28) while this chip's background stays
+    /// dark.
     static func effectiveTextChipColors(
         textColorHex: String,
         tagColorHex: String,
         isFocused: Bool
     ) -> ChipColorDecision {
-        if isFocused {
-            return ChipColorDecision(fg: .focusedFixed, bg: .focusedFixed, showBorder: false)
-        }
+        let packAlpha = Theme.Palette.alpha(fromHexString: tagColorHex)
+        let bgSource: ChipBgSource = packAlpha != nil ? .pack : .semantic
+        let effectiveBgLum = effectiveBackgroundLuminance(tagColorHex: tagColorHex)
+        let darkBase = isFocused && (packAlpha.map { $0 < 1 } ?? false)
+        let lightText: ChipFgSource = isFocused ? .fixedLight : .semantic
 
-        let packBgLum = Theme.Palette.luminance(fromHexString: tagColorHex)
-        let bgSource: ChipBgSource = packBgLum != nil ? .pack : .semantic
-        let effectiveBgLum = packBgLum ?? Theme.Palette.luminance(fromHexString: defaultBgHex)!
+        // The guard's answer: near-black on a light background, the light text on a dark one.
+        // The light text stays SEMANTIC at rest, so a chip that draws no background of its own
+        // (an image chip's text stand-in) still follows whatever surface it is shown on.
+        let guarded: ChipFgSource = effectiveBgLum > 0.5 ? .computedOnBg : lightText
 
         guard let fgLum = Theme.Palette.luminance(fromHexString: textColorHex) else {
             let assumedSemanticFgLum = Theme.Palette.luminance(fromHexString: semanticFgApproxHex)!
-            if abs(assumedSemanticFgLum - effectiveBgLum) < 0.3 {
-                return ChipColorDecision(fg: .computedOnBg, bg: bgSource, showBorder: true)
-            }
-            return ChipColorDecision(fg: .semantic, bg: bgSource, showBorder: true)
+            let fg = abs(assumedSemanticFgLum - effectiveBgLum) < 0.3 ? guarded : lightText
+            return ChipColorDecision(fg: fg, bg: bgSource, showBorder: true, darkBase: darkBase)
         }
 
-        if abs(fgLum - effectiveBgLum) < 0.3 {
-            return ChipColorDecision(fg: .computedOnBg, bg: bgSource, showBorder: true)
-        }
-        return ChipColorDecision(fg: .pack, bg: bgSource, showBorder: true)
+        let fg = abs(fgLum - effectiveBgLum) < 0.3 ? guarded : .pack
+        return ChipColorDecision(fg: fg, bg: bgSource, showBorder: true, darkBase: darkBase)
+    }
+
+    /// The luminance of what a chip's text sits on: the pack's `tagColor` blended by its alpha over
+    /// the dark surface (the row at rest, the dark base on the platter), or that dark surface
+    /// alone when the pack has no parseable `tagColor`.
+    static func effectiveBackgroundLuminance(tagColorHex: String) -> Double {
+        let baseLum = Theme.Palette.luminance(fromHexString: defaultBgHex)!
+        guard let lum = Theme.Palette.luminance(fromHexString: tagColorHex),
+              let alpha = Theme.Palette.alpha(fromHexString: tagColorHex) else { return baseLum }
+        return alpha * lum + (1 - alpha) * baseLum
     }
 
     /// Maps a `ChipColorDecision.fg` to an actual `Color`. Split from `effectiveTextChipColors`
@@ -292,14 +356,20 @@ struct StreamBadgeChipView: View {
             return Theme.Palette.textPrimary
         case .pack:
             return Color(hexString: textColorHex) ?? Theme.Palette.textPrimary
-        case .focusedFixed:
-            return Theme.Palette.onFocusPlatter
+        case .fixedLight:
+            return fixedLightText
         case .computedOnBg:
-            let bgLum = Theme.Palette.luminance(fromHexString: tagColorHex)
-                ?? Theme.Palette.luminance(fromHexString: defaultBgHex)!
-            return bgLum > 0.5 ? Color(hex: 0x0D0D0D) : Theme.Palette.textPrimary
+            // Fixed: this text sits on the chip's own light background, which does not flip
+            // with the focused row's colour scheme the way `textPrimary` does.
+            return computedDarkText
         }
     }
+
+    /// `semanticFgApproxHex` as a colour: the near-white `textPrimary` resolves to in the app's
+    /// dark scheme, fixed so the focused row's light scheme cannot flip it.
+    static let fixedLightText = Color(hex: 0xF5F7F8)
+    /// The guard's near-black, for text on a light chip.
+    static let computedDarkText = Color(hex: 0x0D0D0D)
 
     /// Maps a `ChipColorDecision.bg` to an actual `Color`.
     static func resolvedBackground(_ decision: ChipColorDecision, tagColorHex: String) -> Color {
@@ -308,8 +378,6 @@ struct StreamBadgeChipView: View {
             return Color(hexString: tagColorHex) ?? Theme.Palette.surfaceElevated
         case .semantic:
             return Theme.Palette.surfaceElevated
-        case .focusedFixed:
-            return Color.black.opacity(0.08)
         }
     }
 }
@@ -460,9 +528,14 @@ struct StreamFileSizeChip: View {
 /// changes the badge row's height.
 struct BadgeOverflowChip: View {
     let count: Int
+    @Environment(\.isFocused) private var isFocused
+    @Environment(\.settingsRowIsFocused) private var rowFocused
 
     var body: some View {
         let shape = Capsule()
+        // GitHub #25 (review r1): on the white focus platter the 60 % fill composited to a mid
+        // grey under 70 % white text. Like the other chips, it gets the opaque dark base there.
+        let onPlatter = isFocused || rowFocused
         Text("+\(count)")
             .font(Theme.Font.caption.weight(.semibold))
             // BUG-28: fixed (not semantic) foreground for the same reason as StreamFileSizeChip
@@ -471,7 +544,7 @@ struct BadgeOverflowChip: View {
             .lineLimit(1)
             .padding(.horizontal, Theme.Spacing.sm)
             .frame(height: StreamBadgeMetrics.containerHeight)
-            .background(Theme.Palette.surfaceElevated.opacity(0.6), in: shape)
+            .background(Theme.Palette.surfaceElevated.opacity(onPlatter ? 1 : 0.6), in: shape)
             .overlay(shape.stroke(Color.white.opacity(0.1), lineWidth: 1))
     }
 }

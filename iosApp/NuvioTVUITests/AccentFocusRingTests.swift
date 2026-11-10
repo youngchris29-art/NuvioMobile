@@ -5,7 +5,7 @@ import XCTest
 ///
 /// Deliberately does NOT launch `XCUIApplication` (unlike `NuvioTVUITests.swift`'s device-driving
 /// suite) — these are plain, fast asserts against a decision function, following the same
-/// hand-mirrored-function convention as `StreamBadgeColorTests.swift` (see that file's header for
+/// hand-mirrored-function convention as `TabChipContrastTests.swift` (see that file's header for
 /// why: `NuvioTVUITests` is a genuine UI-testing target with no `BUNDLE_LOADER`/`TEST_HOST`, so
 /// `@testable import NuvioTV` type-checks but fails at link time — nothing embeds the app's object
 /// code into this bundle). This file keeps a small, exact mirror of just the pure functions under

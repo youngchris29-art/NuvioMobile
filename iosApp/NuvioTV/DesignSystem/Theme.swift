@@ -92,7 +92,7 @@ enum Theme {
             return luminance > lightAccentLuminance ? Color(hex: 0x0D0D0D) : textPrimary
         }
 
-        /// Relative luminance (0–1, Rec. 709 weights) of a `#RGB`/`#RRGGBB`/`#RRGGBBAA` hex
+        /// Relative luminance (0–1, Rec. 709 weights) of a `#RGB`/`#RRGGBB`/`#AARRGGBB` hex
         /// string, using the same parsing rules as `Color(hexString:)`. Returns nil for
         /// empty/malformed input so callers can fall back. Deliberately String-in/Double-out (no
         /// `Color` involved) so pure color-decision logic elsewhere (e.g.
@@ -124,6 +124,19 @@ enum Theme {
                 b = Double(value & 0xFF) / 255.0
             }
             return 0.2126 * r + 0.7152 * g + 0.0722 * b
+        }
+
+        /// The alpha (0–1) of a pack hex string, by the same rules as `Color(hexString:)`: an
+        /// 8-digit value is AARRGGBB (BUG-43), 3 and 6 digits are opaque. Nil for empty or
+        /// malformed input. GitHub #25: the badge chips need to know when a pack fill is
+        /// translucent, because such a fill only reads on the dark surface it was authored for.
+        static func alpha(fromHexString hexString: String) -> Double? {
+            var s = hexString.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !s.isEmpty else { return nil }
+            if s.hasPrefix("#") { s.removeFirst() }
+            guard s.count == 3 || s.count == 6 || s.count == 8,
+                  let value = UInt64(s, radix: 16) else { return nil }
+            return s.count == 8 ? Double((value >> 24) & 0xFF) / 255.0 : 1.0
         }
 
         /// FEAT-14: decides the accent focus ring's actual draw color, given the current theme's

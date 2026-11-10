@@ -5,11 +5,11 @@ import XCTest
 /// `NuvioTV/DesignSystem/ArtworkLetterbox.swift`.
 ///
 /// Deliberately does NOT launch `XCUIApplication` — these are plain, fast asserts against a
-/// decision function, same shape as `StreamBadgeColorTests`.
+/// decision function, same shape as `TabChipContrastTests`.
 ///
 /// Why this file mirrors the production logic instead of importing it: `NuvioTVUITests` is a
 /// genuine UI-testing bundle with no `BUNDLE_LOADER`/`TEST_HOST`, so `@testable import NuvioTV`
-/// would type-check but fail at link time — see `StreamBadgeColorTests`' type doc for the full
+/// would type-check but fail at link time — see `TabChipContrastTests`' type doc for the full
 /// explanation and the standing instruction to move these into a real hosted unit-test target if
 /// one ever exists. Keep this in sync BY HAND with `ArtworkLetterbox.zoomFromScan` (and the
 /// `TrailerLetterboxProbe` constants it reads: `blackLuma`, `maxBarFraction`, `minBarFraction`,
