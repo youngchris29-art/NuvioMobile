@@ -2176,6 +2176,18 @@ final class MPVTVPlayerViewController: UIViewController {
         let duration = state.durationSec
         let position = state.positionSec
         guard LivePlaybackPolicy.shouldSaveResume(isLive: holdsLiveResume, positionSec: position, durationSec: duration) else { return }
+        // BUG-231: with Trakt as the progress source the resume position lives on Trakt, which
+        // learns it from this session's stop. Keep the position as a provisional pending stop
+        // (throttled in the outbox, nothing is sent) so a crash or force-quit still leaves one for
+        // the next launch. 0 for a live stream or a placeholder clip, which the outbox ignores.
+        if let item = traktScrobbleItem {
+            TraktScrobbleRepository.shared.noteSessionProgress(
+                profileId: ActiveProfileProvider.shared.activeProfileId,
+                item: item,
+                progressPercent: Float(TrackerScrobblePolicy.stopPercent(positionSec: position, durationSec: duration,
+                                                                         isLive: holdsLiveProgress))
+            ) { _, _ in }
+        }
         if !savedResumeThisSession {
             savedResumeThisSession = true
             resumeEntriesBeforeSession = WatchProgressRepository.shared.localEntriesForVideo(videoId: context.videoId)

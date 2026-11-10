@@ -217,6 +217,16 @@ object TraktScrobbleRepository : TrackingScrobbler {
         sendScrobble(profileId = profileId, action = "stop", item = item, progressPercent = progressPercent)
     }
 
+    /**
+     * BUG-231: the playing session's position, called by the players on their progress tick. With
+     * Trakt as the watch progress source the resume position exists only on Trakt, and Trakt
+     * learns it from the session's stop; a crash or force-quit never sends one. This keeps the
+     * position as a provisional pending stop (throttled in the outbox) that the next launch
+     * replays. Nothing is sent to Trakt here.
+     */
+    suspend fun noteSessionProgress(profileId: Int, item: TraktScrobbleItem, progressPercent: Float): Boolean =
+        engine.noteSessionProgress(profileId, item, progressPercent)
+
     suspend fun buildItem(
         contentType: String,
         parentMetaId: String,

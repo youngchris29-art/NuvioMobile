@@ -7,6 +7,7 @@ import com.nuvio.app.core.account.TRAKT_PENDING_SCROBBLE_STOPS_PREFERENCES
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -492,6 +493,155 @@ class TraktPendingScrobbleStopsTest {
         h.drain(h.outbox()) { _, _ -> calls++; TraktScrobbleDelivery.SENT }
         assertEquals(1, calls)
         assertEquals("episode", h.remote.playsCalls.single().first)
+    }
+
+    // ── BUG-231: provisional stops (a session killed before it could send its stop) ────────
+
+    @Test
+    fun aKilledSessionLeavesItsLastPositionForTheNextLaunch() = runTest {
+        val h = Harness()
+        // Run 1: the session starts, plays, and the app is killed. No stop is ever sent.
+        val run1 = h.outbox()
+        run1.onSessionStarted(1, episode().itemKey)
+        assertTrue(run1.noteSessionProgress(1, episode(), 4f))
+        h.nowMs += 60_000
+        assertTrue(run1.noteSessionProgress(1, episode(), 9.5f))
+        val left = h.pending().single()
+        assertEquals(9.5f, left.progress)
+        assertTrue(left.provisional)
+        assertEquals(h.nowMs, left.createdAtMs)
+
+        // Run 2: the launch drain sends it like any other pending stop.
+        val replayed = mutableListOf<Pair<TraktScrobbleItem, Float>>()
+        val result = h.drain(h.outbox()) { item, progress ->
+            replayed += item to progress
+            TraktScrobbleDelivery.SENT
+        }
+        assertEquals(listOf<Pair<TraktScrobbleItem, Float>>(episode() to 9.5f), replayed)
+        assertEquals(1, result.sent)
+        assertTrue(h.pending().isEmpty())
+    }
+
+    @Test
+    fun provisionalWritesAreThrottledPerSession() = runTest {
+        val h = Harness()
+        val outbox = h.outbox()
+        outbox.onSessionStarted(1, movie().itemKey)
+        assertTrue(outbox.noteSessionProgress(1, movie(), 5f))
+        h.nowMs += TraktScrobbleStopOutbox.DEFAULT_PROVISIONAL_INTERVAL_MS - 1
+        assertFalse(outbox.noteSessionProgress(1, movie(), 6f))
+        assertEquals(5f, h.pending().single().progress)
+        h.nowMs += 1
+        assertTrue(outbox.noteSessionProgress(1, movie(), 6.5f))
+        assertEquals(6.5f, h.pending().single().progress, "one entry per item, the newest position")
+    }
+
+    @Test
+    fun provisionalWritesNeedAnOpenSessionAConnectedAccountAndOnePercent() = runTest {
+        val h = Harness()
+        val outbox = h.outbox()
+        assertFalse(outbox.noteSessionProgress(1, movie(), 20f), "no session was started")
+        outbox.onSessionStarted(1, movie().itemKey)
+        assertFalse(outbox.noteSessionProgress(1, movie("tt2"), 20f), "another item than the open session")
+        assertFalse(outbox.noteSessionProgress(2, movie(), 20f), "another profile than the open session")
+        assertFalse(outbox.noteSessionProgress(1, movie(), 0.5f), "Trakt rejects a stop below 1 %")
+        h.connected = false
+        assertFalse(outbox.noteSessionProgress(1, movie(), 20f), "no Trakt account connected")
+        assertTrue(h.pending().isEmpty())
+    }
+
+    @Test
+    fun theCleanStopReplacesTheProvisionalEntry() = runTest {
+        val h = Harness()
+        val outbox = h.outbox()
+        outbox.onSessionStarted(1, movie().itemKey)
+        outbox.noteSessionProgress(1, movie(), 30f)
+        h.nowMs += 5_000
+        var pendingDuringSend: List<TraktPendingScrobbleStop>? = null
+        outbox.sendStop(1, movie(), 31f) { _, _ ->
+            pendingDuringSend = h.pending()
+            TraktScrobbleDelivery.SENT
+        }
+        val during = pendingDuringSend!!.single()
+        assertEquals(31f, during.progress)
+        assertFalse(during.provisional)
+        assertTrue(h.pending().isEmpty(), "a stop that landed leaves nothing to replay")
+        // The session is closed: a late progress tick writes nothing.
+        assertFalse(outbox.noteSessionProgress(1, movie(), 31f))
+        assertTrue(h.pending().isEmpty())
+    }
+
+    @Test
+    fun aStopBelowOnePercentDropsTheProvisionalEntryButKeepsARealPendingStop() = runTest {
+        val h = Harness()
+        // A real stop for another item is waiting (it failed offline earlier).
+        h.queueOffline(movie("tt-older"), 40f)
+        val outbox = h.outbox()
+        // A stream that turned out to be live or a placeholder: it closes at 0 %.
+        outbox.onSessionStarted(1, movie().itemKey)
+        outbox.noteSessionProgress(1, movie(), 12f)
+        assertEquals(2, h.pending().size)
+        outbox.sendStop(1, movie(), 0f) { _, _ -> TraktScrobbleDelivery.REJECTED }
+        val left = h.pending().single()
+        assertEquals(movie("tt-older").itemKey, left.itemKey)
+        assertFalse(left.provisional)
+    }
+
+    @Test
+    fun theDrainLeavesThePlayingSessionsProvisionalEntryAlone() = runTest {
+        val h = Harness()
+        val outbox = h.outbox()
+        outbox.onSessionStarted(1, movie().itemKey)
+        outbox.noteSessionProgress(1, movie(), 25f)
+        var calls = 0
+        h.drain(outbox) { _, _ -> calls++; TraktScrobbleDelivery.SENT }
+        assertEquals(0, calls, "a replay must not end the session that is playing")
+        assertEquals(1, h.pending().size)
+    }
+
+    @Test
+    fun aKilledSessionFinishedElsewhereSinceIsNotReplayed() = runTest {
+        val h = Harness()
+        val run1 = h.outbox()
+        run1.onSessionStarted(1, episode(1, 2).itemKey)
+        run1.noteSessionProgress(1, episode(1, 2), 30f)
+        // Before the next launch the episode is finished on another device.
+        h.remote.playback = emptyList()
+        h.remote.plays = listOf(episodePlay(1, 2, atMs = h.nowMs + 600_000))
+        var calls = 0
+        val result = h.drain(h.outbox()) { _, _ -> calls++; TraktScrobbleDelivery.SENT }
+        assertEquals(0, calls)
+        assertEquals(1, result.superseded)
+        assertTrue(h.pending().isEmpty())
+    }
+
+    @Test
+    fun aKilledSessionResumedElsewhereSinceIsNotReplayed() = runTest {
+        val h = Harness()
+        val run1 = h.outbox()
+        run1.onSessionStarted(1, movie().itemKey)
+        run1.noteSessionProgress(1, movie(), 30f)
+        // Another device paused the film further in, after the kill.
+        h.remote.playback = listOf(
+            TraktRemoteProgress(
+                kind = "movie",
+                ids = TraktExternalIds(imdb = "tt0111161"),
+                atMs = h.nowMs + 3_600_000,
+                progress = 55f,
+            ),
+        )
+        var calls = 0
+        h.drain(h.outbox()) { _, _ -> calls++; TraktScrobbleDelivery.SENT }
+        assertEquals(0, calls)
+        assertTrue(h.pending().isEmpty())
+    }
+
+    @Test
+    fun aProvisionalEntryFromBeforeTheFieldExistedDecodesAsARealStop() = runTest {
+        val h = Harness()
+        h.queueOffline(movie(), 40f)
+        assertFalse(h.pending().single().provisional)
+        assertFalse(h.storage[1]!!.contains("provisional"), "the default is not written, so older builds read the payload")
     }
 
     @Test

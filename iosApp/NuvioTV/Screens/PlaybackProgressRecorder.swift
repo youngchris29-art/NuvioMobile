@@ -94,6 +94,16 @@ final class PlaybackProgressRecorder {
     func record(positionSec: Double, durationSec: Double, isPaused: Bool, speed: Double, flush: Bool, isLive: Bool) {
         guard let snapshot = Self.progressSnapshot(positionSec: positionSec, durationSec: durationSec,
                                                    isPaused: isPaused, speed: speed, isLive: isLive) else { return }
+        // BUG-231: keep the position as a provisional pending Trakt stop (throttled in the
+        // outbox, nothing is sent), so a crash or force-quit still leaves one for the next launch.
+        if let item = traktItem {
+            TraktScrobbleRepository.shared.noteSessionProgress(
+                profileId: ActiveProfileProvider.shared.activeProfileId,
+                item: item,
+                progressPercent: Float(TrackerScrobblePolicy.stopPercent(positionSec: positionSec, durationSec: durationSec,
+                                                                         isLive: isLive))
+            ) { _, _ in }
+        }
         if flush {
             WatchProgressRepository.shared.flushPlaybackProgress(session: session, snapshot: snapshot, syncRemote: false)
         } else {

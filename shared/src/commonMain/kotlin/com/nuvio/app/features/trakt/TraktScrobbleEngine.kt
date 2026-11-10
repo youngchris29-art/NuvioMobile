@@ -139,6 +139,10 @@ class TraktScrobbleEngine(
         }
     }
 
+    /** BUG-231: the open session's position, kept as a provisional pending stop. Sends nothing. */
+    suspend fun noteSessionProgress(profileId: Int, item: TraktScrobbleItem, progressPercent: Float): Boolean =
+        outbox.noteSessionProgress(profileId, item, progressPercent.coerceIn(0f, 100f))
+
     /**
      * One scrobble request. A live stop retries in place; a replay sends once and leaves the retry
      * to the next drain. A live stop refreshes Trakt progress on success; a drain refreshes at its end.

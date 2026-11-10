@@ -24,7 +24,11 @@ import kotlinx.serialization.json.Json
  * starts. Before replaying, the drain reads what Trakt holds now (`/sync/playback`, and
  * `/sync/history` since the stop was queued) and drops an entry Trakt already has, or that newer
  * activity elsewhere supersedes, so a replay can neither add a duplicate play nor overwrite newer
- * progress. The reads are lazy (playback once, history at most once per kind, each when the first
+ * progress. BUG-231: a session that never sends its stop at all (a crash, a force-quit) is covered
+ * by a PROVISIONAL stop: while a session plays, its position is written here every
+ * [TraktScrobbleStopOutbox.provisionalIntervalMs]; the clean stop supersedes it, and after a kill
+ * the next launch's drain sends it like any other pending stop, behind the same checks.
+ * The reads are lazy (playback once, history at most once per kind, each when the first
  * entry needs it): an entry that cannot be checked is never sent, and the drain stops there, but
  * entries before the failed read may already have been sent. Entries are bounded per profile and by age (24 h at or above the watched threshold,
  * 48 h below it).
@@ -124,6 +128,8 @@ data class TraktPendingScrobbleStop(
     val createdAtMs: Long,
     val attempts: Int = 0,
     val accountSlug: String? = null,
+    /** BUG-231: written while the session was still playing (no stop was ever sent for it). */
+    val provisional: Boolean = false,
 )
 
 /**
@@ -204,6 +210,11 @@ class TraktPendingScrobbleStopQueue(
 
     suspend fun remove(profileId: Int, id: String) = mutate(profileId) { stored ->
         stored.filterNot { it.id == id }.takeIf { it.size != stored.size }
+    }
+
+    /** Drops [itemKey]'s provisional entry, if any; a real pending stop for the item is kept. */
+    suspend fun removeProvisional(profileId: Int, itemKey: String) = mutate(profileId) { stored ->
+        stored.filterNot { it.provisional && it.itemKey == itemKey }.takeIf { it.size != stored.size }
     }
 
     /** Counts one HTTP failure; drops the entry once it reaches [maxAttempts]. True when kept. */
@@ -341,8 +352,16 @@ class TraktScrobbleStopOutbox(
     val maxReplayAttempts: Int = DEFAULT_MAX_REPLAY_ATTEMPTS,
     /** Tolerance for device/Trakt clock skew when comparing Trakt timestamps with [TraktPendingScrobbleStop.createdAtMs]. */
     val clockSlackMs: Long = DEFAULT_CLOCK_SLACK_MS,
+    /** BUG-231: the least time between two provisional writes of one session. */
+    val provisionalIntervalMs: Long = DEFAULT_PROVISIONAL_INTERVAL_MS,
 ) {
     private val drainMutex = Mutex()
+    // Orders a session's provisional writes against its closing stop: a write that was already
+    // under way when the stop arrives finishes first, so it can never supersede the stop's entry.
+    private val sessionMutex = Mutex()
+
+    // Guarded by [sessionMutex]: the session of the last provisional write and when it was made.
+    private var lastProvisional: Triple<Int, String, Long>? = null
     private val inFlightMutex = Mutex()
     private val inFlight = mutableSetOf<String>()
 
@@ -354,6 +373,42 @@ class TraktScrobbleStopOutbox(
     fun onSessionStarted(profileId: Int, itemKey: String) {
         openSession = profileId to itemKey
     }
+
+    /**
+     * BUG-231: the open session's position right now. Persists it as a provisional stop, at most
+     * once per [provisionalIntervalMs], so a session that is killed before it can send its stop
+     * still leaves one for the next launch to replay. Nothing is sent here. Ignored for anything
+     * but the open session, below 1 % (Trakt rejects it) and without a connected account, exactly
+     * as [sendStop] never queues those. The drain leaves the open session's entry alone, so it is
+     * replayed only once that session is gone. True when an entry was written.
+     */
+    suspend fun noteSessionProgress(profileId: Int, item: TraktScrobbleItem, progress: Float): Boolean =
+        sessionMutex.withLock {
+            val session = profileId to item.itemKey
+            if (openSession != session) return@withLock false
+            if (progress < MIN_QUEUED_PROGRESS || !isConnected(profileId)) return@withLock false
+            val nowMs = now()
+            val last = lastProvisional
+            if (last != null && last.first == profileId && last.second == item.itemKey &&
+                nowMs >= last.third && nowMs - last.third < provisionalIntervalMs
+            ) {
+                return@withLock false
+            }
+            queue.enqueue(
+                TraktPendingScrobbleStop(
+                    id = newId(),
+                    profileId = profileId,
+                    itemKey = item.itemKey,
+                    item = TraktPendingScrobbleItem.from(item),
+                    progress = progress,
+                    createdAtMs = nowMs,
+                    accountSlug = accountSlug(),
+                    provisional = true,
+                ),
+            )
+            lastProvisional = Triple(profileId, item.itemKey, nowMs)
+            true
+        }
 
     fun onProfileChanged() {
         openSession = null
@@ -372,20 +427,30 @@ class TraktScrobbleStopOutbox(
         progress: Float,
         deliver: suspend (TraktScrobbleItem, Float) -> TraktScrobbleDelivery,
     ): TraktScrobbleDelivery {
-        if (openSession == (profileId to item.itemKey)) openSession = null
-        if (progress < MIN_QUEUED_PROGRESS || !isConnected(profileId)) return deliver(item, progress)
-        val entry = TraktPendingScrobbleStop(
-            id = newId(),
-            profileId = profileId,
-            itemKey = item.itemKey,
-            item = TraktPendingScrobbleItem.from(item),
-            progress = progress,
-            createdAtMs = now(),
-            accountSlug = accountSlug(),
-        )
-        inFlightMutex.withLock { inFlight += entry.id }
+        val entry = sessionMutex.withLock {
+            if (openSession == (profileId to item.itemKey)) openSession = null
+            lastProvisional = null
+            if (progress < MIN_QUEUED_PROGRESS || !isConnected(profileId)) {
+                // BUG-231: this stop is the session's real end; its provisional position (the
+                // placeholder or live stream that closes at 0 % included) must not be replayed.
+                queue.removeProvisional(profileId, item.itemKey)
+                return@withLock null
+            }
+            val stop = TraktPendingScrobbleStop(
+                id = newId(),
+                profileId = profileId,
+                itemKey = item.itemKey,
+                item = TraktPendingScrobbleItem.from(item),
+                progress = progress,
+                createdAtMs = now(),
+                accountSlug = accountSlug(),
+            )
+            inFlightMutex.withLock { inFlight += stop.id }
+            // Supersedes the session's provisional entry (same item).
+            queue.enqueue(stop)
+            stop
+        } ?: return deliver(item, progress)
         try {
-            queue.enqueue(entry)
             log("Trakt pending stop queued id=${entry.id} profile=$profileId item=${entry.itemKey} progress=${formatProgress(progress)}")
             val result = deliver(item, progress)
             resolve(entry, result, replay = false)
@@ -484,6 +549,7 @@ class TraktScrobbleStopOutbox(
     /** Forgets in-memory session state (sign-out). */
     suspend fun reset() {
         openSession = null
+        sessionMutex.withLock { lastProvisional = null }
         inFlightMutex.withLock { inFlight.clear() }
     }
 
@@ -579,6 +645,7 @@ class TraktScrobbleStopOutbox(
         const val DEFAULT_MAX_REPLAY_ATTEMPTS = 5
         const val MIN_QUEUED_PROGRESS = 1f
         const val DEFAULT_CLOCK_SLACK_MS = 10L * 60 * 1000
+        const val DEFAULT_PROVISIONAL_INTERVAL_MS = 30L * 1000
 
         /** A Trakt paused row within this many percentage points of an entry is the entry itself. */
         const val SAME_POSITION_PERCENT = 1f
