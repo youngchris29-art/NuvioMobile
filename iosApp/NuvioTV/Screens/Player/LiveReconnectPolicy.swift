@@ -28,14 +28,22 @@ nonisolated struct LiveReconnectPolicy: Equatable, Sendable {
 
     /// What the player knows when `eof-reached` rises.
     struct Inputs: Equatable, Sendable {
-        /// `LivePlaybackPolicy.isLive`: the engine reports live, or the duration latched as growing.
-        var isLive: Bool
-        /// `LivePlaybackPolicy.DurationGrowth.undecided`: growth started and is not decided yet
-        /// (a channel that drops in its first half minute has not latched live).
+        /// `LivePlaybackPolicy.reportsLive`: mpv reads `seekable` false. Not proof of a live
+        /// stream on its own: a film served without byte ranges reads the same.
+        var reportsLive: Bool
+        /// `DurationGrowth.grew`: the duration latched as growing with the clock.
+        var growthLatched: Bool
+        /// `DurationGrowth.undecided`: growth started and is not decided yet (a channel that
+        /// drops in its first half minute has not latched live).
         var growthUndecided: Bool
+        /// `DurationGrowth.resumeSettled`: the duration has been quiet for the undecided hold,
+        /// which is what a film looks like and a live playlist does not.
+        var growthSettled: Bool
         /// `LivePlaybackPolicy.needsSettleHold`: HLS or DASH, the only formats that can be live
         /// while still reading seekable with a finite duration.
         var adaptiveFormat: Bool
+        /// The stream has a finite, positive duration. A raw live transport stream has none.
+        var durationKnown: Bool
         /// The file reached FILE_LOADED at least once.
         var fileLoaded: Bool
         /// The player is closing, or the host is swapping it for another source.
@@ -62,11 +70,20 @@ nonisolated struct LiveReconnectPolicy: Equatable, Sendable {
     /// `Inputs.secondsPlayed` at the last reconnect; nil before the first.
     private(set) var playedAtLastReconnect: Double?
 
-    /// Live for the purpose of a reconnect. An undecided stream counts only when it is HLS or
-    /// DASH: a film in another container whose duration mpv is still refining must end as a film.
+    /// Live for the purpose of a reconnect. Reopening a film would start it again from the
+    /// beginning, so "live" here needs more than `seekable` false (a film served without byte
+    /// ranges reads the same, and at its real end it must end):
+    /// - HLS or DASH whose duration grows with the clock, has started to, or has not yet been
+    ///   quiet long enough to read as a film while mpv reports it non-seekable;
+    /// - any container that mpv reports non-seekable and that has no duration at all (a raw live
+    ///   transport stream).
+    /// A film in MKV, MP4 or TS always has a duration and is never reopened.
     static func isEligible(_ inputs: Inputs) -> Bool {
         guard inputs.fileLoaded, !inputs.closingOrSwapping else { return false }
-        return inputs.isLive || (inputs.growthUndecided && inputs.adaptiveFormat)
+        if inputs.adaptiveFormat {
+            return inputs.growthLatched || inputs.growthUndecided || (inputs.reportsLive && !inputs.growthSettled)
+        }
+        return inputs.reportsLive && !inputs.durationKnown
     }
 
     /// Decide at the rising edge of `eof-reached`, at `nowSec` (a monotonic clock). A `.reconnect`

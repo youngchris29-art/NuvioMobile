@@ -6,12 +6,15 @@ import XCTest
 final class LiveReconnectPolicyTests: XCTestCase {
     typealias Policy = LiveReconnectPolicy
 
-    private func inputs(isLive: Bool = true, undecided: Bool = false, adaptive: Bool = true,
+    /// Default: an HLS channel whose duration latched as growing.
+    private func inputs(reportsLive: Bool = false, latched: Bool = true, undecided: Bool = false,
+                        settled: Bool = false, adaptive: Bool = true, durationKnown: Bool = true,
                         loaded: Bool = true, closing: Bool = false, played: Double? = nil) -> Policy.Inputs {
         // By default every decision comes after a long healthy stretch, so only the time window
         // is under test; the streak cases pass `played` themselves.
         defaultPlayed += 1_000
-        return Policy.Inputs(isLive: isLive, growthUndecided: undecided, adaptiveFormat: adaptive,
+        return Policy.Inputs(reportsLive: reportsLive, growthLatched: latched, growthUndecided: undecided,
+                             growthSettled: settled, adaptiveFormat: adaptive, durationKnown: durationKnown,
                              fileLoaded: loaded, closingOrSwapping: closing, secondsPlayed: played ?? defaultPlayed)
     }
 
@@ -19,23 +22,42 @@ final class LiveReconnectPolicyTests: XCTestCase {
 
     func testAFilmEndsAsAFilm() {
         var policy = Policy()
-        XCTAssertEqual(policy.decide(inputs(isLive: false), nowSec: 100), .notEligible)
-        XCTAssertEqual(policy.decide(inputs(isLive: false, adaptive: false), nowSec: 100), .notEligible)
+        // An HLS film: seekable, a fixed duration, quiet since it loaded.
+        XCTAssertEqual(policy.decide(inputs(latched: false, settled: true), nowSec: 100), .notEligible)
+        // An MKV or MP4 film.
+        XCTAssertEqual(policy.decide(inputs(latched: false, settled: true, adaptive: false), nowSec: 100), .notEligible)
         XCTAssertTrue(policy.recent.isEmpty, "a film's end must not count against the window")
+    }
+
+    func testANonSeekableFilmIsNeverReopened() {
+        // Review r1 P2-1: a film served without byte ranges reads `seekable` false. Reopening it
+        // would play it again from the start, for ever.
+        var policy = Policy()
+        XCTAssertEqual(policy.decide(inputs(reportsLive: true, latched: false, settled: true, adaptive: false),
+                                     nowSec: 100), .notEligible, "MKV / MP4 / TS film with a duration")
+        XCTAssertEqual(policy.decide(inputs(reportsLive: true, latched: false, settled: true, adaptive: true),
+                                     nowSec: 100), .notEligible, "an HLS film whose duration never grew")
+        // Even one whose duration looked like growth: only HLS and DASH can be live with a duration.
+        XCTAssertEqual(policy.decide(inputs(reportsLive: true, latched: true, adaptive: false), nowSec: 100),
+                       .notEligible)
+        XCTAssertTrue(policy.recent.isEmpty)
     }
 
     func testALiveStreamReconnects() {
         var policy = Policy()
-        XCTAssertEqual(policy.decide(inputs(), nowSec: 100), .reconnect(attempt: 1))
-        // Live by the engine's own report on a non-adaptive container (a raw MPEG-TS channel).
-        XCTAssertEqual(policy.decide(inputs(adaptive: false), nowSec: 101), .reconnect(attempt: 2))
+        XCTAssertEqual(policy.decide(inputs(), nowSec: 100), .reconnect(attempt: 1), "HLS, growth latched")
+        // A raw live transport stream: non-seekable and no duration at all.
+        XCTAssertEqual(policy.decide(inputs(reportsLive: true, latched: false, adaptive: false, durationKnown: false),
+                                     nowSec: 101), .reconnect(attempt: 2))
+        // An HLS channel mpv reports non-seekable, dropped before growth could latch or settle.
+        XCTAssertEqual(policy.decide(inputs(reportsLive: true, latched: false), nowSec: 102), .reconnect(attempt: 3))
     }
 
     func testAnUndecidedStreamReconnectsOnlyWhenAdaptive() {
         var policy = Policy()
-        XCTAssertEqual(policy.decide(inputs(isLive: false, undecided: true, adaptive: true), nowSec: 10),
+        XCTAssertEqual(policy.decide(inputs(latched: false, undecided: true, adaptive: true), nowSec: 10),
                        .reconnect(attempt: 1))
-        XCTAssertEqual(policy.decide(inputs(isLive: false, undecided: true, adaptive: false), nowSec: 11),
+        XCTAssertEqual(policy.decide(inputs(latched: false, undecided: true, adaptive: false), nowSec: 11),
                        .notEligible, "an MKV whose duration mpv is still refining is a film")
     }
 

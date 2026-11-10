@@ -92,10 +92,10 @@ final class PlaybackProgressRecorder {
     /// Record playback progress. `flush` forces an immediate write (use on teardown). A live
     /// stream (`isLive`, from `LivePlaybackPolicy`) writes nothing.
     func record(positionSec: Double, durationSec: Double, isPaused: Bool, speed: Double, flush: Bool, isLive: Bool) {
-        guard let snapshot = Self.progressSnapshot(positionSec: positionSec, durationSec: durationSec,
-                                                   isPaused: isPaused, speed: speed, isLive: isLive) else { return }
         // BUG-231: keep the position as a provisional pending Trakt stop (throttled in the
         // outbox, nothing is sent), so a crash or force-quit still leaves one for the next launch.
+        // Before the gate below on purpose: a live stream or a placeholder clip reports 0 here,
+        // which makes the outbox drop what this session wrote.
         if let item = traktItem {
             TraktScrobbleRepository.shared.noteSessionProgress(
                 profileId: ActiveProfileProvider.shared.activeProfileId,
@@ -104,6 +104,8 @@ final class PlaybackProgressRecorder {
                                                                          isLive: isLive))
             ) { _, _ in }
         }
+        guard let snapshot = Self.progressSnapshot(positionSec: positionSec, durationSec: durationSec,
+                                                   isPaused: isPaused, speed: speed, isLive: isLive) else { return }
         if flush {
             WatchProgressRepository.shared.flushPlaybackProgress(session: session, snapshot: snapshot, syncRemote: false)
         } else {

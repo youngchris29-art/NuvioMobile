@@ -32,8 +32,12 @@ class TraktPendingScrobbleStopsTest {
             slugAfterRefresh?.let { slug = it }
         }
 
+        /** Runs while the drain is reading `/sync/playback`: what happens on the device meanwhile. */
+        var onPlayback: (suspend () -> Unit)? = null
+
         override suspend fun playback(): List<TraktRemoteProgress>? {
             playbackCalls += 1
+            onPlayback?.invoke()
             return playback
         }
 
@@ -585,6 +589,74 @@ class TraktPendingScrobbleStopsTest {
         val left = h.pending().single()
         assertEquals(movie("tt-older").itemKey, left.itemKey)
         assertFalse(left.provisional)
+    }
+
+    @Test
+    fun aStopBelowOnePercentKeepsAnEarlierKilledSessionsEntry() = runTest {
+        // Review r1 P3-2. Run 1 is killed at 50 %; its entry waits (the launch drain was deferred).
+        val h = Harness()
+        val run1 = h.outbox()
+        run1.onSessionStarted(1, movie().itemKey)
+        run1.noteSessionProgress(1, movie(), 50f)
+        // Run 2: the viewer opens the same film (it starts at 0, Trakt never got the 50 %) and
+        // backs out at once.
+        val run2 = h.outbox()
+        run2.onSessionStarted(1, movie().itemKey)
+        assertFalse(run2.noteSessionProgress(1, movie(), 0.2f))
+        run2.sendStop(1, movie(), 0.2f) { _, _ -> TraktScrobbleDelivery.REJECTED }
+        val left = h.pending().single()
+        assertEquals(50f, left.progress, "the killed session's position is not run 2's to drop")
+        var replayed = 0f
+        h.drain(run2) { _, progress -> replayed = progress; TraktScrobbleDelivery.SENT }
+        assertEquals(50f, replayed)
+    }
+
+    @Test
+    fun aSessionThatTurnsOutLiveDropsWhatItWrote() = runTest {
+        // Review r1 P3-4: the players report 0 once a stream reads live or as a placeholder clip.
+        val h = Harness()
+        val outbox = h.outbox()
+        outbox.onSessionStarted(1, movie().itemKey)
+        assertTrue(outbox.noteSessionProgress(1, movie(), 3f))
+        assertEquals(1, h.pending().size)
+        assertFalse(outbox.noteSessionProgress(1, movie(), 0f))
+        assertTrue(h.pending().isEmpty(), "a crash from here must leave nothing to replay")
+        // If it reads as a film again, the next position is written at once (no throttle carry-over).
+        assertTrue(outbox.noteSessionProgress(1, movie(), 4f))
+        assertEquals(4f, h.pending().single().progress)
+    }
+
+    @Test
+    fun aNewSessionOfTheSameItemSupersedesTheKilledSessionsEntry() = runTest {
+        val h = Harness()
+        val run1 = h.outbox()
+        run1.onSessionStarted(1, movie().itemKey)
+        run1.noteSessionProgress(1, movie(), 50f)
+        val run2 = h.outbox()
+        run2.onSessionStarted(1, movie().itemKey)
+        h.nowMs += 120_000
+        assertTrue(run2.noteSessionProgress(1, movie(), 12f))
+        assertEquals(12f, h.pending().single().progress, "one entry per item, the newer session's")
+    }
+
+    @Test
+    fun aDrainThatReadTraktWhileTheSessionStoppedDoesNotSendTheProvisionalEntry() = runTest {
+        // Review r1 P3-3: the clean stop supersedes the provisional entry while the drain is
+        // reading Trakt for it.
+        val h = Harness()
+        val run1 = h.outbox()
+        run1.onSessionStarted(1, movie().itemKey)
+        run1.noteSessionProgress(1, movie(), 30f)
+        // Next launch: the same film is opened again and stopped while the drain reads Trakt.
+        val run2 = h.outbox()
+        var replays = 0
+        h.remote.onPlayback = {
+            run2.onSessionStarted(1, movie().itemKey)
+            run2.sendStop(1, movie(), 35f) { _, _ -> TraktScrobbleDelivery.SENT }
+        }
+        h.drain(run2) { _, _ -> replays++; TraktScrobbleDelivery.SENT }
+        assertEquals(0, replays, "the 30 % entry was superseded by the 35 % stop that landed")
+        assertTrue(h.pending().isEmpty())
     }
 
     @Test

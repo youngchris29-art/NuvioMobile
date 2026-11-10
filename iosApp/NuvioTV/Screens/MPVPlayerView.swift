@@ -2175,11 +2175,11 @@ final class MPVTVPlayerViewController: UIViewController {
         guard mpv != nil else { return }
         let duration = state.durationSec
         let position = state.positionSec
-        guard LivePlaybackPolicy.shouldSaveResume(isLive: holdsLiveResume, positionSec: position, durationSec: duration) else { return }
         // BUG-231: with Trakt as the progress source the resume position lives on Trakt, which
         // learns it from this session's stop. Keep the position as a provisional pending stop
         // (throttled in the outbox, nothing is sent) so a crash or force-quit still leaves one for
-        // the next launch. 0 for a live stream or a placeholder clip, which the outbox ignores.
+        // the next launch. Before the resume gate on purpose: a stream that turns out live (or a
+        // placeholder clip) reports 0 here, which makes the outbox drop what this session wrote.
         if let item = traktScrobbleItem {
             TraktScrobbleRepository.shared.noteSessionProgress(
                 profileId: ActiveProfileProvider.shared.activeProfileId,
@@ -2188,6 +2188,7 @@ final class MPVTVPlayerViewController: UIViewController {
                                                                          isLive: holdsLiveProgress))
             ) { _, _ in }
         }
+        guard LivePlaybackPolicy.shouldSaveResume(isLive: holdsLiveResume, positionSec: position, durationSec: duration) else { return }
         if !savedResumeThisSession {
             savedResumeThisSession = true
             resumeEntriesBeforeSession = WatchProgressRepository.shared.localEntriesForVideo(videoId: context.videoId)
@@ -3154,10 +3155,14 @@ final class MPVTVPlayerViewController: UIViewController {
     /// never answers goes to the start watchdog, one that fails to the end-file report.
     /// Returns true when a reconnect was issued (the caller must not raise the post-play card).
     private func reconnectLiveStreamIfNeeded() -> Bool {
+        let duration = state.durationSec
         let inputs = LiveReconnectPolicy.Inputs(
-            isLive: isLiveStream,
+            reportsLive: reportsLive,
+            growthLatched: durationGrowth.grew,
             growthUndecided: durationGrowth.undecided,
+            growthSettled: durationGrowth.resumeSettled,
             adaptiveFormat: LivePlaybackPolicy.needsSettleHold(fileFormat: cachedProps().fileFormat, url: context.url),
+            durationKnown: duration.isFinite && duration > 0,
             fileLoaded: fileLoaded,
             closingOrSwapping: failoverClosed || state.playbackFailoverSuppressed,
             secondsPlayed: failoverSecondsPlayed)
@@ -3170,12 +3175,18 @@ final class MPVTVPlayerViewController: UIViewController {
         case .reconnect(let attempt):
             print("[Live] end of stream on a live channel, reconnect \(attempt)/\(LiveReconnectPolicy.limit)")
             liveReconnectLoading = true
-            applyRequestHeaders(context.requestHeaders)
-            command("loadfile", args: [context.url.absoluteString, "replace"])
-            // `keep-open` paused the player when it reached the end, and a pause outlives
-            // `loadfile`: without this the reopened channel sits on its first frame, paused.
-            // (Nobody can reach an end-of-file while paused, so this never undoes a viewer's pause.)
-            eventQueue.async { [weak self] in self?.setFlag("pause", false) }
+            // Off the main thread: this runs inside the 0.5 s `refreshState` tick, and the mpv core
+            // is never called from there (BUG-2/BUG-3). The request headers are a property of the
+            // handle and still hold from the first load.
+            let url = context.url.absoluteString
+            eventQueue.async { [weak self] in
+                guard let self else { return }
+                self.command("loadfile", args: [url, "replace"])
+                // `keep-open` paused the player when it reached the end, and a pause outlives
+                // `loadfile`: without this the reopened channel sits on its first frame, paused.
+                // (Nobody can reach an end-of-file while paused, so this never undoes a viewer's pause.)
+                self.setFlag("pause", false)
+            }
             armStartWatchdog()
             return true
         }
@@ -3286,8 +3297,11 @@ final class MPVTVPlayerViewController: UIViewController {
             stopStartWatchdogTimer()
         case .fired:
             stopStartWatchdogTimer()
+            // GitHub #26: the watchdog is re-armed for a live reconnect. A channel that played
+            // and then failed to reopen is not a link that never started: report what it played,
+            // as the end-file path does (nil / 0 on the first load, as before).
             reportPlaybackFailure(reason: "no media within \(Int(startWatchdog.limitSeconds)) s",
-                                  startedPlaying: false, secondsPlayed: 0,
+                                  startedPlaying: failoverLoadedUptime != nil, secondsPlayed: failoverSecondsPlayed,
                                   verdict: PlaybackFailureClassifier.fromMpvLog(logRing.snapshot, endFileError: nil,
                                                                                 watchdogFired: true))
         }
