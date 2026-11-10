@@ -44,6 +44,9 @@ nonisolated struct LiveReconnectPolicy: Equatable, Sendable {
         var adaptiveFormat: Bool
         /// The stream has a finite, positive duration. A raw live transport stream has none.
         var durationKnown: Bool
+        /// The title is a film or an episode (`PlaybackContext.contentType` "movie" or "series"),
+        /// not a channel.
+        var filmOrEpisode: Bool = false
         /// The file reached FILE_LOADED at least once.
         var fileLoaded: Bool
         /// The player is closing, or the host is swapping it for another source.
@@ -75,15 +78,17 @@ nonisolated struct LiveReconnectPolicy: Equatable, Sendable {
     /// ranges reads the same, and at its real end it must end):
     /// - HLS or DASH whose duration grows with the clock, has started to, or has not yet been
     ///   quiet long enough to read as a film while mpv reports it non-seekable;
-    /// - any container that mpv reports non-seekable and that has no duration at all (a raw live
-    ///   transport stream).
-    /// A film in MKV, MP4 or TS always has a duration and is never reopened.
+    /// - any other container that mpv reports non-seekable, that has no duration at all (a raw
+    ///   live transport stream) and that is not a film or an episode. A film can lack a duration
+    ///   too (a media server's progressive `.ts` transcode: chunked, no length, no byte ranges),
+    ///   and reopening it at its real end would play it again from the start (review r2 F1).
+    /// A film or episode outside HLS and DASH is never reopened.
     static func isEligible(_ inputs: Inputs) -> Bool {
         guard inputs.fileLoaded, !inputs.closingOrSwapping else { return false }
         if inputs.adaptiveFormat {
             return inputs.growthLatched || inputs.growthUndecided || (inputs.reportsLive && !inputs.growthSettled)
         }
-        return inputs.reportsLive && !inputs.durationKnown
+        return inputs.reportsLive && !inputs.durationKnown && !inputs.filmOrEpisode
     }
 
     /// Decide at the rising edge of `eof-reached`, at `nowSec` (a monotonic clock). A `.reconnect`

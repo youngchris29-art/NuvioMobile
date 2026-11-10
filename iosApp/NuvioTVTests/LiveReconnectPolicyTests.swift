@@ -9,13 +9,13 @@ final class LiveReconnectPolicyTests: XCTestCase {
     /// Default: an HLS channel whose duration latched as growing.
     private func inputs(reportsLive: Bool = false, latched: Bool = true, undecided: Bool = false,
                         settled: Bool = false, adaptive: Bool = true, durationKnown: Bool = true,
-                        loaded: Bool = true, closing: Bool = false, played: Double? = nil) -> Policy.Inputs {
+                        film: Bool = false, loaded: Bool = true, closing: Bool = false, played: Double? = nil) -> Policy.Inputs {
         // By default every decision comes after a long healthy stretch, so only the time window
         // is under test; the streak cases pass `played` themselves.
         defaultPlayed += 1_000
         return Policy.Inputs(reportsLive: reportsLive, growthLatched: latched, growthUndecided: undecided,
                              growthSettled: settled, adaptiveFormat: adaptive, durationKnown: durationKnown,
-                             fileLoaded: loaded, closingOrSwapping: closing, secondsPlayed: played ?? defaultPlayed)
+                             filmOrEpisode: film, fileLoaded: loaded, closingOrSwapping: closing, secondsPlayed: played ?? defaultPlayed)
     }
 
     private var defaultPlayed: Double = 0
@@ -40,6 +40,9 @@ final class LiveReconnectPolicyTests: XCTestCase {
         // Even one whose duration looked like growth: only HLS and DASH can be live with a duration.
         XCTAssertEqual(policy.decide(inputs(reportsLive: true, latched: true, adaptive: false), nowSec: 100),
                        .notEligible)
+        // Review r2 F1: a media server's progressive .ts transcode of a film has no duration either.
+        XCTAssertEqual(policy.decide(inputs(reportsLive: true, latched: false, adaptive: false, durationKnown: false,
+                                            film: true), nowSec: 100), .notEligible)
         XCTAssertTrue(policy.recent.isEmpty)
     }
 

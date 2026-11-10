@@ -3163,6 +3163,7 @@ final class MPVTVPlayerViewController: UIViewController {
             growthSettled: durationGrowth.resumeSettled,
             adaptiveFormat: LivePlaybackPolicy.needsSettleHold(fileFormat: cachedProps().fileFormat, url: context.url),
             durationKnown: duration.isFinite && duration > 0,
+            filmOrEpisode: context.contentType == "movie" || context.contentType == "series",
             fileLoaded: fileLoaded,
             closingOrSwapping: failoverClosed || state.playbackFailoverSuppressed,
             secondsPlayed: failoverSecondsPlayed)
