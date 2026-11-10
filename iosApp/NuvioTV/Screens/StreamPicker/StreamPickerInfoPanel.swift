@@ -265,9 +265,4 @@ enum StreamPickerLogo {
         func nonEmpty(_ value: String?) -> String? { (value ?? "").isEmpty ? nil : value }
         return nonEmpty(passed) ?? nonEmpty(peeked)
     }
-
-    /// True when no logo is known from any source at hand, so the details record is worth a fetch.
-    nonisolated static func needsFetch(passed: String?, peeked: String?, cached: String?) -> Bool {
-        resolve(passed: passed, peeked: resolve(passed: peeked, peeked: cached)) == nil
-    }
 }

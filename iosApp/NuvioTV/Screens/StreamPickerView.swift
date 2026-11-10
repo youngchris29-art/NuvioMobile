@@ -55,7 +55,7 @@ struct StreamPickerView: View {
     /// FEAT-42: the title's configured logo (series/movie `MetaDetails.logo`), shown in place of
     /// the plain text heading when it loads — mobile parity for the stream picker screen. `nil`
     /// on launch paths with no meta at hand (Top Shelf); the picker then reads it from the details
-    /// record itself (`peekedLogo`, `resolvedLogoUrl`).
+    /// record itself (`cachedLogo`, `fetchedLogo`, `resolvedLogoUrl`).
     let logoUrl: String?
     /// Never auto-start, whatever the auto-play setting says ("Choose Source…", "Play Manually").
     let forceManual: Bool
@@ -147,12 +147,22 @@ struct StreamPickerView: View {
     @FocusState private var focusedRow: String?
     /// P1: the backdrop read from the details cache when the presenter passed no `background`.
     @State private var peekedBackground: String?
-    /// The title logo read from the details record when the presenter passed none (a Top Shelf
-    /// link, a Continue Watching entry saved without one): the cache on appear, else the fetch.
-    @State private var peekedLogo: String?
-    /// What every logo slot of the picker draws (both layouts, the loading cover, the player).
+    /// The title logo read from the details cache when the presenter passed none (a Top Shelf
+    /// link, a Continue Watching entry saved without one). Seeded in `init`, so the first frame
+    /// (and the loading cover in it) already has it; never written afterwards.
+    @State private var cachedLogo: String?
+    /// The same logo from the details fetch, when the cache had no record. It arrives seconds
+    /// after the first frame, so only the header draws it (`resolvedLogoUrl`).
+    @State private var fetchedLogo: String?
+    /// The logo the picker's header draws in both layouts (and hands a failover picker).
     private var resolvedLogoUrl: String? {
-        StreamPickerLogo.resolve(passed: logoUrl, peeked: peekedLogo)
+        StreamPickerLogo.resolve(passed: logoUrl, peeked: StreamPickerLogo.resolve(passed: cachedLogo, peeked: fetchedLogo))
+    }
+    /// The logo the loading cover and the player draw: fixed from the first frame (review r1), so
+    /// a fetch landing mid-start never swaps the wordmark under the cover or between the cover
+    /// and the player's own overlay. nil keeps their own fallback, as before.
+    private var startLogoUrl: String? {
+        StreamPickerLogo.resolve(passed: logoUrl, peeked: cachedLogo)
     }
     /// P2: error chips dropped after the fan-out finished (`SourceChipRow.chipsToDrop`); cleared
     /// when a fan-out starts again.
@@ -267,6 +277,12 @@ struct StreamPickerView: View {
         self.season = season
         self.episode = episode
         self.episodes = episodes
+        // Review r1: read here, not in `onAppear`, so the cover and the header never start on the
+        // text title when the record is already cached. Only when the presenter passed no logo.
+        if (logoUrl ?? "").isEmpty {
+            let cached: String? = MetaDetailsRepository.shared.peek(type: type, id: parentMetaId ?? videoId)?.logo
+            _cachedLogo = State(initialValue: (cached ?? "").isEmpty ? nil : cached)
+        }
         // BUG-183: decided here, not in `onAppear` — the cover must be in the first frame.
         _autoPlayArmed = State(initialValue: !forceManual && Self.firstStreamAutoPlayOn())
         _model = StateObject(wrappedValue: StreamsViewModel(
@@ -304,7 +320,7 @@ struct StreamPickerView: View {
             episodes: episodes.isEmpty ? fetchedEpisodes : episodes,
             synopsis: synopsis,
             episodeStill: episodeStill,
-            logo: resolvedLogoUrl,
+            logo: startLogoUrl,
             meta: meta,
             fileSizeBytes: { let n: Int64? = stream?.behaviorHints.videoSize?.int64Value; return n }(),
             streamFilename: { let f: String? = stream?.behaviorHints.filename; return f }(),
@@ -338,9 +354,7 @@ struct StreamPickerView: View {
             resumePositionMs: resumePositionMs)
         // A title opened with no logo at hand and none in the details cache fetches the record for
         // it (one request, cached for Detail), so both layouts draw the logo instead of the text.
-        let needsLogo = StreamPickerLogo.needsFetch(
-            passed: logoUrl, peeked: peekedLogo,
-            cached: MetaDetailsRepository.shared.peek(type: type, id: parentMetaId)?.logo)
+        let needsLogo = resolvedLogoUrl == nil
         guard needsEpisodes || needsRuntime || needsLogo else { return }
         // Review r3: a series from Continue Watching needs the episode runtime from this fetch too.
         runtimeFetchPending = needsRuntime
@@ -357,8 +371,8 @@ struct StreamPickerView: View {
                     if let fetchedBackground, !fetchedBackground.isEmpty { peekedBackground = fetchedBackground }
                 }
                 if resolvedLogoUrl == nil {
-                    let fetchedLogo: String? = details?.logo
-                    if let fetchedLogo, !fetchedLogo.isEmpty { peekedLogo = fetchedLogo }
+                    let logo: String? = details?.logo
+                    if let logo, !logo.isEmpty { fetchedLogo = logo }
                 }
                 if meta == nil, fetchedRuntime == nil {
                     let runtime: String? = details?.runtime
@@ -547,10 +561,6 @@ struct StreamPickerView: View {
                     let cached: String? = MetaDetailsRepository.shared.peek(type: type, id: parentMetaId)?.background
                     peekedBackground = (cached ?? "").isEmpty ? nil : cached
                 }
-                if resolvedLogoUrl == nil {
-                    let cached: String? = MetaDetailsRepository.shared.peek(type: type, id: parentMetaId)?.logo
-                    peekedLogo = (cached ?? "").isEmpty ? nil : cached
-                }
                 // Main-thread only (UIApplication.canOpenURL); cheap enough to re-probe every
                 // appearance so an Infuse install mid-session is picked up next time the picker
                 // opens instead of requiring an app relaunch. First, so an auto-play start already
@@ -686,7 +696,7 @@ struct StreamPickerView: View {
         return FirstPlayAutoPlayOverlay(
             title: title,
             parentMetaId: parentMetaId,
-            logoUrl: resolvedLogoUrl,
+            logoUrl: startLogoUrl,
             episodeLine: line,
             pulseKey: videoId,
             message: loadingCoverMessage,

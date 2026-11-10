@@ -60,14 +60,6 @@ final class StreamPickerLayoutTests: XCTestCase {
         XCTAssertNil(StreamPickerLogo.resolve(passed: "", peeked: ""))
     }
 
-    func testDetailsFetchIsWantedOnlyWhenNoLogoIsKnown() {
-        XCTAssertTrue(StreamPickerLogo.needsFetch(passed: nil, peeked: nil, cached: nil))
-        XCTAssertTrue(StreamPickerLogo.needsFetch(passed: "", peeked: "", cached: ""))
-        XCTAssertFalse(StreamPickerLogo.needsFetch(passed: "https://img/a.png", peeked: nil, cached: nil))
-        XCTAssertFalse(StreamPickerLogo.needsFetch(passed: nil, peeked: "https://img/a.png", cached: nil))
-        XCTAssertFalse(StreamPickerLogo.needsFetch(passed: nil, peeked: nil, cached: "https://img/a.png"))
-    }
-
     // MARK: - Facts line
 
     func testEpisodeFactsLineCarriesMarkerNameAndRuntime() {
