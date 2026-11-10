@@ -22,7 +22,7 @@ final class StreamBadgeColorTests: XCTestCase {
                        Decision(fg: .computedOnBg, bg: .pack, showBorder: true))
     }
 
-    func testDarkOnDarkPack_unfocused_appliesContrastGuard() {
+    func testDarkOnDarkPack_appliesContrastGuard_restAndFocused() {
         // Dark on dark: the guard answers with the light text (semantic at rest).
         XCTAssertEqual(decide(text: "1A1A1A", tag: "0D0D0D", focused: false),
                        Decision(fg: .semantic, bg: .pack, showBorder: true))

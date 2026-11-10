@@ -5,7 +5,7 @@ import XCTest
 ///
 /// Deliberately does NOT launch `XCUIApplication` — plain, fast asserts against the planning
 /// function. Same reason this file MIRRORS the production logic instead of importing it as
-/// `TabChipContrastTests.swift` explains at length: `NuvioTVUITests` is a UI-testing bundle in its
+/// `TabChipContrastTests.swift` does: `NuvioTVUITests` is a UI-testing bundle in its
 /// own runner process, so `@testable import NuvioTV` links nothing. The planner was written as pure
 /// Swift (no ImageIO/UIKit) precisely so this mirror can be exact. Keep it in sync by hand with
 /// `GifDecodePlanner` (+ `AnimatedGifDecoder.decodeBudgetBytes` / `decodeLimits`) whenever that

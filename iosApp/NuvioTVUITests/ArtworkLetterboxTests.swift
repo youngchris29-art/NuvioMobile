@@ -9,9 +9,9 @@ import XCTest
 ///
 /// Why this file mirrors the production logic instead of importing it: `NuvioTVUITests` is a
 /// genuine UI-testing bundle with no `BUNDLE_LOADER`/`TEST_HOST`, so `@testable import NuvioTV`
-/// would type-check but fail at link time — see `TabChipContrastTests`' type doc for the full
-/// explanation and the standing instruction to move these into a real hosted unit-test target if
-/// one ever exists. Keep this in sync BY HAND with `ArtworkLetterbox.zoomFromScan` (and the
+/// would type-check but fail at link time. A hosted target (`NuvioTVTests`) exists now, and the
+/// badge colour tests have moved there; this mirror is a candidate for the same move. Until then,
+/// keep this in sync BY HAND with `ArtworkLetterbox.zoomFromScan` (and the
 /// `TrailerLetterboxProbe` constants it reads: `blackLuma`, `maxBarFraction`, `minBarFraction`,
 /// `maxZoom`) whenever that logic changes.
 ///
