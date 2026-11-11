@@ -32,6 +32,17 @@ else
   grep -q 'no publishable text' "$TMP/err" && echo "ok   error message" || { echo "FAIL error message"; FAIL=1; }
 fi
 
+printf -- '---\r\nstate: NOT SENT\r\n---\r\n\r\n**NOT SENT**\r\n\r\nWhat is new\r\n- one\r\n\r\n<!-- internal -->\r\nsecret\r\n' > "$TMP/e.md"
+out="$(strip_changelog_note < "$TMP/e.md")"
+check "CRLF note" $'What is new\n- one' "$out"
+case "$out" in *$'\r'*) echo "FAIL CRLF output has CR"; FAIL=1 ;; *) echo "ok   CRLF output has no CR" ;; esac
+
+printf 'Visible text <!-- internal --> secret\nmore secret\n' > "$TMP/f.md"
+check "mid-line marker only line" "Visible text" "$(strip_changelog_note < "$TMP/f.md")"
+
+printf 'Line one\nLine two   <!-- internal --> secret\nhidden\n' > "$TMP/g.md"
+check "mid-line marker after public lines" $'Line one\nLine two' "$(strip_changelog_note < "$TMP/g.md")"
+
 check "next after 21"        22 "$(printf '21\n' | beta_next_n)"
 check "next after 21.5"      22 "$(printf '21\n21.5\n' | beta_next_n)"
 check "next after 22"        23 "$(printf '21\n21.5\n22\n' | beta_next_n)"

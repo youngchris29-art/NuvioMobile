@@ -78,9 +78,15 @@ EOF
 strip_changelog_note() {
   local out
   out="$(awk '
+    { sub(/\r$/, "") }
     NR == 1 && $0 ~ /^---[ \t]*$/ { fm = 1; next }
     fm == 1 { if ($0 ~ /^---[ \t]*$/) fm = 0; next }
-    /<!--[ \t]*internal[ \t]*-->/ { exit }
+    match($0, /<!--[ \t]*internal[ \t]*-->/) {
+      pre = substr($0, 1, RSTART - 1)
+      sub(/[ \t]+$/, "", pre)
+      if (pre != "" && pre !~ /^[ \t]*$/ && !(!started && pre ~ /^\*\*(NOT SENT|SENT)/)) print pre
+      exit
+    }
     !started && $0 ~ /^[ \t]*$/ { next }
     !started && $0 ~ /^\*\*(NOT SENT|SENT)/ { next }
     { started = 1; print }
