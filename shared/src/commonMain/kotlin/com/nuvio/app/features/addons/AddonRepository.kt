@@ -84,6 +84,13 @@ object AddonRepository {
      * by `pushToServer` and on Default by a push job's `finally` and by `clearLocalState`).
      */
     private val pushJobsLock = SynchronizedObject()
+    /**
+     * Races item 3, review r1: one profile transition at a time; an install's epoch check, append,
+     * persist and push scheduling happen inside it as one step. Order: `profileLock` first, then
+     * [refreshJobsLock] or [pushJobsLock]; holders of those two never take this one. Never held
+     * across a suspension point or a network call.
+     */
+    private val profileLock = SynchronizedObject()
 
     /**
      * Races item 3: bumped whenever the repository's profile changes (`onProfileChanged`,
@@ -155,29 +162,34 @@ object AddonRepository {
     }
 
     fun onProfileChanged(profileId: Int) {
-        val effectiveProfileId = resolveEffectiveProfileId(profileId)
-        if (effectiveProfileId == currentProfileId && bootstrap.initialized) return
-        // Races item 3: the bump comes before the reset writes the state, so an install's append
-        // that races the reset either sees the new epoch or loses its compare-and-set.
-        profileEpoch.update { it + 1 }
-        currentProfileId = effectiveProfileId
-        bootstrap.reset()
-        pulledFromServer = false
-        _serverPullSettled.value = false
-        resetRefreshesAndState()
+        // Races item 3, review r1: the whole transition, early-return check included, is one step
+        // against an install's commit (`addAddon`), which takes the same lock.
+        synchronized(profileLock) {
+            val effectiveProfileId = resolveEffectiveProfileId(profileId)
+            if (effectiveProfileId == currentProfileId && bootstrap.initialized) return
+            // Races item 3: the bump comes before the reset writes the state.
+            profileEpoch.update { it + 1 }
+            currentProfileId = effectiveProfileId
+            bootstrap.reset()
+            pulledFromServer = false
+            _serverPullSettled.value = false
+            resetRefreshesAndState()
+        }
     }
 
     fun clearLocalState() {
-        synchronized(pushJobsLock) {
-            pushJobsByProfile.values.forEach(Job::cancel)
-            pushJobsByProfile.clear()
+        synchronized(profileLock) {
+            synchronized(pushJobsLock) {
+                pushJobsByProfile.values.forEach(Job::cancel)
+                pushJobsByProfile.clear()
+            }
+            profileEpoch.update { it + 1 }
+            currentProfileId = 1
+            bootstrap.reset()
+            pulledFromServer = false
+            _serverPullSettled.value = false
+            resetRefreshesAndState()
         }
-        profileEpoch.update { it + 1 }
-        currentProfileId = 1
-        bootstrap.reset()
-        pulledFromServer = false
-        _serverPullSettled.value = false
-        resetRefreshesAndState()
     }
 
     suspend fun pullFromServer(profileId: Int) {
@@ -379,22 +391,33 @@ object AddonRepository {
         // one URL can both pass it; the append re-checks inside the update and only one lands.
         // Races item 3: the same update also refuses when the profile changed during the fetch (the
         // reducer decides; see `appendInstalled`), so nothing is written into another profile.
+        // Review r1: the epoch check, append, persist and push scheduling are one step under
+        // `profileLock`, so a profile switch cannot land between them. The manifest fetch above is
+        // outside it; nothing in here suspends or waits on the network (`pushToServer` only
+        // snapshots and launches).
         var outcome: InstallAppend = InstallAppend.Duplicate
-        _uiState.update { current ->
-            // `update` can retry its block; every attempt decides afresh.
-            val result = appendInstalled(
-                current = current,
-                addon = ManagedAddon(
-                    manifestUrl = manifestUrl,
-                    manifest = manifest,
-                    enabled = enabled,
-                    isRefreshing = false,
-                    errorMessage = null,
-                ),
-                sameProfile = profileEpoch.value == installEpoch,
-            )
-            outcome = result
-            if (result is InstallAppend.Appended) result.state else current
+        synchronized(profileLock) {
+            // `update` can retry its block (a concurrent refresh publish does not take the lock);
+            // every attempt decides afresh, and the epoch cannot move while the lock is held.
+            _uiState.update { current ->
+                val result = appendInstalled(
+                    current = current,
+                    addon = ManagedAddon(
+                        manifestUrl = manifestUrl,
+                        manifest = manifest,
+                        enabled = enabled,
+                        isRefreshing = false,
+                        errorMessage = null,
+                    ),
+                    sameProfile = profileEpoch.value == installEpoch,
+                )
+                outcome = result
+                if (result is InstallAppend.Appended) result.state else current
+            }
+            if (outcome is InstallAppend.Appended) {
+                persist()
+                pushToServer()
+            }
         }
         when (outcome) {
             InstallAppend.Duplicate ->
@@ -406,8 +429,6 @@ object AddonRepository {
             }
             is InstallAppend.Appended -> Unit
         }
-        persist()
-        pushToServer()
         return AddAddonResult.Success(manifest)
     }
 
