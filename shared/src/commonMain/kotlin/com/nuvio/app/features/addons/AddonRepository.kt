@@ -79,6 +79,11 @@ object AddonRepository {
      */
     private val refreshIdCounter = MutableStateFlow(0L)
     private val pushJobsByProfile = mutableMapOf<Int, Job>()
+    /**
+     * Races item 5: guards every read and write of [pushJobsByProfile] (written on the main thread
+     * by `pushToServer` and on Default by a push job's `finally` and by `clearLocalState`).
+     */
+    private val pushJobsLock = SynchronizedObject()
 
     /**
      * Races item 3: bumped whenever the repository's profile changes (`onProfileChanged`,
@@ -163,8 +168,10 @@ object AddonRepository {
     }
 
     fun clearLocalState() {
-        pushJobsByProfile.values.forEach(Job::cancel)
-        pushJobsByProfile.clear()
+        synchronized(pushJobsLock) {
+            pushJobsByProfile.values.forEach(Job::cancel)
+            pushJobsByProfile.clear()
+        }
         profileEpoch.update { it + 1 }
         currentProfileId = 1
         bootstrap.reset()
@@ -772,30 +779,36 @@ object AddonRepository {
                     sortOrder = index,
                 )
             }
-        pushJobsByProfile[profileId]?.cancel()
-        var pushJob: Job? = null
-        pushJob = scope.launch {
-            try {
-                delay(ADDON_PUSH_DEBOUNCE_MS)
-                log.d { "pushToServer() — profileId=$profileId, pushing ${addons.size} addons" }
-                val params = buildJsonObject {
-                    put("p_profile_id", profileId)
-                    put("p_addons", json.encodeToJsonElement(addons))
-                    putSyncOriginClientId()
-                }
-                SupabaseProvider.client.postgrest.rpc("sync_push_addons", params)
-                log.d { "pushToServer() — success" }
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Throwable) {
-                log.e(error) { "pushToServer() — FAILED" }
-            } finally {
-                if (pushJobsByProfile[profileId] === pushJob) {
-                    pushJobsByProfile.remove(profileId)
+        // Races item 5: cancelling the previous job, launching and registering the new one are one
+        // step under the lock; the job's `finally` takes the same lock for its identity-checked removal.
+        synchronized(pushJobsLock) {
+            pushJobsByProfile[profileId]?.cancel()
+            var pushJob: Job? = null
+            pushJob = scope.launch {
+                try {
+                    delay(ADDON_PUSH_DEBOUNCE_MS)
+                    log.d { "pushToServer() — profileId=$profileId, pushing ${addons.size} addons" }
+                    val params = buildJsonObject {
+                        put("p_profile_id", profileId)
+                        put("p_addons", json.encodeToJsonElement(addons))
+                        putSyncOriginClientId()
+                    }
+                    SupabaseProvider.client.postgrest.rpc("sync_push_addons", params)
+                    log.d { "pushToServer() — success" }
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Throwable) {
+                    log.e(error) { "pushToServer() — FAILED" }
+                } finally {
+                    synchronized(pushJobsLock) {
+                        if (pushJobsByProfile[profileId] === pushJob) {
+                            pushJobsByProfile.remove(profileId)
+                        }
+                    }
                 }
             }
+            pushJobsByProfile[profileId] = pushJob
         }
-        pushJobsByProfile[profileId] = pushJob
     }
 
     private fun markedRefreshing(current: AddonsUiState, manifestUrl: String): AddonsUiState =
