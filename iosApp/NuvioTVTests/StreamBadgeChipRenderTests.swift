@@ -133,10 +133,21 @@ final class StreamBadgeChipRenderTests: XCTestCase {
     func testFocusedChipInteriorMatchesRest() async throws {
         let art = try H.writeArtwork()
         var rasterSeen = 0
+        // No fixture entry is a plain `bordered` raster chip (the `filled == false` branch of the
+        // chip surface): xperience is filled+bordered, sweatycab is SVG. One synthetic entry
+        // (transparent fill, white text and border, like the sweatycab pack) covers it.
+        let syntheticBordered = BadgePackFixtureEntry(
+            name: "SyntheticBordered", tagStyle: "bordered", tagColor: "#00000000",
+            textColor: "#FFFFFF", borderColor: "#FFFFFF", imageURL: "", imageKind: "raster")
+        var packs: [(String, [BadgePackFixtureEntry])] = []
         for pack in ["xperience", "sweatycab"] {
             let entries = try H.fixture(pack)
             XCTAssertFalse(entries.isEmpty)
-            for e in entries.prefix(2) {
+            packs.append((pack, Array(entries.prefix(2))))
+        }
+        packs.append(("synthetic", [syntheticBordered]))
+        for (pack, entries) in packs {
+            for e in entries {
                 let info = H.info(e, art: art)
                 let rest = await H.render(info, focused: false)
                 let focused = await H.render(info, focused: true)
