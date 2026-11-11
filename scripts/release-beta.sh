@@ -67,6 +67,52 @@ Options:
 EOF
 }
 
+# BEGIN testable helpers (scripts/tests/release-beta-changelog-test.sh extracts these)
+
+# strip_changelog_note: read a local comms note on stdin, write only the
+# publishable release-note text to stdout. Removes YAML frontmatter (only when
+# line 1 is ---), a leading **NOT SENT** / **SENT ...** status line, and
+# everything from an <!-- internal --> marker on; trims blank edge lines.
+# Exits 1 (stderr message) when nothing is left. A file with none of these
+# passes through unchanged apart from edge-blank trimming.
+strip_changelog_note() {
+  local out
+  out="$(awk '
+    NR == 1 && $0 ~ /^---[ \t]*$/ { fm = 1; next }
+    fm == 1 { if ($0 ~ /^---[ \t]*$/) fm = 0; next }
+    /<!--[ \t]*internal[ \t]*-->/ { exit }
+    !started && $0 ~ /^[ \t]*$/ { next }
+    !started && $0 ~ /^\*\*(NOT SENT|SENT)/ { next }
+    { started = 1; print }
+  ' | awk '{ l[NR] = $0 } END { n = NR; while (n > 0 && l[n] ~ /^[ \t]*$/) n--; for (i = 1; i <= n; i++) print l[i] }')"
+  if [[ -z "$out" ]]; then
+    echo "error: changelog file has no publishable text after stripping frontmatter, status line and the <!-- internal --> block" >&2
+    return 1
+  fi
+  printf '%s\n' "$out"
+}
+
+# beta_next_n: read beta suffixes (the part after "-beta.", e.g. 21, 21.5, 22)
+# on stdin, print the next whole beta number: floor(highest) + 1. A point
+# release (21.5) therefore resolves to 22, and 22 to 23. Anything after the
+# numeric part (23-rc1) is ignored; non-numeric lines are skipped; empty input
+# yields 1.
+beta_next_n() {
+  local top
+  top="$(sed -n 's/^\([0-9][0-9]*\)\(\.\([0-9][0-9]*\)\)\{0,1\}\([^0-9.].*\)\{0,1\}$/\1 \3/p' \
+    | awk '{ print $1, ($2 == "" ? 0 : $2) }' \
+    | sort -k1,1n -k2,2n | tail -1 | awk '{ print $1 }')"
+  echo $(( ${top:-0} + 1 ))
+}
+
+# beta_max_suffix: highest suffix (version-ordered, dotted-aware) on stdin.
+beta_max_suffix() {
+  sed -n 's/^\([0-9][0-9]*\)\(\.\([0-9][0-9]*\)\)\{0,1\}\([^0-9.].*\)\{0,1\}$/\1 -\3 &/p' \
+    | awk '{ m = substr($2, 2); print $1, (m == "" ? 0 : m), $3 }' \
+    | sort -k1,1n -k2,2n | tail -1 | awk '{ print $3 }'
+}
+# END testable helpers
+
 TAG=""
 PREV_TAG_OVERRIDE=""
 SKIP_BUILD=0
@@ -99,6 +145,9 @@ if [[ -n "$CHANGELOG_FILE" ]]; then
   fi
   # Resolve now — the script cd's to ROOT_DIR below, which would break a relative path.
   CHANGELOG_FILE="$(cd "$(dirname "$CHANGELOG_FILE")" && pwd)/$(basename "$CHANGELOG_FILE")"
+  # The file is a local comms note: strip frontmatter, status line and the
+  # internal block before anything is published. Fails early when empty.
+  CHANGELOG_TEXT="$(strip_changelog_note < "$CHANGELOG_FILE")" || exit 1
 fi
 
 # Validate the Reddit step up front. It runs after publishing, and discovering a
@@ -188,10 +237,10 @@ else
   echo "warning: no NuvioTV checkout at $MIRROR_DIR — publishing to $GH_REPO only. The public releases/latest link on $MIRROR_REPO will go stale!" >&2
 fi
 
-latest_beta_n() { # latest_beta_n <repo> <prefix>
+latest_beta_n() { # latest_beta_n <repo> <prefix>: highest suffix, dotted-aware (21.5 sorts above 21, below 22)
   gh release list --repo "$1" --limit 100 --json tagName -q '.[].tagName' \
     | { grep -F "$2" || true; } \
-    | sed "s|^$2||" | sort -n | tail -1
+    | sed "s|^$2||" | beta_max_suffix
 }
 
 if [[ -z "$TAG" ]]; then
@@ -199,9 +248,9 @@ if [[ -z "$TAG" ]]; then
   LAST_N="$(latest_beta_n "$GH_REPO" "$PREFIX")"
   if [[ -n "$MIRROR_SHA" ]]; then
     MIRROR_LAST_N="$(latest_beta_n "$MIRROR_REPO" "$PREFIX")"
-    [[ "${MIRROR_LAST_N:-0}" -gt "${LAST_N:-0}" ]] && LAST_N="$MIRROR_LAST_N"
+    LAST_N="$(printf '%s\n%s\n' "${LAST_N:-}" "${MIRROR_LAST_N:-}" | beta_max_suffix)"
   fi
-  NEXT_N=$(( ${LAST_N:-0} + 1 ))
+  NEXT_N="$(printf '%s\n' "${LAST_N:-}" | beta_next_n)"
   TAG="${PREFIX}${NEXT_N}"
 fi
 
@@ -370,7 +419,7 @@ EOF
 # printf/cat, NOT an expanding heredoc: commit subjects and external markdown
 # must never go through shell expansion.
 if [[ -n "$CHANGELOG_FILE" ]]; then
-  cat "$CHANGELOG_FILE" >> "$NOTES_FILE"
+  printf '%s\n' "$CHANGELOG_TEXT" >> "$NOTES_FILE"
   printf '\n' >> "$NOTES_FILE"
 fi
 if [[ -n "$CHANGELOG_BODY" ]]; then
