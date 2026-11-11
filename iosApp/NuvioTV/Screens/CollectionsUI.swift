@@ -1333,7 +1333,92 @@ nonisolated enum FolderHeaderGeometry {
     static func phase(scrolled s: CGFloat) -> Int {
         Int(progress(scrolled: s) * 4)
     }
+
+    /// GitHub #28: Settings › Home Screen › Collection Header.
+    nonisolated enum Mode: Sendable, Equatable { case standard, compact }
+
+    /// The scroll value the header's `.visualEffect`s use. Standard: `s` unchanged. Compact: the
+    /// header starts fully risen (Standard at s = R) and does not re-grow on overscroll: below 0 it
+    /// moves with the content.
+    static func effectiveScroll(_ s: CGFloat, mode: Mode) -> CGFloat {
+        mode == .standard ? s : max(s, 0) + riseDistance
+    }
+
+    /// The height `header` is laid out in (bottom-aligned): R for Standard, 0 for Compact.
+    static func headerLayoutHeight(_ mode: Mode) -> CGFloat { mode == .standard ? riseDistance : 0 }
+
+    /// The grid's top pad (focus lift + sm).
+    static let gridTopPad: CGFloat = Theme.Size.heroPinnedRowFocusLiftAllowance + Theme.Spacing.sm   // 32
+
+    /// First grid row's top below the pane top, at rest.
+    static func firstRowOffsetInPane(_ mode: Mode) -> CGFloat { headerLayoutHeight(mode) + gridTopPad }   // 138 / 32
+
+    /// Ghost == compact block height. `chips` = the chip row's laid-out height, nil with one tab.
+    static func compactBlockHeight(chips: CGFloat?) -> CGFloat {
+        compactTop + compactLogoSlot + (chips.map { gap + $0 } ?? 0) + gap + fade
+    }
+
+    /// Compact only: the page draws from the TV-safe line instead of the tab shell's 157 pt inset.
+    static let reclaimedTop: CGFloat = NavigationChrome.cornerSafeTop   // 60
+
+    /// Top of the Edit Filters button / Edit band, level with the title slot's top.
+    static func editControlTop(_ mode: Mode) -> CGFloat { mode == .standard ? restTop : compactTop }   // 32 / 12
 }
+
+/// GitHub #28 Compact: ignore the tab shell's top inset (157 on tvOS 26 with the bar hidden) and
+/// pad to the TV-safe line instead. Top edge only, so the rail's leading inset still applies.
+/// Standard gets the content untouched (no modifier at all).
+private struct CollectionHeaderBandReclaim: ViewModifier {
+    let active: Bool
+    func body(content: Content) -> some View {
+        if active {
+            content
+                .padding(.top, FolderHeaderGeometry.reclaimedTop)
+                .ignoresSafeArea(.container, edges: .top)
+        } else {
+            content
+        }
+    }
+}
+
+#if DEBUG
+/// GitHub #28 (probe only): the grid's laid-out tile frames in the scroll content's space.
+private struct FolderGridTileFramesKey: PreferenceKey {
+    static var defaultValue: [Int: CGRect] = [:]
+    static func reduce(value: inout [Int: CGRect], nextValue: () -> [Int: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
+/// Pure formatting of the tile frames into `minY-maxY` per row, rows joined by `;`.
+nonisolated enum FolderGridProbe {
+    static func rows(_ frames: [Int: CGRect]) -> String {
+        guard !frames.isEmpty else { return "" }
+        var byRow: [Int: (minY: CGFloat, maxY: CGFloat)] = [:]
+        for frame in frames.values {
+            let key = Int(frame.minY.rounded())
+            let maxY = max(byRow[key]?.maxY ?? -.greatestFiniteMagnitude, frame.maxY)
+            byRow[key] = (frame.minY, maxY)
+        }
+        return byRow.keys.sorted().map { key in
+            let row = byRow[key]!
+            return "\(fmt(row.minY))-\(fmt(row.maxY))"
+        }.joined(separator: ";")
+    }
+
+    /// Whole points where the value is whole, else one decimal (cells are 373.5 tall).
+    static func fmt(_ v: CGFloat) -> String {
+        let r = (v * 2).rounded() / 2
+        return r == r.rounded() ? String(Int(r)) : String(format: "%.1f", Double(r))
+    }
+
+    /// The number of tiles in the first row.
+    static func columns(_ frames: [Int: CGRect]) -> Int {
+        guard let top = frames.values.map({ $0.minY.rounded() }).min() else { return 0 }
+        return frames.values.filter { $0.minY.rounded() == top }.count
+    }
+}
+#endif
 
 /// A collection folder's contents: tab chips (one per source + "All") over an adaptive paginated
 /// poster grid. All view modes render as the tabbed grid on tvOS (v1 simplification). Pushed within
@@ -1373,6 +1458,9 @@ struct FolderDetailView: View {
     @AppStorage(FolderLayoutDefault.classicDefaultsKey) private var classicFolderLayoutDefault = FolderLayoutDefault.classicDefaultValue
     /// FEAT-76: this folder's own choice from its tile's hold menu ("" = follow the default).
     @AppStorage private var layoutOverrideRaw: String
+    /// GitHub #28: Settings › Home Screen › Collection Header, read live (Grid page only).
+    @AppStorage(CollectionHeaderStyle.defaultsKey) private var collectionHeaderStyle = CollectionHeaderStyle.defaultValue
+    private var headerMode: FolderHeaderGeometry.Mode { collectionHeaderStyle == .compact ? .compact : .standard }
     /// P2 §2.6: the Rows page's Edit band gate, written by `FolderRowsPage` only when it changes
     /// (true while the strip's focused row is its top focusable row, or before any row had focus).
     @State private var rowsAtTop = true
@@ -1408,6 +1496,10 @@ struct FolderDetailView: View {
     #if DEBUG
     /// C (probe only): `FolderHeaderGeometry.phase`, from an Int transform (5 buckets).
     @State private var headerPhase = 0
+    /// GitHub #28 (probe only): `FolderGridProbe.rows` of the first tiles, and the grid pane's frame.
+    @State private var gridRowsReadout = ""
+    @State private var gridColumnsReadout = 0
+    @State private var paneFrame = CGRect.zero
     #endif
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -1466,7 +1558,9 @@ struct FolderDetailView: View {
                 FolderEditMenuBand(model: model,
                                    layout: layout,
                                    isActive: usesStripRowsPage ? rowsAtTop : !gridScrolled,
-                                   editing: $editing)
+                                   editing: $editing,
+                                   top: layout == .grid ? FolderHeaderGeometry.editControlTop(headerMode) : FolderHeaderGeometry.restTop)
+                    .modifier(CollectionHeaderBandReclaim(active: layout == .grid && headerMode == .compact))
             }
         }
         // BUG-148 / BUG-144 / BUG-161 / UX-16 (3) (Steven, beta.19-rc3 verdict 2026-10-06, follow-up
@@ -1546,7 +1640,7 @@ struct FolderDetailView: View {
                         // paint-order rule: a VStack paints in declaration order).
                         header
                             .fixedSize(horizontal: false, vertical: true)
-                            .frame(height: FolderHeaderGeometry.riseDistance, alignment: .bottom)
+                            .frame(height: FolderHeaderGeometry.headerLayoutHeight(headerMode), alignment: .bottom)
                             .zIndex(1)
 
                         gridContent
@@ -1554,6 +1648,9 @@ struct FolderDetailView: View {
                     .coordinateSpace(.named(FolderHeaderGeometry.contentSpace))
                 }
                 .scrollClipDisabled()
+                #if DEBUG
+                .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global).integral }) { paneFrame = $0 }
+                #endif
                 // The one Bool this page derives from scrolling (Edit Filters + probe). SwiftUI
                 // only calls `action` when the answer flips.
                 .onScrollGeometryChange(for: Bool.self, of: { geometry in
@@ -1562,18 +1659,23 @@ struct FolderDetailView: View {
                     gridScrolled = scrolled
                 })
                 #if DEBUG
-                // C (probe only): five buckets, so at most four writes per rise.
-                .onScrollGeometryChange(for: Int.self, of: { geometry in
-                    FolderHeaderGeometry.phase(scrolled: geometry.contentOffset.y + geometry.contentInsets.top)
+                // C (probe only): five buckets, so at most four writes per rise. Compact reads the
+                // effective scroll, so it is 4 at rest.
+                .onScrollGeometryChange(for: Int.self, of: { [mode = headerMode] geometry in
+                    FolderHeaderGeometry.phase(scrolled: FolderHeaderGeometry.effectiveScroll(
+                        geometry.contentOffset.y + geometry.contentInsets.top, mode: mode))
                 }, action: { _, phase in
                     headerPhase = phase
                 })
                 #endif
             }
+            // GitHub #28 Compact: draw from the TV-safe line, not the tab shell's inset.
+            .modifier(CollectionHeaderBandReclaim(active: headerMode == .compact))
 
             // FEAT-79: the Classic rows page has the Edit band instead (see `body`).
             if homeLayout == .classic && !classicRows {
                 editFiltersOverlay
+                    .modifier(CollectionHeaderBandReclaim(active: headerMode == .compact))
             }
 
             // C: the bottom edge fades into the background instead of cutting cards off at the
@@ -1589,11 +1691,18 @@ struct FolderDetailView: View {
             // Invisible, harness-readable header state for test69 (`folder_header_state`) — same
             // hidden-Text pattern as HomeView's `debug_*` labels. C: XCUITest frames ignore
             // `.offset`/`.scaleEffect`, so the rise is asserted through this label and pixels.
-            Text("scrolled=\(gridScrolled ? 1 : 0) phase=\(headerPhase) chip=\(focusedChip.map { String($0) } ?? "-") reveal=\(gridRevealed ? 1 : 0)")
+            Text("scrolled=\(gridScrolled ? 1 : 0) phase=\(headerPhase) chip=\(focusedChip.map { String($0) } ?? "-") reveal=\(gridRevealed ? 1 : 0) style=\(collectionHeaderStyle.rawValue)")
                 .font(.system(size: 8))
                 .opacity(0.011)
                 .allowsHitTesting(false)
                 .accessibilityIdentifier("folder_header_state")
+            // GitHub #28: laid-out frames (not accessibility frames) for the header UI tests.
+            // Tile frames are in content space; screen y at rest = pane.minY + content minY.
+            Text("folder_grid_geometry style=\(collectionHeaderStyle.rawValue) pane=\(Int(paneFrame.minY)),\(Int(paneFrame.maxY)) rows=\(gridRowsReadout) cols=\(gridColumnsReadout) chips=\(hasChips ? 1 : 0)")
+                .font(.system(size: 8))
+                .opacity(0.011)
+                .allowsHitTesting(false)
+                .accessibilityIdentifier("folder_grid_geometry")
             #endif
         }
         // C: a new tab hides the grid at once (no fade-out), then the task below reveals it when
@@ -1843,8 +1952,26 @@ struct FolderDetailView: View {
                         // UI test69: only the first tile needs an identifier — the test reads its
                         // frame to prove it clears the header's bottom fade.
                         .accessibilityIdentifier(index == 0 ? "folder_grid_first_tile" : "")
+                        #if DEBUG
+                        .background {
+                            if index < 24 {
+                                GeometryReader { p in
+                                    Color.clear.preference(key: FolderGridTileFramesKey.self,
+                                                           value: [index: p.frame(in: .named(FolderHeaderGeometry.contentSpace))])
+                                }
+                            }
+                        }
+                        #endif
                     }
                 }
+                #if DEBUG
+                .onPreferenceChange(FolderGridTileFramesKey.self) { frames in
+                    let rows = FolderGridProbe.rows(frames)
+                    if rows != gridRowsReadout { gridRowsReadout = rows }
+                    let cols = FolderGridProbe.columns(frames)
+                    if cols != gridColumnsReadout { gridColumnsReadout = cols }
+                }
+                #endif
                 // C: the reveal gate. A cover in the page colour rather than `.opacity(0)` on the
                 // grid, so the grid stays focusable while it is held back (a zero-opacity view can
                 // be skipped when tvOS picks the first focus, and a pushed page with nothing
@@ -1873,7 +2000,7 @@ struct FolderDetailView: View {
         // C: the header (with its own bottom fade and gap) is the scroll content's first child, so
         // the grid only needs room for a focused first-row card's lift plus its shadow's reach
         // above the frame. At rest the first row sits within a few points of rc14's.
-        .padding(.top, Theme.Size.heroPinnedRowFocusLiftAllowance + Theme.Spacing.sm)
+        .padding(.top, FolderHeaderGeometry.gridTopPad)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -1921,12 +2048,14 @@ struct FolderDetailView: View {
     /// The title stays in the view tree the whole time (VoiceOver and the harness keep it), and
     /// `folder_header` is this container: at rest its frame is exactly what is drawn.
     private var header: some View {
-        VStack(alignment: .leading, spacing: FolderHeaderGeometry.gap) {
+        // `.visualEffect` closures are `@Sendable` and cannot read `self`.
+        let mode = headerMode
+        return VStack(alignment: .leading, spacing: FolderHeaderGeometry.gap) {
             VStack(alignment: .leading, spacing: FolderHeaderGeometry.gap) {
                 logoSlot
                     .visualEffect { content, proxy in
-                        let s = proxy.frame(in: .named(FolderHeaderGeometry.contentSpace)).minY
-                            - proxy.frame(in: .scrollView(axis: .vertical)).minY
+                        let s = FolderHeaderGeometry.effectiveScroll(proxy.frame(in: .named(FolderHeaderGeometry.contentSpace)).minY
+                            - proxy.frame(in: .scrollView(axis: .vertical)).minY, mode: mode)
                         return content
                             .scaleEffect(FolderHeaderGeometry.logoScale(scrolled: s), anchor: .top)
                             .offset(y: FolderHeaderGeometry.logoOffsetY(scrolled: s))
@@ -1939,8 +2068,8 @@ struct FolderDetailView: View {
                         .rowEdgeEffectStyle()
                         .padding(.horizontal, Theme.Spacing.screen)
                         .visualEffect { content, proxy in
-                            let s = proxy.frame(in: .named(FolderHeaderGeometry.contentSpace)).minY
-                                - proxy.frame(in: .scrollView(axis: .vertical)).minY
+                            let s = FolderHeaderGeometry.effectiveScroll(proxy.frame(in: .named(FolderHeaderGeometry.contentSpace)).minY
+                                - proxy.frame(in: .scrollView(axis: .vertical)).minY, mode: mode)
                             return content.offset(y: FolderHeaderGeometry.pinnedOffsetY(scrolled: s))
                         }
                 }
@@ -1974,8 +2103,8 @@ struct FolderDetailView: View {
                 .padding(.bottom, classicRows ? 0 : -FolderHeaderGeometry.fade)
                 .allowsHitTesting(false)
                 .visualEffect { content, proxy in
-                    let s = proxy.frame(in: .named(FolderHeaderGeometry.contentSpace)).minY
-                        - proxy.frame(in: .scrollView(axis: .vertical)).minY
+                    let s = FolderHeaderGeometry.effectiveScroll(proxy.frame(in: .named(FolderHeaderGeometry.contentSpace)).minY
+                        - proxy.frame(in: .scrollView(axis: .vertical)).minY, mode: mode)
                     return content.offset(y: FolderHeaderGeometry.pinnedOffsetY(scrolled: s))
                 }
             }
@@ -2083,7 +2212,7 @@ struct FolderDetailView: View {
             // Full-width (the Spacer) focus section, as `FolderEditMenuBand` does in Stage: Up from
             // a chip or card anywhere along the page reaches the corner button.
             .focusSection()
-            .padding(.top, FolderHeaderGeometry.restTop)
+            .padding(.top, FolderHeaderGeometry.editControlTop(headerMode))
             .padding(.trailing, Theme.Spacing.screen)
             .opacity(gridScrolled ? 0 : 1)
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: gridScrolled)
@@ -2155,6 +2284,8 @@ struct FolderEditMenuBand: View {
     /// grid has not scrolled.
     let isActive: Bool
     @Binding var editing: FolderDetailViewModel.EditableSource?
+    /// GitHub #28: the band's top padding (Compact on the Grid page lifts it level with the small title).
+    var top: CGFloat = FolderHeaderGeometry.restTop
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dismiss) private var dismiss
     /// FEAT-71: the band shows only while its pill holds focus.
@@ -2226,7 +2357,7 @@ struct FolderEditMenuBand: View {
                 .accessibilityIdentifier("folder.editMenu")
             }
         }
-        .padding(.top, FolderHeaderGeometry.restTop)
+        .padding(.top, top)
         .padding(.trailing, Theme.Spacing.screen)
     }
 
