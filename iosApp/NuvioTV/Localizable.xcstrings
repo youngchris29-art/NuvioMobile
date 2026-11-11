@@ -12955,6 +12955,7 @@
         }
       }
     },
+    "Collection Header": {},
     "Collection folder": {
       "localizations": {
         "de": {
@@ -13223,6 +13224,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Xác nhận"
+          }
+        }
+      }
+    },
+    "Compact": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Compact"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Compacto"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kompakt"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Compatto"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gọn"
           }
         }
       }
@@ -43144,6 +43179,7 @@
         }
       }
     },
+    "Sets the top of a collection folder that opens as a grid. Standard gives the folder's logo or name a large slot that shrinks once you scroll. Compact starts with the small title and uses the empty strip at the top of the screen, so the posters start higher. At the Medium poster size, a folder with one source shows two full rows; with several source tabs, one full row and most of the second. Folders that open as rows are not affected. Default: Standard.": {},
     "Setting up your catalogs…": {
       "localizations": {
         "de": {
