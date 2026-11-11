@@ -80,6 +80,14 @@ object AddonRepository {
     private val refreshIdCounter = MutableStateFlow(0L)
     private val pushJobsByProfile = mutableMapOf<Int, Job>()
 
+    /**
+     * Races item 3: bumped whenever the repository's profile changes (`onProfileChanged`,
+     * `clearLocalState`), BEFORE the state is reset. An install captures it before its manifest
+     * fetch and refuses to append when it moved, so an install that started under one profile can
+     * never write into another's list.
+     */
+    private val profileEpoch = MutableStateFlow(0L)
+
     // Observable mirror of the bootstrap guard so consumers that can outrun bootstrap (the player's
     // subtitle fetch) can wait for the local addon list instead of snapshotting an empty state.
     // Both live in [AddonBootstrapState] so no completion path can set one without the other.
@@ -144,6 +152,9 @@ object AddonRepository {
     fun onProfileChanged(profileId: Int) {
         val effectiveProfileId = resolveEffectiveProfileId(profileId)
         if (effectiveProfileId == currentProfileId && bootstrap.initialized) return
+        // Races item 3: the bump comes before the reset writes the state, so an install's append
+        // that races the reset either sees the new epoch or loses its compare-and-set.
+        profileEpoch.update { it + 1 }
         currentProfileId = effectiveProfileId
         bootstrap.reset()
         pulledFromServer = false
@@ -154,6 +165,7 @@ object AddonRepository {
     fun clearLocalState() {
         pushJobsByProfile.values.forEach(Job::cancel)
         pushJobsByProfile.clear()
+        profileEpoch.update { it + 1 }
         currentProfileId = 1
         bootstrap.reset()
         pulledFromServer = false
@@ -330,6 +342,8 @@ object AddonRepository {
         if (isUsingPrimaryAddonsFromSecondaryProfile()) {
             return AddAddonResult.Error(resourceString("This profile uses primary addons.", StringKey.profile_primary_addons_required))
         }
+        // Races item 3: the profile this install belongs to; checked again inside the append.
+        val installEpoch = profileEpoch.value
         log.i { "addAddon() — rawUrl=$rawUrl" }
         val manifestUrl = try {
             normalizeManifestUrl(rawUrl)
@@ -356,25 +370,34 @@ object AddonRepository {
 
         // C1 review r9: the duplicate check above runs before the (slow) fetch, so two installs of
         // one URL can both pass it; the append re-checks inside the update and only one lands.
-        var appended = false
+        // Races item 3: the same update also refuses when the profile changed during the fetch (the
+        // reducer decides; see `appendInstalled`), so nothing is written into another profile.
+        var outcome: InstallAppend = InstallAppend.Duplicate
         _uiState.update { current ->
-            appended = current.addons.none { isSameManifestUrl(it.manifestUrl, manifestUrl) }
-            if (!appended) return@update current
-            // Review (races item 1): the append also ends any refresh generation left for this URL
-            // by an earlier instance, so that instance's request can never publish onto this one.
-            withInstalledAddon(
-                current,
-                ManagedAddon(
+            // `update` can retry its block; every attempt decides afresh.
+            val result = appendInstalled(
+                current = current,
+                addon = ManagedAddon(
                     manifestUrl = manifestUrl,
                     manifest = manifest,
                     enabled = enabled,
                     isRefreshing = false,
                     errorMessage = null,
                 ),
+                sameProfile = profileEpoch.value == installEpoch,
             )
+            outcome = result
+            if (result is InstallAppend.Appended) result.state else current
         }
-        if (!appended) {
-            return AddAddonResult.Error(resourceString("That addon is already installed.", StringKey.addon_already_installed))
+        when (outcome) {
+            InstallAppend.Duplicate ->
+                return AddAddonResult.Error(resourceString("That addon is already installed.", StringKey.addon_already_installed))
+            // No new copy for this rare case (decision B): the existing install-failure message.
+            InstallAppend.ProfileChanged -> {
+                log.w { "addAddon() — refused: the profile changed during the install of $manifestUrl" }
+                return AddAddonResult.Error(resourceString("Unable to load manifest", StringKey.addon_load_manifest_failed))
+            }
+            is InstallAppend.Appended -> Unit
         }
         persist()
         pushToServer()
@@ -977,6 +1000,27 @@ internal fun generationsForList(current: Map<String, Long>, addons: List<Managed
     if (current.isEmpty()) return current
     val listed = addons.mapTo(HashSet()) { it.manifestUrl }
     return current.filterKeys { it in listed }
+}
+
+/** Races item 3: what appending a freshly installed add-on to the state comes to. */
+internal sealed interface InstallAppend {
+    data class Appended(val state: AddonsUiState) : InstallAppend
+    /** The URL (or a host-case variant) is already listed (C1 review r9). */
+    data object Duplicate : InstallAppend
+    /** The active profile changed since the install started; nothing may be written. */
+    data object ProfileChanged : InstallAppend
+}
+
+/**
+ * Races item 3 (with item 1): the append of an installed [addon] to [current]. Refused when the
+ * profile changed during the fetch ([sameProfile] false); re-checks duplicates with
+ * [isSameManifestUrl] (the pre-fetch check can pass for two installs of one URL); otherwise appends
+ * and ends any stale refresh generation for the URL ([withInstalledAddon]).
+ */
+internal fun appendInstalled(current: AddonsUiState, addon: ManagedAddon, sameProfile: Boolean): InstallAppend = when {
+    !sameProfile -> InstallAppend.ProfileChanged
+    current.addons.any { isSameManifestUrl(it.manifestUrl, addon.manifestUrl) } -> InstallAppend.Duplicate
+    else -> InstallAppend.Appended(withInstalledAddon(current, addon))
 }
 
 /** Races item 1: [current] with [addon] appended and any stale refresh generation for its URL ended. */
