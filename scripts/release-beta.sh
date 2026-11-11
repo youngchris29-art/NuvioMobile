@@ -95,19 +95,21 @@ strip_changelog_note() {
 # beta_next_n: read beta suffixes (the part after "-beta.", e.g. 21, 21.5, 22)
 # on stdin, print the next whole beta number: floor(highest) + 1. A point
 # release (21.5) therefore resolves to 22, and 22 to 23. Anything after the
-# numeric part (23-rc1) is ignored; non-numeric lines are skipped; empty input
-# yields 1.
+# numeric part is ignored, but release-candidate entries (23-rc1) are dropped
+# first: a tester-only rc is not a released number, so 22 + 23-rc1 -> 23.
+# Non-numeric lines are skipped; empty input yields 1.
 beta_next_n() {
   local top
-  top="$(sed -n 's/^\([0-9][0-9]*\)\(\.\([0-9][0-9]*\)\)\{0,1\}\([^0-9.].*\)\{0,1\}$/\1 \3/p' \
+  top="$(sed '/^[0-9][0-9.]*-rc/d' | sed -n 's/^\([0-9][0-9]*\)\(\.\([0-9][0-9]*\)\)\{0,1\}\([^0-9.].*\)\{0,1\}$/\1 \3/p' \
     | awk '{ print $1, ($2 == "" ? 0 : $2) }' \
     | sort -k1,1n -k2,2n | tail -1 | awk '{ print $1 }')"
   echo $(( ${top:-0} + 1 ))
 }
 
-# beta_max_suffix: highest suffix (version-ordered, dotted-aware) on stdin.
+# beta_max_suffix: highest suffix (version-ordered, dotted-aware) on stdin;
+# release-candidate entries (23-rc1) are ignored.
 beta_max_suffix() {
-  sed -n 's/^\([0-9][0-9]*\)\(\.\([0-9][0-9]*\)\)\{0,1\}\([^0-9.].*\)\{0,1\}$/\1 -\3 &/p' \
+  sed '/^[0-9][0-9.]*-rc/d' | sed -n 's/^\([0-9][0-9]*\)\(\.\([0-9][0-9]*\)\)\{0,1\}\([^0-9.].*\)\{0,1\}$/\1 -\3 &/p' \
     | awk '{ m = substr($2, 2); print $1, (m == "" ? 0 : m), $3 }' \
     | sort -k1,1n -k2,2n | tail -1 | awk '{ print $3 }'
 }
