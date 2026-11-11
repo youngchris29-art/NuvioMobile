@@ -79,17 +79,6 @@ object AddonRepository {
      */
     private val refreshIdCounter = MutableStateFlow(0L)
     private val pushJobsByProfile = mutableMapOf<Int, Job>()
-    /**
-     * Races item 5: guards every read and write of [pushJobsByProfile] (written on the main thread
-     * by `pushToServer` and on Default by a push job's `finally` and by `clearLocalState`).
-     */
-    private val pushJobsLock = SynchronizedObject()
-    /**
-     * Races item 5: bumped at the top of every `pushToServer` (every local edit that wants the
-     * server), even a blocked one. `pullFromServer` compares it before and after its SELECT; the
-     * migration rpc inside the pull does not go through `pushToServer`, so it never bumps it.
-     */
-    private val localEditSeq = MutableStateFlow(0L)
 
     /**
      * Races item 3: bumped whenever the repository's profile changes (`onProfileChanged`,
@@ -174,10 +163,8 @@ object AddonRepository {
     }
 
     fun clearLocalState() {
-        synchronized(pushJobsLock) {
-            pushJobsByProfile.values.forEach(Job::cancel)
-            pushJobsByProfile.clear()
-        }
+        pushJobsByProfile.values.forEach(Job::cancel)
+        pushJobsByProfile.clear()
         profileEpoch.update { it + 1 }
         currentProfileId = 1
         bootstrap.reset()
@@ -191,12 +178,6 @@ object AddonRepository {
         try {
             currentProfileId = resolveEffectiveProfileId(profileId)
             log.i { "pullFromServer() — profileId=$profileId, initialized=${bootstrap.initialized}, pulledFromServer=$pulledFromServer" }
-            // Races item 5: what local edit and push activity looked like before the SELECT, so a
-            // HYDRATED pull can tell afterwards that its rows may be older than the TV's own list.
-            val pullProfileId = currentProfileId
-            val localEditSeqAtStart = localEditSeq.value
-            val pushPendingAtStart = pushPending(pullProfileId)
-            val hydratedAtStart = pulledFromServer
             runCatching {
                 val rows = SupabaseProvider.client.postgrest
                     .from("addons")
@@ -217,22 +198,6 @@ object AddonRepository {
                 val urls = rowsByUrl.keys.toList()
                 log.i { "pullFromServer() — server returned ${rows.size} addons" }
                 urls.forEachIndexed { i, u -> log.d { "  server[$i]: $u" } }
-
-                // Races item 5: only a pull that started and ends hydrated can be skipped; the first
-                // pull after a profile switch or sign-in (not hydrated) applies exactly as before,
-                // which is the clean-install wipe fix's direction. A skipped pull leaves state,
-                // storage and `pulledFromServer` alone; the TV is the last writer.
-                if (shouldSkipPulledAddons(
-                        hydrated = hydratedAtStart && pulledFromServer,
-                        seqAtStart = localEditSeqAtStart,
-                        seqNow = localEditSeq.value,
-                        pushPendingAtStart = pushPendingAtStart,
-                        pushPendingNow = pushPending(pullProfileId),
-                    )
-                ) {
-                    log.i { "pullFromServer() — SKIPPED apply: a local edit or push overlapped this hydrated pull" }
-                    return
-                }
 
                 if (urls.isEmpty() && !pulledFromServer) {
                     val localUrls = dedupeManifestUrls(AddonStorage.loadInstalledAddonUrls(currentProfileId))
@@ -785,12 +750,7 @@ object AddonRepository {
     fun seedingAllowed(): Boolean =
         defaultAddonSeedingAllowed(AuthRepository.state.value, _serverPullSettled.value)
 
-    /** Races item 5: whether [profileId] has a push job that has not completed (debouncing or in its rpc). */
-    private fun pushPending(profileId: Int): Boolean =
-        synchronized(pushJobsLock) { pushJobsByProfile[profileId]?.isCompleted == false }
-
     private fun pushToServer() {
-        localEditSeq.update { it + 1 }
         if (isUsingPrimaryAddonsFromSecondaryProfile()) return
         if (shouldBlockUnhydratedAddonPush(AuthRepository.state.value, pulledFromServer)) {
             // Deliberate data-direction choice (Codex 2026-08-28 P2, declined): a mutation made
@@ -812,36 +772,30 @@ object AddonRepository {
                     sortOrder = index,
                 )
             }
-        // Races item 5: cancelling the previous job, launching and registering the new one are one
-        // step under the lock; the job's `finally` takes the same lock for its identity-checked removal.
-        synchronized(pushJobsLock) {
-            pushJobsByProfile[profileId]?.cancel()
-            var pushJob: Job? = null
-            pushJob = scope.launch {
-                try {
-                    delay(ADDON_PUSH_DEBOUNCE_MS)
-                    log.d { "pushToServer() — profileId=$profileId, pushing ${addons.size} addons" }
-                    val params = buildJsonObject {
-                        put("p_profile_id", profileId)
-                        put("p_addons", json.encodeToJsonElement(addons))
-                        putSyncOriginClientId()
-                    }
-                    SupabaseProvider.client.postgrest.rpc("sync_push_addons", params)
-                    log.d { "pushToServer() — success" }
-                } catch (error: CancellationException) {
-                    throw error
-                } catch (error: Throwable) {
-                    log.e(error) { "pushToServer() — FAILED" }
-                } finally {
-                    synchronized(pushJobsLock) {
-                        if (pushJobsByProfile[profileId] === pushJob) {
-                            pushJobsByProfile.remove(profileId)
-                        }
-                    }
+        pushJobsByProfile[profileId]?.cancel()
+        var pushJob: Job? = null
+        pushJob = scope.launch {
+            try {
+                delay(ADDON_PUSH_DEBOUNCE_MS)
+                log.d { "pushToServer() — profileId=$profileId, pushing ${addons.size} addons" }
+                val params = buildJsonObject {
+                    put("p_profile_id", profileId)
+                    put("p_addons", json.encodeToJsonElement(addons))
+                    putSyncOriginClientId()
+                }
+                SupabaseProvider.client.postgrest.rpc("sync_push_addons", params)
+                log.d { "pushToServer() — success" }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                log.e(error) { "pushToServer() — FAILED" }
+            } finally {
+                if (pushJobsByProfile[profileId] === pushJob) {
+                    pushJobsByProfile.remove(profileId)
                 }
             }
-            pushJobsByProfile[profileId] = pushJob
         }
+        pushJobsByProfile[profileId] = pushJob
     }
 
     private fun markedRefreshing(current: AddonsUiState, manifestUrl: String): AddonsUiState =
@@ -1025,21 +979,6 @@ private fun normalizeManifestUrl(rawUrl: String): String {
 /// docs/addon-wipe-investigation-2026-08-28.md.
 internal fun shouldBlockUnhydratedAddonPush(authState: AuthState, pulledFromServer: Boolean): Boolean =
     authState is AuthState.Authenticated && !authState.isAnonymous && !pulledFromServer
-
-/**
- * Races item 5: whether a pulled add-on list must NOT be applied because the TV's own list is
- * newer. Only a [hydrated] pull (this profile has already seen the server's list) can be skipped: a
- * local edit ([seqNow] moved past [seqAtStart]) or a push pending when the pull started or when it
- * is about to apply means the SELECT's rows may predate the TV's list, which the pending push will
- * full-replace onto the server. An unhydrated pull always applies (the wipe fix's direction).
- */
-internal fun shouldSkipPulledAddons(
-    hydrated: Boolean,
-    seqAtStart: Long,
-    seqNow: Long,
-    pushPendingAtStart: Boolean,
-    pushPendingNow: Boolean,
-): Boolean = hydrated && (seqNow != seqAtStart || pushPendingAtStart || pushPendingNow)
 
 /// Guests and signed-out sessions have nothing to pull, so the default-addon seed may run as
 /// soon as local state is known empty. A signed-in, non-anonymous account must instead wait for
