@@ -1361,23 +1361,28 @@ nonisolated enum FolderHeaderGeometry {
     /// Compact only: the page draws from the TV-safe line instead of the tab shell's 157 pt inset.
     static let reclaimedTop: CGFloat = NavigationChrome.cornerSafeTop   // 60
 
+    /// The one treatment `CollectionHeaderBandReclaim` applies, as data: Standard is a 0 pt pad and
+    /// no ignored edges (a no-op), Compact pads to the TV-safe line and ignores the top inset.
+    static func bandReclaim(active: Bool) -> (topPad: CGFloat, edges: Edge.Set) {
+        active ? (reclaimedTop, .top) : (0, [])
+    }
+
     /// Top of the Edit Filters button / Edit band, level with the title slot's top.
     static func editControlTop(_ mode: Mode) -> CGFloat { mode == .standard ? restTop : compactTop }   // 32 / 12
 }
 
 /// GitHub #28 Compact: ignore the tab shell's top inset (157 on tvOS 26 with the bar hidden) and
 /// pad to the TV-safe line instead. Top edge only, so the rail's leading inset still applies.
-/// Standard gets the content untouched (no modifier at all).
+/// Always applied, so the view keeps ONE structural identity when the style flips while a folder is
+/// open (a branch here would replace the `ScrollView` and its focused children, losing scroll
+/// position and focus). Standard passes a 0 pt pad and an empty edge set: no layout change.
 private struct CollectionHeaderBandReclaim: ViewModifier {
     let active: Bool
     func body(content: Content) -> some View {
-        if active {
-            content
-                .padding(.top, FolderHeaderGeometry.reclaimedTop)
-                .ignoresSafeArea(.container, edges: .top)
-        } else {
-            content
-        }
+        let treatment = FolderHeaderGeometry.bandReclaim(active: active)
+        return content
+            .padding(.top, treatment.topPad)
+            .ignoresSafeArea(.container, edges: treatment.edges)
     }
 }
 

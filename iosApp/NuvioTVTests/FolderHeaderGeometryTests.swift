@@ -90,6 +90,17 @@ final class FolderHeaderGeometryTests: XCTestCase {
         XCTAssertEqual(G.editControlTop(.compact), 12)
     }
 
+    /// The band modifier is applied in BOTH styles (one structural identity, so flipping the style
+    /// with a folder open cannot replace its ScrollView); Standard's treatment must be a no-op.
+    func testBandReclaimIsANoOpInStandard() {
+        let standard = G.bandReclaim(active: false)
+        XCTAssertEqual(standard.topPad, 0)
+        XCTAssertTrue(standard.edges.isEmpty)
+        let compact = G.bandReclaim(active: true)
+        XCTAssertEqual(compact.topPad, G.reclaimedTop)
+        XCTAssertEqual(compact.edges, .top)
+    }
+
     func testCompactAtRestIsStandardRisen() {
         for s in stride(from: CGFloat(0), through: 300, by: 5) {
             let e = G.effectiveScroll(s, mode: .compact)
