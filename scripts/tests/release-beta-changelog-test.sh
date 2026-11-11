@@ -63,6 +63,21 @@ if strip_changelog_note < "$TMP/l.md" >/dev/null 2>&1; then echo "FAIL unclosed 
 printf -- '---\nx: 1\n---\nTop\n\n---\n\nBelow rule\n' > "$TMP/m.md"
 check "later hr stays body" $'Top\n\n---\n\nBelow rule' "$(strip_changelog_note < "$TMP/m.md")"
 
+printf 'NOT SENT — draft release note, x\n\nReal first line\n' > "$TMP/n1.md"
+check "unbolded NOT SENT status" "Real first line" "$(strip_changelog_note < "$TMP/n1.md")"
+printf '**ALL SENT 2026-11-04**\n\nReal first line\n' > "$TMP/n2.md"
+check "bold ALL SENT status" "Real first line" "$(strip_changelog_note < "$TMP/n2.md")"
+printf '**SENT 2026-11-11T18:45Z** (https://example.com/x)\n\nReal first line\n' > "$TMP/n3.md"
+check "bold SENT with url status" "Real first line" "$(strip_changelog_note < "$TMP/n3.md")"
+printf 'Sentence case title\n\nBody\n' > "$TMP/n4.md"
+check "Sentence title kept" $'Sentence case title\n\nBody' "$(strip_changelog_note < "$TMP/n4.md")"
+printf 'SENTINEL value\n\nBody\n' > "$TMP/n5.md"
+check "SENTINEL kept" $'SENTINEL value\n\nBody' "$(strip_changelog_note < "$TMP/n5.md")"
+printf '**NOT SENT.** Reply\n\nReal first line\n' > "$TMP/n6.md"
+check "bold NOT SENT. status" "Real first line" "$(strip_changelog_note < "$TMP/n6.md")"
+printf -- '---\nnote: <!-- internal -->\n---\nBody\n' > "$TMP/n7.md"
+if strip_changelog_note < "$TMP/n7.md" >/dev/null 2>"$TMP/err7"; then echo "FAIL frontmatter internal marker should error"; FAIL=1; else grep -q 'no publishable text' "$TMP/err7" && echo "ok   frontmatter internal marker errors" || { echo "FAIL frontmatter marker message"; FAIL=1; }; fi
+
 check "next after 21"        22 "$(printf '21\n' | beta_next_n)"
 check "next after 21.5"      22 "$(printf '21\n21.5\n' | beta_next_n)"
 check "next after 22"        23 "$(printf '21\n21.5\n22\n' | beta_next_n)"

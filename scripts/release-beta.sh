@@ -71,7 +71,7 @@ EOF
 
 # strip_changelog_note: read a local comms note on stdin, write only the
 # publishable release-note text to stdout. Removes YAML frontmatter (when the
-# first non-blank line, after any BOM, is ---), a leading **NOT SENT** / **SENT ...** status line, and
+# first non-blank line, after any BOM, is ---), a leading status line (SENT / NOT SENT / ALL SENT, bold or plain, all caps, not followed by a letter), and
 # everything from an <!-- internal marker (any form, as the copy linter) on; trims blank edge lines.
 # Exits 1 (stderr message) when nothing is left. A file with none of these
 # passes through unchanged apart from edge-blank trimming.
@@ -84,17 +84,19 @@ strip_changelog_note() {
   out="$(sed -e "1s/^${bom}//" -e "s/${cr}\$//" | tr '\r' '\n' | awk '
     !seen && $0 ~ /^[ \t]*$/ { next }
     !seen { seen = 1; if ($0 ~ /^---[ \t]*$/) { fm = 1; next } }
+    # An internal marker inside frontmatter cuts everything from there on (as the linter): nothing publishable.
+    fm == 1 && /<!--[ \t]*internal/ { exit }
     fm == 1 { if ($0 ~ /^---[ \t]*$/) fm = 0; next }
     # Same cut as scripts/deslop/deslop.py (prefix "<!-- internal", case-sensitive),
     # widened only on spacing so "<!--internal-->" also cuts (fail closed).
     match($0, /<!--[ \t]*internal/) {
       pre = substr($0, 1, RSTART - 1)
       sub(/[ \t]+$/, "", pre)
-      if (pre != "" && pre !~ /^[ \t]*$/ && !(!started && pre ~ /^\*\*(NOT SENT|SENT)/)) print pre
+      if (pre != "" && pre !~ /^[ \t]*$/ && !(!started && pre ~ /^(\*\*)?(ALL |NOT )?SENT([^A-Za-z]|$)/)) print pre
       exit
     }
     !started && $0 ~ /^[ \t]*$/ { next }
-    !started && $0 ~ /^\*\*(NOT SENT|SENT)/ { next }
+    !started && $0 ~ /^(\*\*)?(ALL |NOT )?SENT([^A-Za-z]|$)/ { next }
     { started = 1; print }
   ' | awk '{ l[NR] = $0 } END { n = NR; while (n > 0 && l[n] ~ /^[ \t]*$/) n--; for (i = 1; i <= n; i++) print l[i] }')"
   if [[ -z "$out" ]]; then
