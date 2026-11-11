@@ -96,8 +96,8 @@ final class CollectionHeaderUITests: XCTestCase {
                "-debug.homeScrollProbe", "YES", "-home_upcoming_row_enabled", "NO"]
             : ["-home_layout", "classic", "-folder_layout_default_classic", "grid"] + (Self.shells[shell] ?? [])
         args += ["-inline_trailers_enabled", "NO", "-debug.posterSizeOverride", "medium", "-debug.posterHideTitles", "NO",
-                 "-collection_header_style", style,
                  "-debug.collectionsSeedJsonB64", Data(seed.utf8).base64EncodedString()]
+        args += ["-collection_header_style", style]
         let app = XCUIApplication()
         app.launchArguments = args
         app.launch()
@@ -337,6 +337,7 @@ final class CollectionHeaderUITests: XCTestCase {
             XCTAssertGreaterThanOrEqual(f.minX, 1400, "classic-compact: Edit Filters is trailing")
         }
         shot("compact-edit-classic")
+        assertEditControlTakesFocus(classic, control: button, tag: "classic-compact", downReturnsToChips: false)
 
         // Classic, Standard (control)
         guard let standard = openFolder(style: "standard", seed: Self.editSeed, shell: "T", terminateFirst: classic) else { return }
@@ -348,6 +349,7 @@ final class CollectionHeaderUITests: XCTestCase {
             XCTAssertEqual(sbutton.frame.minY, 189, accuracy: 2, "classic-standard: Edit Filters top (157 + 32)")
         }
         shot("standard-edit-classic")
+        assertEditControlTakesFocus(standard, control: sbutton, tag: "classic-standard", downReturnsToChips: true)
 
         // Stage Home, Grid page, Compact: the Edit band's pill takes focus on Up.
         guard let stage = openFolder(style: "compact", seed: Self.editSeed, shell: "T", stage: true, terminateFirst: standard) else { return }
@@ -365,6 +367,59 @@ final class CollectionHeaderUITests: XCTestCase {
             XCTAssertGreaterThanOrEqual(f.minX, 1400, "stage-compact: Edit menu is trailing")
         }
         shot("compact-edit-stage")
+        // Up from the chips already ran above; assert it moved focus, then that Down gives it back.
+        assertFocusOnControl(stage, menu, "stage-compact")
+        assertEditControlReleasesFocus(stage, control: menu, tag: "stage-compact", returnsToChips: false)
+    }
+
+    private struct FocusNode { let identifier: String; let label: String; let frame: CGRect }
+
+    private func focusedNodes(_ app: XCUIApplication) -> [FocusNode] {
+        guard let root = try? app.snapshot() else { return [] }
+        var out: [FocusNode] = []
+        func walk(_ node: XCUIElementSnapshot) {
+            if node.hasFocus { out.append(FocusNode(identifier: node.identifier, label: node.label, frame: node.frame)) }
+            node.children.forEach(walk)
+        }
+        walk(root)
+        return out
+    }
+
+    /// Focus signal: the snapshot's `hasFocus` nodes (reliable on this project's 26.5 clone; the
+    /// guest-picker walk in `openFolder` relies on it too) matched against the control's frame, because
+    /// the Edit menu's identifier sits on a container rather than on the focused pill. The `chip=`
+    /// token of `folder_header_state` (`-` when no chip holds focus) backs it up.
+    private func controlHasFocus(_ app: XCUIApplication, _ control: XCUIElement) -> Bool {
+        let f = control.frame.insetBy(dx: -6, dy: -6)
+        return focusedNodes(app).contains { $0.identifier == "folder.editFilters" || $0.identifier == "folder.editMenu"
+            || ($0.frame.width > 20 && f.contains(CGPoint(x: $0.frame.midX, y: $0.frame.midY))) }
+    }
+
+    private func assertEditControlTakesFocus(_ app: XCUIApplication, control: XCUIElement, tag: String, downReturnsToChips: Bool) {
+        guard control.exists else { return }
+        remote.press(.up); pause(1.5)
+        assertFocusOnControl(app, control, tag)
+        assertEditControlReleasesFocus(app, control: control, tag: tag, returnsToChips: downReturnsToChips)
+    }
+
+    private func assertFocusOnControl(_ app: XCUIApplication, _ control: XCUIElement, _ tag: String) {
+        let nodes = focusedNodes(app).map { "\($0.identifier)|\($0.label)|\($0.frame)" }
+        note(tag, "after Up: focused=\(nodes) | \(state(app))")
+        XCTAssertTrue(controlHasFocus(app, control), "\(tag): the Edit control does not hold focus after Up | \(nodes)")
+        XCTAssertEqual(Self.token(state(app), "chip"), "-", "\(tag): a chip still holds focus after Up | \(state(app))")
+    }
+
+    /// Standard (control): Down returns focus to the chips. Compact, measured on the clone: the control
+    /// sits above the chip row at the trailing edge and Down lands on the poster beneath it, not on a
+    /// chip (`returnsToChips: false` asserts only that focus left the control; see the batch doc).
+    private func assertEditControlReleasesFocus(_ app: XCUIApplication, control: XCUIElement, tag: String, returnsToChips: Bool) {
+        remote.press(.down); pause(1.5)
+        let nodes = focusedNodes(app).map { "\($0.identifier)|\($0.label)|\($0.frame)" }
+        note(tag, "after Down: focused=\(nodes) | \(state(app))")
+        XCTAssertFalse(controlHasFocus(app, control), "\(tag): Down did not leave the Edit control | \(nodes)")
+        if returnsToChips {
+            XCTAssertNotEqual(Self.token(state(app), "chip"), "-", "\(tag): Down did not return focus to the chips | \(nodes)")
+        }
     }
 
     // MARK: - 6. Compact header pixels
