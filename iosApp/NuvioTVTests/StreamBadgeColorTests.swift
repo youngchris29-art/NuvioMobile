@@ -157,7 +157,7 @@ final class StreamBadgeColorTests: XCTestCase {
 
     func testEffectiveBackgroundLuminanceBlendsByAlpha() {
         let base = Chip.effectiveBackgroundLuminance(tagColorHex: "")
-        XCTAssertEqual(base, Theme.Palette.luminance(fromHexString: "242424") ?? -1, accuracy: 0.0001)
+        XCTAssertEqual(base, Theme.Palette.luminance(fromHexString: "1A1A1A") ?? -1, accuracy: 0.0001)
         XCTAssertEqual(Chip.effectiveBackgroundLuminance(tagColorHex: "#00FFFFFF"), base, accuracy: 0.0001)
         XCTAssertEqual(Chip.effectiveBackgroundLuminance(tagColorHex: "FFFFFF"), 1, accuracy: 0.0001)
         let tint = Chip.effectiveBackgroundLuminance(tagColorHex: "#20FFD500")
@@ -168,6 +168,58 @@ final class StreamBadgeColorTests: XCTestCase {
     // MARK: - Image chips (GitHub #25)
 
     private typealias Surface = StreamBadgeChipView.ImageChipSurface
+
+    // MARK: - Chip base, parity, transparent pack colours (GitHub #25 follow-up)
+
+    func testChipBaseIsTheRowRestingSurface() {
+        XCTAssertEqual(Chip.chipBaseHex, "1A1A1A")
+        XCTAssertEqual(Chip.chipBase, Theme.Palette.surface)
+        XCTAssertEqual(Theme.Palette.luminance(fromHexString: Chip.chipBaseHex) ?? -1,
+                       Theme.Palette.luminance(fromHexString: "1A1A1A") ?? -2, accuracy: 0.0001)
+        XCTAssertEqual(Chip.resolvedBackground(Decision(fg: .semantic, bg: .semantic, showBorder: true),
+                                               tagColorHex: ""), Chip.chipBase)
+    }
+
+    func testIsFilled_exactMatchParity() {
+        for yes in ["filled", "FILLED", " filled ", "Filled"] { XCTAssertTrue(Chip.isFilled(tagStyle: yes), yes) }
+        for no in ["bordered", "filled and bordered", "", "outlined"] { XCTAssertFalse(Chip.isFilled(tagStyle: no), no) }
+    }
+
+    func testPackHex_transparentCountsAsMissing() {
+        XCTAssertEqual(Chip.packHex("#00000000"), "")
+        XCTAssertEqual(Chip.packHex("#00FFFFFF"), "")
+        XCTAssertEqual(Chip.packHex("#FFFFFF"), "#FFFFFF")
+        XCTAssertEqual(Chip.packHex("#80FFFFFF"), "#80FFFFFF")
+        XCTAssertEqual(Chip.packHex(""), "")
+    }
+
+    func testTransparentTextColour_fallsBackToLightText() {
+        XCTAssertEqual(Chip.effectiveTextChipColors(textColorHex: Chip.packHex("#00FFFFFF"), tagColorHex: "", isFocused: false).fg, .semantic)
+        XCTAssertEqual(Chip.effectiveTextChipColors(textColorHex: Chip.packHex("#00FFFFFF"), tagColorHex: "", isFocused: true).fg, .fixedLight)
+        // The guard itself also drops a transparent text colour.
+        XCTAssertEqual(Chip.effectiveTextChipColors(textColorHex: "#00FFFFFF", tagColorHex: "", isFocused: true).fg, .fixedLight)
+    }
+
+    func testHisPacks_decisions() {
+        let xperience = (style: "filled and bordered", tag: "#00000000", text: "#00000000")
+        let sweaty = (style: "bordered", tag: "#00000000", text: "#FFFFFF")
+        for p in [xperience, sweaty] {
+            let filled = Chip.isFilled(tagStyle: p.style)
+            XCTAssertFalse(filled)
+            XCTAssertEqual(Chip.imageChipSurface(filled: filled, tagColorHex: p.tag, isFocused: false),
+                           Surface(darkBase: false, drawsPackFill: false))
+            XCTAssertEqual(Chip.imageChipSurface(filled: filled, tagColorHex: p.tag, isFocused: true),
+                           Surface(darkBase: true, drawsPackFill: false))
+        }
+        func fg(_ text: String, _ focused: Bool) -> StreamBadgeChipView.ChipFgSource {
+            Chip.effectiveTextChipColors(textColorHex: text, tagColorHex: "", isFocused: focused).fg
+        }
+        XCTAssertEqual(fg(sweaty.text, false), .pack)
+        XCTAssertEqual(fg(sweaty.text, true), .pack)
+        XCTAssertEqual(fg(xperience.text, false), .semantic)
+        XCTAssertEqual(fg(xperience.text, true), .fixedLight)
+    }
+
 
     func testImageChipSurface_atRestDrawsOnlyWhatThePackAsked() {
         XCTAssertEqual(Chip.imageChipSurface(filled: false, tagColorHex: "#000000", isFocused: false),

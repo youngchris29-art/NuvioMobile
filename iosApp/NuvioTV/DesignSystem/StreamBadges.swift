@@ -97,13 +97,14 @@ struct StreamBadgeChipView: View {
 
     private var imageChip: some View {
         let shape = RoundedRectangle(cornerRadius: StreamBadgeMetrics.cornerRadius)
-        let filled = badge.tagStyle.caseInsensitiveCompare("filled") == .orderedSame
+        let filled = Self.isFilled(tagStyle: badge.tagStyle)
         // Badge art is authored to sit on a dark surface: transparent PNGs, and since the tinted
         // packs (GitHub #25) translucent fills too. On the white focus platter both wash out, so
         // the chip recreates that dark surface while focused (`imageChipSurface`).
         let surface = Self.imageChipSurface(filled: filled, tagColorHex: badge.tagColor, isFocused: onPlatter)
         let fill: Color = surface.drawsPackFill ? (Color(hexString: badge.tagColor) ?? .clear) : .clear
-        let border = Color(hexString: badge.borderColor)
+        let textHex = Self.packHex(badge.textColor)
+        let border = Color(hexString: Self.packHex(badge.borderColor))
             ?? (Self.needsPlatterEdge(drawsPackFill: surface.drawsPackFill, darkBase: surface.darkBase,
                                       tagColorHex: badge.tagColor, isFocused: onPlatter)
                     ? Theme.Palette.onFocusPlatter.opacity(Self.platterEdgeOpacity) : nil)
@@ -114,13 +115,13 @@ struct StreamBadgeChipView: View {
         // row — invisible in the opposite direction from the reported defect.
         let effectiveBgHex = surface.drawsPackFill ? badge.tagColor : ""
         let fallbackDecision = Self.effectiveTextChipColors(
-            textColorHex: badge.textColor,
+            textColorHex: textHex,
             tagColorHex: effectiveBgHex,
             isFocused: onPlatter
         )
         let fallbackForeground = Self.resolvedForeground(
             fallbackDecision,
-            textColorHex: badge.textColor,
+            textColorHex: textHex,
             tagColorHex: effectiveBgHex
         )
 
@@ -136,7 +137,7 @@ struct StreamBadgeChipView: View {
         .padding(.horizontal, 6)
         .frame(height: StreamBadgeMetrics.containerHeight)
         .background(fill, in: shape)
-        .background(surface.darkBase ? Theme.Palette.surfaceElevated : .clear, in: shape)
+        .background(surface.darkBase ? Self.chipBase : .clear, in: shape)
         .overlay(shape.stroke(border ?? .clear, lineWidth: border == nil ? 0 : 1))
         .clipShape(shape)
     }
@@ -145,7 +146,7 @@ struct StreamBadgeChipView: View {
 
     /// What an image chip paints behind its artwork.
     struct ImageChipSurface: Equatable {
-        /// The opaque dark surface (`surfaceElevated`) under everything else.
+        /// The opaque base (`chipBase`, the row's resting card colour) under everything else.
         var darkBase: Bool
         /// The pack's `tagColor` fill, over the dark base when both are set.
         var drawsPackFill: Bool
@@ -202,14 +203,15 @@ struct StreamBadgeChipView: View {
 
     /// The pre-D2 text chip, kept intact for packs with a `tagColor` (BUG-28 / BUG-43).
     private var packTextChip: some View {
+        let textHex = Self.packHex(badge.textColor)
         let decision = Self.effectiveTextChipColors(
-            textColorHex: badge.textColor,
+            textColorHex: textHex,
             tagColorHex: badge.tagColor,
             isFocused: onPlatter
         )
-        let foreground = Self.resolvedForeground(decision, textColorHex: badge.textColor, tagColorHex: badge.tagColor)
+        let foreground = Self.resolvedForeground(decision, textColorHex: textHex, tagColorHex: badge.tagColor)
         let background = Self.resolvedBackground(decision, tagColorHex: badge.tagColor)
-        let border = Color(hexString: badge.borderColor)
+        let border = Color(hexString: Self.packHex(badge.borderColor))
             ?? (Self.needsPlatterEdge(drawsPackFill: decision.bg == .pack, darkBase: decision.darkBase,
                                       tagColorHex: badge.tagColor, isFocused: onPlatter)
                     ? Theme.Palette.onFocusPlatter.opacity(Self.platterEdgeOpacity) : nil)
@@ -222,7 +224,7 @@ struct StreamBadgeChipView: View {
             .padding(.vertical, Theme.Spacing.xxs)
             .frame(height: StreamBadgeMetrics.containerHeight)
             .background(background, in: Capsule())
-            .background(decision.darkBase ? Theme.Palette.surfaceElevated : .clear, in: Capsule())
+            .background(decision.darkBase ? Self.chipBase : .clear, in: Capsule())
             .overlay(
                 Capsule().stroke(border ?? .clear, lineWidth: border == nil ? 0 : 1)
             )
@@ -248,7 +250,7 @@ struct StreamBadgeChipView: View {
 
     /// Where a text chip's background should come from.
     enum ChipBgSource: Equatable {
-        /// `Theme.Palette.surfaceElevated` — the existing fixed-dark default.
+        /// `chipBase` — the row's resting card colour, the fixed-dark default.
         case semantic
         /// The pack's own `tagColor` hex.
         case pack
@@ -265,9 +267,27 @@ struct StreamBadgeChipView: View {
         var darkBase: Bool = false
     }
 
-    /// Default effective background hex used for the fg/bg contrast guard when the pack supplies
-    /// no (or an unparseable) `tagColor` — mirrors `Theme.Palette.surfaceElevated` (0x242424).
-    private static let defaultBgHex = "242424"
+    /// The source row's resting card colour (`Theme.Palette.surface`, `StreamRowView` full and
+    /// compact rows). The base under a chip on the focus platter is painted in it, so a badge looks
+    /// the same inside its chip at rest and focused (GitHub #25 follow-up), and it is the colour
+    /// the contrast guard judges text against when the pack supplies no (or an unparseable)
+    /// `tagColor`. Keep `chipBaseHex` and `chipBase` the same colour.
+    static let chipBaseHex = "1A1A1A"
+    static let chipBase = Theme.Palette.surface
+
+    /// Whether a `tagStyle` fills the chip with `tagColor`: exactly "filled", ignoring case and
+    /// surrounding whitespace. Parity with `StreamBadgeChip.kt` (composeApp) and upstream
+    /// `cmp-rewrite`, which compare with `equals("filled", ignoreCase = true)`; compound styles
+    /// such as "filled and bordered" are not filled on any platform.
+    static func isFilled(tagStyle: String) -> Bool {
+        tagStyle.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare("filled") == .orderedSame
+    }
+
+    /// A pack colour with alpha 0 means "none" (packs write `#00000000` for unset colours): returns
+    /// "" for it so callers treat it as missing. Anything else, parseable or not, comes back as is.
+    static func packHex(_ hex: String) -> String {
+        Theme.Palette.alpha(fromHexString: hex) == 0 ? "" : hex
+    }
 
     /// Approximate luminance of `Theme.Palette.textPrimary` (`Color.primary`) as it actually
     /// renders in this app: near-white, since the app pins a dark color scheme (see that
@@ -308,10 +328,11 @@ struct StreamBadgeChipView: View {
     /// the focused row flips semantic colours dark (BUG-28) while this chip's background stays
     /// dark.
     static func effectiveTextChipColors(
-        textColorHex: String,
+        textColorHex rawTextColorHex: String,
         tagColorHex: String,
         isFocused: Bool
     ) -> ChipColorDecision {
+        let textColorHex = packHex(rawTextColorHex)
         let packAlpha = Theme.Palette.alpha(fromHexString: tagColorHex)
         let bgSource: ChipBgSource = packAlpha != nil ? .pack : .semantic
         let effectiveBgLum = effectiveBackgroundLuminance(tagColorHex: tagColorHex)
@@ -334,10 +355,10 @@ struct StreamBadgeChipView: View {
     }
 
     /// The luminance of what a chip's text sits on: the pack's `tagColor` blended by its alpha over
-    /// the dark surface (the row at rest, the dark base on the platter), or that dark surface
-    /// alone when the pack has no parseable `tagColor`.
+    /// the chip base (the row's resting card, and the base under the chip on the platter), or that
+    /// base alone when the pack has no parseable `tagColor`.
     static func effectiveBackgroundLuminance(tagColorHex: String) -> Double {
-        let baseLum = Theme.Palette.luminance(fromHexString: defaultBgHex)!
+        let baseLum = Theme.Palette.luminance(fromHexString: chipBaseHex)!
         guard let lum = Theme.Palette.luminance(fromHexString: tagColorHex),
               let alpha = Theme.Palette.alpha(fromHexString: tagColorHex) else { return baseLum }
         return alpha * lum + (1 - alpha) * baseLum
@@ -375,9 +396,9 @@ struct StreamBadgeChipView: View {
     static func resolvedBackground(_ decision: ChipColorDecision, tagColorHex: String) -> Color {
         switch decision.bg {
         case .pack:
-            return Color(hexString: tagColorHex) ?? Theme.Palette.surfaceElevated
+            return Color(hexString: tagColorHex) ?? chipBase
         case .semantic:
-            return Theme.Palette.surfaceElevated
+            return chipBase
         }
     }
 }
@@ -463,7 +484,7 @@ private actor BadgeImageCache {
                   let (data, response) = try? await URLSession.shared.data(from: parsed),
                   (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? true
             else { return nil }
-            return Self.downsample(data: data, maxPixel: Self.maxPixelSize)
+            return BadgeImageDecoder.decodeThumbnail(data: data, maxPixel: Self.maxPixelSize)
         }
         inflight[url] = task
         let result = await task.value
@@ -471,9 +492,12 @@ private actor BadgeImageCache {
         if let result { BadgeImageMemory.store(result, for: url) }
         return result
     }
+}
 
-    /// CGImageSource thumbnail decode: never materializes the full-resolution bitmap.
-    private static func downsample(data: Data, maxPixel: CGFloat) -> UIImage? {
+/// CGImageSource thumbnail decode: never materializes the full-resolution bitmap. ImageIO on tvOS
+/// has no SVG decoder, so SVG artwork returns nil (the chip then shows the badge name as text).
+enum BadgeImageDecoder {
+    nonisolated static func decodeThumbnail(data: Data, maxPixel: CGFloat) -> UIImage? {
         let srcOpts = [kCGImageSourceShouldCache: false] as CFDictionary
         guard let source = CGImageSourceCreateWithData(data as CFData, srcOpts) else { return nil }
         let thumbOpts = [
@@ -544,7 +568,9 @@ struct BadgeOverflowChip: View {
             .lineLimit(1)
             .padding(.horizontal, Theme.Spacing.sm)
             .frame(height: StreamBadgeMetrics.containerHeight)
-            .background(Theme.Palette.surfaceElevated.opacity(onPlatter ? 1 : 0.6), in: shape)
+            // On the platter: 0x202020, what the 60 % fill composites to over the resting card
+            // (0x1A1A1A), so "+N" matches rest.
+            .background(onPlatter ? Color(hex: 0x202020) : Theme.Palette.surfaceElevated.opacity(0.6), in: shape)
             .overlay(shape.stroke(Color.white.opacity(0.1), lineWidth: 1))
     }
 }

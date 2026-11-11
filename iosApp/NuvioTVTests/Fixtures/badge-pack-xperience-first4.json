@@ -1,0 +1,40 @@
+{
+  "filters": [
+    {
+      "name": "REMUX",
+      "tagStyle": "filled and bordered",
+      "tagColor": "#00000000",
+      "textColor": "#00000000",
+      "borderColor": "#00000000",
+      "imageURL": "https://cdn.xperience-app.com/badges/elite/1.webp",
+      "imageKind": "raster"
+    },
+    {
+      "name": "Blu-ray Disc",
+      "tagStyle": "filled and bordered",
+      "tagColor": "#00000000",
+      "textColor": "#00000000",
+      "borderColor": "#00000000",
+      "imageURL": "https://cdn.xperience-app.com/badges/elite/2.webp",
+      "imageKind": "raster"
+    },
+    {
+      "name": "WEB-DL",
+      "tagStyle": "filled and bordered",
+      "tagColor": "#00000000",
+      "textColor": "#00000000",
+      "borderColor": "#00000000",
+      "imageURL": "https://cdn.xperience-app.com/badges/elite/3.webp",
+      "imageKind": "raster"
+    },
+    {
+      "name": "WEBRip",
+      "tagStyle": "filled and bordered",
+      "tagColor": "#00000000",
+      "textColor": "#00000000",
+      "borderColor": "#00000000",
+      "imageURL": "https://cdn.xperience-app.com/badges/elite/4.webp",
+      "imageKind": "raster"
+    }
+  ]
+}

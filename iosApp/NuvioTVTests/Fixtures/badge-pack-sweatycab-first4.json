@@ -1,0 +1,40 @@
+{
+  "filters": [
+    {
+      "name": "4K",
+      "tagStyle": "bordered",
+      "tagColor": "#00000000",
+      "textColor": "#FFFFFF",
+      "borderColor": "#FFFFFF",
+      "imageURL": "https://cdn.jsdelivr.net/gh/sweatycab/nuvio-minimalist-badges@main/badges/white-4k.svg",
+      "imageKind": "svg"
+    },
+    {
+      "name": "1080p",
+      "tagStyle": "bordered",
+      "tagColor": "#00000000",
+      "textColor": "#FFFFFF",
+      "borderColor": "#FFFFFF",
+      "imageURL": "https://cdn.jsdelivr.net/gh/sweatycab/nuvio-minimalist-badges@main/badges/white-1080p.svg",
+      "imageKind": "svg"
+    },
+    {
+      "name": "720p",
+      "tagStyle": "bordered",
+      "tagColor": "#00000000",
+      "textColor": "#FFFFFF",
+      "borderColor": "#FFFFFF",
+      "imageURL": "https://cdn.jsdelivr.net/gh/sweatycab/nuvio-minimalist-badges@main/badges/white-720p.svg",
+      "imageKind": "svg"
+    },
+    {
+      "name": "576p",
+      "tagStyle": "bordered",
+      "tagColor": "#00000000",
+      "textColor": "#FFFFFF",
+      "borderColor": "#FFFFFF",
+      "imageURL": "https://cdn.jsdelivr.net/gh/sweatycab/nuvio-minimalist-badges@main/badges/white-576p.svg",
+      "imageKind": "svg"
+    }
+  ]
+}
