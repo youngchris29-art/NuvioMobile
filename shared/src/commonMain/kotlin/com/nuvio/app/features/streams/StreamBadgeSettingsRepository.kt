@@ -160,9 +160,7 @@ object StreamBadgeSettingsRepository {
 
         return try {
             val currentRules = streamBadgeRules.normalized()
-            val isExistingImport = currentRules.imports.any { import ->
-                import.sourceUrl.equals(normalizedUrl, ignoreCase = true)
-            }
+            val isExistingImport = currentRules.containsSource(normalizedUrl)
             if (!isExistingImport && currentRules.imports.size >= STREAM_BADGE_IMPORT_LIMIT) {
                 return StreamBadgeImportResult.Error(localizedBadgeImportLimit(STREAM_BADGE_IMPORT_LIMIT))
             }
@@ -179,7 +177,7 @@ object StreamBadgeSettingsRepository {
                     return StreamBadgeImportResult.Error(localizedBadgeImportFailed())
                 }
                 val latestRules = streamBadgeRules.normalized()
-                val stillNew = latestRules.imports.none { it.sourceUrl.equals(normalizedUrl, ignoreCase = true) }
+                val stillNew = !latestRules.containsSource(normalizedUrl)
                 if (stillNew && latestRules.imports.size >= STREAM_BADGE_IMPORT_LIMIT) {
                     return StreamBadgeImportResult.Error(localizedBadgeImportLimit(STREAM_BADGE_IMPORT_LIMIT))
                 }

@@ -45,6 +45,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.nuvio.app.core.network.isSameBadgeSource
 import com.nuvio.app.core.ui.NuvioTokens
 import com.nuvio.app.core.ui.nuvio
 import com.nuvio.app.features.streams.STREAM_BADGE_IMPORT_LIMIT
@@ -350,7 +351,7 @@ private fun BadgeUrlManagerDialog(
                             onPreview = { previewImport = import },
                             onDelete = {
                                 StreamBadgeSettingsRepository.deleteStreamBadgeRulesSource(import.sourceUrl)
-                                if (previewImport?.sourceUrl.equals(import.sourceUrl, ignoreCase = true)) {
+                                if (previewImport?.let { isSameBadgeSource(it.sourceUrl, import.sourceUrl) } == true) {
                                     previewImport = null
                                 }
                             },

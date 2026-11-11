@@ -45,7 +45,7 @@ final class BadgeSettingsViewModel: ObservableObject {
     /// A source that is no longer imported reads as "" (the shared rules fall back the same way).
     var playerBadgeSource: String {
         let source = state?.playerBadgeSource ?? ""
-        return imports.contains { $0.sourceUrl.caseInsensitiveCompare(source) == .orderedSame } ? source : ""
+        return state?.rules.containsSource(sourceUrl: source) == true ? source : ""
     }
     /// Stream picker A (P4.1): the picker's backdrop mode; the platform default (Cinematic on tvOS,
     /// decision D1) until the repository has emitted.

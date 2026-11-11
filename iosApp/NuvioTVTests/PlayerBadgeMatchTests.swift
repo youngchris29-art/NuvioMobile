@@ -305,4 +305,14 @@ final class PlayerBadgeMatchTests: XCTestCase {
         m.setBadgeFacts(atmosFacts)
         XCTAssertEqual(m.info.badges.map(\.name), ["Atmos"])
     }
+
+    /// `BadgeSettingsViewModel.playerBadgeSource` asks the shared rules whether the pack is still
+    /// imported: host case is the same pack, a path-case variant is not (it reads as "").
+    func testPlayerSourceMatchesAPackByHostCaseOnly() {
+        let rules = settings(showInPlayer: true, pattern: "Atmos").rules
+        XCTAssertTrue(rules.containsSource(sourceUrl: "https://packs.example/fusion.json"))
+        XCTAssertTrue(rules.containsSource(sourceUrl: "https://PACKS.example/fusion.json"))
+        XCTAssertFalse(rules.containsSource(sourceUrl: "https://packs.example/Fusion.json"))
+        XCTAssertFalse(rules.containsSource(sourceUrl: ""))
+    }
 }

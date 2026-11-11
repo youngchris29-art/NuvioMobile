@@ -7,6 +7,7 @@ import co.touchlab.kermit.Logger
 import com.nuvio.app.core.i18n.StringKey
 import com.nuvio.app.core.i18n.resourceString
 import com.nuvio.app.core.network.SupabaseProvider
+import com.nuvio.app.core.network.urlIdentityKey
 import com.nuvio.app.core.sync.putSyncOriginClientId
 import io.github.jan.supabase.postgrest.postgrest
 import io.github.jan.supabase.postgrest.query.Order
@@ -1031,13 +1032,7 @@ private fun manifestComparisonKey(raw: String): String {
         trimmed.substring(0, schemeAt).equals("stremio", ignoreCase = true) -> "https://" + trimmed.substring(schemeAt + 3)
         else -> trimmed
     }
-    val sep = url.indexOf("://")
-    val afterSep = url.substring(sep + 3)
-    val authorityEnd = afterSep.indexOfFirst { it == '/' || it == '?' }.let { if (it < 0) afterSep.length else it }
-    val authority = afterSep.substring(0, authorityEnd)
-    val at = authority.lastIndexOf('@')
-    val host = if (at >= 0) authority.substring(0, at + 1) + authority.substring(at + 1).lowercase() else authority.lowercase()
-    return url.substring(0, sep).lowercase() + "://" + host + afterSep.substring(authorityEnd)
+    return urlIdentityKey(url)
 }
 
 internal fun steppedOrder(addons: List<ManagedAddon>, manifestUrl: String, delta: Int): List<ManagedAddon>? {

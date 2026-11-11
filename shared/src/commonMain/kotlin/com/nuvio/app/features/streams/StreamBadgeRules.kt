@@ -1,5 +1,6 @@
 package com.nuvio.app.features.streams
 
+import com.nuvio.app.core.network.isSameBadgeSource
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationException
@@ -21,13 +22,21 @@ data class StreamBadgeRules(
     val enabledFilterCount: Int
         get() = activeImport?.enabledFilterCount ?: 0
 
+    /**
+     * Whether a pack with [sourceUrl] is imported. Scheme and host compare case-insensitively; the
+     * rest of the URL (path, query) is case-sensitive, so two packs whose URLs differ only in path
+     * case are two packs (see `urlIdentityKey`).
+     */
+    fun containsSource(sourceUrl: String): Boolean =
+        imports.any { isSameBadgeSource(it.sourceUrl, sourceUrl) }
+
     fun normalized(): StreamBadgeRules {
         val normalizedImports = mutableListOf<StreamBadgeImport>()
         imports.forEach { import ->
             val normalizedUrl = import.sourceUrl.trim()
             if (normalizedUrl.isBlank() || import.filters.isEmpty()) return@forEach
             val normalizedImport = import.copy(sourceUrl = normalizedUrl)
-            val existingIndex = normalizedImports.indexOfFirst { it.sourceUrl.equals(normalizedUrl, ignoreCase = true) }
+            val existingIndex = normalizedImports.indexOfFirst { isSameBadgeSource(it.sourceUrl, normalizedUrl) }
             if (existingIndex >= 0) {
                 normalizedImports[existingIndex] = normalizedImport
             } else if (normalizedImports.size < STREAM_BADGE_IMPORT_LIMIT) {
@@ -48,16 +57,16 @@ data class StreamBadgeRules(
         if (normalizedUrl.isBlank()) return normalized()
         val normalizedImport = import.copy(sourceUrl = normalizedUrl, isActive = activate)
         val replaced = imports.map { existing ->
-            if (existing.sourceUrl.equals(normalizedUrl, ignoreCase = true)) normalizedImport else existing
+            if (isSameBadgeSource(existing.sourceUrl, normalizedUrl)) normalizedImport else existing
         }
-        val nextImports = if (imports.any { it.sourceUrl.equals(normalizedUrl, ignoreCase = true) }) {
+        val nextImports = if (containsSource(normalizedUrl)) {
             replaced
         } else {
             imports + normalizedImport
         }
         val activeImports = if (activate) {
             nextImports.map { existing ->
-                existing.copy(isActive = existing.sourceUrl.equals(normalizedUrl, ignoreCase = true))
+                existing.copy(isActive = isSameBadgeSource(existing.sourceUrl, normalizedUrl))
             }
         } else {
             nextImports
@@ -67,12 +76,12 @@ data class StreamBadgeRules(
 
     fun setActiveSource(sourceUrl: String): StreamBadgeRules {
         val normalizedUrl = sourceUrl.trim()
-        if (normalizedUrl.isBlank() || imports.none { it.sourceUrl.equals(normalizedUrl, ignoreCase = true) }) {
+        if (normalizedUrl.isBlank() || !containsSource(normalizedUrl)) {
             return normalized()
         }
         return copy(
             imports = imports.map { import ->
-                import.copy(isActive = import.sourceUrl.equals(normalizedUrl, ignoreCase = true))
+                import.copy(isActive = isSameBadgeSource(import.sourceUrl, normalizedUrl))
             },
         ).normalized()
     }
@@ -86,7 +95,7 @@ data class StreamBadgeRules(
         if (sourceUrl.isBlank()) normalized() else setActiveSource(sourceUrl)
 
     fun removeSource(sourceUrl: String): StreamBadgeRules =
-        copy(imports = imports.filterNot { it.sourceUrl.equals(sourceUrl.trim(), ignoreCase = true) }).normalized()
+        copy(imports = imports.filterNot { isSameBadgeSource(it.sourceUrl, sourceUrl) }).normalized()
 
     override fun toString(): String =
         "StreamBadgeRules(imports=${imports.size}, activeFilters=$enabledFilterCount, groups=${imports.sumOf { it.groups.size }})"
