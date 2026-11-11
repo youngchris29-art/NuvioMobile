@@ -365,3 +365,15 @@ private data class StreamBadgeGroupPayload(
     val color: String? = null,
     val isExpanded: Boolean? = null,
 )
+
+/**
+ * Review r1 (upgrade): a player source stored under the old whole-URL ignore-case rule that no
+ * longer matches any import, mapped to the ONE import equal to it under that old rule. Null means
+ * leave it as it is: it already matches, is blank, or has no candidate or several.
+ */
+internal fun migratedPlayerBadgeSource(stored: String, rules: StreamBadgeRules): String? {
+    val source = stored.trim()
+    if (source.isEmpty() || rules.containsSource(source)) return null
+    val candidates = rules.imports.filter { it.sourceUrl.equals(source, ignoreCase = true) }
+    return candidates.singleOrNull()?.sourceUrl
+}

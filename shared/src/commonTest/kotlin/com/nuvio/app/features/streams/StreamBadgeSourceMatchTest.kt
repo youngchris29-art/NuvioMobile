@@ -75,4 +75,55 @@ class StreamBadgeSourceMatchTest {
         }
         assertEquals(STREAM_BADGE_IMPORT_LIMIT, rules.imports.size)
     }
+
+    private val lower = "https://example.com/packs/pack.json"
+    private val mixed = "https://example.com/packs/Pack.json"
+    private val upper = "https://example.com/packs/PACK.json"
+
+    @Test
+    fun anExactlyMatchingPlayerSourceIsLeftAlone() {
+        val rules = StreamBadgeRules().upsert(pack(a))
+        assertEquals(null, migratedPlayerBadgeSource(a, rules))
+    }
+
+    @Test
+    fun aHostCaseOnlyPlayerSourceIsLeftAlone() {
+        val rules = StreamBadgeRules().upsert(pack("https://example.com/p.json"))
+        assertEquals(null, migratedPlayerBadgeSource("https://EXAMPLE.com/p.json", rules))
+    }
+
+    @Test
+    fun aPathCaseOrphanWithOneCandidateIsMigrated() {
+        val rules = StreamBadgeRules().upsert(pack(lower))
+        val result = migratedPlayerBadgeSource(mixed, rules)
+        assertEquals(lower, result)
+        assertEquals(lower, rules.forPlayer(result.orEmpty()).activeImport?.sourceUrl)
+    }
+
+    @Test
+    fun aPathCaseOrphanWithTwoCandidatesIsLeftAlone() {
+        val rules = StreamBadgeRules().upsert(pack(lower)).upsert(pack(upper))
+        assertEquals(null, migratedPlayerBadgeSource(mixed, rules))
+    }
+
+    @Test
+    fun anOrphanWithNoCandidateIsLeftAlone() {
+        val rules = StreamBadgeRules().upsert(pack(b))
+        assertEquals(null, migratedPlayerBadgeSource("https://example.com/packs/Gone.json", rules))
+        assertEquals(null, migratedPlayerBadgeSource("", rules))
+        assertEquals(null, migratedPlayerBadgeSource("   ", rules))
+    }
+
+    @Test
+    fun theMigrationIsIdempotent() {
+        val rules = StreamBadgeRules().upsert(pack(lower))
+        val migrated = migratedPlayerBadgeSource(mixed, rules)
+        assertEquals(null, migratedPlayerBadgeSource(migrated.orEmpty(), rules))
+    }
+
+    @Test
+    fun surroundingWhitespaceIsIgnored() {
+        val rules = StreamBadgeRules().upsert(pack(lower))
+        assertEquals(lower, migratedPlayerBadgeSource("  $mixed ", rules))
+    }
 }

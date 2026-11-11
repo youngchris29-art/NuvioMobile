@@ -331,6 +331,13 @@ object StreamBadgeSettingsRepository {
             saveStreamBadgeRules()
             StreamBadgeSettingsStorage.clearLegacyDebridStreamBadgeRules()
         }
+        // Upgrade: a player source saved under the old ignore-case rule follows its pack once. After
+        // the save it matches exactly, so later loads find nothing to do (no flag on purpose: a
+        // synced blob from a client that still collapses by case can bring an old spelling back).
+        migratedPlayerBadgeSource(playerBadgeSource, streamBadgeRules.normalized())?.let { migrated ->
+            playerBadgeSource = migrated
+            StreamBadgeSettingsStorage.savePlayerBadgeSource(migrated)
+        }
         publish()
     }
 
