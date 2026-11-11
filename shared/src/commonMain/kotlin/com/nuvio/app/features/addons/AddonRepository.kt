@@ -115,17 +115,18 @@ object AddonRepository {
         // Add-ons hub v2 review r5: a same-profile replacement keeps the refresh generations, so a
         // refresh superseded before it carries over can still be told apart.
         _uiState.update { current ->
+            val rebuilt = keepingLiveRefresh(
+                storedUrls.map { manifestUrl ->
+                    existingByUrl[manifestUrl].toPendingAddon(
+                        manifestUrl = manifestUrl,
+                        enabled = enabledByUrl[manifestUrl],
+                    )
+                },
+                current,
+            )
             AddonsUiState(
-                refreshGenerations = current.refreshGenerations,
-                addons = keepingLiveRefresh(
-                    storedUrls.map { manifestUrl ->
-                        existingByUrl[manifestUrl].toPendingAddon(
-                            manifestUrl = manifestUrl,
-                            enabled = enabledByUrl[manifestUrl],
-                        )
-                    },
-                    current,
-                ),
+                refreshGenerations = generationsForList(current.refreshGenerations, rebuilt),
+                addons = rebuilt,
                 isInitialized = true,
             )
         }
@@ -226,17 +227,18 @@ object AddonRepository {
                         // Add-ons hub v2 review r5: a same-profile replacement keeps the refresh generations, so a
                         // refresh superseded before it carries over can still be told apart.
                         _uiState.update { current ->
+                            val rebuilt = keepingLiveRefresh(
+                                localUrls.map { url ->
+                                    existingByUrl[url].toPendingAddon(
+                                        manifestUrl = url,
+                                        enabled = enabledByUrl[url],
+                                    )
+                                },
+                                current,
+                            )
                             AddonsUiState(
-                                refreshGenerations = current.refreshGenerations,
-                                addons = keepingLiveRefresh(
-                                    localUrls.map { url ->
-                                        existingByUrl[url].toPendingAddon(
-                                            manifestUrl = url,
-                                            enabled = enabledByUrl[url],
-                                        )
-                                    },
-                                    current,
-                                ),
+                                refreshGenerations = generationsForList(current.refreshGenerations, rebuilt),
+                                addons = rebuilt,
                                 // This path completes bootstrap below, so the published state
                                 // says so too — a pull that wins the race with initialize() must not
                                 // leave watchers thinking bootstrap never happened.
@@ -261,19 +263,20 @@ object AddonRepository {
                 // Add-ons hub v2 review r5: a same-profile replacement keeps the refresh generations, so a
                 // refresh superseded before it carries over can still be told apart.
                 _uiState.update { current ->
+                    val rebuilt = keepingLiveRefresh(
+                        urls.map { url ->
+                            val row = rowsByUrl[url]
+                            existingByUrl[url].toPendingAddon(
+                                manifestUrl = url,
+                                userSetName = row?.name?.takeIf { it.isNotBlank() },
+                                enabled = row?.enabled,
+                            )
+                        },
+                        current,
+                    )
                     AddonsUiState(
-                        refreshGenerations = current.refreshGenerations,
-                        addons = keepingLiveRefresh(
-                            urls.map { url ->
-                                val row = rowsByUrl[url]
-                                existingByUrl[url].toPendingAddon(
-                                    manifestUrl = url,
-                                    userSetName = row?.name?.takeIf { it.isNotBlank() },
-                                    enabled = row?.enabled,
-                                )
-                            },
-                            current,
-                        ),
+                        refreshGenerations = generationsForList(current.refreshGenerations, rebuilt),
+                        addons = rebuilt,
                         // As above: the server's list IS a settled bootstrap for this profile.
                         isInitialized = true,
                     )
@@ -357,8 +360,11 @@ object AddonRepository {
         _uiState.update { current ->
             appended = current.addons.none { isSameManifestUrl(it.manifestUrl, manifestUrl) }
             if (!appended) return@update current
-            current.copy(
-                addons = current.addons + ManagedAddon(
+            // Review (races item 1): the append also ends any refresh generation left for this URL
+            // by an earlier instance, so that instance's request can never publish onto this one.
+            withInstalledAddon(
+                current,
+                ManagedAddon(
                     manifestUrl = manifestUrl,
                     manifest = manifest,
                     enabled = enabled,
@@ -379,11 +385,31 @@ object AddonRepository {
         if (isUsingPrimaryAddonsFromSecondaryProfile()) return
         log.i { "removeAddon() — $manifestUrl" }
         var changed = false
-        _uiState.update { current ->
-            val updatedAddons = current.addons.filterNot { it.manifestUrl == manifestUrl }
-            changed = updatedAddons.size != current.addons.size
-            if (changed) current.copy(addons = updatedAddons) else current
+        var cancelled: Job? = null
+        // Races item 1/4: the removal ends the URL's refresh generation, drops its health and takes
+        // its job out in the same step as the list change, under the lock refresh registration
+        // uses. A reinstall that lands before the (asynchronous) removal watcher runs therefore
+        // starts clean: the removed instance's request fails its generation check. The job is
+        // cancelled after the lock, as `resetRefreshesAndState` does.
+        synchronized(refreshJobsLock) {
+            _uiState.update { current ->
+                val updatedAddons = current.addons.filterNot { it.manifestUrl == manifestUrl }
+                changed = updatedAddons.size != current.addons.size
+                if (changed) {
+                    current.copy(
+                        addons = updatedAddons,
+                        refreshGenerations = generationsForList(current.refreshGenerations, updatedAddons),
+                    )
+                } else {
+                    current
+                }
+            }
+            if (changed) {
+                cancelled = activeRefreshJobs.remove(manifestUrl)
+                AddonHealthTracker.forget(manifestUrl)
+            }
         }
+        cancelled?.cancel()
         if (!changed) return
         persist()
         pushToServer()
@@ -500,7 +526,10 @@ object AddonRepository {
                         addon.enabled && addon.manifest == null && !addon.isRefreshing &&
                             current.addons.firstOrNull { it.manifestUrl == addon.manifestUrl }?.enabled == false
                     }.map { it.manifestUrl }
-                    current.copy(addons = outcome.addons)
+                    current.copy(
+                        addons = outcome.addons,
+                        refreshGenerations = generationsForList(current.refreshGenerations, outcome.addons),
+                    )
                 }
             }
         }
@@ -938,6 +967,24 @@ internal fun defaultAddonSeedingAllowed(authState: AuthState, serverPullSettled:
 /** [current] with [generation] (a unique refresh id) as [manifestUrl]'s newest refresh. */
 internal fun withRefreshGeneration(current: Map<String, Long>, manifestUrl: String, generation: Long): Map<String, Long> =
     current + (manifestUrl to generation)
+
+/**
+ * Races item 1: [current] generations kept only for the URLs still in [addons]. A generation for a
+ * URL that is not listed is stale by definition (`startRefresh` refuses absent URLs), so a list
+ * change ends the departed URLs' generations while every kept URL carries its own over (review r5).
+ */
+internal fun generationsForList(current: Map<String, Long>, addons: List<ManagedAddon>): Map<String, Long> {
+    if (current.isEmpty()) return current
+    val listed = addons.mapTo(HashSet()) { it.manifestUrl }
+    return current.filterKeys { it in listed }
+}
+
+/** Races item 1: [current] with [addon] appended and any stale refresh generation for its URL ended. */
+internal fun withInstalledAddon(current: AddonsUiState, addon: ManagedAddon): AddonsUiState =
+    current.copy(
+        addons = current.addons + addon,
+        refreshGenerations = current.refreshGenerations - addon.manifestUrl,
+    )
 
 /**
  * Add-ons hub v2 review r6: a same-profile rebuild of the list (`initialize`, a server pull) builds
