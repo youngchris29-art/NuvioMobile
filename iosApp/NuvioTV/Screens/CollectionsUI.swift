@@ -1698,7 +1698,7 @@ struct FolderDetailView: View {
                 .accessibilityIdentifier("folder_header_state")
             // GitHub #28: laid-out frames (not accessibility frames) for the header UI tests.
             // Tile frames are in content space; screen y at rest = pane.minY + content minY.
-            Text("folder_grid_geometry style=\(collectionHeaderStyle.rawValue) pane=\(Int(paneFrame.minY)),\(Int(paneFrame.maxY)) rows=\(gridRowsReadout) cols=\(gridColumnsReadout) chips=\(hasChips ? 1 : 0)")
+            Text("folder_grid_geometry style=\(collectionHeaderStyle.rawValue) pane=\(String(Int(paneFrame.minY))),\(String(Int(paneFrame.maxY))) rows=\(gridRowsReadout) cols=\(String(gridColumnsReadout)) chips=\(hasChips ? 1 : 0)")
                 .font(.system(size: 8))
                 .opacity(0.011)
                 .allowsHitTesting(false)

@@ -203,7 +203,8 @@ final class CollectionHeaderUITests: XCTestCase {
                 XCTAssertEqual(g.rows[0].min, 138, accuracy: 1, "\(tag): \(g.line)")
                 XCTAssertEqual(g.paneMin, seedName == "one" ? 285 : 384, accuracy: 1, "\(tag): \(g.line)")
                 XCTAssertEqual(g.top(0), seedName == "one" ? 423 : 522, accuracy: 1, "\(tag): \(g.line)")
-                XCTAssertEqual(g.paneMax, 1080, accuracy: 1, "\(tag): \(g.line)")
+                // The laid-out pane ends at the bottom safe area (1020); the earlier 1080 was an AX frame.
+                XCTAssertEqual(g.paneMax, 1020, accuracy: 1, "\(tag): \(g.line)")
                 note(tag, "\(st) | \(g.line)")
                 shot("\(tag)-rest")
             }
