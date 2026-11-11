@@ -69,4 +69,49 @@ final class FolderHeaderGeometryTests: XCTestCase {
         XCTAssertEqual(G.progress(scrolled: .nan), 0)
         XCTAssertEqual(G.progress(scrolled: .infinity), 1)
     }
+
+    // MARK: - GitHub #28 Collection Header (Standard / Compact)
+
+    func testStandardEffectiveScrollIsIdentity() {
+        for s in stride(from: CGFloat(-40), through: 300, by: 5) {
+            XCTAssertEqual(G.effectiveScroll(s, mode: .standard), s)
+        }
+        XCTAssertEqual(G.headerLayoutHeight(.standard), 106)
+        XCTAssertEqual(G.editControlTop(.standard), 32)
+    }
+
+    func testCompactConstants() {
+        XCTAssertEqual(G.headerLayoutHeight(.compact), 0)
+        XCTAssertEqual(G.gridTopPad, 32)
+        XCTAssertEqual(G.firstRowOffsetInPane(.standard), 138)
+        XCTAssertEqual(G.firstRowOffsetInPane(.compact), 32)
+        XCTAssertEqual(G.firstRowOffsetInPane(.standard) - G.firstRowOffsetInPane(.compact), G.riseDistance)
+        XCTAssertEqual(G.reclaimedTop, 60)
+        XCTAssertEqual(G.editControlTop(.compact), 12)
+    }
+
+    func testCompactAtRestIsStandardRisen() {
+        for s in stride(from: CGFloat(0), through: 300, by: 5) {
+            let e = G.effectiveScroll(s, mode: .compact)
+            XCTAssertEqual(G.logoScale(scrolled: e), G.compactLogoSlot / G.logoSlot, accuracy: 1e-9)
+            XCTAssertEqual(G.restTop - G.riseDistance - s + G.logoOffsetY(scrolled: e), G.compactTop, accuracy: 1e-9)
+            XCTAssertEqual(G.restTop + G.logoSlot + G.gap - G.riseDistance - s + G.pinnedOffsetY(scrolled: e),
+                           G.compactTop + G.compactLogoSlot + G.gap, accuracy: 1e-9)
+            XCTAssertEqual(G.compactTop + G.compactLogoSlot + G.gap, 92)
+        }
+    }
+
+    func testCompactOverscrollMovesWithContent() {
+        for s in stride(from: CGFloat(-60), through: 0, by: 5) {
+            let e = G.effectiveScroll(s, mode: .compact)
+            XCTAssertEqual(e, G.riseDistance)
+            XCTAssertEqual(G.logoScale(scrolled: e), G.compactLogoSlot / G.logoSlot, accuracy: 1e-9)
+            XCTAssertEqual(G.pinnedOffsetY(scrolled: e), 0)
+        }
+    }
+
+    func testGhostEqualsCompactBlock() {
+        XCTAssertEqual(G.compactBlockHeight(chips: nil), 128)
+        XCTAssertEqual(G.compactBlockHeight(chips: 83), 227)
+    }
 }
