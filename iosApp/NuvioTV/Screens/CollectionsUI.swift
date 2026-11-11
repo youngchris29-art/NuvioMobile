@@ -1527,6 +1527,17 @@ struct FolderDetailView: View {
     /// FEAT-79: the Classic rows page lists every source as a row, so it has no tab chips.
     private var hasChips: Bool { model.tabs.count > 1 && !classicRows }
 
+    /// GitHub #28: Down from the Edit control (Classic's Edit Filters, Stage's Edit menu) onto the
+    /// chip row. In Compact the chip row sits entirely above the grid pane (pane top 188 / 287, chips
+    /// 152-235), and the focus engine only offers an off-pane item to a search that starts inside
+    /// that scroll view, so from the control (outside it) Down skipped the chips and landed on the
+    /// poster below. Standard's chips are partly inside the pane, so the engine finds them itself:
+    /// nothing runs there.
+    private func enterChipsFromControl() {
+        guard headerMode == .compact, hasChips else { return }
+        focusedChip = min(max(model.selectedTabIndex, 0), model.tabs.count - 1)
+    }
+
     /// FEAT-79: Classic Home + Rows layout: the grid page with Classic rows in place of the grid.
     private var classicRows: Bool { homeLayout == .classic && pageLayout == .rows }
 
@@ -1564,7 +1575,8 @@ struct FolderDetailView: View {
                                    layout: layout,
                                    isActive: usesStripRowsPage ? rowsAtTop : !gridScrolled,
                                    editing: $editing,
-                                   top: layout == .grid ? FolderHeaderGeometry.editControlTop(headerMode) : FolderHeaderGeometry.restTop)
+                                   top: layout == .grid ? FolderHeaderGeometry.editControlTop(headerMode) : FolderHeaderGeometry.restTop,
+                                   onMoveDown: layout == .grid ? { enterChipsFromControl() } : nil)
                     .modifier(CollectionHeaderBandReclaim(active: layout == .grid && headerMode == .compact))
             }
         }
@@ -2214,6 +2226,9 @@ struct FolderDetailView: View {
                 .disabled(gridScrolled)
                 .accessibilityIdentifier("folder.editFilters")
             }
+            .onMoveCommand { direction in
+                if direction == .down { enterChipsFromControl() }
+            }
             // Full-width (the Spacer) focus section, as `FolderEditMenuBand` does in Stage: Up from
             // a chip or card anywhere along the page reaches the corner button.
             .focusSection()
@@ -2291,6 +2306,8 @@ struct FolderEditMenuBand: View {
     @Binding var editing: FolderDetailViewModel.EditableSource?
     /// GitHub #28: the band's top padding (Compact on the Grid page lifts it level with the small title).
     var top: CGFloat = FolderHeaderGeometry.restTop
+    /// GitHub #28: called on Down from the pill (the Grid page uses it to enter the chip row).
+    var onMoveDown: (() -> Void)? = nil
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dismiss) private var dismiss
     /// FEAT-71: the band shows only while its pill holds focus.
@@ -2312,6 +2329,9 @@ struct FolderEditMenuBand: View {
         Group {
             if isActive {
                 band.focusSection()
+                    .onMoveCommand { direction in
+                        if direction == .down { onMoveDown?() }
+                    }
             } else {
                 band.hidden()
             }

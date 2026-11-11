@@ -273,8 +273,23 @@ final class CollectionHeaderUITests: XCTestCase {
             guard let g = readGeo(app) else { return }
             let restTop = g.top(0)
 
+            // Left / Right along the chips.
+            let startChip = Self.token(state(app), "chip") ?? "-"
+            remote.press(.right); pause(1)
+            let rightChip = Self.token(state(app), "chip") ?? "-"
+            XCTAssertNotEqual(rightChip, "-", "\(tag): Right keeps focus on the chips: \(state(app))")
+            XCTAssertNotEqual(rightChip, startChip, "\(tag): Right moves along the chips: \(state(app))")
+            remote.press(.left); pause(1)
+            XCTAssertEqual(Self.token(state(app), "chip"), startChip, "\(tag): Left moves back along the chips: \(state(app))")
+
             remote.press(.down); pause(1)
             XCTAssertEqual(Self.token(state(app), "chip"), "-", "\(tag): Down enters the grid: \(state(app))")
+            XCTAssertEqual(Self.token(state(app), "scrolled"), "0", "\(tag): Down from a chip lands on row 1, not scrolled: \(state(app))")
+            // Up from row 1 at rest reaches the chip row.
+            remote.press(.up); pause(1)
+            XCTAssertNotEqual(Self.token(state(app), "chip"), "-", "\(tag): Up from row 1 posters reaches the chips: \(state(app))")
+            remote.press(.down); pause(1)
+            XCTAssertEqual(Self.token(state(app), "chip"), "-", "\(tag): Down re-enters the grid: \(state(app))")
             var scrolled = Self.token(state(app), "scrolled") == "1"
             for _ in 0..<3 where !scrolled {
                 remote.press(.down); pause(1)
@@ -337,7 +352,7 @@ final class CollectionHeaderUITests: XCTestCase {
             XCTAssertGreaterThanOrEqual(f.minX, 1400, "classic-compact: Edit Filters is trailing")
         }
         shot("compact-edit-classic")
-        assertEditControlTakesFocus(classic, control: button, tag: "classic-compact", downReturnsToChips: false)
+        assertEditControlTakesFocus(classic, control: button, tag: "classic-compact", downReturnsToChips: true)
 
         // Classic, Standard (control)
         guard let standard = openFolder(style: "standard", seed: Self.editSeed, shell: "T", terminateFirst: classic) else { return }
@@ -369,7 +384,7 @@ final class CollectionHeaderUITests: XCTestCase {
         shot("compact-edit-stage")
         // Up from the chips already ran above; assert it moved focus, then that Down gives it back.
         assertFocusOnControl(stage, menu, "stage-compact")
-        assertEditControlReleasesFocus(stage, control: menu, tag: "stage-compact", returnsToChips: false)
+        assertEditControlReleasesFocus(stage, control: menu, tag: "stage-compact", returnsToChips: true)
     }
 
     private struct FocusNode { let identifier: String; let label: String; let frame: CGRect }
@@ -409,9 +424,8 @@ final class CollectionHeaderUITests: XCTestCase {
         XCTAssertEqual(Self.token(state(app), "chip"), "-", "\(tag): a chip still holds focus after Up | \(state(app))")
     }
 
-    /// Standard (control): Down returns focus to the chips. Compact, measured on the clone: the control
-    /// sits above the chip row at the trailing edge and Down lands on the poster beneath it, not on a
-    /// chip (`returnsToChips: false` asserts only that focus left the control; see the batch doc).
+    /// Down from the Edit control returns focus to the chips, in Standard and in Compact (Compact's chip
+    /// row is wholly above the grid pane, so `enterChipsFromControl` hands the focus over by hand).
     private func assertEditControlReleasesFocus(_ app: XCUIApplication, control: XCUIElement, tag: String, returnsToChips: Bool) {
         remote.press(.down); pause(1.5)
         let nodes = focusedNodes(app).map { "\($0.identifier)|\($0.label)|\($0.frame)" }
