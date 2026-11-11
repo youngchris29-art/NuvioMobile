@@ -352,7 +352,7 @@ final class CollectionHeaderUITests: XCTestCase {
             XCTAssertGreaterThanOrEqual(f.minX, 1400, "classic-compact: Edit Filters is trailing")
         }
         shot("compact-edit-classic")
-        assertEditControlTakesFocus(classic, control: button, tag: "classic-compact", downReturnsToChips: true)
+        assertEditControlTakesFocus(classic, control: button, tag: "classic-compact", downReturnsToChips: true, selectedChip: "2")
 
         // Classic, Standard (control)
         guard let standard = openFolder(style: "standard", seed: Self.editSeed, shell: "T", terminateFirst: classic) else { return }
@@ -364,7 +364,7 @@ final class CollectionHeaderUITests: XCTestCase {
             XCTAssertEqual(sbutton.frame.minY, 189, accuracy: 2, "classic-standard: Edit Filters top (157 + 32)")
         }
         shot("standard-edit-classic")
-        assertEditControlTakesFocus(standard, control: sbutton, tag: "classic-standard", downReturnsToChips: true)
+        assertEditControlTakesFocus(standard, control: sbutton, tag: "classic-standard", downReturnsToChips: true, selectedChip: "2")
 
         // Stage Home, Grid page, Compact: the Edit band's pill takes focus on Up.
         guard let stage = openFolder(style: "compact", seed: Self.editSeed, shell: "T", stage: true, terminateFirst: standard) else { return }
@@ -384,7 +384,18 @@ final class CollectionHeaderUITests: XCTestCase {
         shot("compact-edit-stage")
         // Up from the chips already ran above; assert it moved focus, then that Down gives it back.
         assertFocusOnControl(stage, menu, "stage-compact")
-        assertEditControlReleasesFocus(stage, control: menu, tag: "stage-compact", returnsToChips: true)
+        assertEditControlReleasesFocus(stage, control: menu, tag: "stage-compact", returnsToChips: true, selectedChip: "2")
+
+        // Stage Home, Grid page, Standard (control): the engine reaches the chips itself.
+        guard let stageStandard = openFolder(style: "standard", seed: Self.editSeed, shell: "T", stage: true, terminateFirst: stage) else { return }
+        selectDiscoverChip(stageStandard, "stage-standard")
+        remote.press(.up); pause(1.5)
+        let smenu = stageStandard.descendants(matching: .any)["folder.editMenu"].firstMatch
+        XCTAssertTrue(smenu.waitForExistence(timeout: 8), "stage-standard: folder.editMenu never existed")
+        if smenu.exists {
+            assertFocusOnControl(stageStandard, smenu, "stage-standard")
+            assertEditControlReleasesFocus(stageStandard, control: smenu, tag: "stage-standard", returnsToChips: true, selectedChip: "2")
+        }
     }
 
     private struct FocusNode { let identifier: String; let label: String; let frame: CGRect }
@@ -410,11 +421,11 @@ final class CollectionHeaderUITests: XCTestCase {
             || ($0.frame.width > 20 && f.contains(CGPoint(x: $0.frame.midX, y: $0.frame.midY))) }
     }
 
-    private func assertEditControlTakesFocus(_ app: XCUIApplication, control: XCUIElement, tag: String, downReturnsToChips: Bool) {
+    private func assertEditControlTakesFocus(_ app: XCUIApplication, control: XCUIElement, tag: String, downReturnsToChips: Bool, selectedChip: String? = nil) {
         guard control.exists else { return }
         remote.press(.up); pause(1.5)
         assertFocusOnControl(app, control, tag)
-        assertEditControlReleasesFocus(app, control: control, tag: tag, returnsToChips: downReturnsToChips)
+        assertEditControlReleasesFocus(app, control: control, tag: tag, returnsToChips: downReturnsToChips, selectedChip: selectedChip)
     }
 
     private func assertFocusOnControl(_ app: XCUIApplication, _ control: XCUIElement, _ tag: String) {
@@ -425,14 +436,23 @@ final class CollectionHeaderUITests: XCTestCase {
     }
 
     /// Down from the Edit control returns focus to the chips, in Standard and in Compact (Compact's chip
-    /// row is wholly above the grid pane, so `enterChipsFromControl` hands the focus over by hand).
-    private func assertEditControlReleasesFocus(_ app: XCUIApplication, control: XCUIElement, tag: String, returnsToChips: Bool) {
+    /// row is wholly above the grid pane, so the page's focus watcher hands the focus over when the
+    /// engine lands on a poster). `selectedChip` is the selected tab's index: the chip that takes
+    /// focus is that one, and the grid never scrolled and its pane did not move (a brief poster
+    /// focus must not leave a trace).
+    private func assertEditControlReleasesFocus(_ app: XCUIApplication, control: XCUIElement, tag: String, returnsToChips: Bool, selectedChip: String? = nil) {
+        let paneBefore = Self.token(geometry(app), "pane")
         remote.press(.down); pause(1.5)
         let nodes = focusedNodes(app).map { "\($0.identifier)|\($0.label)|\($0.frame)" }
         note(tag, "after Down: focused=\(nodes) | \(state(app))")
         XCTAssertFalse(controlHasFocus(app, control), "\(tag): Down did not leave the Edit control | \(nodes)")
         if returnsToChips {
             XCTAssertNotEqual(Self.token(state(app), "chip"), "-", "\(tag): Down did not return focus to the chips | \(nodes)")
+            if let selectedChip {
+                XCTAssertEqual(Self.token(state(app), "chip"), selectedChip, "\(tag): focus is not on the selected chip | \(state(app))")
+            }
+            XCTAssertEqual(Self.token(state(app), "scrolled"), "0", "\(tag): the grid scrolled | \(state(app))")
+            XCTAssertEqual(Self.token(geometry(app), "pane"), paneBefore, "\(tag): the grid pane moved | \(geometry(app))")
         }
     }
 
