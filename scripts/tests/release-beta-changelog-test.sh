@@ -43,6 +43,26 @@ check "mid-line marker only line" "Visible text" "$(strip_changelog_note < "$TMP
 printf 'Line one\nLine two   <!-- internal --> secret\nhidden\n' > "$TMP/g.md"
 check "mid-line marker after public lines" $'Line one\nLine two' "$(strip_changelog_note < "$TMP/g.md")"
 
+printf 'Public\n<!-- internal: notes -->\nsecret\n' > "$TMP/h.md"
+check "internal: form own line" "Public" "$(strip_changelog_note < "$TMP/h.md")"
+printf 'Public text <!-- internal: the sections below are records, not copy -->\nsecret\n' > "$TMP/h2.md"
+check "internal: form mid-line" "Public text" "$(strip_changelog_note < "$TMP/h2.md")"
+printf 'Public\n<!--internal-->\nsecret\n' > "$TMP/h3.md"
+check "no-space marker" "Public" "$(strip_changelog_note < "$TMP/h3.md")"
+printf 'Internal testing went well\n<!-- note -->\nan internal detail\nlast\n' > "$TMP/h4.md"
+check "prose and other comments do not cut" $'Internal testing went well\n<!-- note -->\nan internal detail\nlast' "$(strip_changelog_note < "$TMP/h4.md")"
+
+printf '\357\273\277---\nstate: x\n---\nBody\n' > "$TMP/i.md"
+check "BOM before frontmatter" "Body" "$(strip_changelog_note < "$TMP/i.md")"
+printf '\n\n---\nstate: x\n---\nBody\n' > "$TMP/j.md"
+check "blank lines before frontmatter" "Body" "$(strip_changelog_note < "$TMP/j.md")"
+printf -- '---\rstate: x\r---\rBody one\r\r<!-- internal -->\rsecret\r' > "$TMP/k.md"
+check "CR-only endings" $'Body one' "$(strip_changelog_note < "$TMP/k.md")"
+printf -- '---\nstate: x\nno close\nBody\n' > "$TMP/l.md"
+if strip_changelog_note < "$TMP/l.md" >/dev/null 2>&1; then echo "FAIL unclosed frontmatter should error"; FAIL=1; else echo "ok   unclosed frontmatter errors"; fi
+printf -- '---\nx: 1\n---\nTop\n\n---\n\nBelow rule\n' > "$TMP/m.md"
+check "later hr stays body" $'Top\n\n---\n\nBelow rule' "$(strip_changelog_note < "$TMP/m.md")"
+
 check "next after 21"        22 "$(printf '21\n' | beta_next_n)"
 check "next after 21.5"      22 "$(printf '21\n21.5\n' | beta_next_n)"
 check "next after 22"        23 "$(printf '21\n21.5\n22\n' | beta_next_n)"

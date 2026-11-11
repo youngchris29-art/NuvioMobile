@@ -70,18 +70,24 @@ EOF
 # BEGIN testable helpers (scripts/tests/release-beta-changelog-test.sh extracts these)
 
 # strip_changelog_note: read a local comms note on stdin, write only the
-# publishable release-note text to stdout. Removes YAML frontmatter (only when
-# line 1 is ---), a leading **NOT SENT** / **SENT ...** status line, and
-# everything from an <!-- internal --> marker on; trims blank edge lines.
+# publishable release-note text to stdout. Removes YAML frontmatter (when the
+# first non-blank line, after any BOM, is ---), a leading **NOT SENT** / **SENT ...** status line, and
+# everything from an <!-- internal marker (any form, as the copy linter) on; trims blank edge lines.
 # Exits 1 (stderr message) when nothing is left. A file with none of these
 # passes through unchanged apart from edge-blank trimming.
 strip_changelog_note() {
-  local out
-  out="$(awk '
-    { sub(/\r$/, "") }
-    NR == 1 && $0 ~ /^---[ \t]*$/ { fm = 1; next }
+  local out cr bom
+  cr="$(printf '\r')"
+  bom="$(printf '\357\273\277')"
+  # Normalise first so every edge fails closed: drop a UTF-8 BOM on line 1,
+  # CRLF -> LF, then any remaining bare CR -> LF (CR-only files).
+  out="$(sed -e "1s/^${bom}//" -e "s/${cr}\$//" | tr '\r' '\n' | awk '
+    !seen && $0 ~ /^[ \t]*$/ { next }
+    !seen { seen = 1; if ($0 ~ /^---[ \t]*$/) { fm = 1; next } }
     fm == 1 { if ($0 ~ /^---[ \t]*$/) fm = 0; next }
-    match($0, /<!--[ \t]*internal[ \t]*-->/) {
+    # Same cut as scripts/deslop/deslop.py (prefix "<!-- internal", case-sensitive),
+    # widened only on spacing so "<!--internal-->" also cuts (fail closed).
+    match($0, /<!--[ \t]*internal/) {
       pre = substr($0, 1, RSTART - 1)
       sub(/[ \t]+$/, "", pre)
       if (pre != "" && pre !~ /^[ \t]*$/ && !(!started && pre ~ /^\*\*(NOT SENT|SENT)/)) print pre
