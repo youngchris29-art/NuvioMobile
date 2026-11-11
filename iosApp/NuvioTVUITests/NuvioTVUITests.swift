@@ -8302,10 +8302,13 @@ final class NuvioTVUITests: XCTestCase {
     /// pixels; the `folder_header` AX frame is compared only at rest, where it equals what is drawn.
     func test69FolderHeaderRisesAndStays() throws {
         let folderTitle = "ZZFolderProbeFolder"
-        let app = launchToHomeWithSeededCollections(Self.folderProbeSeedJson)
+        // GitHub #28: pin the header style (the argument domain shadows a stored Compact).
+        let app = launchToHomeWithSeededCollections(Self.folderProbeSeedJson,
+                                                    extraArguments: ["-collection_header_style", "standard"])
         defer {
             // The import REPLACED this profile's collections; put back the fixture's (none).
-            let restored = launchToHomeWithSeededCollections("[]")
+            let restored = launchToHomeWithSeededCollections("[]",
+                                                             extraArguments: ["-collection_header_style", "standard"])
             XCTAssertTrue(restored.state == .runningForeground)
         }
         pause(1.5)
@@ -9715,7 +9718,7 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["settings_pane_homeScreen"].waitForExistence(timeout: 4), "Home Screen pane did not push")
         // Home Stage & Strip (P2 §3.2, §4.4): the pane's first row is now the Home Layout picker
         // (the new Layout section), in both layouts. This run is Classic (`launchToHome`): Home
-        // Layout → Upcoming Episodes → Show Hero (or Refresh Add-ons with no catalogs).
+        // Layout → Collections Layout → Collection Header → Upcoming Episodes → Show Hero (or Refresh Add-ons with no catalogs).
         XCTAssertEqual(titleBecomes(["Home Layout"]), "Home Layout", "on the pane's first row the explainer must describe Home Layout")
         let rowBody = explainerBody.exists ? explainerBody.label : ""
         XCTAssertFalse(rowBody.isEmpty, "the explainer body is empty on the Home Layout row")
@@ -9723,17 +9726,24 @@ final class NuvioTVUITests: XCTestCase {
         shot(app, "82b_home_layout")
         // ui-legs (2026-10-22): Batch F put Collections Layout directly under Home Layout in both
         // layouts (HomeScreenSettingsPane.layoutSection), one row above Upcoming Episodes.
+        // GitHub #28: Collection Header sits directly under Collections Layout in both layouts.
         press(.down, times: 1)
         XCTAssertEqual(titleBecomes(["Collections Layout"]), "Collections Layout", "Classic: Down from Home Layout must move the explainer to Collections Layout (Ambient Background is Stage only)")
+        let collectionsBody = explainerBody.exists ? explainerBody.label : ""
         press(.down, times: 1)
-        XCTAssertEqual(titleBecomes(["Upcoming Episodes"]), "Upcoming Episodes", "Classic: Down from Collections Layout must move the explainer to Upcoming Episodes")
+        XCTAssertEqual(titleBecomes(["Collection Header"]), "Collection Header", "Classic: Down from Collections Layout must move the explainer to Collection Header")
+        let headerBody = explainerBody.exists ? explainerBody.label : ""
+        XCTAssertFalse(headerBody.isEmpty, "the explainer body is empty on the Collection Header row")
+        XCTAssertNotEqual(headerBody, collectionsBody, "the explainer body still shows the Collections Layout text on Collection Header")
+        press(.down, times: 1)
+        XCTAssertEqual(titleBecomes(["Upcoming Episodes"]), "Upcoming Episodes", "Classic: Down from Collection Header must move the explainer to Upcoming Episodes")
         shot(app, "82b2_home_upcoming")
         press(.down, times: 1)
         let next = titleBecomes(["Show Hero", "Refresh Add-ons"])
         XCTAssertTrue(["Show Hero", "Refresh Add-ons"].contains(next), "Classic: Down from Upcoming Episodes must move the explainer to Show Hero (or Refresh Add-ons with no catalogs), got '\(next)'")
         shot(app, "82c_home_next_row")
 
-        // Stage run: Home Layout, then Ambient Background (Stage only, directly below it).
+        // Stage run: Home Layout, Collections Layout, Collection Header, then Ambient Background (Stage only).
         let stage = launchToHome(forceFreshLaunch: true, homeLayout: "stage")
         XCTAssertTrue(openSettingsCategory(stage, named: "Home Screen"), "Settings › Home Screen pane did not open (Stage)")
         let stageTitle = stage.staticTexts["settings_explainer_title"]
@@ -9750,7 +9760,9 @@ final class NuvioTVUITests: XCTestCase {
         press(.down, times: 1)
         XCTAssertEqual(stageTitleBecomes("Collections Layout"), "Collections Layout", "Stage: Down from Home Layout must reach Collections Layout (Batch F)")
         press(.down, times: 1)
-        XCTAssertEqual(stageTitleBecomes("Ambient Background"), "Ambient Background", "Stage: Down from Collections Layout must reach Ambient Background")
+        XCTAssertEqual(stageTitleBecomes("Collection Header"), "Collection Header", "Stage: Down from Collections Layout must reach Collection Header (GitHub #28)")
+        press(.down, times: 1)
+        XCTAssertEqual(stageTitleBecomes("Ambient Background"), "Ambient Background", "Stage: Down from Collection Header must reach Ambient Background")
         shot(stage, "82c2_stage_ambient")
 
         // Minimal style: no explainer column at the root.
