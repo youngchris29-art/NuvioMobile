@@ -1490,8 +1490,15 @@ struct FolderDetailView: View {
     /// C: the grid stays covered until its first posters are warm (≤ 0.45 s), instead of every card
     /// flashing its shimmer. One write per load; reset without animation on a tab change.
     @State private var gridRevealed = false
+    /// GitHub #28: the one focus value for the Grid page's header controls and cards (the Edit
+    /// control, a tab chip, a poster). One `FocusState` so its `onChange` sees the previous and the
+    /// new holder together (`redirectFocusFromControlToCards`).
+    @FocusState private var pageFocus: FolderPageFocus?
     /// C (probe only): which tab chip holds focus.
-    @FocusState private var focusedChip: Int?
+    private var focusedChip: Int? {
+        if case .chip(let index) = pageFocus { return index }
+        return nil
+    }
     /// BUG-190: the Classic rows page's hero models live in `FolderClassicHeroHost`, mounted only
     /// by that page (review r1: a `@StateObject` here built them for every Grid and Stage Rows
     /// folder page too).
@@ -1527,15 +1534,23 @@ struct FolderDetailView: View {
     /// FEAT-79: the Classic rows page lists every source as a row, so it has no tab chips.
     private var hasChips: Bool { model.tabs.count > 1 && !classicRows }
 
-    /// GitHub #28: Down from the Edit control (Classic's Edit Filters, Stage's Edit menu) onto the
-    /// chip row. In Compact the chip row sits entirely above the grid pane (pane top 188 / 287, chips
-    /// 152-235), and the focus engine only offers an off-pane item to a search that starts inside
-    /// that scroll view, so from the control (outside it) Down skipped the chips and landed on the
-    /// poster below. Standard's chips are partly inside the pane, so the engine finds them itself:
-    /// nothing runs there.
-    private func enterChipsFromControl() {
-        guard headerMode == .compact, hasChips else { return }
-        focusedChip = min(max(model.selectedTabIndex, 0), model.tabs.count - 1)
+    /// GitHub #28: moving down from the Edit control (Classic's Edit Filters, Stage's Edit menu) must
+    /// reach the chip row. In Compact the chip row sits entirely above the grid pane (pane top 188 /
+    /// 287, chips 152-235), and the focus engine only offers an off-pane item to a search that
+    /// starts inside that scroll view, so from the control (outside it) the engine's own move lands
+    /// on the poster below. This watches the FOCUS (not a move command, so a touch-surface swipe the
+    /// engine handles without `onMoveCommand` is covered too): control -> poster in Compact, with
+    /// chips and the grid at rest, sends focus to the selected chip. The decision is
+    /// `FolderHeaderFocusRedirect.shouldRedirect`; after the redirect the holder is a chip, which
+    /// the rule never redirects, so it cannot loop. Standard's chips are partly inside the pane, so
+    /// the engine finds them itself: the rule is false there.
+    private func redirectFocusFromControlToCards(old: FolderPageFocus?, new: FolderPageFocus?) {
+        guard FolderHeaderFocusRedirect.shouldRedirect(previous: old?.holder ?? .outside,
+                                                       new: new?.holder ?? .outside,
+                                                       compact: headerMode == .compact,
+                                                       hasChips: hasChips,
+                                                       gridScrolled: gridScrolled) else { return }
+        pageFocus = .chip(min(max(model.selectedTabIndex, 0), model.tabs.count - 1))
     }
 
     /// FEAT-79: Classic Home + Rows layout: the grid page with Classic rows in place of the grid.
@@ -1576,7 +1591,7 @@ struct FolderDetailView: View {
                                    isActive: usesStripRowsPage ? rowsAtTop : !gridScrolled,
                                    editing: $editing,
                                    top: layout == .grid ? FolderHeaderGeometry.editControlTop(headerMode) : FolderHeaderGeometry.restTop,
-                                   onMoveDown: layout == .grid ? { enterChipsFromControl() } : nil)
+                                   pageFocus: $pageFocus)
                     .modifier(CollectionHeaderBandReclaim(active: layout == .grid && headerMode == .compact))
             }
         }
@@ -1724,6 +1739,9 @@ struct FolderDetailView: View {
         }
         // C: a new tab hides the grid at once (no fade-out), then the task below reveals it when
         // the new tab's first posters are warm.
+        .onChange(of: pageFocus) { old, new in
+            redirectFocusFromControlToCards(old: old, new: new)
+        }
         .onChange(of: model.selectedTabIndex) { _, _ in
             var transaction = Transaction()
             transaction.disablesAnimations = true
@@ -1964,6 +1982,7 @@ struct FolderDetailView: View {
                         }
                         .cardFocusButtonStyle()
                         .posterButtonShape()
+                        .focused($pageFocus, equals: .card(index))
                         .titleHoldMenu(preview: item)
                         .onAppear { model.itemAppeared(at: index) }
                         // UI test69: only the first tile needs an identifier — the test reads its
@@ -2189,7 +2208,7 @@ struct FolderDetailView: View {
                         model.selectTab(index)
                     }
                     if bindsFocus {
-                        chip.focused($focusedChip, equals: index)
+                        chip.focused($pageFocus, equals: .chip(index))
                     } else {
                         chip
                     }
@@ -2224,10 +2243,8 @@ struct FolderDetailView: View {
                 }
                 .buttonStyle(.bordered)
                 .disabled(gridScrolled)
+                .focused($pageFocus, equals: .control)
                 .accessibilityIdentifier("folder.editFilters")
-            }
-            .onMoveCommand { direction in
-                if direction == .down { enterChipsFromControl() }
             }
             // Full-width (the Spacer) focus section, as `FolderEditMenuBand` does in Stage: Up from
             // a chip or card anywhere along the page reaches the corner button.
@@ -2306,12 +2323,13 @@ struct FolderEditMenuBand: View {
     @Binding var editing: FolderDetailViewModel.EditableSource?
     /// GitHub #28: the band's top padding (Compact on the Grid page lifts it level with the small title).
     var top: CGFloat = FolderHeaderGeometry.restTop
-    /// GitHub #28: called on Down from the pill (the Grid page uses it to enter the chip row).
-    var onMoveDown: (() -> Void)? = nil
+    /// GitHub #28: the page's shared focus value; the pill is `.control`. The band reads it for its
+    /// reveal and the page watches it for the chip-row redirect.
+    var pageFocus: FocusState<FolderPageFocus?>.Binding
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dismiss) private var dismiss
     /// FEAT-71: the band shows only while its pill holds focus.
-    @FocusState private var menuFocused: Bool
+    private var menuFocused: Bool { pageFocus.wrappedValue == .control }
     /// The at-rest opacity: invisible to a viewer, still a focus target (opacity 0 is not).
     static let hiddenOpacity: Double = 0.011
 
@@ -2329,9 +2347,6 @@ struct FolderEditMenuBand: View {
         Group {
             if isActive {
                 band.focusSection()
-                    .onMoveCommand { direction in
-                        if direction == .down { onMoveDown?() }
-                    }
             } else {
                 band.hidden()
             }
@@ -2358,7 +2373,7 @@ struct FolderEditMenuBand: View {
                 }
                 .buttonStyle(.bordered)
                 .disabled(!isActive)
-                .focused($menuFocused)
+                .focused(pageFocus, equals: .control)
                 .accessibilityIdentifier("folder.goBack")
             } else {
                 Menu {
@@ -2378,7 +2393,7 @@ struct FolderEditMenuBand: View {
                 .menuStyle(.button)
                 .buttonStyle(.bordered)
                 .disabled(!isActive)
-                .focused($menuFocused)
+                .focused(pageFocus, equals: .control)
                 .accessibilityIdentifier("folder.editMenu")
             }
         }
@@ -2491,4 +2506,38 @@ final class ClassicRowsFocusMemory {
     }
 
     func isCurrent(_ g: Int) -> Bool { g == generation }
+}
+
+
+/// GitHub #28: who holds focus on the folder Grid page, for one `FocusState` shared by the Edit
+/// control, the tab chips and the poster cards.
+enum FolderPageFocus: Hashable {
+    case control
+    case chip(Int)
+    case card(Int)
+
+    var holder: FolderFocusHolder {
+        switch self {
+        case .control: return .control
+        case .chip: return .chip
+        case .card: return .card
+        }
+    }
+}
+
+/// The kind of view that holds focus; `.outside` = nothing on this page (focus elsewhere).
+enum FolderFocusHolder: Equatable {
+    case outside, control, chip, card
+}
+
+/// GitHub #28 (Compact): the focus engine skips the chip row when moving from the Edit control to
+/// the grid, because the row is off the grid pane. True when focus just went control -> card and the
+/// page should hand it to the selected chip. Everything else is false: chip -> card (a deliberate
+/// move down), card -> card, focus arriving from outside the page (pop from Detail, rail), Standard
+/// (the engine reaches the chips), a folder without chips, and a scrolled grid.
+enum FolderHeaderFocusRedirect {
+    static func shouldRedirect(previous: FolderFocusHolder, new: FolderFocusHolder,
+                               compact: Bool, hasChips: Bool, gridScrolled: Bool) -> Bool {
+        previous == .control && new == .card && compact && hasChips && !gridScrolled
+    }
 }

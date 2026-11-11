@@ -41,3 +41,39 @@ final class CollectionHeaderStyleTests: XCTestCase {
         XCTAssertEqual(FolderGridProbe.columns([:]), 0)
     }
 }
+
+
+/// GitHub #28: the Compact Edit control -> poster focus redirect decision.
+final class FolderHeaderFocusRedirectTests: XCTestCase {
+    private func go(_ previous: FolderFocusHolder, _ new: FolderFocusHolder, compact: Bool = true,
+                    hasChips: Bool = true, scrolled: Bool = false) -> Bool {
+        FolderHeaderFocusRedirect.shouldRedirect(previous: previous, new: new, compact: compact,
+                                                 hasChips: hasChips, gridScrolled: scrolled)
+    }
+
+    func testControlToCardRedirectsInCompactWithChipsAtRest() {
+        XCTAssertTrue(go(.control, .card))
+    }
+
+    func testOtherTransitionsNeverRedirect() {
+        XCTAssertFalse(go(.chip, .card), "Down from a chip is deliberate")
+        XCTAssertFalse(go(.card, .card), "poster to poster")
+        XCTAssertFalse(go(.outside, .card), "arriving from outside the page (Detail pop, rail)")
+        XCTAssertFalse(go(.control, .chip), "already on a chip: no loop")
+        XCTAssertFalse(go(.control, .outside))
+        XCTAssertFalse(go(.card, .control))
+        XCTAssertFalse(go(.card, .chip))
+    }
+
+    func testStandardNoChipsAndScrolledGridDoNothing() {
+        XCTAssertFalse(go(.control, .card, compact: false))
+        XCTAssertFalse(go(.control, .card, hasChips: false))
+        XCTAssertFalse(go(.control, .card, scrolled: true))
+    }
+
+    func testPageFocusMapsToHolder() {
+        XCTAssertEqual(FolderPageFocus.control.holder, .control)
+        XCTAssertEqual(FolderPageFocus.chip(2).holder, .chip)
+        XCTAssertEqual(FolderPageFocus.card(0).holder, .card)
+    }
+}
