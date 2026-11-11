@@ -40,6 +40,8 @@ struct HomeScreenSettingsPane: View {
     @AppStorage(FolderLayoutDefault.defaultsKey) private var folderLayoutDefault = FolderLayoutDefault.defaultValue
     /// Batch F: Classic's own Collections Layout default (Grid unless changed).
     @AppStorage(FolderLayoutDefault.classicDefaultsKey) private var classicFolderLayoutDefault = FolderLayoutDefault.classicDefaultValue
+    /// GitHub #28: the Grid folder page's header, Standard or Compact. Device-local, not synced.
+    @AppStorage(CollectionHeaderStyle.defaultsKey) private var collectionHeaderStyle = CollectionHeaderStyle.defaultValue
 
     /// Home Stage & Strip (H3): the soft wash of the focused title's colors behind the stage.
     /// Default ON. Local-only, not synced; the wash layer reads the same key
@@ -340,6 +342,16 @@ struct HomeScreenSettingsPane: View {
                 selection: isStage ? $folderLayoutDefault : $classicFolderLayoutDefault,
                 options: FolderLayoutDefault.allCases,
                 descriptionID: .homeCollectionsLayout,
+                label: { $0.label }
+            )
+
+            // GitHub #28: the Grid folder page's header. Standard = today's page; Compact starts with
+            // the small title it reaches after a scroll. One device-local key for both Home layouts.
+            SettingsPickerRow(
+                title: String(localized: "Collection Header"),
+                selection: $collectionHeaderStyle,
+                options: CollectionHeaderStyle.allCases,
+                descriptionID: .homeCollectionHeader,
                 label: { $0.label }
             )
 

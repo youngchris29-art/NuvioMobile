@@ -88,6 +88,35 @@ nonisolated enum FolderLayoutDefault: String, CaseIterable, Sendable {
 }
 
 
+/// GitHub #28: Settings › Home Screen › Collection Header, the Grid folder page's header. Standard
+/// is today's page (large title slot that shrinks on scroll); Compact starts with the small title
+/// and also uses the strip at the top of the screen that the hidden tab bar leaves empty.
+/// Device-local `@AppStorage`, not synced, like `folder_layout_default`; one key for both Home layouts.
+nonisolated enum CollectionHeaderStyle: String, CaseIterable, Sendable {
+    case standard
+    case compact
+
+    /// The `UserDefaults` key (device-local, not synced).
+    static let defaultsKey = "collection_header_style"
+    static let defaultValue: CollectionHeaderStyle = .standard
+
+    /// nil, blank or unknown resolves to `defaultValue`. The views store the enum itself through
+    /// `@AppStorage`; this is for raw readers such as tests and tooling.
+    static func resolve(_ raw: String?) -> CollectionHeaderStyle {
+        guard let raw else { return defaultValue }
+        return CollectionHeaderStyle(rawValue: raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+            ?? defaultValue
+    }
+
+    /// The Settings picker label.
+    var label: String {
+        switch self {
+        case .standard: String(localized: "Standard")
+        case .compact: String(localized: "Compact")
+        }
+    }
+}
+
 /// FEAT-76 (D17; Steven rc5: "Genres as a grid, the rest as rows"): one folder's own layout,
 /// chosen from its tile's hold menu. Device-local (`UserDefaults`, one key per folder), NOT synced
 /// with the collection: upstream's `CollectionFolder` has no such field, so the official phone app
