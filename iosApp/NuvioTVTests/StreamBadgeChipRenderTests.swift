@@ -108,6 +108,10 @@ enum BadgeChipRenderHarness {
     static let interior = (x: 130, y: 21)
     /// Outside the chip: the row backdrop.
     static let outside = (x: 4, y: 4)
+    /// Inside the synthetic raster's white bar. The 120x52 PNG scales to 60x26 (height 26), so the
+    /// chip is 72x34 centred in the 260x70 canvas (x 94...166, y 18...52), the image sits at
+    /// x 100...160, y 22...48 and its white bar covers x 100...124.
+    static let artwork = (x: 110, y: 35)
 }
 
 final class BadgeFixtureAnchor {}
@@ -117,6 +121,7 @@ final class BadgeFixtureAnchor {}
 @MainActor
 final class StreamBadgeChipRenderTests: XCTestCase {
     private typealias H = BadgeChipRenderHarness
+    private typealias BadgeChip = StreamBadgeChipView
 
     private func assertNear(_ got: (Int, Int, Int), _ want: (Int, Int, Int), _ msg: String,
                             file: StaticString = #filePath, line: UInt = #line) {
@@ -127,6 +132,7 @@ final class StreamBadgeChipRenderTests: XCTestCase {
 
     func testFocusedChipInteriorMatchesRest() async throws {
         let art = try H.writeArtwork()
+        var rasterSeen = 0
         for pack in ["xperience", "sweatycab"] {
             let entries = try H.fixture(pack)
             XCTAssertFalse(entries.isEmpty)
@@ -135,12 +141,45 @@ final class StreamBadgeChipRenderTests: XCTestCase {
                 let rest = await H.render(info, focused: false)
                 let focused = await H.render(info, focused: true)
                 let want = (26, 26, 26)
+                if e.imageKind == "raster" {
+                    rasterSeen += 1
+                    // The raster artwork actually drew (not a blank image, not the text fallback).
+                    assertNear(H.px(rest, H.artwork.x, H.artwork.y), (255, 255, 255), "\(pack) \(e.name) rest artwork")
+                    assertNear(H.px(focused, H.artwork.x, H.artwork.y), (255, 255, 255), "\(pack) \(e.name) focused artwork")
+                }
                 assertNear(H.px(rest, H.interior.x, H.interior.y), want, "\(pack) \(e.name) rest interior")
                 assertNear(H.px(focused, H.interior.x, H.interior.y), want, "\(pack) \(e.name) focused interior")
                 // The accepted remaining edge: the backdrop outside the chip is the white platter.
                 assertNear(H.px(focused, H.outside.x, H.outside.y), (255, 255, 255), "\(pack) platter")
             }
         }
+        XCTAssertGreaterThan(rasterSeen, 0, "no raster fixture entry exercised the artwork assertions")
+    }
+
+    /// The tinted packs (GitHub #25): a 12 % gold fill. `imageChipSurface` says the fill is drawn at
+    /// rest over the row, and focused over the dark base (not the white platter), so both states
+    /// show the tint blended over 1A1A1A.
+    func testTintedFilledChipInteriorIsTintOverDarkBase() async throws {
+        let art = try H.writeArtwork()
+        let hex = "#20FFD500"
+        XCTAssertEqual(BadgeChip.imageChipSurface(filled: true, tagColorHex: hex, isFocused: false),
+                       BadgeChip.ImageChipSurface(darkBase: false, drawsPackFill: true))
+        XCTAssertEqual(BadgeChip.imageChipSurface(filled: true, tagColorHex: hex, isFocused: true),
+                       BadgeChip.ImageChipSurface(darkBase: true, drawsPackFill: true))
+        let a = 32.0 / 255.0
+        func blend(_ fg: Double, _ bg: Double) -> Int { Int((a * fg + (1 - a) * bg).rounded()) }
+        let want = (blend(255, 26), blend(213, 26), blend(0, 26))
+        let info = StreamBadgeInfo(name: "Tinted", imageURL: art.png.absoluteString,
+                                   tagColor: hex, tagStyle: "filled", textColor: "", borderColor: "")
+        let rest = await H.render(info, focused: false)
+        let focused = await H.render(info, focused: true)
+        let gotRest = H.px(rest, H.interior.x, H.interior.y)
+        let gotFocused = H.px(focused, H.interior.x, H.interior.y)
+        print("TINTED want=\(want) rest=\(gotRest) focused=\(gotFocused)")
+        assertNear(gotRest, want, "tinted rest interior")
+        assertNear(gotFocused, want, "tinted focused interior")
+        assertNear(H.px(rest, H.artwork.x, H.artwork.y), (255, 255, 255), "tinted rest artwork")
+        assertNear(H.px(focused, H.artwork.x, H.artwork.y), (255, 255, 255), "tinted focused artwork")
     }
 
     func testSvgArtworkDoesNotDecode() throws {
