@@ -12955,7 +12955,40 @@
         }
       }
     },
-    "Collection Header": {},
+    "Collection Header": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kollektionskopf"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cabecera de colección"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "En-tête de collection"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Intestazione raccolta"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tiêu đề bộ sưu tập"
+          }
+        }
+      }
+    },
     "Collection folder": {
       "localizations": {
         "de": {
@@ -43179,7 +43212,40 @@
         }
       }
     },
-    "Sets the top of a collection folder that opens as a grid. Standard gives the folder's logo or name a large slot that shrinks once you scroll. Compact starts with the small title and uses the empty strip at the top of the screen, so the posters start higher. At the Medium poster size, a folder with one source shows two full rows; with several source tabs, one full row and most of the second. Folders that open as rows are not affected. Default: Standard.": {},
+    "Sets the top of a collection folder that opens as a grid. Standard gives the folder's logo or name a large slot that shrinks once you scroll. Compact starts with the small title and uses the empty strip at the top of the screen, so the posters start higher. At the Medium poster size, a folder with one source shows two full rows; with several source tabs, one full row and most of the second. Folders that open as rows are not affected. Default: Standard.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Legt den Kopfbereich eines Kollektionsordners fest, der als Raster öffnet. Standard gibt dem Logo oder Namen des Ordners einen großen Platz, der beim Scrollen schrumpft. Kompakt beginnt mit dem kleinen Titel und nutzt den leeren Streifen oben am Bildschirm, damit die Poster höher beginnen. Bei der Postergröße Mittel zeigt ein Ordner mit einer Quelle zwei volle Reihen; bei mehreren Quellen-Tabs eine volle Reihe und den größten Teil der zweiten. Ordner, die als Reihen öffnen, sind nicht betroffen. Standard: Standard."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Define la parte superior de una carpeta de colección que se abre como cuadrícula. Estándar da al logotipo o al nombre de la carpeta un espacio grande que se reduce al desplazarte. Compacto empieza con el título pequeño y usa la franja vacía de la parte superior de la pantalla, así que los pósteres empiezan más arriba. Con el tamaño de póster Medio, una carpeta con una fuente muestra dos filas completas; con varias pestañas de fuente, una fila completa y casi toda la segunda. Las carpetas que se abren como filas no se ven afectadas. Predeterminado: Estándar."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Définit le haut d’un dossier de collection qui s’ouvre en grille. Standard donne au logo ou au nom du dossier un grand emplacement qui rétrécit au défilement. Compact commence par le petit titre et utilise la bande vide en haut de l’écran, pour que les affiches commencent plus haut. Avec la taille d’affiche Moyen, un dossier à une seule source affiche deux lignes complètes ; avec plusieurs onglets de source, une ligne complète et presque toute la deuxième. Les dossiers qui s’ouvrent en lignes ne sont pas concernés. Par défaut : Standard."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Imposta la parte superiore di una cartella di raccolta che si apre come griglia. Standard dà al logo o al nome della cartella uno spazio grande che si riduce quando scorri. Compatto inizia con il titolo piccolo e usa la striscia vuota in cima allo schermo, così le locandine partono più in alto. Con la dimensione locandina Medio, una cartella con una sola sorgente mostra due righe intere; con più schede sorgente, una riga intera e quasi tutta la seconda. Le cartelle che si aprono come righe non sono interessate. Predefinito: Standard."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đặt phần đầu của thư mục bộ sưu tập mở dưới dạng lưới. Tiêu chuẩn cho logo hoặc tên thư mục một vị trí lớn, thu nhỏ khi bạn cuộn. Gọn bắt đầu với tiêu đề nhỏ và dùng dải trống ở đầu màn hình, nên poster bắt đầu cao hơn. Ở kích thước poster Vừa, một thư mục có một nguồn hiển thị hai hàng đầy đủ; với nhiều thẻ nguồn, một hàng đầy đủ và gần hết hàng thứ hai. Thư mục mở dưới dạng hàng thì không bị ảnh hưởng. Mặc định: Tiêu chuẩn."
+          }
+        }
+      }
+    },
     "Setting up your catalogs…": {
       "localizations": {
         "de": {
