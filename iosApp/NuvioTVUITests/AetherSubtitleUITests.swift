@@ -288,13 +288,20 @@ final class AetherSubtitleUITests: XCTestCase {
         XCTAssertTrue(shown.ok, "no SIDECAR ALPHA at \(pos(app)) s after picking the late file: \(shown.seen)")
     }
 
-    /// (2): with a preferred subtitle language and no decision made, the start plan picks the late file by itself.
-    func testLateSubtitleFileIsAutoPickedWhenNothingWasDecided() throws {
+    /// (2) Rule: a subtitle search that completes with nothing found decides Off, and a file that arrives after
+    /// that is listed but not picked (mpv parity). In this fixture the sim has no subtitle add-on, so the search
+    /// completes within a second or two and the start plan decides Off long before the injection at 20 s, even
+    /// with English preferred. The undecided branch (search still out when the file arrives) is covered by
+    /// `AetherControllerTests.testCompletionAloneDecidesEvenWithAConflatedLoadingEdge`.
+    func testLateSubtitleFileIsListedButNotPickedAfterOffWasDecided() throws {
         let app = try launchLate(extra: ["-preferred_subtitle_language_1", "en", "-preferred_audio_language_1", "en"])
         PlayerChrome.openDisc(app, "subtitles")
         let row = subtitleRow(app, "Late EN")
         XCTAssertTrue(row.waitForExistence(timeout: 5), "no Late EN row after the mid-play add")
-        print("[SubLeg] late auto row id=\(row.identifier) value=\(String(describing: row.value))")
-        XCTAssertEqual(row.value as? String, "selected", "the late file was not auto-picked (row value \(String(describing: row.value)))")
+        let off = subtitleRow(app, "Off")
+        XCTAssertTrue(off.waitForExistence(timeout: 5), "no Off row in the Subtitles popover")
+        print("[SubLeg] late listed row id=\(row.identifier) value=\(String(describing: row.value)); off value=\(String(describing: off.value))")
+        XCTAssertNotEqual(row.value as? String, "selected", "the late file was picked after Off was decided (row value \(String(describing: row.value)))")
+        XCTAssertEqual(off.value as? String, "selected", "the Off row is not selected (value \(String(describing: off.value)))")
     }
 }
