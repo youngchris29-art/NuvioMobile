@@ -182,6 +182,9 @@ struct TrailerHeroPlayer: UIViewRepresentable {
     /// BUG-128: which surface this is, for the `[TrailerHealth]` summary (`detail-bg`, `home-hero`).
     /// nil falls back to `hero` (looping) / `inline`.
     var surfaceTag: String? = nil
+    /// BUG-130 way back: the Detail visit this hero belongs to (`DetailView.trailerVisitID`); only
+    /// the `detail-bg` surface reads it. A hero without one never takes a return position.
+    var visitID: UUID? = nil
 
     /// UX-9: our YouTube trailer encodes bake letterboxing directly into the frame (2.39:1 film
     /// inside a 16:9 container), so `.resizeAspectFill` alone still shows black bars — it fills the
@@ -222,7 +225,7 @@ struct TrailerHeroPlayer: UIViewRepresentable {
         view.layer.cornerCurve = .continuous
         view.layer.masksToBounds = true
         view.playerLayer.videoGravity = .resizeAspectFill
-        context.coordinator.attach(to: view, urlString: urlString, loops: loops, zoomKey: zoomKey, videoId: videoId, surfaceTag: surfaceTag)
+        context.coordinator.attach(to: view, urlString: urlString, loops: loops, zoomKey: zoomKey, videoId: videoId, surfaceTag: surfaceTag, visitID: visitID)
         return view
     }
 
@@ -289,6 +292,12 @@ struct TrailerHeroPlayer: UIViewRepresentable {
         /// BUG-130: which surface this is; the Detail background (`detail-bg`) hands its position to
         /// the full-screen player at teardown (`TrailerPositionHandoff`).
         private var surfaceTag: String?
+        /// BUG-130 way back: the pending resume (seek) of a hero that took the cover's position.
+        /// `resumeItemObservation` waits for the looper's first item, `resumeFallback` starts playback
+        /// regardless if neither the item nor the seek completes in time.
+        private var resumeItemObservation: NSKeyValueObservation?
+        private var resumeFallback: DispatchWorkItem?
+        private var resumeSettled = false
 
         init(onFailure: @escaping (TrailerFailureReport) -> Void, onPlaybackEnded: (() -> Void)? = nil) {
             self.onFailure = onFailure
@@ -296,7 +305,7 @@ struct TrailerHeroPlayer: UIViewRepresentable {
         }
 
         func attach(to view: TrailerPlayerUIView, urlString: String, loops: Bool = true, zoomKey: String? = nil,
-                    videoId: String? = nil, surfaceTag: String? = nil) {
+                    videoId: String? = nil, surfaceTag: String? = nil, visitID: UUID? = nil) {
             attachedURLString = urlString
             attachedView = view
             self.surfaceTag = surfaceTag
@@ -380,14 +389,15 @@ struct TrailerHeroPlayer: UIViewRepresentable {
                 self?.fail(.failedToPlayToEnd(error), item: item)
             }
 
-            // BUG-130 way back: the full-screen cover left its position for this stream; continue the
-            // background loop from there instead of 0. `detail-bg` only, consumed once, same URL.
-            if surfaceTag == "detail-bg", let resumeAt = TrailerPositionHandoff.returning.take(url: urlString) {
-                TrailerZoomProbe.log("handoff hero resume=\(String(format: "%.2f", resumeAt.seconds))")
-                queue.seek(to: resumeAt, toleranceBefore: .zero, toleranceAfter: CMTime(value: 1, timescale: 4))
+            // BUG-130 way back: the full-screen cover left its position for THIS visit's hero; continue
+            // from there instead of 0. `detail-bg` only, consumed once, same visit + URL, inside the
+            // window (`TrailerReturnHandoff.decide`). Best-effort: playback starts whether or not the
+            // seek lands (`beginPlayback`).
+            if surfaceTag == "detail-bg", let back = TrailerReturnHandoff.shared.take(visit: visitID, url: urlString) {
+                resumeHero(queue: queue, to: back.time, age: back.age)
+            } else {
+                queue.play()
             }
-
-            queue.play()
 
             // UX-9: start measuring the baked-in bars. Anchored to `play()`, not `readyToPlay`, for
             // the same reason the presentationSize probe below is — and the probe reads
@@ -433,6 +443,56 @@ struct TrailerHeroPlayer: UIViewRepresentable {
             }
             RunLoop.main.add(timer, forMode: .common)
             watchdog = timer
+        }
+
+        /// BUG-130 way back: seek the hero loop to the cover's position, then play. The seek waits for
+        /// the queue's current item (a seek with none attached fails silently, and the looper may not
+        /// have inserted its first copy yet), `play()` follows the seek's completion, and a fallback
+        /// starts playback after `resumeGrace` whatever happened: the hero is never left paused or
+        /// black. Logs `handoff hero resume=<requested> applied=<bool>` and, 2 s later, the player's
+        /// actual position (`handoff hero at=`).
+        private static let resumeGrace: TimeInterval = 1.5
+
+        private func resumeHero(queue: AVQueuePlayer, to target: CMTime, age: TimeInterval) {
+            resumeSettled = false
+            let requested = String(format: "%.2f", target.seconds)
+            let finish: (Bool, String) -> Void = { [weak self, weak queue] applied, why in
+                guard let self, !self.resumeSettled else { return }
+                self.resumeSettled = true
+                self.resumeItemObservation?.invalidate()
+                self.resumeItemObservation = nil
+                self.resumeFallback?.cancel()
+                self.resumeFallback = nil
+                guard let queue, self.player === queue else { return }
+                if queue.timeControlStatus == .paused || queue.rate == 0 { queue.play() }
+                TrailerZoomProbe.log("handoff hero resume=\(requested) applied=\(applied) age=\(String(format: "%.2f", age)) \(why)")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self, weak queue] in
+                    guard let self, let queue, self.player === queue else { return }
+                    let dur = queue.currentItem?.duration.seconds ?? 0
+                    TrailerZoomProbe.log("handoff hero at=\(String(format: "%.2f", queue.currentTime().seconds)) dur=\(String(format: "%.1f", dur.isFinite ? dur : 0)) playing=\(queue.timeControlStatus == .playing)")
+                }
+            }
+            let seek: (AVQueuePlayer) -> Void = { queue in
+                queue.seek(to: target, toleranceBefore: .zero, toleranceAfter: CMTime(value: 1, timescale: 4)) { finished in
+                    DispatchQueue.main.async { finish(finished, finished ? "seek-done" : "seek-cancelled") }
+                }
+            }
+            let fallback = DispatchWorkItem { finish(false, "timeout") }
+            resumeFallback = fallback
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.resumeGrace, execute: fallback)
+            if queue.currentItem != nil {
+                seek(queue)
+            } else {
+                resumeItemObservation = queue.observe(\.currentItem, options: [.new]) { [weak self] observed, change in
+                    guard (change.newValue ?? nil) != nil else { return }
+                    DispatchQueue.main.async { [weak self, weak observed] in
+                        guard let self, let observed, !self.resumeSettled else { return }
+                        self.resumeItemObservation?.invalidate()
+                        self.resumeItemObservation = nil
+                        seek(observed)
+                    }
+                }
+            }
         }
 
         /// BUG-226: audible only when the viewer wants sound AND the video is on screen. Main
@@ -500,6 +560,11 @@ struct TrailerHeroPlayer: UIViewRepresentable {
             }
             audioWatcher?.cancel()
             audioWatcher = nil
+            resumeSettled = true
+            resumeItemObservation?.invalidate()
+            resumeItemObservation = nil
+            resumeFallback?.cancel()
+            resumeFallback = nil
             letterboxProbe?.stop()
             letterboxProbe = nil
             player?.pause()
@@ -595,11 +660,6 @@ enum TrailerStreamRefresh {
 @MainActor
 final class TrailerPositionHandoff {
     static let shared = TrailerPositionHandoff()
-    /// BUG-130 way back (decision AB): the full-screen cover's position at dismissal, for the Detail
-    /// background loop that remounts behind it. A separate slot so the forward `take` never consumes
-    /// a return entry and vice versa. Written only by the cover, read only by `detail-bg`.
-    static let returning = TrailerPositionHandoff()
-
     static let freshness: TimeInterval = 10
     nonisolated static let minimumSeconds: Double = 1
     nonisolated static let endMarginSeconds: Double = 3
@@ -629,6 +689,100 @@ final class TrailerPositionHandoff {
     }
 }
 
+/// BUG-130 way back (decision AB, review r1 P2): the full-screen cover's position at dismissal, for
+/// the Detail background loop that remounts behind it. A slot of its own (never the forward one), and
+/// scoped to ONE Detail visit and its immediate cover return: the cover records it under the
+/// presenting visit's token (`DetailView.trailerVisitID`), only a hero carrying the same token may
+/// take it, and it dies after `window` or as soon as the Detail visit leaves, or the hero cannot play
+/// when the cover closes. Anything else that remounts the hero (scroll, picker, a new visit of the
+/// same title with the same URL) starts from 0. Main thread only.
+@MainActor
+final class TrailerReturnHandoff {
+    static let shared = TrailerReturnHandoff()
+
+    /// How long after the cover closes the hero may still take the position. The hero remounts
+    /// 0.05 to 0.10 s after the cover's player is dismantled (simulator, 3 runs); 1.5 s is ~15x that
+    /// and covers the page's scroll-settle debounce on a slower box, while a longer window only
+    /// widens the chance of an unrelated remount inheriting the position.
+    nonisolated static let window: TimeInterval = 1.5
+
+    enum Decision: Equatable { case take, dropOtherVisit, dropOtherStream, dropExpired }
+
+    /// The one rule for "may this hero attach take the returning position". Pure.
+    nonisolated static func decide(entryVisit: UUID, entryURL: String, age: TimeInterval,
+                                   heroVisit: UUID?, heroURL: String) -> Decision {
+        guard let heroVisit, heroVisit == entryVisit else { return .dropOtherVisit }
+        guard heroURL == entryURL else { return .dropOtherStream }
+        guard age >= 0, age <= window else { return .dropExpired }
+        return .take
+    }
+
+    /// Whether the entry survives the cover closing: the hero must be able to play right then
+    /// (duration timer not expired, trailer gate open, auto-play / Background Trailer not off).
+    nonisolated static func survivesCoverClose(heroEligible: Bool) -> Bool { heroEligible }
+
+    private var entry: (visit: UUID, url: String, time: CMTime, at: TimeInterval)?
+    /// `onDismiss` runs a few ms BEFORE the cover's player is dismantled (simulator log), so an
+    /// ineligible `settle` usually finds nothing to clear yet: it leaves a refusal the dismantle's
+    /// `record` then honours (within the window).
+    private var refusal: (visit: UUID, at: TimeInterval)?
+
+    var isEmpty: Bool { entry == nil }
+
+    /// Records the cover's position under the presenting visit. An unusable reading clears an older
+    /// entry; a cover with no visit token (`nil`) never records.
+    func record(visit: UUID?, url: String, time: CMTime, duration: CMTime?,
+                now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        guard let visit, TrailerPositionHandoff.isUsable(time: time, duration: duration) else { entry = nil; return }
+        if let refusal, refusal.visit == visit, now - refusal.at <= Self.window {
+            self.refusal = nil
+            entry = nil
+            TrailerZoomProbe.log("handoff return refused (hero ineligible when the cover closed)")
+            return
+        }
+        entry = (visit, url, time, now)
+        // The slot empties itself when the window passes; `take` still checks the age.
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.window + 0.05) { [weak self] in
+            guard let self, self.entry?.at == now else { return }
+            self.entry = nil
+        }
+    }
+
+    /// The position for this hero, consumed whatever the answer (a rejected read must not leave it
+    /// for a later one).
+    func take(visit: UUID?, url: String,
+              now: TimeInterval = ProcessInfo.processInfo.systemUptime) -> (time: CMTime, age: TimeInterval)? {
+        defer { entry = nil }
+        guard let entry else { return nil }
+        let age = now - entry.at
+        let decision = Self.decide(entryVisit: entry.visit, entryURL: entry.url, age: age, heroVisit: visit, heroURL: url)
+        guard decision == .take else {
+            TrailerZoomProbe.log("handoff hero drop=\(decision) age=\(String(format: "%.2f", age))")
+            return nil
+        }
+        return (entry.time, age)
+    }
+
+    /// The Detail visit went away: nothing it left may reach another visit.
+    func discard(visit: UUID) {
+        if entry?.visit == visit {
+            entry = nil
+            TrailerZoomProbe.log("handoff return cleared (visit left)")
+        }
+        if refusal?.visit == visit { refusal = nil }
+    }
+
+    /// The cover has closed for `visit`: drop the entry when the hero cannot mount and play now.
+    func settle(visit: UUID, heroEligible: Bool, now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        guard !Self.survivesCoverClose(heroEligible: heroEligible) else { refusal = nil; return }
+        if entry?.visit == visit {
+            entry = nil
+            TrailerZoomProbe.log("handoff return cleared (hero ineligible when the cover closed)")
+        }
+        refusal = (visit, now)
+    }
+}
+
 struct FullScreenTrailerPlayer: View {
     let urlString: String
     var onPlaybackEnded: () -> Void = {}
@@ -640,6 +794,9 @@ struct FullScreenTrailerPlayer: View {
     /// `TrailerBridgeCoverObserver`). The surface is blanked first so the cover, whose background
     /// the host clears, reveals the description underneath at once.
     var onWillDismiss: () -> Void = {}
+    /// BUG-130 way back: the presenting Detail visit (`DetailView.trailerVisitID`); the cover records
+    /// its return position under it.
+    var visitID: UUID? = nil
 
     /// Stable across body re-evals (@State keeps the instance); bridges the play/pause command
     /// to the representable's player without making the surface observable.
@@ -649,7 +806,7 @@ struct FullScreenTrailerPlayer: View {
         // UX-9: no `.scaleEffect` any more — the zoom is measured per stream and applied to the
         // player layer itself (`TrailerLetterboxProbe`), with `parityZoom` as its floor, so this
         // surface still renders exactly as before for a bar-free 16:9 source.
-        FullScreenTrailerSurface(urlString: urlString, zoomKey: zoomKey, videoId: videoId, control: control, onPlaybackEnded: onPlaybackEnded)
+        FullScreenTrailerSurface(urlString: urlString, zoomKey: zoomKey, videoId: videoId, visitID: visitID, control: control, onPlaybackEnded: onPlaybackEnded)
             .ignoresSafeArea()
             .background(TrailerBridgeCoverObserver {
                 control.hideSurface()
@@ -684,6 +841,7 @@ private struct FullScreenTrailerSurface: UIViewRepresentable {
     let urlString: String
     let zoomKey: String?
     let videoId: String?
+    let visitID: UUID?
     let control: FullScreenTrailerControl
     let onPlaybackEnded: () -> Void
 
@@ -712,6 +870,7 @@ private struct FullScreenTrailerSurface: UIViewRepresentable {
             control.player = player
             control.surface = view
             context.coordinator.observeEnd(of: player, onEnded: onPlaybackEnded)
+            context.coordinator.visitID = visitID
             context.coordinator.startHealth(player: player, urlString: urlString)
             context.coordinator.watchForExpiredURLs(player: player, videoId: videoId)
             context.coordinator.startLetterboxProbe(view: view, player: player, urlString: urlString, zoomKey: zoomKey, videoId: videoId)
@@ -779,6 +938,8 @@ private struct FullScreenTrailerSurface: UIViewRepresentable {
         private var onEnded: (() -> Void)?
         /// The URL the cover started with; `recordReturnPosition` compares against it.
         private var coverURLString: String?
+        /// The presenting Detail visit (set at `makeUIView`).
+        var visitID: UUID?
         private var stallObserver: NSObjectProtocol?
         private var refreshes = 0
         private var refreshing = false
@@ -880,8 +1041,8 @@ private struct FullScreenTrailerSurface: UIViewRepresentable {
         /// `TrailerPositionHandoff.isUsable`'s end margin, so the loop starts from 0.
         func recordReturnPosition(player: AVPlayer?) {
             guard !tornDown, refreshes == 0, let player, let url = coverURLString else { return }
-            TrailerPositionHandoff.returning.record(url: url, time: player.currentTime(),
-                                                    duration: player.currentItem?.duration)
+            TrailerReturnHandoff.shared.record(visit: visitID, url: url, time: player.currentTime(),
+                                               duration: player.currentItem?.duration)
         }
 
         func teardown() {

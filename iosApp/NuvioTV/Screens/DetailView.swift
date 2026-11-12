@@ -638,6 +638,10 @@ struct DetailView: View {
     @State private var userInteracted = false
     /// BUG-153: see `trailerMountCandidate`.
     @State private var trailerMounted = false
+    /// BUG-130 way back: this Detail visit's identity for the trailer hand-off. Created with the
+    /// page, so the cover's return position can only reach THIS visit's hero (a reopened title is a
+    /// new page with a new token).
+    @State private var trailerVisitID = UUID()
     @State private var pageScrolling = false
     /// Review r3 #4: the late Play claim only applies while the page is still settling. A Select on
     /// Watched/Library is not a move command, so a claim that fired after add-ons finished loading
@@ -846,7 +850,7 @@ struct DetailView: View {
                 // trailer and no negative cache to scope (that's the inline card's problem).
                 TrailerHeroPlayer(urlString: trailer, onFailure: { _ in model.trailerFailed() },
                                   zoomKey: model.trailerZoomKey, videoId: model.trailerVideoId,
-                                  surfaceTag: "detail-bg")
+                                  surfaceTag: "detail-bg", visitID: trailerVisitID)
                     .ignoresSafeArea()
                     .transition(.opacity)
             }
@@ -1273,6 +1277,8 @@ struct DetailView: View {
         .onDisappear {
             // BUG-187: a push from a remembered card arms the restore for the return.
             focusMemory.arm()
+            // BUG-130 way back: nothing this visit's cover left may reach another visit.
+            discardTrailerReturnHandoff()
             model.stop()
             cancelAutoPlayTrailer()
             cancelTrailerDurationTask()
@@ -1436,6 +1442,9 @@ struct DetailView: View {
             trailerPlaybackIsAutoPlay = false
             // FEAT-32: the cover is gone, the still is showing enlarged: settle it.
             TrailerZoomProbe.log("bridge onDismiss")
+            // BUG-130 way back: the return position only survives if this visit's hero can play now
+            // (duration timer not expired, gate open); otherwise nothing is left for a later remount.
+            settleTrailerReturnHandoff()
             bridgeCoverPresented = false
             settleTrailerBridge()
         }) { item in
@@ -1464,17 +1473,7 @@ struct DetailView: View {
                     scrimOverlay(posterBackdropVisible: false)
                 }
                 ScrollDimOverlay(model: dimModel, trailerActive: false, glassFlat: chipGlassFlat, showsProbe: false)
-                FullScreenTrailerPlayer(urlString: item.url, onPlaybackEnded: {
-                    model.trailerPlayback = nil
-                }, zoomKey: item.zoomKey, videoId: item.videoId, onWillDismiss: {
-                    // FEAT-32: the system dismissal has begun (Back). SwiftUI only reports it once
-                    // it has ENDED (cover binding nil, `onDismiss` and the player teardown all
-                    // land in the same millisecond), so this is the one moment to drop the black
-                    // and land the enlarged still before the cover reveals the description.
-                    TrailerZoomProbe.log("bridge cover-will-disappear")
-                    NotificationCenter.default.post(name: .trailerBridgeCoverWillDismiss, object: nil)
-                    endTrailerBridge()
-                })
+                trailerCoverPlayer(item)
             }
                 .ignoresSafeArea()
                 // FEAT-32: title (logo) + Back hint, bottom-left, for a beat after playback starts.
@@ -1745,6 +1744,33 @@ struct DetailView: View {
     /// now mounts once the scroll settles (`ScrollDimModel.isScrolling`, ~150 ms debounce); one that
     /// is already mounted is never torn down for scrolling (only by the dim latch, as before).
     private var trailerMountCandidate: Bool { isTrailerActive && !trailerDimmedOut }
+
+    /// The full-screen trailer cover's player. Its own function (it was inline in the cover's
+    /// builder): `body`'s modifier chain is at the type-checker's limit, and the visit token made it tip.
+    private func trailerCoverPlayer(_ item: TrailerPlaybackItem) -> some View {
+        FullScreenTrailerPlayer(urlString: item.url, onPlaybackEnded: {
+            model.trailerPlayback = nil
+        }, zoomKey: item.zoomKey, videoId: item.videoId, onWillDismiss: {
+            // FEAT-32: the system dismissal has begun (Back). SwiftUI only reports it once
+            // it has ENDED (cover binding nil, `onDismiss` and the player teardown all
+            // land in the same millisecond), so this is the one moment to drop the black
+            // and land the enlarged still before the cover reveals the description.
+            TrailerZoomProbe.log("bridge cover-will-disappear")
+            NotificationCenter.default.post(name: .trailerBridgeCoverWillDismiss, object: nil)
+            endTrailerBridge()
+        }, visitID: trailerVisitID)
+    }
+
+    /// BUG-130 way back: the Detail visit is leaving; nothing its cover left may reach another visit.
+    private func discardTrailerReturnHandoff() {
+        TrailerReturnHandoff.shared.discard(visit: trailerVisitID)
+    }
+
+    /// BUG-130 way back: the cover has closed; the return position survives only if this visit's
+    /// hero can mount and play now (duration timer not expired, trailer gate open).
+    private func settleTrailerReturnHandoff() {
+        TrailerReturnHandoff.shared.settle(visit: trailerVisitID, heroEligible: trailerMountCandidate)
+    }
 
     private func updateTrailerMount() {
         guard trailerMountCandidate else {
