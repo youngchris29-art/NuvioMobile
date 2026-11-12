@@ -15,6 +15,9 @@ struct DetailTailFocusStop: ViewModifier {
     let isFocused: Bool
     let label: Text
     let identifier: String
+    /// False when the caller draws the platter itself around the content that should be hugged
+    /// (`detailTailPlatter`): Cast & Crew's platter hugs the names, not the page-wide focus target.
+    var drawsPlatter = true
 
     /// The platter snaps instead of fading under Reduce Motion (as About's).
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -31,7 +34,7 @@ struct DetailTailFocusStop: ViewModifier {
         content
             .accessibilityHidden(active)
             .background {
-                if active { platter.animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: isFocused) }
+                if active, drawsPlatter { platter.animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: isFocused) }
             }
             .overlay {
                 if active {
@@ -59,8 +62,15 @@ struct DetailTailFocusStop: ViewModifier {
 }
 
 extension View {
-    func detailTailFocusStop(active: Bool, isFocused: Bool, label: Text, identifier: String) -> some View {
-        modifier(DetailTailFocusStop(active: active, isFocused: isFocused, label: label, identifier: identifier))
+    func detailTailFocusStop(active: Bool, isFocused: Bool, label: Text, identifier: String,
+                             drawsPlatter: Bool = true) -> some View {
+        modifier(DetailTailFocusStop(active: active, isFocused: isFocused, label: label, identifier: identifier,
+                                     drawsPlatter: drawsPlatter))
+    }
+
+    /// The stop's platter around just this content (the focus target itself stays page-wide).
+    func detailTailPlatter(active: Bool, isFocused: Bool) -> some View {
+        modifier(DetailTailPlatter(active: active, isFocused: isFocused))
     }
 }
 
@@ -75,6 +85,30 @@ extension View {
             focusRow(alignment: .leading)
         } else {
             self
+        }
+    }
+}
+
+/// The platter of a tail stop whose visible band hugs its content: the same surface and stroke as
+/// `DetailTailFocusStop`'s, drawn behind the content it is applied to (drawn outside its bounds
+/// through negative padding, so focusing never shifts the layout).
+struct DetailTailPlatter: ViewModifier {
+    let active: Bool
+    let isFocused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        content.background {
+            if active {
+                RoundedRectangle(cornerRadius: Theme.Radius.hero)
+                    .fill(Theme.Palette.surface.opacity(isFocused ? 0.9 : 0))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: Theme.Radius.hero)
+                            .strokeBorder(Color.white.opacity(isFocused ? 0.55 : 0), lineWidth: 2) // neutral by design: the HIG contract bans accent focus rings
+                    )
+                    .padding(-Theme.Spacing.md)
+                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: isFocused)
+            }
         }
     }
 }

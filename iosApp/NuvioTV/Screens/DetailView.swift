@@ -3453,6 +3453,14 @@ struct DetailView: View {
                             }
                         }
                         .padding(.vertical, Theme.Spacing.xs)
+                        // Look change (round 1): the row's measured height stops short of a role line
+                        // ("Writer"), which then hung across the platter's bottom edge; a stop
+                        // reserves that line so the caption sits fully inside (0 while inactive).
+                        .padding(.bottom, tailStop && items.contains { !($0.subtitle ?? "").isEmpty }
+                                 ? Theme.Font.uiFont(for: .caption1).lineHeight + Theme.Spacing.xs : 0)
+                        // Look change (round 1): the visible platter hugs the names, inside the
+                        // scrolling content, while the focus target below stays page-wide.
+                        .detailTailPlatter(active: tailStop, isFocused: focusedRow == .cast)
                     }
                     // BUG-187: remember the card a push to a person page leaves from (A4.4: its key).
                     .onChange(of: focusedCastKey) { _, key in noteDetailFocus(.cast, key) }
@@ -3464,7 +3472,8 @@ struct DetailView: View {
                     .rowEdgeEffectStyle()
                 }
                 .detailTailFocusStop(active: tailStop, isFocused: focusedRow == .cast,
-                                     label: castStopLabel(items), identifier: "detail_tail_stop_castAndCrew")
+                                     label: castStopLabel(items), identifier: "detail_tail_stop_castAndCrew",
+                                     drawsPlatter: false)
             }
             // Follow-up 5A (device: Down from a More Like This poster right of the last Cast &
             // Crew card skipped the row, Up from Comments likewise): the row's focus section is
