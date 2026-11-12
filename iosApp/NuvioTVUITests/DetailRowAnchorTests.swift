@@ -468,7 +468,17 @@ final class DetailRowAnchorTests: XCTestCase {
         for n in 1...40 {
             press(.down, times: 1, gap: 0.8)
             pause(1.2)
-            guard var sample = readSample(app, press: n) else {
+            // Settle: re-read until two consecutive readings 0.3 s apart agree on row and offset
+            // (within 0.5 pt), at most 4 s, so a still-moving scroll is never asserted mid-flight.
+            var settled = readSample(app, press: n)
+            let settleBy = Date().addingTimeInterval(4)
+            while let prev = settled, Date() < settleBy {
+                pause(0.3)
+                guard let next = readSample(app, press: n) else { break }
+                settled = next
+                if next.row == prev.row, abs(next.off - prev.off) < 0.5 { break }
+            }
+            guard var sample = settled else {
                 XCTFail("no geometry reading after press \(n) (probes absent?)")
                 return result
             }
@@ -824,11 +834,13 @@ final class DetailRowAnchorTests: XCTestCase {
                          ("moreLikeThis", 2269)],
     ]
 
-    /// `tolerance`: Cinematic and Apple-style repeat to within 2 pt; Classic's mid-page rests wander by up
-    /// to ~14 pt between identical runs (episodes 567-574, cast 1414-1420, trailers 2245-2259 on this
-    /// clone, base commit measured once), so it gets 16 pt. The focus sequence is exact in all three.
+    /// `tolerance`: one ±16 pt for all three layouts. Identical runs differ by up to 14 pt at
+    /// mid-page rests (Classic 2245-2259, Cinematic 1631 vs 1640; run-to-run settle jitter measured
+    /// 2026-11-12), while a leaked row height (the smallest plausible: a reserved caption line) would
+    /// be at least 40 pt. The focus sequence stays an exact comparison. Offsets are read after the
+    /// scroll has settled (see `walkDownToEnd`).
     private func baselineWalk(layout: String, tmdb: Bool, sections: [String: Bool], tag: String,
-                              tolerance: Double = 2) throws {
+                              tolerance: Double = 16) throws {
         guard let app = launchWalk(Self.severance, layout: layout, tmdb: tmdb, sections: sections) else { return }
         guard let r = walkDownToEnd(app, tag: tag) else { return }
         attachWalk(tag, r)
@@ -862,6 +874,6 @@ final class DetailRowAnchorTests: XCTestCase {
     func testBaselineWalkClassic() throws {
         var s = Self.everySection
         s["comments"] = false
-        try baselineWalk(layout: "classic", tmdb: true, sections: s, tag: "base-classic", tolerance: 16)
+        try baselineWalk(layout: "classic", tmdb: true, sections: s, tag: "base-classic")
     }
 }
