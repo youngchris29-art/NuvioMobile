@@ -447,7 +447,7 @@ final class DetailRowAnchorTests: XCTestCase {
     /// The shared Down-walk oracle: Down one press at a time (0.8 s gap, then the Down settle task's
     /// two 0.35 s waits plus margin), at most 40 presses, until two consecutive presses change
     /// nothing. Geometry from laid-out values only, never accessibility frames.
-    private func walkDownToEnd(_ app: XCUIApplication) -> WalkResult? {
+    private func walkDownToEnd(_ app: XCUIApplication, tag: String = "walk") -> WalkResult? {
         // Guest fixture: Play reads "Playback unavailable" and initial focus can sit on an icon-only
         // secondary; start from the leftmost hero control (as the BUG-96 walk does).
         if app.buttons["Playback unavailable"].exists { press(.left, times: 4, gap: 0.6) }
@@ -490,6 +490,7 @@ final class DetailRowAnchorTests: XCTestCase {
                 unchanged = 0
             }
             result.samples.append(sample)
+            frameIfRequested("\(tag)-p\(String(format: "%02d", n))-\(sample.row)\(sample.comment.map { "-c\($0)" } ?? "")")
             if unchanged >= 2 { break }
         }
         return result
@@ -564,6 +565,13 @@ final class DetailRowAnchorTests: XCTestCase {
         }
     }
 
+    /// A per-press frame, saved only when `BUG244_SHOT_DIR` is set for the run (the evidence frames).
+    private func frameIfRequested(_ name: String) {
+        guard let dir = ProcessInfo.processInfo.environment["BUG244_SHOT_DIR"] else { return }
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        try? XCUIScreen.main.screenshot().pngRepresentation.write(to: URL(fileURLWithPath: dir).appendingPathComponent("\(name).png"))
+    }
+
     private func screenshot(_ name: String) {
         let shot = XCUIScreen.main.screenshot()
         let attachment = XCTAttachment(screenshot: shot)
@@ -584,7 +592,7 @@ final class DetailRowAnchorTests: XCTestCase {
         if label.exists, !(Self.tokens(label.label)["tail"] ?? "").contains("castAndCrew") {
             throw XCTSkip("the title's Cast & Crew is not a names-only tail section here: \(label.label)")
         }
-        guard let r = walkDownToEnd(app) else { return }
+        guard let r = walkDownToEnd(app, tag: "u1") else { return }
         screenshot("u1-apple-end")
         try assertWalk(r, "U1")
         if r.hasSectionsProbe {
@@ -601,7 +609,7 @@ final class DetailRowAnchorTests: XCTestCase {
         if label.exists, (Self.tokens(label.label)["tail"] ?? "").isEmpty {
             throw XCTSkip("no tail on this title's Classic page: \(label.label)")
         }
-        guard let r = walkDownToEnd(app) else { return }
+        guard let r = walkDownToEnd(app, tag: "u2") else { return }
         screenshot("u2-classic-end")
         try assertWalk(r, "U2")
     }
@@ -627,7 +635,7 @@ final class DetailRowAnchorTests: XCTestCase {
             XCTFail("\(tag): comments seed refused or absent — \(label.exists ? label.label : "no probe")")
             return
         }
-        guard let r = walkDownToEnd(app) else { return }
+        guard let r = walkDownToEnd(app, tag: tag) else { return }
         screenshot("\(tag)-end")
         try assertWalk(r, tag, commentCount: Self.commentsSeedCount)
         // I7: the comments list body does not re-run for focus moves outside it.
