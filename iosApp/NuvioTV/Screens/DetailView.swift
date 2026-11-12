@@ -570,6 +570,9 @@ struct DetailView: View {
     @State private var showAboutOverviewSheet = false
     /// Apple-style: slots held after a section above focus answered empty (`DetailSlotHold`).
     @State private var slotHold = DetailSlotHoldBox()
+    /// BUG-244: the content sections that are one focus stop each because nothing focusable follows
+    /// them (`DetailTrailingFocus`); written once per body pass, never invalidates.
+    @State private var tailStopBox = DetailTailStopBox()
     /// FEAT-35 Start Over (movies): the next stream-picker presentation starts from 0. Reset when
     /// the cover goes away, like `forceManualPlay`. Series carry it on `SeriesPlayRoute`.
     @State private var startOverMovie = false
@@ -884,9 +887,17 @@ struct DetailView: View {
                     // A2: one typed, ordered list per layout (`DetailSectionOrder`). BUG-96: every
                     // row below the top block is anchored inside `detailSection(_:pending:)` — see
                     // `DetailRowAnchor`.
-                    ForEach(orderedSections(availability), id: \.self) { section in
+                    let sections = orderedSections(availability)
+                    // BUG-244: sections after the last focus stop become one stop each, so Down
+                    // reaches (and scrolls to) the end of the page.
+                    let tailStops = tailStopBox.resolve(
+                        sections: sections,
+                        contentless: Set(sections.filter { availability.state($0) == .pending }).union(held.keys),
+                        focused: DetailSection.section(for: focusedRow),
+                        hasOwnStop: sectionHasOwnFocusStop)
+                    ForEach(sections, id: \.self) { section in
                         detailSection(section, pending: availability.state(section) == .pending,
-                                      heldHeight: held[section])
+                                      heldHeight: held[section], tailStop: tailStops.contains(section))
                     }
                 }
                 // A2/D: the side insets per layout (`DetailGeometry.pageInsets`): Cinematic and
@@ -1223,6 +1234,15 @@ struct DetailView: View {
                     .font(.system(size: 8))
                     .opacity(0.011)
                     .accessibilityIdentifier("debug_action_heights")
+            }
+            // BUG-244 probe (`-debug.detailScrollProbe YES`): the laid-out section tops, which sections
+            // are focus stops and which are tail stops, the layout constants and the comments list's
+            // body count, read by the Down-walk legs in `DetailRowAnchorTests`.
+            if DetailScrollProbe.enabled {
+                Text(verbatim: "debug_detail_sections \(debugSectionsNote)")
+                    .font(.system(size: 8))
+                    .opacity(0.011)
+                    .accessibilityIdentifier("debug_detail_sections")
             }
             #endif
         }
@@ -1650,6 +1670,34 @@ struct DetailView: View {
     /// is Cinematic; never Classic). It carries the show overview whenever there is one
     /// (`DetailAboutOverview.hasContent`), so the hero reads this too (`heroSynopsis`).
     private var aboutSectionEnabled: Bool { sectionAbout && detailLayout == .cinematic }
+    /// BUG-244: whether a section has a focus stop without help. Parental Guide never; Cast & Crew
+    /// only when some card has a TMDB id (else plain `CastCard`s); Studio Logos only when some chip
+    /// does. Comments always (its cards are built eagerly, `DetailCommentsList`).
+    private func sectionHasOwnFocusStop(_ section: DetailSection) -> Bool {
+        switch section {
+        case .parentalGuide: return false
+        case .castAndCrew: return creditRowItems.contains { $0.tmdbId != nil }
+        case .companies: return companyLogos.contains { $0.company.tmdbId != nil }
+        default: return true
+        }
+    }
+    #if DEBUG
+    /// BUG-244 probe text: `rows=` the rendered sections in order with their laid-out content-space
+    /// tops (`?` before a section reports one), `stops=` those with a focus stop of their own,
+    /// `tail=` the tail stops now, `gap=`/`pad=` the page's section gap and bottom padding (a
+    /// section's bottom is the next top minus `gap`, the last one's `content - pad`), `cbody=` the
+    /// comments list's body count.
+    private var debugSectionsNote: String {
+        let sections = orderedSections(sectionAvailability)
+        let rows = sections.map { section -> String in
+            let top = section.rowID.flatMap { detailRowOffsets[$0] }
+            return "\(section.rawValue):\(top.map { String(Int($0.rounded())) } ?? "?")"
+        }.joined(separator: ",")
+        let stops = sections.filter { sectionHasOwnFocusStop($0) }.map(\.rawValue).joined(separator: ",")
+        let tail = sections.filter { tailStopBox.stops.contains($0) }.map(\.rawValue).joined(separator: ",")
+        return "rows=\(rows) stops=\(stops) tail=\(tail) gap=\(Int(Theme.Spacing.lg + Theme.Spacing.sm)) pad=\(Int(Theme.Spacing.screen)) cbody=\(DetailCommentsBodyCounter.count)"
+    }
+    #endif
     /// Apple-style: resolves `DetailSlotHold` for this body pass. Focus: a row, the hero (its own
     /// focus state), or neither (a cover or a restore holds it: off the page).
     private func resolveSlotHold(_ availability: DetailSectionAvailability) -> [DetailSection: CGFloat] {
@@ -2056,7 +2104,8 @@ struct DetailView: View {
     /// A2: one section below the hero (`DetailSectionOrder`), each call site moved as it was.
     /// A `.pending` section (Apple-style only) holds its slot unanchored until its data answers.
     @ViewBuilder
-    private func detailSection(_ section: DetailSection, pending: Bool, heldHeight: CGFloat? = nil) -> some View {
+    private func detailSection(_ section: DetailSection, pending: Bool, heldHeight: CGFloat? = nil,
+                               tailStop: Bool = false) -> some View {
         if let heldHeight {
             // Apple-style: emptied above focus; keeps its last on-screen height (`DetailSlotHold`).
             DetailSectionSlot(height: heldHeight)
@@ -2069,10 +2118,10 @@ struct DetailView: View {
                 // Not reached: the hero stays the page VStack's first child (`heroBlock`).
                 EmptyView()
             case .companies:
-                companyLogosRow
+                companyLogosRow(tailStop: tailStop)
                     .detailRowAnchored(.logos, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
             case .parentalGuide:
-                parentalGuideSection
+                parentalGuideSection(tailStop: tailStop)
                     .detailRowAnchored(.parental, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
             case .episodes:
                 if let meta = model.meta {
@@ -2093,7 +2142,7 @@ struct DetailView: View {
                     .detailRowAnchored(.episodes, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
                 }
             case .castAndCrew:
-                castRow
+                castRow(tailStop: tailStop)
                     .detailRowAnchored(.cast, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
             case .collection:
                 collectionRow
@@ -3278,7 +3327,7 @@ struct DetailView: View {
     }
 
     @ViewBuilder
-    private var castRow: some View {
+    private func castRow(tailStop: Bool) -> some View {
         let items = creditRowItems
         if !items.isEmpty {
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
@@ -3292,57 +3341,64 @@ struct DetailView: View {
                 }
                     .font(Theme.Font.sectionTitle)
                     .foregroundStyle(Theme.Palette.textPrimary)
-                ScrollView(.horizontal, showsIndicators: false) {
-                    // Top-aligned so an avatar with no role line below it still lines up with its neighbours.
-                    LazyHStack(alignment: .top, spacing: Theme.Spacing.lg) {
-                        // A4.4: identity and focus by the card's stable key, not its index, so a
-                        // reload that adds crew or reorders cast keeps the remembered card.
-                        ForEach(items) { item in
-                            let person = MetaPerson(name: item.name, role: item.subtitle, photo: item.photo,
-                                                    tmdbId: item.tmdbId.map { KotlinInt(int: Int32(truncatingIfNeeded: $0)) },
-                                                    creditCategory: nil)
-                            // Cast and crew carry a TMDB id only when TMDB enrichment is on; make those
-                            // tappable to a person page, leave the rest as plain (non-focusable) cards.
-                            if let personId = item.tmdbId {
-                                NavigationLink(value: PersonRoute(id: personId, name: item.name)) {
-                                    // stillFocused: CastCard draws its own no-zoom still ring on
-                                    // the avatar circle (Codex 2026-08-29 rounds 3-5) — focus
-                                    // truth from the row's FocusState, not a second binding.
-                                    CastCard(person: person, stillFocused: focusedCastKey == item.key,
-                                             avatarSize: castAvatarSize)
+                // BUG-244: the names-only band is ONE focus stop when nothing focusable follows it
+                // (`DetailTailFocusStop`). Applied to this wrapper, never to the ScrollView itself (a
+                // focusable scroll view changes how tvOS routes Left/Right); the heading stays outside.
+                VStack(spacing: 0) {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        // Top-aligned so an avatar with no role line below it still lines up with its neighbours.
+                        LazyHStack(alignment: .top, spacing: Theme.Spacing.lg) {
+                            // A4.4: identity and focus by the card's stable key, not its index, so a
+                            // reload that adds crew or reorders cast keeps the remembered card.
+                            ForEach(items) { item in
+                                let person = MetaPerson(name: item.name, role: item.subtitle, photo: item.photo,
+                                                        tmdbId: item.tmdbId.map { KotlinInt(int: Int32(truncatingIfNeeded: $0)) },
+                                                        creditCategory: nil)
+                                // Cast and crew carry a TMDB id only when TMDB enrichment is on; make those
+                                // tappable to a person page, leave the rest as plain (non-focusable) cards.
+                                if let personId = item.tmdbId {
+                                    NavigationLink(value: PersonRoute(id: personId, name: item.name)) {
+                                        // stillFocused: CastCard draws its own no-zoom still ring on
+                                        // the avatar circle (Codex 2026-08-29 rounds 3-5) — focus
+                                        // truth from the row's FocusState, not a second binding.
+                                        CastCard(person: person, stillFocused: focusedCastKey == item.key,
+                                                 avatarSize: castAvatarSize)
+                                    }
+                                    // Card-like navigation element: joins the no-zoom sweep so the
+                                    // setting stills every card on the page, not most (Codex 2026-08-29).
+                                    // BUG-108: same as FolderTile — the avatar owns its ring-mode lift now,
+                                    // so ring mode must take the native lift away (`.card`, the default).
+                                    // No `.posterButtonShape()` here on purpose: it sets a rounded-RECT
+                                    // border shape that only a system button style consumes, and the
+                                    // avatar is a circle.
+                                    .cardFocusButtonStyle()
+                                    // BUG-200: in the default cell (bare `.borderless`, a system
+                                    // style) the avatar wears the system highlight, whose platter
+                                    // takes the BUTTON's border shape, not the avatar's content shape:
+                                    // without this it stood as a rounded square around every avatar
+                                    // and the lifted photo lost its circle (sim, 2026-10-21). The ring
+                                    // and still styles are custom and ignore it.
+                                    .buttonBorderShape(.circle)
+                                    .focused($focusedCastKey, equals: item.key)
+                                    .zIndex(liftedCastZIndex(item.key))
+                                } else {
+                                    CastCard(person: person, avatarSize: castAvatarSize)
                                 }
-                                // Card-like navigation element: joins the no-zoom sweep so the
-                                // setting stills every card on the page, not most (Codex 2026-08-29).
-                                // BUG-108: same as FolderTile — the avatar owns its ring-mode lift now,
-                                // so ring mode must take the native lift away (`.card`, the default).
-                                // No `.posterButtonShape()` here on purpose: it sets a rounded-RECT
-                                // border shape that only a system button style consumes, and the
-                                // avatar is a circle.
-                                .cardFocusButtonStyle()
-                                // BUG-200: in the default cell (bare `.borderless`, a system
-                                // style) the avatar wears the system highlight, whose platter
-                                // takes the BUTTON's border shape, not the avatar's content shape:
-                                // without this it stood as a rounded square around every avatar
-                                // and the lifted photo lost its circle (sim, 2026-10-21). The ring
-                                // and still styles are custom and ignore it.
-                                .buttonBorderShape(.circle)
-                                .focused($focusedCastKey, equals: item.key)
-                                .zIndex(liftedCastZIndex(item.key))
-                            } else {
-                                CastCard(person: person, avatarSize: castAvatarSize)
                             }
                         }
+                        .padding(.vertical, Theme.Spacing.xs)
                     }
-                    .padding(.vertical, Theme.Spacing.xs)
+                    // BUG-187: remember the card a push to a person page leaves from (A4.4: its key).
+                    .onChange(of: focusedCastKey) { _, key in noteDetailFocus(.cast, key) }
+                    .scrollClipDisabled()
+                    // beta.19-rc1 verdict (F, FEAT-54): the Appearance "Row Edge Fade" setting reaches
+                    // the Detail rows too (Cast, More Like This, Collection, Trailers & Extras and the
+                    // Episodes rows). The page's rows sit at the same 140 pt margin from the bezel as
+                    // Home's, so the standard environment margins are right and no overrides are passed.
+                    .rowEdgeEffectStyle()
                 }
-                // BUG-187: remember the card a push to a person page leaves from (A4.4: its key).
-                .onChange(of: focusedCastKey) { _, key in noteDetailFocus(.cast, key) }
-                .scrollClipDisabled()
-                // beta.19-rc1 verdict (F, FEAT-54): the Appearance "Row Edge Fade" setting reaches
-                // the Detail rows too (Cast, More Like This, Collection, Trailers & Extras and the
-                // Episodes rows). The page's rows sit at the same 140 pt margin from the bezel as
-                // Home's, so the standard environment margins are right and no overrides are passed.
-                .rowEdgeEffectStyle()
+                .detailTailFocusStop(active: tailStop, isFocused: focusedRow == .cast,
+                                     label: castStopLabel(items), identifier: "detail_tail_stop_castAndCrew")
             }
             // Follow-up 5A (device: Down from a More Like This poster right of the last Cast &
             // Crew card skipped the row, Up from Comments likewise): the row's focus section is
@@ -3352,6 +3408,12 @@ struct DetailView: View {
             // (no TMDB ids) has an empty section, which the engine passes over.
             .focusRow(alignment: .leading)
         }
+    }
+
+    /// BUG-244: the names-only Cast stop reads every name (a `LazyHStack` builds only the visible cards).
+    private func castStopLabel(_ items: [DetailCreditItem]) -> Text {
+        Text(detailLayoutChoice == .appleStyle ? "Cast & Crew" : "Cast")
+            + Text(verbatim: ", " + items.map(\.name).joined(separator: ", "))
     }
 
     @ViewBuilder
@@ -3490,7 +3552,7 @@ struct DetailView: View {
     /// above already list all of them by name). White chips keep the mostly-dark logos readable.
     /// Chips with a TMDB id push the studio/network browse page (`EntityRoute`).
     @ViewBuilder
-    private var companyLogosRow: some View {
+    private func companyLogosRow(tailStop: Bool) -> some View {
         let companies = companyLogos
         if !companies.isEmpty {
             // BUG-111: row spacing stays `Spacing.md` (16pt), unchanged — the widest chip is 180pt
@@ -3532,6 +3594,11 @@ struct DetailView: View {
                     }
                 }
             }
+            // BUG-244: with no TMDB id on any chip nothing here is focusable, so a last Studio Logos
+            // row is one focus stop (`DetailTailFocusStop`; dead today, logos come only from TMDB).
+            .detailTailFocusStop(active: tailStop, isFocused: focusedRow == .logos,
+                                 label: Text(verbatim: companies.map(\.company.name).joined(separator: ", ")),
+                                 identifier: "detail_tail_stop_companies")
             // Full-width: a section that hugs its chips was skipped by Up/Down from the right side.
             .focusRow(alignment: .leading)
             // BUG-187: remember the chip a push to a studio/network page leaves from.
@@ -3560,7 +3627,7 @@ struct DetailView: View {
     // MARK: - Parental guide (IMDb parents-guide severities)
 
     @ViewBuilder
-    private var parentalGuideSection: some View {
+    private func parentalGuideSection(tailStop: Bool) -> some View {
         let warnings = model.parentalWarnings
         if !warnings.isEmpty {
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
@@ -3585,7 +3652,17 @@ struct DetailView: View {
                         }
                     }
                 }
+                // BUG-244: plain chips are never focusable, so with nothing focusable below, the
+                // chip row is ONE focus stop (`DetailTailFocusStop`).
+                .detailTailFocusStop(active: tailStop, isFocused: focusedRow == .parental,
+                                     label: Text("Parental Guide")
+                                         + Text(verbatim: ", " + warnings.map { "\($0.label) \($0.severity)" }
+                                             .joined(separator: ", ")),
+                                     identifier: "detail_tail_stop_parentalGuide")
             }
+            // BUG-244: a stop spans the page width, so Up/Down from any x reaches it. Only while it
+            // is a stop: an inactive section stays today's tree.
+            .detailTailFullWidth(active: tailStop)
         }
     }
 
