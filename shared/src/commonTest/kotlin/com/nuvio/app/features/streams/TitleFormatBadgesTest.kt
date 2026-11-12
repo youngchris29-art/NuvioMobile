@@ -43,6 +43,11 @@ class TitleFormatBadgesTest {
     }
 
     @Test
+    fun sdrTaggedFourKLightsFourKOnly() {
+        assertEquals(listOf(UHD_4K), badges(stream(name = "Movie.2024.2160p.WEB-DL.SDR.DDP5.1-GRP")))
+    }
+
+    @Test
     fun resolution1080pLightsNothing() {
         assertEquals(emptyList(), badges(stream(name = "Movie.2024.1080p.WEB-DL.x264-GRP")))
     }
