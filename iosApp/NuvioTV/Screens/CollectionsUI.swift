@@ -1396,6 +1396,17 @@ private struct FolderGridTileFramesKey: PreferenceKey {
 }
 
 /// Pure formatting of the tile frames into `minY-maxY` per row, rows joined by `;`.
+#if DEBUG
+/// GitHub #28 (probe only): how many times `FolderDetailView.body` has been evaluated. A plain
+/// static (not `@State`, not observed), so writing it never invalidates the page. The
+/// `folder_header_state` label prints it as `body=<n>`; the label sits in the same body, so it
+/// shows the count as of the last evaluation, and no evaluation means the count has not moved.
+@MainActor enum FolderBodyCounter {
+    static var count = 0
+    static func bump() { count += 1 }
+}
+#endif
+
 nonisolated enum FolderGridProbe {
     static func rows(_ frames: [Int: CGRect]) -> String {
         guard !frames.isEmpty else { return "" }
@@ -1550,6 +1561,8 @@ struct FolderDetailView: View {
                                                        compact: headerMode == .compact,
                                                        hasChips: hasChips,
                                                        gridScrolled: gridScrolled) else { return }
+        // Synchronous, inside the `onChange` of the move that landed on the poster: no Task or
+        // dispatch hop, so a second press cannot overtake the write. It writes a chip, never `.card`.
         pageFocus = .chip(min(max(model.selectedTabIndex, 0), model.tabs.count - 1))
     }
 
@@ -1569,6 +1582,9 @@ struct FolderDetailView: View {
     }
 
     var body: some View {
+        #if DEBUG
+        let _ = FolderBodyCounter.bump()
+        #endif
         let layout = pageLayout
         ZStack(alignment: .top) {
             switch layout {
@@ -1723,7 +1739,7 @@ struct FolderDetailView: View {
             // Invisible, harness-readable header state for test69 (`folder_header_state`) — same
             // hidden-Text pattern as HomeView's `debug_*` labels. C: XCUITest frames ignore
             // `.offset`/`.scaleEffect`, so the rise is asserted through this label and pixels.
-            Text("scrolled=\(gridScrolled ? 1 : 0) phase=\(headerPhase) chip=\(focusedChip.map { String($0) } ?? "-") reveal=\(gridRevealed ? 1 : 0) style=\(collectionHeaderStyle.rawValue)")
+            Text("scrolled=\(gridScrolled ? 1 : 0) phase=\(headerPhase) chip=\(focusedChip.map { String($0) } ?? "-") reveal=\(gridRevealed ? 1 : 0) style=\(collectionHeaderStyle.rawValue) body=\(FolderBodyCounter.count)")
                 .font(.system(size: 8))
                 .opacity(0.011)
                 .allowsHitTesting(false)
@@ -1982,7 +1998,7 @@ struct FolderDetailView: View {
                         }
                         .cardFocusButtonStyle()
                         .posterButtonShape()
-                        .focused($pageFocus, equals: .card(index))
+                        .focused($pageFocus, equals: .card)
                         .titleHoldMenu(preview: item)
                         .onAppear { model.itemAppeared(at: index) }
                         // UI test69: only the first tile needs an identifier — the test reads its
@@ -2511,10 +2527,16 @@ final class ClassicRowsFocusMemory {
 
 /// GitHub #28: who holds focus on the folder Grid page, for one `FocusState` shared by the Edit
 /// control, the tab chips and the poster cards.
+///
+/// `card` has NO index and every poster binds to it: the value then changes only when focus enters
+/// or leaves the grid, not on every move between posters (a per-card value invalidated the whole
+/// page body on each press; measured 1 body evaluation per press). It is therefore read-only state:
+/// nothing may ever WRITE `.card` (with a value shared by many views a write would be ambiguous).
+/// The only writes are `.chip(i)` (the redirect) and nil.
 enum FolderPageFocus: Hashable {
     case control
     case chip(Int)
-    case card(Int)
+    case card
 
     var holder: FolderFocusHolder {
         switch self {

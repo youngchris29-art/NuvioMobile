@@ -74,6 +74,6 @@ final class FolderHeaderFocusRedirectTests: XCTestCase {
     func testPageFocusMapsToHolder() {
         XCTAssertEqual(FolderPageFocus.control.holder, .control)
         XCTAssertEqual(FolderPageFocus.chip(2).holder, .chip)
-        XCTAssertEqual(FolderPageFocus.card(0).holder, .card)
+        XCTAssertEqual(FolderPageFocus.card.holder, .card)
     }
 }
