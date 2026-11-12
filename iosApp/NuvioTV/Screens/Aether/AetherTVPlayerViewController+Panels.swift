@@ -66,7 +66,7 @@ extension AetherTVPlayerViewController {
         }
         // Per title/episode, per profile (beta.15 §B2): the overlay applies it host-side.
         if let storedMs = PlayerTrackPreferenceStorage.shared.loadSubtitleDelayMs(videoId: context.videoId) {
-            setSubtitleDelay(Double(storedMs.intValue) / 1000.0)
+            setSubtitleDelay(Double(storedMs.intValue) / 1000.0, stored: true)
         }
     }
 
@@ -369,8 +369,10 @@ extension AetherTVPlayerViewController {
     // MARK: Timing
 
     /// Host-side (the overlay draws `sourceSec - delay`); same persistence key and range as mpv.
-    private func setSubtitleDelay(_ seconds: Double) {
+    private func setSubtitleDelay(_ seconds: Double, stored: Bool = false) {
         let value = seconds.isFinite ? seconds : 0
+        let note = stored ? " (stored)" : ""
+        print("[AetherPlayer] subtitle delay \(String(format: "%+.2f", value)) s\(note)")
         subtitleOverlay?.setDelay(value)
         state.subtitleDelaySec = value
         PlayerTrackPreferenceStorage.shared.saveSubtitleDelayMs(videoId: context.videoId,
