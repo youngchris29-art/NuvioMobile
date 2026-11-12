@@ -340,24 +340,43 @@ final class CollectionHeaderUITests: XCTestCase {
     /// appears), Menu returns, and the same poster is focused with the page still at rest. Identity
     /// is the focused element's label and frame (tvOS 26.5 reports `hasFocus`); the laid-out
     /// geometry line and `scrolled=0` prove the page did not move.
-    func testDetailReturnKeepsTheThirdPoster() {
+    func testDetailReturnKeepsTheThirdPoster() { detailReturn(scrolled: false) }
+
+    /// Same route from a poster in row 4 (several-sources seed, which has far more than three rows
+    /// of Cinemeta results): the page is scrolled (`scrolled=1`) before Detail and must be
+    /// identical after Menu: same poster (label and laid-out frame), still scrolled, same geometry
+    /// line, focus not on the first tile; then Left and Right still move focus between posters.
+    func testDetailReturnKeepsAScrolledPoster() { detailReturn(scrolled: true) }
+
+    private func detailReturn(scrolled: Bool) {
         defer { clearSeed() }
         var previous: XCUIApplication?
         for style in ["standard", "compact"] {
             guard let app = openFolder(style: style, seed: Self.severalSources, shell: "T", terminateFirst: previous) else { return }
             previous = app
-            let tag = "detailreturn-\(style)"
+            let tag = "detailreturn\(scrolled ? "-scrolled" : "")-\(style)"
             for _ in 0..<3 where Self.token(state(app), "chip") != "-" { remote.press(.down); pause(1) }
             XCTAssertEqual(Self.token(state(app), "chip"), "-", "\(tag): focus is in the grid: \(state(app))")
             for _ in 0..<8 { remote.press(.left); pause(0.6) }
             remote.press(.right); pause(0.8)
             remote.press(.right); pause(1.2)
+            if scrolled {
+                for _ in 0..<3 { remote.press(.down); pause(1) }
+                pause(1)
+            }
             guard let g = readGeo(app) else { return }
             guard let before = focusSnapshot(app) else { XCTFail("\(tag): no focused element before Detail"); return }
-            XCTAssertEqual(CGFloat(before.minY), g.top(0), accuracy: 3, "\(tag): the focused poster is in row 1: \(before) \(g.line)")
-            XCTAssertGreaterThan(before.minX, 400, "\(tag): the focused poster is the third, not the first: \(before)")
-            XCTAssertEqual(Self.token(state(app), "scrolled"), "0", "\(tag): \(state(app))")
+            if scrolled {
+                XCTAssertEqual(Self.token(state(app), "scrolled"), "1", "\(tag): the page is scrolled before Detail: \(state(app))")
+                let firstLabel = label(app, "folder_grid_first_tile")
+                XCTAssertNotEqual(before.label, firstLabel, "\(tag): focus is not on the first tile: \(before)")
+            } else {
+                XCTAssertEqual(CGFloat(before.minY), g.top(0), accuracy: 3, "\(tag): the focused poster is in row 1: \(before) \(g.line)")
+                XCTAssertEqual(Self.token(state(app), "scrolled"), "0", "\(tag): \(state(app))")
+            }
+            XCTAssertGreaterThan(before.minX, 400, "\(tag): the focused poster is the third column, not the first: \(before)")
             let geoBefore = g.line
+            let stateBefore = state(app)
 
             var detail = false
             for attempt in 0..<2 where !detail {
@@ -371,12 +390,27 @@ final class CollectionHeaderUITests: XCTestCase {
             XCTAssertTrue(back, "\(tag): Menu did not return to the folder page")
             pause(3)
             let after = focusSnapshot(app)
-            note(tag, "before=\(before) after=\(String(describing: after)) \(state(app))")
+            note(tag, "before=\(before) after=\(String(describing: after)) geoBefore=\(geoBefore) geoAfter=\(geometry(app)) stateBefore=\(stateBefore) stateAfter=\(state(app))")
             XCTAssertEqual(after, before, "\(tag): focus is not back on the same poster")
-            XCTAssertEqual(Self.token(state(app), "scrolled"), "0", "\(tag): the page scrolled on return: \(state(app))")
+            XCTAssertEqual(Self.token(state(app), "scrolled"), scrolled ? "1" : "0", "\(tag): the page scroll state changed on return: \(state(app))")
             XCTAssertEqual(Self.token(state(app), "chip"), "-", "\(tag): focus fell to a chip on return: \(state(app))")
             XCTAssertEqual(geometry(app), geoBefore, "\(tag): the laid-out geometry changed across Detail")
+            if scrolled, let after {
+                XCTAssertNotEqual(after.label, label(app, "folder_grid_first_tile"), "\(tag): focus fell to the first tile on return")
+            }
             shot("\(tag)-back")
+
+            // The shared focus value must not have trapped focus: Left and Right still move.
+            let y0 = after?.minY
+            remote.press(.left); pause(1)
+            let moved = focusSnapshot(app)
+            XCTAssertNotNil(moved, "\(tag): no focus after Left")
+            XCTAssertNotEqual(moved?.minX, after?.minX, "\(tag): Left did not move focus off the returned poster: \(String(describing: moved))")
+            XCTAssertEqual(moved?.minY, y0, "\(tag): Left stayed in the same row")
+            remote.press(.right); pause(1)
+            let movedBack = focusSnapshot(app)
+            XCTAssertNotEqual(movedBack?.minX, moved?.minX, "\(tag): Right did not move focus: \(String(describing: movedBack))")
+            XCTAssertEqual(Self.token(state(app), "chip"), "-", "\(tag): focus stayed in the grid: \(state(app))")
         }
     }
 
@@ -401,11 +435,23 @@ final class CollectionHeaderUITests: XCTestCase {
             XCTAssertEqual(Self.token(state(app), "chip"), "-", "\(tag): focus is in the grid: \(state(app))")
             for _ in 0..<8 { remote.press(.left); pause(0.6) }
             pause(1)
-            func step(_ name: String, _ press: XCUIRemote.Button, _ n: Int) -> Int {
+            func step(_ name: String, _ press: XCUIRemote.Button, _ n: Int, mustMove: Bool = true) -> Int {
                 let before = bodyCount(app)
-                for _ in 0..<n { remote.press(press); pause(0.8) }
+                XCTAssertGreaterThanOrEqual(before, 1, "\(tag)-\(name): body counter missing or zero before the step: \(state(app))")
+                for i in 0..<n {
+                    let snap = focusSnapshot(app)
+                    remote.press(press); pause(0.8)
+                    let next = focusSnapshot(app)
+                    XCTAssertNotNil(snap, "\(tag)-\(name): no focus before press \(i + 1)")
+                    XCTAssertNotNil(next, "\(tag)-\(name): no focus after press \(i + 1)")
+                    if mustMove, press == .left || press == .right {
+                        XCTAssertNotEqual(next?.minX, snap?.minX, "\(tag)-\(name): press \(i + 1) did not move focus (\(String(describing: snap)) -> \(String(describing: next)))")
+                    }
+                }
                 pause(1)
-                let delta = bodyCount(app) - before
+                let after = bodyCount(app)
+                XCTAssertGreaterThanOrEqual(after, 1, "\(tag)-\(name): body counter missing after the step: \(state(app))")
+                let delta = after - before
                 note("\(tag)-\(name)", "delta=\(delta) \(state(app))")
                 return delta
             }
