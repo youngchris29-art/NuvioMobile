@@ -307,16 +307,31 @@ nonisolated enum DetailTrailingFocus {
     /// A stop is active only while its section has no focus target of its own, so focus anywhere in
     /// that section IS focus on the stop until links appear. When the section gains targets
     /// (`hasOwnTargets`) while its stop holds focus (round 1 P2), the stop is kept for that pass and
-    /// reported as a hand-off (focus goes to the first link); once focus is on a link
-    /// (`linkFocused`) the stop is dropped, so the links are reachable and visible to VoiceOver and
-    /// focus never falls to nil. A stop that does not hold focus is dropped at once.
+    /// reported as a hand-off (focus goes to a link); once focus is on a link (`linkFocused`) the stop
+    /// is dropped, so the links are reachable and visible to VoiceOver and focus never falls to nil.
+    /// A stop that does not hold focus is dropped at once.
+    ///
+    /// Review finding A: the hold lasts ONE pass. When the previous pass already reported the hand-off
+    /// for this section (`previousHandoff`), the stop is dropped now whatever happened to focus: the
+    /// hand-off is not retried, so a link that could not take focus (not realized yet) can never leave
+    /// the stop over live person links (cards hidden from VoiceOver, Select dead).
     static func resolve(tail: Set<DetailSection>, previous: Set<DetailSection>, focused: DetailSection?,
                         hasOwnTargets: (DetailSection) -> Bool,
-                        linkFocused: (DetailSection) -> Bool = { _ in false }) -> Resolution {
+                        linkFocused: (DetailSection) -> Bool = { _ in false },
+                        previousHandoff: DetailSection? = nil) -> Resolution {
         guard let focused, previous.contains(focused) else { return Resolution(stops: tail, handoff: nil) }
         guard hasOwnTargets(focused) else { return Resolution(stops: tail.union([focused]), handoff: nil) }
-        if linkFocused(focused) { return Resolution(stops: tail, handoff: nil) }
+        if linkFocused(focused) || previousHandoff == focused { return Resolution(stops: tail, handoff: nil) }
         return Resolution(stops: tail.union([focused]), handoff: focused)
+    }
+
+    /// Review finding A: the hand-off's target, the first card that carries a person link AND is
+    /// realized (a `LazyHStack` builds only the cards near the viewport, and a focus assignment to an
+    /// unbuilt card does not take). nil = none is on screen: the stop is dropped anyway and focus stays
+    /// wherever the engine puts it within the row.
+    /// - Parameter cards: the row's cards in order, `hasLink` = carries a TMDB id.
+    static func handoffTarget(cards: [(key: String, hasLink: Bool)], realized: Set<String>) -> String? {
+        cards.first { $0.hasLink && realized.contains($0.key) }?.key
     }
 
     /// How a section behaves for the tail calculation, from what it ACTUALLY holds right now.
@@ -389,7 +404,8 @@ final class DetailTailStopBox {
         let tail = DetailTrailingFocus.tailStops(sections: sections, contentless: contentless,
                                                  hasOwnStop: hasOwnStop)
         let result = DetailTrailingFocus.resolve(tail: tail, previous: stops, focused: focused,
-                                                 hasOwnTargets: hasOwnStop, linkFocused: linkFocused)
+                                                 hasOwnTargets: hasOwnStop, linkFocused: linkFocused,
+                                                 previousHandoff: handoff)
         stops = result.stops
         handoff = result.handoff
         return stops

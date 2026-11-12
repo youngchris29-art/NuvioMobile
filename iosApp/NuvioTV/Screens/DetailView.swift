@@ -573,6 +573,13 @@ struct DetailView: View {
     /// BUG-244: the content sections that are one focus stop each because nothing focusable follows
     /// them (`DetailTrailingFocus`); written once per body pass, never invalidates.
     @State private var tailStopBox = DetailTailStopBox()
+    /// Review finding A: the Cast cards (with a person link) a `LazyHStack` has built right now, for
+    /// the hand-off's target. A reference box: written from `onAppear`/`onDisappear`, never invalidates.
+    @State private var realizedCastKeys = DetailRealizedKeysBox()
+    /// Review finding A: bumped after a hand-off attempt so the page re-evaluates once more and the
+    /// held stop is released (`resolve` drops it on the pass after the hand-off) even when no focus
+    /// change follows (the target card was not built). Read once in `body`, so its write is what re-runs the page.
+    @State private var tailHandoffTick = 0
     /// Review finding B: what `model.meta` yields that the focus facts and the section availability
     /// read on every body pass (credit cards, studio logos, trailer split, "has any" flags), rebuilt
     /// only when the meta object or an input changes. A reference box: never invalidates.
@@ -840,6 +847,7 @@ struct DetailView: View {
         // Review finding B: the focus facts are built once per pass and shared by the sections block
         // and the hand-off `onChange` below.
         let facts = detailFocusFacts
+        let _ = tailHandoffTick   // read so the hand-off's write re-runs this body (the stop's release pass)
         ZStack(alignment: .topLeading) {
             backdropImage
                 // FEAT-32: the still lands enlarged when the trailer cover goes and settles to 1.
@@ -1746,21 +1754,36 @@ struct DetailView: View {
         }
         return metaDerived
     }
-    /// Round 1 P2: a stop that held focus when its section gained focus targets is gone this pass;
-    /// hand focus to the first person link (or studio chip) from the `onChange` that follows the
-    /// same update (`detailFocusFacts` changed), before the engine's own fallback moves focus to the
-    /// nearest row above, so focus never falls to nil.
+    /// Round 1 P2: a stop that held focus when its section gained focus targets is gone after the
+    /// next pass; hand focus to a person link (or studio chip) so it never falls to nil.
+    ///
+    /// Review finding A: the assignment runs on the next main-queue turn (the link exists by then, and
+    /// no timer or task outlives the view) and is NOT retried: `DetailTrailingFocus.resolve` holds the
+    /// stop for one pass only. The target is the first id-bearing card a `LazyHStack` has realized
+    /// (`handoffTarget`); when none is (the first id card sits beyond the built cards), nothing is
+    /// assigned, the stop is dropped on the next pass anyway and the engine's own fallback places focus,
+    /// normally on a card of this same row (the nearest focusable view of the removed stop).
     private func performTailHandoff() {
         guard let section = tailStopBox.handoff else { return }
         #if DEBUG
         if DetailFocusProbe.enabled { print("[BUG244] handoff \(section) focusedRow=\(focusedRow.map { "\($0)" } ?? "-")") }
         #endif
-        switch section {
-        case .castAndCrew:
-            if let first = creditRowItems.first(where: { $0.tmdbId != nil }) { focusedCastKey = first.key }
-        case .companies:
-            if let index = companyLogos.firstIndex(where: { $0.company.tmdbId != nil }) { focusedCompanyIndex = index }
-        default: break
+        DispatchQueue.main.async {
+            switch section {
+            case .castAndCrew:
+                guard focusedCastKey == nil else { return }
+                let cards = derivedMeta().credits.map { (key: $0.key, hasLink: $0.tmdbId != nil) }
+                let target = DetailTrailingFocus.handoffTarget(cards: cards, realized: realizedCastKeys.keys)
+                #if DEBUG
+                if DetailFocusProbe.enabled { print("[BUG244] handoff target \(target ?? "none") realized=\(realizedCastKeys.keys.count)") }
+                #endif
+                if let target { focusedCastKey = target }
+            case .companies:
+                guard focusedCompanyIndex == nil else { return }
+                if let index = derivedMeta().companies.firstIndex(where: { $0.company.tmdbId != nil }) { focusedCompanyIndex = index }
+            default: break
+            }
+            tailHandoffTick &+= 1
         }
     }
     #if DEBUG
@@ -1778,7 +1801,7 @@ struct DetailView: View {
         let facts = detailFocusFacts
         let stops = sections.filter { DetailTrailingFocus.kind(of: $0, facts: facts) == .focusable }.map(\.rawValue).joined(separator: ",")
         let tail = sections.filter { tailStopBox.stops.contains($0) }.map(\.rawValue).joined(separator: ",")
-        return "rows=\(rows) stops=\(stops) tail=\(tail) gap=\(Int(Theme.Spacing.lg + Theme.Spacing.sm)) pad=\(Int(Theme.Spacing.screen)) cbody=\(DetailCommentsBodyCounter.count)"
+        return "rows=\(rows) stops=\(stops) tail=\(tail) gap=\(Int(Theme.Spacing.lg + Theme.Spacing.sm)) pad=\(Int(Theme.Spacing.screen)) cast=\(derivedMeta().credits.count)/\(derivedMeta().credits.filter { $0.tmdbId != nil }.count) cbody=\(DetailCommentsBodyCounter.count)"
     }
     #endif
     /// Apple-style: resolves `DetailSlotHold` for this body pass. Focus: a row, the hero (its own
@@ -3403,6 +3426,15 @@ struct DetailView: View {
             return items.map { DetailCreditItem(key: $0.key, kind: $0.kind, name: $0.name, subtitle: $0.subtitle,
                                                 photo: $0.photo, tmdbId: nil) }
         }
+        // `-debug.detailCastIdsFromCard <n>`: once released, only cards from index n on carry an id
+        // (the first id card beyond the built cards, review finding A's late-card scenario).
+        let firstWithId = UserDefaults.standard.integer(forKey: "debug.detailCastIdsFromCard")
+        if firstWithId > 0 {
+            return items.enumerated().map { index, item in
+                DetailCreditItem(key: item.key, kind: item.kind, name: item.name, subtitle: item.subtitle,
+                                 photo: item.photo, tmdbId: index >= firstWithId ? item.tmdbId : nil)
+            }
+        }
         #endif
         return items
     }
@@ -3472,6 +3504,8 @@ struct DetailView: View {
                                     .buttonBorderShape(.circle)
                                     .focused($focusedCastKey, equals: item.key)
                                     .zIndex(liftedCastZIndex(item.key))
+                                    .onAppear { realizedCastKeys.keys.insert(item.key) }
+                                    .onDisappear { realizedCastKeys.keys.remove(item.key) }
                                 } else {
                                     CastCard(person: person, avatarSize: castAvatarSize)
                                 }
@@ -4632,6 +4666,11 @@ private extension View {
     }
 }
 #endif
+
+/// Review finding A: the keys of the Cast cards (with a person link) that are built right now.
+final class DetailRealizedKeysBox {
+    var keys: Set<String> = []
+}
 
 /// Review finding B: the values `DetailView` derives from `model.meta` and reads several times per
 /// body pass. Rebuilt only when the meta object (identity: Kotlin's model is immutable) or an input

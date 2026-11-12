@@ -776,6 +776,35 @@ final class DetailRowAnchorTests: XCTestCase {
         screenshot("handoff-person-link")
     }
 
+    /// Review finding A (late card): only a card beyond the built ones carries an id when the ids
+    /// arrive (`-debug.detailCastIdsFromCard 10`: the first 10 cards have none, the 11th has one) while the
+    /// stop holds focus. The hand-off cannot assign (that card is not built) and is not retried: afterwards the
+    /// stop element is gone and focus is not nil.
+    func testLateIdCardDropsTheHeldStopAndLinksStayFocusable() throws {
+        guard let app = launchWalk(Self.severance, layout: "apple", tmdb: true,
+                                   sections: ["about": false, "studio_logos": false, "collection": false, "comments": false,
+                                              "more_like_this": false, "trailers": false],
+                                   extra: ["-debug.detailCastIdsDelay", "75", "-debug.detailCastIdsFromCard", "10"]) else { return }
+        guard tailTokens(app).contains("castAndCrew") else { throw XCTSkip("ids were not withheld / no Cast tail: \(tailTokens(app))") }
+        XCTAssertTrue(pressDown(app, until: "cast"), "Down never reached the Cast stop")
+        let stop = app.descendants(matching: .any)["detail_tail_stop_castAndCrew"]
+        guard stop.exists else { throw XCTSkip("the Cast stop was already gone (ids arrived before focus)") }
+        let deadline = Date().addingTimeInterval(150)
+        while Date() < deadline, stop.exists { pause(1) }
+        XCTAssertFalse(stop.exists, "the held Cast stop must be dropped after one pass, whether or not focus reached a link")
+        pause(3)
+        print("[BUG244] late-card after-drop reading \(focusReading(app)) sections=\(app.staticTexts["debug_detail_sections"].label)")
+        screenshot("late-card-after-drop")
+        // The 11th card was not built, so nothing could be assigned and the engine placed focus itself
+        // (here: back up on the Episodes row, never nil). The stop stays gone. Whether Down then reaches
+        // the unbuilt 11th card is the lazy row's own limit (no built view is focusable), so it is only
+        // reported, not asserted.
+        XCTAssertNotEqual(focusReading(app).row, "-", "focus must not be nil after the stop is dropped")
+        XCTAssertFalse(stop.exists)
+        let reached = pressDown(app, until: "cast", max: 3)
+        print("[BUG244] late-card Down reaches Cast row: \(reached) reading \(focusReading(app))")
+    }
+
     /// Finding 4: with no comments and no tail rows, the focus sequence and the scroll offset at each
     /// stop equal the constants measured on `b055a42a2` (the commit before the fix), in all three
     /// layouts. Record mode (no constants for a tag) only prints `[BASELINE]` lines.

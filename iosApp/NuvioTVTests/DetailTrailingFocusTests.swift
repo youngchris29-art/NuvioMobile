@@ -294,6 +294,51 @@ final class DetailTrailingFocusTests: XCTestCase {
         XCTAssertNil(box.handoff)
     }
 
+    /// Review finding A: the hold lasts one pass. The pass after a reported hand-off drops the stop
+    /// whatever happened to focus (the link never took it, or the link was inserted in the same update).
+    func testHeldStopIsReleasedOnThePassAfterTheHandoff() {
+        let box = DetailTailStopBox()
+        var castIds = false
+        let own: (DetailSection) -> Bool = { $0 == .castAndCrew ? castIds : $0 != .parentalGuide }
+        let sections: [DetailSection] = [.hero, .castAndCrew, .parentalGuide]
+        func pass() { _ = box.resolve(sections: sections, contentless: [], focused: .castAndCrew, hasOwnStop: own,
+                                       linkFocused: { _ in false }) }
+        pass()
+        castIds = true
+        pass()
+        XCTAssertEqual(box.handoff, .castAndCrew)
+        XCTAssertEqual(box.stops, [.castAndCrew, .parentalGuide], "held once")
+        pass()   // focus never reached a link
+        XCTAssertNil(box.handoff, "no retry")
+        XCTAssertEqual(box.stops, [.parentalGuide], "then dropped")
+        pass()
+        XCTAssertEqual(box.stops, [.parentalGuide])
+        XCTAssertNil(box.handoff)
+        // Pure form: the previous pass's hand-off for the focused section releases it.
+        let held = DetailTrailingFocus.resolve(tail: [.parentalGuide], previous: [.castAndCrew, .parentalGuide],
+                                               focused: .castAndCrew, hasOwnTargets: own,
+                                               previousHandoff: .castAndCrew)
+        XCTAssertEqual(held.stops, [.parentalGuide])
+        XCTAssertNil(held.handoff)
+        // A hand-off reported for another section does not release this one.
+        let other = DetailTrailingFocus.resolve(tail: [.parentalGuide], previous: [.castAndCrew, .parentalGuide],
+                                                focused: .castAndCrew, hasOwnTargets: own,
+                                                previousHandoff: .companies)
+        XCTAssertEqual(other.handoff, .castAndCrew)
+    }
+
+    /// Review finding A: the hand-off targets the first realized card with a link.
+    func testHandoffTargetIsTheFirstRealizedIdCard() {
+        let cards: [(key: String, hasLink: Bool)] = (0..<12).map { (key: "c\($0)", hasLink: $0 >= 10) }
+        // The first 10 have no id and the 11th has one: realized -> it is the target.
+        XCTAssertEqual(DetailTrailingFocus.handoffTarget(cards: cards, realized: ["c0", "c9", "c10", "c11"]), "c10")
+        // An id card that is not realized is skipped for a later realized one.
+        XCTAssertEqual(DetailTrailingFocus.handoffTarget(cards: cards, realized: ["c11"]), "c11")
+        // No on-screen id card: nil (the stop is dropped anyway).
+        XCTAssertNil(DetailTrailingFocus.handoffTarget(cards: cards, realized: Set((0..<10).map { "c\($0)" })))
+        XCTAssertNil(DetailTrailingFocus.handoffTarget(cards: [], realized: ["c0"]))
+    }
+
     // MARK: Data-driven classification (finding 2)
 
     private typealias Facts = DetailTrailingFocus.Facts
