@@ -482,6 +482,10 @@ struct DetailView: View {
 
     @StateObject private var model: DetailViewModel
     @State private var showStreams = false
+    #if DEBUG
+    /// W5 item 4: laid-out heights of the action-row buttons by key (see `probeActionHeight`).
+    @State private var debugActionHeights: [String: Int] = [:]
+    #endif
     /// Hold-Play "Choose Source…" (movies): the next picker presentation skips auto-play and shows
     /// the list. Reset when the cover goes away. Series carry the same flag on `SeriesPlayRoute`.
     @State private var forceManualPlay = false
@@ -1205,6 +1209,16 @@ struct DetailView: View {
                     .font(.system(size: 8))
                     .opacity(0.011)
                     .accessibilityIdentifier("debug_detail_focus")
+            }
+            // W5 item 4 (launch argument `-debug.detailActionGeometry YES`): the LAID-OUT whole-point
+            // height of each action-row button (`onGeometryChange` after the style), because XCUITest
+            // frames are accessibility frames. Read by `DetailActionRowGeometryUITests`.
+            if UserDefaults.standard.bool(forKey: "debug.detailActionGeometry") {
+                Text(verbatim: "debug_action_heights " + debugActionHeights.sorted { $0.key < $1.key }
+                    .map { "\($0.key)=\($0.value)" }.joined(separator: " "))
+                    .font(.system(size: 8))
+                    .opacity(0.011)
+                    .accessibilityIdentifier("debug_action_heights")
             }
             #endif
         }
@@ -2552,6 +2566,9 @@ struct DetailView: View {
                 .onGeometryChange(for: CGSize.self, of: { DetailActionSquare.whole($0.size) },
                                   action: { playButtonSize = $0 })
                 .accessibilityIdentifier("detail_action_play")
+                #if DEBUG
+                .probeActionHeight("play", $debugActionHeights)
+                #endif
                 // C (upstream `972109f9`): grey out instead of letting the user tap into an empty
                 // Streams screen when no addon/plugin/embedded/download source can serve this title.
                 .disabled(!model.isPlayEnabled)
@@ -2591,6 +2608,9 @@ struct DetailView: View {
                 .onGeometryChange(for: CGSize.self, of: { DetailActionSquare.whole($0.size) },
                                   action: { playButtonSize = $0 })
                 .accessibilityIdentifier("detail_action_play")
+                #if DEBUG
+                .probeActionHeight("play", $debugActionHeights)
+                #endif
                 // C (upstream `972109f9`): same gate as the movie Play button above.
                 .disabled(!model.isPlayEnabled)
                 .modifier(HoldPlayChooseSourceMenu(autoPlayFirstStreamOn: model.autoPlayFirstStreamOn,
@@ -2638,6 +2658,9 @@ struct DetailView: View {
                 )
                 .focused($heroFocus, equals: .trailer)
                 .accessibilityIdentifier("detail_action_trailer")
+                #if DEBUG
+                .probeActionHeight("trailer", $debugActionHeights)
+                #endif
             }
 
             compactActionButtonStyle(
@@ -2660,6 +2683,9 @@ struct DetailView: View {
             // Review r1 #2: identity only (a move between hero buttons is user input).
             .focused($heroFocus, equals: .watched)
             .accessibilityIdentifier("detail_action_watched")
+            #if DEBUG
+            .probeActionHeight("watched", $debugActionHeights)
+            #endif
 
             compactActionButtonStyle(
                 Button {
@@ -2678,6 +2704,9 @@ struct DetailView: View {
             )
             .focused($heroFocus, equals: .library)
             .accessibilityIdentifier("detail_action_library")
+            #if DEBUG
+            .probeActionHeight("library", $debugActionHeights)
+            #endif
 
             // Episode shuffle: series only, and only while the global switch is on. Last in the
             // row so the existing buttons keep their positions. On for this show = the accent on
@@ -2707,6 +2736,9 @@ struct DetailView: View {
                 )
                 .focused($heroFocus, equals: .shuffle)
                 .accessibilityIdentifier("detail_action_shuffle")
+                #if DEBUG
+                .probeActionHeight("shuffle", $debugActionHeights)
+                #endif
             }
         }
     }
@@ -3098,6 +3130,9 @@ struct DetailView: View {
         .disabled(!model.isPlayEnabled)
         .focused($heroFocus, equals: .startOver)
         .accessibilityIdentifier("detail_start_over")
+        #if DEBUG
+        .probeActionHeight("startover", $debugActionHeights)
+        #endif
     }
 
     /// FEAT-9: the underlying `Label` for one action-row button — icon + text normally, icon-only
@@ -4423,3 +4458,22 @@ nonisolated enum DetailScrim {
         return bottom * (t - clearUntil) / (1 - clearUntil)
     }
 }
+
+#if DEBUG
+/// W5 item 4: writes a button's laid-out whole-point height into `heights[key]` (DEBUG only).
+private struct ProbeActionHeight: ViewModifier {
+    let key: String
+    @Binding var heights: [String: Int]
+
+    func body(content: Content) -> some View {
+        content.onGeometryChange(for: Int.self, of: { Int($0.size.height.rounded()) },
+                                 action: { if heights[key] != $0 { heights[key] = $0 } })
+    }
+}
+
+private extension View {
+    func probeActionHeight(_ key: String, _ heights: Binding<[String: Int]>) -> some View {
+        modifier(ProbeActionHeight(key: key, heights: heights))
+    }
+}
+#endif
