@@ -691,4 +691,125 @@ final class DetailRowAnchorTests: XCTestCase {
         assertEnd(r, "R2")
         print("[BUG244] R2 rowSequence=\(rowSequence(r))")
     }
+
+    // MARK: Reach, hand-off and the no-change baseline (round 1)
+
+    private func focusReading(_ app: XCUIApplication) -> (row: String, idx: String) {
+        let t = Self.tokens(app.staticTexts["debug_detail_focus"].label)
+        return (t["row"] ?? "?", t["idx"] ?? "-")
+    }
+
+    /// Down one press at a time until the probe reports `row` (at most `max` presses).
+    @discardableResult
+    private func pressDown(_ app: XCUIApplication, until row: String, max: Int = 8) -> Bool {
+        if app.buttons["Playback unavailable"].exists { press(.left, times: 4, gap: 0.6) }
+        for _ in 0..<max {
+            if focusReading(app).row == row { return true }
+            press(.down, times: 1, gap: 0.8)
+            pause(1.5)
+        }
+        return focusReading(app).row == row
+    }
+
+    private func tailTokens(_ app: XCUIApplication) -> Set<String> {
+        let label = app.staticTexts["debug_detail_sections"]
+        guard label.exists else { return [] }
+        return Set((Self.tokens(label.label)["tail"] ?? "").split(separator: ",").map(String.init))
+    }
+
+    /// Finding 3 (Cast stop): with focus on the right-most Episodes card, Down lands on the names-only
+    /// Cast stop (its platter hugs the names, its focus reach spans the page), then on Parental Guide.
+    func testCastStopReachableFromTheRightmostCardAbove() throws {
+        guard let app = launchWalk(Self.severance, layout: "apple", tmdb: false,
+                                   sections: ["about": false, "more_like_this": false, "comments": false, "trailers": false]) else { return }
+        guard tailTokens(app).contains("castAndCrew") else { throw XCTSkip("no names-only Cast tail on this title today") }
+        XCTAssertTrue(pressDown(app, until: "episodes"), "Down never reached Episodes")
+        press(.right, times: 14, gap: 0.5)
+        pause(1)
+        press(.down, times: 1, gap: 0.8)
+        pause(1.5)
+        XCTAssertEqual(focusReading(app).row, "cast", "Down from the right-most Episodes card must land on the Cast stop")
+        XCTAssertTrue(app.descendants(matching: .any)["detail_tail_stop_castAndCrew"].exists)
+        screenshot("reach-cast-stop")
+    }
+
+    /// Finding 3 (Parental Guide): with focus on the right-most Cast card (a wide row), Down lands on
+    /// the Parental Guide stop although the chip row is narrow.
+    func testParentalStopReachableFromTheRightmostCardAbove() throws {
+        guard let app = launchWalk(Self.severance, layout: "apple", tmdb: true,
+                                   sections: ["about": false, "studio_logos": false, "collection": false, "comments": false,
+                                              "more_like_this": false, "trailers": false]) else { return }
+        guard tailTokens(app) == ["parentalGuide"] else { throw XCTSkip("no Parental-Guide-only tail today: \(tailTokens(app))") }
+        XCTAssertTrue(pressDown(app, until: "cast"), "Down never reached Cast")
+        press(.right, times: 30, gap: 0.4)
+        pause(1)
+        press(.down, times: 1, gap: 0.8)
+        pause(1.5)
+        XCTAssertEqual(focusReading(app).row, "parental", "Down from the right-most Cast card must land on the Parental Guide stop")
+        XCTAssertTrue(app.descendants(matching: .any)["detail_tail_stop_parentalGuide"].exists)
+        screenshot("reach-parental-stop")
+    }
+
+    /// Finding 1: TMDB ids arrive (`-debug.detailCastIdsDelay`) while the names-only Cast stop holds
+    /// focus: the wrapper goes and focus is handed to a person link, never nil.
+    func testCastIdsArrivingUnderTheFocusedStopHandFocusToALink() throws {
+        guard let app = launchWalk(Self.severance, layout: "apple", tmdb: true,
+                                   sections: ["about": false, "studio_logos": false, "collection": false, "comments": false,
+                                              "more_like_this": false, "trailers": false],
+                                   extra: ["-debug.detailCastIdsDelay", "40"]) else { return }
+        guard tailTokens(app).contains("castAndCrew") else { throw XCTSkip("ids were not withheld / no Cast tail: \(tailTokens(app))") }
+        XCTAssertTrue(pressDown(app, until: "cast"), "Down never reached the Cast stop")
+        let stop = app.descendants(matching: .any)["detail_tail_stop_castAndCrew"]
+        guard stop.exists else { throw XCTSkip("the Cast stop was already gone (ids arrived before focus)") }
+        let deadline = Date().addingTimeInterval(120)
+        while Date() < deadline, stop.exists { pause(1) }
+        XCTAssertFalse(stop.exists, "the Cast stop wrapper must be removed once the ids arrive")
+        pause(3)
+        let after = focusReading(app)
+        XCTAssertEqual(after.row, "cast", "focus must stay in the Cast row, not fall to nil")
+        XCTAssertNotEqual(after.idx, "-", "focus must be on a person link (the focus memory holds its key)")
+        screenshot("handoff-person-link")
+    }
+
+    /// Finding 4: with no comments and no tail rows, the focus sequence and the scroll offset at each
+    /// stop equal the constants measured on `b055a42a2` (the commit before the fix), in all three
+    /// layouts. Record mode (no constants for a tag) only prints `[BASELINE]` lines.
+    private static let baselineWalks: [String: [(row: String, off: Double)]] = [:]
+
+    private func baselineWalk(layout: String, tmdb: Bool, sections: [String: Bool], tag: String) throws {
+        guard let app = launchWalk(Self.severance, layout: layout, tmdb: tmdb, sections: sections) else { return }
+        guard let r = walkDownToEnd(app, tag: tag) else { return }
+        attachWalk(tag, r)
+        // One reading per distinct (row, rounded offset): the sequence the viewer sees.
+        var seq: [(row: String, off: Double)] = []
+        for s in r.samples {
+            let item = (row: s.row, off: s.off.rounded())
+            if let last = seq.last, last.row == item.row, abs(last.off - item.off) < 1 { continue }
+            seq.append(item)
+        }
+        print("[BASELINE \(tag)] " + seq.map { "\($0.row)@\(Int($0.off))" }.joined(separator: ","))
+        if r.hasSectionsProbe { XCTAssertTrue(r.tail.isEmpty, "\(tag): the fixture must have no tail — \(r.tail)") }
+        guard let want = Self.baselineWalks[tag] else { return }
+        XCTAssertEqual(seq.map(\.row), want.map(\.row), "\(tag) focus sequence differs from the base commit — \(seq)")
+        if seq.count == want.count {
+            for (got, exp) in zip(seq, want) {
+                XCTAssertEqual(got.off, exp.off, accuracy: 2, "\(tag) offset at \(got.row) differs from the base commit — \(seq)")
+            }
+        }
+    }
+
+    private static let everySection: [String: Bool] = ["about": true, "more_like_this": true, "trailers": true, "comments": true,
+                                                       "parental_guide": true, "cast": true, "collection": true, "studio_logos": true]
+
+    func testBaselineWalkCinematic() throws {
+        try baselineWalk(layout: "cinematic", tmdb: false, sections: Self.everySection, tag: "base-cinematic")
+    }
+    func testBaselineWalkAppleStyle() throws {
+        try baselineWalk(layout: "apple", tmdb: true, sections: Self.everySection, tag: "base-apple")
+    }
+    func testBaselineWalkClassic() throws {
+        var s = Self.everySection
+        s["comments"] = false
+        try baselineWalk(layout: "classic", tmdb: true, sections: s, tag: "base-classic")
+    }
 }

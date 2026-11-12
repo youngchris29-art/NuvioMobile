@@ -54,12 +54,14 @@ extension View {
 }
 
 extension View {
-    /// A tail stop's section spans the page width (`.frame(maxWidth: .infinity, alignment: .leading)`);
-    /// an inactive one returns `self` untouched (invariant I1).
+    /// A tail stop's focus REACH spans the page width: the section is a full-width focus section
+    /// that routes a vertical press from any x to the stop, while the visible platter still hugs the
+    /// content (round 1 P2: a stop on an intrinsic-width chip row was skipped by a Down press from a
+    /// card far to the right). An inactive section returns `self` untouched (invariant I1).
     @ViewBuilder
-    func detailTailFullWidth(active: Bool) -> some View {
+    func detailTailFocusReach(active: Bool) -> some View {
         if active {
-            frame(maxWidth: .infinity, alignment: .leading)
+            focusRow(alignment: .leading)
         } else {
             self
         }

@@ -3720,7 +3720,7 @@ struct DetailView: View {
             // BUG-244: a stop's focus reach spans the page (a full-width focus section routing to the
             // chip row's stop), so Up/Down from any x reaches it; the platter still hugs the chips.
             // Only while it is a stop: an inactive section stays today's tree.
-            .detailTailFullWidth(active: tailStop)
+            .detailTailFocusReach(active: tailStop)
         }
     }
 
