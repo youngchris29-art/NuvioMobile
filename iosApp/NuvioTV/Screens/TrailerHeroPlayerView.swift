@@ -380,6 +380,13 @@ struct TrailerHeroPlayer: UIViewRepresentable {
                 self?.fail(.failedToPlayToEnd(error), item: item)
             }
 
+            // BUG-130 way back: the full-screen cover left its position for this stream; continue the
+            // background loop from there instead of 0. `detail-bg` only, consumed once, same URL.
+            if surfaceTag == "detail-bg", let resumeAt = TrailerPositionHandoff.returning.take(url: urlString) {
+                TrailerZoomProbe.log("handoff hero resume=\(String(format: "%.2f", resumeAt.seconds))")
+                queue.seek(to: resumeAt, toleranceBefore: .zero, toleranceAfter: CMTime(value: 1, timescale: 4))
+            }
+
             queue.play()
 
             // UX-9: start measuring the baked-in bars. Anchored to `play()`, not `readyToPlay`, for
@@ -588,6 +595,10 @@ enum TrailerStreamRefresh {
 @MainActor
 final class TrailerPositionHandoff {
     static let shared = TrailerPositionHandoff()
+    /// BUG-130 way back (decision AB): the full-screen cover's position at dismissal, for the Detail
+    /// background loop that remounts behind it. A separate slot so the forward `take` never consumes
+    /// a return entry and vice versa. Written only by the cover, read only by `detail-bg`.
+    static let returning = TrailerPositionHandoff()
 
     static let freshness: TimeInterval = 10
     nonisolated static let minimumSeconds: Double = 1
@@ -731,6 +742,7 @@ private struct FullScreenTrailerSurface: UIViewRepresentable {
     func updateUIView(_ uiView: TrailerPlayerUIView, context: Context) {}
 
     static func dismantleUIView(_ uiView: TrailerPlayerUIView, coordinator: Coordinator) {
+        coordinator.recordReturnPosition(player: uiView.playerLayer.player)
         coordinator.teardown()
         uiView.playerLayer.player?.pause()
         uiView.playerLayer.player = nil
@@ -749,6 +761,7 @@ private struct FullScreenTrailerSurface: UIViewRepresentable {
 
         /// BUG-128: health monitor for the full-screen player (`detail-full`).
         func startHealth(player: AVPlayer, urlString: String) {
+            coverURLString = urlString
             health = TrailerPlaybackHealthMonitor(player: player, surface: "detail-full", urlString: urlString)
             health?.start()
         }
@@ -764,6 +777,8 @@ private struct FullScreenTrailerSurface: UIViewRepresentable {
         }
 
         private var onEnded: (() -> Void)?
+        /// The URL the cover started with; `recordReturnPosition` compares against it.
+        private var coverURLString: String?
         private var stallObserver: NSObjectProtocol?
         private var refreshes = 0
         private var refreshing = false
@@ -857,6 +872,16 @@ private struct FullScreenTrailerSurface: UIViewRepresentable {
                                  videoId: String?) {
             letterboxProbe = TrailerLetterboxProbe(view: view, player: player, urlString: urlString, zoomKey: zoomKey, videoId: videoId, surface: "full")
             letterboxProbe?.start()
+        }
+
+        /// BUG-130 way back: leave the cover's position for the Detail background loop. Skipped after a
+        /// BUG-128 refresh (the cover then plays the progressive URL while the background stream is the
+        /// adaptive one: positions match, URLs do not). A trailer that played to its end is dropped by
+        /// `TrailerPositionHandoff.isUsable`'s end margin, so the loop starts from 0.
+        func recordReturnPosition(player: AVPlayer?) {
+            guard !tornDown, refreshes == 0, let player, let url = coverURLString else { return }
+            TrailerPositionHandoff.returning.record(url: url, time: player.currentTime(),
+                                                    duration: player.currentItem?.duration)
         }
 
         func teardown() {
