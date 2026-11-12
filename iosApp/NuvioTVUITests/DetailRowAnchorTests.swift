@@ -306,4 +306,381 @@ final class DetailRowAnchorTests: XCTestCase {
         remote.press(.menu)
         pause(1)
     }
+
+    // MARK: - BUG-244: the Down walk reaches every section and the end of the page
+
+    /// One at-rest reading after a Down press: the focused row, the focused comment card (the DEBUG
+    /// `debug_comment_focus` marker), the laid-out scroll geometry (`debug_ux6` `geo=`) and the
+    /// sections' laid-out tops in content space (`debug_detail_sections` `rows=`).
+    private struct WalkSample: CustomStringConvertible {
+        var press: Int
+        var row: String
+        var comment: Int?
+        var off: Double
+        var inset: Double
+        var vis: Double
+        var content: Double
+        var tops: [String: Double]
+        var cbody: Int?
+        /// The Comments section's screen-space bottom (`sb=` of the focus marker), live between cards.
+        var sectionBottom: Double?
+        var description: String {
+            "p\(press) row=\(row) c=\(comment.map(String.init) ?? "-") off=\(Int(off)) inset=\(Int(inset)) vis=\(Int(vis)) content=\(Int(content)) cbody=\(cbody.map(String.init) ?? "-")"
+        }
+    }
+
+    private struct WalkResult {
+        var app: XCUIApplication
+        /// Rendered sections in page order (probe `rows=`), with their tops at the first reading.
+        var sections: [String]
+        var stops: Set<String>
+        var tail: Set<String>
+        var gap: Double
+        var pad: Double
+        var hasSectionsProbe: Bool
+        var initialCBody: Int?
+        var samples: [WalkSample]
+    }
+
+    /// `DetailSection.rawValue` → `DetailRowID` case name (the `debug_detail_focus` `row=` token).
+    private static func rowName(_ section: String) -> String {
+        switch section {
+        case "companies": return "logos"
+        case "parentalGuide": return "parental"
+        case "castAndCrew": return "cast"
+        default: return section
+        }
+    }
+
+    private static func tokens(_ label: String) -> [String: String] {
+        var out: [String: String] = [:]
+        for part in label.split(separator: " ") {
+            let kv = part.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            if kv.count == 2 { out[String(kv[0])] = String(kv[1]) }
+        }
+        return out
+    }
+
+    /// Eight comments shaped like a real title's: a 1/10 with 57 likes, a spoiler, a five-line one,
+    /// a review, the rest one or two lines. In memory only (`DetailCommentsDebugSeed`, guest only).
+    private static let commentsSeedB64: String = {
+        let long = String(repeating: "A long comment that runs over several lines so the card is taller than the rest, like a real review does. ", count: 6)
+        let items: [[String: Any]] = [
+            ["id": 1, "author": "Seed One", "text": "Worst thing I have seen this year.", "likes": 57, "rating": 1, "createdAt": "2026-10-18T00:00:00Z"],
+            ["id": 2, "author": "Seed Two", "text": "The ending is a twist you will not see coming.", "spoiler": true, "likes": 41, "rating": 9, "createdAt": "2026-10-12T00:00:00Z"],
+            ["id": 3, "author": "Seed Three", "text": long, "review": true, "likes": 33, "rating": 8, "createdAt": "2026-10-09T00:00:00Z"],
+            ["id": 4, "author": "Seed Four", "text": "Great.", "likes": 12, "rating": 10, "createdAt": "2026-10-01T00:00:00Z"],
+            ["id": 5, "author": "Seed Five", "text": "Slow start, strong middle and a finish that earns it.", "likes": 9, "createdAt": "2026-09-28T00:00:00Z"],
+            ["id": 6, "author": "Seed Six", "text": "Watched it twice.", "likes": 4, "rating": 7, "createdAt": "2026-09-20T00:00:00Z"],
+            ["id": 7, "author": "Seed Seven", "text": "Not for me, but the cast is good and the score carries a lot of it.", "likes": 2, "rating": 5, "createdAt": "2026-09-14T00:00:00Z"],
+            ["id": 8, "author": "Seed Eight", "text": "Fine.", "likes": 0, "createdAt": "2026-09-02T00:00:00Z"],
+        ]
+        let data = try! JSONSerialization.data(withJSONObject: items)
+        return data.base64EncodedString()
+    }()
+    private static let commentsSeedCount = 8
+
+    private static let severance = "nuviotv://title?id=tt11280740&type=series&name=Severance"
+    private static let dune = "nuviotv://title?id=tt1160419&type=movie&name=Dune"
+
+    /// Launches straight into `url` through the DEBUG deep-link hook (no Home walk, no Select on a
+    /// content card) and settles. Launch arguments live in the argument domain: nothing is written
+    /// or synced. The app is terminated in a teardown block, also when the test fails.
+    private func launchWalk(_ url: String, layout: String, tmdb: Bool, sections: [String: Bool] = [:],
+                            seedComments: Bool = false, extra: [String] = []) -> XCUIApplication? {
+        let app = XCUIApplication()
+        var args = ["-debug.openDeepLink", url, "-debug.tmdbEnabledOverride", tmdb ? "YES" : "NO",
+                    "-debug.rememberLastProfile", "NO", "-detail_layout", layout,
+                    "-detail_trailer_autoplay", "NO", "-detail_trailer_fullscreen_autoplay", "NO",
+                    "-debug.trailerProbe", "YES", "-debug.trailerForceNoTrailer", "YES",
+                    "-debug.detailScrollProbe", "YES", "-debug.detailFocusProbe", "YES"]
+        for (key, on) in sections.sorted(by: { $0.key < $1.key }) { args += ["-detail_section_\(key)", on ? "YES" : "NO"] }
+        if seedComments { args += ["-debug.detailCommentsSeedB64", Self.commentsSeedB64] }
+        app.launchArguments += args + extra
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        guard DetailEntryRoute.selectChrisTile(self, app, timeout: 90) != nil else {
+            XCTFail("profile picker never appeared — is the sim session still signed in?")
+            return nil
+        }
+        // The page settles: meta loaded, then the late rows (Parental Guide, Trakt comments).
+        let deadline = Date().addingTimeInterval(60)
+        while Date() < deadline {
+            if app.staticTexts["debug_detail_focus"].exists, app.staticTexts["debug_detail_focus"].label.contains("meta=1") { break }
+            pause(1)
+        }
+        pause(14)
+        return app
+    }
+
+    private func readSample(_ app: XCUIApplication, press: Int) -> WalkSample? {
+        let focus = app.staticTexts["debug_detail_focus"]
+        let ux6 = app.staticTexts["debug_ux6"]
+        guard focus.exists, ux6.exists else { return nil }
+        let focusTokens = Self.tokens(focus.label)
+        let geo = ux6.label
+        // The initial rest (press 0) has no geometry sample yet (`geo=-`): the page is at its top,
+        // offset 0 on the 1080 pane (vis 960 inset 60, as every later reading reports).
+        let initialRest = press == 0 && !geo.contains("off=")
+        guard let off = initialRest ? 0 : probeNumber(geo, key: "off="),
+              let vis = initialRest ? 960 : probeNumber(geo, key: "vis="),
+              let content = initialRest ? 0 : probeNumber(geo, key: "content=") else { return nil }
+        let marker = app.staticTexts["debug_comment_focus"]
+        let markerTokens = marker.exists ? marker.label.split(separator: " ").map(String.init) : []
+        let comment = markerTokens.count > 1 ? Int(markerTokens[1]) : nil
+        let sectionBottom = markerTokens.first { $0.hasPrefix("sb=") }.flatMap { Double($0.dropFirst(3)) }
+        var tops: [String: Double] = [:]
+        var cbody: Int?
+        let sections = app.staticTexts["debug_detail_sections"]
+        if sections.exists {
+            let t = Self.tokens(sections.label)
+            for entry in (t["rows"] ?? "").split(separator: ",") {
+                let kv = entry.split(separator: ":")
+                if kv.count == 2, let top = Double(kv[1]) { tops[String(kv[0])] = top }
+            }
+            cbody = t["cbody"].flatMap(Int.init)
+        }
+        return WalkSample(press: press, row: focusTokens["row"] ?? "?", comment: comment, off: off,
+                          inset: initialRest ? 60 : (probeNumber(geo, key: "inset=") ?? 0), vis: vis, content: content, tops: tops, cbody: cbody, sectionBottom: sectionBottom)
+    }
+
+    /// The shared Down-walk oracle: Down one press at a time (0.8 s gap, then the Down settle task's
+    /// two 0.35 s waits plus margin), at most 40 presses, until two consecutive presses change
+    /// nothing. Geometry from laid-out values only, never accessibility frames.
+    private func walkDownToEnd(_ app: XCUIApplication) -> WalkResult? {
+        // Guest fixture: Play reads "Playback unavailable" and initial focus can sit on an icon-only
+        // secondary; start from the leftmost hero control (as the BUG-96 walk does).
+        if app.buttons["Playback unavailable"].exists { press(.left, times: 4, gap: 0.6) }
+        pause(0.8)
+        let sectionsLabel = app.staticTexts["debug_detail_sections"]
+        let hasProbe = sectionsLabel.exists
+        let t = hasProbe ? Self.tokens(sectionsLabel.label) : [:]
+        var sections: [String] = []
+        for entry in (t["rows"] ?? "").split(separator: ",") {
+            if let name = entry.split(separator: ":").first { sections.append(String(name)) }
+        }
+        func set(_ key: String) -> Set<String> { Set((t[key] ?? "").split(separator: ",").map(String.init)) }
+        var result = WalkResult(app: app, sections: sections, stops: set("stops"), tail: set("tail"),
+                                gap: t["gap"].flatMap(Double.init) ?? 0, pad: t["pad"].flatMap(Double.init) ?? 0,
+                                hasSectionsProbe: hasProbe, initialCBody: t["cbody"].flatMap(Int.init), samples: [])
+        if let initial = readSample(app, press: 0) { result.samples.append(initial) }
+        var unchanged = 0
+        for n in 1...40 {
+            press(.down, times: 1, gap: 0.8)
+            pause(1.2)
+            guard var sample = readSample(app, press: n) else {
+                XCTFail("no geometry reading after press \(n) (probes absent?)")
+                return result
+            }
+            // Between comment cards the page's own scroll sample is stale (it is published when the
+            // focused ROW changes): take the live offset from the Comments section's screen-space
+            // bottom, whose content-space bottom is the next section's top minus the gap (or the
+            // content end minus the padding).
+            if sample.comment != nil, let sb = sample.sectionBottom, sb > 0,
+               let at = result.sections.firstIndex(of: "comments") {
+                let bottomContent: Double? = at + 1 < result.sections.count
+                    ? sample.tops[result.sections[at + 1]].map { $0 - result.gap }
+                    : sample.content - result.pad
+                if let bottomContent { sample.off = bottomContent - sb }
+            }
+            if let last = result.samples.last, last.row == sample.row, last.comment == sample.comment,
+               abs(last.off - sample.off) < 1 {
+                unchanged += 1
+            } else {
+                unchanged = 0
+            }
+            result.samples.append(sample)
+            if unchanged >= 2 { break }
+        }
+        return result
+    }
+
+    /// The pane's bottom in the content space's screen mapping: a section's on-screen y is
+    /// `contentY - off`; the last reachable offset is `content - vis - inset`, so the bottom safe
+    /// area is at `vis + inset` (1020 on the 1080 pane).
+    private func paneBottom(_ s: WalkSample) -> Double { s.vis + s.inset }
+
+    private func attachWalk(_ name: String, _ r: WalkResult) {
+        let text = "sections=\(r.sections) stops=\(r.stops.sorted()) tail=\(r.tail.sorted()) gap=\(r.gap) pad=\(r.pad)\n"
+            + r.samples.map { "\($0) tops=\($0.tops.sorted { $0.key < $1.key })" }.joined(separator: "\n")
+        let attachment = XCTAttachment(string: text)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        print("[BUG244] \(name):\n\(text)")
+    }
+
+    /// The distinct focused rows after the hero, in order (repeats collapsed; the hero and unknown
+    /// readings dropped).
+    private func rowSequence(_ r: WalkResult) -> [String] {
+        var out: [String] = []
+        for s in r.samples where s.row != "-" && s.row != "?" {
+            if out.last != s.row { out.append(s.row) }
+        }
+        return out
+    }
+
+    private func assertEnd(_ r: WalkResult, _ tag: String) {
+        guard let last = r.samples.last else { return XCTFail("\(tag): no samples") }
+        let section = r.hasSectionsProbe ? (r.sections.last ?? "") : ""
+        // The last section's bottom is `content - pad` (base tip: pad unknown, 0).
+        let bottom = last.content - r.pad - last.off
+        XCTAssertLessThanOrEqual(bottom, paneBottom(last) + 1,
+                                 "\(tag) END: the last section (\(section)) ends at y=\(Int(bottom)), below the pane bottom \(Int(paneBottom(last))) — \(r.samples)")
+    }
+
+    /// Asserts 1 (order), 2 (visited), 3 (end) and 4 (comments) of the shared oracle.
+    private func assertWalk(_ r: WalkResult, _ tag: String, commentCount: Int? = nil) throws {
+        attachWalk(tag, r)
+        assertEnd(r, tag)
+        guard r.hasSectionsProbe else {
+            throw XCTSkip("\(tag): no debug_detail_sections probe (base tip): asserts 1, 2 and 4 skipped")
+        }
+        let expected = r.sections.filter { r.stops.contains($0) || r.tail.contains($0) }.map(Self.rowName(_:))
+        XCTAssertEqual(rowSequence(r), expected, "\(tag) ORDER: the focused rows must visit every stop in page order — \(r.samples)")
+        // Visited: focused at some rest, or fully on the pane at some rest.
+        for (index, section) in r.sections.enumerated() {
+            let row = Self.rowName(section)
+            if r.samples.contains(where: { $0.row == row }) { continue }
+            let onScreen = r.samples.contains { s in
+                guard let top = s.tops[section] else { return false }
+                let bottom: Double
+                if index + 1 < r.sections.count, let next = s.tops[r.sections[index + 1]] {
+                    bottom = next - r.gap
+                } else if index + 1 == r.sections.count, s.content > 0 {
+                    bottom = s.content - r.pad
+                } else {
+                    return false
+                }
+                // "On screen": inside the 1080 pt screen (a section may end under the bottom safe-area line).
+                return top - s.off >= 0 && bottom - s.off <= 1080 + 1
+            }
+            XCTAssertTrue(onScreen, "\(tag) VISITED: \(section) was never focused nor fully on the pane at a rest — \(r.samples)")
+        }
+        if let n = commentCount {
+            var seen: [Int] = []
+            for s in r.samples { if let c = s.comment, seen.last != c { seen.append(c) } }
+            XCTAssertEqual(seen, Array(0..<n), "\(tag) COMMENTS: the focused comment cards must be 0…\(n - 1) in order — \(r.samples)")
+        }
+    }
+
+    private func screenshot(_ name: String) {
+        let shot = XCUIScreen.main.screenshot()
+        let attachment = XCTAttachment(screenshot: shot)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        if let dir = ProcessInfo.processInfo.environment["BUG244_SHOT_DIR"] {
+            try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            try? shot.pngRepresentation.write(to: URL(fileURLWithPath: dir).appendingPathComponent("\(name).png"))
+        }
+    }
+
+    /// U1: Apple-style, TMDB off (names-only Cast), About, More Like This and Comments off.
+    func testAppleStyleNamesOnlyTailReachesPageEnd() throws {
+        guard let app = launchWalk(Self.severance, layout: "apple", tmdb: false,
+                                   sections: ["about": false, "more_like_this": false, "comments": false]) else { return }
+        let label = app.staticTexts["debug_detail_sections"]
+        if label.exists, !(Self.tokens(label.label)["tail"] ?? "").contains("castAndCrew") {
+            throw XCTSkip("the title's Cast & Crew is not a names-only tail section here: \(label.label)")
+        }
+        guard let r = walkDownToEnd(app) else { return }
+        screenshot("u1-apple-end")
+        try assertWalk(r, "U1")
+        if r.hasSectionsProbe {
+            XCTAssertTrue(app.descendants(matching: .any)["detail_tail_stop_castAndCrew"].exists, "U1: the Cast tail stop element is missing")
+        }
+    }
+
+    /// U2: Classic film, TMDB off, Trailers, More Like This and Comments off: Down from the action
+    /// row reaches Parental Guide then Cast.
+    func testClassicFilmTailReachesPageEnd() throws {
+        guard let app = launchWalk(Self.dune, layout: "classic", tmdb: false,
+                                   sections: ["trailers": false, "more_like_this": false, "comments": false]) else { return }
+        let label = app.staticTexts["debug_detail_sections"]
+        if label.exists, (Self.tokens(label.label)["tail"] ?? "").isEmpty {
+            throw XCTSkip("no tail on this title's Classic page: \(label.label)")
+        }
+        guard let r = walkDownToEnd(app) else { return }
+        screenshot("u2-classic-end")
+        try assertWalk(r, "U2")
+    }
+
+    /// U2c: Cinematic series, TMDB off, About, Trailers, More Like This and Comments off.
+    func testCinematicAboutOffTailReachesPageEnd() throws {
+        guard let app = launchWalk(Self.severance, layout: "cinematic", tmdb: false,
+                                   sections: ["about": false, "trailers": false, "more_like_this": false, "comments": false]) else { return }
+        let label = app.staticTexts["debug_detail_sections"]
+        if label.exists, !(Self.tokens(label.label)["tail"] ?? "").contains("castAndCrew") {
+            throw XCTSkip("the title's Cast & Crew is not a names-only tail section here: \(label.label)")
+        }
+        guard let r = walkDownToEnd(app) else { return }
+        screenshot("u2c-cinematic-end")
+        try assertWalk(r, "U2c")
+    }
+
+    private func commentsLeg(about: Bool, tag: String) throws {
+        guard let app = launchWalk(Self.severance, layout: "apple", tmdb: true,
+                                   sections: ["about": about], seedComments: true) else { return }
+        let label = app.staticTexts["debug_detail_sections"]
+        guard label.exists, label.label.contains("comments:") else {
+            XCTFail("\(tag): comments seed refused or absent — \(label.exists ? label.label : "no probe")")
+            return
+        }
+        guard let r = walkDownToEnd(app) else { return }
+        screenshot("\(tag)-end")
+        try assertWalk(r, tag, commentCount: Self.commentsSeedCount)
+        // I7: the comments list body does not re-run for focus moves outside it.
+        let atFirstComment = r.samples.first { $0.comment == 0 }?.cbody
+        if let initial = r.initialCBody, let first = atFirstComment {
+            XCTAssertLessThanOrEqual(first - initial, 1, "\(tag) CBODY: the comments list body re-ran \(first - initial) times on the walk to the first card (settled \(initial))")
+        }
+        if about {
+            // The pass-7 clip: About's bottom edge inside the pane at the end.
+            XCTAssertEqual(r.samples.last?.row, "about", "\(tag): the walk must end on About — \(r.samples)")
+        } else {
+            XCTAssertEqual(r.samples.last?.row, "comments", "\(tag): the walk must end on the last comment card — \(r.samples)")
+        }
+    }
+
+    /// U3: the tester's case: Apple-style, TMDB on, About off, Trakt comments (seeded).
+    func testCommentsReachableAboutOff() throws { try commentsLeg(about: false, tag: "U3") }
+
+    /// U4: the same with About on: Down enters every card, then About, whole.
+    func testCommentsThenAboutWhole() throws { try commentsLeg(about: true, tag: "U4") }
+
+    /// R1 (invariant): Cinematic with every section on and no tail: no tail stop exists and the walk
+    /// ends on About.
+    func testCinematicDefaultsWalkUnchanged() throws {
+        let all: [String: Bool] = ["about": true, "more_like_this": true, "trailers": true, "comments": true,
+                                   "parental_guide": true, "cast": true, "collection": true, "studio_logos": true]
+        guard let app = launchWalk(Self.severance, layout: "cinematic", tmdb: false, sections: all) else { return }
+        guard let r = walkDownToEnd(app) else { return }
+        screenshot("r1-cinematic-end")
+        attachWalk("R1", r)
+        if r.hasSectionsProbe {
+            XCTAssertTrue(r.tail.isEmpty, "R1: the tail must be empty — \(r.tail)")
+            XCTAssertFalse(app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'detail_tail_stop_'")).firstMatch.exists, "R1: a tail stop exists")
+        }
+        XCTAssertEqual(r.samples.last?.row, "about", "R1: the walk ends on About — \(r.samples)")
+        assertEnd(r, "R1")
+        print("[BUG244] R1 rowSequence=\(rowSequence(r))")
+    }
+
+    /// R2 (invariant): Apple-style, TMDB on, every section on, no seed: same.
+    func testAppleStyleTmdbOnWalkUnchanged() throws {
+        let all: [String: Bool] = ["about": true, "more_like_this": true, "trailers": true, "comments": true,
+                                   "parental_guide": true, "cast": true, "collection": true, "studio_logos": true]
+        guard let app = launchWalk(Self.severance, layout: "apple", tmdb: true, sections: all) else { return }
+        guard let r = walkDownToEnd(app) else { return }
+        screenshot("r2-apple-end")
+        attachWalk("R2", r)
+        if r.hasSectionsProbe {
+            XCTAssertTrue(r.tail.isEmpty, "R2: the tail must be empty — \(r.tail)")
+            XCTAssertFalse(app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'detail_tail_stop_'")).firstMatch.exists, "R2: a tail stop exists")
+        }
+        XCTAssertEqual(r.samples.last?.row, "about", "R2: the walk ends on About — \(r.samples)")
+        assertEnd(r, "R2")
+        print("[BUG244] R2 rowSequence=\(rowSequence(r))")
+    }
 }
