@@ -134,7 +134,7 @@ object AddonRepository {
         val existingByUrl = _uiState.value.addons.associateBy(ManagedAddon::manifestUrl)
         // Add-ons hub v2 review r5: a same-profile replacement keeps the refresh generations, so a
         // refresh superseded before it carries over can still be told apart.
-        _uiState.update { current ->
+        updateListDetachingDeparted { current ->
             val rebuilt = keepingLiveRefresh(
                 storedUrls.map { manifestUrl ->
                     existingByUrl[manifestUrl].toPendingAddon(
@@ -257,7 +257,7 @@ object AddonRepository {
                         val existingByUrl = _uiState.value.addons.associateBy(ManagedAddon::manifestUrl)
                         // Add-ons hub v2 review r5: a same-profile replacement keeps the refresh generations, so a
                         // refresh superseded before it carries over can still be told apart.
-                        _uiState.update { current ->
+                        updateListDetachingDeparted { current ->
                             val rebuilt = keepingLiveRefresh(
                                 localUrls.map { url ->
                                     existingByUrl[url].toPendingAddon(
@@ -293,7 +293,7 @@ object AddonRepository {
                 val existingByUrl = _uiState.value.addons.associateBy(ManagedAddon::manifestUrl)
                 // Add-ons hub v2 review r5: a same-profile replacement keeps the refresh generations, so a
                 // refresh superseded before it carries over can still be told apart.
-                _uiState.update { current ->
+                updateListDetachingDeparted { current ->
                     val rebuilt = keepingLiveRefresh(
                         urls.map { url ->
                             val row = rowsByUrl[url]
@@ -432,6 +432,34 @@ object AddonRepository {
         return AddAddonResult.Success(manifest)
     }
 
+    /**
+     * Review whole-stage r1 P2: every path that REPLACES the list (`initialize`, the three pull
+     * applies, a Remote Setup edit) detaches the departed URLs' refresh jobs and health in the same
+     * step as the list change, under [refreshJobsLock], exactly as [removeAddon] does. Without it a
+     * pull that removes U and a pull that restores it before the asynchronous watcher runs would
+     * leave the old job registered: `refreshAddon` refuses to start a new one and the old one
+     * cannot publish (its generation is gone). The detached jobs are cancelled after the lock;
+     * nothing is awaited. [transform] may run more than once (a state update retries), so it must
+     * be free of side effects other than the ones the callers already reset per attempt. No other
+     * lock is taken inside; callers do not hold [refreshJobsLock] (it is not re-entered).
+     */
+    private fun updateListDetachingDeparted(transform: (AddonsUiState) -> AddonsUiState) {
+        var before = emptyList<ManagedAddon>()
+        var after = emptyList<ManagedAddon>()
+        val cancelled = synchronized(refreshJobsLock) {
+            _uiState.update { current ->
+                val next = transform(current)
+                before = current.addons
+                after = next.addons
+                next
+            }
+            val detach = detachedByListChange(before, after, activeRefreshJobs.keys)
+            detach.healthUrls.forEach(AddonHealthTracker::forget)
+            detach.jobUrls.mapNotNull { activeRefreshJobs.remove(it) }
+        }
+        cancelled.forEach(Job::cancel)
+    }
+
     fun removeAddon(manifestUrl: String) {
         if (isUsingPrimaryAddonsFromSecondaryProfile()) return
         log.i { "removeAddon() — $manifestUrl" }
@@ -555,7 +583,7 @@ object AddonRepository {
         var changed = false
         var refusal: EditedListOutcome? = null
         var toRefresh = emptyList<String>()
-        _uiState.update { current ->
+        updateListDetachingDeparted { current ->
             // `update` can retry its block; every attempt starts from a clean slate.
             matched = false
             changed = false
@@ -1034,6 +1062,33 @@ internal fun generationsForList(current: Map<String, Long>, addons: List<Managed
     if (current.isEmpty()) return current
     val listed = addons.mapTo(HashSet()) { it.manifestUrl }
     return current.filterKeys { it in listed }
+}
+
+/** Review whole-stage r1: what a replacement of the list takes with it. */
+internal data class ListChangeDetach(
+    /** URLs whose health is dropped: listed before, not after. */
+    val healthUrls: Set<String>,
+    /** URLs whose registered refresh job is detached and cancelled: registered, not listed after. */
+    val jobUrls: Set<String>,
+)
+
+/**
+ * Review whole-stage r1: when the list [before] is replaced by [after], the URLs that left lose
+ * their health and any registered refresh job in the same step (the caller applies it under the job
+ * lock). A URL that is still listed keeps its job, so a kept add-on's refresh is never disturbed; a
+ * URL removed and then restored holds no job by the time the restore arrives, so a new refresh can
+ * start. [registeredJobUrls] is the key set of the job map at that moment.
+ */
+internal fun detachedByListChange(
+    before: List<ManagedAddon>,
+    after: List<ManagedAddon>,
+    registeredJobUrls: Set<String>,
+): ListChangeDetach {
+    val listedAfter = after.mapTo(HashSet()) { it.manifestUrl }
+    return ListChangeDetach(
+        healthUrls = before.mapNotNullTo(HashSet()) { it.manifestUrl.takeIf { url -> url !in listedAfter } },
+        jobUrls = registeredJobUrls.filterTo(HashSet()) { it !in listedAfter },
+    )
 }
 
 /** Races item 3: what appending a freshly installed add-on to the state comes to. */
