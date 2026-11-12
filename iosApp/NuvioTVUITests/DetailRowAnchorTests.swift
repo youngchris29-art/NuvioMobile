@@ -703,7 +703,8 @@ final class DetailRowAnchorTests: XCTestCase {
     @discardableResult
     private func pressDown(_ app: XCUIApplication, until row: String, max: Int = 8) -> Bool {
         if app.buttons["Playback unavailable"].exists { press(.left, times: 4, gap: 0.6) }
-        for _ in 0..<max {
+        for n in 0..<max {
+            print("[BUG244] pressDown \(n) reading \(focusReading(app)) tail=\(tailTokens(app).sorted())")
             if focusReading(app).row == row { return true }
             press(.down, times: 1, gap: 0.8)
             pause(1.5)
@@ -724,13 +725,17 @@ final class DetailRowAnchorTests: XCTestCase {
                                    sections: ["about": false, "more_like_this": false, "comments": false, "trailers": false]) else { return }
         guard tailTokens(app).contains("castAndCrew") else { throw XCTSkip("no names-only Cast tail on this title today") }
         XCTAssertTrue(pressDown(app, until: "episodes"), "Down never reached Episodes")
+        // Apple-style: the first Episodes stop is the season tab row; Down once more reaches a card.
+        press(.down, times: 1, gap: 0.8)
+        pause(1.2)
         press(.right, times: 14, gap: 0.5)
         pause(1)
         press(.down, times: 1, gap: 0.8)
         pause(1.5)
+        screenshot("reach-cast-stop")
+        print("[BUG244] reach-cast reading \(focusReading(app)) sections=\(app.staticTexts["debug_detail_sections"].label)")
         XCTAssertEqual(focusReading(app).row, "cast", "Down from the right-most Episodes card must land on the Cast stop")
         XCTAssertTrue(app.descendants(matching: .any)["detail_tail_stop_castAndCrew"].exists)
-        screenshot("reach-cast-stop")
     }
 
     /// Finding 3 (Parental Guide): with focus on the right-most Cast card (a wide row), Down lands on
@@ -756,12 +761,12 @@ final class DetailRowAnchorTests: XCTestCase {
         guard let app = launchWalk(Self.severance, layout: "apple", tmdb: true,
                                    sections: ["about": false, "studio_logos": false, "collection": false, "comments": false,
                                               "more_like_this": false, "trailers": false],
-                                   extra: ["-debug.detailCastIdsDelay", "40"]) else { return }
+                                   extra: ["-debug.detailCastIdsDelay", "75"]) else { return }
         guard tailTokens(app).contains("castAndCrew") else { throw XCTSkip("ids were not withheld / no Cast tail: \(tailTokens(app))") }
         XCTAssertTrue(pressDown(app, until: "cast"), "Down never reached the Cast stop")
         let stop = app.descendants(matching: .any)["detail_tail_stop_castAndCrew"]
         guard stop.exists else { throw XCTSkip("the Cast stop was already gone (ids arrived before focus)") }
-        let deadline = Date().addingTimeInterval(120)
+        let deadline = Date().addingTimeInterval(150)
         while Date() < deadline, stop.exists { pause(1) }
         XCTAssertFalse(stop.exists, "the Cast stop wrapper must be removed once the ids arrive")
         pause(3)

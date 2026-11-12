@@ -903,8 +903,14 @@ struct DetailView: View {
                             DetailTrailingFocus.kind(of: $0, facts: facts) == .contentless
                         }),
                         focused: DetailSection.section(for: focusedRow),
-                        hasOwnStop: { DetailTrailingFocus.kind(of: $0, facts: facts) == .focusable })
-                    let _ = scheduleTailHandoff(tailStopBox.handoff)
+                        hasOwnStop: { DetailTrailingFocus.kind(of: $0, facts: facts) == .focusable },
+                        linkFocused: { section in
+                            switch section {
+                            case .castAndCrew: return focusedCastKey != nil
+                            case .companies: return focusedCompanyIndex != nil
+                            default: return false
+                            }
+                        })
                     ForEach(sections, id: \.self) { section in
                         detailSection(section, pending: availability.state(section) == .pending,
                                       heldHeight: held[section], tailStop: tailStops.contains(section))
@@ -966,6 +972,9 @@ struct DetailView: View {
             // Christian's call 2026-09-08: keep that minimal reveal on Down, and only pull the row
             // up to `screenRest` when it would otherwise leave the header straddling the top scrim
             // — the ORIGINAL BUG-96 photo, not the two-step motion the blend fix already solved.
+            // BUG-244 (round 1): a stop that held focus when its section gained focus targets hands
+            // focus to a link in the update that removed it.
+            .onChange(of: detailFocusFacts) { _, _ in performTailHandoff() }
             .onChange(of: focusedRow) { old, row in
                 // BUG-194 (Batch P): during a live pop restore the engine's stray first landing must
                 // not move the page (the "up, then down onto the card" Steven filmed). Decided by
@@ -1714,20 +1723,20 @@ struct DetailView: View {
         return facts
     }
     /// Round 1 P2: a stop that held focus when its section gained focus targets is gone this pass;
-    /// hand focus to the first person link (or studio chip) one runloop later (the engine's own
-    /// fallback wins a same-update claim, as `ClaimsFocusAfterSwap`), so focus never falls to nil.
-    /// Always returns `()` so the page body can bind it with `let _`.
-    private func scheduleTailHandoff(_ section: DetailSection?) {
-        guard let section else { return }
-        DispatchQueue.main.async {
-            guard focusedRow == nil || DetailSection.section(for: focusedRow) == section else { return }
-            switch section {
-            case .castAndCrew:
-                if let first = creditRowItems.first(where: { $0.tmdbId != nil }) { focusedCastKey = first.key }
-            case .companies:
-                if let index = companyLogos.firstIndex(where: { $0.company.tmdbId != nil }) { focusedCompanyIndex = index }
-            default: break
-            }
+    /// hand focus to the first person link (or studio chip) from the `onChange` that follows the
+    /// same update (`detailFocusFacts` changed), before the engine's own fallback moves focus to the
+    /// nearest row above, so focus never falls to nil.
+    private func performTailHandoff() {
+        guard let section = tailStopBox.handoff else { return }
+        #if DEBUG
+        if DetailFocusProbe.enabled { print("[BUG244] handoff \(section) focusedRow=\(focusedRow.map { "\($0)" } ?? "-")") }
+        #endif
+        switch section {
+        case .castAndCrew:
+            if let first = creditRowItems.first(where: { $0.tmdbId != nil }) { focusedCastKey = first.key }
+        case .companies:
+            if let index = companyLogos.firstIndex(where: { $0.company.tmdbId != nil }) { focusedCompanyIndex = index }
+        default: break
         }
     }
     #if DEBUG

@@ -251,37 +251,45 @@ final class DetailTrailingFocusTests: XCTestCase {
     }
 
     /// Round 1 P2 (finding 1): Cast & Crew gains TMDB ids while its names-only stop holds focus.
-    func testIdsArrivingUnderAFocusedStopHandFocusToALinkAndDropTheWrapper() {
+    func testIdsArrivingUnderAFocusedStopHandFocusToALinkThenDropTheStop() {
         let own: (DetailSection) -> Bool = { $0 == .castAndCrew }
-        // Stop focused, ids arrive: wrapper gone, hand-off named (focus is never left to fall to nil).
-        let handed = DetailTrailingFocus.resolve(tail: [.parentalGuide], previous: [.castAndCrew, .parentalGuide],
-                                                 focused: .castAndCrew, hasOwnTargets: own)
-        XCTAssertEqual(handed.stops, [.parentalGuide])
+        let prev: Set<DetailSection> = [.castAndCrew, .parentalGuide]
+        // Stop focused, ids arrive: the stop is kept for this pass and the hand-off is named, so focus
+        // moves to a link instead of falling to nil.
+        let handed = DetailTrailingFocus.resolve(tail: [.parentalGuide], previous: prev, focused: .castAndCrew,
+                                                 hasOwnTargets: own, linkFocused: { _ in false })
+        XCTAssertEqual(handed.stops, [.castAndCrew, .parentalGuide])
         XCTAssertEqual(handed.handoff, .castAndCrew)
-        // Stop not focused, ids arrive: wrapper gone, no focus change.
-        let quiet = DetailTrailingFocus.resolve(tail: [.parentalGuide], previous: [.castAndCrew, .parentalGuide],
-                                                focused: .parentalGuide, hasOwnTargets: own)
-        XCTAssertEqual(quiet.stops, [.parentalGuide])
-        XCTAssertNil(quiet.handoff)
-        let nofocus = DetailTrailingFocus.resolve(tail: [.parentalGuide], previous: [.castAndCrew, .parentalGuide],
-                                                  focused: nil, hasOwnTargets: own)
-        XCTAssertEqual(nofocus.stops, [.parentalGuide])
-        XCTAssertNil(nofocus.handoff)
+        // Focus is now on a person link: the wrapper is gone, no further hand-off.
+        let done = DetailTrailingFocus.resolve(tail: [.parentalGuide], previous: handed.stops, focused: .castAndCrew,
+                                               hasOwnTargets: own, linkFocused: { $0 == .castAndCrew })
+        XCTAssertEqual(done.stops, [.parentalGuide])
+        XCTAssertNil(done.handoff)
+        // Stop not focused, ids arrive: wrapper gone at once, no focus change.
+        for focused in [DetailSection.parentalGuide, nil] {
+            let quiet = DetailTrailingFocus.resolve(tail: [.parentalGuide], previous: prev, focused: focused,
+                                                    hasOwnTargets: own)
+            XCTAssertEqual(quiet.stops, [.parentalGuide])
+            XCTAssertNil(quiet.handoff)
+        }
     }
 
-    func testBoxHandsOffOnTheTransitionPassOnly() {
+    func testBoxHandsOffUntilALinkHoldsFocus() {
         let box = DetailTailStopBox()
         var castIds = false
+        var linkFocused = false
         let own: (DetailSection) -> Bool = { $0 == .castAndCrew ? castIds : $0 != .parentalGuide }
         let sections: [DetailSection] = [.hero, .castAndCrew, .parentalGuide]
-        _ = box.resolve(sections: sections, contentless: [], focused: nil, hasOwnStop: own)
+        func pass() { _ = box.resolve(sections: sections, contentless: [], focused: .castAndCrew, hasOwnStop: own,
+                                       linkFocused: { _ in linkFocused }) }
+        pass()
         XCTAssertEqual(box.stops, [.castAndCrew, .parentalGuide])
         castIds = true
-        _ = box.resolve(sections: sections, contentless: [], focused: .castAndCrew, hasOwnStop: own)
-        XCTAssertEqual(box.stops, [.parentalGuide])
+        pass()
+        XCTAssertEqual(box.stops, [.castAndCrew, .parentalGuide], "the stop is kept while it still holds focus")
         XCTAssertEqual(box.handoff, .castAndCrew)
-        // The next pass (focus now on a link, row still Cast): no second hand-off, wrapper stays gone.
-        _ = box.resolve(sections: sections, contentless: [], focused: .castAndCrew, hasOwnStop: own)
+        linkFocused = true
+        pass()
         XCTAssertEqual(box.stops, [.parentalGuide])
         XCTAssertNil(box.handoff)
     }

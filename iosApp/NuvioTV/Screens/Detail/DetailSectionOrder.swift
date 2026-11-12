@@ -305,15 +305,18 @@ nonisolated enum DetailTrailingFocus {
     /// (a late comments or More Like This arrival below it), and is released when focus leaves.
     ///
     /// A stop is active only while its section has no focus target of its own, so focus anywhere in
-    /// that section IS focus on the stop (`focused` is the section holding focus). When the section
-    /// gains targets (`hasOwnTargets`) while its stop holds focus, the stop is NOT held: it is
-    /// dropped in the same pass and reported as a hand-off, so the person links are reachable and
-    /// visible to VoiceOver (round 1 P2).
+    /// that section IS focus on the stop until links appear. When the section gains targets
+    /// (`hasOwnTargets`) while its stop holds focus (round 1 P2), the stop is kept for that pass and
+    /// reported as a hand-off (focus goes to the first link); once focus is on a link
+    /// (`linkFocused`) the stop is dropped, so the links are reachable and visible to VoiceOver and
+    /// focus never falls to nil. A stop that does not hold focus is dropped at once.
     static func resolve(tail: Set<DetailSection>, previous: Set<DetailSection>, focused: DetailSection?,
-                        hasOwnTargets: (DetailSection) -> Bool) -> Resolution {
+                        hasOwnTargets: (DetailSection) -> Bool,
+                        linkFocused: (DetailSection) -> Bool = { _ in false }) -> Resolution {
         guard let focused, previous.contains(focused) else { return Resolution(stops: tail, handoff: nil) }
-        if hasOwnTargets(focused) { return Resolution(stops: tail, handoff: focused) }
-        return Resolution(stops: tail.union([focused]), handoff: nil)
+        guard hasOwnTargets(focused) else { return Resolution(stops: tail.union([focused]), handoff: nil) }
+        if linkFocused(focused) { return Resolution(stops: tail, handoff: nil) }
+        return Resolution(stops: tail.union([focused]), handoff: focused)
     }
 
     /// How a section behaves for the tail calculation, from what it ACTUALLY holds right now.
@@ -379,11 +382,12 @@ final class DetailTailStopBox {
     private(set) var handoff: DetailSection?
 
     func resolve(sections: [DetailSection], contentless: Set<DetailSection>, focused: DetailSection?,
-                 hasOwnStop: (DetailSection) -> Bool) -> Set<DetailSection> {
+                 hasOwnStop: (DetailSection) -> Bool,
+                 linkFocused: (DetailSection) -> Bool = { _ in false }) -> Set<DetailSection> {
         let tail = DetailTrailingFocus.tailStops(sections: sections, contentless: contentless,
                                                  hasOwnStop: hasOwnStop)
         let result = DetailTrailingFocus.resolve(tail: tail, previous: stops, focused: focused,
-                                                 hasOwnTargets: hasOwnStop)
+                                                 hasOwnTargets: hasOwnStop, linkFocused: linkFocused)
         stops = result.stops
         handoff = result.handoff
         return stops

@@ -6,8 +6,8 @@ import SwiftUI
 /// scrolls the section into view. Select on a stop does nothing; Menu still pops. The section's
 /// heading stays outside the platter.
 ///
-/// `active` false returns `content` untouched (an `if`, not `.focusable(false)`): an inactive page
-/// is today's view tree, so configurations that work keep their focus path (invariant I1).
+/// `active` false adds nothing visible, focusable or accessible (two empty backgrounds): an
+/// inactive page keeps its layout and focus path (invariant I1).
 /// The stop is one combined VoiceOver element carrying `label` (a `LazyHStack` builds only the
 /// visible cards, so `.combine` would drop names).
 struct DetailTailFocusStop: ViewModifier {
@@ -19,19 +19,30 @@ struct DetailTailFocusStop: ViewModifier {
     /// The platter snaps instead of fading under Reduce Motion (as About's).
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    @ViewBuilder
+    /// The focus target is a clear `.focusable()` OVERLAY on the content, a sibling of the cards and
+    /// never their ancestor (a focusable background was passed over by Down when avatar photos
+    /// covered it, so it sits on top). Two consequences: the cards keep their identity when the stop
+    /// comes and goes (a section gaining person links under a held stop keeps them alive, so focus can
+    /// be handed to one, round 1 P2), and they do not inherit the stop's focus (a focusable ancestor
+    /// made every avatar's hover highlight draw a glass square when the stop took focus). `active`
+    /// false adds nothing focusable. The overlay is the one combined VoiceOver element carrying
+    /// `label`; the cards themselves are hidden from VoiceOver while the stop is active.
     func body(content: Content) -> some View {
-        if active {
-            content
-                .background { platter }
-                .focusable()
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(label)
-                .accessibilityIdentifier(identifier)
-                .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: isFocused)
-        } else {
-            content
-        }
+        content
+            .accessibilityHidden(active)
+            .background {
+                if active { platter.animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: isFocused) }
+            }
+            .overlay {
+                if active {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .focusable()
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(label)
+                        .accessibilityIdentifier(identifier)
+                }
+            }
     }
 
     /// Copy of `DetailAboutSection.platter` (itself a copy of `PersonDetailView.topFocusPlatter`):
