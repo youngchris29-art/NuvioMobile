@@ -81,7 +81,15 @@ final class CollectionHeaderUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["-debug.collectionsSeedJsonB64", Data("[]".utf8).base64EncodedString()]
         app.launch()
-        pause(8)
+        // The seed is applied by the Home pipeline, which starts only once a profile is chosen: pass
+        // the picker (as `StripFitNoZoomUITests.launch` does) and wait for Home before terminating,
+        // or the empty seed is never applied and a seeded collection stays on the fixture.
+        let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
+        if chris.waitForExistence(timeout: 60) {
+            DetailEntryRoute.selectChrisTile(self, app, timeout: 5)
+            _ = poll(60) { !chris.exists }
+        }
+        pause(12)
         app.terminate()
     }
 
