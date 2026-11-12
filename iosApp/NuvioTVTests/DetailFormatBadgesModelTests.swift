@@ -215,6 +215,42 @@ final class DetailFormatBadgesModelTests: XCTestCase {
                           DetailFormatBadgesModel.taskID(request: request(), enabled: true, ready: true))
     }
 
+    func testCoveredStopsTheStartedProbeKeepsBadgesAndWatches() async {
+        let source = FakeSource()
+        let model = makeModel(source)
+        let req = request()
+        let task = Task { await model.run(request: req, enabled: true) }
+        await waitUntil("start") { source.hasUpdates(key: req.key) }
+        source.emit([.uhd4k], key: req.key)
+        await waitUntil("4K") { self.labels(model) == [TitleFormatBadge.uhd4k.label] }
+        task.cancel()
+        await task.value
+
+        source.cached = [.uhd4k]
+        await model.run(request: req, enabled: true, covered: true)
+        XCTAssertEqual(source.cancelled, [req.key], "one cancel")
+        XCTAssertEqual(source.started, [req.key], "no further start under the cover")
+        XCTAssertEqual(labels(model), [TitleFormatBadge.uhd4k.label])
+        XCTAssertEqual(source.watched.last, req.key, "still tracked for the picker fold")
+    }
+
+    func testUncoveredRunStartsTheProbe() async {
+        let source = FakeSource()
+        let model = makeModel(source)
+        let req = request()
+        let task = Task { await model.run(request: req, enabled: true, covered: false) }
+        await waitUntil("start") { source.hasUpdates(key: req.key) }
+        XCTAssertEqual(source.started, [req.key])
+        task.cancel()
+        await task.value
+    }
+
+    func testTaskIDDiffersWhenCovered() {
+        let a = request()
+        XCTAssertNotEqual(DetailFormatBadgesModel.taskID(request: a, enabled: true, covered: true),
+                          DetailFormatBadgesModel.taskID(request: a, enabled: true, covered: false))
+    }
+
     func testTaskIDDiffersForSettingAndKey() {
         let a = request("tt1")
         let b = request("tt2")

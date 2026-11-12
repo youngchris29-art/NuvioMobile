@@ -76,8 +76,9 @@ final class DetailFormatBadgesModel: ObservableObject {
         self.dwell = dwell
     }
 
-    static func taskID(request: TitleFormatRequest?, enabled: Bool, ready: Bool = true) -> String {
-        "\(enabled ? "on" : "off")|\(ready ? "ready" : "wait")|\(request?.key ?? "-")"
+    static func taskID(request: TitleFormatRequest?, enabled: Bool, ready: Bool = true,
+                       covered: Bool = false) -> String {
+        "\(enabled ? "on" : "off")|\(ready ? "ready" : "wait")|\(covered ? "covered" : "open")|\(request?.key ?? "-")"
     }
 
     /// Call from `.task(id: DetailFormatBadgesModel.taskID(request:enabled:))`. Tracks the request
@@ -85,7 +86,11 @@ final class DetailFormatBadgesModel: ObservableObject {
     /// probe and follows its state until the task is cancelled. Off or no request: clears, no start.
     /// Not `ready` (the page's metadata is (re)loading, so a title's embedded streams are not known
     /// yet): shows what is known, stops any started probe and waits for the ready run.
-    func run(request: TitleFormatRequest?, enabled: Bool, ready: Bool = true) async {
+    /// `covered` (a full-screen cover, the stream picker, player or trailer, is up over the page,
+    /// which `.onDisappear` never reports): stops the started probe like not-ready, but keeps
+    /// tracking the request so the picker's own results still fold into the badges. When the cover
+    /// goes the task id changes and the run restarts from the probe's cache.
+    func run(request: TitleFormatRequest?, enabled: Bool, ready: Bool = true, covered: Bool = false) async {
         guard enabled, let request else {
             stopStarted()
             shownKey = nil
@@ -93,8 +98,9 @@ final class DetailFormatBadgesModel: ObservableObject {
             return
         }
         if let started, started.key != request.key { stopStarted() }
-        guard ready else {
+        guard ready, !covered else {
             stopStarted()
+            if covered { source.watch(request) }
             shownKey = request.key
             replace(with: source.snapshot(for: request))
             return

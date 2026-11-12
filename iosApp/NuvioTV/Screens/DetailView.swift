@@ -1281,6 +1281,7 @@ struct DetailView: View {
                 if !trailerStartDelayHolds { scheduleTrailerDurationTimerIfNeeded() }
             }
         }
+        .environment(\.detailCoverPresented, showStreams || seriesPlay != nil || model.trailerPlayback != nil)
         .onChange(of: showStreams) { _, isShowing in
             if isShowing {
                 cancelAutoPlayTrailer()

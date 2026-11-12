@@ -1,6 +1,21 @@
 import SharedCore
 import SwiftUI
 
+// Manual key rather than `@Entry`, like every other environment key in this target.
+private struct DetailCoverPresentedKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    /// True while a full-screen cover (stream picker, player, trailer) is up over the Detail page.
+    /// `.fullScreenCover` leaves the page in the hierarchy, so `.onDisappear` never fires under it;
+    /// `DetailView` sets this from its own cover state and the badge row stops its probe on it.
+    var detailCoverPresented: Bool {
+        get { self[DetailCoverPresentedKey.self] }
+        set { self[DetailCoverPresentedKey.self] = newValue }
+    }
+}
+
 /// Detail-page format badges ("Available in 4K, Dolby Vision, ..."). Outlined text chips in a
 /// fixed-height slot so the hero's bottom-anchored stack never moves when badges land late.
 /// Never focusable: plain text, no buttons.
@@ -11,6 +26,7 @@ struct DetailFormatBadgeRow: View {
     var ready: Bool = true
 
     @AppStorage(DetailSettingsKeys.formatBadges) private var enabled = true
+    @Environment(\.detailCoverPresented) private var covered
     @StateObject private var model = DetailFormatBadgesModel()
 
     var body: some View {
@@ -21,8 +37,9 @@ struct DetailFormatBadgeRow: View {
                 EmptyView()
             }
         }
-        .task(id: DetailFormatBadgesModel.taskID(request: request, enabled: enabled, ready: ready)) {
-            await model.run(request: request, enabled: enabled, ready: ready)
+        .task(id: DetailFormatBadgesModel.taskID(request: request, enabled: enabled, ready: ready,
+                                                           covered: covered)) {
+            await model.run(request: request, enabled: enabled, ready: ready, covered: covered)
         }
         .onDisappear { model.disappear() }
     }
