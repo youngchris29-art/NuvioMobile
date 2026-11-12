@@ -774,7 +774,17 @@ final class DetailRowAnchorTests: XCTestCase {
     /// Finding 4: with no comments and no tail rows, the focus sequence and the scroll offset at each
     /// stop equal the constants measured on `b055a42a2` (the commit before the fix), in all three
     /// layouts. Record mode (no constants for a tag) only prints `[BASELINE]` lines.
-    private static let baselineWalks: [String: [(row: String, off: Double)]] = [:]
+    /// Measured on `b055a42a2` (the commit before the fix, app sources temporarily restored to it,
+    /// 2026-11-12, sim clone 855DC175, Severance, guest fixture): the focus rows after each Down press
+    /// with the page's scroll offset at each rest. Larger Text: no launch argument or helper exists
+    /// for it on tvOS here, so no walk covers it.
+    private static let baselineWalks: [String: [(row: String, off: Double)]] = [
+        "base-cinematic": [("-", 0), ("episodes", 844), ("trailers", 1640), ("about", 1652)],
+        "base-apple": [("-", 0), ("episodes", 792), ("trailers", 934), ("bonus", 1388), ("moreLikeThis", 1965),
+                       ("cast", 2400), ("logos", 2502), ("about", 3111)],
+        "base-classic": [("-", 0), ("logos", 84), ("episodes", 574), ("cast", 1420), ("trailers", 2259),
+                         ("moreLikeThis", 2269)],
+    ]
 
     private func baselineWalk(layout: String, tmdb: Bool, sections: [String: Bool], tag: String) throws {
         guard let app = launchWalk(Self.severance, layout: layout, tmdb: tmdb, sections: sections) else { return }
