@@ -244,4 +244,57 @@ final class AetherSubtitleUITests: XCTestCase {
         XCTAssertEqual(row.value as? String, "selected", "the Forced EN row is not the selected track")
         XCTAssertNotEqual(subtitleRow(app, "Embedded EN").value as? String, "selected")
     }
+
+    // MARK: Late (mid-play) add-on subtitles
+
+    /// The no-subtitles fixture (`AETHER_SMOKE_URL`) playing from `resume`, with `aether-sidecar.vtt` handed to the
+    /// player as an add-on file once playback passes 20 s (`-debug.aetherLateSubtitleURL`, DEBUG only). Returns
+    /// paused at about 22 s with the bar hidden: the file arrived while playing, never during the load.
+    private func launchLate(extra: [String] = []) throws -> XCUIApplication {
+        let env = ProcessInfo.processInfo.environment
+        let url = try XCTUnwrap(env["AETHER_SMOKE_URL"], "AETHER_SMOKE_URL not set (the no-subtitles fixture)")
+        let side = try XCTUnwrap(env["AETHER_SMOKE_SIDECAR_URL"], "AETHER_SMOKE_SIDECAR_URL not set")
+        let app = XCUIApplication()
+        app.launchArguments += ["-debug.mpvSmokeURL", url, "-debug.mpvSmokeEngine", "aether",
+                                "-debug.mpvSmokeResumeSec", "12",
+                                "-debug.aetherLateSubtitleURL", side, "-debug.aetherLateSubtitleDelaySec", "20"] + extra
+        app.launch()
+        XCTAssertTrue(app.otherElements["player.aether"].waitForExistence(timeout: 30), "the Aether controller did not appear")
+        XCTAssertTrue(waitSeek(app, timeout: 60) { (Double($0["pos"] ?? "") ?? 0) >= 22 }, "playback never passed 22 s: \(seekText(app))")
+        remote.press(.playPause)
+        XCTAssertTrue(waitSeek(app, timeout: 4) { $0["paused"] == "1" }, "did not pause: \(seekText(app))")
+        XCTAssertTrue(waitBar(app, timeout: 14) { $0["vis"] == "0" }, "the paused bar never hid: \(barText(app))")
+        print("[SubLeg] late: paused at \(pos(app)) s")
+        return app
+    }
+
+    /// (1) + (3): the file that arrives mid-play is listed without reopening the player, and once picked by hand
+    /// its cue shows at the cue's own time (30-90 s).
+    func testLateSubtitleFileListsAndShowsItsCue() throws {
+        let app = try launchLate()
+        PlayerChrome.openDisc(app, "subtitles")
+        let row = subtitleRow(app, "Late EN")
+        XCTAssertTrue(row.waitForExistence(timeout: 5), "no Late EN row after the mid-play add")
+        print("[SubLeg] late row id=\(row.identifier) label=\(row.label) value=\(String(describing: row.value))")
+        pick(app, "Late EN")
+        remote.press(.menu)
+        let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: element(app, "player.popover.subtitles"))
+        XCTAssertEqual(XCTWaiter().wait(for: [closed], timeout: 4), .completed, "Menu did not close the Subtitles popover")
+        remote.press(.playPause)
+        XCTAssertTrue(waitSeek(app, timeout: 30) { (Double($0["pos"] ?? "") ?? 0) >= 32 }, "playback never reached 32 s: \(seekText(app))")
+        remote.press(.playPause)
+        XCTAssertTrue(waitSeek(app, timeout: 4) { $0["paused"] == "1" }, "did not pause: \(seekText(app))")
+        let shown = waitForText("SIDECAR ALPHA", timeout: 12)
+        XCTAssertTrue(shown.ok, "no SIDECAR ALPHA at \(pos(app)) s after picking the late file: \(shown.seen)")
+    }
+
+    /// (2): with a preferred subtitle language and no decision made, the start plan picks the late file by itself.
+    func testLateSubtitleFileIsAutoPickedWhenNothingWasDecided() throws {
+        let app = try launchLate(extra: ["-preferred_subtitle_language_1", "en", "-preferred_audio_language_1", "en"])
+        PlayerChrome.openDisc(app, "subtitles")
+        let row = subtitleRow(app, "Late EN")
+        XCTAssertTrue(row.waitForExistence(timeout: 5), "no Late EN row after the mid-play add")
+        print("[SubLeg] late auto row id=\(row.identifier) value=\(String(describing: row.value))")
+        XCTAssertEqual(row.value as? String, "selected", "the late file was not auto-picked (row value \(String(describing: row.value)))")
+    }
 }

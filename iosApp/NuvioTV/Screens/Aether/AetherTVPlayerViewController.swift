@@ -704,6 +704,7 @@ final class AetherTVPlayerViewController: UIViewController {
         updateSkipPrompt(position: positionMirror, duration: transportDurationSec, paused: pausedMirror)
         #if DEBUG
         debugInjectFailureIfDue(now: now)
+        debugInjectLateSubtitleIfDue()
         #endif
     }
 
@@ -714,6 +715,8 @@ final class AetherTVPlayerViewController: UIViewController {
     // `debug.mpvSmokeAetherInterrupt` YES posts an `AVAudioSession` route change just before each, so
     // the failure lands inside the policy's 10 s window (rebuild) rather than outside it (mpv).
     private var debugInjected = 0
+    /// `debug.aetherLateSubtitleURL` has been injected (once per controller).
+    var debugLateSubtitleInjected = false
     private var debugLastInjectUptime = 0.0
     private func debugInjectFailureIfDue(now: Double) {
         let defaults = UserDefaults.standard

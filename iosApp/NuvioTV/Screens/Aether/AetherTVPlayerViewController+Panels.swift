@@ -366,6 +366,26 @@ extension AetherTVPlayerViewController {
         return added
     }
 
+    #if DEBUG
+    /// Harness only (W5 item 3a): `debug.aetherLateSubtitleURL` is handed to `addAddonSubtitles` once
+    /// playback passes `debug.aetherLateSubtitleDelaySec` (default 8), as a file that arrived while
+    /// already playing (display "Late EN", language "en"). Numbers are read through `double(forKey:)`,
+    /// which also converts the String a device launch argument arrives as (BUG-234).
+    func debugInjectLateSubtitleIfDue() {
+        let defaults = UserDefaults.standard
+        guard !debugLateSubtitleInjected, mediaReady, everShowedFrame,
+              let url = defaults.string(forKey: "debug.aetherLateSubtitleURL"), !url.isEmpty else { return }
+        let delay = defaults.object(forKey: "debug.aetherLateSubtitleDelaySec") == nil
+            ? 8 : max(0, defaults.double(forKey: "debug.aetherLateSubtitleDelaySec"))
+        guard positionMirror >= delay else { return }
+        debugLateSubtitleInjected = true
+        let added = addAddonSubtitles([AddonSubtitle(id: "debug-late", url: url, language: "en",
+                                                     display: "Late EN", addonName: "Debug", isSelected: false)])
+        print("[AetherPlayer] DEBUG late subtitle injected at \(String(format: "%.1f", positionMirror)) s: "
+              + "tracks=\(added.map(\.id))")
+    }
+    #endif
+
     // MARK: Timing
 
     /// Host-side (the overlay draws `sourceSec - delay`); same persistence key and range as mpv.
