@@ -393,7 +393,9 @@ struct TrailerHeroPlayer: UIViewRepresentable {
             // from there instead of 0. `detail-bg` only, consumed once, same visit + URL, inside the
             // window (`TrailerReturnHandoff.decide`). Best-effort: playback starts whether or not the
             // seek lands (`beginPlayback`).
-            if surfaceTag == "detail-bg", let back = TrailerReturnHandoff.shared.take(visit: visitID, url: urlString) {
+            let resumeBack: (time: CMTime, age: TimeInterval)? = surfaceTag == "detail-bg"
+                ? TrailerReturnHandoff.shared.take(visit: visitID, url: urlString) : nil
+            if let back = resumeBack {
                 resumeHero(queue: queue, to: back.time, age: back.age)
             } else {
                 queue.play()
@@ -435,7 +437,9 @@ struct TrailerHeroPlayer: UIViewRepresentable {
             #endif
 
             // Insurance: if nothing is playing within a few seconds, give up (static fallback).
-            let timer = Timer(timeInterval: 6, repeats: false) { [weak self] _ in
+            // The resume path holds `play()` back for up to `resumeGrace`, so its clock gets that much
+            // extra; every other path keeps exactly 6 s.
+            let timer = Timer(timeInterval: 6 + (resumeBack != nil ? Self.resumeGrace : 0), repeats: false) { [weak self] _ in
                 guard let self else { return }
                 if !self.started && self.player?.timeControlStatus != .playing {
                     self.fail(.watchdogTimeout)
@@ -477,7 +481,13 @@ struct TrailerHeroPlayer: UIViewRepresentable {
                     DispatchQueue.main.async { finish(finished, finished ? "seek-done" : "seek-cancelled") }
                 }
             }
-            let fallback = DispatchWorkItem { finish(false, "timeout") }
+            let fallback = DispatchWorkItem { [weak self, weak queue] in
+                // The seek may still be pending on a slow network: cancel it so nothing moves the
+                // playhead once playback has started from 0. Its completion lands in `finish`, which
+                // is already settled and ignores it.
+                if let self, let queue, !self.resumeSettled { queue.currentItem?.cancelPendingSeeks() }
+                finish(false, "timeout-from-start")
+            }
             resumeFallback = fallback
             DispatchQueue.main.asyncAfter(deadline: .now() + Self.resumeGrace, execute: fallback)
             if queue.currentItem != nil {
@@ -776,8 +786,10 @@ final class TrailerReturnHandoff {
     func settle(visit: UUID, heroEligible: Bool, now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         guard !Self.survivesCoverClose(heroEligible: heroEligible) else { refusal = nil; return }
         if entry?.visit == visit {
+            // The entry itself is the thing to drop; a refusal would have nothing left to refuse.
             entry = nil
             TrailerZoomProbe.log("handoff return cleared (hero ineligible when the cover closed)")
+            return
         }
         refusal = (visit, now)
     }

@@ -99,6 +99,19 @@ final class TrailerPositionHandoffTests: XCTestCase {
         XCTAssertFalse(back.isEmpty, "a refusal only covers the cover's own dismissal window")
     }
 
+    func testIneligibleSettleThatClearsAnEntryLeavesNoRefusal() {
+        let back = TrailerReturnHandoff()
+        let now = ProcessInfo.processInfo.systemUptime
+        back.record(visit: visit, url: "a", time: t(20), duration: t(150), now: now)
+        back.settle(visit: visit, heroEligible: false, now: now + 0.001)
+        XCTAssertTrue(back.isEmpty, "the entry is cleared")
+        // A refusal would swallow this record (inside its window); none was left.
+        back.record(visit: visit, url: "a", time: t(30), duration: t(150), now: now + 0.003)
+        XCTAssertFalse(back.isEmpty, "no refusal remains after the clear")
+        back.settle(visit: visit, heroEligible: true, now: now + 0.004)
+        XCTAssertNotNil(back.take(visit: visit, url: "a", now: now + 0.5), "a later legitimate return in the same visit is taken")
+    }
+
     func testEligibleSettleLeavesNoRefusal() {
         let back = TrailerReturnHandoff()
         let now = ProcessInfo.processInfo.systemUptime
