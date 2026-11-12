@@ -245,6 +245,33 @@ final class DetailFormatBadgesModelTests: XCTestCase {
         await task.value
     }
 
+    /// Presenting a cover (any `DetailCoverStates` flag, the synopsis covers included) stops the
+    /// running probe; dismissing it starts it again, from the cache, after the dwell.
+    func testPresentingAndDismissingACoverStopsAndRestartsTheProbe() async {
+        for synopsis in [DetailCoverStates(synopsisSheet: true), DetailCoverStates(aboutOverviewSheet: true)] {
+            let source = FakeSource()
+            let model = makeModel(source)
+            let req = request()
+
+            let running = Task { await model.run(request: req, enabled: true, covered: DetailCoverStates().isPresented) }
+            await waitUntil("start") { source.hasUpdates(key: req.key) }
+            XCTAssertEqual(source.started, [req.key])
+
+            // The cover goes up: SwiftUI cancels the task for the old id and runs the new one.
+            running.cancel()
+            await running.value
+            await model.run(request: req, enabled: true, covered: synopsis.isPresented)
+            XCTAssertEqual(source.cancelled, [req.key], "the probe stopped behind the cover")
+            XCTAssertEqual(source.started, [req.key], "and nothing started under it")
+
+            // Dismissed: the probe runs again.
+            let again = Task { await model.run(request: req, enabled: true, covered: DetailCoverStates().isPresented) }
+            await waitUntil("restart") { source.started.count == 2 }
+            again.cancel()
+            await again.value
+        }
+    }
+
     func testTaskIDDiffersWhenCovered() {
         let a = request()
         XCTAssertNotEqual(DetailFormatBadgesModel.taskID(request: a, enabled: true, covered: true),

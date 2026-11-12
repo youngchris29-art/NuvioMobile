@@ -1295,7 +1295,16 @@ struct DetailView: View {
                 if !trailerStartDelayHolds { scheduleTrailerDurationTimerIfNeeded() }
             }
         }
-        .environment(\.detailCoverPresented, showStreams || seriesPlay != nil || model.trailerPlayback != nil)
+        .environment(\.detailCoverPresented, DetailCoverStates(
+            streams: showStreams,
+            seriesPlay: seriesPlay != nil,
+            trailerPlayback: model.trailerPlayback != nil,
+            presentedTrailer: presentedTrailer != nil,
+            synopsisSheet: showSynopsisSheet,
+            aboutOverviewSheet: showAboutOverviewSheet,
+            shuffleSheet: showShuffleSheet,
+            libraryAlert: model.libraryActionError != nil
+        ).isPresented)
         .onChange(of: showStreams) { _, isShowing in
             if isShowing {
                 cancelAutoPlayTrailer()
