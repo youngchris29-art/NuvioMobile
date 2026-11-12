@@ -262,13 +262,15 @@ final class CollectionHeaderUITests: XCTestCase {
 
     // MARK: - 4. Focus and rest in Compact
 
-    func testCompactKeepsFocusAndRest() {
+    /// `rowOneTop`: row 1's screen top at rest for the several-sources fixture (Compact 319,
+    /// Standard 522).
+    private func keepsFocusAndRest(style: String, rowOneTop: CGFloat) {
         defer { clearSeed() }
         var previous: XCUIApplication?
         for shell in ["T", "KA"] {
-            guard let app = openFolder(style: "compact", seed: Self.severalSources, shell: shell, terminateFirst: previous) else { return }
+            guard let app = openFolder(style: style, seed: Self.severalSources, shell: shell, terminateFirst: previous) else { return }
             previous = app
-            let tag = "compact-focus-\(shell)"
+            let tag = "\(style)-focus-\(shell)"
             XCTAssertNotEqual(Self.token(state(app), "chip"), "-", "\(tag): opens with focus on a chip: \(state(app))")
             guard let g = readGeo(app) else { return }
             let restTop = g.top(0)
@@ -306,13 +308,114 @@ final class CollectionHeaderUITests: XCTestCase {
             pause(1)
             XCTAssertEqual(Self.token(state(app), "scrolled"), "0", "\(tag): \(state(app))")
             XCTAssertEqual(firstTileMinY(app), restTop, accuracy: 2, "\(tag): row 1 back at rest")
-            XCTAssertEqual(firstTileMinY(app), 319, accuracy: 2, "\(tag): row 1 back at 319")
+            XCTAssertEqual(firstTileMinY(app), rowOneTop, accuracy: 2, "\(tag): row 1 back at \(rowOneTop)")
 
             remote.press(.menu)
             let gone = poll(5) { !app.descendants(matching: .any)["folder_header"].firstMatch.exists }
             XCTAssertTrue(gone, "\(tag): Menu did not pop the folder page")
             let home = poll(5) { app.descendants(matching: .any)["debug_hero"].firstMatch.exists }
             XCTAssertTrue(home, "\(tag): Home's debug_hero never came back")
+        }
+    }
+
+    func testCompactKeepsFocusAndRest() { keepsFocusAndRest(style: "compact", rowOneTop: 319) }
+
+    func testStandardKeepsFocusAndRest() { keepsFocusAndRest(style: "standard", rowOneTop: 522) }
+
+    // MARK: - 4c. Detail and back keeps the poster
+
+    private struct FocusSnapshot: Equatable {
+        var label: String
+        var minX: Int, minY: Int
+    }
+
+    private func focusSnapshot(_ app: XCUIApplication) -> FocusSnapshot? {
+        let e = app.descendants(matching: .any).matching(NSPredicate(format: "hasFocus == true")).firstMatch
+        guard e.exists else { return nil }
+        return FocusSnapshot(label: e.label, minX: Int(e.frame.minX.rounded()), minY: Int(e.frame.minY.rounded()))
+    }
+
+    /// A row-1 poster that is not the first: Select opens its Detail (Cinemeta, the same route
+    /// `BatchAFolderUITests.testClassicGridKeepsTabBarHiddenAfterDetail` uses: `debug_bridge`
+    /// appears), Menu returns, and the same poster is focused with the page still at rest. Identity
+    /// is the focused element's label and frame (tvOS 26.5 reports `hasFocus`); the laid-out
+    /// geometry line and `scrolled=0` prove the page did not move.
+    func testDetailReturnKeepsTheThirdPoster() {
+        defer { clearSeed() }
+        var previous: XCUIApplication?
+        for style in ["standard", "compact"] {
+            guard let app = openFolder(style: style, seed: Self.severalSources, shell: "T", terminateFirst: previous) else { return }
+            previous = app
+            let tag = "detailreturn-\(style)"
+            for _ in 0..<3 where Self.token(state(app), "chip") != "-" { remote.press(.down); pause(1) }
+            XCTAssertEqual(Self.token(state(app), "chip"), "-", "\(tag): focus is in the grid: \(state(app))")
+            for _ in 0..<8 { remote.press(.left); pause(0.6) }
+            remote.press(.right); pause(0.8)
+            remote.press(.right); pause(1.2)
+            guard let g = readGeo(app) else { return }
+            guard let before = focusSnapshot(app) else { XCTFail("\(tag): no focused element before Detail"); return }
+            XCTAssertEqual(CGFloat(before.minY), g.top(0), accuracy: 3, "\(tag): the focused poster is in row 1: \(before) \(g.line)")
+            XCTAssertGreaterThan(before.minX, 400, "\(tag): the focused poster is the third, not the first: \(before)")
+            XCTAssertEqual(Self.token(state(app), "scrolled"), "0", "\(tag): \(state(app))")
+            let geoBefore = g.line
+
+            var detail = false
+            for attempt in 0..<2 where !detail {
+                remote.press(.select)
+                detail = poll(attempt == 0 ? 15 : 20) { app.descendants(matching: .any)["debug_bridge"].firstMatch.exists }
+            }
+            shot("\(tag)-detail")
+            XCTAssertTrue(detail, "\(tag): Select did not open a Detail page (focus=\(before))")
+            remote.press(.menu)
+            let back = poll(15) { app.descendants(matching: .any)["folder_header"].firstMatch.exists && !app.descendants(matching: .any)["debug_bridge"].firstMatch.exists }
+            XCTAssertTrue(back, "\(tag): Menu did not return to the folder page")
+            pause(3)
+            let after = focusSnapshot(app)
+            note(tag, "before=\(before) after=\(String(describing: after)) \(state(app))")
+            XCTAssertEqual(after, before, "\(tag): focus is not back on the same poster")
+            XCTAssertEqual(Self.token(state(app), "scrolled"), "0", "\(tag): the page scrolled on return: \(state(app))")
+            XCTAssertEqual(Self.token(state(app), "chip"), "-", "\(tag): focus fell to a chip on return: \(state(app))")
+            XCTAssertEqual(geometry(app), geoBefore, "\(tag): the laid-out geometry changed across Detail")
+            shot("\(tag)-back")
+        }
+    }
+
+    // MARK: - 4b. Poster moves do not re-evaluate the page
+
+    private func bodyCount(_ app: XCUIApplication) -> Int {
+        Int(Self.token(state(app), "body") ?? "") ?? -1
+    }
+
+    /// GitHub #28 review P1: the page-level FocusState must change only when focus enters or leaves
+    /// the grid, so moving between posters evaluates `FolderDetailView.body` zero times.
+    /// `body=` is `FolderBodyCounter` (DEBUG static). The Down is reported, not asserted to be 0:
+    /// when it scrolls the page, the scroll state may legitimately invalidate.
+    func testPosterMovesDoNotInvalidateThePage() {
+        defer { clearSeed() }
+        var previous: XCUIApplication?
+        for style in ["standard", "compact"] {
+            guard let app = openFolder(style: style, seed: Self.severalSources, shell: "T", terminateFirst: previous) else { return }
+            previous = app
+            let tag = "bodycount-\(style)"
+            for _ in 0..<3 where Self.token(state(app), "chip") != "-" { remote.press(.down); pause(1) }
+            XCTAssertEqual(Self.token(state(app), "chip"), "-", "\(tag): focus is in the grid: \(state(app))")
+            for _ in 0..<8 { remote.press(.left); pause(0.6) }
+            pause(1)
+            func step(_ name: String, _ press: XCUIRemote.Button, _ n: Int) -> Int {
+                let before = bodyCount(app)
+                for _ in 0..<n { remote.press(press); pause(0.8) }
+                pause(1)
+                let delta = bodyCount(app) - before
+                note("\(tag)-\(name)", "delta=\(delta) \(state(app))")
+                return delta
+            }
+            let right = step("right5", .right, 5)
+            let down = step("down1", .down, 1)
+            let left = step("left5", .left, 5)
+            XCTAssertEqual(Self.token(state(app), "chip"), "-", "\(tag): still in the grid: \(state(app))")
+            XCTAssertEqual(right, 0, "\(tag): 5 Right presses re-evaluated the page body")
+            XCTAssertEqual(left, 0, "\(tag): 5 Left presses re-evaluated the page body")
+            note("\(tag)-summary", "right5=\(right) down1=\(down) left5=\(left)")
         }
     }
 
