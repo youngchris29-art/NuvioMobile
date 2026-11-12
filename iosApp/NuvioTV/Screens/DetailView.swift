@@ -3641,11 +3641,18 @@ struct DetailView: View {
                 Text("Comments")
                     .font(Theme.Font.sectionTitle)
                     .foregroundStyle(Theme.Palette.textPrimary)
-                LazyVStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                    ForEach(Array(comments.prefix(8).enumerated()), id: \.element.id) { _, comment in
-                        commentCard(comment)
-                    }
-                }
+                // BUG-244: eager cards in their own equatable view, never a `LazyVStack` (see
+                // `DetailCommentsList`): every card exists so Down can enter the section.
+                DetailCommentsList(comments: Array(comments.prefix(DetailCommentsList.maxCards)),
+                                   expanded: expandedComments,
+                                   onToggle: { id in
+                                       if expandedComments.contains(id) {
+                                           expandedComments.remove(id)
+                                       } else {
+                                           expandedComments.insert(id)
+                                       }
+                                   })
+                    .equatable()
                 Text("From Trakt")
                     .font(Theme.Font.caption)
                     .foregroundStyle(Theme.Palette.textSecondary)
@@ -3655,78 +3662,6 @@ struct DetailView: View {
             // Down from a card right of 1100 pt found nothing.
             .focusRow(alignment: .leading)
         }
-    }
-
-    /// One comment as a focusable card. Pressing reveals spoilers / expands long text.
-    private func commentCard(_ comment: TraktCommentReview) -> some View {
-        let expanded = expandedComments.contains(comment.id)
-        let hidesForSpoiler = (comment.spoiler || comment.hasSpoilerContent) && !expanded
-        return Button {
-            if expanded {
-                expandedComments.remove(comment.id)
-            } else {
-                expandedComments.insert(comment.id)
-            }
-        } label: {
-            VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                HStack(spacing: Theme.Spacing.md) {
-                    Text(comment.authorDisplayName)
-                        .font(Theme.Font.meta)
-                        .rowTextColor()
-                    if let rating = comment.rating?.value {
-                        HStack(spacing: 2) {
-                            // BUG-50: the star's fixed gold (Theme.Palette.star) isn't a
-                            // semantic color the row's colorScheme flip can fix, and reads as
-                            // washed-out on the near-white focused platter. `rowAccentTint`
-                            // preserves the gold at rest (active: false, inactiveColor: star)
-                            // while forcing the platter-safe color on focus, same shape as
-                            // BUG-22's row-icon fix.
-                            Image(systemName: "star.fill")
-                                .rowAccentTint(false, inactiveColor: Theme.Palette.star)
-                            Text("\(rating)/10")
-                        }
-                        .font(Theme.Font.caption)
-                        .rowTextColor(secondary: true)
-                    }
-                    if let date = commentDate(comment) {
-                        Text(date)
-                            .font(Theme.Font.caption)
-                            .rowTextColor(secondary: true)
-                    }
-                    if comment.review {
-                        Text("Review")
-                            .font(Theme.Font.caption)
-                            .rowAccentTint()
-                    }
-                    Spacer(minLength: 0)
-                    if comment.likes > 0 {
-                        Label("\(comment.likes)", systemImage: "heart.fill")
-                            .font(Theme.Font.caption)
-                            .rowTextColor(secondary: true)
-                    }
-                }
-                if hidesForSpoiler {
-                    Label("Contains spoilers \u{2014} press to reveal", systemImage: "eye.slash")
-                        .font(Theme.Font.body)
-                        .rowTextColor(secondary: true)
-                } else {
-                    Text(comment.comment)
-                        .font(Theme.Font.body)
-                        .rowTextColor()
-                        .lineLimit(expanded ? nil : 5)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            .padding(Theme.Spacing.md)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .buttonStyle(.settingsRow)
-    }
-
-    private func commentDate(_ comment: TraktCommentReview) -> String? {
-        let raw: String? = comment.createdAt
-        guard let raw, raw.count >= 10 else { return nil }
-        return String(raw.prefix(10))
     }
 
     // MARK: - Auto-play hero trailer

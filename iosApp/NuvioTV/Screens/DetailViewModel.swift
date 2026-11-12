@@ -485,6 +485,13 @@ final class DetailViewModel: ObservableObject {
     private func fetchCommentsIfNeeded(_ meta: MetaDetails) {
         guard !didRequestComments else { return }
         didRequestComments = true
+        #if DEBUG
+        // BUG-244: the guest-only in-memory seed (`-debug.detailCommentsSeedB64`); a refusal falls through.
+        if let seeded = DetailCommentsDebugSeed.commentsIfRequested() {
+            comments = seeded
+            return
+        }
+        #endif
         TraktCommentsSwiftBridge.shared.pageOrNull(meta: meta, page: 1, forceRefresh: false) { [weak self] page, _ in
             DispatchQueue.main.async {
                 guard let self, let page else { return }
