@@ -291,12 +291,83 @@ nonisolated enum DetailTrailingFocus {
         return tail
     }
 
+    /// What `resolve` decided for one body pass.
+    struct Resolution: Equatable {
+        /// The sections that are a tail stop this pass.
+        var stops: Set<DetailSection>
+        /// A section whose stop held focus when its own focus targets arrived (Cast & Crew gaining
+        /// TMDB ids): the wrapper is gone this pass, so focus must be handed to one of the new
+        /// links or it falls to nil. nil = no hand-off.
+        var handoff: DetailSection?
+    }
+
     /// The tail plus a previous stop that still holds focus: a stop never vanishes under focus
     /// (a late comments or More Like This arrival below it), and is released when focus leaves.
-    static func resolve(tail: Set<DetailSection>, previous: Set<DetailSection>,
-                        focused: DetailSection?) -> Set<DetailSection> {
-        guard let focused, previous.contains(focused) else { return tail }
-        return tail.union([focused])
+    ///
+    /// A stop is active only while its section has no focus target of its own, so focus anywhere in
+    /// that section IS focus on the stop (`focused` is the section holding focus). When the section
+    /// gains targets (`hasOwnTargets`) while its stop holds focus, the stop is NOT held: it is
+    /// dropped in the same pass and reported as a hand-off, so the person links are reachable and
+    /// visible to VoiceOver (round 1 P2).
+    static func resolve(tail: Set<DetailSection>, previous: Set<DetailSection>, focused: DetailSection?,
+                        hasOwnTargets: (DetailSection) -> Bool) -> Resolution {
+        guard let focused, previous.contains(focused) else { return Resolution(stops: tail, handoff: nil) }
+        if hasOwnTargets(focused) { return Resolution(stops: tail, handoff: focused) }
+        return Resolution(stops: tail.union([focused]), handoff: nil)
+    }
+
+    /// How a section behaves for the tail calculation, from what it ACTUALLY holds right now.
+    enum Kind: Equatable {
+        /// Has at least one focus target of its own.
+        case focusable
+        /// Has content but nothing focusable (Parental Guide; names-only Cast; Studio Logos without ids).
+        case inert
+        /// Present but empty (or not yet answered): no content, never a stop, skipped.
+        case contentless
+    }
+
+    /// What each section holds, counted the way its row builder counts it.
+    struct Facts: Equatable {
+        /// Videos with a season or episode number (what `EpisodesSection` lists).
+        var numberedEpisodes = 0
+        var trailers = 0
+        var bonus = 0
+        var moreLikeThis = 0
+        var collection = 0
+        var comments = 0
+        var castItems = 0
+        var castWithIds = 0
+        var logos = 0
+        var logosWithIds = 0
+        var warnings = 0
+    }
+
+    /// Data-driven: a section is focusable only if it has a focusable item (round 1 P2: a series
+    /// with no numbered videos has an Episodes section with no focus target).
+    static func kind(of section: DetailSection, facts: Facts) -> Kind {
+        func list(_ count: Int) -> Kind { count > 0 ? .focusable : .contentless }
+        switch section {
+        case .hero, .about: return .focusable
+        case .episodes: return list(facts.numberedEpisodes)
+        case .trailers: return list(facts.trailers)
+        case .bonus: return list(facts.bonus)
+        case .moreLikeThis: return list(facts.moreLikeThis)
+        case .collection: return list(facts.collection)
+        case .comments: return list(facts.comments)
+        case .castAndCrew:
+            return facts.castItems == 0 ? .contentless : (facts.castWithIds > 0 ? .focusable : .inert)
+        case .companies:
+            return facts.logos == 0 ? .contentless : (facts.logosWithIds > 0 ? .focusable : .inert)
+        case .parentalGuide: return facts.warnings > 0 ? .inert : .contentless
+        }
+    }
+
+    /// `tailStops` driven by `Facts`: pending and held slots plus every present-but-empty section
+    /// are contentless; only `.focusable` sections end the scan.
+    static func tailStops(sections: [DetailSection], pendingOrHeld: Set<DetailSection>, facts: Facts) -> Set<DetailSection> {
+        let empty = Set(sections.filter { kind(of: $0, facts: facts) == .contentless })
+        return tailStops(sections: sections, contentless: pendingOrHeld.union(empty),
+                         hasOwnStop: { kind(of: $0, facts: facts) == .focusable })
     }
 }
 
@@ -304,12 +375,17 @@ nonisolated enum DetailTrailingFocus {
 /// evaluation (focus and layout changes re-run the body), so it never invalidates the view.
 final class DetailTailStopBox {
     private(set) var stops: Set<DetailSection> = []
+    /// The hand-off of the latest `resolve`, nil when none (set on the one pass it happens).
+    private(set) var handoff: DetailSection?
 
     func resolve(sections: [DetailSection], contentless: Set<DetailSection>, focused: DetailSection?,
                  hasOwnStop: (DetailSection) -> Bool) -> Set<DetailSection> {
         let tail = DetailTrailingFocus.tailStops(sections: sections, contentless: contentless,
                                                  hasOwnStop: hasOwnStop)
-        stops = DetailTrailingFocus.resolve(tail: tail, previous: stops, focused: focused)
+        let result = DetailTrailingFocus.resolve(tail: tail, previous: stops, focused: focused,
+                                                 hasOwnTargets: hasOwnStop)
+        stops = result.stops
+        handoff = result.handoff
         return stops
     }
 }

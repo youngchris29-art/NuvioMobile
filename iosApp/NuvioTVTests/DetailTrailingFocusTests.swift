@@ -236,14 +236,122 @@ final class DetailTrailingFocusTests: XCTestCase {
     // MARK: Hold
 
     func testAStopThatHoldsFocusStaysUntilFocusLeaves() {
-        XCTAssertEqual(DetailTrailingFocus.resolve(tail: [], previous: [.parentalGuide], focused: .parentalGuide),
-                       [.parentalGuide])
-        XCTAssertEqual(DetailTrailingFocus.resolve(tail: [], previous: [.parentalGuide], focused: .trailers), [])
-        XCTAssertEqual(DetailTrailingFocus.resolve(tail: [], previous: [.parentalGuide], focused: nil), [])
+        let inert: (DetailSection) -> Bool = { _ in false }
+        func resolve(_ tail: Set<DetailSection>, _ previous: Set<DetailSection>, _ focused: DetailSection?)
+            -> DetailTrailingFocus.Resolution {
+            DetailTrailingFocus.resolve(tail: tail, previous: previous, focused: focused, hasOwnTargets: inert)
+        }
+        XCTAssertEqual(resolve([], [.parentalGuide], .parentalGuide).stops, [.parentalGuide])
+        XCTAssertEqual(resolve([], [.parentalGuide], .trailers).stops, [])
+        XCTAssertEqual(resolve([], [.parentalGuide], nil).stops, [])
         // Only a previous stop is held; a focused section that was never a stop is not invented.
-        XCTAssertEqual(DetailTrailingFocus.resolve(tail: [], previous: [], focused: .parentalGuide), [])
-        XCTAssertEqual(DetailTrailingFocus.resolve(tail: [.castAndCrew], previous: [.parentalGuide],
-                                                   focused: .parentalGuide), [.castAndCrew, .parentalGuide])
+        XCTAssertEqual(resolve([], [], .parentalGuide).stops, [])
+        XCTAssertEqual(resolve([.castAndCrew], [.parentalGuide], .parentalGuide).stops, [.castAndCrew, .parentalGuide])
+        XCTAssertNil(resolve([], [.parentalGuide], .parentalGuide).handoff)
+    }
+
+    /// Round 1 P2 (finding 1): Cast & Crew gains TMDB ids while its names-only stop holds focus.
+    func testIdsArrivingUnderAFocusedStopHandFocusToALinkAndDropTheWrapper() {
+        let own: (DetailSection) -> Bool = { $0 == .castAndCrew }
+        // Stop focused, ids arrive: wrapper gone, hand-off named (focus is never left to fall to nil).
+        let handed = DetailTrailingFocus.resolve(tail: [.parentalGuide], previous: [.castAndCrew, .parentalGuide],
+                                                 focused: .castAndCrew, hasOwnTargets: own)
+        XCTAssertEqual(handed.stops, [.parentalGuide])
+        XCTAssertEqual(handed.handoff, .castAndCrew)
+        // Stop not focused, ids arrive: wrapper gone, no focus change.
+        let quiet = DetailTrailingFocus.resolve(tail: [.parentalGuide], previous: [.castAndCrew, .parentalGuide],
+                                                focused: .parentalGuide, hasOwnTargets: own)
+        XCTAssertEqual(quiet.stops, [.parentalGuide])
+        XCTAssertNil(quiet.handoff)
+        let nofocus = DetailTrailingFocus.resolve(tail: [.parentalGuide], previous: [.castAndCrew, .parentalGuide],
+                                                  focused: nil, hasOwnTargets: own)
+        XCTAssertEqual(nofocus.stops, [.parentalGuide])
+        XCTAssertNil(nofocus.handoff)
+    }
+
+    func testBoxHandsOffOnTheTransitionPassOnly() {
+        let box = DetailTailStopBox()
+        var castIds = false
+        let own: (DetailSection) -> Bool = { $0 == .castAndCrew ? castIds : $0 != .parentalGuide }
+        let sections: [DetailSection] = [.hero, .castAndCrew, .parentalGuide]
+        _ = box.resolve(sections: sections, contentless: [], focused: nil, hasOwnStop: own)
+        XCTAssertEqual(box.stops, [.castAndCrew, .parentalGuide])
+        castIds = true
+        _ = box.resolve(sections: sections, contentless: [], focused: .castAndCrew, hasOwnStop: own)
+        XCTAssertEqual(box.stops, [.parentalGuide])
+        XCTAssertEqual(box.handoff, .castAndCrew)
+        // The next pass (focus now on a link, row still Cast): no second hand-off, wrapper stays gone.
+        _ = box.resolve(sections: sections, contentless: [], focused: .castAndCrew, hasOwnStop: own)
+        XCTAssertEqual(box.stops, [.parentalGuide])
+        XCTAssertNil(box.handoff)
+    }
+
+    // MARK: Data-driven classification (finding 2)
+
+    private typealias Facts = DetailTrailingFocus.Facts
+
+    /// Present but empty sections are contentless, never "always focusable".
+    func testPresentButEmptySectionsAreContentless() {
+        for section in [DetailSection.episodes, .trailers, .bonus, .moreLikeThis, .collection, .comments,
+                        .castAndCrew, .companies, .parentalGuide] {
+            XCTAssertEqual(DetailTrailingFocus.kind(of: section, facts: Facts()), .contentless, "\(section)")
+        }
+        XCTAssertEqual(DetailTrailingFocus.kind(of: .hero, facts: Facts()), .focusable)
+        XCTAssertEqual(DetailTrailingFocus.kind(of: .about, facts: Facts()), .focusable)
+    }
+
+    func testFilledSectionsAreFocusableExceptTheInertOnes() {
+        var f = Facts(numberedEpisodes: 3, trailers: 1, bonus: 1, moreLikeThis: 5, collection: 2, comments: 4,
+                      castItems: 4, castWithIds: 0, logos: 2, logosWithIds: 0, warnings: 3)
+        XCTAssertEqual(DetailTrailingFocus.kind(of: .episodes, facts: f), .focusable)
+        XCTAssertEqual(DetailTrailingFocus.kind(of: .trailers, facts: f), .focusable)
+        XCTAssertEqual(DetailTrailingFocus.kind(of: .bonus, facts: f), .focusable)
+        XCTAssertEqual(DetailTrailingFocus.kind(of: .moreLikeThis, facts: f), .focusable)
+        XCTAssertEqual(DetailTrailingFocus.kind(of: .collection, facts: f), .focusable)
+        XCTAssertEqual(DetailTrailingFocus.kind(of: .comments, facts: f), .focusable)
+        XCTAssertEqual(DetailTrailingFocus.kind(of: .castAndCrew, facts: f), .inert)
+        XCTAssertEqual(DetailTrailingFocus.kind(of: .companies, facts: f), .inert)
+        XCTAssertEqual(DetailTrailingFocus.kind(of: .parentalGuide, facts: f), .inert)
+        f.castWithIds = 1
+        f.logosWithIds = 1
+        XCTAssertEqual(DetailTrailingFocus.kind(of: .castAndCrew, facts: f), .focusable)
+        XCTAssertEqual(DetailTrailingFocus.kind(of: .companies, facts: f), .focusable)
+    }
+
+    /// The finding's configuration: Classic or Cinematic series, Parental Guide above an Episodes
+    /// section with no numbered videos, nothing focusable after: Parental Guide is a stop.
+    func testParentalGuideAboveAnEmptyEpisodesSectionIsAStop() {
+        for layout in [DetailLayout.cinematic, .classic] {
+            let sections = DetailSectionOrder.sections(
+                layout: layout, isSeries: true,
+                availability: DetailSectionAvailability(states: ready([.parentalGuide, .episodes])))
+            XCTAssertEqual(sections, [.hero, .parentalGuide, .episodes], "\(layout)")
+            let empty = DetailTrailingFocus.tailStops(sections: sections, pendingOrHeld: [],
+                                                      facts: Facts(numberedEpisodes: 0, warnings: 2))
+            XCTAssertEqual(empty, [.parentalGuide], "\(layout)")
+            // With real episodes the scan stops at Episodes: nothing changes.
+            let full = DetailTrailingFocus.tailStops(sections: sections, pendingOrHeld: [],
+                                                     facts: Facts(numberedEpisodes: 6, warnings: 2))
+            XCTAssertEqual(full, [], "\(layout)")
+        }
+    }
+
+    /// Each present-but-empty section after an inert one lets the scan reach the inert one.
+    func testEachEmptyTrailingSectionIsSkippedByTheScan() {
+        let layoutCases: [(DetailSection, [DetailSection])] = [
+            (.trailers, [.parentalGuide, .trailers]), (.moreLikeThis, [.parentalGuide, .moreLikeThis]),
+            (.collection, [.parentalGuide, .collection]), (.comments, [.parentalGuide, .comments]),
+            (.episodes, [.parentalGuide, .episodes]),
+        ]
+        for (empty, order) in layoutCases {
+            let stops = DetailTrailingFocus.tailStops(sections: [.hero] + order, pendingOrHeld: [],
+                                                      facts: Facts(warnings: 1))
+            XCTAssertEqual(stops, [.parentalGuide], "\(empty)")
+        }
+        // Bonus (Apple-style): Parental Guide above an empty Bonus.
+        let bonus = DetailTrailingFocus.tailStops(sections: [.hero, .parentalGuide, .bonus], pendingOrHeld: [],
+                                                  facts: Facts(warnings: 1))
+        XCTAssertEqual(bonus, [.parentalGuide])
     }
 
     func testBoxCarriesTheHoldAcrossBodyPasses() {

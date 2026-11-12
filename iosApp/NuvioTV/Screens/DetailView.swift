@@ -573,6 +573,11 @@ struct DetailView: View {
     /// BUG-244: the content sections that are one focus stop each because nothing focusable follows
     /// them (`DetailTrailingFocus`); written once per body pass, never invalidates.
     @State private var tailStopBox = DetailTailStopBox()
+    #if DEBUG
+    /// `-debug.detailCastIdsDelay <seconds>`: Cast & Crew shows without TMDB ids until the delay has
+    /// passed (a late enrichment), so the UI leg can land on the names-only Cast stop first.
+    @State private var debugCastIdsReleased = UserDefaults.standard.double(forKey: "debug.detailCastIdsDelay") <= 0
+    #endif
     /// FEAT-35 Start Over (movies): the next stream-picker presentation starts from 0. Reset when
     /// the cover goes away, like `forceManualPlay`. Series carry it on `SeriesPlayRoute`.
     @State private var startOverMovie = false
@@ -890,11 +895,16 @@ struct DetailView: View {
                     let sections = orderedSections(availability)
                     // BUG-244: sections after the last focus stop become one stop each, so Down
                     // reaches (and scrolls to) the end of the page.
+                    let facts = detailFocusFacts
+                    let pendingOrHeld = Set(sections.filter { availability.state($0) == .pending }).union(held.keys)
                     let tailStops = tailStopBox.resolve(
                         sections: sections,
-                        contentless: Set(sections.filter { availability.state($0) == .pending }).union(held.keys),
+                        contentless: pendingOrHeld.union(sections.filter {
+                            DetailTrailingFocus.kind(of: $0, facts: facts) == .contentless
+                        }),
                         focused: DetailSection.section(for: focusedRow),
-                        hasOwnStop: sectionHasOwnFocusStop)
+                        hasOwnStop: { DetailTrailingFocus.kind(of: $0, facts: facts) == .focusable })
+                    let _ = scheduleTailHandoff(tailStopBox.handoff)
                     ForEach(sections, id: \.self) { section in
                         detailSection(section, pending: availability.state(section) == .pending,
                                       heldHeight: held[section], tailStop: tailStops.contains(section))
@@ -1238,6 +1248,14 @@ struct DetailView: View {
             // BUG-244 probe (`-debug.detailScrollProbe YES`): the laid-out section tops, which sections
             // are focus stops and which are tail stops, the layout constants and the comments list's
             // body count, read by the Down-walk legs in `DetailRowAnchorTests`.
+            if UserDefaults.standard.double(forKey: "debug.detailCastIdsDelay") > 0 {
+                Color.clear.frame(width: 1, height: 1)
+                    .task(id: model.meta != nil) {
+                        guard model.meta != nil, !debugCastIdsReleased else { return }
+                        try? await Task.sleep(nanoseconds: UInt64(UserDefaults.standard.double(forKey: "debug.detailCastIdsDelay") * 1_000_000_000))
+                        debugCastIdsReleased = true
+                    }
+            }
             if DetailScrollProbe.enabled {
                 Text(verbatim: "debug_detail_sections \(debugSectionsNote)")
                     .font(.system(size: 8))
@@ -1670,15 +1688,46 @@ struct DetailView: View {
     /// is Cinematic; never Classic). It carries the show overview whenever there is one
     /// (`DetailAboutOverview.hasContent`), so the hero reads this too (`heroSynopsis`).
     private var aboutSectionEnabled: Bool { sectionAbout && detailLayout == .cinematic }
-    /// BUG-244: whether a section has a focus stop without help. Parental Guide never; Cast & Crew
-    /// only when some card has a TMDB id (else plain `CastCard`s); Studio Logos only when some chip
-    /// does. Comments always (its cards are built eagerly, `DetailCommentsList`).
-    private func sectionHasOwnFocusStop(_ section: DetailSection) -> Bool {
-        switch section {
-        case .parentalGuide: return false
-        case .castAndCrew: return creditRowItems.contains { $0.tmdbId != nil }
-        case .companies: return companyLogos.contains { $0.company.tmdbId != nil }
-        default: return true
+    /// BUG-244: what each section holds right now, counted like its row builder counts it, so the
+    /// tail rule classifies a section by whether it ACTUALLY has a focusable item (an Episodes
+    /// section with no numbered videos is empty for this; Cast & Crew is focusable only with a TMDB
+    /// id; Parental Guide never).
+    private var detailFocusFacts: DetailTrailingFocus.Facts {
+        var facts = DetailTrailingFocus.Facts()
+        if let meta = model.meta {
+            facts.numberedEpisodes = meta.videos.filter { $0.season != nil || $0.episode != nil }.count
+            let appleStyle = detailLayoutChoice == .appleStyle
+            let split = appleStyle ? trailerSplit : ([], [])
+            facts.trailers = appleStyle ? split.0.count : meta.trailers.count
+            facts.bonus = appleStyle ? split.1.count : 0
+            facts.moreLikeThis = meta.moreLikeThis.count
+            facts.collection = meta.collectionItems.count
+        }
+        facts.comments = model.comments.isEmpty ? 0 : min(model.comments.count, DetailCommentsList.maxCards)
+        let credits = creditRowItems
+        facts.castItems = credits.count
+        facts.castWithIds = credits.filter { $0.tmdbId != nil }.count
+        let logos = companyLogos
+        facts.logos = logos.count
+        facts.logosWithIds = logos.filter { $0.company.tmdbId != nil }.count
+        facts.warnings = model.parentalWarnings.count
+        return facts
+    }
+    /// Round 1 P2: a stop that held focus when its section gained focus targets is gone this pass;
+    /// hand focus to the first person link (or studio chip) one runloop later (the engine's own
+    /// fallback wins a same-update claim, as `ClaimsFocusAfterSwap`), so focus never falls to nil.
+    /// Always returns `()` so the page body can bind it with `let _`.
+    private func scheduleTailHandoff(_ section: DetailSection?) {
+        guard let section else { return }
+        DispatchQueue.main.async {
+            guard focusedRow == nil || DetailSection.section(for: focusedRow) == section else { return }
+            switch section {
+            case .castAndCrew:
+                if let first = creditRowItems.first(where: { $0.tmdbId != nil }) { focusedCastKey = first.key }
+            case .companies:
+                if let index = companyLogos.firstIndex(where: { $0.company.tmdbId != nil }) { focusedCompanyIndex = index }
+            default: break
+            }
         }
     }
     #if DEBUG
@@ -1693,7 +1742,8 @@ struct DetailView: View {
             let top = section.rowID.flatMap { detailRowOffsets[$0] }
             return "\(section.rawValue):\(top.map { String(Int($0.rounded())) } ?? "?")"
         }.joined(separator: ",")
-        let stops = sections.filter { sectionHasOwnFocusStop($0) }.map(\.rawValue).joined(separator: ",")
+        let facts = detailFocusFacts
+        let stops = sections.filter { DetailTrailingFocus.kind(of: $0, facts: facts) == .focusable }.map(\.rawValue).joined(separator: ",")
         let tail = sections.filter { tailStopBox.stops.contains($0) }.map(\.rawValue).joined(separator: ",")
         return "rows=\(rows) stops=\(stops) tail=\(tail) gap=\(Int(Theme.Spacing.lg + Theme.Spacing.sm)) pad=\(Int(Theme.Spacing.screen)) cbody=\(DetailCommentsBodyCounter.count)"
     }
@@ -3311,9 +3361,16 @@ struct DetailView: View {
 
     /// A4.4 (C10): the Cast row's cards, cast then crew (`DetailCreditRow`), every layout.
     private var creditRowItems: [DetailCreditItem] {
-        DetailCreditRow.items(cast: model.meta?.cast ?? [], crew: model.meta?.crew ?? [],
-                              creators: model.meta?.creators ?? [],
-                              actorLimit: detailLayoutChoice == .appleStyle ? Self.appleStyleActorLimit : nil)
+        let items = DetailCreditRow.items(cast: model.meta?.cast ?? [], crew: model.meta?.crew ?? [],
+                                          creators: model.meta?.creators ?? [],
+                                          actorLimit: detailLayoutChoice == .appleStyle ? Self.appleStyleActorLimit : nil)
+        #if DEBUG
+        if !debugCastIdsReleased {
+            return items.map { DetailCreditItem(key: $0.key, kind: $0.kind, name: $0.name, subtitle: $0.subtitle,
+                                                photo: $0.photo, tmdbId: nil) }
+        }
+        #endif
+        return items
     }
 
     /// Apple-style's Cast & Crew row shows this many actors before the creator and crew cards
@@ -3660,8 +3717,9 @@ struct DetailView: View {
                                              .joined(separator: ", ")),
                                      identifier: "detail_tail_stop_parentalGuide")
             }
-            // BUG-244: a stop spans the page width, so Up/Down from any x reaches it. Only while it
-            // is a stop: an inactive section stays today's tree.
+            // BUG-244: a stop's focus reach spans the page (a full-width focus section routing to the
+            // chip row's stop), so Up/Down from any x reaches it; the platter still hugs the chips.
+            // Only while it is a stop: an inactive section stays today's tree.
             .detailTailFullWidth(active: tailStop)
         }
     }
