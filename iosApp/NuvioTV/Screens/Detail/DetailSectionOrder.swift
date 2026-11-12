@@ -264,3 +264,52 @@ struct DetailSectionSlot: View {
             .accessibilityHidden(true)
     }
 }
+
+/// BUG-244: which sections need a focus stop of their own because nothing focusable follows them.
+///
+/// The page scrolls only to reveal a focused view, so a content section after the last focus stop
+/// (Parental Guide always; Cast & Crew when no card carries a TMDB id; Studio Logos when no chip
+/// does) is shown only if it happens to fit under the engine's reveal margin. Each such section
+/// becomes ONE focus stop (`DetailTailFocusStop`). Pure and `nonisolated`: the page's tests build
+/// `sections` with the real presets.
+nonisolated enum DetailTrailingFocus {
+    /// Content sections after the last section that has a focus stop of its own (each needs one).
+    /// - Parameters:
+    ///   - sections: `DetailSectionOrder.sections(...)` output, in page order. The hero (a stop)
+    ///     may be present or absent; it never lands in the tail.
+    ///   - contentless: pending and held slots: no content, never a stop, skipped.
+    ///   - hasOwnStop: whether a section has a focus stop without help (comments always: its cards
+    ///     are built eagerly, `DetailCommentsList`).
+    static func tailStops(sections: [DetailSection], contentless: Set<DetailSection>,
+                          hasOwnStop: (DetailSection) -> Bool) -> Set<DetailSection> {
+        var tail: Set<DetailSection> = []
+        for section in sections.reversed() {
+            if section == .hero || contentless.contains(section) { continue }
+            if hasOwnStop(section) { break }
+            tail.insert(section)
+        }
+        return tail
+    }
+
+    /// The tail plus a previous stop that still holds focus: a stop never vanishes under focus
+    /// (a late comments or More Like This arrival below it), and is released when focus leaves.
+    static func resolve(tail: Set<DetailSection>, previous: Set<DetailSection>,
+                        focused: DetailSection?) -> Set<DetailSection> {
+        guard let focused, previous.contains(focused) else { return tail }
+        return tail.union([focused])
+    }
+}
+
+/// `DetailView`'s holder for `DetailTrailingFocus`: a reference in `@State`, written once per body
+/// evaluation (focus and layout changes re-run the body), so it never invalidates the view.
+final class DetailTailStopBox {
+    private(set) var stops: Set<DetailSection> = []
+
+    func resolve(sections: [DetailSection], contentless: Set<DetailSection>, focused: DetailSection?,
+                 hasOwnStop: (DetailSection) -> Bool) -> Set<DetailSection> {
+        let tail = DetailTrailingFocus.tailStops(sections: sections, contentless: contentless,
+                                                 hasOwnStop: hasOwnStop)
+        stops = DetailTrailingFocus.resolve(tail: tail, previous: stops, focused: focused)
+        return stops
+    }
+}
