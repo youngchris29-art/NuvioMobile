@@ -735,7 +735,15 @@ final class DetailRowAnchorTests: XCTestCase {
         screenshot("reach-cast-stop")
         print("[BUG244] reach-cast reading \(focusReading(app)) sections=\(app.staticTexts["debug_detail_sections"].label)")
         XCTAssertEqual(focusReading(app).row, "cast", "Down from the right-most Episodes card must land on the Cast stop")
-        XCTAssertTrue(app.descendants(matching: .any)["detail_tail_stop_castAndCrew"].exists)
+        let stop = app.descendants(matching: .any)["detail_tail_stop_castAndCrew"]
+        XCTAssertTrue(stop.exists)
+        // Review round 2 (finding 2): VoiceOver reads each name AND the line its card shows (character,
+        // "Director", "Writer"), not names alone.
+        let label = stop.label
+        print("[BUG244] cast stop label: \(label)")
+        XCTAssertTrue(label.hasPrefix("Cast & Crew, "), "label starts with the heading: \(label)")
+        XCTAssertTrue(["Director", "Writer", "Creator", "Producer"].contains { label.contains(", \($0)") },
+                      "the label carries the crew jobs the cards show: \(label)")
     }
 
     /// Finding 3 (Parental Guide): with focus on the right-most Cast card (a wide row), Down lands on
@@ -776,11 +784,11 @@ final class DetailRowAnchorTests: XCTestCase {
         screenshot("handoff-person-link")
     }
 
-    /// Review finding A (late card): only a card beyond the built ones carries an id when the ids
+    /// Review finding A, round 2 (late card): only a card beyond the built ones carries an id when the ids
     /// arrive (`-debug.detailCastIdsFromCard 10`: the first 10 cards have none, the 11th has one) while the
-    /// stop holds focus. The hand-off cannot assign (that card is not built) and is not retried: afterwards the
-    /// stop element is gone and focus is not nil.
-    func testLateIdCardDropsTheHeldStopAndLinksStayFocusable() throws {
+    /// stop holds focus. The held stop scrolls the Cast row to that card and hands focus to it: afterwards
+    /// the stop element is gone and focus is on a person link in the Cast row (not Episodes, not nil).
+    func testLateIdCardKeepsFocusInCastAndReachesTheLink() throws {
         guard let app = launchWalk(Self.severance, layout: "apple", tmdb: true,
                                    sections: ["about": false, "studio_logos": false, "collection": false, "comments": false,
                                               "more_like_this": false, "trailers": false],
@@ -791,18 +799,14 @@ final class DetailRowAnchorTests: XCTestCase {
         guard stop.exists else { throw XCTSkip("the Cast stop was already gone (ids arrived before focus)") }
         let deadline = Date().addingTimeInterval(150)
         while Date() < deadline, stop.exists { pause(1) }
-        XCTAssertFalse(stop.exists, "the held Cast stop must be dropped after one pass, whether or not focus reached a link")
+        XCTAssertFalse(stop.exists, "the Cast stop must be gone once the rail has scrolled to the first link")
         pause(3)
-        print("[BUG244] late-card after-drop reading \(focusReading(app)) sections=\(app.staticTexts["debug_detail_sections"].label)")
+        let after = focusReading(app)
+        print("[BUG244] late-card after-drop reading \(after) sections=\(app.staticTexts["debug_detail_sections"].label)")
         screenshot("late-card-after-drop")
-        // The 11th card was not built, so nothing could be assigned and the engine placed focus itself
-        // (here: back up on the Episodes row, never nil). The stop stays gone. Whether Down then reaches
-        // the unbuilt 11th card is the lazy row's own limit (no built view is focusable), so it is only
-        // reported, not asserted.
-        XCTAssertNotEqual(focusReading(app).row, "-", "focus must not be nil after the stop is dropped")
+        XCTAssertEqual(after.row, "cast", "focus must stay in the Cast row (not fall to Episodes or nil)")
+        XCTAssertNotEqual(after.idx, "-", "focus must be on a person link (the focus memory holds its key)")
         XCTAssertFalse(stop.exists)
-        let reached = pressDown(app, until: "cast", max: 3)
-        print("[BUG244] late-card Down reaches Cast row: \(reached) reading \(focusReading(app))")
     }
 
     /// Finding 4: with no comments and no tail rows, the focus sequence and the scroll offset at each

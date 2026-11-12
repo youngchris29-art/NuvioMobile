@@ -291,6 +291,20 @@ nonisolated enum DetailTrailingFocus {
         return tail
     }
 
+    /// What a held stop's hand-off does this pass.
+    enum HandoffAction: Equatable {
+        /// A person link is realized: assign focus to it (the stop is released on the next pass).
+        case assign
+        /// No id-bearing card is realized yet (the first one sits beyond the cards a `LazyHStack` has
+        /// built): scroll the row to it by offset and look again; the stop stays focused meanwhile.
+        case scroll
+    }
+
+    /// Review round 2 (finding 1): how many scroll-and-look-again attempts a held stop gets before it
+    /// is dropped anyway (the target never appeared). Each attempt is one `performTailHandoff` run,
+    /// ~0.4 s apart, so a stop is never held for more than a couple of seconds.
+    static let maxScrollAttempts = 4
+
     /// What `resolve` decided for one body pass.
     struct Resolution: Equatable {
         /// The sections that are a tail stop this pass.
@@ -299,6 +313,8 @@ nonisolated enum DetailTrailingFocus {
         /// TMDB ids): the wrapper is gone this pass, so focus must be handed to one of the new
         /// links or it falls to nil. nil = no hand-off.
         var handoff: DetailSection?
+        /// What the hand-off does (nil exactly when `handoff` is nil).
+        var action: HandoffAction?
     }
 
     /// The tail plus a previous stop that still holds focus: a stop never vanishes under focus
@@ -311,18 +327,27 @@ nonisolated enum DetailTrailingFocus {
     /// is dropped, so the links are reachable and visible to VoiceOver and focus never falls to nil.
     /// A stop that does not hold focus is dropped at once.
     ///
-    /// Review finding A: the hold lasts ONE pass. When the previous pass already reported the hand-off
-    /// for this section (`previousHandoff`), the stop is dropped now whatever happened to focus: the
-    /// hand-off is not retried, so a link that could not take focus (not realized yet) can never leave
-    /// the stop over live person links (cards hidden from VoiceOver, Select dead).
+    /// Review finding A: an ASSIGN hand-off lasts ONE pass. When the previous pass already reported
+    /// it for this section (`previousHandoff`), the stop is dropped now whatever happened to focus:
+    /// it is not retried, so a link that could not take focus can never leave the stop over live
+    /// person links (cards hidden from VoiceOver, Select dead).
+    ///
+    /// Review round 2 (finding 1): when no link card is realized (`targetRealized` false) the stop is
+    /// held with a SCROLL action instead, so focus stays in the row while it moves toward the first
+    /// link; `scrollAttempts` (the attempts already made) bounds this: at `maxScrollAttempts` the stop
+    /// is dropped as before. Leaving the row, or the section losing its targets, ends the hold at once.
     static func resolve(tail: Set<DetailSection>, previous: Set<DetailSection>, focused: DetailSection?,
                         hasOwnTargets: (DetailSection) -> Bool,
                         linkFocused: (DetailSection) -> Bool = { _ in false },
-                        previousHandoff: DetailSection? = nil) -> Resolution {
-        guard let focused, previous.contains(focused) else { return Resolution(stops: tail, handoff: nil) }
-        guard hasOwnTargets(focused) else { return Resolution(stops: tail.union([focused]), handoff: nil) }
-        if linkFocused(focused) || previousHandoff == focused { return Resolution(stops: tail, handoff: nil) }
-        return Resolution(stops: tail.union([focused]), handoff: focused)
+                        previousHandoff: DetailSection? = nil,
+                        targetRealized: (DetailSection) -> Bool = { _ in true },
+                        scrollAttempts: Int = 0) -> Resolution {
+        guard let focused, previous.contains(focused) else { return Resolution(stops: tail, handoff: nil, action: nil) }
+        guard hasOwnTargets(focused) else { return Resolution(stops: tail.union([focused]), handoff: nil, action: nil) }
+        if linkFocused(focused) || previousHandoff == focused { return Resolution(stops: tail, handoff: nil, action: nil) }
+        if targetRealized(focused) { return Resolution(stops: tail.union([focused]), handoff: focused, action: .assign) }
+        if scrollAttempts >= maxScrollAttempts { return Resolution(stops: tail, handoff: nil, action: nil) }
+        return Resolution(stops: tail.union([focused]), handoff: focused, action: .scroll)
     }
 
     /// Review finding A: the hand-off's target, the first card that carries a person link AND is
@@ -332,6 +357,30 @@ nonisolated enum DetailTrailingFocus {
     /// - Parameter cards: the row's cards in order, `hasLink` = carries a TMDB id.
     static func handoffTarget(cards: [(key: String, hasLink: Bool)], realized: Set<String>) -> String? {
         cards.first { $0.hasLink && realized.contains($0.key) }?.key
+    }
+
+    /// Review round 2 (finding 1): the index of the first card that carries a person link, realized or
+    /// not (where the row must scroll to). nil = no card has one.
+    static func firstLinkIndex(cards: [(key: String, hasLink: Bool)]) -> Int? {
+        cards.firstIndex { $0.hasLink }
+    }
+
+    /// The horizontal offset that brings card `index` into a row of `pitch`-wide slots: one slot
+    /// before it (so the card is well inside the viewport and the lazy stack builds it), nudged a half
+    /// slot further on each later `attempt` (0-based) so an estimate that is a little short still
+    /// converges. Never negative.
+    static func scrollOffset(index: Int, pitch: Double, attempt: Int) -> Double {
+        max(0, (Double(index) - 1 + 0.5 * Double(max(0, attempt))) * pitch)
+    }
+
+    /// Review round 2 (finding 2): what VoiceOver reads for a names-only Cast stop (after the heading):
+    /// every person's name, each followed by the line the card shows under it (character, "Director",
+    /// "Writer") when there is one. "Name, role, Name, Name, role".
+    static func castStopPeopleLabel(_ people: [(name: String, subtitle: String?)]) -> String {
+        people.map { person in
+            let role = person.subtitle ?? ""
+            return role.isEmpty ? person.name : "\(person.name), \(role)"
+        }.joined(separator: ", ")
     }
 
     /// How a section behaves for the tail calculation, from what it ACTUALLY holds right now.
@@ -397,17 +446,39 @@ final class DetailTailStopBox {
     private(set) var stops: Set<DetailSection> = []
     /// The hand-off of the latest `resolve`, nil when none (set on the one pass it happens).
     private(set) var handoff: DetailSection?
+    /// What the latest hand-off does, nil when none.
+    private(set) var action: DetailTrailingFocus.HandoffAction?
+    /// Scroll attempts made for the current hold (counted when `performTailHandoff` consumes a scroll
+    /// action, not per body pass: unrelated re-renders must not use them up). Reset when no hold is active.
+    private(set) var scrollAttempts = 0
+    /// True once the latest `resolve`'s action was taken (the action stays readable for the next
+    /// `resolve`'s one-pass rule).
+    private var taken = false
 
     func resolve(sections: [DetailSection], contentless: Set<DetailSection>, focused: DetailSection?,
                  hasOwnStop: (DetailSection) -> Bool,
-                 linkFocused: (DetailSection) -> Bool = { _ in false }) -> Set<DetailSection> {
+                 linkFocused: (DetailSection) -> Bool = { _ in false },
+                 targetRealized: (DetailSection) -> Bool = { _ in true }) -> Set<DetailSection> {
         let tail = DetailTrailingFocus.tailStops(sections: sections, contentless: contentless,
                                                  hasOwnStop: hasOwnStop)
         let result = DetailTrailingFocus.resolve(tail: tail, previous: stops, focused: focused,
                                                  hasOwnTargets: hasOwnStop, linkFocused: linkFocused,
-                                                 previousHandoff: handoff)
+                                                 previousHandoff: action == .assign ? handoff : nil,
+                                                 targetRealized: targetRealized, scrollAttempts: scrollAttempts)
         stops = result.stops
         handoff = result.handoff
+        action = result.action
+        taken = false
+        if result.action != .scroll { scrollAttempts = 0 }
         return stops
+    }
+
+    /// The pending hand-off, taken once per `resolve`: a scroll action counts one attempt.
+    func takeAction() -> (section: DetailSection, action: DetailTrailingFocus.HandoffAction, attempt: Int)? {
+        guard !taken, let section = handoff, let action else { return nil }
+        taken = true
+        let attempt = scrollAttempts
+        if action == .scroll { scrollAttempts += 1 }
+        return (section, action, attempt)
     }
 }

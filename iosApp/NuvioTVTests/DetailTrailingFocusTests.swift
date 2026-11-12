@@ -339,6 +339,114 @@ final class DetailTrailingFocusTests: XCTestCase {
         XCTAssertNil(DetailTrailingFocus.handoffTarget(cards: [], realized: ["c0"]))
     }
 
+    /// Review round 2 (finding 1): no id card is realized -> the stop is held with a SCROLL action
+    /// (focus stays in the row), bounded by the attempts; a realized one assigns; leaving ends the hold.
+    func testUnrealizedTargetHoldsTheStopWithAScrollActionUntilTheAttemptsRunOut() {
+        let own: (DetailSection) -> Bool = { $0 == .castAndCrew }
+        let prev: Set<DetailSection> = [.castAndCrew, .parentalGuide]
+        func resolve(attempts: Int, realized: Bool, focused: DetailSection? = .castAndCrew,
+                     linkFocused: Bool = false) -> DetailTrailingFocus.Resolution {
+            DetailTrailingFocus.resolve(tail: [.parentalGuide], previous: prev, focused: focused, hasOwnTargets: own,
+                                        linkFocused: { _ in linkFocused }, targetRealized: { _ in realized },
+                                        scrollAttempts: attempts)
+        }
+        for attempts in 0..<DetailTrailingFocus.maxScrollAttempts {
+            let held = resolve(attempts: attempts, realized: false)
+            XCTAssertEqual(held.stops, [.castAndCrew, .parentalGuide], "attempt \(attempts): the stop is held")
+            XCTAssertEqual(held.handoff, .castAndCrew)
+            XCTAssertEqual(held.action, .scroll)
+        }
+        // The attempts are used up and the card never appeared: dropped, as before.
+        let spent = resolve(attempts: DetailTrailingFocus.maxScrollAttempts, realized: false)
+        XCTAssertEqual(spent.stops, [.parentalGuide])
+        XCTAssertNil(spent.handoff)
+        XCTAssertNil(spent.action)
+        // The card is built: assign, whatever the attempts so far.
+        let assign = resolve(attempts: 2, realized: true)
+        XCTAssertEqual(assign.action, .assign)
+        XCTAssertEqual(assign.stops, [.castAndCrew, .parentalGuide])
+        // The user left the row, or focus is already on a link: dropped at once, no action.
+        for quiet in [resolve(attempts: 0, realized: false, focused: .parentalGuide),
+                      resolve(attempts: 0, realized: false, focused: nil),
+                      resolve(attempts: 0, realized: false, linkFocused: true)] {
+            XCTAssertEqual(quiet.stops, [.parentalGuide])
+            XCTAssertNil(quiet.action)
+        }
+        // The section lost its targets again (meta changed): back to the plain held stop, no action.
+        let lost = DetailTrailingFocus.resolve(tail: [.parentalGuide], previous: prev, focused: .castAndCrew,
+                                               hasOwnTargets: { _ in false }, targetRealized: { _ in false })
+        XCTAssertEqual(lost.stops, [.castAndCrew, .parentalGuide])
+        XCTAssertNil(lost.action)
+    }
+
+    /// The box counts a scroll attempt only when its action is taken (once per pass), resets when the
+    /// hold ends, never lets the hold stick, and still drops the stop one pass after an assign.
+    func testBoxBoundsTheScrollHoldAndStillReleasesAfterAnAssign() {
+        var box = DetailTailStopBox()
+        var castIds = false
+        var realized = false
+        let own: (DetailSection) -> Bool = { $0 == .castAndCrew ? castIds : $0 != .parentalGuide }
+        let sections: [DetailSection] = [.hero, .castAndCrew, .parentalGuide]
+        func pass(focused: DetailSection? = .castAndCrew) {
+            _ = box.resolve(sections: sections, contentless: [], focused: focused, hasOwnStop: own,
+                            linkFocused: { _ in false }, targetRealized: { _ in realized })
+        }
+        pass()
+        castIds = true
+        // Unrelated body passes do not use the attempts up.
+        for _ in 0..<10 { pass() }
+        XCTAssertEqual(box.stops, [.castAndCrew, .parentalGuide])
+        XCTAssertEqual(box.scrollAttempts, 0)
+        // Each taken scroll action is one attempt; taking it twice in one pass is a no-op.
+        for attempt in 0..<DetailTrailingFocus.maxScrollAttempts {
+            pass()
+            XCTAssertEqual(box.action, .scroll)
+            let taken = box.takeAction()
+            XCTAssertEqual(taken?.action, .scroll)
+            XCTAssertEqual(taken?.attempt, attempt)
+            XCTAssertNil(box.takeAction(), "an action runs once per pass")
+        }
+        pass()
+        XCTAssertNil(box.action, "the card never appeared: the hold is over")
+        XCTAssertEqual(box.stops, [.parentalGuide], "and the stop is dropped, never stuck")
+        XCTAssertEqual(box.scrollAttempts, 0, "reset for the next hold")
+        // A fresh hold that finds the card built assigns, and releases one pass later.
+        box = DetailTailStopBox()
+        castIds = false
+        pass()
+        castIds = true
+        realized = true
+        pass()
+        XCTAssertEqual(box.action, .assign)
+        XCTAssertEqual(box.takeAction()?.action, .assign)
+        pass()
+        XCTAssertNil(box.action, "no retry after an assign")
+        XCTAssertEqual(box.stops, [.parentalGuide])
+    }
+
+    func testScrollOffsetIsAColumnBeforeTheCardAndSweepsOnLaterAttempts() {
+        XCTAssertEqual(DetailTrailingFocus.scrollOffset(index: 10, pitch: 100, attempt: 0), 900)
+        XCTAssertEqual(DetailTrailingFocus.scrollOffset(index: 10, pitch: 100, attempt: 1), 950)
+        XCTAssertEqual(DetailTrailingFocus.scrollOffset(index: 10, pitch: 100, attempt: 3), 1050)
+        XCTAssertEqual(DetailTrailingFocus.scrollOffset(index: 0, pitch: 100, attempt: 0), 0, "never negative")
+        XCTAssertEqual(DetailTrailingFocus.scrollOffset(index: 1, pitch: 100, attempt: -2), 0)
+        let cards: [(key: String, hasLink: Bool)] = (0..<12).map { (key: "c\($0)", hasLink: $0 >= 10) }
+        XCTAssertEqual(DetailTrailingFocus.firstLinkIndex(cards: cards), 10)
+        XCTAssertNil(DetailTrailingFocus.firstLinkIndex(cards: cards.map { (key: $0.key, hasLink: false) }))
+        XCTAssertNil(DetailTrailingFocus.firstLinkIndex(cards: []))
+    }
+
+    /// Review round 2 (finding 2): the stop's VoiceOver text carries each name AND the line the card shows.
+    func testCastStopLabelCarriesNamesAndRoles() {
+        typealias P = (name: String, subtitle: String?)
+        func label(_ people: [P]) -> String { DetailTrailingFocus.castStopPeopleLabel(people) }
+        XCTAssertEqual(label([("Ann", nil), ("Bo", nil)]), "Ann, Bo", "names only")
+        XCTAssertEqual(label([("Ann", "Mark"), ("Bo", "Helly")]), "Ann, Mark, Bo, Helly", "names with roles")
+        XCTAssertEqual(label([("Ann", "Mark"), ("Bo", nil), ("Cy", "Director")]), "Ann, Mark, Bo, Cy, Director", "mixed")
+        XCTAssertEqual(label([("Ann", ""), ("Bo", "Writer")]), "Ann, Bo, Writer", "an empty subtitle is skipped")
+        XCTAssertEqual(label([]), "")
+    }
+
     // MARK: Data-driven classification (finding 2)
 
     private typealias Facts = DetailTrailingFocus.Facts

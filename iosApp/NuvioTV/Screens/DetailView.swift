@@ -580,6 +580,14 @@ struct DetailView: View {
     /// held stop is released (`resolve` drops it on the pass after the hand-off) even when no focus
     /// change follows (the target card was not built). Read once in `body`, so its write is what re-runs the page.
     @State private var tailHandoffTick = 0
+    /// Review round 2 (finding 1): the Cast row's horizontal position. A reference box behind a custom
+    /// `Binding` (the user's own scrolling writes the box, never this view's body); a programmatic
+    /// scroll writes the box and bumps `tailScrollTick`, whose body pass hands the new position to the
+    /// ScrollView.
+    @State private var castRailBox = DetailRailPositionBox()
+    /// Bumped by each scroll attempt of a held Cast stop; `.task(id:)` below waits ~0.4 s (cancelled
+    /// with the view, so nothing outlives it) and then re-runs the hand-off check via `tailHandoffTick`.
+    @State private var tailScrollTick = 0
     /// Review finding B: what `model.meta` yields that the focus facts and the section availability
     /// read on every body pass (credit cards, studio logos, trailer split, "has any" flags), rebuilt
     /// only when the meta object or an input changes. A reference box: never invalidates.
@@ -924,6 +932,15 @@ struct DetailView: View {
                             case .companies: return focusedCompanyIndex != nil
                             default: return false
                             }
+                        },
+                        targetRealized: { section in
+                            // Only the Cast row's cards are built lazily; a studio chip row hands off by index.
+                            guard section == .castAndCrew else { return true }
+                            let cards = derivedMeta().credits.map { (key: $0.key, hasLink: $0.tmdbId != nil) }
+                            // A first link among the opening cards is built by the next main-queue turn (the
+                            // hand-off runs then, as before); only a later one needs the row scrolled to it.
+                            if let first = DetailTrailingFocus.firstLinkIndex(cards: cards), first <= 2 { return true }
+                            return DetailTrailingFocus.handoffTarget(cards: cards, realized: realizedCastKeys.keys) != nil
                         })
                     ForEach(sections, id: \.self) { section in
                         detailSection(section, pending: availability.state(section) == .pending,
@@ -989,6 +1006,14 @@ struct DetailView: View {
             // BUG-244 (round 1): a stop that held focus when its section gained focus targets hands
             // focus to a link in the update that removed it.
             .onChange(of: facts) { _, _ in performTailHandoff() }
+            // Review round 2 (finding 1): the check that follows a scroll attempt (and the release pass
+            // after an assign) re-runs the hand-off; `takeAction` makes it once per body pass.
+            .onChange(of: tailHandoffTick) { _, _ in performTailHandoff() }
+            .task(id: tailScrollTick) {
+                guard tailScrollTick > 0 else { return }
+                do { try await Task.sleep(nanoseconds: 400_000_000) } catch { return }
+                tailHandoffTick &+= 1
+            }
             .onChange(of: focusedRow) { old, row in
                 // BUG-194 (Batch P): during a live pop restore the engine's stray first landing must
                 // not move the page (the "up, then down onto the card" Steven filmed). Decided by
@@ -1757,21 +1782,41 @@ struct DetailView: View {
     /// Round 1 P2: a stop that held focus when its section gained focus targets is gone after the
     /// next pass; hand focus to a person link (or studio chip) so it never falls to nil.
     ///
-    /// Review finding A: the assignment runs on the next main-queue turn (the link exists by then, and
-    /// no timer or task outlives the view) and is NOT retried: `DetailTrailingFocus.resolve` holds the
-    /// stop for one pass only. The target is the first id-bearing card a `LazyHStack` has realized
-    /// (`handoffTarget`); when none is (the first id card sits beyond the built cards), nothing is
-    /// assigned, the stop is dropped on the next pass anyway and the engine's own fallback places focus,
-    /// normally on a card of this same row (the nearest focusable view of the removed stop).
+    /// Review finding A: an ASSIGN runs on the next main-queue turn (the link exists by then, and no
+    /// timer or task outlives the view) and is NOT retried: `DetailTrailingFocus.resolve` holds the
+    /// stop for one pass after it only. The target is the first id-bearing card a `LazyHStack` has
+    /// realized (`handoffTarget`).
+    ///
+    /// Review round 2 (finding 1): when no id-bearing card is realized (the first one sits beyond the
+    /// built cards) the stop is HELD and the Cast row is scrolled to that card by offset
+    /// (`ScrollPosition.scrollTo(x:)`, never by id: id-based scrolling is unreliable on this tvOS);
+    /// `.task(id: tailScrollTick)` re-checks 0.4 s later, and the next check either assigns focus to the
+    /// now-built card or scrolls again, at most `DetailTrailingFocus.maxScrollAttempts` times, after
+    /// which the stop is dropped as before. Leaving the Cast row (focus not on this row any more, or on
+    /// a card) ends the hold without touching focus.
     private func performTailHandoff() {
-        guard let section = tailStopBox.handoff else { return }
+        guard let pending = tailStopBox.takeAction() else { return }
+        let section = pending.section
         #if DEBUG
-        if DetailFocusProbe.enabled { print("[BUG244] handoff \(section) focusedRow=\(focusedRow.map { "\($0)" } ?? "-")") }
+        if DetailFocusProbe.enabled { print("[BUG244] handoff \(section) \(pending.action) attempt=\(pending.attempt) focusedRow=\(focusedRow.map { "\($0)" } ?? "-")") }
         #endif
+        if pending.action == .scroll {
+            guard section == .castAndCrew, focusedRow == .cast, focusedCastKey == nil else { return }
+            let cards = derivedMeta().credits.map { (key: $0.key, hasLink: $0.tmdbId != nil) }
+            guard let index = DetailTrailingFocus.firstLinkIndex(cards: cards) else { return }
+            let pitch = Double(castAvatarSize + 10 + Theme.Spacing.lg)
+            let x = DetailTrailingFocus.scrollOffset(index: index, pitch: pitch, attempt: pending.attempt)
+            #if DEBUG
+            if DetailFocusProbe.enabled { print("[BUG244] handoff scroll index=\(index) x=\(Int(x)) realized=\(realizedCastKeys.keys.count)") }
+            #endif
+            castRailBox.position = ScrollPosition(x: x, y: 0)
+            tailScrollTick &+= 1
+            return
+        }
         DispatchQueue.main.async {
             switch section {
             case .castAndCrew:
-                guard focusedCastKey == nil else { return }
+                guard focusedCastKey == nil, focusedRow == .cast else { return }
                 let cards = derivedMeta().credits.map { (key: $0.key, hasLink: $0.tmdbId != nil) }
                 let target = DetailTrailingFocus.handoffTarget(cards: cards, realized: realizedCastKeys.keys)
                 #if DEBUG
@@ -3521,6 +3566,8 @@ struct DetailView: View {
                         // scrolling content, while the focus target below stays page-wide.
                         .detailTailPlatter(active: tailStop, isFocused: focusedRow == .cast)
                     }
+                    // Review round 2 (finding 1): lets a held Cast stop scroll the row to its first link card.
+                    .scrollPosition(Binding(get: { castRailBox.position }, set: { castRailBox.position = $0 }))
                     // BUG-187: remember the card a push to a person page leaves from (A4.4: its key).
                     .onChange(of: focusedCastKey) { _, key in noteDetailFocus(.cast, key) }
                     .scrollClipDisabled()
@@ -3545,9 +3592,11 @@ struct DetailView: View {
     }
 
     /// BUG-244: the names-only Cast stop reads every name (a `LazyHStack` builds only the visible cards).
+    /// Review round 2 (finding 2): each name is followed by the line its card shows (character,
+    /// "Director", "Writer"), since the cards themselves are hidden from VoiceOver while the stop is active.
     private func castStopLabel(_ items: [DetailCreditItem]) -> Text {
         Text(detailLayoutChoice == .appleStyle ? "Cast & Crew" : "Cast")
-            + Text(verbatim: ", " + items.map(\.name).joined(separator: ", "))
+            + Text(verbatim: ", " + DetailTrailingFocus.castStopPeopleLabel(items.map { (name: $0.name, subtitle: $0.subtitle) }))
     }
 
     @ViewBuilder
@@ -4670,6 +4719,12 @@ private extension View {
 /// Review finding A: the keys of the Cast cards (with a person link) that are built right now.
 final class DetailRealizedKeysBox {
     var keys: Set<String> = []
+}
+
+/// Review round 2 (finding 1): the Cast row's `ScrollPosition`, held outside the view's state so the
+/// user's own scrolling (which writes it back through the binding) never re-runs `DetailView.body`.
+final class DetailRailPositionBox {
+    var position = ScrollPosition()
 }
 
 /// Review finding B: the values `DetailView` derives from `model.meta` and reads several times per
