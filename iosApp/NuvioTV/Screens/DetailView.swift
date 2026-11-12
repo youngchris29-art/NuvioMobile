@@ -573,6 +573,10 @@ struct DetailView: View {
     /// BUG-244: the content sections that are one focus stop each because nothing focusable follows
     /// them (`DetailTrailingFocus`); written once per body pass, never invalidates.
     @State private var tailStopBox = DetailTailStopBox()
+    /// Review finding B: what `model.meta` yields that the focus facts and the section availability
+    /// read on every body pass (credit cards, studio logos, trailer split, "has any" flags), rebuilt
+    /// only when the meta object or an input changes. A reference box: never invalidates.
+    @State private var metaDerived = DetailMetaDerivedBox()
     #if DEBUG
     /// `-debug.detailCastIdsDelay <seconds>`: Cast & Crew shows without TMDB ids until the delay has
     /// passed (a late enrichment), so the UI leg can land on the names-only Cast stop first.
@@ -833,6 +837,9 @@ struct DetailView: View {
     var body: some View {
         // BUG-41 measurement probe, gated at runtime by `DetailScrollProbe.enabled` (see above).
         let _ = Self.logBodyEval()
+        // Review finding B: the focus facts are built once per pass and shared by the sections block
+        // and the hand-off `onChange` below.
+        let facts = detailFocusFacts
         ZStack(alignment: .topLeading) {
             backdropImage
                 // FEAT-32: the still lands enlarged when the trailer cover goes and settles to 1.
@@ -895,7 +902,6 @@ struct DetailView: View {
                     let sections = orderedSections(availability)
                     // BUG-244: sections after the last focus stop become one stop each, so Down
                     // reaches (and scrolls to) the end of the page.
-                    let facts = detailFocusFacts
                     let pendingOrHeld = Set(sections.filter { availability.state($0) == .pending }).union(held.keys)
                     let tailStops = tailStopBox.resolve(
                         sections: sections,
@@ -974,7 +980,7 @@ struct DetailView: View {
             // — the ORIGINAL BUG-96 photo, not the two-step motion the blend fix already solved.
             // BUG-244 (round 1): a stop that held focus when its section gained focus targets hands
             // focus to a link in the update that removed it.
-            .onChange(of: detailFocusFacts) { _, _ in performTailHandoff() }
+            .onChange(of: facts) { _, _ in performTailHandoff() }
             .onChange(of: focusedRow) { old, row in
                 // BUG-194 (Batch P): during a live pop restore the engine's stray first landing must
                 // not move the page (the "up, then down onto the card" Steven filmed). Decided by
@@ -1661,9 +1667,7 @@ struct DetailView: View {
         return RowEdgeMargins(leading: m.leading, trailing: m.trailing)
     }
     /// A2: Apple-style's Trailers/Bonus partition of the title's videos (`DetailTrailerPartition`).
-    private var trailerSplit: (trailers: [MetaTrailer], bonus: [MetaTrailer]) {
-        DetailTrailerPartition.split(model.meta?.trailers ?? [])
-    }
+    private var trailerSplit: (trailers: [MetaTrailer], bonus: [MetaTrailer]) { derivedMeta().split }
     /// A2: what each section can show right now (`DetailSectionAvailability`). Reads only what the
     /// row builders read, so Cinematic and Classic render a row iff its toggle is on and it has
     /// content, as before.
@@ -1684,11 +1688,11 @@ struct DetailView: View {
         set(.parentalGuide, sectionParentalGuide, !model.parentalWarnings.isEmpty, false)
         set(.episodes, isSeries, model.meta.map { EpisodesSection.isSeriesLike($0) } ?? false, loadingMeta)
         set(.castAndCrew, sectionCast, !creditRowItems.isEmpty, loadingMeta)
-        set(.collection, sectionCollection, !(model.meta?.collectionItems ?? []).isEmpty, loadingMeta)
-        let hasTrailers = appleStyle ? !split.trailers.isEmpty : !(model.meta?.trailers ?? []).isEmpty
+        set(.collection, sectionCollection, derivedMeta().hasCollection, loadingMeta)
+        let hasTrailers = appleStyle ? !split.trailers.isEmpty : derivedMeta().hasTrailers
         set(.trailers, sectionTrailers, hasTrailers, loadingMeta)
         set(.bonus, sectionTrailers && appleStyle, !split.bonus.isEmpty, loadingMeta)
-        set(.moreLikeThis, sectionMoreLikeThis, !(model.meta?.moreLikeThis ?? []).isEmpty, loadingMeta || enriching)
+        set(.moreLikeThis, sectionMoreLikeThis, derivedMeta().hasMoreLikeThis, loadingMeta || enriching)
         set(.comments, sectionComments, !model.comments.isEmpty, false)
         set(.about, aboutSectionEnabled, DetailAboutOverview.hasContent(rows: aboutRows, overview: overview), loadingMeta)
         return DetailSectionAvailability(states: states)
@@ -1703,24 +1707,44 @@ struct DetailView: View {
     /// id; Parental Guide never).
     private var detailFocusFacts: DetailTrailingFocus.Facts {
         var facts = DetailTrailingFocus.Facts()
-        if let meta = model.meta {
-            facts.numberedEpisodes = meta.videos.filter { $0.season != nil || $0.episode != nil }.count
+        let derived = derivedMeta()
+        if model.meta != nil {
             let appleStyle = detailLayoutChoice == .appleStyle
-            let split = appleStyle ? trailerSplit : ([], [])
-            facts.trailers = appleStyle ? split.0.count : meta.trailers.count
-            facts.bonus = appleStyle ? split.1.count : 0
-            facts.moreLikeThis = meta.moreLikeThis.count
-            facts.collection = meta.collectionItems.count
+            facts.numberedEpisodes = derived.hasNumberedEpisodes
+            facts.trailers = appleStyle ? !derived.split.trailers.isEmpty : derived.hasTrailers
+            facts.bonus = appleStyle && !derived.split.bonus.isEmpty
+            facts.moreLikeThis = derived.hasMoreLikeThis
+            facts.collection = derived.hasCollection
         }
-        facts.comments = model.comments.isEmpty ? 0 : min(model.comments.count, DetailCommentsList.maxCards)
-        let credits = creditRowItems
-        facts.castItems = credits.count
-        facts.castWithIds = credits.filter { $0.tmdbId != nil }.count
-        let logos = companyLogos
-        facts.logos = logos.count
-        facts.logosWithIds = logos.filter { $0.company.tmdbId != nil }.count
-        facts.warnings = model.parentalWarnings.count
+        facts.comments = !model.comments.isEmpty
+        facts.castItems = !derived.credits.isEmpty
+        facts.castWithIds = derived.credits.contains { $0.tmdbId != nil }
+        facts.logos = !derived.companies.isEmpty
+        facts.logosWithIds = derived.companies.contains { $0.company.tmdbId != nil }
+        facts.warnings = !model.parentalWarnings.isEmpty
         return facts
+    }
+    /// Review finding B: `model.meta`'s derived values, rebuilt only when the meta object (compared by
+    /// identity: the Kotlin model is immutable) or the layout/debug inputs change.
+    private func derivedMeta() -> DetailMetaDerivedBox {
+        #if DEBUG
+        let castIdsReleased = debugCastIdsReleased
+        #else
+        let castIdsReleased = true
+        #endif
+        metaDerived.refresh(meta: model.meta,
+                            inputs: .init(appleStyle: detailLayoutChoice == .appleStyle,
+                                          castIdsReleased: castIdsReleased)) { meta in
+            DetailMetaDerivedBox.Values(
+                credits: buildCreditRowItems(),
+                companies: buildCompanyLogos(),
+                split: DetailTrailerPartition.split(meta?.trailers ?? []),
+                hasNumberedEpisodes: meta?.videos.contains { $0.season != nil || $0.episode != nil } ?? false,
+                hasTrailers: !(meta?.trailers ?? []).isEmpty,
+                hasMoreLikeThis: !(meta?.moreLikeThis ?? []).isEmpty,
+                hasCollection: !(meta?.collectionItems ?? []).isEmpty)
+        }
+        return metaDerived
     }
     /// Round 1 P2: a stop that held focus when its section gained focus targets is gone this pass;
     /// hand focus to the first person link (or studio chip) from the `onChange` that follows the
@@ -3369,7 +3393,8 @@ struct DetailView: View {
     }
 
     /// A4.4 (C10): the Cast row's cards, cast then crew (`DetailCreditRow`), every layout.
-    private var creditRowItems: [DetailCreditItem] {
+    private var creditRowItems: [DetailCreditItem] { derivedMeta().credits }
+    private func buildCreditRowItems() -> [DetailCreditItem] {
         let items = DetailCreditRow.items(cast: model.meta?.cast ?? [], crew: model.meta?.crew ?? [],
                                           creators: model.meta?.creators ?? [],
                                           actorLimit: detailLayoutChoice == .appleStyle ? Self.appleStyleActorLimit : nil)
@@ -3685,7 +3710,8 @@ struct DetailView: View {
         CompanyChip(company: company, stillFocused: stillFocused)
     }
 
-    private var companyLogos: [(company: MetaCompany, isNetwork: Bool)] {
+    private var companyLogos: [(company: MetaCompany, isNetwork: Bool)] { derivedMeta().companies }
+    private func buildCompanyLogos() -> [(company: MetaCompany, isNetwork: Bool)] {
         guard let meta = model.meta else { return [] }
         var seen = Set<String>()
         let tagged = meta.productionCompanies.map { (company: $0, isNetwork: false) }
@@ -4606,3 +4632,41 @@ private extension View {
     }
 }
 #endif
+
+/// Review finding B: the values `DetailView` derives from `model.meta` and reads several times per
+/// body pass. Rebuilt only when the meta object (identity: Kotlin's model is immutable) or an input
+/// changes; a reference in `@State`, written during the body pass like `DetailTailStopBox`.
+final class DetailMetaDerivedBox {
+    struct Inputs: Equatable {
+        var appleStyle: Bool
+        var castIdsReleased: Bool
+    }
+    struct Values {
+        var credits: [DetailCreditItem] = []
+        var companies: [(company: MetaCompany, isNetwork: Bool)] = []
+        var split: (trailers: [MetaTrailer], bonus: [MetaTrailer]) = ([], [])
+        var hasNumberedEpisodes = false
+        var hasTrailers = false
+        var hasMoreLikeThis = false
+        var hasCollection = false
+    }
+
+    private var meta: MetaDetails?
+    private var inputs: Inputs?
+    private var values = Values()
+
+    var credits: [DetailCreditItem] { values.credits }
+    var companies: [(company: MetaCompany, isNetwork: Bool)] { values.companies }
+    var split: (trailers: [MetaTrailer], bonus: [MetaTrailer]) { values.split }
+    var hasNumberedEpisodes: Bool { values.hasNumberedEpisodes }
+    var hasTrailers: Bool { values.hasTrailers }
+    var hasMoreLikeThis: Bool { values.hasMoreLikeThis }
+    var hasCollection: Bool { values.hasCollection }
+
+    func refresh(meta newMeta: MetaDetails?, inputs newInputs: Inputs, build: (MetaDetails?) -> Values) {
+        if let inputs, inputs == newInputs, meta === newMeta { return }
+        meta = newMeta
+        inputs = newInputs
+        values = build(newMeta)
+    }
+}

@@ -329,26 +329,28 @@ nonisolated enum DetailTrailingFocus {
         case contentless
     }
 
-    /// What each section holds, counted the way its row builder counts it.
+    /// What each section holds, judged the way its row builder judges it. Bools, not counts: only
+    /// "any" matters, and a count over a Kotlin-bridged list allocates the whole Swift array
+    /// (review finding B).
     struct Facts: Equatable {
         /// Videos with a season or episode number (what `EpisodesSection` lists).
-        var numberedEpisodes = 0
-        var trailers = 0
-        var bonus = 0
-        var moreLikeThis = 0
-        var collection = 0
-        var comments = 0
-        var castItems = 0
-        var castWithIds = 0
-        var logos = 0
-        var logosWithIds = 0
-        var warnings = 0
+        var numberedEpisodes = false
+        var trailers = false
+        var bonus = false
+        var moreLikeThis = false
+        var collection = false
+        var comments = false
+        var castItems = false
+        var castWithIds = false
+        var logos = false
+        var logosWithIds = false
+        var warnings = false
     }
 
     /// Data-driven: a section is focusable only if it has a focusable item (round 1 P2: a series
     /// with no numbered videos has an Episodes section with no focus target).
     static func kind(of section: DetailSection, facts: Facts) -> Kind {
-        func list(_ count: Int) -> Kind { count > 0 ? .focusable : .contentless }
+        func list(_ any: Bool) -> Kind { any ? .focusable : .contentless }
         switch section {
         case .hero, .about: return .focusable
         case .episodes: return list(facts.numberedEpisodes)
@@ -358,10 +360,10 @@ nonisolated enum DetailTrailingFocus {
         case .collection: return list(facts.collection)
         case .comments: return list(facts.comments)
         case .castAndCrew:
-            return facts.castItems == 0 ? .contentless : (facts.castWithIds > 0 ? .focusable : .inert)
+            return !facts.castItems ? .contentless : (facts.castWithIds ? .focusable : .inert)
         case .companies:
-            return facts.logos == 0 ? .contentless : (facts.logosWithIds > 0 ? .focusable : .inert)
-        case .parentalGuide: return facts.warnings > 0 ? .inert : .contentless
+            return !facts.logos ? .contentless : (facts.logosWithIds ? .focusable : .inert)
+        case .parentalGuide: return facts.warnings ? .inert : .contentless
         }
     }
 

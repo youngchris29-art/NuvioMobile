@@ -309,8 +309,9 @@ final class DetailTrailingFocusTests: XCTestCase {
     }
 
     func testFilledSectionsAreFocusableExceptTheInertOnes() {
-        var f = Facts(numberedEpisodes: 3, trailers: 1, bonus: 1, moreLikeThis: 5, collection: 2, comments: 4,
-                      castItems: 4, castWithIds: 0, logos: 2, logosWithIds: 0, warnings: 3)
+        var f = Facts(numberedEpisodes: true, trailers: true, bonus: true, moreLikeThis: true, collection: true,
+                      comments: true, castItems: true, castWithIds: false, logos: true, logosWithIds: false,
+                      warnings: true)
         XCTAssertEqual(DetailTrailingFocus.kind(of: .episodes, facts: f), .focusable)
         XCTAssertEqual(DetailTrailingFocus.kind(of: .trailers, facts: f), .focusable)
         XCTAssertEqual(DetailTrailingFocus.kind(of: .bonus, facts: f), .focusable)
@@ -320,8 +321,8 @@ final class DetailTrailingFocusTests: XCTestCase {
         XCTAssertEqual(DetailTrailingFocus.kind(of: .castAndCrew, facts: f), .inert)
         XCTAssertEqual(DetailTrailingFocus.kind(of: .companies, facts: f), .inert)
         XCTAssertEqual(DetailTrailingFocus.kind(of: .parentalGuide, facts: f), .inert)
-        f.castWithIds = 1
-        f.logosWithIds = 1
+        f.castWithIds = true
+        f.logosWithIds = true
         XCTAssertEqual(DetailTrailingFocus.kind(of: .castAndCrew, facts: f), .focusable)
         XCTAssertEqual(DetailTrailingFocus.kind(of: .companies, facts: f), .focusable)
     }
@@ -335,11 +336,11 @@ final class DetailTrailingFocusTests: XCTestCase {
                 availability: DetailSectionAvailability(states: ready([.parentalGuide, .episodes])))
             XCTAssertEqual(sections, [.hero, .parentalGuide, .episodes], "\(layout)")
             let empty = DetailTrailingFocus.tailStops(sections: sections, pendingOrHeld: [],
-                                                      facts: Facts(numberedEpisodes: 0, warnings: 2))
+                                                      facts: Facts(numberedEpisodes: false, warnings: true))
             XCTAssertEqual(empty, [.parentalGuide], "\(layout)")
             // With real episodes the scan stops at Episodes: nothing changes.
             let full = DetailTrailingFocus.tailStops(sections: sections, pendingOrHeld: [],
-                                                     facts: Facts(numberedEpisodes: 6, warnings: 2))
+                                                     facts: Facts(numberedEpisodes: true, warnings: true))
             XCTAssertEqual(full, [], "\(layout)")
         }
     }
@@ -353,12 +354,12 @@ final class DetailTrailingFocusTests: XCTestCase {
         ]
         for (empty, order) in layoutCases {
             let stops = DetailTrailingFocus.tailStops(sections: [.hero] + order, pendingOrHeld: [],
-                                                      facts: Facts(warnings: 1))
+                                                      facts: Facts(warnings: true))
             XCTAssertEqual(stops, [.parentalGuide], "\(empty)")
         }
         // Bonus (Apple-style): Parental Guide above an empty Bonus.
         let bonus = DetailTrailingFocus.tailStops(sections: [.hero, .parentalGuide, .bonus], pendingOrHeld: [],
-                                                  facts: Facts(warnings: 1))
+                                                  facts: Facts(warnings: true))
         XCTAssertEqual(bonus, [.parentalGuide])
     }
 
