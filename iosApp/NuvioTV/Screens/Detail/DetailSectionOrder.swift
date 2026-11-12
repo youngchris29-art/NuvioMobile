@@ -305,6 +305,10 @@ nonisolated enum DetailTrailingFocus {
     /// ~0.4 s apart, so a stop is never held for more than a couple of seconds.
     static let maxScrollAttempts = 4
 
+    /// Whether a scroll action taken as attempt `attempt` (0-based) actually scrolls: the attempt after
+    /// the last one is a wait for the last scroll's cards, then the stop is dropped.
+    static func issuesScroll(attempt: Int) -> Bool { attempt < maxScrollAttempts }
+
     /// What `resolve` decided for one body pass.
     struct Resolution: Equatable {
         /// The sections that are a tail stop this pass.
@@ -334,8 +338,9 @@ nonisolated enum DetailTrailingFocus {
     ///
     /// Review round 2 (finding 1): when no link card is realized (`targetRealized` false) the stop is
     /// held with a SCROLL action instead, so focus stays in the row while it moves toward the first
-    /// link; `scrollAttempts` (the attempts already made) bounds this: at `maxScrollAttempts` the stop
-    /// is dropped as before. Leaving the row, or the section losing its targets, ends the hold at once.
+    /// link; `scrollAttempts` (the attempts already made) bounds this: the stop is held for one more
+    /// check pass after the last issued scroll (`scrollAttempts == maxScrollAttempts`, whose pass
+    /// issues no scroll, see `issuesScroll`) and dropped once past it, so every issued scroll is checked. Leaving the row, or the section losing its targets, ends the hold at once.
     static func resolve(tail: Set<DetailSection>, previous: Set<DetailSection>, focused: DetailSection?,
                         hasOwnTargets: (DetailSection) -> Bool,
                         linkFocused: (DetailSection) -> Bool = { _ in false },
@@ -346,7 +351,7 @@ nonisolated enum DetailTrailingFocus {
         guard hasOwnTargets(focused) else { return Resolution(stops: tail.union([focused]), handoff: nil, action: nil) }
         if linkFocused(focused) || previousHandoff == focused { return Resolution(stops: tail, handoff: nil, action: nil) }
         if targetRealized(focused) { return Resolution(stops: tail.union([focused]), handoff: focused, action: .assign) }
-        if scrollAttempts >= maxScrollAttempts { return Resolution(stops: tail, handoff: nil, action: nil) }
+        if scrollAttempts > maxScrollAttempts { return Resolution(stops: tail, handoff: nil, action: nil) }
         return Resolution(stops: tail.union([focused]), handoff: focused, action: .scroll)
     }
 
@@ -451,8 +456,9 @@ final class DetailTailStopBox {
     /// Scroll attempts made for the current hold (counted when `performTailHandoff` consumes a scroll
     /// action, not per body pass: unrelated re-renders must not use them up). Reset when no hold is active.
     private(set) var scrollAttempts = 0
-    /// True once the latest `resolve`'s action was taken (the action stays readable for the next
-    /// `resolve`'s one-pass rule).
+    /// True once the latest `resolve`'s action was taken (focus assignment issued). An assign counts
+    /// as the previous hand-off for the next `resolve`'s one-pass rule only once taken: an assign no
+    /// `performTailHandoff` picked up stays an assign on the next pass instead of being dropped.
     private var taken = false
 
     func resolve(sections: [DetailSection], contentless: Set<DetailSection>, focused: DetailSection?,
@@ -463,7 +469,7 @@ final class DetailTailStopBox {
                                                  hasOwnStop: hasOwnStop)
         let result = DetailTrailingFocus.resolve(tail: tail, previous: stops, focused: focused,
                                                  hasOwnTargets: hasOwnStop, linkFocused: linkFocused,
-                                                 previousHandoff: action == .assign ? handoff : nil,
+                                                 previousHandoff: (action == .assign && taken) ? handoff : nil,
                                                  targetRealized: targetRealized, scrollAttempts: scrollAttempts)
         stops = result.stops
         handoff = result.handoff

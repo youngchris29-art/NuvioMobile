@@ -1809,7 +1809,7 @@ struct DetailView: View {
             #if DEBUG
             if DetailFocusProbe.enabled { print("[BUG244] handoff scroll index=\(index) x=\(Int(x)) realized=\(realizedCastKeys.keys.count)") }
             #endif
-            castRailBox.position = ScrollPosition(x: x, y: 0)
+            if DetailTrailingFocus.issuesScroll(attempt: pending.attempt) { castRailBox.position = ScrollPosition(x: x, y: 0) }
             tailScrollTick &+= 1
             return
         }

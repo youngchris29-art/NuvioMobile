@@ -308,6 +308,7 @@ final class DetailTrailingFocusTests: XCTestCase {
         pass()
         XCTAssertEqual(box.handoff, .castAndCrew)
         XCTAssertEqual(box.stops, [.castAndCrew, .parentalGuide], "held once")
+        XCTAssertEqual(box.takeAction()?.action, .assign)
         pass()   // focus never reached a link
         XCTAssertNil(box.handoff, "no retry")
         XCTAssertEqual(box.stops, [.parentalGuide], "then dropped")
@@ -350,14 +351,14 @@ final class DetailTrailingFocusTests: XCTestCase {
                                         linkFocused: { _ in linkFocused }, targetRealized: { _ in realized },
                                         scrollAttempts: attempts)
         }
-        for attempts in 0..<DetailTrailingFocus.maxScrollAttempts {
+        for attempts in 0...DetailTrailingFocus.maxScrollAttempts {
             let held = resolve(attempts: attempts, realized: false)
             XCTAssertEqual(held.stops, [.castAndCrew, .parentalGuide], "attempt \(attempts): the stop is held")
             XCTAssertEqual(held.handoff, .castAndCrew)
             XCTAssertEqual(held.action, .scroll)
         }
-        // The attempts are used up and the card never appeared: dropped, as before.
-        let spent = resolve(attempts: DetailTrailingFocus.maxScrollAttempts, realized: false)
+        // The last scroll was checked too and the card never appeared: dropped, as before.
+        let spent = resolve(attempts: DetailTrailingFocus.maxScrollAttempts + 1, realized: false)
         XCTAssertEqual(spent.stops, [.parentalGuide])
         XCTAssertNil(spent.handoff)
         XCTAssertNil(spent.action)
@@ -406,6 +407,13 @@ final class DetailTrailingFocusTests: XCTestCase {
             XCTAssertEqual(taken?.attempt, attempt)
             XCTAssertNil(box.takeAction(), "an action runs once per pass")
         }
+        // Every issued scroll gets one check: the pass after the 4th scroll still holds (a wait that
+        // scrolls nothing), and only the check after that drops the stop.
+        pass()
+        XCTAssertEqual(box.action, .scroll)
+        let wait = box.takeAction()
+        XCTAssertEqual(wait?.attempt, DetailTrailingFocus.maxScrollAttempts)
+        XCTAssertFalse(DetailTrailingFocus.issuesScroll(attempt: wait?.attempt ?? 0), "no scroll right before the drop")
         pass()
         XCTAssertNil(box.action, "the card never appeared: the hold is over")
         XCTAssertEqual(box.stops, [.parentalGuide], "and the stop is dropped, never stuck")
@@ -422,6 +430,29 @@ final class DetailTrailingFocusTests: XCTestCase {
         pass()
         XCTAssertNil(box.action, "no retry after an assign")
         XCTAssertEqual(box.stops, [.parentalGuide])
+    }
+
+    /// An assign nobody took (an unrelated body pass resolved it) is not the previous hand-off: the
+    /// next pass resolves it again and the stop stays held; once taken, the next pass drops it.
+    func testUntakenAssignSurvivesTheNextPassAndTakenOneDrops() {
+        let box = DetailTailStopBox()
+        var castIds = false
+        let own: (DetailSection) -> Bool = { $0 == .castAndCrew ? castIds : $0 != .parentalGuide }
+        let sections: [DetailSection] = [.hero, .castAndCrew, .parentalGuide]
+        func pass() { _ = box.resolve(sections: sections, contentless: [], focused: .castAndCrew, hasOwnStop: own,
+                                       linkFocused: { _ in false }, targetRealized: { _ in true }) }
+        pass()
+        castIds = true
+        pass()
+        XCTAssertEqual(box.action, .assign)
+        pass()   // not taken
+        XCTAssertEqual(box.action, .assign, "still an assign")
+        XCTAssertEqual(box.stops, [.castAndCrew, .parentalGuide], "stop still held")
+        pass()
+        XCTAssertEqual(box.takeAction()?.action, .assign)
+        pass()
+        XCTAssertNil(box.action)
+        XCTAssertEqual(box.stops, [.parentalGuide], "dropped one pass after taken")
     }
 
     func testScrollOffsetIsAColumnBeforeTheCardAndSweepsOnLaterAttempts() {
