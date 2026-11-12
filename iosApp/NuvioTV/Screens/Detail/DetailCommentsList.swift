@@ -125,20 +125,51 @@ struct DetailCommentsList: View, Equatable {
     static func bump() { count += 1 }
 }
 
-/// BUG-244 probe: a leaf inside a comment card that exists only while the card is focused, so a UI
-/// leg can read WHICH card holds focus (the tvOS runtime never reports `hasFocus`). It reads its own
-/// `isFocused` environment, so the card's body does not depend on focus.
+/// BUG-244 probe: the Comments section's laid-out bottom edge in global (screen) space, written by
+/// `DetailCommentsSectionEndProbe` (a plain static, never observed).
+@MainActor enum DetailCommentsProbe {
+    static var sectionBottom: CGFloat = 0
+}
+
+/// A zero-size leaf at the bottom of the Comments section (under the "From Trakt" caption).
+struct DetailCommentsSectionEndProbe: View {
+    var body: some View {
+        Color.clear
+            .frame(height: 1)
+            .allowsHitTesting(false)
+            .onGeometryChange(for: CGFloat.self, of: { $0.frame(in: .global).maxY }) { DetailCommentsProbe.sectionBottom = $0 }
+    }
+}
+
+/// BUG-244 probe: a leaf inside a comment card, drawn over it (no layout). While the card is focused
+/// it shows `debug_comment_focus <index> y0=<card top> y1=<card bottom> sb=<section bottom>` in
+/// global (screen) points, so a UI leg can read WHICH card holds focus (the tvOS runtime never
+/// reports `hasFocus`) and where the page really is: the page's own scroll sample is published only
+/// when the focused ROW changes, so it is stale for moves between cards. It reads its own
+/// `isFocused` environment and keeps its own state, so neither the card nor the list re-runs.
 struct DetailCommentFocusMarker: View {
     let index: Int
     @Environment(\.isFocused) private var isFocused
+    @State private var frame: CGRect = .zero
+    @State private var sectionBottom: CGFloat = 0
 
     var body: some View {
-        if isFocused {
-            Text(verbatim: "debug_comment_focus \(index)")
-                .font(.system(size: 8))
-                .opacity(0.011)
-                .accessibilityIdentifier("debug_comment_focus")
+        ZStack {
+            Color.clear
+                .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { frame = $0 }
+                .task(id: frame) {
+                    // The section end moves in step with the card; read it once the card has settled.
+                    try? await Task.sleep(nanoseconds: 400_000_000)
+                    sectionBottom = DetailCommentsProbe.sectionBottom
+                }
+            if isFocused {
+                Text(verbatim: "debug_comment_focus \(index) y0=\(Int(frame.minY)) y1=\(Int(frame.maxY)) sb=\(Int(sectionBottom))")
+                    .font(.system(size: 8))
+                    .opacity(0.011)
+                    .accessibilityIdentifier("debug_comment_focus")
+            }
         }
+        .allowsHitTesting(false)
     }
 }
 #endif

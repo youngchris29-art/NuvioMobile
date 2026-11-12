@@ -3734,6 +3734,12 @@ struct DetailView: View {
                     .font(Theme.Font.caption)
                     .foregroundStyle(Theme.Palette.textSecondary)
             }
+            #if DEBUG
+            // BUG-244 probe: the section's bottom edge in screen space (`DetailCommentFocusMarker`).
+            .overlay(alignment: .bottom) {
+                if DetailScrollProbe.enabled { DetailCommentsSectionEndProbe() }
+            }
+            #endif
             .frame(maxWidth: 1100, alignment: .leading)
             // Section full-width (content still capped at 1100): comments are the last row, and
             // Down from a card right of 1100 pt found nothing.
