@@ -791,7 +791,11 @@ final class DetailRowAnchorTests: XCTestCase {
                          ("moreLikeThis", 2269)],
     ]
 
-    private func baselineWalk(layout: String, tmdb: Bool, sections: [String: Bool], tag: String) throws {
+    /// `tolerance`: Cinematic and Apple-style repeat to within 2 pt; Classic's mid-page rests wander by up
+    /// to ~14 pt between identical runs (episodes 567-574, cast 1414-1420, trailers 2245-2259 on this
+    /// clone, base commit measured once), so it gets 16 pt. The focus sequence is exact in all three.
+    private func baselineWalk(layout: String, tmdb: Bool, sections: [String: Bool], tag: String,
+                              tolerance: Double = 2) throws {
         guard let app = launchWalk(Self.severance, layout: layout, tmdb: tmdb, sections: sections) else { return }
         guard let r = walkDownToEnd(app, tag: tag) else { return }
         attachWalk(tag, r)
@@ -808,7 +812,7 @@ final class DetailRowAnchorTests: XCTestCase {
         XCTAssertEqual(seq.map(\.row), want.map(\.row), "\(tag) focus sequence differs from the base commit — \(seq)")
         if seq.count == want.count {
             for (got, exp) in zip(seq, want) {
-                XCTAssertEqual(got.off, exp.off, accuracy: 2, "\(tag) offset at \(got.row) differs from the base commit — \(seq)")
+                XCTAssertEqual(got.off, exp.off, accuracy: tolerance, "\(tag) offset at \(got.row) differs from the base commit — \(seq)")
             }
         }
     }
@@ -825,6 +829,6 @@ final class DetailRowAnchorTests: XCTestCase {
     func testBaselineWalkClassic() throws {
         var s = Self.everySection
         s["comments"] = false
-        try baselineWalk(layout: "classic", tmdb: true, sections: s, tag: "base-classic")
+        try baselineWalk(layout: "classic", tmdb: true, sections: s, tag: "base-classic", tolerance: 16)
     }
 }
