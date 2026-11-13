@@ -874,25 +874,29 @@ final class HomeWatchlistRowUITests: XCTestCase {
             XCTFail("the rail never finished its exit (armed=0 focused=-1 gated=0, own=\(c1) for 0.6 s): '\(label(app, "debug_homeReturn"))' | '\(railState(app))'")
             throw HarnessAbort("rail exit never settled")
         }
-        var upPresses = 1
-        remote.press(.up)
-        if !poll(2.0, step: 0.1, { own(app) == "-" && label(app, "debug_homeReturn").contains("ret=own hero") }) {
-            upPresses = 2
-            remote.press(.up)
-            if !poll(2.0, step: 0.1, { own(app) == "-" && label(app, "debug_homeReturn").contains("ret=own hero") }) {
-                let readouts = "'\(label(app, "debug_homeReturn"))' | '\(railState(app))'"
-                note("late_watchlist_rail_up", "Up pressed twice, focus never reached the hero from \(c1): \(readouts)")
-                XCTFail("Up did not reach the hero from \(c1) (pressed twice): \(readouts)")
-                throw HarnessAbort("Up did not move focus")
-            }
+        func onHero() -> Bool {
+            let l = label(app, "debug_homeReturn")
+            return own(app) == "-" && (l.contains("ret=own hero") || l.contains("ret=up press own=hero"))
         }
-        print("[leg25] up presses needed: \(upPresses)")
-        note("late_watchlist_rail_up", "up presses needed: \(upPresses)")
+        func landed() -> Bool {
+            let w = label(app, "debug_homeWatchlist")
+            return (Self.int(w, "n") ?? 0) > 0 && Self.token(w, "held") == "0"
+        }
+        if landed() {   // released during the rail exit (the best-effort edge)
+            print("[leg25] released-during-rail-exit")
+            note("late_watchlist_rail", "released-during-rail-exit: \(label(app, "debug_homeReturn"))")
+            let o = own(app)
+            XCTAssertTrue(o == c1 || Self.topKeys.contains(o), "focus lost after an early release: '\(label(app, "debug_homeReturn"))'")
+            try requireWatchlistSeed(app)
+            return
+        }
+        remote.press(.up)
+        XCTAssertTrue(poll(2.0, step: 0.1) { onHero() || landed() }, "Up from \(c1) did not reach the hero: '\(label(app, "debug_homeReturn"))'")
         XCTAssertFalse(own(app) != "-" && !Self.topKeys.contains(own(app)), "Up from \(c1) reached another catalog row: c1 was not the first catalog row: '\(label(app, "debug_homeReturn"))'")
-        let landed = poll(5, step: 0.25) { (Self.int(label(app, "debug_homeWatchlist"), "n") ?? 0) > 0 && Self.token(label(app, "debug_homeWatchlist"), "held") == "0" }
+        let ok = poll(5, step: 0.25) { landed() }
         let landedReadouts = "\(label(app, "debug_homeWatchlist")) | \(label(app, "debug_homeReturn")) | \(railState(app))"
         note("late_watchlist_rail", landedReadouts)
-        XCTAssertTrue(landed, "the held Watchlist lands once focus leaves the catalog row: \(landedReadouts)")
+        XCTAssertTrue(ok, "the held Watchlist lands once focus leaves the catalog row: \(landedReadouts)")
         try requireWatchlistSeed(app)
         shot("classic_late_watchlist_rail")
     }
