@@ -296,9 +296,10 @@ final class HomeViewModel: ObservableObject {
     private var homeSurfaceCovered = false
     /// W3 r1: a Home row view has appeared in this pipeline run (reset with the hero commit state).
     private var homeRowDrawnThisRun = false
-    /// §16: HomeView's answer to "would the Watchlist row appearing or leaving now slide the row the
-    /// viewer is on out of the pane?" (Classic only; nil until HomeView installs it, never held then).
-    var watchlistPresenceChangeBlocked: (@MainActor () -> Bool)?
+    /// §17: the live HomeView's row actions, for the Watchlist hold's question. WEAK: the model outlives
+    /// the view (`ContentView` owns it); a strong closure here retained the dead view's state. nil (no
+    /// Home mounted, or Stage before any Classic mount) = never held.
+    weak var watchlistHoldSource: HomeRowActions?
     /// §16: a held appearance (removals are never held, 16.3.0). Not published.
     private var heldWatchlistSection: HomeCatalogSection?
     private var heldWatchlistCheckToken = 0
@@ -1306,7 +1307,7 @@ final class HomeViewModel: ObservableObject {
     private func publishWatchlistSection(_ next: HomeCatalogSection?) {
         if let next, HomeWatchlistPresenceHold.holds(currentPresent: watchlistSection != nil,
                                                      nextPresent: true,
-                                                     blocked: watchlistPresenceChangeBlocked?() == true) {
+                                                     blocked: watchlistHoldSource?.watchlistAppearanceBlocked() == true) {
             let wasHeld = heldWatchlistSection != nil
             heldWatchlistSection = next
             #if DEBUG
@@ -1326,7 +1327,7 @@ final class HomeViewModel: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.heldWatchlistRecheckSeconds) { [weak self] in
             guard let self, token == self.heldWatchlistCheckToken, gen == self.pipelineGeneration,
                   let held = self.heldWatchlistSection else { return }
-            if self.watchlistPresenceChangeBlocked?() == true {
+            if self.watchlistHoldSource?.watchlistAppearanceBlocked() == true {
                 self.scheduleHeldWatchlistCheck()
                 return
             }
@@ -1810,6 +1811,30 @@ final class HomeViewModel: ObservableObject {
 nonisolated enum HomeWatchlistPresenceHold {
     static func holds(currentPresent: Bool, nextPresent: Bool, blocked: Bool) -> Bool {
         !currentPresent && nextPresent && blocked
+    }
+
+    /// §17: the row focus is on, or will come back to, for the hold. nil = no row to protect.
+    /// `owned` wins; then the rail's return target while the rail holds focus (`.hero`/nil = none);
+    /// then, while Home is covered, the last owned row; then, within `hopWindow` of a row release, the
+    /// row being left (a hop between rows passes through nil).
+    static let hopWindow: TimeInterval = 0.5
+
+    static func returnRowKey(owned: String?, railFocused: Bool, railTarget: HomeRailReturnTarget?,
+                             covered: Bool, lastOwned: String?, sinceRowRelease: TimeInterval?) -> String? {
+        if let owned { return owned }
+        if railFocused {
+            if case .row(let key)? = railTarget { return key }
+            return nil
+        }
+        if covered { return lastOwned }
+        if let since = sinceRowRelease, since < hopWindow { return lastOwned }
+        return nil
+    }
+
+    /// Continue Watching sits above the slot and the Watchlist is the slot; every other row is below.
+    static func isBelowSlot(_ key: String?) -> Bool {
+        guard let key else { return false }
+        return key != HomeTopRowKey.continueWatching && key != HomeTopRowKey.watchlist
     }
 }
 

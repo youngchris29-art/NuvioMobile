@@ -646,33 +646,27 @@ struct HomeView: View {
         actions.catalogRowAppeared = { model.rowAppeared(sectionKey: $0) }
         actions.collectionRowAppeared = { prefetchCollectionHeroArt($0) }
         actions.rowDrawn = { model.noteHomeRowDrawn() }
-        // §16: hold a Watchlist row APPEARING while focus is (or will return) below its slot. The model
-        // asks only for an appearance; removals never wait (16.3.0).
-        model.watchlistPresenceChangeBlocked = { classicFocusBelowWatchlistSlot() }
+        // §16/§17: the Watchlist hold's question, on the view-owned actions like every other row callback.
+        actions.watchlistAppearanceBlocked = { classicFocusBelowWatchlistSlot() }
     }
 
-    /// §16: whether a Watchlist row appearing now would slide the viewer's row out of the pane (asked
-    /// for appearances only). The row that owns focus; while Home is covered, the row focus comes back
-    /// to (the pop restore does not scroll, 16.3.0 point 2); within
-    /// `watchlistHoldHopWindow` of a row release, the row being left (a hop between rows passes
-    /// through nil). Continue Watching sits above the slot and the Watchlist is the slot. Classic only.
+    /// §16/§17: whether a Watchlist row appearing now would slide the viewer's row out of the pane (asked
+    /// for appearances only). The row that owns focus; while the rail holds focus, its return target
+    /// (`classicRailRoute`; `.hero`/nil = none); while Home is covered, the last owned row (the pop
+    /// restore does not scroll, 16.3.0 point 2); within `HomeWatchlistPresenceHold.hopWindow` of a row
+    /// release, the row being left. Continue Watching sits above the slot and the Watchlist is the
+    /// slot. Classic only. `navigationChrome` is read at call time, never a body dependency.
     private func classicFocusBelowWatchlistSlot() -> Bool {
         guard !isStageLayout else { return false }
-        let key: String?
-        if let owned = focusedRowKey {
-            key = owned
-        } else if !homePath.isEmpty || resume != nil || tabBarVisibility.homeSurfaceCovered {
-            key = upInput.lastOwnedRowKey
-        } else if let released = upInput.lastRowReleasedAt,
-                  ProcessInfo.processInfo.systemUptime - released < Self.watchlistHoldHopWindow {
-            key = upInput.lastOwnedRowKey
-        } else {
-            key = nil
-        }
-        guard let key else { return false }
-        return key != HomeTopRowKey.continueWatching && key != HomeTopRowKey.watchlist
+        let key = HomeWatchlistPresenceHold.returnRowKey(
+            owned: focusedRowKey,
+            railFocused: navigationChrome.isFocusedChrome,
+            railTarget: upInput.railReturnTarget,
+            covered: !homePath.isEmpty || resume != nil || tabBarVisibility.homeSurfaceCovered,
+            lastOwned: upInput.lastOwnedRowKey,
+            sinceRowRelease: upInput.lastRowReleasedAt.map { ProcessInfo.processInfo.systemUptime - $0 })
+        return HomeWatchlistPresenceHold.isBelowSlot(key)
     }
-    private static let watchlistHoldHopWindow: TimeInterval = 0.5
 
     /// A collection row's folder focus (formerly the row's inline `onFolderFocusChange` closure).
     private func handleFolderFocus(collection: NuvioCollection, folder: CollectionFolder?) {
@@ -1398,6 +1392,7 @@ struct HomeView: View {
             // incoming subtree BEFORE removing the outgoing one, so this runs while the previous
             // HomeView still holds the model — the count goes 1 → 2 → 1 and the pipeline never
             // stops, restarts, or republishes.
+            model.watchlistHoldSource = rowActions
             model.acquire()
             if upcomingRowEnabled { model.startUpcoming() }
             if watchlistRowEnabled { model.startWatchlist() }
@@ -1475,6 +1470,7 @@ struct HomeView: View {
             // the incoming view has already retained the model so the pipeline stays up. Profile
             // exit / sign-out is NOT handled here any more: `ContentView` hard-stops the model
             // there, because it now outlives this view.
+            if model.watchlistHoldSource === rowActions { model.watchlistHoldSource = nil }
             model.release()
             heroSettings.stop()
         }

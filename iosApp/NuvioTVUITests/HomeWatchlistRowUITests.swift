@@ -800,4 +800,59 @@ final class HomeWatchlistRowUITests: XCTestCase {
         note("late_watchlist_c1", "\(label(app, "debug_homeWatchlist")) | \(label(app, "debug_homeReturn"))")
         shot("classic_late_watchlist_c1")
     }
+
+    // MARK: - Test 25 (Classic: a late Watchlist stays held while the rail holds focus)
+
+    private func railState(_ app: XCUIApplication) -> String { label(app, "rail_state") }
+    private func railExpanded(_ app: XCUIApplication) -> Bool { Self.token(railState(app), "expanded") == "1" }
+
+    /// §17: the rail's return row is below the slot, so the hold keeps the Watchlist back while the
+    /// viewer sits in the rail; Right returns to the same row, then Up lands the held row.
+    func testClassic_LateWatchlistHeldWhileRailHoldsFocus() throws {
+        let app = launch(["-home_layout", "classic", "-hero_nuvio_style", "YES", "-inline_trailers_enabled", "NO",
+                          "-hero_trailer_autoplay", "NO", "-sidebar_style", "rail", "-rail_visibility", "always",
+                          "-discover_placement", "off", "-debug.homeScrollProbe", "YES",
+                          "-home_upcoming_row_enabled", "NO",
+                          "-debug.homeWatchlistSeedJsonB64", Self.wlSeed,
+                          "-debug.homeWatchlistSeedDelayMs", "30000"], settle: 4)
+        guard poll(30, step: 0.5, { !label(app, "debug_homeReturn").isEmpty && !railState(app).isEmpty }) else {
+            throw HarnessAbort("readouts never appeared (rail mounted?)")
+        }
+        var c1 = "-"
+        for _ in 0..<4 {
+            c1 = classicStep(app, .down)
+            if c1 != "-" && !Self.topKeys.contains(c1) { break }
+        }
+        guard c1 != "-", !Self.topKeys.contains(c1) else {
+            XCTFail("focus never reached a catalog row (own=\(own(app))): '\(label(app, "debug_homeReturn"))'")
+            throw HarnessAbort("focus never reached a catalog row")
+        }
+        XCTAssertEqual(Self.int(label(app, "debug_homeWatchlist"), "n"), 0, "the delay elapsed before focus reached the catalog row: '\(label(app, "debug_homeWatchlist"))'")
+        for _ in 0..<6 where !railExpanded(app) {
+            remote.press(.left)
+            pause(0.8)
+        }
+        guard railExpanded(app) else {
+            XCTFail("Left from the row's first card never opened the rail: \(railState(app))")
+            throw HarnessAbort("rail never opened")
+        }
+        guard poll(45, step: 0.5, { Self.token(label(app, "debug_homeWatchlist"), "held") == "1" }) else {
+            XCTFail("the late Watchlist was never held: '\(label(app, "debug_homeWatchlist"))'")
+            throw HarnessAbort("no held Watchlist")
+        }
+        pause(1.5)
+        let line = label(app, "debug_homeWatchlist")
+        XCTAssertEqual(Self.int(line, "n"), 0, "the rail's return row is below the slot: the Watchlist stays held: '\(line)'")
+        XCTAssertEqual(Self.token(line, "held"), "1", "still held in the rail: '\(line)'")
+        remote.press(.right)
+        XCTAssertTrue(poll(2.0) { !railExpanded(app) }, "Right closes the rail: \(railState(app))")
+        XCTAssertTrue(poll(3.0) { own(app) == c1 }, "Right returns to \(c1): '\(label(app, "debug_homeReturn"))'")
+        XCTAssertEqual(Self.int(label(app, "debug_homeWatchlist"), "n"), 0, "the held row is not inserted after the return")
+        remote.press(.up)
+        XCTAssertTrue(poll(5, step: 0.25) { (Self.int(label(app, "debug_homeWatchlist"), "n") ?? 0) > 0 },
+                      "the held Watchlist lands once focus leaves the catalog row: '\(label(app, "debug_homeWatchlist"))'")
+        try requireWatchlistSeed(app)
+        note("late_watchlist_rail", "\(label(app, "debug_homeWatchlist")) | \(label(app, "debug_homeReturn")) | \(railState(app))")
+        shot("classic_late_watchlist_rail")
+    }
 }

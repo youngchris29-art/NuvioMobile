@@ -39,6 +39,9 @@ final class HomeRowActions {
     var collectionRowAppeared: (NuvioCollection) -> Void = { _ in }
     /// W3 r1: any Home row mounted (`HomeViewModel.noteHomeRowDrawn`, the Watchlist pull's release).
     var rowDrawn: () -> Void = {}
+    /// §17: whether a Watchlist row appearing now would slide the viewer's row out of the pane
+    /// (`HomeView.classicFocusBelowWatchlistSlot`). The model holds this object weakly.
+    var watchlistAppearanceBlocked: () -> Bool = { false }
 
 
     /// Continue Watching › Remove. An Up Next card is dismissed (synced with the phone); a
