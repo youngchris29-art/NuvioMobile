@@ -7,6 +7,7 @@ import com.nuvio.app.features.tracking.TrackingLibraryTabKind
 import com.nuvio.app.features.tracking.TrackingProviderId
 import com.nuvio.app.features.watchprogress.WatchProgressEntry
 import com.nuvio.app.features.watchprogress.WatchProgressSourceNextUp
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.emptyFlow
@@ -473,9 +474,11 @@ class LibraryProviderRowsTest {
         connected: Flow<Set<TrackingProviderId>>,
         lists: List<LibraryProviderWatchlist>,
         requests: MutableList<Set<TrackingProviderId>> = mutableListOf(),
+        profiles: Flow<Int> = MutableStateFlow(1),
     ) = libraryWatchlistFlow(
         connectedProviderIds = connected,
-        watchlists = { ids ->
+        activeProfileIds = profiles,
+        watchlists = { ids, _ ->
             requests += ids
             flowOf(lists)
         },
@@ -668,5 +671,122 @@ class LibraryProviderRowsTest {
             homeWatchlistRowSection("Watchlist", items),
             homeWatchlistRowSectionOf("Watchlist", items.map(LibraryItem::toMetaPreview)),
         )
+    }
+
+    @Test
+    fun homeWatchlistEmptiesAtOnceOnASameProviderProfileSwitch() = runTest {
+        val connected = MutableStateFlow(setOf(trakt))
+        val profiles = MutableStateFlow(1)
+        val requests = mutableListOf<Pair<Set<TrackingProviderId>, Int>>()
+        val emissions = mutableListOf<HomeWatchlistRow>()
+        val job = launch(UnconfinedTestDispatcher(testScheduler)) {
+            libraryWatchlistFlow(
+                connectedProviderIds = connected,
+                activeProfileIds = profiles,
+                watchlists = { ids, p ->
+                    requests += ids to p
+                    flowOf(listOf(watchlist(trakt, item("p$p", addedAt = 1))))
+                },
+            ).toList(emissions)
+        }
+        profiles.value = 2
+        job.cancel()
+        assertEquals(listOf(listOf("p1"), emptyList(), listOf("p2")), emissions.map { r -> r.items.map { it.id } })
+        assertEquals(listOf(setOf(trakt) to 1, setOf(trakt) to 2), requests)
+    }
+
+    @Test
+    fun homeWatchlistDoesNotBlankOnAProviderChangeWithinAProfile() = runTest {
+        val connected = MutableStateFlow(setOf(trakt))
+        val emissions = mutableListOf<HomeWatchlistRow>()
+        val job = launch(UnconfinedTestDispatcher(testScheduler)) {
+            libraryWatchlistFlow(
+                connectedProviderIds = connected,
+                activeProfileIds = MutableStateFlow(1),
+                watchlists = { ids, _ ->
+                    val lists = mutableListOf(watchlist(trakt, item("t1", addedAt = 1)))
+                    if (simkl in ids) lists += watchlist(simkl, item("s1", addedAt = 2))
+                    flowOf(lists)
+                },
+            ).toList(emissions)
+        }
+        connected.value = setOf(trakt, simkl)
+        job.cancel()
+        assertEquals(listOf(listOf("t1"), listOf("s1", "t1")), emissions.map { r -> r.items.map { it.id } })
+    }
+
+    @Test
+    fun homeWatchlistHoldDuringTheMainHopRevokesThePull() = runTest {
+        val releasedFor = MutableStateFlow<Int?>(null)
+        val hop = CompletableDeferred<Unit>()
+        var releasedCalls = 0
+        val job = launch(UnconfinedTestDispatcher(testScheduler)) {
+            homeWatchlistTriggers(
+                changes = emptyFlow(),
+                profileId = 1,
+                releasedFor = releasedFor,
+                isActiveProfile = { true },
+                onMain = { block ->
+                    hop.await()
+                    block()
+                },
+                onDeferred = {},
+                onReleased = { releasedCalls += 1 },
+            ).toList(mutableListOf())
+        }
+        releasedFor.value = 1
+        assertEquals(0, releasedCalls)
+        releasedFor.value = null
+        hop.complete(Unit)
+        assertEquals(0, releasedCalls)
+        releasedFor.value = 1
+        assertEquals(0, releasedCalls)
+        job.cancel()
+    }
+
+    @Test
+    fun homeWatchlistReleaseForAnotherProfileDoesNotPull() = runTest {
+        val releasedFor = MutableStateFlow<Int?>(1)
+        var deferred = 0
+        var releasedCalls = 0
+        val emissions = mutableListOf<Unit>()
+        val job = launch(UnconfinedTestDispatcher(testScheduler)) {
+            homeWatchlistTriggers(
+                changes = emptyFlow(),
+                profileId = 2,
+                releasedFor = releasedFor,
+                isActiveProfile = { true },
+                onMain = { it() },
+                onDeferred = { deferred += 1 },
+                onReleased = { releasedCalls += 1 },
+            ).toList(emissions)
+        }
+        assertEquals(1, deferred)
+        assertEquals(0, releasedCalls)
+        assertEquals(1, emissions.size)
+        releasedFor.value = 2
+        assertEquals(1, releasedCalls)
+        assertEquals(2, emissions.size)
+        job.cancel()
+    }
+
+    @Test
+    fun homeWatchlistReleaseIsRevalidatedAgainstTheActiveProfile() = runTest {
+        var deferred = 0
+        var releasedCalls = 0
+        val job = launch(UnconfinedTestDispatcher(testScheduler)) {
+            homeWatchlistTriggers(
+                changes = emptyFlow(),
+                profileId = 1,
+                releasedFor = MutableStateFlow<Int?>(1),
+                isActiveProfile = { false },
+                onMain = { it() },
+                onDeferred = { deferred += 1 },
+                onReleased = { releasedCalls += 1 },
+            ).toList(mutableListOf())
+        }
+        assertEquals(0, releasedCalls)
+        assertEquals(0, deferred)
+        job.cancel()
     }
 }
