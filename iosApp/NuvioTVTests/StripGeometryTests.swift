@@ -101,6 +101,48 @@ final class StripGeometryTests: XCTestCase {
         XCTAssertEqual(g.stageHeight, 536.5, accuracy: 0.001)
     }
 
+    /// Home Watchlist W4 (spec 9.2). G2 / G3 were measured 2026-11-12 on the 1080p tvOS sim clone
+    /// "NuvioTV home-watchlist" (CB9C5444), poster cards width 220, Stage with fit rows, from the
+    /// laid-out view readout `debug_strip_fit` (not accessibility frames).
+    private static let firstCatalogRowMeasured: CGFloat = 459   // G2: key=com.linvo.cinemeta:movie:top m=459 h=498.5
+    private static let watchlistRowMeasured: CGFloat = 459      // G3: key=home-watchlist m=459 h=498.5
+
+    /// The sim's title line height was 37 (not the table's 38): that is the one input that
+    /// reproduces the measured P 498.5 / stage 538.5 / strip 541.5 (peek 43, row 458.5).
+    private func simInputs() -> StripGeometry.Inputs {
+        inputs(dp: 126, titles: true, noZoom: false, titleHeight: 37)
+    }
+
+    func testWatchlistRowPagesLikeACatalogRow() {
+        let g = StripGeometry.make(simInputs())
+        let watchlist = StripGeometry.fitPageHeight(measured: Self.watchlistRowMeasured,
+                                                    page: g.pageHeight, focusLift: g.focusLift)
+        let catalog = StripGeometry.fitPageHeight(measured: Self.firstCatalogRowMeasured,
+                                                  page: g.pageHeight, focusLift: g.focusLift)
+        XCTAssertEqual(watchlist, catalog, accuracy: 0.001)
+        // h = P (the fit page is capped at the fixed page), as measured.
+        XCTAssertEqual(watchlist, 498.5, accuracy: 0.5)
+
+        // The same equality holds on the table's Medium inputs (titleH 38).
+        let medium = StripGeometry.make(inputs(dp: 126, titles: true, noZoom: false))
+        XCTAssertEqual(StripGeometry.fitPageHeight(measured: Self.watchlistRowMeasured,
+                                                   page: medium.pageHeight, focusLift: medium.focusLift),
+                       StripGeometry.fitPageHeight(measured: Self.firstCatalogRowMeasured,
+                                                   page: medium.pageHeight, focusLift: medium.focusLift),
+                       accuracy: 0.001)
+    }
+
+    /// G1 = G4: P 498.5, stageH 538.5, stripH 541.5, measured without (G1) and with (G4) the
+    /// Watchlist. The row adds no input to `StripGeometry.make` (it is one more key in the strip;
+    /// page, stage and strip heights do not depend on the row set), which is what "does not change
+    /// the Stage" means at the unit level.
+    func testWatchlistDoesNotChangeTheStage() {
+        let g = StripGeometry.make(simInputs())
+        XCTAssertEqual(g.pageHeight, 498.5, accuracy: 0.5)
+        XCTAssertEqual(g.stageHeight, 538.5, accuracy: 0.5)
+        XCTAssertEqual(g.stripHeight, 541.5, accuracy: 0.5)
+    }
+
     func testOpenSansSpotChecks() {
         let medium = StripGeometry.make(inputs(dp: 126, titles: true, noZoom: false,
                                                titleHeight: 38.84, synopsisLine: 31.32))
