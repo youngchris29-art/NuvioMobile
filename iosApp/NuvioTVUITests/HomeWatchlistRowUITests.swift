@@ -1,0 +1,653 @@
+import XCTest
+
+/// Home Watchlist row (FEAT-92), W3 brief 3: the UI legs for the Watchlist row under Continue Watching
+/// in both Home layouts (spec section 6, `docs/spec-home-watchlist-row-2026-11-12.md`).
+///
+/// The row is a `HomeCatalogSection` with key `home-watchlist`, shown under Continue Watching and
+/// above Upcoming. A guest has no Trakt or Simkl, so the legs inject it with the DEBUG seed
+/// (`-debug.homeWatchlistSeedJsonB64`, in-memory) and, where a leg needs them, the Continue Watching
+/// seed (`-debug.continueWatchingSeedJsonB64`, persistent: every leg that uses it clears it again in
+/// `defer`), the Upcoming seed (`-debug.homeUpcomingSeedJsonB64`, in-memory) and the no-catalog-rows
+/// knob (`-debug.homeNoCatalogRows`).
+///
+/// Oracles are the DEBUG readouts, never accessibility frames of moving things:
+///   - Classic: `debug_homeReturn own=<rowKey>` (the row holding focus now), `debug_pinned` (the last
+///     pinned settle: `row= vh= rowH= last= lastRowShaped=`), `debug_hero pitem=` (the presented hero);
+///   - Stage: `debug_strip key= row= foc=<rowKey>/<itemId> atTop=`, `debug_stage disp=<type:id>`,
+///     `debug_strip_fit key=<rowKey> m= h= | ...`;
+///   - both: `debug_homeWatchlist on= n= first=`.
+///
+/// Fixture facts: FA87 or the project's sim clone, guest "Chris" with Cinemeta, Medium posters, no watch
+/// history. In Tabs mode the launch lands focus on the tab bar, so the first Down enters the strip (Stage)
+/// or the hero (Classic).
+///
+/// Helpers are this file's own (the harness's duplication rule: every UI test file owns its helpers;
+/// copied from `StageStripUITests` and `StripFitNoZoomUITests`).
+final class HomeWatchlistRowUITests: XCTestCase {
+
+    let remote = XCUIRemote.shared
+
+    override func setUpWithError() throws {
+        continueAfterFailure = true
+    }
+
+    /// A harness precondition that makes the rest of a leg meaningless.
+    private struct HarnessAbort: Error, CustomStringConvertible {
+        let description: String
+        init(_ reason: String) { description = reason }
+    }
+
+    // MARK: - Basics
+
+    private func pause(_ seconds: TimeInterval) { Thread.sleep(forTimeInterval: seconds) }
+
+    private func shot(_ name: String) {
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    private func note(_ name: String, _ text: String) {
+        let attachment = XCTAttachment(string: text)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        print("[HomeWatchlistRowUITests] \(name): \(text)")
+    }
+
+    private func poll(_ timeout: TimeInterval, step: TimeInterval = 0.2, _ condition: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            pause(step)
+        }
+        return condition()
+    }
+
+    /// Fresh launch with `arguments`, then the profile gate ("Chris" is the first profile and focused
+    /// by default), then `settle`.
+    @discardableResult
+    private func launch(_ arguments: [String], settle: TimeInterval = 14) -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments = arguments
+        app.launch()
+        let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
+        XCTAssertTrue(chris.waitForExistence(timeout: 90), "profile picker never appeared — is the fixture set up?")
+        if chris.exists {
+            DetailEntryRoute.selectChrisTile(self, app, timeout: 5)
+        }
+        pause(settle)
+        return app
+    }
+
+    private func label(_ app: XCUIApplication, _ identifier: String) -> String {
+        let element = app.descendants(matching: .any)[identifier].firstMatch
+        return element.exists ? element.label : ""
+    }
+
+    /// `key=value` out of a readout line, matched on the exact key.
+    private static func token(_ line: String, _ key: String) -> String? {
+        for part in line.split(separator: " ") {
+            let pair = part.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard pair.count == 2, pair[0] == Substring(key) else { continue }
+            return String(pair[1])
+        }
+        return nil
+    }
+
+    private static func int(_ line: String, _ key: String) -> Int? { token(line, key).flatMap { Int($0) } }
+
+    /// One row's `(m, h)` out of `debug_strip_fit`, nil when that row has no measurement yet
+    /// (`StripFitNoZoomUITests.fit`).
+    private static func fit(_ line: String, rowKey: String) -> (measured: Double, page: Double)? {
+        let body = line.hasPrefix("debug_strip_fit ") ? String(line.dropFirst("debug_strip_fit ".count)) : line
+        for entry in body.components(separatedBy: " | ") where token(entry, "key") == rowKey {
+            guard let m = token(entry, "m").flatMap(Double.init),
+                  let h = token(entry, "h").flatMap(Double.init) else { return nil }
+            return (m, h)
+        }
+        return nil
+    }
+
+    // MARK: - Seeds and launch arguments
+
+    private static func b64(_ array: [[String: Any]]) -> String {
+        let data = (try? JSONSerialization.data(withJSONObject: array)) ?? Data("[]".utf8)
+        return data.base64EncodedString()
+    }
+
+    private static let cwEntry: [String: Any] = ["type": "movie", "id": "tt0111161", "title": "The Shawshank Redemption",
+                                                 "positionMin": 60, "durationMin": 142]
+    private static var cwSeed: String { b64([cwEntry]) }
+
+    private static func watchlistItem(_ type: String, _ id: String, _ name: String) -> [String: Any] {
+        ["type": type, "id": id, "name": name,
+         "poster": "https://images.metahub.space/poster/medium/\(id)/img",
+         "background": "https://images.metahub.space/background/medium/\(id)/img",
+         "logo": "https://images.metahub.space/logo/medium/\(id)/img"]
+    }
+
+    private static let wlFirst = "movie:tt0068646"
+    private static var wlSeed: String {
+        b64([watchlistItem("movie", "tt0068646", "The Godfather"),
+             watchlistItem("series", "tt0903747", "Breaking Bad"),
+             watchlistItem("movie", "tt0110912", "Pulp Fiction")])
+    }
+
+    private static var upSeed: String {
+        b64([["showId": "tt0944947", "showTitle": "Game of Thrones", "season": 8, "episode": 1, "daysUntilAir": 1,
+              "showYear": "2011", "episodeTitle": "Winterfell",
+              "poster": "https://images.metahub.space/poster/medium/tt0944947/img",
+              "background": "https://images.metahub.space/background/medium/tt0944947/img",
+              "logo": "https://images.metahub.space/logo/medium/tt0944947/img"]])
+    }
+
+    private static let baseArguments = ["-inline_trailers_enabled", "NO", "-hero_trailer_autoplay", "NO",
+                                        "-sidebar_style", "tabs", "-debug.homeScrollProbe", "YES"]
+    private static let classicBase = ["-home_layout", "classic", "-hero_nuvio_style", "YES"] + baseArguments
+    private static let stageBase = ["-home_layout", "stage", "-debug.stripFitRows", "YES"] + baseArguments
+
+    /// One Watchlist/Upcoming combination of the spec's table (CW is always seeded).
+    private struct Combo {
+        let name: String
+        let watchlist: Bool
+        let upcoming: Bool
+
+        /// Top rows after Continue Watching, in order.
+        var below: [String] { (watchlist ? ["home-watchlist"] : []) + (upcoming ? ["upcoming"] : []) }
+        var topRows: [String] { ["continue-watching"] + below }
+        /// The Down sequence from Continue Watching: the rows below, then the first catalog row.
+        var down: [String] { below + ["c1"] }
+        /// The Up sequence from the first catalog row back to Continue Watching.
+        var up: [String] { Array(below.reversed()) + ["continue-watching"] }
+        var last: String { topRows.last ?? "continue-watching" }
+
+        /// Seeds and toggles of this combination (Continue Watching seeded).
+        var arguments: [String] {
+            var out = ["-debug.continueWatchingSeedJsonB64", HomeWatchlistRowUITests.cwSeed,
+                       "-home_upcoming_row_enabled", upcoming ? "YES" : "NO"]
+            if watchlist { out += ["-debug.homeWatchlistSeedJsonB64", HomeWatchlistRowUITests.wlSeed] }
+            if upcoming { out += ["-debug.homeUpcomingSeedJsonB64", HomeWatchlistRowUITests.upSeed] }
+            return out
+        }
+    }
+
+    private static let comboA = Combo(name: "A", watchlist: false, upcoming: false)
+    private static let comboB = Combo(name: "B", watchlist: true, upcoming: false)
+    private static let comboC = Combo(name: "C", watchlist: false, upcoming: true)
+    private static let comboD = Combo(name: "D", watchlist: true, upcoming: true)
+
+    private static let topKeys: Set<String> = ["continue-watching", "home-watchlist", "upcoming"]
+
+    /// Clears the persistent Continue Watching seed (the S15 recipe).
+    private func clearContinueWatchingSeed() {
+        var removal = Self.cwEntry
+        removal["remove"] = true
+        let cleanup = launch(["-debug.continueWatchingSeedJsonB64", Self.b64([removal])], settle: 8)
+        cleanup.terminate()
+    }
+
+    /// If a leg seeded the Watchlist but the label reads `n=0`, the seed was refused (signed-in sim?).
+    private func requireWatchlistSeed(_ app: XCUIApplication) throws {
+        guard poll(25, step: 0.5, {
+            (Self.int(label(app, "debug_homeWatchlist"), "n") ?? 0) > 0
+        }) else {
+            throw XCTSkip("seed refused (signed-in sim?) or this build lacks HomeWatchlistDebugSeed: '\(label(app, "debug_homeWatchlist"))'")
+        }
+        XCTAssertEqual(Self.token(label(app, "debug_homeWatchlist"), "first"), Self.wlFirst,
+                       "the seeded Watchlist's first item: \(label(app, "debug_homeWatchlist"))")
+    }
+
+    // MARK: - Classic readouts and walks
+
+    private func own(_ app: XCUIApplication) -> String { Self.token(label(app, "debug_homeReturn"), "own") ?? "-" }
+
+    /// Presses `button` once, rests 1.8 s, and returns the row now owning focus (a second short wait
+    /// when the readout is mid-motion and reads "-").
+    @discardableResult
+    private func classicStep(_ app: XCUIApplication, _ button: XCUIRemote.Button) -> String {
+        remote.press(button)
+        pause(1.8)
+        var key = own(app)
+        if key == "-" {
+            _ = poll(2.0, step: 0.25) { own(app) != "-" }
+            key = own(app)
+        }
+        return key
+    }
+
+    /// The last `debug_pinned` settle line whose `row=` is `key`, waited for up to 4 s.
+    private func pinnedLine(_ app: XCUIApplication, row key: String) -> String? {
+        var found: String?
+        _ = poll(4.0, step: 0.25) {
+            let line = label(app, "debug_pinned")
+            if Self.token(line, "row") == key { found = line; return true }
+            return false
+        }
+        return found
+    }
+
+    private static func normalized(_ key: String) -> String { topKeys.contains(key) ? key : "c1" }
+
+    private struct ClassicWalk {
+        var down: [String] = []
+        var up: [String] = []
+        var c1Key = "-"
+        var pinned: [String: String] = [:]
+    }
+
+    /// Down until Continue Watching owns focus (≤ 5 presses), Down recording each `own=` until a
+    /// non-top key, Up once, then Up until Continue Watching.
+    private func classicWalkFromCW(_ app: XCUIApplication) throws -> ClassicWalk {
+        guard poll(30, step: 0.5, { !label(app, "debug_homeReturn").isEmpty }) else {
+            throw HarnessAbort("debug_homeReturn never appeared (DEBUG build? -home_layout classic honoured?)")
+        }
+        var reached = false
+        for _ in 0..<5 {
+            if classicStep(app, .down) == "continue-watching" { reached = true; break }
+        }
+        guard reached else {
+            throw XCTSkip("the Continue Watching seed did not land (own=\(own(app))): refused on a signed-in account, or this build lacks the seed")
+        }
+        var walk = ClassicWalk()
+        for _ in 0..<6 {
+            let before = own(app)
+            let key = classicStep(app, .down)
+            if key == before { walk.down.append("stuck:\(key)"); break }
+            walk.down.append(Self.normalized(key))
+            if let line = pinnedLine(app, row: key) { walk.pinned[key] = line }
+            if !Self.topKeys.contains(key) { walk.c1Key = key; break }
+        }
+        for _ in 0..<6 {
+            let before = own(app)
+            let key = classicStep(app, .up)
+            if key == before { walk.up.append("stuck:\(key)"); break }
+            walk.up.append(Self.normalized(key))
+            if key == "continue-watching" { break }
+        }
+        note("classic_walk", "down=\(walk.down) up=\(walk.up) c1=\(walk.c1Key)\n" +
+             walk.pinned.map { "\($0.key): \($0.value)" }.sorted().joined(separator: "\n"))
+        return walk
+    }
+
+    private func assertClassicCombo(_ combo: Combo) throws {
+        defer { clearContinueWatchingSeed() }
+        let app = launch(Self.classicBase + combo.arguments)
+        if combo.watchlist { try requireWatchlistSeed(app) }
+        let walk = try classicWalkFromCW(app)
+        shot("classic_combo\(combo.name)")
+        XCTAssertEqual(walk.down, combo.down, "Combo \(combo.name): the Down sequence from Continue Watching")
+        XCTAssertEqual(walk.up, combo.up, "Combo \(combo.name): the Up sequence from the first catalog row")
+        if combo.watchlist {
+            let wl = walk.pinned["home-watchlist"] ?? ""
+            let c1 = walk.pinned[walk.c1Key] ?? ""
+            let wlH = Self.int(wl, "rowH"), c1H = Self.int(c1, "rowH")
+            XCTAssertNotNil(wlH, "no debug_pinned settle for home-watchlist: '\(wl)'")
+            XCTAssertEqual(wlH, c1H, "G6 = G5: the Watchlist's rowH equals the catalog row's: wl='\(wl)' c1='\(c1)'")
+            XCTAssertEqual(Self.token(wl, "last"), "0", "the Watchlist is not the last row here: '\(wl)'")
+        }
+    }
+
+    // MARK: - Stage readouts and walks
+
+    private func strip(_ app: XCUIApplication) -> String { label(app, "debug_strip") }
+    private func stage(_ app: XCUIApplication) -> String { label(app, "debug_stage") }
+    private func stripKey(_ app: XCUIApplication) -> String { Self.token(strip(app), "key") ?? "-" }
+
+    private static let tabTitles = ["Home", "Search", "Library", "Add-ons", "Settings", "Profile"]
+    private func tabBarFocused(_ app: XCUIApplication) -> Bool {
+        Self.tabTitles.contains { app.buttons[$0].exists && app.buttons[$0].hasFocus }
+    }
+
+    /// Waits for Stage Home (`debug_stage` with its geometry and a shown title) and returns its line.
+    private func requireStage(_ app: XCUIApplication) throws -> String {
+        var line = ""
+        let ready = poll(30, step: 0.5) {
+            line = stage(app)
+            return Self.token(line, "stageH") != nil && (Self.token(line, "shown") ?? "-") != "-"
+        }
+        guard ready else { throw HarnessAbort("Stage Home never came up: debug_stage='\(line)'") }
+        return line
+    }
+
+    @discardableResult
+    private func stageStep(_ app: XCUIApplication, _ button: XCUIRemote.Button) -> String {
+        remote.press(button)
+        pause(3.0)
+        return stripKey(app)
+    }
+
+    private struct StageWalk {
+        var down: [String] = []
+        var up: [String] = []
+        var c1Key = "-"
+    }
+
+    /// Enters the strip (the first Down leaves the tab bar; Up once when the first row read is not
+    /// Continue Watching, S15's inserted-row rule), then the same Down and Up walk as Classic.
+    private func stageWalkFromCW(_ app: XCUIApplication) throws -> StageWalk {
+        _ = try requireStage(app)
+        var key = stageStep(app, .down)
+        for _ in 0..<2 where key != "continue-watching" {
+            key = stageStep(app, .up)
+            if key == "-" || tabBarFocused(app) { key = stageStep(app, .down) }
+        }
+        guard key == "continue-watching" else {
+            throw XCTSkip("the Continue Watching seed did not land (strip: '\(strip(app))')")
+        }
+        var walk = StageWalk()
+        for _ in 0..<6 {
+            let before = stripKey(app)
+            let next = stageStep(app, .down)
+            if next == before { walk.down.append("stuck:\(next)"); break }
+            walk.down.append(Self.normalized(next))
+            if !Self.topKeys.contains(next) { walk.c1Key = next; break }
+        }
+        for _ in 0..<6 {
+            let before = stripKey(app)
+            let next = stageStep(app, .up)
+            if next == before { walk.up.append("stuck:\(next)"); break }
+            walk.up.append(Self.normalized(next))
+            if next == "continue-watching" { break }
+        }
+        note("stage_walk", "down=\(walk.down) up=\(walk.up) c1=\(walk.c1Key)\n\(stage(app))\n\(label(app, "debug_strip_fit"))")
+        return walk
+    }
+
+    private func assertStageCombo(_ combo: Combo) throws {
+        defer { clearContinueWatchingSeed() }
+        let app = launch(Self.stageBase + combo.arguments)
+        if combo.watchlist { try requireWatchlistSeed(app) }
+        let walk = try stageWalkFromCW(app)
+        shot("stage_combo\(combo.name)")
+        XCTAssertEqual(walk.down, combo.down, "Combo \(combo.name): the Down sequence from Continue Watching")
+        XCTAssertEqual(walk.up, combo.up, "Combo \(combo.name): the Up sequence from the first catalog row")
+        if combo.watchlist {
+            // Walk back down so both rows are measured, then read the fit pages of both.
+            _ = stageStep(app, .down)
+            for _ in 0..<(combo.below.count) { _ = stageStep(app, .down) }
+            let line = label(app, "debug_strip_fit")
+            let wl = Self.fit(line, rowKey: "home-watchlist")
+            let c1 = Self.fit(line, rowKey: walk.c1Key)
+            note("G3_G2_fit", "wl=\(String(describing: wl)) c1=\(String(describing: c1)) line=\(line)")
+            if let wl, let c1 {
+                XCTAssertEqual(wl.measured, c1.measured, accuracy: 0.5, "the Watchlist's measured height equals the catalog row's: \(line)")
+                XCTAssertEqual(wl.page, c1.page, accuracy: 0.5, "the Watchlist's fit page equals the catalog row's: \(line)")
+            } else {
+                XCTFail("debug_strip_fit lacks an entry for home-watchlist or \(walk.c1Key): \(line)")
+            }
+            // Stage geometry readout of this launch (G1 vs G4: the Watchlist must not change the stage).
+            note("G4_stage", stage(app))
+        }
+    }
+
+    // MARK: - Tests 1-4 (Classic: Down from CW, Up from the first catalog row)
+
+    func testClassic_ComboA_DownFromCWAndUpFromFirstCatalogRow() throws { try assertClassicCombo(Self.comboA) }
+    func testClassic_ComboB_DownFromCWAndUpFromFirstCatalogRow() throws { try assertClassicCombo(Self.comboB) }
+    func testClassic_ComboC_DownFromCWAndUpFromFirstCatalogRow() throws { try assertClassicCombo(Self.comboC) }
+    func testClassic_ComboD_DownFromCWAndUpFromFirstCatalogRow() throws { try assertClassicCombo(Self.comboD) }
+
+    // MARK: - Tests 5-8 (Stage)
+
+    func testStage_ComboA_DownFromCWAndUpFromFirstCatalogRow() throws { try assertStageCombo(Self.comboA) }
+    func testStage_ComboB_DownFromCWAndUpFromFirstCatalogRow() throws { try assertStageCombo(Self.comboB) }
+    func testStage_ComboC_DownFromCWAndUpFromFirstCatalogRow() throws { try assertStageCombo(Self.comboC) }
+    func testStage_ComboD_DownFromCWAndUpFromFirstCatalogRow() throws { try assertStageCombo(Self.comboD) }
+
+    // MARK: - Tests 9-12 (Classic pinned: the last row with no catalog rows)
+
+    /// Down until `own=` stops changing (2 still reads).
+    private func assertClassicLastRow(_ combo: Combo) throws {
+        defer { clearContinueWatchingSeed() }
+        let app = launch(Self.classicBase + combo.arguments + ["-debug.homeNoCatalogRows", "YES", "-debug.pinnedRowSettleProbe", "YES"])
+        if combo.watchlist { try requireWatchlistSeed(app) }
+        guard poll(30, step: 0.5, { !label(app, "debug_homeReturn").isEmpty }) else {
+            throw HarnessAbort("debug_homeReturn never appeared")
+        }
+        var last = "-"
+        var still = 0
+        var seen: [String] = []
+        for _ in 0..<10 {
+            remote.press(.down)
+            pause(1.8)
+            let key = own(app)
+            if key == last { still += 1 } else { still = 0 }
+            if key != "-", seen.last != key { seen.append(key) }
+            last = key
+            if still >= 2, key != "-" { break }
+        }
+        let finalKey = own(app)
+        let line = pinnedLine(app, row: finalKey) ?? label(app, "debug_pinned")
+        note("classic_last_combo\(combo.name)", "own sequence=\(seen) final=\(finalKey)\n\(line)")
+        shot("classic_last_combo\(combo.name)")
+        XCTAssertEqual(finalKey, combo.last, "Combo \(combo.name): the last row with no catalog rows (sequence \(seen))")
+        if combo.name == "B" {
+            XCTAssertEqual(Self.token(line, "row"), "home-watchlist", "debug_pinned must describe the Watchlist: '\(line)'")
+            XCTAssertEqual(Self.token(line, "last"), "1", "the Watchlist is the last row: '\(line)'")
+            XCTAssertEqual(Self.token(line, "lastRowShaped"), "1", "the last-row shaping applies to the Watchlist: '\(line)'")
+            // G5's catalog rowH on the base tip (554, plan "Geometry, base tip"): no catalog row exists in this launch.
+            XCTAssertEqual(Self.int(line, "rowH"), 554, "the Watchlist's rowH equals the catalog row's (G5 = 554): '\(line)'")
+        }
+    }
+
+    func testClassic_ComboA_PinnedLastRowWithNoCatalogRows() throws { try assertClassicLastRow(Self.comboA) }
+    func testClassic_ComboB_PinnedLastRowWithNoCatalogRows() throws { try assertClassicLastRow(Self.comboB) }
+    func testClassic_ComboC_PinnedLastRowWithNoCatalogRows() throws { try assertClassicLastRow(Self.comboC) }
+    func testClassic_ComboD_PinnedLastRowWithNoCatalogRows() throws { try assertClassicLastRow(Self.comboD) }
+
+    // MARK: - Tests 13-16 (Stage: the last row with no catalog rows)
+
+    /// Down until `debug_strip row=` stops changing.
+    private func assertStageLastRow(_ combo: Combo) throws {
+        defer { clearContinueWatchingSeed() }
+        let app = launch(Self.stageBase + combo.arguments + ["-debug.homeNoCatalogRows", "YES"])
+        if combo.watchlist { try requireWatchlistSeed(app) }
+        _ = try requireStage(app)
+        var lastRow = -2
+        var still = 0
+        for _ in 0..<8 {
+            remote.press(.down)
+            pause(3.0)
+            let row = Self.int(strip(app), "row") ?? -1
+            if row == lastRow { still += 1 } else { still = 0 }
+            lastRow = row
+            if still >= 1, row >= 0 { break }
+        }
+        let line = strip(app)
+        note("stage_last_combo\(combo.name)", line)
+        shot("stage_last_combo\(combo.name)")
+        XCTAssertEqual(stripKey(app), combo.last, "Combo \(combo.name): the last row with no catalog rows: \(line)")
+        XCTAssertEqual(Self.int(line, "row"), combo.topRows.count - 1, "row= is the number of top rows minus 1: \(line)")
+        remote.press(.down)
+        pause(2.0)
+        XCTAssertEqual(strip(app).isEmpty ? "" : stripKey(app), combo.last, "Down at the end changes nothing: \(strip(app))")
+        XCTAssertEqual(Self.int(strip(app), "row"), combo.topRows.count - 1, "Down at the end changes nothing: \(strip(app))")
+    }
+
+    func testStage_ComboA_LastRowWithNoCatalogRows() throws { try assertStageLastRow(Self.comboA) }
+    func testStage_ComboB_LastRowWithNoCatalogRows() throws { try assertStageLastRow(Self.comboB) }
+    func testStage_ComboC_LastRowWithNoCatalogRows() throws { try assertStageLastRow(Self.comboC) }
+    func testStage_ComboD_LastRowWithNoCatalogRows() throws { try assertStageLastRow(Self.comboD) }
+
+    // MARK: - Test 17 (Classic, no Continue Watching: the Watchlist is the top row)
+
+    /// A card of a catalog row holds focus (not Continue Watching, the Watchlist or Upcoming, whose
+    /// cards play or open another page), read from the layout's own readout.
+    private func classicCatalogCardFocused(_ app: XCUIApplication) -> Bool {
+        let line = label(app, "debug_homeReturn")
+        guard let own = Self.token(line, "own"), own != "-", !Self.topKeys.contains(own),
+              let foc = Self.token(line, "foc"), let slash = foc.firstIndex(of: "/"),
+              String(foc[..<slash]) == own else { return false }
+        guard let root = try? app.snapshot() else { return false }
+        var frame: CGRect?
+        func walk(_ node: XCUIElementSnapshot) {
+            if node.hasFocus { frame = node.frame }
+            node.children.forEach(walk)
+        }
+        walk(root)
+        guard let frame else { return false }
+        return frame.width >= 100 && frame.height >= 100
+    }
+
+    func testClassic_NoCWWatchlistIsTheTopRow() throws {
+        let app = launch(Self.classicBase + ["-debug.homeWatchlistSeedJsonB64", Self.wlSeed, "-home_upcoming_row_enabled", "NO"])
+        try requireWatchlistSeed(app)
+        guard poll(30, step: 0.5, { !label(app, "debug_homeReturn").isEmpty }) else {
+            throw HarnessAbort("debug_homeReturn never appeared")
+        }
+        // From the hero CTA (own=-), Down: the Watchlist.
+        var first = "-"
+        for _ in 0..<4 {
+            first = classicStep(app, .down)
+            if first != "-" { break }
+        }
+        XCTAssertEqual(first, "home-watchlist", "the first row reached from the hero is the Watchlist: \(label(app, "debug_homeReturn"))")
+        let c1 = classicStep(app, .down)
+        XCTAssertFalse(Self.topKeys.contains(c1) || c1 == "-", "Down from the Watchlist reaches the first catalog row: \(label(app, "debug_homeReturn"))")
+        XCTAssertEqual(classicStep(app, .up), "home-watchlist", "Up from the first catalog row reaches the Watchlist")
+        XCTAssertEqual(classicStep(app, .down), c1, "Down again reaches the first catalog row")
+        guard classicCatalogCardFocused(app) else {
+            shot("unverified_c1_card")
+            throw HarnessAbort("focus is not on a catalog card (\(label(app, "debug_homeReturn"))) — not pressing Select")
+        }
+        remote.press(.select)
+        pause(2.0)
+        remote.press(.menu)
+        // `ret=` holds only the LAST [HomeReturn] event and the remount is followed by a restore event,
+        // so the readout is polled from the Menu press on (every 0.1 s, up to 4 s) and the first
+        // remount event is kept.
+        var ret = ""
+        _ = poll(4.0, step: 0.1) {
+            let line = label(app, "debug_homeReturn")
+            if line.contains("remount rows=") { ret = line; return true }
+            return false
+        }
+        if ret.isEmpty { ret = label(app, "debug_homeReturn") }
+        note("remount", ret)
+        XCTAssertTrue(ret.contains("remount rows=") && ret.contains("home-watchlist"),
+                      "after the pop the Watchlist is remounted (top-row token; c1 is the origin): \(ret)")
+        XCTAssertEqual(classicStep(app, .up), "home-watchlist", "Up from the first catalog row after the pop reaches the Watchlist")
+    }
+
+    // MARK: - Test 18 (Classic, hero off: the Watchlist seeds the panel)
+
+    func testClassic_NoCWWatchlistSeedsTheHeroPanel() throws {
+        let args = Self.classicBase + ["-debug.homeWatchlistSeedJsonB64", Self.wlSeed, "-home_upcoming_row_enabled", "NO",
+                                       "-debug.homeHeroOff", "YES", "-debug.homeHeroProbe", "YES"]
+        let app = launch(args + ["-debug.homeNoCatalogRows", "YES"])
+        try requireWatchlistSeed(app)
+        var pitem = "-"
+        _ = poll(10, step: 0.3) {
+            pitem = Self.token(label(app, "debug_hero"), "pitem") ?? "-"
+            return pitem != "-"
+        }
+        note("pitem_no_catalog", label(app, "debug_hero"))
+        XCTAssertEqual(pitem, Self.wlFirst, "no catalog rows and no Continue Watching: the panel's seed is the Watchlist's first item: \(label(app, "debug_hero"))")
+        app.terminate()
+
+        // With catalog rows present the panel's seed is the first catalog row's first item (decision Q).
+        let second = launch(args)
+        try requireWatchlistSeed(second)
+        var catalogItem = "-"
+        _ = poll(15, step: 0.3) {
+            catalogItem = Self.token(label(second, "debug_hero"), "pitem") ?? "-"
+            return catalogItem != "-"
+        }
+        note("pitem_with_catalog", label(second, "debug_hero"))
+        XCTAssertNotEqual(catalogItem, "-", "the panel presents an item: \(label(second, "debug_hero"))")
+        XCTAssertNotEqual(catalogItem, Self.wlFirst, "with catalog rows the panel's seed is the first catalog row's item, not the Watchlist's: \(label(second, "debug_hero"))")
+    }
+
+    // MARK: - Test 19 (Stage, no Continue Watching: row zero and the stage seed)
+
+    /// After focus settles on a card of `rowKey`, two quick Rights, then the stage's shown item
+    /// (`debug_stage disp=<type:id>`) must equal the focused card (`debug_strip foc=<rowKey>/<itemId>`)
+    /// within 10 s. Returns the result text.
+    private func stageFollowsFocus(_ app: XCUIApplication, rowKey: String) -> (ok: Bool, detail: String) {
+        guard stripKey(app) == rowKey else { return (false, "precondition: strip is on \(stripKey(app)), not \(rowKey)") }
+        remote.press(.right)
+        pause(0.15)
+        remote.press(.right)
+        var detail = ""
+        let ok = poll(10, step: 0.3) {
+            let foc = Self.token(strip(app), "foc") ?? "-"
+            let id = foc.firstIndex(of: "/").map { String(foc[foc.index(after: $0)...]) } ?? "-"
+            let disp = Self.token(stage(app), "disp") ?? "-"
+            let dispId = disp.firstIndex(of: ":").map { String(disp[disp.index(after: $0)...]) } ?? "-"
+            detail = "foc=\(foc) disp=\(disp)"
+            return id != "-" && id == dispId
+        }
+        return (ok, detail)
+    }
+
+    func testStage_NoCWWatchlistIsRowZeroAndSeedsTheStage() throws {
+        let app = launch(Self.stageBase + ["-debug.homeWatchlistSeedJsonB64", Self.wlSeed, "-home_upcoming_row_enabled", "NO"])
+        try requireWatchlistSeed(app)
+        let geometry = try requireStage(app)
+        note("G1_G4_stage", geometry)
+        XCTAssertTrue(poll(10, step: 0.3) { Self.token(stage(app), "disp") == Self.wlFirst },
+                      "before focus the stage seed is the Watchlist's first item: \(stage(app))")
+        remote.press(.down)
+        pause(3.0)
+        XCTAssertEqual(stripKey(app), "home-watchlist", "entering the strip lands on the Watchlist: \(strip(app))")
+        XCTAssertEqual(Self.int(strip(app), "row"), 0, "the Watchlist is row 0: \(strip(app))")
+        let wlFocus = stageFollowsFocus(app, rowKey: "home-watchlist")
+        note("stage_follows_focus_watchlist", "\(wlFocus.ok) \(wlFocus.detail)")
+        XCTAssertTrue(wlFocus.ok, "the stage shows the focused Watchlist card within 10 s of settling: \(wlFocus.detail)")
+        let below = stageStep(app, .down)
+        XCTAssertFalse(Self.topKeys.contains(below) || below == "-", "Down reaches the first catalog row: \(strip(app))")
+        XCTAssertEqual(Self.int(strip(app), "row"), 1, "the first catalog row is row 1: \(strip(app))")
+        let catalogFocus = stageFollowsFocus(app, rowKey: below)
+        note("stage_follows_focus_catalog", "\(catalogFocus.ok) \(catalogFocus.detail)")
+        XCTAssertTrue(catalogFocus.ok, "the stage shows the focused catalog card within 10 s of settling: \(catalogFocus.detail)")
+        XCTAssertEqual(stageStep(app, .up), "home-watchlist", "Up returns to the Watchlist: \(strip(app))")
+        remote.press(.up)
+        XCTAssertTrue(poll(2.0) { tabBarFocused(app) }, "Up from row 0 reaches the tab bar")
+        XCTAssertEqual(Self.token(strip(app), "atTop"), "1", "the strip reads atTop=1: \(strip(app))")
+    }
+
+    // MARK: - Tests 20-21 (toggle off)
+
+    func testToggleOffRemovesTheRow_Classic() throws {
+        let app = launch(Self.classicBase + ["-debug.homeWatchlistSeedJsonB64", Self.wlSeed, "-home_watchlist_row_enabled", "NO",
+                                             "-home_upcoming_row_enabled", "NO"])
+        guard poll(30, step: 0.5, { !label(app, "debug_homeReturn").isEmpty }) else {
+            throw HarnessAbort("debug_homeReturn never appeared")
+        }
+        var owned: [String] = []
+        for _ in 0..<5 {
+            let key = classicStep(app, .down)
+            if key != "-", owned.last != key { owned.append(key) }
+        }
+        let wl = label(app, "debug_homeWatchlist")
+        note("toggle_off_classic", "own sequence=\(owned) \(wl)")
+        XCTAssertEqual(Self.token(wl, "on"), "0", "the toggle reads off: \(wl)")
+        XCTAssertEqual(Self.token(wl, "n"), "0", "no Watchlist section while off: \(wl)")
+        XCTAssertFalse(owned.contains("home-watchlist"), "no row owns focus as the Watchlist: \(owned)")
+        XCTAssertNotNil(owned.first, "a row took focus: \(label(app, "debug_homeReturn"))")
+        if let first = owned.first {
+            XCTAssertFalse(Self.topKeys.contains(first), "the first catalog row follows the hero directly: \(owned)")
+        }
+    }
+
+    func testToggleOffRemovesTheRow_Stage() throws {
+        let app = launch(Self.stageBase + ["-debug.homeWatchlistSeedJsonB64", Self.wlSeed, "-home_watchlist_row_enabled", "NO",
+                                           "-home_upcoming_row_enabled", "NO"])
+        _ = try requireStage(app)
+        var keys: [String] = []
+        for _ in 0..<5 {
+            let key = stageStep(app, .down)
+            if key != "-", keys.last != key { keys.append(key) }
+        }
+        let wl = label(app, "debug_homeWatchlist")
+        let fitLine = label(app, "debug_strip_fit")
+        note("toggle_off_stage", "keys=\(keys) \(wl)\n\(fitLine)")
+        XCTAssertEqual(Self.token(wl, "on"), "0", "the toggle reads off: \(wl)")
+        XCTAssertEqual(Self.token(wl, "n"), "0", "no Watchlist section while off: \(wl)")
+        XCTAssertFalse(keys.contains("home-watchlist"), "no strip row is the Watchlist: \(keys)")
+        XCTAssertNil(Self.fit(fitLine, rowKey: "home-watchlist"), "no fit entry for the Watchlist: \(fitLine)")
+        XCTAssertFalse(fitLine.contains("home-watchlist"), "no fit entry for the Watchlist: \(fitLine)")
+    }
+}
