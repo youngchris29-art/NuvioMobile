@@ -14,7 +14,7 @@ import UIKit
 //
 // Everything else on `HomeView`'s body still applies and is wanted: its `NavigationStack(path:)`,
 // the `.navigationDestination`s, the Continue Watching `.fullScreenCover`, `model.acquire()` /
-// `release()` and `startUpcoming()`. This view must NOT acquire the model.
+// `release()`, `startUpcoming()` and `startWatchlist()`. This view must NOT acquire the model.
 //
 // None of Classic's pinned machinery is mounted here (P1 §1.2): rows get no pinned environment, so
 // their reaches stay 0 and their headings are the plain `Text` above the shelf (with the add-on's
@@ -73,12 +73,15 @@ struct StageStripHome: View {
     /// off) gates the headings' add-on name and the folder previews' "name · N sources" line.
     @AppStorage(HeadingDetailsSetting.defaultsKey) private var catalogDetailsInHeadings = HeadingDetailsSetting.defaultValue
     @AppStorage("home_upcoming_row_enabled") private var upcomingRowEnabled = true
+    /// Mirrors HomeView's `home_watchlist_row_enabled` (default ON).
+    @AppStorage("home_watchlist_row_enabled") private var watchlistRowEnabled = true
     @AppStorage("inline_trailers_enabled") private var inlineTrailersEnabled = false
     @AppStorage("trailer_playback_location") private var trailerPlaybackLocation = "poster"
 
     /// Classic's row keys, so `pinnedRowUpFallbackTarget(rowKey:)` and the focus memory agree.
-    static let continueWatchingKey = "continue-watching"
-    static let upcomingKey = "upcoming"
+    static let continueWatchingKey = HomeTopRowKey.continueWatching
+    static let watchlistKey = HomeTopRowKey.watchlist
+    static let upcomingKey = HomeTopRowKey.upcoming
 
     var body: some View {
         #if DEBUG
@@ -195,27 +198,11 @@ struct StageStripHome: View {
 
     // MARK: Rows
 
-    /// Classic's row order and keys: Continue Watching (non-empty), Upcoming (on and non-empty), then
+    /// Classic's row order and keys: Continue Watching (non-empty), the Watchlist (on and non-empty), Upcoming (on and non-empty), then
     /// `model.rows` as `section.key` / the bare `collection.id`. Deduplicated defensively: a repeated
     /// key would break the strip's `ForEach`.
     private var rowKeys: [String] {
-        var keys: [String] = []
-        var seen = Set<String>()
-        if !model.continueWatching.isEmpty, seen.insert(Self.continueWatchingKey).inserted {
-            keys.append(Self.continueWatchingKey)
-        }
-        if upcomingRowEnabled, !model.upcoming.isEmpty, seen.insert(Self.upcomingKey).inserted {
-            keys.append(Self.upcomingKey)
-        }
-        for row in model.rows {
-            let key: String
-            switch row {
-            case .catalog(let section): key = section.key
-            case .collection(let collection): key = collection.id
-            }
-            if seen.insert(key).inserted { keys.append(key) }
-        }
-        return keys
+        HomeRowOrder.live(model: model, upcomingEnabled: upcomingRowEnabled, watchlistEnabled: watchlistRowEnabled).stripKeys
     }
 
     /// Perf review 2026-10-17 (#10): a dictionary lookup (`HomeViewModel.rowsByKey`) instead of a
@@ -278,6 +265,8 @@ struct StageStripHome: View {
     private func rowView(_ key: String) -> some View {
         if key == Self.continueWatchingKey {
             continueWatchingRow
+        } else if key == Self.watchlistKey {
+            watchlistRow
         } else if key == Self.upcomingKey {
             upcomingRow
         } else if let row = homeRow(for: key) {
@@ -316,6 +305,27 @@ struct StageStripHome: View {
                          source: Self.upcomingKey,
                          prefetch: { model.upcoming.prefix(8).flatMap { heroBackdropPrefetchURLs(for: $0.toMetaPreview()) } })
         })
+    }
+
+    /// Home Watchlist row: a catalog-style poster row. A focused card reports like a catalog card
+    /// (decision G): logo candidates and backdrop prefetch, so the stage shows its backdrop, logo,
+    /// meta line and synopsis, and the background trailer runs under its gate. Select opens Detail
+    /// (the card's own `NavigationLink(value: TitleRoute)`), and a title in Continue Watching reads
+    /// its progress copy through `StageCopy.progressLookup`, as in every row.
+    @ViewBuilder
+    private var watchlistRow: some View {
+        if let section = model.watchlistSection {
+            CatalogRowView(
+                section: section,
+                previewLimit: CatalogRowView.homePreviewLimit,
+                onItemFocusChange: { item in
+                    stage.report(item,
+                                 source: Self.watchlistKey,
+                                 logoCandidates: { Array(section.items.prefix(CatalogRowView.homePreviewLimit)) },
+                                 prefetch: { section.items.prefix(8).flatMap { heroBackdropPrefetchURLs(for: $0) } })
+                }
+            )
+        }
     }
 
     private func catalogRow(_ section: HomeCatalogSection) -> some View {
@@ -386,6 +396,7 @@ struct StageStripHome: View {
         if key == Self.continueWatchingKey {
             return model.continueWatching.first.map { StageCopy.preview(from: $0) }
         }
+        if key == Self.watchlistKey { return model.watchlistSection?.items.first }
         if key == Self.upcomingKey {
             return model.upcoming.first?.toMetaPreview()
         }

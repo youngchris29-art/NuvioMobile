@@ -88,6 +88,8 @@ struct HomeView: View {
     /// Home Rows toggle, default ON. Local-only like `hero_nuvio_style`. Off = the shared
     /// repository is not even started, so no metadata sweep runs.
     @AppStorage("home_upcoming_row_enabled") private var upcomingRowEnabled = true
+    /// Home Watchlist row: Settings › Home Screen › Home Rows, default ON, device-local (not synced), like Upcoming.
+    @AppStorage("home_watchlist_row_enabled") private var watchlistRowEnabled = true
     /// FEAT-25: whether the hero plays its title's trailer on its own, with no focus anywhere near
     /// it (the Nuvio behavior). Default OFF, so an untouched install keeps exactly the static
     /// backdrop it has always had. Device-local for the same reason `inline_trailers_enabled` is —
@@ -372,6 +374,9 @@ struct HomeView: View {
         // (`HomeViewModel.catalogRowsSettledAfterGateOpen`), as the carousel holds for its commit.
         guard model.catalogRowsSettledAfterGateOpen else { return nil }
         if let firstEntry = model.continueWatching.first { return previewFromEntry(firstEntry) }
+        // FEAT-92 (decision Q a): the Watchlist seeds only after the catalog rows and Continue
+        // Watching, so today's catalog-first precedence is unchanged.
+        if watchlistRowEnabled, let first = model.watchlistSection?.items.first { return first }
         // BUG-38 round three (Codex r2): a collection-only Home — no catalog rows, no Continue
         // Watching — still has something the panel can represent when a folder carries its own
         // hero artwork. Same load-boundary character as the branches above (it moves when the
@@ -764,6 +769,7 @@ struct HomeView: View {
     /// Folder-return Up-skip (2026-10-17): identity tokens for the Continue Watching and Upcoming
     /// rows, bumped by `remountTopRowsAfterPop`. See that function.
     @State private var continueWatchingRowToken = 0
+    @State private var watchlistRowToken = 0
     @State private var upcomingRowToken = 0
     @State private var activeUpFallbackTarget: String?
     /// The row the live attempt started FROM, captured at `beginUpFallback` — the `landed`
@@ -899,6 +905,7 @@ struct HomeView: View {
                 // BUG-156 (invisible, harness-readable): Classic's remembered card and the last
                 // pop-restore event. A leaf with its own sink, so it never re-renders this body.
                 HomeReturnDebugLabel()
+                HomeWatchlistDebugLabel(model: model, enabled: watchlistRowEnabled)
                 HomeBodyCountLabel()
                 // FEAT-30 / H9 (invisible, harness-readable): which navigation chrome this build is
                 // rendering under (`mode=tabs|rail`), the rail's visibility, the leading inset Always
@@ -1365,6 +1372,7 @@ struct HomeView: View {
             // stops, restarts, or republishes.
             model.acquire()
             if upcomingRowEnabled { model.startUpcoming() }
+            if watchlistRowEnabled { model.startWatchlist() }
             heroSettings.start()
             prefetchHeroArt()
             // Wave H: the repository cache can already have published hero items before this view
@@ -1445,6 +1453,9 @@ struct HomeView: View {
         .onChange(of: upcomingRowEnabled) { _, enabled in
             if enabled { model.startUpcoming() } else { model.stopUpcoming() }
         }
+        .onChange(of: watchlistRowEnabled) { _, enabled in
+            if enabled { model.startWatchlist() } else { model.stopWatchlist() }
+        }
         // Review r1 (A P2-4, B P2-3): a live Home Layout flip mounts the other layout at its top,
         // but `isScrolledDown` and the rail's mirror kept the old layout's state: Classic's
         // hysteresis writes only on crossings, and Stage's first ownership doesn't page. Left set,
@@ -1515,7 +1526,7 @@ struct HomeView: View {
                 }
 
                 // Perf review 2026-10-17 (#1): the rows region — placeholder, Continue Watching,
-                // Upcoming and every catalog / collection row — is its own view that observes only
+                // the Watchlist, Upcoming and every catalog / collection row — is its own view that observes only
                 // `HomeViewModel` and takes stable inputs (one `HomeRowActions` reference, the
                 // pinned floors as values). A hero focus commit, a carousel page, a settle probe
                 // line or any other state this body owns no longer re-renders a single row.
@@ -1523,6 +1534,7 @@ struct HomeView: View {
                              actions: rowActions,
                              pinned: pinned,
                              upcomingRowEnabled: upcomingRowEnabled,
+                             watchlistRowEnabled: watchlistRowEnabled,
                              shortRowFloorEnabled: pinnedShortRowFloor,
                              lastRowFloor: pinnedLastRowLinkFrameFloor(plan),
                              refresh: HomeRowsRefresh(systemVideoAutoplayEnabled: systemVideoAutoplayEnabled,
@@ -1531,6 +1543,7 @@ struct HomeView: View {
                                                       focusRequest: rowFocusRequest,
                                                       focusedRowKey: focusedRowKeyState),
                              continueWatchingToken: continueWatchingRowToken,
+                             watchlistToken: watchlistRowToken,
                              upcomingToken: upcomingRowToken)
             }
             // Pinned only (device rounds 4–5): every row card extends its focusable frame
@@ -2174,8 +2187,8 @@ struct HomeView: View {
         // and settled (`apply … after=nil`), where Down from the CTA focused it at once; a fresh
         // identity takes the ask. Given now, before the scroll brings the row in, so the first ask
         // can land; once more at 0.6 s below if it has not.
-        if target.key == "continue-watching" || target.key == "upcoming" {
-            if target.key == "continue-watching" { continueWatchingRowToken &+= 1 } else { upcomingRowToken &+= 1 }
+        if HomeTopRowKey.isTopRow(target.key) {
+            bumpTopRowToken(target.key)
             logHomeReturn("remount rows=\(target.key) reason=redirect")
         }
         PinnedRowSettle.noteExternalScroll(reason: "up-into-hero-redirect")
@@ -2189,10 +2202,10 @@ struct HomeView: View {
                 requestRowFocus(target.key)
             }
         }
-        if target.key == "continue-watching" || target.key == "upcoming" {
+        if HomeTopRowKey.isTopRow(target.key) {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
                 guard stillRedirecting() else { return }
-                if target.key == "continue-watching" { continueWatchingRowToken &+= 1 } else { upcomingRowToken &+= 1 }
+                bumpTopRowToken(target.key)
                 logHomeReturn("remount rows=\(target.key) reason=redirectMissed")
             }
         }
@@ -2255,7 +2268,8 @@ struct HomeView: View {
     /// land well after the focus gain it caused.
     private static let upIntoHeroWindow: TimeInterval = 0.8
 
-    /// The row ABOVE `rowKey` in `rowsScroll`'s actual render order — Continue Watching, then
+    /// The row ABOVE `rowKey` in `rowsScroll`'s actual render order — Continue Watching, then the
+    /// Watchlist (FEAT-92, `home_upcoming_top` anchors Upcoming below it), then
     /// Upcoming, then `ForEach(model.rows)` — together with the scroll anchor that reveals it.
     /// `nil` when `rowKey` is the topmost row, or is not a row this screen renders.
     ///
@@ -2274,22 +2288,23 @@ struct HomeView: View {
     /// scroll anchor — using `HomeRow.id` as the key here would silently never match
     /// `focusedRowKey` for any collection row and the fallback would never fire past row 2.
     private func previousRowTarget(for rowKey: String) -> (key: String, anchor: String)? {
-        var order: [(key: String, anchor: String)] = []
-        if !model.continueWatching.isEmpty { order.append((key: "continue-watching", anchor: "home_top")) }
-        if upcomingRowEnabled, !model.upcoming.isEmpty { order.append((key: "upcoming", anchor: "home_top")) }
-        for row in model.rows {
-            switch row {
-            case .catalog(let section):
-                // `HomeRow.id` for `.catalog` IS `section.key` (HomeViewModel.swift) — no
-                // divergence here, but named explicitly rather than reused so the collection
-                // branch's divergence below doesn't read as an inconsistency.
-                order.append((key: section.key, anchor: section.key))
-            case .collection(let collection):
-                order.append((key: collection.id, anchor: row.id))
-            }
+        rowOrder.previous(of: rowKey).map { (key: $0.key, anchor: $0.anchor) }
+    }
+
+    /// The one source of Home's row order (`HomeRowOrder`): Classic's ladder, remounts and last-row
+    /// arithmetic and Stage's strip keys all read it. With the Watchlist absent it is today's order.
+    private var rowOrder: HomeRowOrder {
+        .live(model: model, upcomingEnabled: upcomingRowEnabled, watchlistEnabled: watchlistRowEnabled)
+    }
+
+    /// Renews a top row's view identity (folder-return Up-skip); a key that is not a top row is ignored.
+    private func bumpTopRowToken(_ key: String) {
+        switch key {
+        case HomeTopRowKey.continueWatching: continueWatchingRowToken &+= 1
+        case HomeTopRowKey.watchlist: watchlistRowToken &+= 1
+        case HomeTopRowKey.upcoming: upcomingRowToken &+= 1
+        default: break
         }
-        guard let index = order.firstIndex(where: { $0.key == rowKey }), index > 0 else { return nil }
-        return order[index - 1]
     }
 
     /// The hand-off ladder. Each rung is cheaper-first and only runs if the one before it did not
@@ -2578,29 +2593,23 @@ struct HomeView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
             guard serial == upInput.popSerial, homePath.isEmpty, resume == nil else { return }
             var rebuilt: [String] = []
-            if !model.continueWatching.isEmpty,
-               focusedRowKey != "continue-watching", origin != "continue-watching" {
-                continueWatchingRowToken &+= 1
-                rebuilt.append("continue-watching")
-            }
-            if upcomingRowEnabled, !model.upcoming.isEmpty,
-               focusedRowKey != "upcoming", origin != "upcoming" {
-                upcomingRowToken &+= 1
-                rebuilt.append("upcoming")
+            for key in rowOrder.topKeys where focusedRowKey != key && origin != key {
+                bumpTopRowToken(key)
+                rebuilt.append(key)
             }
             logHomeReturn("remount rows=\(rebuilt.isEmpty ? "-" : rebuilt.joined(separator: ","))")
         }
         // Review r1 (P2-3): Detail opened from a Continue Watching or Upcoming card makes that row
         // the origin, kept above. If the restore could not land in it (the same dropped writes),
         // give it its fresh identity once the restore is over and it still does not hold focus.
-        guard origin == "continue-watching" || origin == "upcoming" else { return }
+        guard let origin, HomeTopRowKey.isTopRow(origin) else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + HomeReturnFocusMemory.expiry + 0.1) {
             // Only when the origin never took focus since this pop (review r2 P3-1): a restore that
             // landed and a viewer who then moved on must keep the row and its card position.
             guard serial == upInput.popSerial, homePath.isEmpty, resume == nil,
                   !upInput.popOriginOwned, focusedRowKey != origin else { return }
-            if origin == "continue-watching" { continueWatchingRowToken &+= 1 } else { upcomingRowToken &+= 1 }
-            logHomeReturn("remount rows=\(origin ?? "-") reason=originMissed")
+            bumpTopRowToken(origin)
+            logHomeReturn("remount rows=\(origin) reason=originMissed")
         }
     }
 
@@ -3090,14 +3099,7 @@ struct HomeView: View {
         if let last = model.rows.last {
             switch last {
             case .catalog:
-                let artworkHeight = posterStyle.landscapeCatalogRows
-                    ? Theme.Size.landscapeHeight : posterStyle.height
-                let caption = posterStyle.showTitle ? PinnedRowTitle.cardLockupCaptionChrome : 0
-                // `pinnedUniformShelfChrome` bundles the two `Spacing.lg` shelf paddings with the
-                // reaches; pull the label (topReach + artwork + caption + bottomReach) back out so
-                // the floor is compared against the label alone, not the whole shelf.
-                let label = plan.topReach + artworkHeight + caption + plan.bottomReach
-                return Theme.Spacing.lg + max(label, floor) + Theme.Spacing.lg
+                return catalogShelfHeight(plan)
             case .collection(let collection):
                 // BUG-87 (beta.18): `pinnedRowHeight` states the FIXED pinned reaches
                 // (`heroPinnedRowTopPad` / `heroPinnedRowBottomReach`) because they were the only
@@ -3120,13 +3122,30 @@ struct HomeView: View {
         // claim. Overstating the last row's height understates `pinnedRowsBottomInset` by the same
         // amount, which is the one thing that inset exists to get right.
         let fallbackCaption = posterStyle.showTitle ? PinnedRowTitle.cardLockupCaptionChrome : 0
-        if upcomingRowEnabled, !model.upcoming.isEmpty {
+        switch rowOrder.lastTopRowKeyWhenNoModelRows {
+        case HomeTopRowKey.watchlist?:
+            // FEAT-92: the Watchlist is a `CatalogRowView`, so as the last row it has a catalog
+            // row's shelf and floor.
+            return catalogShelfHeight(plan)
+        case HomeTopRowKey.upcoming?, HomeTopRowKey.continueWatching?:
             return Theme.Size.landscapeHeight + fallbackCaption + pinnedUniformShelfChrome(plan)
+        default:
+            return nil
         }
-        if !model.continueWatching.isEmpty {
-            return Theme.Size.landscapeHeight + fallbackCaption + pinnedUniformShelfChrome(plan)
-        }
-        return nil
+    }
+
+    /// The shelf height of a catalog row (`CatalogRowView`) as the LAST pinned row: its own label
+    /// or the plan's link-frame floor, whichever is larger, plus the two shelf paddings.
+    private func catalogShelfHeight(_ plan: PinnedRowGeometry.Plan) -> CGFloat {
+        let floor = pinnedLastRowLinkFrameFloor(plan)
+        let artworkHeight = posterStyle.landscapeCatalogRows
+            ? Theme.Size.landscapeHeight : posterStyle.height
+        let caption = posterStyle.showTitle ? PinnedRowTitle.cardLockupCaptionChrome : 0
+        // `pinnedUniformShelfChrome` bundles the two `Spacing.lg` shelf paddings with the
+        // reaches; pull the label (topReach + artwork + caption + bottomReach) back out so
+        // the floor is compared against the label alone, not the whole shelf.
+        let label = plan.topReach + artworkHeight + caption + plan.bottomReach
+        return Theme.Spacing.lg + max(label, floor) + Theme.Spacing.lg
     }
 
     /// BUG-87/89 (rc11): the label-height floor Home's LAST pinned row publishes — see
@@ -3151,10 +3170,7 @@ struct HomeView: View {
     /// Identifies `pinnedLastRowHeight`'s row for the probe line — `HomeRow.id` in the common
     /// case, the fixed row keys `rowsScroll` uses for CW/Upcoming otherwise.
     private var pinnedLastRowId: String? {
-        if let id = model.rows.last?.id { return id }
-        if upcomingRowEnabled, !model.upcoming.isEmpty { return "upcoming" }
-        if !model.continueWatching.isEmpty { return "continue-watching" }
-        return nil
+        rowOrder.lastRowId
     }
 
     /// The fixed vertical chrome every UNIFORM-card pinned shelf (catalog, Continue Watching,

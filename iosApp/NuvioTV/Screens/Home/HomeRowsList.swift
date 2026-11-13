@@ -95,7 +95,7 @@ struct HomeRowsRefresh: Equatable {
     var focusedRowKey: String?
 }
 
-/// Home's rows: the placeholder, Continue Watching, Upcoming, then the catalog and collection rows
+/// Home's rows: the placeholder, Continue Watching, the Watchlist, Upcoming, then the catalog and collection rows
 /// in the user's Home Rows order. See the header above.
 struct HomeRowsList: View {
     @ObservedObject var model: HomeViewModel
@@ -103,6 +103,7 @@ struct HomeRowsList: View {
     /// `HomeView.rowsScroll`'s `pinned` (the header's load boundary).
     let pinned: Bool
     let upcomingRowEnabled: Bool
+    let watchlistRowEnabled: Bool
     /// rc14 (BUG-122): About → "Short Row Floor (A/B)" (`debug.pinnedShortRowFloor`).
     let shortRowFloorEnabled: Bool
     /// BUG-87/89 (rc11): `PinnedRowGeometry.lastRowLinkFrameFloor` for the current plan.
@@ -114,6 +115,7 @@ struct HomeRowsList: View {
     /// renewed after a pop (`HomeView.remountTopRowsAfterPop`). Kept out of `refresh`, which every
     /// catalog and collection cell compares, so a bump rebuilds these two rows only (review r1 P3).
     var continueWatchingToken: Int = 0
+    var watchlistToken: Int = 0
     var upcomingToken: Int = 0
 
     var body: some View {
@@ -147,18 +149,32 @@ struct HomeRowsList: View {
             .id("home-cw-row-\(continueWatchingToken)")
         }
 
+        // Home Watchlist row (FEAT-92): Trakt watchlist + Simkl Plan to Watch, under Continue
+        // Watching and above Upcoming, like them not part of `model.rows`. A uniform poster row
+        // through the catalog cell (no See All: 18 items at most, `hasMore` false). Hidden while
+        // empty or toggled off. Last row only when nothing renders below it.
+        if watchlistRowEnabled, let section = model.watchlistSection {
+            let isLast = model.rows.isEmpty && !(upcomingRowEnabled && !model.upcoming.isEmpty)
+            HomeCatalogRowCell(section: section, actions: actions, refresh: refresh)
+                .equatable()
+                .environment(\.pinnedRowIsLast, isLast)
+                .environment(\.rowCardLinkFrameFloor, pinned && isLast ? lastRowFloor : 0)
+                // Folder-return Up-skip: renewed after a pop, as Continue Watching.
+                .id("home-watchlist-row-\(watchlistToken)")
+        }
+
         // Upcoming: next airing episode per followed show, directly under Continue
-        // Watching and above every settings-ordered row (like CW, not part of
-        // `model.rows`). Hidden while empty or toggled off.
+        // Watching (and the Watchlist) and above every settings-ordered row (like CW, not part
+        // of `model.rows`). Hidden while empty or toggled off. While the Watchlist is present it
+        // gets its own scroll anchor (`home_upcoming_top`), so the pinned Up ladder's scroll rungs
+        // reveal Upcoming and not the top of the rows region.
         if upcomingRowEnabled, !model.upcoming.isEmpty {
-            UpcomingRow(
-                items: model.upcoming,
-                onItemFocusChange: { [actions] in actions.upcomingFocus($0) }
-            )
-            // rc14 (BUG-122): the short-row floor — see `shortRowLinkFrameFloor`.
-            .environment(\.rowCardLinkFrameFloor, shortRowLinkFrameFloor)
-            // Folder-return Up-skip: as Continue Watching above.
-            .id("home-upcoming-row-\(upcomingToken)")
+            if watchlistRowEnabled, model.watchlistSection != nil {
+                VStack(spacing: 0) { upcomingRow }
+                    .id(HomeTopRowKey.upcomingAnchorBelowWatchlist)
+            } else {
+                upcomingRow
+            }
         }
 
         // Catalog sections and collection folder-tile rows, interleaved per the
@@ -215,6 +231,18 @@ struct HomeRowsList: View {
                                     || (shortRowFloorEnabled && Self.isCollectionRow(row)))
                              ? lastRowFloor : 0)
         }
+    }
+
+    @ViewBuilder
+    private var upcomingRow: some View {
+        UpcomingRow(
+            items: model.upcoming,
+            onItemFocusChange: { [actions] in actions.upcomingFocus($0) }
+        )
+        // rc14 (BUG-122): the short-row floor — see `shortRowLinkFrameFloor`.
+        .environment(\.rowCardLinkFrameFloor, shortRowLinkFrameFloor)
+        // Folder-return Up-skip: as Continue Watching above.
+        .id("home-upcoming-row-\(upcomingToken)")
     }
 
     /// rc14 (BUG-122, every 2026-09-30 device walk): the SAME floor, published on the short rows
