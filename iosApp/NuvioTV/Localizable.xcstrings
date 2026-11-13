@@ -5890,6 +5890,40 @@
         }
       }
     },
+    "Adds a row under Continue Watching with movies and series from your Trakt watchlist and Simkl Plan to Watch, most recently added first. The row appears only when Trakt or Simkl is connected. The full list stays in the Library. On by default.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fügt unter „Weiterschauen“ eine Reihe mit Filmen und Serien aus deiner Trakt-Watchlist und Simkl Plan to Watch hinzu, zuletzt hinzugefügte zuerst. Die Reihe erscheint nur, wenn Trakt oder Simkl verbunden ist. Die vollständige Liste bleibt in der Bibliothek. Standardmäßig ein."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Añade una fila bajo Seguir viendo con películas y series de tu lista de seguimiento de Trakt y Plan to Watch de Simkl, las añadidas más recientemente primero. La fila aparece solo cuando Trakt o Simkl está conectado. La lista completa se mantiene en la Biblioteca. Activado por defecto."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ajoute une rangée sous Continuer à regarder avec des films et des séries de votre liste de suivi Trakt et Plan to Watch de Simkl, les plus récemment ajoutés en premier. La rangée n’apparaît que lorsque Trakt ou Simkl est connecté. La liste complète reste dans la Bibliothèque. Activé par défaut."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aggiunge una riga sotto Continua a guardare con film e serie dalla tua watchlist di Trakt e dalla lista Plan to Watch di Simkl, dagli ultimi aggiunti. La riga compare solo quando Trakt o Simkl è collegato. La lista completa resta nella Libreria. Attivato per impostazione predefinita."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thêm một hàng bên dưới Tiếp tục xem với phim và loạt phim từ danh sách theo dõi Trakt và Plan to Watch của Simkl, mục mới thêm gần nhất xếp trước. Hàng này chỉ hiện khi đã kết nối Trakt hoặc Simkl. Toàn bộ danh sách vẫn nằm trong Thư viện. Mặc định bật."
+          }
+        }
+      }
+    },
     "Adds a row under Continue Watching with the next episodes of your shows that air in the next 14 days. On by default.": {
       "localizations": {
         "de": {
@@ -5920,40 +5954,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Thêm một hàng bên dưới Tiếp tục xem với các tập tiếp theo của chương trình bạn sẽ phát sóng trong 14 ngày tới. Mặc định bật."
-          }
-        }
-      }
-    },
-    "Adds a row under Continue Watching with your Trakt watchlist and Simkl Plan to Watch, movies and series together, newest first. It shows when Trakt or Simkl is connected, and the full list stays in the Library. On by default.": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Fügt unter „Weiterschauen“ eine Reihe mit deiner Trakt-Watchlist und Simkl Plan to Watch hinzu, Filme und Serien gemeinsam, neueste zuerst. Sie erscheint, wenn Trakt oder Simkl verbunden ist, und die vollständige Liste bleibt in der Bibliothek. Standardmäßig ein."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Añade una fila bajo Seguir viendo con tu lista de seguimiento de Trakt y Plan to Watch de Simkl, películas y series juntas, las más recientes primero. Aparece cuando Trakt o Simkl está conectado, y la lista completa se mantiene en la Biblioteca. Activado por defecto."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ajoute une rangée sous Continuer à regarder avec votre liste de suivi Trakt et Plan to Watch de Simkl, films et séries ensemble, les plus récents en premier. Elle s’affiche quand Trakt ou Simkl est connecté, et la liste complète reste dans la Bibliothèque. Activé par défaut."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Aggiunge una riga sotto Continua a guardare con la tua watchlist di Trakt e la lista Plan to Watch di Simkl, film e serie insieme, dalle più recenti. Compare quando Trakt o Simkl è collegato, e la lista completa resta nella Libreria. Attivato per impostazione predefinita."
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Thêm một hàng bên dưới Tiếp tục xem với danh sách theo dõi Trakt và Plan to Watch của Simkl, phim và phim bộ cùng lúc, mới nhất trước. Hàng này hiện khi đã kết nối Trakt hoặc Simkl, và toàn bộ danh sách vẫn nằm trong Thư viện. Mặc định bật."
           }
         }
       }
