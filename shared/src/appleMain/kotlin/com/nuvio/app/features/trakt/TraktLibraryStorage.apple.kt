@@ -23,6 +23,10 @@ actual object TraktLibraryStorage {
         PayloadFileStore.save(subdirectory, ProfileScopedKey.of(payloadKey), payload)
     }
 
+    internal actual fun savePayload(profileId: Int, payload: String) {
+        PayloadFileStore.save(subdirectory, ProfileScopedKey.of(payloadKey, profileId), payload)
+    }
+
     /** Sign-out cleanup — mirrors PluginStateFiles.deleteAll (called by TvOsAccountDataCleaner). */
     fun deleteAll() = PayloadFileStore.deleteAll(subdirectory)
 }

@@ -6,6 +6,10 @@ import com.nuvio.app.features.addons.RawHttpResponse
 import com.nuvio.app.features.addons.httpRequestRaw
 import com.nuvio.app.features.details.tenPointRatingText
 import com.nuvio.app.features.library.LibraryItem
+import com.nuvio.app.features.profiles.ProfileRepository
+import kotlinx.atomicfu.atomic
+import kotlinx.atomicfu.locks.SynchronizedObject
+import kotlinx.atomicfu.locks.synchronized
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -66,6 +70,70 @@ object TraktLibraryRepository {
     private var lastRefreshAtMs: Long = 0L
     private var lastListTabsRefreshAtMs: Long = 0L
 
+    /**
+     * W7 (P1): bumped by [onProfileChanged] and [clearLocalState]. A request captures it with the
+     * active profile at its start; nothing it fetched is published or written once either moved.
+     */
+    private val profileGeneration = atomic(0L)
+
+    /**
+     * "Still current, then publish" against "bump, then reset" ([onProfileChanged],
+     * [clearLocalState]). Never held across I/O. Lock order: [saveLock] may enclose this, never the reverse.
+     */
+    private val stateLock = SynchronizedObject()
+
+    /** "Still current, then write" against sign-out's "bump, then wipe" ([clearLocalState]). */
+    private val saveLock = SynchronizedObject()
+
+    private class RequestToken(val generation: Long, val profileId: Int)
+
+    private fun captureRequest(): RequestToken =
+        RequestToken(profileGeneration.value, ProfileRepository.activeProfileId)
+
+    private fun isCurrent(request: RequestToken): Boolean =
+        request.generation == profileGeneration.value &&
+            request.profileId == ProfileRepository.activeProfileId
+
+    /** Sets `transform(latest)` unless the profile moved on; returns whether it was set. */
+    private fun publishIfCurrent(
+        request: RequestToken,
+        transform: (TraktLibraryUiState) -> TraktLibraryUiState,
+    ): Boolean = synchronized(stateLock) {
+        if (isCurrent(request)) {
+            _uiState.value = transform(_uiState.value)
+            true
+        } else {
+            false
+        }
+    }
+
+    /** Writes [state] to the REQUEST's profile file unless the profile moved on (encode outside the lock). */
+    private fun saveIfCurrent(request: RequestToken, state: TraktLibraryUiState): Boolean {
+        val payload = json.encodeToString(
+            StoredTraktLibraryPayload(listTabs = state.listTabs, entriesByList = state.entriesByList),
+        )
+        return synchronized(saveLock) {
+            if (isCurrent(request)) {
+                payloadSaver(request.profileId, payload)
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    /** Test seam: the full fetch (production: [fetchSnapshot]). */
+    internal var snapshotFetcher: suspend (Map<String, String>, (TraktLibraryUiState) -> Unit) -> TraktLibraryUiState =
+        { headers, onPartial -> fetchSnapshot(headers, onPartial) }
+
+    /** Test seam: reads the ACTIVE profile's cached payload (production: [TraktLibraryStorage.loadPayload]). */
+    internal var payloadLoader: () -> String? = { TraktLibraryStorage.loadPayload() }
+
+    /** Test seam: writes the NAMED profile's payload (production: [TraktLibraryStorage.savePayload]). */
+    internal var payloadSaver: (Int, String) -> Unit = { profileId, payload ->
+        TraktLibraryStorage.savePayload(profileId, payload)
+    }
+
     fun ensureLoaded() {
         if (hasLoaded) return
         hasLoaded = true
@@ -85,19 +153,28 @@ object TraktLibraryRepository {
     }
 
     fun onProfileChanged() {
-        hasLoaded = false
-        lastRefreshAtMs = 0L
-        lastListTabsRefreshAtMs = 0L
-        _uiState.value = TraktLibraryUiState()
+        synchronized(stateLock) {
+            profileGeneration.incrementAndGet()
+            hasLoaded = false
+            lastRefreshAtMs = 0L
+            lastListTabsRefreshAtMs = 0L
+            _uiState.value = TraktLibraryUiState()
+        }
         ensureLoaded()
     }
 
     fun clearLocalState() {
-        hasLoaded = false
-        lastRefreshAtMs = 0L
-        lastListTabsRefreshAtMs = 0L
-        _uiState.value = TraktLibraryUiState()
-        TraktLibraryStorage.savePayload("")
+        // Bump and wipe as one step against a request's "still current, then write".
+        synchronized(saveLock) {
+            synchronized(stateLock) {
+                profileGeneration.incrementAndGet()
+                hasLoaded = false
+                lastRefreshAtMs = 0L
+                lastListTabsRefreshAtMs = 0L
+                _uiState.value = TraktLibraryUiState()
+            }
+            payloadSaver(ProfileRepository.activeProfileId, "")
+        }
     }
 
     fun currentListTabs(): List<TraktListTab> = _uiState.value.listTabs
@@ -119,20 +196,22 @@ object TraktLibraryRepository {
         ensureLoaded()
         refreshMutex.withLock {
             if (_uiState.value.listTabs.isNotEmpty()) return
-
-            val headers = TraktAuthRepository.authorizedHeaders() ?: return
+            val request = captureRequest()
+            val headers = authorizedHeadersSource() ?: return
             val tabs = fetchListTabs(headers)
-            _uiState.value = _uiState.value.copy(
-                listTabs = tabs,
-                errorMessage = null,
-            )
-            lastListTabsRefreshAtMs = TraktPlatformClock.nowEpochMs()
+            publishIfCurrent(request) { state ->
+                lastListTabsRefreshAtMs = TraktPlatformClock.nowEpochMs()
+                state.copy(listTabs = tabs, errorMessage = null)
+            }
         }
     }
 
     private suspend fun refresh(force: Boolean) {
         ensureLoaded()
         refreshMutex.withLock {
+            // W7 (P1): captured under the mutex, so a request queued behind an older profile's
+            // fetch runs for the profile active when it starts, and the older one is discarded.
+            val request = captureRequest()
             val now = TraktPlatformClock.nowEpochMs()
             val current = _uiState.value
             val cacheWindowMs = if (force) FORCE_REFRESH_DEDUP_MS else SNAPSHOT_CACHE_TTL_MS
@@ -144,44 +223,43 @@ object TraktLibraryRepository {
                 return
             }
 
-            val headers = TraktAuthRepository.authorizedHeaders()
+            val headers = authorizedHeadersSource()
             if (headers == null) {
-                _uiState.value = TraktLibraryUiState()
-                lastRefreshAtMs = 0L
-                lastListTabsRefreshAtMs = 0L
+                publishIfCurrent(request) {
+                    lastRefreshAtMs = 0L
+                    lastListTabsRefreshAtMs = 0L
+                    TraktLibraryUiState()
+                }
                 return
             }
 
-            _uiState.value = current.copy(isLoading = true, errorMessage = null)
+            if (!publishIfCurrent(request) { it.copy(isLoading = true, errorMessage = null) }) return
 
             val result = runCatching {
-                fetchSnapshot(headers) { partialState ->
-                    _uiState.value = partialState.copy(
-                        isLoading = true,
-                        hasLoaded = true,
-                        errorMessage = null,
-                    )
+                snapshotFetcher(headers) { partialState ->
+                    publishIfCurrent(request) {
+                        partialState.copy(isLoading = true, hasLoaded = true, errorMessage = null)
+                    }
                 }
             }
             result.exceptionOrNull()?.let { error ->
                 if (error is CancellationException) throw error
                 log.w(error) { "Failed to refresh Trakt library" }
-                _uiState.value = _uiState.value.copy(
-                    isLoading = false,
-                    hasLoaded = true,
-                    errorMessage = traktLibraryLoadErrorMessage(error),
-                )
+                val message = traktLibraryLoadErrorMessage(error) // suspend: never inside a lock
+                publishIfCurrent(request) {
+                    it.copy(isLoading = false, hasLoaded = true, errorMessage = message)
+                }
                 return
             }
 
-            val snapshot = result.getOrThrow()
-            _uiState.value = snapshot.copy(
-                isLoading = false,
-                hasLoaded = true,
-                errorMessage = null,
-            )
-            persistSnapshot(_uiState.value)
-            lastRefreshAtMs = now
+            val finalState = result.getOrThrow().copy(isLoading = false, hasLoaded = true, errorMessage = null)
+            // Write first, then publish (Simkl's order). A switch between the two leaves the
+            // request's own file correct and the new profile's state untouched.
+            if (!saveIfCurrent(request, finalState)) return
+            publishIfCurrent(request) {
+                lastRefreshAtMs = now // inside the lock: a reset right after can never be overwritten
+                finalState
+            }
         }
     }
 
@@ -249,6 +327,7 @@ object TraktLibraryRepository {
         val current = getMembershipSnapshot(item).listMembership
         val desired = changes.desiredMembership
         val keys = (current.keys + desired.keys).distinct()
+        val request = captureRequest()
         val previousState = _uiState.value
 
         _uiState.value = applyOptimisticMembershipChanges(
@@ -280,7 +359,7 @@ object TraktLibraryRepository {
                 }
             }
         } catch (error: Throwable) {
-            _uiState.value = previousState
+            publishIfCurrent(request) { previousState }
             throw error
         }
     }
@@ -423,7 +502,7 @@ object TraktLibraryRepository {
     }
 
     private fun loadSnapshotFromDisk() {
-        val payload = TraktLibraryStorage.loadPayload().orEmpty().trim()
+        val payload = payloadLoader().orEmpty().trim()
         if (payload.isBlank()) return
 
         val cached = runCatching {
@@ -437,14 +516,6 @@ object TraktLibraryRepository {
             entriesByList = cached.entriesByList,
         )
         _uiState.value = state.copy(isLoading = false, errorMessage = null, hasLoaded = true)
-    }
-
-    private fun persistSnapshot(state: TraktLibraryUiState) {
-        val payload = StoredTraktLibraryPayload(
-            listTabs = state.listTabs,
-            entriesByList = state.entriesByList,
-        )
-        TraktLibraryStorage.savePayload(json.encodeToString(payload))
     }
 
     private suspend fun traktLibraryLoadErrorMessage(error: Throwable): String {

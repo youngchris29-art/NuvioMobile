@@ -1243,7 +1243,14 @@ final class HomeViewModel: ObservableObject {
                 DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(delay)) { [weak self] in
                     guard let self, self.pipelineGeneration == gen, self.watchlistSeedPending else { return }
                     self.watchlistSeedPending = false
-                    self.publishWatchlistSection(seeded)
+                    // W7 (P2): the refusal (guest only, no tracker progress source) is re-read at
+                    // delivery. Refused now → the real path; section() is nil there, so
+                    // startWatchlist() cannot reach this delay branch again.
+                    if let fresh = HomeWatchlistDebugSeed.section(title: String(localized: "Watchlist")) {
+                        self.publishWatchlistSection(fresh)
+                    } else {
+                        self.startWatchlist()
+                    }
                 }
                 return
             }
