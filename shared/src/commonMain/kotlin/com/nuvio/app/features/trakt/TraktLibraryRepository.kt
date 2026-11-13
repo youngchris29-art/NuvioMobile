@@ -136,8 +136,10 @@ object TraktLibraryRepository {
     }
 
     fun ensureLoaded() {
-        val active = ProfileRepository.activeProfileId
         val request = synchronized(stateLock) {
+            // W7 delta review 2 (P3-1): read under the lock onProfileChanged resets under, so a caller
+            // that entered before a switch can never roll the latch back to the old profile.
+            val active = ProfileRepository.activeProfileId
             if (loadedProfileId == active) {
                 null
             } else {
@@ -359,10 +361,14 @@ object TraktLibraryRepository {
         }
         val desired = changes.desiredMembership
         val keys = (current.keys + desired.keys).distinct()
-        val previousState = _uiState.value
+        // W7 delta review 2 (P3-2): both set inside the publish's lock, for the rollback below.
+        var previousState = _uiState.value
+        var optimisticState = previousState
 
         if (!publishIfCurrent(request) { state ->
+                previousState = state
                 applyOptimisticMembershipChanges(state = state, item = item, desiredMembership = desired)
+                    .also { optimisticState = it }
             }
         ) {
             log.i { "Trakt library change abandoned item=${item.id}: the profile changed" }
@@ -382,9 +388,46 @@ object TraktLibraryRepository {
                 membershipWriter(headers, key, after, item)
             }
         } catch (error: Throwable) {
-            publishIfCurrent(request) { previousState }
+            publishIfCurrent(request) { latest ->
+                rolledBackMembership(
+                    latest = latest,
+                    previousState = previousState,
+                    optimisticState = optimisticState,
+                    item = item,
+                    before = current,
+                    desired = desired,
+                )
+            }
             throw error
         }
+    }
+
+    /**
+     * W7 delta review 2 (P3-2): a failed toggle's rollback. When nothing was published since the
+     * optimistic change, the exact pre-toggle state (as before). Otherwise (a refresh landed during
+     * the writes) only the lists this toggle changed go back to their pre-toggle membership, on the
+     * latest state, so the refresh's items survive. Pure; runs inside [publishIfCurrent]'s lock.
+     */
+    private fun rolledBackMembership(
+        latest: TraktLibraryUiState,
+        previousState: TraktLibraryUiState,
+        optimisticState: TraktLibraryUiState,
+        item: LibraryItem,
+        before: Map<String, Boolean>,
+        desired: Map<String, Boolean>,
+    ): TraktLibraryUiState {
+        if (latest === optimisticState) return previousState
+        val itemKeys = allContentKeys(item)
+        // Re-adding a removed title restores its stored entry (poster, savedAt), not the bare toggle item.
+        val restoredItem = previousState.allItems.firstOrNull { entry ->
+            allContentKeys(entry).any(itemKeys::contains)
+        } ?: item
+        val membership = membershipListKeys(latest, restoredItem).associateWith { true }.toMutableMap()
+        (before.keys + desired.keys).forEach { key ->
+            val wasMember = before[key] == true
+            if (wasMember != (desired[key] == true)) membership[key] = wasMember
+        }
+        return applyOptimisticMembershipChanges(state = latest, item = restoredItem, desiredMembership = membership)
     }
 
     /** Test seam: one membership change on Trakt (production: [writeMembership]). */

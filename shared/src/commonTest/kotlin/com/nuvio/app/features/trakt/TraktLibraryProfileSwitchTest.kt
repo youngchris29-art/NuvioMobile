@@ -307,6 +307,50 @@ class TraktLibraryProfileSwitchTest {
     }
 
     @Test
+    fun aFailedToggleKeepsARefreshThatLandedDuringItsWrites() = runBlocking {
+        withTimeout(10_000) {
+            val payloadA = payloadFor(1, "tt-a1")
+            val payloadR = payloadFor(3, "tt-a1", "tt-r1", "tt-x")
+            TraktLibraryRepository.payloadLoader = { id -> mapOf(1 to payloadA, 3 to payloadR)[id] }
+            // The refresh's result, rebuilt by the repository (membershipByContent filled in).
+            ProfileRepository.selectProfile(3)
+            TraktLibraryRepository.onProfileChanged()
+            val refreshed = TraktLibraryRepository.uiState.value
+            ProfileRepository.selectProfile(1)
+            TraktLibraryRepository.onProfileChanged()
+            assertEquals(listOf("tt-a1"), ids())
+
+            var offline = true
+            TraktLibraryRepository.snapshotFetcher = { _, _ -> if (offline) error("offline") else refreshed }
+            val gate = Gate()
+            TraktLibraryRepository.membershipWriter = { _, _, _, _ ->
+                gate.entered.complete(Unit)
+                gate.release.await()
+                error("boom")
+            }
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val job = scope.async { TraktLibraryRepository.applyMembershipChanges(toggledItem, watchlistOn()) }
+            gate.entered.await()
+            assertTrue("tt-x" in ids(), "${ids()}")
+
+            // A refresh lands while the write is in flight.
+            offline = false
+            TraktLibraryRepository.refreshNow()
+            assertEquals(listOf("tt-a1", "tt-r1", "tt-x"), ids().sorted())
+
+            gate.release.complete(Unit)
+            assertFailsWith<IllegalStateException> { job.await() }
+
+            // The refresh's items survive; the toggled title is back to its pre-toggle membership (out).
+            assertEquals(listOf("tt-a1", "tt-r1"), ids().sorted())
+            assertTrue(
+                TraktLibraryRepository.uiState.value.entriesByList[watchlistTab.key].orEmpty().none { it.id == "tt-x" },
+                "${TraktLibraryRepository.uiState.value.entriesByList}",
+            )
+        }
+    }
+
+    @Test
     fun aListTabPreloadFinishingAfterASwitchIsDiscarded() = runBlocking {
         withTimeout(10_000) {
             val gate = Gate()
