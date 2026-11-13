@@ -37,6 +37,8 @@ final class HomeRowActions {
     var catalogRowAppeared: (String) -> Void = { _ in }
     /// Wave H: a collection row mounted (`HomeView.prefetchCollectionHeroArt`).
     var collectionRowAppeared: (NuvioCollection) -> Void = { _ in }
+    /// W3 r1: any Home row mounted (`HomeViewModel.noteHomeRowDrawn`, the Watchlist pull's release).
+    var rowDrawn: () -> Void = {}
 
 
     /// Continue Watching › Remove. An Up Next card is dismissed (synced with the phone); a
@@ -147,6 +149,7 @@ struct HomeRowsList: View {
             // Folder-return Up-skip: renewed after a pop (`HomeView.remountTopRowsAfterPop`).
             // A string apart from every catalog key and scroll anchor in this stack.
             .id("home-cw-row-\(continueWatchingToken)")
+            .onAppear { [actions] in actions.rowDrawn() }
         }
 
         // Home Watchlist row (FEAT-92): Trakt watchlist + Simkl Plan to Watch, under Continue
@@ -161,20 +164,21 @@ struct HomeRowsList: View {
                 .environment(\.rowCardLinkFrameFloor, pinned && isLast ? lastRowFloor : 0)
                 // Folder-return Up-skip: renewed after a pop, as Continue Watching.
                 .id("home-watchlist-row-\(watchlistToken)")
+                .onAppear { [actions] in actions.rowDrawn() }
         }
 
         // Upcoming: next airing episode per followed show, directly under Continue
         // Watching (and the Watchlist) and above every settings-ordered row (like CW, not part
-        // of `model.rows`). Hidden while empty or toggled off. While the Watchlist is present it
-        // gets its own scroll anchor (`home_upcoming_top`), so the pinned Up ladder's scroll rungs
-        // reveal Upcoming and not the top of the rows region.
+        // of `model.rows`). Hidden while empty or toggled off. It gets its own scroll anchor
+        // (`home_upcoming_top`), used only while the Watchlist is present, so the pinned Up
+        // ladder's scroll rungs reveal Upcoming and not the top of the rows region.
         if upcomingRowEnabled, !model.upcoming.isEmpty {
-            if watchlistRowEnabled, model.watchlistSection != nil {
-                VStack(spacing: 0) { upcomingRow }
-                    .id(HomeTopRowKey.upcomingAnchorBelowWatchlist)
-            } else {
-                upcomingRow
-            }
+            // Always wrapped (W3 r1): one identity whether or not the Watchlist sits above, so a late
+            // Watchlist does not remount Upcoming under a resting focus. `HomeRowOrder` decides the
+            // anchor: `home_upcoming_top` only while the Watchlist is present, `home_top` otherwise, so
+            // with the Watchlist absent nothing scrolls to this id and the anchors are today's.
+            VStack(spacing: 0) { upcomingRow }
+                .id(HomeTopRowKey.upcomingAnchorBelowWatchlist)
         }
 
         // Catalog sections and collection folder-tile rows, interleaved per the
@@ -190,7 +194,7 @@ struct HomeRowsList: View {
                         // into view. LazyVStack fires onAppear per row as it mounts; the shared
                         // repo dedups per item+language for the session, so re-appearing rows
                         // cost nothing (see HomeRepository.requestRowEnrichment).
-                        .onAppear { actions.catalogRowAppeared(section.key) }
+                        .onAppear { actions.catalogRowAppeared(section.key); actions.rowDrawn() }
                 case .collection(let collection):
                     HomeCollectionRowCell(collection: collection, actions: actions,
                                           refresh: refresh)
@@ -201,7 +205,7 @@ struct HomeRowsList: View {
                         // always waited on a cold fetch (BUG-86 phenomenon D). Shares
                         // `prefetchedBackdropRows` with `reportRowFocus`, so whichever runs
                         // first pays for the row and the other is a no-op.
-                        .onAppear { actions.collectionRowAppeared(collection) }
+                        .onAppear { actions.collectionRowAppeared(collection); actions.rowDrawn() }
                 }
             }
             // BUG-89: tells the settle tracker (BrowseComponents `PinnedRowSettleTracking`)
@@ -243,6 +247,7 @@ struct HomeRowsList: View {
         .environment(\.rowCardLinkFrameFloor, shortRowLinkFrameFloor)
         // Folder-return Up-skip: as Continue Watching above.
         .id("home-upcoming-row-\(upcomingToken)")
+        .onAppear { [actions] in actions.rowDrawn() }
     }
 
     /// rc14 (BUG-122, every 2026-09-30 device walk): the SAME floor, published on the short rows

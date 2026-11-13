@@ -248,7 +248,7 @@ struct StageStripHome: View {
                            navigationChrome.setScrolledDown(tab: 0, index > 0, motion: .page(seconds: seconds))
                        },
                        onStripFocusLost: { stage.stripFocusLost() }) { key in
-                rowView(key)
+                rowView(key).onAppear { model.noteHomeRowDrawn() }
             }
             // #23: a synced Poster Size too tall for the stage's 420 pt floor is laid out at the
             // largest height that fits, a re-layout of every row (they all read `\.posterStyle`).

@@ -227,7 +227,7 @@ final class HomeViewModel: ObservableObject {
     /// (`catalogSettleBudgetSeconds`, a backstop so a stalled add-on can never blank the panel for
     /// good). Reset with the gate.
     @Published private(set) var catalogRowsSettledAfterGateOpen = false {
-        didSet { if catalogRowsSettledAfterGateOpen && !oldValue { scheduleWatchlistRelease() } }
+        didSet { if catalogRowsSettledAfterGateOpen && !oldValue { watchlistReleaseGate.evaluate() } }
     }
     /// Stales the backstop timer of an older open (`reset()`, then a re-open).
     private var catalogSettleGeneration = 0
@@ -292,6 +292,31 @@ final class HomeViewModel: ObservableObject {
     private var upcomingWatcher: FlowWatcher?
     private var watchlistWatcher: FlowWatcher?
     private var lastWatchlistRow: HomeWatchlistRow?
+    /// W3 r1: whether Home's surface is covered (HomeView's `syncHeroFocusCover` inputs). Not published.
+    private var homeSurfaceCovered = false
+    /// W3 r1: a Home row view has appeared in this pipeline run (reset with the hero commit state).
+    private var homeRowDrawnThisRun = false
+    #if DEBUG
+    private var watchlistSeedPending = false
+    #endif
+    private lazy var watchlistReleaseGate = HomeWatchlistReleaseGate(
+        inputs: { [weak self] in
+            guard let self else {
+                return .init(subscribed: false, settled: false, covered: true, rowDrawn: false, nothingToDraw: false)
+            }
+            return .init(subscribed: self.watchlistWatcher != nil,
+                         settled: self.catalogRowsSettledAfterGateOpen,
+                         covered: self.homeSurfaceCovered,
+                         rowDrawn: self.homeRowDrawnThisRun,
+                         nothingToDraw: self.rows.isEmpty && self.continueWatching.isEmpty
+                             && self.upcoming.isEmpty && self.watchlistSection == nil)
+        },
+        release: {
+            #if DEBUG
+            NSLog("[HomeWatchlist] firstRows layout=%@", HomeLayout.current().rawValue)
+            #endif
+            LibraryProviderRowsRepository.shared.releaseHomeWatchlistRefresh()
+        })
     private var collectionsWatcher: FlowWatcher?
     private var catalogSettingsWatcher: FlowWatcher?
     private var collections: [NuvioCollection] = []
@@ -548,6 +573,7 @@ final class HomeViewModel: ObservableObject {
         rowsGate.reset()
         rowsGateOpen = rowsGate.isOpen
         catalogRowsSettledAfterGateOpen = false
+        homeRowDrawnThisRun = false
         catalogSettleGeneration += 1
         // Internal review r1 (P3): per pipeline RUN, not per process. Left true, a restarted
         // pipeline never marks the `first_hero` milestone again and the launch trace silently
@@ -1162,9 +1188,11 @@ final class HomeViewModel: ObservableObject {
     func startUpcoming() {
         #if DEBUG
         if let seeded = HomeUpcomingDebugSeed.items() {
+            if upcomingWatcher != nil { stopUpcoming() }
             if upcoming != seeded { upcoming = seeded }
             return
         }
+        if upcomingWatcher == nil, !upcoming.isEmpty { upcoming = [] }
         #endif
         if upcomingWatcher == nil {
             // Same generation guard as the main pipeline's watchers (Codex wave-4 r3): a delivery
@@ -1193,13 +1221,29 @@ final class HomeViewModel: ObservableObject {
     /// `HomeView.onAppear` after `acquire()` and on the toggle, like `startUpcoming`. Not
     /// refcounted, idempotent both ways; the pipeline teardown stops it wholesale. Snapshots are
     /// read at once; the shared layer pulls only after `releaseHomeWatchlistRefresh()`, which
-    /// `scheduleWatchlistRelease()` sends one main-queue turn after the first rows settle.
+    /// `HomeWatchlistReleaseGate` sends once a Home row has drawn on an uncovered, settled Home.
     func startWatchlist() {
         #if DEBUG
         if let seeded = HomeWatchlistDebugSeed.section(title: String(localized: "Watchlist")) {
+            // A real subscription from an earlier refused start (auth still loading) yields to the seed.
+            if watchlistWatcher != nil { stopWatchlist() }
+            let delay = HomeRowsDebugKnobs.watchlistSeedDelayMs
+            if delay > 0, watchlistSection == nil {
+                watchlistSeedPending = true
+                let gen = pipelineGeneration
+                DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(delay)) { [weak self] in
+                    guard let self, self.pipelineGeneration == gen, self.watchlistSeedPending else { return }
+                    self.watchlistSeedPending = false
+                    if self.watchlistSection != seeded { self.watchlistSection = seeded }
+                }
+                return
+            }
             if watchlistSection != seeded { watchlistSection = seeded }
             return
         }
+        // Refused now (sign-in, tracker source): never leave an earlier seed on screen. Without a
+        // watcher the section can only be a seed (stop()/stopWatchlist clear it with the watcher).
+        if watchlistWatcher == nil, watchlistSection != nil { watchlistSection = nil }
         LibraryProviderRowsRepository.shared.homeWatchlistPullListener = { decision in
             NSLog("[HomeWatchlist] pull provider=%@ afterFirstRows=%@ decision=%@ profile=%d",
                   decision.provider, decision.afterFirstRows ? "1" : "0", decision.decision, decision.profileId)
@@ -1211,16 +1255,35 @@ final class HomeViewModel: ObservableObject {
             guard let self, self.pipelineGeneration == gen, let row = emitted as? HomeWatchlistRow else { return }
             self.applyWatchlist(row)
         }
-        if catalogRowsSettledAfterGateOpen { scheduleWatchlistRelease() }
+        watchlistReleaseGate.evaluate()
     }
 
     /// Off: no observation and no pull. Also the profile-switch / sign-out path (teardown).
     func stopWatchlist() {
         watchlistWatcher?.cancel()
         watchlistWatcher = nil
+        #if DEBUG
+        watchlistSeedPending = false
+        #endif
+        watchlistReleaseGate.reset()
         LibraryProviderRowsRepository.shared.holdHomeWatchlistRefresh()
         lastWatchlistRow = nil
         if watchlistSection != nil { watchlistSection = nil }
+    }
+
+    /// W3 r1: HomeView's cover state (a tab, a push, the stream picker, the root cover). Uncovering
+    /// may release the Watchlist pull; covering never holds it.
+    func setHomeSurfaceCovered(_ covered: Bool) {
+        guard homeSurfaceCovered != covered else { return }
+        homeSurfaceCovered = covered
+        if !covered { watchlistReleaseGate.evaluate() }
+    }
+
+    /// W3 r1: a Home row view ran its `.onAppear` (both layouts, every row kind). First call per run only.
+    func noteHomeRowDrawn() {
+        guard !homeRowDrawnThisRun else { return }
+        homeRowDrawnThisRun = true
+        watchlistReleaseGate.evaluate()
     }
 
     /// Assigned only on change: an unchanged row must not re-render its shelf.
@@ -1230,20 +1293,6 @@ final class HomeViewModel: ObservableObject {
         let next = row.items.isEmpty ? nil
             : LibraryProviderRowsKt.homeWatchlistRowSection(title: String(localized: "Watchlist"), items: row.items)
         if next != watchlistSection { watchlistSection = next }
-    }
-
-    /// "After Home's first rows draw" (decision I): one main-queue turn after
-    /// `catalogRowsSettledAfterGateOpen` turned true, so the settled rows' frame is committed first.
-    private func scheduleWatchlistRelease() {
-        let gen = pipelineGeneration
-        DispatchQueue.main.async { [weak self] in
-            guard let self, self.pipelineGeneration == gen, self.catalogRowsSettledAfterGateOpen,
-                  self.watchlistWatcher != nil else { return }
-            #if DEBUG
-            NSLog("[HomeWatchlist] firstRows layout=%@", HomeLayout.current().rawValue)
-            #endif
-            LibraryProviderRowsRepository.shared.releaseHomeWatchlistRefresh()
-        }
     }
 
     /// Codex r2 (P1): the ONLY way any watcher asks for a row rebuild.

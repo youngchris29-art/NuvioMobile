@@ -452,6 +452,7 @@ struct HomeView: View {
         let restoresFocus = !homePath.isEmpty || resume != nil
         focusModel.setCovered(restoresFocus || (shellCovered ?? tabBarVisibility.homeSurfaceCovered),
                               restoresFocus: restoresFocus)
+        model.setHomeSurfaceCovered(restoresFocus || (shellCovered ?? tabBarVisibility.homeSurfaceCovered))
     }
 
     /// Whether the hero ARTWORK layer should be visible. `heroPosterFocusOnly` fades it while the
@@ -644,6 +645,7 @@ struct HomeView: View {
         actions.folderFocus = { collection, folder in handleFolderFocus(collection: collection, folder: folder) }
         actions.catalogRowAppeared = { model.rowAppeared(sectionKey: $0) }
         actions.collectionRowAppeared = { prefetchCollectionHeroArt($0) }
+        actions.rowDrawn = { model.noteHomeRowDrawn() }
     }
 
     /// A collection row's folder focus (formerly the row's inline `onFolderFocusChange` closure).

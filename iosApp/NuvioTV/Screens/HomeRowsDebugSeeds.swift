@@ -11,7 +11,8 @@ import SharedCore
 /// of UTF-8 JSON (the launch-argument domain parses a bracket-led value as an old-style plist and
 /// drops raw JSON); refused on a signed-in cloud account (`collectionsSeedRefusal`) and while a
 /// tracker is the progress source; the latch is set after both refusals pass, so a refusal does not
-/// latch and a malformed payload does. They inject at the Swift model and write nothing to a
+/// latch and a malformed payload does. Both refusals run on every call, before the in-memory
+/// cache, so a seed applied as a guest never follows a sign-in or a tracker source. They inject at the Swift model and write nothing to a
 /// repository, provider, throttle or disk.
 
 // MARK: - Shared refusal rules
@@ -62,23 +63,29 @@ enum HomeWatchlistDebugSeed {
     private static var didApply = false
     /// The decoded previews, kept for the launch (in-memory seed: the toggle and a restart reuse it).
     private static var previews: [MetaPreview]?
+    /// none | refused | applied | malformed, for `debug_homeWatchlist seed=`.
+    private(set) static var status = "none"
 
     /// The seeded section, or nil when no seed is requested, it is refused, or it is empty.
     static func section(title: String) -> HomeCatalogSection? {
+        guard let b64 = UserDefaults.standard.string(forKey: argumentKey), !b64.isEmpty else { return nil }
+        // W3 r1 (P2): every call, cached or not; a refusal does not latch.
+        if HomeRowsSeedRefusal.refused(tag: "HomeWatchlistSeed") { status = "refused"; return nil }
         if let previews {
+            status = "applied"
             return previews.isEmpty ? nil : LibraryProviderRowsKt.homeWatchlistRowSectionOf(title: title, previews: previews)
         }
         guard !didApply else { return nil }
-        guard let b64 = UserDefaults.standard.string(forKey: argumentKey), !b64.isEmpty else { return nil }
-        if HomeRowsSeedRefusal.refused(tag: "HomeWatchlistSeed") { return nil }
         didApply = true
         guard let array = HomeRowsSeedRefusal.decodeArray(b64) else {
+            status = "malformed"
             NSLog("[HomeWatchlistSeed] applied=false error=the payload is not base64 of a JSON array")
             return nil
         }
         let built = Array(array.compactMap(preview(from:)).prefix(CatalogRowView.homePreviewLimit))
         previews = built
         NSLog("[HomeWatchlistSeed] applied=true items=%d skipped=%d", built.count, array.count - built.count)
+        status = "applied"
         return built.isEmpty ? nil : LibraryProviderRowsKt.homeWatchlistRowSectionOf(title: title, previews: built)
     }
 
@@ -126,21 +133,29 @@ enum HomeUpcomingDebugSeed {
     static let argumentKey = "debug.homeUpcomingSeedJsonB64"
     private static var didApply = false
     private static var cached: [UpcomingEpisodeItem]?
+    /// none | refused | applied | malformed.
+    private(set) static var status = "none"
 
     /// The seeded items, or nil when no seed is requested, it is refused, or it is empty.
     static func items() -> [UpcomingEpisodeItem]? {
-        if let cached { return cached.isEmpty ? nil : cached }
-        guard !didApply else { return nil }
         guard let b64 = UserDefaults.standard.string(forKey: argumentKey), !b64.isEmpty else { return nil }
-        if HomeRowsSeedRefusal.refused(tag: "HomeUpcomingSeed") { return nil }
+        // W3 r1 (P2): every call, cached or not; a refusal does not latch.
+        if HomeRowsSeedRefusal.refused(tag: "HomeUpcomingSeed") { status = "refused"; return nil }
+        if let cached {
+            status = "applied"
+            return cached.isEmpty ? nil : cached
+        }
+        guard !didApply else { return nil }
         didApply = true
         guard let array = HomeRowsSeedRefusal.decodeArray(b64) else {
+            status = "malformed"
             NSLog("[HomeUpcomingSeed] applied=false error=the payload is not base64 of a JSON array")
             return nil
         }
         let built = array.compactMap(item(from:))
         cached = built
         NSLog("[HomeUpcomingSeed] applied=true items=%d skipped=%d", built.count, array.count - built.count)
+        status = "applied"
         return built.isEmpty ? nil : built
     }
 
@@ -188,6 +203,9 @@ enum HomeRowsDebugKnobs {
     /// collection row, so Home has none, as on a no-catalog account. The settle then falls to
     /// `loadFinishedEmpty` or the 4 s backstop. Persists nothing.
     nonisolated static let noCatalogRows = UserDefaults.standard.bool(forKey: "debug.homeNoCatalogRows")
+
+    /// `-debug.homeWatchlistSeedDelayMs <ms>`: the Watchlist seed lands that long after `startWatchlist()` (the late-provider case). 0 = at once.
+    nonisolated static let watchlistSeedDelayMs = UserDefaults.standard.integer(forKey: "debug.homeWatchlistSeedDelayMs")
 }
 
 // MARK: - Readout
@@ -198,7 +216,7 @@ struct HomeWatchlistDebugLabel: View {
     @ObservedObject var model: HomeViewModel
     let enabled: Bool
     var body: some View {
-        Text(verbatim: "debug_homeWatchlist on=\(enabled ? 1 : 0) n=\(model.watchlistSection?.items.count ?? 0) first=\(model.watchlistSection?.items.first.map { "\($0.type):\($0.id)" } ?? "-")")
+        Text(verbatim: "debug_homeWatchlist on=\(enabled ? 1 : 0) n=\(model.watchlistSection?.items.count ?? 0) first=\(model.watchlistSection?.items.first.map { "\($0.type):\($0.id)" } ?? "-") seed=\(HomeWatchlistDebugSeed.status)")
             .font(.system(size: 8))
             .opacity(0.011)
             .accessibilityIdentifier("debug_homeWatchlist")
