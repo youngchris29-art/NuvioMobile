@@ -296,6 +296,13 @@ final class HomeViewModel: ObservableObject {
     private var homeSurfaceCovered = false
     /// W3 r1: a Home row view has appeared in this pipeline run (reset with the hero commit state).
     private var homeRowDrawnThisRun = false
+    /// §16: HomeView's answer to "would the Watchlist row appearing or leaving now slide the row the
+    /// viewer is on out of the pane?" (Classic only; nil until HomeView installs it, never held then).
+    var watchlistPresenceChangeBlocked: (@MainActor () -> Bool)?
+    /// §16: a held appearance (removals are never held, 16.3.0). Not published.
+    private var heldWatchlistSection: HomeCatalogSection?
+    private var heldWatchlistCheckToken = 0
+    nonisolated static let heldWatchlistRecheckSeconds: Double = 0.5
     #if DEBUG
     private var watchlistSeedPending = false
     #endif
@@ -521,6 +528,7 @@ final class HomeViewModel: ObservableObject {
         // URLs embed the profile's custom-poster pattern/keys; drop failure verdicts with it.
         ArtworkStore.clearFailedURLs()
         upcoming = []
+        dropHeldWatchlist()
         watchlistSection = nil
         lastWatchlistRow = nil
         isLoading = false
@@ -1234,16 +1242,16 @@ final class HomeViewModel: ObservableObject {
                 DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(delay)) { [weak self] in
                     guard let self, self.pipelineGeneration == gen, self.watchlistSeedPending else { return }
                     self.watchlistSeedPending = false
-                    if self.watchlistSection != seeded { self.watchlistSection = seeded }
+                    self.publishWatchlistSection(seeded)
                 }
                 return
             }
-            if watchlistSection != seeded { watchlistSection = seeded }
+            publishWatchlistSection(seeded)
             return
         }
         // Refused now (sign-in, tracker source): never leave an earlier seed on screen. Without a
         // watcher the section can only be a seed (stop()/stopWatchlist clear it with the watcher).
-        if watchlistWatcher == nil, watchlistSection != nil { watchlistSection = nil }
+        if watchlistWatcher == nil, watchlistSection != nil || heldWatchlistSection != nil { dropHeldWatchlist(); watchlistSection = nil }
         LibraryProviderRowsRepository.shared.homeWatchlistPullListener = { decision in
             NSLog("[HomeWatchlist] pull provider=%@ afterFirstRows=%@ decision=%@ profile=%d",
                   decision.provider, decision.afterFirstRows ? "1" : "0", decision.decision, decision.profileId)
@@ -1267,6 +1275,7 @@ final class HomeViewModel: ObservableObject {
         #endif
         watchlistReleaseGate.reset()
         LibraryProviderRowsRepository.shared.holdHomeWatchlistRefresh()
+        dropHeldWatchlist()
         lastWatchlistRow = nil
         if watchlistSection != nil { watchlistSection = nil }
     }
@@ -1279,11 +1288,60 @@ final class HomeViewModel: ObservableObject {
         if !covered { watchlistReleaseGate.evaluate() }
     }
 
-    /// W3 r1: a Home row view ran its `.onAppear` (both layouts, every row kind). First call per run only.
+    /// W3 r1: a Home row view ran its `.onAppear` (both layouts, every row kind, the Watchlist's own row
+    /// included: its snapshot is drawn Home content). First call per run only. The release still waits
+    /// for the settle, and the gate's 0.3 s re-check runs on the main actor after the render commit that
+    /// drew the settled rows (§16.5), so a row drawn before the settle cannot release the pull early.
     func noteHomeRowDrawn() {
         guard !homeRowDrawnThisRun else { return }
         homeRowDrawnThisRun = true
         watchlistReleaseGate.evaluate()
+    }
+
+    /// §16: the one way the provider path and the DEBUG seeds publish the Watchlist row. The LazyVStack
+    /// keeps its offset when a row is inserted or removed above the focused one, so a 554 pt row
+    /// arriving above it pushes it out of the pane, it is unrealized and focus falls to another card
+    /// (sim) or to nil (the box). Only an appearance is held, while HomeView says focus is below the
+    /// slot; a removal or a content change publishes at once (sign-out empties the row at once).
+    private func publishWatchlistSection(_ next: HomeCatalogSection?) {
+        if let next, HomeWatchlistPresenceHold.holds(currentPresent: watchlistSection != nil,
+                                                     nextPresent: true,
+                                                     blocked: watchlistPresenceChangeBlocked?() == true) {
+            let wasHeld = heldWatchlistSection != nil
+            heldWatchlistSection = next
+            #if DEBUG
+            HomeWatchlistDebug.shared.setHeld(true)
+            #endif
+            if !wasHeld { scheduleHeldWatchlistCheck() }
+            return
+        }
+        dropHeldWatchlist()
+        if next != watchlistSection { watchlistSection = next }
+    }
+
+    private func scheduleHeldWatchlistCheck() {
+        heldWatchlistCheckToken &+= 1
+        let token = heldWatchlistCheckToken
+        let gen = pipelineGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.heldWatchlistRecheckSeconds) { [weak self] in
+            guard let self, token == self.heldWatchlistCheckToken, gen == self.pipelineGeneration,
+                  let held = self.heldWatchlistSection else { return }
+            if self.watchlistPresenceChangeBlocked?() == true {
+                self.scheduleHeldWatchlistCheck()
+                return
+            }
+            self.dropHeldWatchlist()
+            if held != self.watchlistSection { self.watchlistSection = held }
+        }
+    }
+
+    private func dropHeldWatchlist() {
+        guard heldWatchlistSection != nil else { return }
+        heldWatchlistSection = nil
+        heldWatchlistCheckToken &+= 1
+        #if DEBUG
+        HomeWatchlistDebug.shared.setHeld(false)
+        #endif
     }
 
     /// Assigned only on change: an unchanged row must not re-render its shelf.
@@ -1292,7 +1350,7 @@ final class HomeViewModel: ObservableObject {
         lastWatchlistRow = row
         let next = row.items.isEmpty ? nil
             : LibraryProviderRowsKt.homeWatchlistRowSection(title: String(localized: "Watchlist"), items: row.items)
-        if next != watchlistSection { watchlistSection = next }
+        publishWatchlistSection(next)
     }
 
     /// Codex r2 (P1): the ONLY way any watcher asks for a row rebuild.
@@ -1744,6 +1802,14 @@ final class HomeViewModel: ObservableObject {
         noSourcesSyncWatcher?.cancel()
         upcomingWatcher?.cancel()
         watchlistWatcher?.cancel()
+    }
+}
+
+/// §16: whether a Watchlist publish is held. Only an appearance (nothing on screen → a row) while
+/// focus is below the slot; a removal or a content change never is (sign-out empties at once).
+nonisolated enum HomeWatchlistPresenceHold {
+    static func holds(currentPresent: Bool, nextPresent: Bool, blocked: Bool) -> Bool {
+        !currentPresent && nextPresent && blocked
     }
 }
 

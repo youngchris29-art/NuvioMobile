@@ -646,7 +646,33 @@ struct HomeView: View {
         actions.catalogRowAppeared = { model.rowAppeared(sectionKey: $0) }
         actions.collectionRowAppeared = { prefetchCollectionHeroArt($0) }
         actions.rowDrawn = { model.noteHomeRowDrawn() }
+        // §16: hold a Watchlist row APPEARING while focus is (or will return) below its slot. The model
+        // asks only for an appearance; removals never wait (16.3.0).
+        model.watchlistPresenceChangeBlocked = { classicFocusBelowWatchlistSlot() }
     }
+
+    /// §16: whether a Watchlist row appearing now would slide the viewer's row out of the pane (asked
+    /// for appearances only). The row that owns focus; while Home is covered, the row focus comes back
+    /// to (the pop restore does not scroll, 16.3.0 point 2); within
+    /// `watchlistHoldHopWindow` of a row release, the row being left (a hop between rows passes
+    /// through nil). Continue Watching sits above the slot and the Watchlist is the slot. Classic only.
+    private func classicFocusBelowWatchlistSlot() -> Bool {
+        guard !isStageLayout else { return false }
+        let key: String?
+        if let owned = focusedRowKey {
+            key = owned
+        } else if !homePath.isEmpty || resume != nil || tabBarVisibility.homeSurfaceCovered {
+            key = upInput.lastOwnedRowKey
+        } else if let released = upInput.lastRowReleasedAt,
+                  ProcessInfo.processInfo.systemUptime - released < Self.watchlistHoldHopWindow {
+            key = upInput.lastOwnedRowKey
+        } else {
+            key = nil
+        }
+        guard let key else { return false }
+        return key != HomeTopRowKey.continueWatching && key != HomeTopRowKey.watchlist
+    }
+    private static let watchlistHoldHopWindow: TimeInterval = 0.5
 
     /// A collection row's folder focus (formerly the row's inline `onFolderFocusChange` closure).
     private func handleFolderFocus(collection: NuvioCollection, folder: CollectionFolder?) {
@@ -2600,6 +2626,9 @@ struct HomeView: View {
                 rebuilt.append(key)
             }
             logHomeReturn("remount rows=\(rebuilt.isEmpty ? "-" : rebuilt.joined(separator: ","))")
+            #if DEBUG
+            HomeReturnDebug.shared.noteRemount(rebuilt.isEmpty ? "-" : rebuilt.joined(separator: ","))
+            #endif
         }
         // Review r1 (P2-3): Detail opened from a Continue Watching or Upcoming card makes that row
         // the origin, kept above. If the restore could not land in it (the same dropped writes),
@@ -2612,6 +2641,9 @@ struct HomeView: View {
                   !upInput.popOriginOwned, focusedRowKey != origin else { return }
             bumpTopRowToken(origin)
             logHomeReturn("remount rows=\(origin) reason=originMissed")
+            #if DEBUG
+            HomeReturnDebug.shared.noteRemount(origin)
+            #endif
         }
     }
 
@@ -7601,8 +7633,8 @@ nonisolated struct HomeReturnFocusMemory: Equatable, Sendable {
 }
 
 #if DEBUG
-/// BUG-156: the `debug_homeReturn` readout (`own=<rowKey> foc=<rowKey>/<itemId> ret=<last restore
-/// event>`; `ret` is free text and comes last). A
+/// BUG-156: the `debug_homeReturn` readout (`own=<rowKey> foc=<rowKey>/<itemId> rem=<last remount
+/// rows> remN=<remount count> ret=<last restore event>`; `ret` is free text and comes last). A
 /// LEAF observing its own sink, so a card hop re-renders this label and never Home's body.
 @MainActor
 final class HomeReturnDebug: ObservableObject {
@@ -7612,6 +7644,15 @@ final class HomeReturnDebug: ObservableObject {
     /// The row that owns focus right now (`handleRowFocusOwnership`), "-" while none does (the hero
     /// CTA, the tab bar, a pushed page).
     @Published private(set) var own = "-"
+    /// §16: the last `remountTopRowsAfterPop` event (rows, comma-joined, or "-") and a counter, kept apart
+    /// from `ret`, which the next restore rung overwrites ~0.1 s later.
+    @Published private(set) var rem = "-"
+    @Published private(set) var remN = 0
+
+    func noteRemount(_ rows: String) {
+        rem = rows
+        remN &+= 1
+    }
 
     func setOwn(_ rowKey: String?) {
         let next = rowKey ?? "-"
@@ -7632,7 +7673,7 @@ struct HomeReturnDebugLabel: View {
     @ObservedObject private var debug = HomeReturnDebug.shared
 
     var body: some View {
-        Text(verbatim: "debug_homeReturn own=\(debug.own) foc=\(debug.foc) ret=\(debug.ret)")
+        Text(verbatim: "debug_homeReturn own=\(debug.own) foc=\(debug.foc) rem=\(debug.rem) remN=\(debug.remN) ret=\(debug.ret)")
             .font(.system(size: 8))
             .opacity(0.011)
             .accessibilityIdentifier("debug_homeReturn")

@@ -546,22 +546,20 @@ final class HomeWatchlistRowUITests: XCTestCase {
             shot("unverified_c1_card")
             throw HarnessAbort("focus is not on a catalog card (\(label(app, "debug_homeReturn"))) — not pressing Select")
         }
+        let remBefore = Self.int(label(app, "debug_homeReturn"), "remN") ?? 0
         remote.press(.select)
         pause(2.0)
         remote.press(.menu)
-        // `ret=` holds only the LAST [HomeReturn] event and the remount is followed by a restore event,
-        // so the readout is polled from the Menu press on (every 0.1 s, up to 4 s) and the first
-        // remount event is kept.
-        var ret = ""
-        _ = poll(4.0, step: 0.1) {
-            let line = label(app, "debug_homeReturn")
-            if line.contains("remount rows=") { ret = line; return true }
-            return false
+        // `rem=`/`remN=` keep the last remount (`ret=` is overwritten by the next restore rung ~0.1 s later).
+        var line = ""
+        let remounted = poll(4.0, step: 0.25) {
+            line = label(app, "debug_homeReturn")
+            return (Self.int(line, "remN") ?? 0) > remBefore
         }
-        if ret.isEmpty { ret = label(app, "debug_homeReturn") }
-        note("remount", ret)
-        XCTAssertTrue(ret.contains("remount rows=") && ret.contains("home-watchlist"),
-                      "after the pop the Watchlist is remounted (top-row token; c1 is the origin): \(ret)")
+        note("remount", line)
+        XCTAssertTrue(remounted, "a top-row remount ran after the pop: \(line)")
+        XCTAssertTrue((Self.token(line, "rem") ?? "").split(separator: ",").contains("home-watchlist"),
+                      "after the pop the Watchlist is remounted (top-row token; c1 is the origin): \(line)")
         XCTAssertEqual(classicStep(app, .up), "home-watchlist", "Up from the first catalog row after the pop reaches the Watchlist")
     }
 
@@ -687,9 +685,9 @@ final class HomeWatchlistRowUITests: XCTestCase {
 
     // MARK: - Test 22 (Classic: a late Watchlist keeps focus on Upcoming)
 
-    /// The Watchlist arrives 30 s after launch (`-debug.homeWatchlistSeedDelayMs`), while focus rests on
-    /// Upcoming; Upcoming keeps one identity, so focus stays on it. Stage is out of scope (its pager
-    /// re-keys by index, a different mechanism).
+    /// The Watchlist arrives 30 s after launch (`-debug.homeWatchlistSeedDelayMs`) while focus rests on
+    /// Upcoming; the insert is held (§16) so focus stays on it, and lands once focus goes to the hero.
+    /// Stage is out of scope (its pager re-keys by index, a different mechanism).
     func testClassic_LateWatchlistKeepsFocusOnUpcoming() throws {
         let app = launch(Self.classicBase + ["-home_upcoming_row_enabled", "YES", "-debug.homeUpcomingSeedJsonB64", Self.upSeed,
                                              "-debug.homeWatchlistSeedJsonB64", Self.wlSeed,
@@ -707,13 +705,99 @@ final class HomeWatchlistRowUITests: XCTestCase {
         }
         let early = label(app, "debug_homeWatchlist")
         XCTAssertEqual(Self.int(early, "n"), 0, "the delay elapsed before focus reached Upcoming: '\(early)'")
-        _ = poll(40, step: 0.5) { (Self.int(label(app, "debug_homeWatchlist"), "n") ?? 0) > 0 }
-        try requireWatchlistSeed(app)
+        // The delayed seed lands while focus rests on Upcoming: it is held, not inserted.
+        guard poll(45, step: 0.5, { Self.token(label(app, "debug_homeWatchlist"), "held") == "1" }) else {
+            XCTFail("the late Watchlist was never held: '\(label(app, "debug_homeWatchlist"))'")
+            throw HarnessAbort("no held Watchlist")
+        }
         for i in 0..<3 {
-            XCTAssertEqual(own(app), "upcoming", "read \(i + 1): focus stays on Upcoming after the Watchlist arrives: '\(label(app, "debug_homeReturn"))'")
+            XCTAssertEqual(own(app), "upcoming", "read \(i + 1): focus stays on Upcoming while the Watchlist is held: '\(label(app, "debug_homeReturn"))'")
+            XCTAssertEqual(Self.int(label(app, "debug_homeWatchlist"), "n"), 0, "read \(i + 1): the held row is not inserted")
             pause(1.0)
         }
+        // Up from the top row reaches the hero; the hold lets go within about a second.
+        remote.press(.up)
+        XCTAssertTrue(poll(5, step: 0.25) { (Self.int(label(app, "debug_homeWatchlist"), "n") ?? 0) > 0 },
+                      "the held Watchlist lands once focus leaves the rows below it: '\(label(app, "debug_homeWatchlist"))'")
+        XCTAssertEqual(Self.token(label(app, "debug_homeWatchlist"), "held"), "0", "the hold is released")
+        try requireWatchlistSeed(app)
+        XCTAssertEqual(classicStep(app, .down), "home-watchlist", "Down from the hero now reaches the Watchlist above Upcoming")
         note("late_watchlist", "\(label(app, "debug_homeWatchlist")) | \(label(app, "debug_homeReturn"))")
         shot("classic_late_watchlist")
+    }
+
+    // MARK: - Test 23 (Classic: a late Watchlist lands at once under focused Continue Watching)
+
+    /// Continue Watching sits above the Watchlist's slot, so a late Watchlist is inserted without a hold
+    /// and focus stays on Continue Watching.
+    func testClassic_LateWatchlistLandsAtOnceUnderFocusedContinueWatching() throws {
+        let app = launch(Self.classicBase + ["-debug.continueWatchingSeedJsonB64", Self.cwSeed,
+                                             "-home_upcoming_row_enabled", "YES", "-debug.homeUpcomingSeedJsonB64", Self.upSeed,
+                                             "-debug.homeWatchlistSeedJsonB64", Self.wlSeed,
+                                             "-debug.homeWatchlistSeedDelayMs", "30000"], settle: 4)
+        defer { app.terminate(); clearContinueWatchingSeed() }
+        guard poll(30, step: 0.5, { !label(app, "debug_homeReturn").isEmpty }) else {
+            throw HarnessAbort("debug_homeReturn never appeared")
+        }
+        var reached = false
+        for _ in 0..<4 {
+            if classicStep(app, .down) == "continue-watching" { reached = true; break }
+        }
+        guard reached else {
+            throw XCTSkip("the Continue Watching seed did not land: refused on a signed-in account?")
+        }
+        XCTAssertEqual(Self.int(label(app, "debug_homeWatchlist"), "n"), 0, "the delay elapsed before focus reached Continue Watching: '\(label(app, "debug_homeWatchlist"))'")
+        guard poll(45, step: 0.5, { (Self.int(label(app, "debug_homeWatchlist"), "n") ?? 0) > 0 }) else {
+            XCTFail("the late Watchlist never landed under Continue Watching: '\(label(app, "debug_homeWatchlist"))'")
+            throw HarnessAbort("no late Watchlist row")
+        }
+        XCTAssertEqual(Self.token(label(app, "debug_homeWatchlist"), "held"), "0", "no hold above the slot: '\(label(app, "debug_homeWatchlist"))'")
+        for i in 0..<3 {
+            XCTAssertEqual(own(app), "continue-watching", "read \(i + 1): focus stays on Continue Watching: '\(label(app, "debug_homeReturn"))'")
+            pause(1.0)
+        }
+        XCTAssertEqual(classicStep(app, .down), "home-watchlist", "Down from Continue Watching reaches the Watchlist")
+        XCTAssertEqual(classicStep(app, .down), "upcoming", "Down from the Watchlist reaches Upcoming")
+        note("late_watchlist_cw", "\(label(app, "debug_homeWatchlist")) | \(label(app, "debug_homeReturn"))")
+        shot("classic_late_watchlist_cw")
+    }
+
+    // MARK: - Test 24 (Classic: a late Watchlist is held while focus is on the first catalog row)
+
+    func testClassic_LateWatchlistHeldWhileOnFirstCatalogRow() throws {
+        let app = launch(Self.classicBase + ["-home_upcoming_row_enabled", "NO",
+                                             "-debug.homeWatchlistSeedJsonB64", Self.wlSeed,
+                                             "-debug.homeWatchlistSeedDelayMs", "30000"], settle: 4)
+        guard poll(30, step: 0.5, { !label(app, "debug_homeReturn").isEmpty }) else {
+            throw HarnessAbort("debug_homeReturn never appeared")
+        }
+        var c1 = "-"
+        for _ in 0..<4 {
+            c1 = classicStep(app, .down)
+            if c1 != "-" && !Self.topKeys.contains(c1) { break }
+        }
+        guard c1 != "-", !Self.topKeys.contains(c1) else {
+            XCTFail("focus never reached a catalog row (own=\(own(app))): '\(label(app, "debug_homeReturn"))'")
+            throw HarnessAbort("focus never reached a catalog row")
+        }
+        XCTAssertEqual(Self.int(label(app, "debug_homeWatchlist"), "n"), 0, "the delay elapsed before focus reached the catalog row: '\(label(app, "debug_homeWatchlist"))'")
+        guard poll(45, step: 0.5, { Self.token(label(app, "debug_homeWatchlist"), "held") == "1" }) else {
+            XCTFail("the late Watchlist was never held: '\(label(app, "debug_homeWatchlist"))'")
+            throw HarnessAbort("no held Watchlist")
+        }
+        for i in 0..<3 {
+            XCTAssertEqual(own(app), c1, "read \(i + 1): focus stays on \(c1) while the Watchlist is held: '\(label(app, "debug_homeReturn"))'")
+            XCTAssertEqual(Self.int(label(app, "debug_homeWatchlist"), "n"), 0, "read \(i + 1): the held row is not inserted")
+            pause(1.0)
+        }
+        remote.press(.up)
+        XCTAssertTrue(poll(5, step: 0.25) {
+            let line = label(app, "debug_homeWatchlist")
+            return (Self.int(line, "n") ?? 0) > 0 && Self.token(line, "held") == "0"
+        }, "the held Watchlist lands once focus leaves the catalog row: '\(label(app, "debug_homeWatchlist"))'")
+        try requireWatchlistSeed(app)
+        XCTAssertEqual(classicStep(app, .down), "home-watchlist", "Down from the hero reaches the Watchlist")
+        note("late_watchlist_c1", "\(label(app, "debug_homeWatchlist")) | \(label(app, "debug_homeReturn"))")
+        shot("classic_late_watchlist_c1")
     }
 }

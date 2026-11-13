@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import SwiftUI
 import SharedCore
@@ -210,13 +211,23 @@ enum HomeRowsDebugKnobs {
 
 // MARK: - Readout
 
-/// `debug_homeWatchlist on=<0|1> n=<count> first=<type:id|->`: the row's state as the UI legs read
-/// it. Invisible (0.011 opacity) and not hit-testable, like the other `debug_*` readouts.
+/// §16: the held-presence flag for `debug_homeWatchlist held=`. A leaf sink (like `HomeReturnDebug`),
+/// so the hold never publishes on `HomeViewModel`.
+@MainActor
+final class HomeWatchlistDebug: ObservableObject {
+    static let shared = HomeWatchlistDebug()
+    @Published private(set) var held = false
+    func setHeld(_ value: Bool) { if held != value { held = value } }
+}
+
+/// `debug_homeWatchlist on=<0|1> n=<count> first=<type:id|-> seed=<status> held=<0|1>`: the row's state
+/// as the UI legs read it. Invisible (0.011 opacity) and not hit-testable, like the other `debug_*` readouts.
 struct HomeWatchlistDebugLabel: View {
     @ObservedObject var model: HomeViewModel
+    @ObservedObject private var sink = HomeWatchlistDebug.shared
     let enabled: Bool
     var body: some View {
-        Text(verbatim: "debug_homeWatchlist on=\(enabled ? 1 : 0) n=\(model.watchlistSection?.items.count ?? 0) first=\(model.watchlistSection?.items.first.map { "\($0.type):\($0.id)" } ?? "-") seed=\(HomeWatchlistDebugSeed.status)")
+        Text(verbatim: "debug_homeWatchlist on=\(enabled ? 1 : 0) n=\(model.watchlistSection?.items.count ?? 0) first=\(model.watchlistSection?.items.first.map { "\($0.type):\($0.id)" } ?? "-") seed=\(HomeWatchlistDebugSeed.status) held=\(sink.held ? 1 : 0)")
             .font(.system(size: 8))
             .opacity(0.011)
             .accessibilityIdentifier("debug_homeWatchlist")
