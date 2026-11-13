@@ -2,6 +2,9 @@ package com.nuvio.app.features.simkl
 
 internal expect object SimklSyncStorage {
     fun loadPayload(): String?
+
+    /** Reads [profileId]'s file, not whichever profile is active when the read happens. */
+    fun loadPayload(profileId: Int): String?
     fun savePayload(payload: String)
 
     /** Writes [profileId]'s file, not whichever profile is active when the write happens. */

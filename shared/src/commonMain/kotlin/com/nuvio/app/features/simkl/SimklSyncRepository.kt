@@ -75,7 +75,8 @@ object SimklSyncRepository : TrackingProfileStore {
      */
     internal val stateLock = SynchronizedObject()
 
-    private var hasLoaded = false
+    /** The profile whose snapshot is loaded; null = none. Read and written under [stateLock]. */
+    private var loadedProfileId: Int? = null
     // Read off the main thread by the commit functions, written by profile switch and sign-out.
     private val profileGeneration = atomic(0L)
 
@@ -84,9 +85,24 @@ object SimklSyncRepository : TrackingProfileStore {
     }
 
     fun ensureLoaded() {
-        if (hasLoaded) return
-        hasLoaded = true
-        val snapshot = SimklSyncStorage.loadPayload()
+        val request = synchronized(stateLock) {
+            val active = ProfileRepository.activeProfileId
+            if (loadedProfileId == active) {
+                null
+            } else {
+                if (loadedProfileId != null) {
+                    // The active profile changed without onProfileChanged (a profile restored or
+                    // selected before this store was reset): retire the old profile's state and
+                    // in-flight commits, as a switch does.
+                    profileGeneration.incrementAndGet()
+                    _state.value = SimklSyncUiState()
+                }
+                loadedProfileId = active
+                profileGeneration.value to active
+            }
+        } ?: return
+        val (generation, profileId) = request
+        val snapshot = SimklSyncStorage.loadPayload(profileId)
             ?.trim()
             ?.takeIf(String::isNotEmpty)
             ?.let { payload ->
@@ -95,8 +111,9 @@ object SimklSyncRepository : TrackingProfileStore {
                     .getOrNull()
             }
             ?: SimklSyncSnapshot()
-        _state.value = SimklSyncUiState(snapshot = snapshot, hasLoaded = true)
-        SimklWatchDiagnostics.logSnapshot(stage = "cache-load", snapshot = snapshot)
+        if (publishIfCurrent(generation, profileId) { SimklSyncUiState(snapshot = snapshot, hasLoaded = true) }) {
+            SimklWatchDiagnostics.logSnapshot(stage = "cache-load", snapshot = snapshot)
+        }
     }
 
     fun refreshAsync(intent: TrackingRefreshIntent) {
@@ -328,7 +345,7 @@ object SimklSyncRepository : TrackingProfileStore {
     override fun onProfileChanged() {
         synchronized(stateLock) {
             profileGeneration.incrementAndGet()
-            hasLoaded = false
+            loadedProfileId = null
             _state.value = SimklSyncUiState()
         }
         ensureLoaded()
@@ -339,7 +356,7 @@ object SimklSyncRepository : TrackingProfileStore {
         synchronized(saveLock) {
             synchronized(stateLock) {
                 profileGeneration.incrementAndGet()
-                hasLoaded = false
+                loadedProfileId = null
                 _state.value = SimklSyncUiState()
             }
             SimklSyncStorage.savePayload("")
