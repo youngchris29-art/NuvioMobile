@@ -95,6 +95,7 @@ enum SettingsDescriptionID: String, CaseIterable {
     case homeCollectionsLayout = "home.collectionsLayout"
     case homeCollectionHeader = "home.collectionHeader"
     case homeUpcoming = "home.upcoming"
+    case homeWatchlist = "home.watchlist"
     case homeRefreshAddons = "home.refreshAddons"
     case homeShowHero = "home.showHero"
     case homeNuvioStyleHero = "home.nuvioStyleHero"
@@ -327,6 +328,7 @@ enum SettingsDescriptions {
         case .homeCollectionsLayout: return LocalizedStringResource("How a collection folder opens. Rows shows the focused title at the top with one row per source below it. Grid shows every title of the selected source as a grid of posters. Each Home layout keeps its own choice. Default: Rows on Stage, Grid on Classic. Hold a folder to give it its own layout.")
         case .homeCollectionHeader: return LocalizedStringResource("Sets the top of a collection folder that opens as a grid. Standard gives the folder's logo or name a large slot that shrinks once you scroll. Compact starts with the small title and uses the empty strip at the top of the screen, so the posters start higher. At the Medium poster size, a folder with one source shows two full rows; with several source tabs, one full row and most of the second. Folders that open as rows are not affected. Default: Standard.")
         case .homeUpcoming: return LocalizedStringResource("Adds a row under Continue Watching with the next episodes of your shows that air in the next 14 days. On by default.")
+        case .homeWatchlist: return LocalizedStringResource("Adds a row under Continue Watching with movies and series from your Trakt watchlist and Simkl Plan to Watch, most recently added first. The row appears only when Trakt or Simkl is connected. The full list stays in the Library. On by default.")
         case .homeRefreshAddons: return LocalizedStringResource("Checks your installed add-ons again for catalogs. Use it if Home rows are missing even though add-ons are installed.")
         case .homeShowHero: return LocalizedStringResource("On shows a rotating banner at the top of Home, built from up to two of your catalogs. Off shows the focused title's artwork and description instead. On by default.")
         case .homeNuvioStyleHero: return LocalizedStringResource("On puts the title and description on the left, the artwork on the right, and keeps the banner in place while rows scroll. Off uses the classic layout with the logo at the lower left. Off by default.")

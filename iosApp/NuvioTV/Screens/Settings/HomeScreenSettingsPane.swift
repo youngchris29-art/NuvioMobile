@@ -24,7 +24,7 @@ import SharedCore
 /// touched; they simply do nothing in Stage and are back as they were when the layout returns to
 /// Classic. Trailer Location reads Background / In Row in Stage (the stage always exists, so
 /// Background always takes effect) and keeps today's Hero / Poster wording and captions in
-/// Classic. Upcoming Episodes, Catalogs and Show Catalog Type are the same in both layouts.
+/// Classic. Upcoming Episodes, Watchlist, Catalogs and Show Catalog Type are the same in both layouts.
 struct HomeScreenSettingsPane: View {
     @ObservedObject var model: SettingsViewModel
 
@@ -59,6 +59,10 @@ struct HomeScreenSettingsPane: View {
     /// Mirrors HomeView's `home_upcoming_row_enabled` key: the "Upcoming" row of followed shows'
     /// next airing episodes, directly under Continue Watching. Default ON. Local-only.
     @AppStorage("home_upcoming_row_enabled") private var upcomingRowEnabled = true
+
+    /// Mirrors HomeView's `home_watchlist_row_enabled` key: the Watchlist row (Trakt watchlist +
+    /// Simkl Plan to Watch) under Continue Watching. Default ON. Local-only.
+    @AppStorage("home_watchlist_row_enabled") private var watchlistRowEnabled = true
 
     /// FEAT-25: mirrors HomeView's `hero_trailer_autoplay` key — the hero plays its own trailer
     /// with no focus required. Default OFF. Local-only, not synced.
@@ -108,6 +112,15 @@ struct HomeScreenSettingsPane: View {
                     : String(localized: "No Upcoming row on Home"),
                 isOn: $upcomingRowEnabled,
                 descriptionID: .homeUpcoming
+            )
+
+            SettingsToggleRow(
+                title: String(localized: "Watchlist"),
+                subtitle: watchlistRowEnabled
+                    ? String(localized: "A row under Continue Watching with your Trakt watchlist and Simkl Plan to Watch")
+                    : String(localized: "No Watchlist row on Home"),
+                isOn: $watchlistRowEnabled,
+                descriptionID: .homeWatchlist
             )
 
             if model.catalogs.isEmpty {
