@@ -1,5 +1,6 @@
 package com.nuvio.app.features.library
 
+import com.nuvio.app.features.home.canOpenCatalog
 import com.nuvio.app.features.tracking.TrackingLibrarySnapshot
 import com.nuvio.app.features.tracking.TrackingLibraryTab
 import com.nuvio.app.features.tracking.TrackingLibraryTabKind
@@ -8,6 +9,7 @@ import com.nuvio.app.features.watchprogress.WatchProgressEntry
 import com.nuvio.app.features.watchprogress.WatchProgressSourceNextUp
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
@@ -462,6 +464,209 @@ class LibraryProviderRowsTest {
         assertEquals(
             listOf(trakt, simkl),
             throttle.refreshTargets(listOf(trakt, simkl), activeSource = TrackingProviderId.MDBLIST, profileId = 1, nowEpochMs = 0L),
+        )
+    }
+
+    // ---- Home Watchlist row (shared flow) ----
+
+    private fun homeFlow(
+        connected: Flow<Set<TrackingProviderId>>,
+        lists: List<LibraryProviderWatchlist>,
+        requests: MutableList<Set<TrackingProviderId>> = mutableListOf(),
+    ) = libraryWatchlistFlow(
+        connectedProviderIds = connected,
+        watchlists = { ids ->
+            requests += ids
+            flowOf(lists)
+        },
+    )
+
+    @Test
+    fun homeWatchlistObservesNothingWhileDisconnected() = runTest {
+        val connected = MutableStateFlow<Set<TrackingProviderId>>(setOf(TrackingProviderId.MDBLIST))
+        val requests = mutableListOf<Set<TrackingProviderId>>()
+        val flow = homeFlow(connected, listOf(watchlist(trakt, item("tt2", addedAt = 1))), requests)
+
+        assertEquals(HomeWatchlistRow(), flow.first())
+        assertTrue(requests.isEmpty())
+
+        connected.value = setOf(trakt, TrackingProviderId.MDBLIST)
+        assertEquals(listOf("tt2"), flow.first().items.map { it.id })
+        assertEquals(listOf(setOf(trakt)), requests)
+    }
+
+    @Test
+    fun homeWatchlistGoesEmptyOnDisconnect() = runTest {
+        val connected = MutableStateFlow<Set<TrackingProviderId>>(setOf(simkl))
+        val emissions = mutableListOf<HomeWatchlistRow>()
+        val job = launch(UnconfinedTestDispatcher(testScheduler)) {
+            homeFlow(connected, listOf(watchlist(simkl, item("tt2", addedAt = 1)))).toList(emissions)
+        }
+        connected.value = emptySet()
+        job.cancel()
+        assertEquals(2, emissions.size)
+        assertEquals(listOf("tt2"), emissions[0].items.map { it.id })
+        assertEquals(HomeWatchlistRow(), emissions[1])
+    }
+
+    @Test
+    fun homeWatchlistIsCappedAtEighteenAfterDedupe() = runTest {
+        assertEquals(18, HomeWatchlistRowLimit)
+        val traktItems = (1..25).map { item("tt$it", addedAt = 1_000L + it, provider = trakt) }.toTypedArray()
+        // Simkl duplicates of the ten oldest Trakt titles, each added slightly earlier than Trakt's copy.
+        val simklItems = (1..10).map { item("tt$it", addedAt = 500L + it, provider = simkl) }.toTypedArray()
+        val row = homeFlow(
+            MutableStateFlow(setOf(trakt, simkl)),
+            listOf(watchlist(trakt, *traktItems), watchlist(simkl, *simklItems)),
+        ).first()
+        assertEquals(18, row.items.size)
+        assertEquals((25 downTo 8).map { "tt$it" }, row.items.map { it.id })
+    }
+
+    @Test
+    fun homeWatchlistIsNewestAddedFirstWithTraktWinningATie() = runTest {
+        val row = homeFlow(
+            MutableStateFlow(setOf(trakt, simkl)),
+            listOf(
+                watchlist(simkl, item("s-old", addedAt = 10), item("s-tie", addedAt = 50), item("s-new", addedAt = 90)),
+                watchlist(trakt, item("t-tie", addedAt = 50), item("t-mid", addedAt = 70)),
+            ),
+        ).first()
+        assertEquals(listOf("s-new", "t-mid", "t-tie", "s-tie", "s-old"), row.items.map { it.id })
+    }
+
+    @Test
+    fun homeWatchlistMatchesTheLibraryRowForTheSameInputs() = runTest {
+        val overlapping = listOf(
+            watchlist(
+                trakt,
+                item("tt100", addedAt = 50, provider = trakt),
+                item("tt200", type = "series", addedAt = 400, imdbId = "tt200", tmdbId = 77, provider = trakt),
+                item("tt300", addedAt = 10, provider = trakt),
+            ),
+            watchlist(
+                simkl,
+                item("tt100", addedAt = 300, provider = simkl),
+                item("tmdb:77", type = "series", addedAt = 100, imdbId = "tt200", provider = simkl),
+                item("tt300", type = "series", addedAt = 20, provider = simkl),
+            ),
+        )
+        val connected = setOf(trakt, simkl)
+        val library = buildLibraryProviderRows(connected, emptyList(), emptyList(), overlapping, watchlistLimit = 18)
+        assertEquals(library.watchlist, homeFlow(MutableStateFlow(connected), overlapping).first().items)
+
+        val thirty = listOf(watchlist(trakt, *(1..30).map { item("tt$it", addedAt = it.toLong()) }.toTypedArray()))
+        val atLibraryCap = buildLibraryProviderRows(connected, emptyList(), emptyList(), thirty, watchlistLimit = 40).watchlist
+        assertEquals(30, atLibraryCap.size)
+        assertEquals(atLibraryCap.take(18), homeFlow(MutableStateFlow(connected), thirty).first().items)
+    }
+
+    @Test
+    fun homeWatchlistLeavesOutADisconnectedProvidersList() = runTest {
+        val row = homeFlow(
+            MutableStateFlow(setOf(simkl)),
+            listOf(
+                watchlist(trakt, item("t1", addedAt = 5)),
+                watchlist(simkl, item("s1", addedAt = 4)),
+            ),
+        ).first()
+        assertEquals(listOf("s1"), row.items.map { it.id })
+    }
+
+    @Test
+    fun deferredRefreshReadsTheSnapshotBeforeTheStartSignal() = runTest {
+        val released = MutableStateFlow(false)
+        var deferred = 0
+        var releasedCalls = 0
+        val emissions = mutableListOf<Unit>()
+        val job = launch(UnconfinedTestDispatcher(testScheduler)) {
+            deferredRefreshTriggers(
+                triggers = emptyFlow(),
+                released = released,
+                onDeferred = { deferred += 1 },
+                onReleased = { releasedCalls += 1 },
+            ).toList(emissions)
+        }
+        assertEquals(1, emissions.size)
+        assertEquals(1, deferred)
+        assertEquals(0, releasedCalls)
+        job.cancel()
+    }
+
+    @Test
+    fun deferredRefreshPullsOnceAfterTheStartSignal() = runTest {
+        val released = MutableStateFlow(false)
+        var releasedCalls = 0
+        val emissions = mutableListOf<Unit>()
+        val job = launch(UnconfinedTestDispatcher(testScheduler)) {
+            deferredRefreshTriggers(
+                triggers = emptyFlow(),
+                released = released,
+                onDeferred = {},
+                onReleased = { releasedCalls += 1 },
+            ).toList(emissions)
+        }
+        assertEquals(0, releasedCalls)
+        released.value = true
+        assertEquals(1, releasedCalls)
+        assertEquals(2, emissions.size)
+        released.value = false
+        released.value = true
+        assertEquals(1, releasedCalls)
+        job.cancel()
+    }
+
+    @Test
+    fun deferredRefreshPullsAtOnceWhenAlreadyReleased() = runTest {
+        var releasedCalls = 0
+        val job = launch(UnconfinedTestDispatcher(testScheduler)) {
+            deferredRefreshTriggers(
+                triggers = emptyFlow(),
+                released = MutableStateFlow(true),
+                onDeferred = {},
+                onReleased = { releasedCalls += 1 },
+            ).toList(mutableListOf())
+        }
+        assertEquals(1, releasedCalls)
+        job.cancel()
+    }
+
+    @Test
+    fun refreshDecisionsShareOneThrottleAcrossLibraryAndHome() {
+        val throttle = LibraryRowsRefreshThrottle(intervalMs = 1_000L)
+        val library = refreshDecisions(throttle, listOf(trakt), activeSource = null, profileId = 1, nowEpochMs = 100L)
+        val home = refreshDecisions(throttle, listOf(trakt), activeSource = null, profileId = 1, nowEpochMs = 500L)
+        val later = refreshDecisions(throttle, listOf(trakt), activeSource = null, profileId = 1, nowEpochMs = 1_200L)
+        assertEquals(listOf(trakt to HomeWatchlistPullPull), library)
+        assertEquals(listOf(trakt to HomeWatchlistPullThrottled), home)
+        assertEquals(listOf(trakt to HomeWatchlistPullPull), later)
+    }
+
+    @Test
+    fun refreshDecisionsNameTheSource() {
+        val throttle = LibraryRowsRefreshThrottle()
+        val first = refreshDecisions(throttle, listOf(trakt, simkl), activeSource = trakt, profileId = 1, nowEpochMs = 0L)
+        assertEquals(listOf(trakt to HomeWatchlistPullSource, simkl to HomeWatchlistPullPull), first)
+        val second = refreshDecisions(throttle, listOf(trakt, simkl), activeSource = trakt, profileId = 1, nowEpochMs = 1L)
+        assertEquals(listOf(trakt to HomeWatchlistPullSource, simkl to HomeWatchlistPullPull), second)
+    }
+
+    @Test
+    fun homeWatchlistRowSectionCarriesNoSeeAllAtTheHomeCap() {
+        val items = (1..18).map { item("tt$it", addedAt = it.toLong()) }
+        val section = homeWatchlistRowSection(title = "Watchlist", items = items)
+        assertEquals(HOME_WATCHLIST_ROW_KEY, section.key)
+        assertEquals(false, section.hasMore)
+        assertEquals(18, section.availableItemCount)
+        assertEquals(false, section.canOpenCatalog(previewLimit = 18))
+    }
+
+    @Test
+    fun homeWatchlistRowSectionOfPreviewsMatchesTheItemsVersion() {
+        val items = listOf(item("tt1", addedAt = 1), item("tt2", type = "series", addedAt = 2))
+        assertEquals(
+            homeWatchlistRowSection("Watchlist", items),
+            homeWatchlistRowSectionOf("Watchlist", items.map(LibraryItem::toMetaPreview)),
         )
     }
 }

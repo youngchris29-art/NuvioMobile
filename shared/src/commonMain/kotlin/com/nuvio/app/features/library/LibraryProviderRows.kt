@@ -8,6 +8,7 @@ import com.nuvio.app.core.poster.withCustomPosterUrls
 import com.nuvio.app.core.tracking.ensureTrackingProvidersRegistered
 import com.nuvio.app.features.catalog.CatalogTarget
 import com.nuvio.app.features.home.HomeCatalogSection
+import com.nuvio.app.features.home.MetaPreview
 import com.nuvio.app.features.profiles.ProfileRepository
 import com.nuvio.app.features.tracking.TrackingLibraryProvider
 import com.nuvio.app.features.tracking.TrackingLibrarySnapshot
@@ -34,12 +35,16 @@ import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
@@ -48,6 +53,7 @@ import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * FEAT-89 (Reddit, u/dclimaxb; decision C0 (a), 2026-10-30): two rows on the tvOS Library tab for
@@ -90,6 +96,41 @@ data class LibraryProviderRows(
         get() = resumeWatching.isEmpty() && watchlist.isEmpty()
 }
 
+/** The Home Watchlist row's length: the length of every other Home row (`CatalogRowView.homePreviewLimit`). */
+const val HomeWatchlistRowLimit = 18
+
+/** The Home row's key: its `HomeCatalogSection.key`, Home's row key and its focus key. */
+const val HOME_WATCHLIST_ROW_KEY = "home-watchlist"
+
+/** The Home Watchlist row. Swift hides the row while [items] is empty. */
+data class HomeWatchlistRow(val items: List<LibraryItem> = emptyList())
+
+/** One provider's refresh decision on the Home path (DEBUG pull line). */
+data class HomeWatchlistPullDecision(
+    val provider: String,        // TrackingProviderId.storageId: "trakt" | "simkl"
+    val afterFirstRows: Boolean,
+    val decision: String,        // one of the HomeWatchlistPull* constants
+    val profileId: Int,
+)
+const val HomeWatchlistPullDeferred = "deferred"
+const val HomeWatchlistPullPull = "pull"
+const val HomeWatchlistPullThrottled = "throttled"
+const val HomeWatchlistPullSource = "source"
+
+/**
+ * Pure (unit-tested): the watchlist half of [buildLibraryProviderRows], shared by the Library row
+ * and the Home row. No Trakt or Simkl connection → empty.
+ */
+fun buildLibraryWatchlistRow(
+    connectedProviderIds: Set<TrackingProviderId>,
+    watchlists: List<LibraryProviderWatchlist>,
+    limit: Int,
+): List<LibraryItem> {
+    val connected = connectedProviderIds.filterTo(mutableSetOf()) { it in LibraryRowProviderIds }
+    if (connected.isEmpty()) return emptyList()
+    return mergeLibraryWatchlists(watchlists.filter { it.providerId in connected }).take(limit)
+}
+
 /**
  * Pure (unit-tested): both rows from their inputs. No Trakt or Simkl connection → no rows,
  * whatever the inputs hold. A next-up entry without an episode is dropped, so a series whose next
@@ -110,8 +151,7 @@ fun buildLibraryProviderRows(
     }
     return LibraryProviderRows(
         resumeWatching = mergeContinueWatchingWithNextUp(inProgress = inProgress, nextUp = knownNextUp),
-        watchlist = mergeLibraryWatchlists(watchlists.filter { it.providerId in connected })
-            .take(watchlistLimit),
+        watchlist = buildLibraryWatchlistRow(connected, watchlists, watchlistLimit),
     )
 }
 
@@ -186,6 +226,21 @@ fun libraryWatchlistRowSection(title: String, items: List<LibraryItem>): HomeCat
     )
 
 const val LIBRARY_WATCHLIST_ROW_KEY = "library.providerRows.watchlist"
+
+/** The Home row as `CatalogRowView` takes it. [title] is localized by Swift. No See All. */
+fun homeWatchlistRowSection(title: String, items: List<LibraryItem>): HomeCatalogSection =
+    homeWatchlistRowSectionOf(title, items.map(LibraryItem::toMetaPreview))
+
+/** The same section from previews (the DEBUG seed builds previews in Swift). */
+fun homeWatchlistRowSectionOf(title: String, previews: List<MetaPreview>): HomeCatalogSection =
+    HomeCatalogSection(
+        key = HOME_WATCHLIST_ROW_KEY,
+        title = title,
+        subtitle = "",
+        addonName = "",
+        target = CatalogTarget.Library(contentType = "", sectionType = HOME_WATCHLIST_ROW_KEY),
+        items = previews,
+    )
 
 /**
  * How often the rows ask a provider that is NOT the Library source to refresh its library (review
@@ -285,6 +340,63 @@ internal fun libraryProviderRowsFlow(
     }
     .distinctUntilChanged()
 
+/**
+ * The Home Watchlist row's wiring with its sources injected (unit-tested): [watchlists] is never
+ * called while no Trakt or Simkl account is connected.
+ */
+@OptIn(ExperimentalCoroutinesApi::class)
+internal fun libraryWatchlistFlow(
+    connectedProviderIds: Flow<Set<TrackingProviderId>>,
+    watchlists: (Set<TrackingProviderId>) -> Flow<List<LibraryProviderWatchlist>>,
+    limit: Int = HomeWatchlistRowLimit,
+    onConnectedChanged: (Set<TrackingProviderId>) -> Unit = {},
+): Flow<HomeWatchlistRow> = connectedProviderIds
+    .map { ids -> ids.filterTo(linkedSetOf()) { it in LibraryRowProviderIds } }
+    .distinctUntilChanged()
+    .flatMapLatest { connected ->
+        onConnectedChanged(connected)
+        if (connected.isEmpty()) flowOf(HomeWatchlistRow())
+        else watchlists(connected).map { lists -> HomeWatchlistRow(buildLibraryWatchlistRow(connected, lists, limit)) }
+    }
+    .distinctUntilChanged()
+
+/**
+ * The snapshot triggers, read at once, plus ONE refresh once [released] first reads true.
+ * [onDeferred] runs at subscription (the caller logs `deferred` lines when the release has not
+ * happened yet); [onReleased] runs once per subscription, never before [released] is true.
+ */
+internal fun deferredRefreshTriggers(
+    triggers: Flow<Unit>,
+    released: Flow<Boolean>,
+    onDeferred: () -> Unit,
+    onReleased: suspend () -> Unit,
+): Flow<Unit> = merge(
+    triggers.onStart { onDeferred(); emit(Unit) },
+    flow { released.first { it }; onReleased(); emit(Unit) },
+)
+
+/**
+ * The refresh decision per connected provider, from one [LibraryRowsRefreshThrottle.refreshTargets]
+ * call. Both the Library and the Home path use it with the repository's single throttle.
+ */
+internal fun refreshDecisions(
+    throttle: LibraryRowsRefreshThrottle,
+    connected: List<TrackingProviderId>,
+    activeSource: TrackingProviderId?,
+    profileId: Int,
+    nowEpochMs: Long,
+    unloaded: Collection<TrackingProviderId> = emptyList(),
+): List<Pair<TrackingProviderId, String>> {
+    val due = throttle.refreshTargets(connected, activeSource, profileId, nowEpochMs, unloaded)
+    return connected.map { id ->
+        id to when {
+            id == activeSource -> HomeWatchlistPullSource
+            id in due -> HomeWatchlistPullPull
+            else -> HomeWatchlistPullThrottled
+        }
+    }
+}
+
 /** The production wiring of [libraryProviderRowsFlow] over the app's repositories; what Swift watches. */
 object LibraryProviderRowsRepository {
     private val log = Logger.withTag("LibraryProviderRows")
@@ -292,6 +404,12 @@ object LibraryProviderRowsRepository {
         SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("LibraryProviderRows"),
     )
     private val refreshThrottle = LibraryRowsRefreshThrottle()
+    private val homeRefreshReleased = MutableStateFlow(false)
+    /** Profile whose Library source this path last loaded; null = none yet. */
+    private var librarySourceLoadedForProfile: Int? = null
+    /** DEBUG sink for the pull line; Swift sets it in DEBUG builds only. */
+    @kotlin.concurrent.Volatile
+    var homeWatchlistPullListener: ((HomeWatchlistPullDecision) -> Unit)? = null
 
     /**
      * Both rows for the active profile. A plain `Flow` (Swift: `watchFlow`, collected on the main
@@ -318,9 +436,57 @@ object LibraryProviderRowsRepository {
         return libraryProviderRowsFlow(
             connectedProviderIds = TrackingProviderRegistry.connectedProviderIds,
             resumeInputs = ::resumeInputs,
-            watchlists = ::watchlists,
+            watchlists = { connected -> watchlists(connected, CustomPosterScreen.LIBRARY, null) },
             onConnectedChanged = refreshThrottle::retainConnected,
         )
+    }
+
+    /**
+     * The Home row's Watchlist: the Library's Watchlist half without Up Next, capped at
+     * [HomeWatchlistRowLimit]. A plain `Flow` (Swift: `watchFlow`, collected on the main thread).
+     * Call it from the main thread. Reads snapshots at once; any pull waits for
+     * [releaseHomeWatchlistRefresh]. Nothing is observed with no Trakt or Simkl connection.
+     */
+    fun observeWatchlist(): Flow<HomeWatchlistRow> {
+        ensureTrackingProvidersRegistered()
+        TrackingProviderRegistry.ensureLoaded()
+        CustomPosterUrlRepository.ensureLoaded()
+        LibraryRowProviderIds
+            .mapNotNull(TrackingProviderRegistry::libraryProvider)
+            .forEach(TrackingLibraryProvider::ensureLoaded)
+        return libraryWatchlistFlow(
+            connectedProviderIds = TrackingProviderRegistry.connectedProviderIds,
+            watchlists = { connected -> watchlists(connected, CustomPosterScreen.HOME, homeRefreshReleased) },
+            limit = HomeWatchlistRowLimit,
+            onConnectedChanged = refreshThrottle::retainConnected,
+        )
+    }
+
+    /** Home's first rows have drawn: the Home path may pull now. Idempotent. Main thread. */
+    fun releaseHomeWatchlistRefresh() { homeRefreshReleased.value = true }
+
+    /** Profile switch, sign-out, toggle off or Home teardown: the next subscription waits again. Idempotent. */
+    fun holdHomeWatchlistRefresh() { homeRefreshReleased.value = false }
+
+    /** Once per profile per process, after first rows, so the Library source gets its own gates. */
+    private fun ensureLibrarySourceLoadedForActiveProfile() {
+        val profileId = ProfileRepository.activeProfileId
+        if (librarySourceLoadedForProfile == profileId) return
+        librarySourceLoadedForProfile = profileId
+        LibraryRepository.ensureLoaded()
+    }
+
+    private fun logPull(decisions: List<Pair<TrackingProviderId, String>>, afterFirstRows: Boolean) {
+        val listener = homeWatchlistPullListener ?: return
+        val profileId = ProfileRepository.activeProfileId
+        decisions.forEach { (id, decision) ->
+            listener(HomeWatchlistPullDecision(id.storageId, afterFirstRows, decision, profileId))
+        }
+    }
+
+    private fun logPull(providers: List<TrackingLibraryProvider>, afterFirstRows: Boolean, deferred: Boolean) {
+        if (!deferred) return
+        logPull(providers.map { it.providerId to HomeWatchlistPullDeferred }, afterFirstRows)
     }
 
     /** Home's Continue Watching inputs: the in-progress row and the Up Next entries. */
@@ -370,33 +536,66 @@ object LibraryProviderRowsRepository {
         }
     }
 
-    /** Each connected provider's watchlist, re-read on its library changes and poster pattern. */
-    private fun watchlists(connected: Set<TrackingProviderId>): Flow<List<LibraryProviderWatchlist>> {
+    /**
+     * The refresh half of the old `onStart`: asks the throttle which providers to pull, launches
+     * those pulls and returns the decision per provider.
+     */
+    private fun requestRefresh(providers: List<TrackingLibraryProvider>): List<Pair<TrackingProviderId, String>> {
+        val profileId = ProfileRepository.activeProfileId
+        val decisions = refreshDecisions(
+            throttle = refreshThrottle,
+            connected = providers.map(TrackingLibraryProvider::providerId),
+            activeSource = LibraryRepository.uiState.value.sourceMode.providerId,
+            profileId = profileId,
+            nowEpochMs = LibraryClock.nowEpochMs(),
+            unloaded = providers
+                .filterNot { provider -> provider.snapshot().hasLoaded }
+                .map(TrackingLibraryProvider::providerId),
+        )
+        providers
+            .filter { provider -> decisions.any { (id, decision) -> id == provider.providerId && decision == HomeWatchlistPullPull } }
+            .forEach { provider -> refreshScope.launch { refresh(provider, profileId) } }
+        return decisions
+    }
+
+    /**
+     * Each connected provider's watchlist, re-read on its library changes and poster pattern.
+     * [homeRelease] null is the Library path (refresh at subscription); non-null is the Home path
+     * (snapshots at once, one refresh once the release reads true).
+     */
+    private fun watchlists(
+        connected: Set<TrackingProviderId>,
+        posterScreen: CustomPosterScreen,
+        homeRelease: StateFlow<Boolean>?,
+    ): Flow<List<LibraryProviderWatchlist>> {
         val providers = connected.mapNotNull(TrackingProviderRegistry::libraryProvider)
         if (providers.isEmpty()) return flowOf(emptyList())
         val posterPattern = combine(
             CustomPosterUrlRepository.pattern,
             CustomPosterUrlRepository.enabledScreens,
         ) { _, _ -> Unit }
-        return merge(posterPattern, *providers.map(TrackingLibraryProvider::changes).toTypedArray())
-            .onStart {
-                val profileId = ProfileRepository.activeProfileId
-                val due = refreshThrottle.refreshTargets(
-                    connected = providers.map(TrackingLibraryProvider::providerId),
-                    activeSource = LibraryRepository.uiState.value.sourceMode.providerId,
-                    profileId = profileId,
-                    nowEpochMs = LibraryClock.nowEpochMs(),
-                    unloaded = providers
-                        .filterNot { provider -> provider.snapshot().hasLoaded }
-                        .map(TrackingLibraryProvider::providerId),
-                )
-                providers
-                    .filter { provider -> provider.providerId in due }
-                    .forEach { provider -> refreshScope.launch { refresh(provider, profileId) } }
+        val changes = merge(posterPattern, *providers.map(TrackingLibraryProvider::changes).toTypedArray())
+        val triggers = if (homeRelease == null) {
+            changes.onStart {
+                requestRefresh(providers)
                 emit(Unit)
             }
+        } else {
+            deferredRefreshTriggers(
+                triggers = changes,
+                released = homeRelease,
+                onDeferred = {
+                    if (!homeRelease.value) logPull(providers, afterFirstRows = false, deferred = true)
+                },
+                onReleased = {
+                    withContext(Dispatchers.Main) { ensureLibrarySourceLoadedForActiveProfile() }
+                    logPull(requestRefresh(providers), afterFirstRows = true)
+                },
+            )
+        }
+        return triggers
             .map {
-                val pattern = CustomPosterUrlRepository.patternForScreen(CustomPosterScreen.LIBRARY)
+                val pattern = CustomPosterUrlRepository.patternForScreen(posterScreen)
                 providers.map { provider ->
                     LibraryProviderWatchlist(
                         providerId = provider.providerId,
