@@ -25,6 +25,9 @@ actual object TraktLibraryStorage {
             ?.apply()
     }
 
+    internal actual fun loadPayload(profileId: Int): String? =
+        preferences?.getString(ProfileScopedKey.of(payloadKey, profileId), null)
+
     internal actual fun savePayload(profileId: Int, payload: String) {
         preferences
             ?.edit()

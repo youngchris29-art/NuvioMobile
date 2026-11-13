@@ -3,8 +3,11 @@ package com.nuvio.app.features.trakt
 import com.nuvio.app.features.library.LibraryItem
 import com.nuvio.app.features.profiles.ProfileRepository
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -13,6 +16,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -58,16 +62,33 @@ class TraktLibraryProfileSwitchTest {
     private val originalFetcher = TraktLibraryRepository.snapshotFetcher
     private val originalLoader = TraktLibraryRepository.payloadLoader
     private val originalSaver = TraktLibraryRepository.payloadSaver
+    private val originalWriter = TraktLibraryRepository.membershipWriter
+    private val originalTabsFetcher = TraktLibraryRepository.listTabsFetcher
     private val saves = mutableListOf<Pair<Int, String>>()
+    private val writes = mutableListOf<Pair<String, Boolean>>()
+
+    private val toggledItem = LibraryItem(id = "tt-x", type = "movie", name = "x", savedAtEpochMs = 0L)
+    private fun watchlistOn() = TraktMembershipChanges(mapOf("trakt:watchlist" to true))
+
+    /** Profile [profile]'s persisted payload after a refresh that returned [ids]; leaves [profile] active. */
+    private suspend fun payloadFor(profile: Int, vararg ids: String): String {
+        ProfileRepository.selectProfile(profile)
+        TraktLibraryRepository.onProfileChanged()
+        TraktLibraryRepository.snapshotFetcher = { _, _ -> state(*ids) }
+        TraktLibraryRepository.ensureFresh()
+        return saves.last().second.also { saves.clear() }
+    }
 
     @BeforeTest
     fun setUp() {
         ProfileRepository.clearInMemory()
-        TraktLibraryRepository.payloadLoader = { null }
+        TraktLibraryRepository.payloadLoader = { _ -> null }
         TraktLibraryRepository.payloadSaver = { id, p -> saves += id to p }
+        TraktLibraryRepository.membershipWriter = { _, k, add, _ -> writes += k to add }
         TraktLibraryRepository.authorizedHeadersSource = { mapOf("Authorization" to "Bearer test") }
         TraktLibraryRepository.onProfileChanged()
         saves.clear()
+        writes.clear()
     }
 
     @AfterTest
@@ -75,6 +96,9 @@ class TraktLibraryProfileSwitchTest {
         TraktLibraryRepository.authorizedHeadersSource = originalHeaders
         TraktLibraryRepository.snapshotFetcher = originalFetcher
         TraktLibraryRepository.payloadSaver = originalSaver
+        TraktLibraryRepository.membershipWriter = originalWriter
+        TraktLibraryRepository.listTabsFetcher = originalTabsFetcher
+        TraktLibraryRepository.payloadLoader = { _ -> null }
         ProfileRepository.clearInMemory()
         TraktLibraryRepository.onProfileChanged()
         TraktLibraryRepository.payloadLoader = originalLoader
@@ -118,7 +142,7 @@ class TraktLibraryProfileSwitchTest {
             val payloadB = saves.single().also { assertEquals(2, it.first) }.second
 
             // (b) back to profile 1, with profile 2's file readable.
-            TraktLibraryRepository.payloadLoader = { if (ProfileRepository.activeProfileId == 2) payloadB else null }
+            TraktLibraryRepository.payloadLoader = { id -> if (id == 2) payloadB else null }
             ProfileRepository.selectProfile(1)
             TraktLibraryRepository.onProfileChanged()
             saves.clear()
@@ -198,6 +222,146 @@ class TraktLibraryProfileSwitchTest {
             val saved = saves.single()
             assertEquals(1, saved.first)
             assertTrue(saved.second.contains("tt-a2"), saved.second)
+        }
+    }
+
+    @Test
+    fun aToggleStartedForOneProfileIsAbandonedWhenTheProfileChangesFirst() = runBlocking {
+        withTimeout(10_000) {
+            val payloadA = payloadFor(1, "tt-a1")
+            TraktLibraryRepository.payloadLoader = { id -> if (id == 1) payloadA else null }
+            ProfileRepository.selectProfile(1)
+            TraktLibraryRepository.onProfileChanged()
+            val gate = Gate()
+            TraktLibraryRepository.snapshotFetcher = gated(gate, state("tt-a1"), state("tt-a1"))
+            val job = launch(Dispatchers.Default) {
+                TraktLibraryRepository.applyMembershipChanges(toggledItem, watchlistOn())
+            }
+            gate.entered.await()
+            ProfileRepository.selectProfile(2)
+            TraktLibraryRepository.onProfileChanged()
+            gate.release.complete(Unit)
+            job.join()
+
+            assertTrue(writes.isEmpty(), "$writes")
+            assertFalse("tt-x" in ids(), "${ids()}")
+            assertTrue(saves.isEmpty(), "$saves")
+        }
+    }
+
+    @Test
+    fun aToggleWithNoSwitchWritesOnceAndShowsAtOnce() = runBlocking {
+        withTimeout(10_000) {
+            val payloadA = payloadFor(1, "tt-a1")
+            TraktLibraryRepository.payloadLoader = { id -> if (id == 1) payloadA else null }
+            ProfileRepository.selectProfile(1)
+            TraktLibraryRepository.onProfileChanged()
+            TraktLibraryRepository.snapshotFetcher = { _, _ -> state("tt-a1") }
+            TraktLibraryRepository.ensureFresh()
+
+            TraktLibraryRepository.applyMembershipChanges(toggledItem, watchlistOn())
+
+            assertEquals(listOf("trakt:watchlist" to true), writes.toList())
+            assertTrue("tt-x" in ids(), "${ids()}")
+        }
+    }
+
+    @Test
+    fun aFailedToggleRollsBackOnlyItsOwnProfile() = runBlocking {
+        withTimeout(10_000) {
+            val payloadA = payloadFor(1, "tt-a1")
+            TraktLibraryRepository.payloadLoader = { id -> if (id == 1) payloadA else null }
+            ProfileRepository.selectProfile(1)
+            TraktLibraryRepository.onProfileChanged()
+            TraktLibraryRepository.snapshotFetcher = { _, _ -> state("tt-a1") }
+            TraktLibraryRepository.ensureFresh()
+
+            // (a) the profile switches while the write is in flight, then the write fails.
+            val gate = Gate()
+            TraktLibraryRepository.membershipWriter = { _, _, _, _ ->
+                gate.entered.complete(Unit)
+                gate.release.await()
+                error("boom")
+            }
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val job = scope.async { TraktLibraryRepository.applyMembershipChanges(toggledItem, watchlistOn()) }
+            gate.entered.await()
+            ProfileRepository.selectProfile(2)
+            TraktLibraryRepository.onProfileChanged()
+            gate.release.complete(Unit)
+            assertFailsWith<IllegalStateException> { job.await() }
+            assertTrue(ids().isEmpty(), "${ids()}")
+
+            // (b) no switch: the failure rolls the profile's own state back.
+            ProfileRepository.selectProfile(1)
+            TraktLibraryRepository.onProfileChanged()
+            TraktLibraryRepository.snapshotFetcher = { _, _ -> state("tt-a1") }
+            TraktLibraryRepository.ensureFresh()
+            val before = ids()
+            TraktLibraryRepository.membershipWriter = { _, _, _, _ -> error("boom") }
+            assertFailsWith<IllegalStateException> {
+                TraktLibraryRepository.applyMembershipChanges(toggledItem, watchlistOn())
+            }
+            assertEquals(before, ids())
+        }
+    }
+
+    @Test
+    fun aListTabPreloadFinishingAfterASwitchIsDiscarded() = runBlocking {
+        withTimeout(10_000) {
+            val gate = Gate()
+            TraktLibraryRepository.listTabsFetcher = {
+                gate.entered.complete(Unit)
+                gate.release.await()
+                listOf(watchlistTab)
+            }
+            val job = launch(Dispatchers.Default) { TraktLibraryRepository.ensureListTabs() }
+            gate.entered.await()
+            ProfileRepository.selectProfile(2)
+            TraktLibraryRepository.onProfileChanged()
+            gate.release.complete(Unit)
+            job.join()
+
+            assertTrue(TraktLibraryRepository.currentListTabs().isEmpty(), "${TraktLibraryRepository.currentListTabs()}")
+        }
+    }
+
+    @Test
+    fun ensureLoadedReloadsForTheSelectedProfileAfterABootTimeLoad() = runBlocking {
+        withTimeout(10_000) {
+            val payloadA = payloadFor(1, "tt-a1")
+            val payloadB = payloadFor(2, "tt-b1")
+            TraktLibraryRepository.payloadLoader = { id -> mapOf(1 to payloadA, 2 to payloadB)[id] }
+            ProfileRepository.clearInMemory()
+            TraktLibraryRepository.onProfileChanged()
+            assertEquals(listOf("tt-a1"), ids())
+
+            // A profile change without the fan-out (the test coordinator is a no-op).
+            ProfileRepository.selectProfile(2)
+            TraktLibraryRepository.ensureLoaded()
+            assertEquals(listOf("tt-b1"), ids())
+        }
+    }
+
+    @Test
+    fun aDiskLoadFinishingAfterASwitchIsDiscarded() = runBlocking {
+        withTimeout(10_000) {
+            val payloadA = payloadFor(1, "tt-a1")
+            val payloadB = payloadFor(2, "tt-b1")
+            TraktLibraryRepository.payloadLoader = { id ->
+                if (id == 1) {
+                    // The switch, and profile 2's own load, happen while profile 1's read is in progress.
+                    ProfileRepository.selectProfile(2)
+                    TraktLibraryRepository.onProfileChanged()
+                    payloadA
+                } else {
+                    payloadB
+                }
+            }
+            ProfileRepository.clearInMemory()
+            TraktLibraryRepository.onProfileChanged()
+
+            assertEquals(listOf("tt-b1"), ids())
         }
     }
 }

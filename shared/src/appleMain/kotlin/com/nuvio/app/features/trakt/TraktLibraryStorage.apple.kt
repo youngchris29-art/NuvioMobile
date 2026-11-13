@@ -23,6 +23,9 @@ actual object TraktLibraryStorage {
         PayloadFileStore.save(subdirectory, ProfileScopedKey.of(payloadKey), payload)
     }
 
+    internal actual fun loadPayload(profileId: Int): String? =
+        PayloadFileStore.load(subdirectory, ProfileScopedKey.of(payloadKey, profileId))
+
     internal actual fun savePayload(profileId: Int, payload: String) {
         PayloadFileStore.save(subdirectory, ProfileScopedKey.of(payloadKey, profileId), payload)
     }

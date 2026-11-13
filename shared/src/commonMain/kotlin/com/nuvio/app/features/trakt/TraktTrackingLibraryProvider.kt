@@ -2,6 +2,7 @@ package com.nuvio.app.features.trakt
 
 import com.nuvio.app.features.library.LibraryItem
 import com.nuvio.app.features.library.LibrarySection
+import com.nuvio.app.features.profiles.ProfileRepository
 import com.nuvio.app.features.tracking.TrackingLibraryProvider
 import com.nuvio.app.features.tracking.TrackingLibrarySnapshot
 import com.nuvio.app.features.tracking.TrackingLibraryTab
@@ -96,6 +97,8 @@ object TraktTrackingLibraryProvider : TrackingLibraryProvider {
         desiredMembership: Map<String, Boolean>,
         destructiveRemovalConfirmed: Boolean,
     ): TrackingMembershipResolution? {
+        // W7 delta (P2): same entry guard as Simkl's adapter; the repository binds the rest.
+        if (profileId != ProfileRepository.activeProfileId) return null
         TraktLibraryRepository.applyMembershipChanges(
             item = item,
             changes = TraktMembershipChanges(desiredMembership = desiredMembership),
