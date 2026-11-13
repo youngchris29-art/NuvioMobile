@@ -651,10 +651,10 @@ struct HomeView: View {
     }
 
     /// §16/§17: whether a Watchlist row appearing now would slide the viewer's row out of the pane (asked
-    /// for appearances only). The row that owns focus; while the rail holds focus, its return target
-    /// (`classicRailRoute`; `.hero`/nil = none); while Home is covered, the last owned row (the pop
-    /// restore does not scroll, 16.3.0 point 2); within `HomeWatchlistPresenceHold.hopWindow` of a row
-    /// release, the row being left. Continue Watching sits above the slot and the Watchlist is the
+    /// for appearances only). The row that owns focus; while Home is covered, the last owned row (the pop
+    /// restore does not scroll, 16.3.0 point 2; a cover beats the rail); while the rail holds focus, its
+    /// return target (`classicRailRoute`; `.hero`/nil = none); within `HomeWatchlistPresenceHold.hopWindow`
+    /// of a row release, the row being left. Continue Watching sits above the slot and the Watchlist is the
     /// slot. Classic only. `navigationChrome` is read at call time, never a body dependency.
     private func classicFocusBelowWatchlistSlot() -> Bool {
         guard !isStageLayout else { return false }

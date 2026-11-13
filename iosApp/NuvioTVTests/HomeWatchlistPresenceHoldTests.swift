@@ -64,6 +64,18 @@ final class HomeWatchlistPresenceHoldTests: XCTestCase {
         XCTAssertEqual(r(covered: true, lastOwned: "c3"), "c3")
     }
 
+    func testCoveredBeatsRailHeroTarget() {
+        XCTAssertEqual(r(railFocused: true, railTarget: .hero, covered: true, lastOwned: "c3"), "c3")
+    }
+
+    func testCoveredBeatsRailNilTarget() {
+        XCTAssertEqual(r(railFocused: true, railTarget: nil, covered: true, lastOwned: "c3"), "c3")
+    }
+
+    func testCoveredBeatsRailRowTarget() {
+        XCTAssertEqual(r(railFocused: true, railTarget: .row("c5"), covered: true, lastOwned: "c3"), "c3")
+    }
+
     func testHopWindow() {
         XCTAssertEqual(r(lastOwned: "c3", sinceRowRelease: 0.2), "c3")
         XCTAssertNil(r(lastOwned: "c3", sinceRowRelease: 0.6))

@@ -1814,19 +1814,19 @@ nonisolated enum HomeWatchlistPresenceHold {
     }
 
     /// §17: the row focus is on, or will come back to, for the hold. nil = no row to protect.
-    /// `owned` wins; then the rail's return target while the rail holds focus (`.hero`/nil = none);
-    /// then, while Home is covered, the last owned row; then, within `hopWindow` of a row release, the
-    /// row being left (a hop between rows passes through nil).
+    /// `owned` wins; then, while Home is covered, the last owned row (a cover beats the rail); then the
+    /// rail's return target while the rail holds focus (`.hero`/nil = none); then, within `hopWindow` of
+    /// a row release, the row being left (a hop between rows passes through nil).
     static let hopWindow: TimeInterval = 0.5
 
     static func returnRowKey(owned: String?, railFocused: Bool, railTarget: HomeRailReturnTarget?,
                              covered: Bool, lastOwned: String?, sinceRowRelease: TimeInterval?) -> String? {
         if let owned { return owned }
+        if covered { return lastOwned }
         if railFocused {
             if case .row(let key)? = railTarget { return key }
             return nil
         }
-        if covered { return lastOwned }
         if let since = sinceRowRelease, since < hopWindow { return lastOwned }
         return nil
     }
