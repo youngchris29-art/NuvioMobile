@@ -17,8 +17,10 @@ import XCTest
 ///     `debug_strip_fit key=<rowKey> m= h= | ...`;
 ///   - both: `debug_homeWatchlist on= n= first=`.
 ///
-/// Fixture facts: FA87 or the project's sim clone, guest "Chris" with Cinemeta, Medium posters, no watch
-/// history. In Tabs mode the launch lands focus on the tab bar, so the first Down enters the strip (Stage)
+/// Fixture facts: FA87 or the project's sim clone, guest "Chris" with Cinemeta, Medium posters. FA87 may
+/// carry stored watch progress from the player-harness classes (`smoke-mpv`): the no-Continue-Watching
+/// legs 17-19 then skip (§22), and the others accept a Continue Watching row above the rows they test.
+/// In Tabs mode the launch lands focus on the tab bar, so the first Down enters the strip (Stage)
 /// or the hero (Classic).
 ///
 /// Helpers are this file's own (the harness's duplication rule: every UI test file owns its helpers;
@@ -209,6 +211,52 @@ final class HomeWatchlistRowUITests: XCTestCase {
         }
         XCTAssertEqual(Self.token(line, "seed"), "applied", "seed status: '\(line)'")
         XCTAssertEqual(Self.token(line, "first"), Self.wlFirst, "the seeded Watchlist's first item: '\(line)'")
+    }
+
+    // MARK: - Fixture precondition: stored watch progress (§22)
+
+    /// The Continue Watching items this fixture shows with no seed at all: a Classic launch with no
+    /// catalog rows, no Watchlist and no Upcoming, so the only row Down can reach is Continue Watching
+    /// (the Combo A last-row leg's launch minus its seed). Empty when the fixture has no stored progress.
+    private func storedContinueWatchingItems() throws -> [String] {
+        let app = launch(Self.classicBase + ["-home_upcoming_row_enabled", "NO", "-debug.homeNoCatalogRows", "YES"])
+        defer { app.terminate() }
+        guard poll(30, step: 0.5, { !label(app, "debug_homeReturn").isEmpty }) else {
+            throw HarnessAbort("debug_homeReturn never appeared in the stored-progress probe")
+        }
+        var onContinueWatching = false
+        for _ in 0..<4 where !onContinueWatching {
+            onContinueWatching = classicStep(app, .down) == "continue-watching"
+        }
+        guard onContinueWatching else { return [] }
+        func focusedItem() -> String? {
+            guard let foc = Self.token(label(app, "debug_homeReturn"), "foc"),
+                  foc.hasPrefix("continue-watching/") else { return nil }
+            return String(foc.dropFirst("continue-watching/".count))
+        }
+        var items = focusedItem().map { [$0] } ?? ["?"]
+        for _ in 0..<6 {
+            remote.press(.right)
+            pause(1.0)
+            guard let item = focusedItem(), item != items.last else { break }
+            items.append(item)
+        }
+        return items
+    }
+
+    /// The no-Continue-Watching legs (17-19) need a fixture without stored watch progress. A fixture
+    /// with history (FA87 after the player-harness classes) skips them; this class's own seed left
+    /// behind fails them.
+    private func requireNoStoredContinueWatching() throws {
+        let items = try storedContinueWatchingItems()
+        note("stored_progress_probe", "Continue Watching with no seed: \(items)")
+        guard !items.isEmpty else { return }
+        let ownSeed = (Self.cwEntry["id"] as? String) ?? "tt0111161"
+        if items.contains(where: { $0.contains(ownSeed) }) {
+            XCTFail("this class's Continue Watching seed (\(ownSeed)) survived its cleanup: \(items) (a test-hygiene defect, not a fixture condition)")
+            throw HarnessAbort("own Continue Watching seed left behind")
+        }
+        throw XCTSkip("fixture has stored watch progress (\(items.joined(separator: ","))); the no-Continue-Watching case is covered on a clean guest fixture")
     }
 
     // MARK: - Classic readouts and walks
@@ -526,6 +574,7 @@ final class HomeWatchlistRowUITests: XCTestCase {
     }
 
     func testClassic_NoCWWatchlistIsTheTopRow() throws {
+        try requireNoStoredContinueWatching()
         let app = launch(Self.classicBase + ["-debug.homeWatchlistSeedJsonB64", Self.wlSeed, "-home_upcoming_row_enabled", "NO"])
         try requireWatchlistSeed(app)
         guard poll(30, step: 0.5, { !label(app, "debug_homeReturn").isEmpty }) else {
@@ -566,6 +615,7 @@ final class HomeWatchlistRowUITests: XCTestCase {
     // MARK: - Test 18 (Classic, hero off: the Watchlist seeds the panel)
 
     func testClassic_NoCWWatchlistSeedsTheHeroPanel() throws {
+        try requireNoStoredContinueWatching()
         let args = Self.classicBase + ["-debug.homeWatchlistSeedJsonB64", Self.wlSeed, "-home_upcoming_row_enabled", "NO",
                                        "-debug.homeHeroOff", "YES", "-debug.homeHeroProbe", "YES"]
         let app = launch(args + ["-debug.homeNoCatalogRows", "YES"])
@@ -615,6 +665,7 @@ final class HomeWatchlistRowUITests: XCTestCase {
     }
 
     func testStage_NoCWWatchlistIsRowZeroAndSeedsTheStage() throws {
+        try requireNoStoredContinueWatching()
         let app = launch(Self.stageBase + ["-debug.homeWatchlistSeedJsonB64", Self.wlSeed, "-home_upcoming_row_enabled", "NO"])
         try requireWatchlistSeed(app)
         let geometry = try requireStage(app)
@@ -658,9 +709,11 @@ final class HomeWatchlistRowUITests: XCTestCase {
         XCTAssertEqual(Self.token(wl, "on"), "0", "the toggle reads off: \(wl)")
         XCTAssertEqual(Self.token(wl, "n"), "0", "no Watchlist section while off: \(wl)")
         XCTAssertFalse(owned.contains("home-watchlist"), "no row owns focus as the Watchlist: \(owned)")
-        XCTAssertNotNil(owned.first, "a row took focus: \(label(app, "debug_homeReturn"))")
-        if let first = owned.first {
-            XCTAssertFalse(Self.topKeys.contains(first), "the first catalog row follows the hero directly: \(owned)")
+        // §6 leg 20: the first catalog row follows Continue Watching (stored progress on the fixture) or the hero directly.
+        let rows = owned.first == "continue-watching" ? Array(owned.dropFirst()) : owned
+        XCTAssertNotNil(rows.first, "a catalog row took focus: \(owned) \(label(app, "debug_homeReturn"))")
+        if let first = rows.first {
+            XCTAssertFalse(Self.topKeys.contains(first), "the first catalog row follows Continue Watching or the hero directly: \(owned)")
         }
     }
 
@@ -721,7 +774,16 @@ final class HomeWatchlistRowUITests: XCTestCase {
                       "the held Watchlist lands once focus leaves the rows below it: '\(label(app, "debug_homeWatchlist"))'")
         XCTAssertEqual(Self.token(label(app, "debug_homeWatchlist"), "held"), "0", "the hold is released")
         try requireWatchlistSeed(app)
-        XCTAssertEqual(classicStep(app, .down), "home-watchlist", "Down from the hero now reaches the Watchlist above Upcoming")
+        // Up from upcoming lands on the hero, or on Continue Watching when the fixture has one (the sim may still
+        // put it on the hero: the combo legs' expected Up-skip). The Watchlist is the next row below that,
+        // through Continue Watching when Down starts from the hero.
+        let afterUp = own(app)
+        XCTAssertTrue(afterUp == "-" || afterUp == "continue-watching",
+                      "Up from upcoming reaches the hero or Continue Watching: '\(label(app, "debug_homeReturn"))'")
+        var path = [classicStep(app, .down)]
+        if afterUp == "-", path[0] == "continue-watching" { path.append(classicStep(app, .down)) }
+        XCTAssertEqual(path.last, "home-watchlist",
+                       "Down from \(afterUp == "-" ? "the hero" : afterUp) reaches the Watchlist: path \(path) '\(label(app, "debug_homeReturn"))'")
         note("late_watchlist", "\(label(app, "debug_homeWatchlist")) | \(label(app, "debug_homeReturn"))")
         shot("classic_late_watchlist")
     }
@@ -796,7 +858,16 @@ final class HomeWatchlistRowUITests: XCTestCase {
             return (Self.int(line, "n") ?? 0) > 0 && Self.token(line, "held") == "0"
         }, "the held Watchlist lands once focus leaves the catalog row: '\(label(app, "debug_homeWatchlist"))'")
         try requireWatchlistSeed(app)
-        XCTAssertEqual(classicStep(app, .down), "home-watchlist", "Down from the hero reaches the Watchlist")
+        // Up from c1 lands on the hero, or on Continue Watching when the fixture has one (the sim may still
+        // put it on the hero: the combo legs' expected Up-skip). The Watchlist is the next row below that,
+        // through Continue Watching when Down starts from the hero.
+        let afterUp = own(app)
+        XCTAssertTrue(afterUp == "-" || afterUp == "continue-watching",
+                      "Up from \(c1) reaches the hero or Continue Watching: '\(label(app, "debug_homeReturn"))'")
+        var path = [classicStep(app, .down)]
+        if afterUp == "-", path[0] == "continue-watching" { path.append(classicStep(app, .down)) }
+        XCTAssertEqual(path.last, "home-watchlist",
+                       "Down from \(afterUp == "-" ? "the hero" : afterUp) reaches the Watchlist: path \(path) '\(label(app, "debug_homeReturn"))'")
         note("late_watchlist_c1", "\(label(app, "debug_homeWatchlist")) | \(label(app, "debug_homeReturn"))")
         shot("classic_late_watchlist_c1")
     }
