@@ -145,6 +145,12 @@ final class StripPagerBox {
     /// D10 r1: a re-pin ran or was deferred while the strip may still be moving: once it is at rest
     /// (`rest`), the pager re-pins once more, instantly (a no-op when it already rests on the anchor).
     var repinAtRest = false
+    /// D10 r2: the row the pager last put the strip on: every app write of `positionId` (a page, a
+    /// re-pin, a focus request's page, the row-0 follow), and a page that found the strip already
+    /// there. Never the scroll view's own write-back through the `.scrollPosition(id:)` binding, which
+    /// names the row it rests on even when an insert above displaced it (r1 §1.3, iteration 1). The
+    /// anchor of every re-pin that is not the focused row (`StripRepinPolicy.anchor`).
+    var intendedRow: String?
     /// D10 r1: whether the strip is still moving, and its one at-rest callback (`StripRestWatch`).
     let rest: StripRestWatch
 
@@ -369,6 +375,18 @@ nonisolated enum StripRepinPolicy {
         guard onScreen else { return .onAppear }
         return moving ? .atRest : .now
     }
+
+    /// D10 r2: the row a re-pin goes to. The focused row, when focus is in the strip, the row is in
+    /// the data and no focus request or held pop restore owns the strip (`owned`). Otherwise the row
+    /// the pager last put the strip on (`intended`), and the binding's row (`shown`) only when
+    /// `intended` is unset or left the data. Never the scroll view's write-back while the pager's own
+    /// choice is still a row (review r2: focus moved to the rail mid-glide).
+    static func anchor(focused: String?, owned: Bool, intended: String?, shown: String?,
+                       rows: [String]) -> String? {
+        if let focused, !owned, rows.contains(focused) { return focused }
+        if let intended, rows.contains(intended) { return intended }
+        return shown
+    }
 }
 
 /// W2-5 (a): the strip's `ScrollView` and its `.scrollPosition`. The only view that observes the
@@ -499,6 +517,9 @@ struct StripPager<Row: View>: View {
     private var positionId: String? {
         get { position.id }
         nonmutating set {
+            // D10 r2: every app write is the row the strip must show (`StripPagerBox.intendedRow`),
+            // recorded even when the binding already names it.
+            box.intendedRow = newValue
             if position.id != newValue { position.id = newValue }
         }
     }
@@ -689,7 +710,7 @@ struct StripPager<Row: View>: View {
         guard fitHeights[key] != height else { return }
         let keys = box.rowKeys
         let aboveAnchor: Bool = {
-            guard let anchor = positionId, let anchorIndex = keys.firstIndex(of: anchor),
+            guard let anchor = pinnedAnchor, let anchorIndex = keys.firstIndex(of: anchor),
                   let index = keys.firstIndex(of: key) else { return false }
             return index < anchorIndex
         }()
@@ -702,7 +723,7 @@ struct StripPager<Row: View>: View {
         // first measurement one turn after the insert), which moves the anchored row unless the strip
         // is re-pinned. While the strip moves the rest check does it: a Down from a morphed card
         // collapses that card above the new anchor on every press.
-        if aboveAnchor, let anchor = positionId {
+        if aboveAnchor, let anchor = pinnedAnchor {
             repin(to: anchor, why: "fit")
         }
     }
@@ -829,6 +850,9 @@ struct StripPager<Row: View>: View {
     /// on `key`) it runs at once.
     private func page(to key: String, index: Int, from previous: Int, alongside: (() -> Void)? = nil) {
         guard positionId != key else {
+            // D10 r2: already there (the focus engine's own scroll wrote the row first); it is still
+            // the row the pager asked for.
+            box.intendedRow = key
             alongside?()
             return
         }
@@ -936,19 +960,29 @@ struct StripPager<Row: View>: View {
         repin(to: anchor, why: "rest", verifies: false)
     }
 
-    /// The row the strip must show at rest (§4): the focused row, unless a focus request or a held
-    /// pop restore owns the strip (then the row they put it on, `positionId`), or focus is outside
-    /// the strip (`positionId`). Not the scroll view's own write-back, which reports the row it rests
-    /// on even when that is the wrong one (iteration 1: `position …movie:top -> …series:top`).
+    /// The row the strip must show at rest (§4, r2): the focused row, unless a focus request or a
+    /// held pop restore owns the strip, or focus is outside it; then the row the pager last put the
+    /// strip on (`pinnedAnchor`). Never the scroll view's own write-back, which reports the row it
+    /// rests on even when that is the wrong one (r1 iteration 1: `position …movie:top -> …series:top`;
+    /// review r2: focus moved to the rail mid-glide).
     private func restAnchor() -> String? {
-        guard let key = box.focusedRowKey, box.rowKeys.contains(key), box.programmaticTarget == nil,
-              !controller.uncoverHoldsPage(forRowKey: key) else { return positionId }
-        return key
+        let focused = box.focusedRowKey
+        let owned = box.programmaticTarget != nil
+            || focused.map { controller.uncoverHoldsPage(forRowKey: $0) } == true
+        return StripRepinPolicy.anchor(focused: focused, owned: owned, intended: box.intendedRow,
+                                       shown: positionId, rows: box.rowKeys)
+    }
+
+    /// D10 r2: the row the pager last put the strip on while it is still in the data, else the
+    /// binding's row. The anchor whenever it is not the focused row (focus outside, a request, a hold).
+    private var pinnedAnchor: String? {
+        StripRepinPolicy.anchor(focused: nil, owned: true, intended: box.intendedRow,
+                                shown: positionId, rows: box.rowKeys)
     }
 
     /// `onAppear`'s owed re-pin (rows changed while the strip was off screen).
     private func repinOwedOnAppear() {
-        guard box.repinOnAppear, box.isOnScreen, let anchor = positionId else { return }
+        guard box.repinOnAppear, box.isOnScreen, let anchor = pinnedAnchor else { return }
         box.repinOnAppear = false
         repin(to: anchor, why: "appear")
     }
@@ -1028,7 +1062,7 @@ struct StripPager<Row: View>: View {
         // D10 r1: "a glide" is the strip moving (`box.rest`), not the motion signal's page.
         let owned = box.rest.isMoving || box.programmaticTarget != nil
             || controller.uncoverHoldsPage(forRowKey: key)
-        let anchor = owned ? (positionId ?? key) : key
+        let anchor = owned ? (pinnedAnchor ?? key) : key
         if StripRepinPolicy.rowsAboveChanged(old: previousKeys, new: keys, anchor: anchor) {
             repin(to: anchor, why: "rows")
         }
@@ -1048,7 +1082,7 @@ struct StripPager<Row: View>: View {
             positionId = first
             StageStripProbe.shared.log("rows changed outside the strip: row 0 is now \(first)")
         }
-        guard let shown = positionId, let index = keys.firstIndex(of: shown) else {
+        guard let shown = pinnedAnchor, let index = keys.firstIndex(of: shown) else {
             box.refreshMounts()
             return
         }
