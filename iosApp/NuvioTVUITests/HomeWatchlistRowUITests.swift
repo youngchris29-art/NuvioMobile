@@ -1031,11 +1031,13 @@ final class HomeWatchlistRowUITests: XCTestCase {
         assertStripShowsFocusedRow(app, slot, row: c1, item: before.item, tag: "S_late_rest")
     }
 
-    /// d10 leg S-late-inflight: the same launch, with Down/Up pressed back to back (each inside or just
-    /// after the previous page's glide, stretched to 1.0 s) until the Watchlist lands. No press after
-    /// the insert (a row change writes a new id and would repair any offset): asserted against whatever
-    /// catalog row the last pre-insert glide left focus on.
-    func testStage_LateWatchlistPressInFlight() throws {
+    /// d10 leg S-late-inflight, kept as a STRESS leg (review r1): the same launch, with Down/Up pressed
+    /// back to back (each inside or just after the previous page's glide, stretched to 1.0 s) until
+    /// the Watchlist lands, asserted against whatever catalog row focus rests on. Automation timing
+    /// decides where in a glide the insert lands and whether a press follows it, so it proves no
+    /// path ran; the deterministic legs below do. Not a gate: run with `-test-iterations 10` and
+    /// record the pass rate (8/10 at `2119479cb`).
+    func testStage_LateWatchlistPressTrain() throws {
         let app = launch(Self.stageBase + ["-home_upcoming_row_enabled", "NO",
                                            "-debug.stripPageSeconds", "1.0",
                                            "-debug.homeWatchlistSeedJsonB64", Self.wlSeed,
@@ -1084,6 +1086,152 @@ final class HomeWatchlistRowUITests: XCTestCase {
             throw HarnessAbort("focus off the catalog rows")
         }
         assertStripShowsFocusedRow(app, slot, row: rest.row, item: rest.item, tag: "S_late_inflight")
+    }
+
+    /// D10 r1: the delayed seed armed for the next strip page (`debug_homeWatchlist armed=1`), polled
+    /// while focus rests (no press, so no page can take it early).
+    private func waitForArmedSeed(_ app: XCUIApplication) throws {
+        guard watchlistCount(app) == 0 else {
+            XCTFail("the held seed landed before the glide under test (a page ran after it armed): '\(label(app, "debug_homeWatchlist"))'")
+            throw HarnessAbort("Watchlist landed early")
+        }
+        guard poll(40, step: 0.5, { Self.token(label(app, "debug_homeWatchlist"), "armed") == "1" }) else {
+            XCTFail("the delayed seed never armed for a strip page: '\(label(app, "debug_homeWatchlist"))'")
+            throw HarnessAbort("seed not armed")
+        }
+    }
+
+    /// D10 r1 (item 5, finding 4): the in-flight case, deterministic. The seed lands 500 ms into one
+    /// Down's 1.0 s glide (`-debug.homeWatchlistSeedOnPageMs 500`): mid visual glide, long after the
+    /// motion signal's page has ended. Fails if the re-pin did not see the strip moving and leave the
+    /// running glide alone (`deferred=`), if no re-pin ran at rest (`settles=`), or on the oracle set.
+    func testStage_LateWatchlistPressInFlight() throws {
+        let app = launch(Self.stageBase + ["-home_upcoming_row_enabled", "NO",
+                                           "-debug.stripPageSeconds", "1.0",
+                                           "-debug.homeWatchlistSeedJsonB64", Self.wlSeed,
+                                           "-debug.homeWatchlistSeedDelayMs", "25000",
+                                           "-debug.homeWatchlistSeedOnPageMs", "500"], settle: 4)
+        defer { app.terminate() }
+        let slot = try stageSlot(app)
+        try requireSeedNotRefused(app)
+        let c1 = try stageEnterFirstCatalogRow(app)
+        try waitForArmedSeed(app)
+        let before = focParts(app)
+        let rowBefore = Self.int(strip(app), "row") ?? -1
+        let deferredBefore = Self.int(strip(app), "deferred") ?? -1
+        let settlesBefore = Self.int(strip(app), "settles") ?? -1
+        XCTAssertEqual(before.row, c1, "focus rests on \(c1) before the glide: \(strip(app))")
+        XCTAssertEqual(deferredBefore, 0, "no deferred re-pin before the insert: \(strip(app))")
+        remote.press(.down)
+        guard poll(5, step: 0.1, { watchlistCount(app) > 0 }) else {
+            XCTFail("the Down's glide did not land the armed seed (no page started?): '\(label(app, "debug_homeWatchlist"))' strip='\(strip(app))'")
+            throw HarnessAbort("no insert on the glide")
+        }
+        XCTAssertEqual(Self.token(label(app, "debug_homeWatchlist"), "held"), "0",
+                       "Stage never holds the row (D10): '\(label(app, "debug_homeWatchlist"))'")
+        pause(5.0)
+        let line = strip(app)
+        XCTAssertEqual(Self.int(line, "deferred"), deferredBefore + 1,
+                       "S_late_midglide R1: debug_strip deferred= did not count exactly one re-pin left to the strip's rest, so the Watchlist landed 500 ms into the Down's 1.0 s glide but the re-pin did not see the strip moving (it ran an instant scroll mid-glide, action=now: the iteration-6 failure): before=\(deferredBefore) now='\(line)'")
+        XCTAssertGreaterThanOrEqual(Self.int(line, "settles") ?? -1, settlesBefore + 1,
+                                    "S_late_midglide R2: debug_strip settles= did not count the re-pin at rest after the glide: before=\(settlesBefore) now='\(line)'")
+        let rest = focParts(app)
+        guard rest.row != "-", rest.row != c1, !Self.topKeys.contains(rest.row) else {
+            XCTFail("the Down did not move focus from \(c1) to the next catalog row: '\(line)'")
+            throw HarnessAbort("focus did not move down")
+        }
+        XCTAssertEqual(Self.int(line, "row"), rowBefore + 2,
+                       "A1b: debug_strip row= is not one Down plus one row inserted above: before=\(rowBefore) now='\(line)'")
+        assertStripShowsFocusedRow(app, slot, row: rest.row, item: rest.item, tag: "S_late_midglide")
+    }
+
+    /// D10 r1 (item 5, iteration 1's shape): a press lands right after the insert. The seed lands
+    /// 300 ms into one Down's 1.0 s glide; the leg presses Down again the moment it sees the row, so the
+    /// second glide starts while the first still runs. The strip must end on the row that second Down
+    /// focused (`restAnchor`), not on the re-pin's target.
+    func testStage_LateWatchlistPressRightAfterInsert() throws {
+        let app = launch(Self.stageBase + ["-home_upcoming_row_enabled", "NO",
+                                           "-debug.stripPageSeconds", "1.0",
+                                           "-debug.homeWatchlistSeedJsonB64", Self.wlSeed,
+                                           "-debug.homeWatchlistSeedDelayMs", "25000",
+                                           "-debug.homeWatchlistSeedOnPageMs", "300"], settle: 4)
+        defer { app.terminate() }
+        let slot = try stageSlot(app)
+        try requireSeedNotRefused(app)
+        let c1 = try stageEnterFirstCatalogRow(app)
+        try waitForArmedSeed(app)
+        let rowBefore = Self.int(strip(app), "row") ?? -1
+        let deferredBefore = Self.int(strip(app), "deferred") ?? -1
+        let settlesBefore = Self.int(strip(app), "settles") ?? -1
+        let pressed = Date()
+        remote.press(.down)
+        guard poll(5, step: 0.05, { watchlistCount(app) > 0 }) else {
+            XCTFail("the Down's glide did not land the armed seed: '\(label(app, "debug_homeWatchlist"))' strip='\(strip(app))'")
+            throw HarnessAbort("no insert on the glide")
+        }
+        remote.press(.down)
+        let secondPressAfter = Date().timeIntervalSince(pressed)
+        note("S_late_press_after", "second Down sent \(Int(secondPressAfter * 1000)) ms after the first (insert at 300 ms; glide 1000 ms)")
+        XCTAssertLessThan(secondPressAfter, 0.9,
+                          "harness: the second Down was sent \(Int(secondPressAfter * 1000)) ms after the first, past the first glide's 1.0 s, so this run did not test a press landing while the strip moves")
+        pause(5.0)
+        let line = strip(app)
+        XCTAssertGreaterThanOrEqual(Self.int(line, "deferred") ?? -1, deferredBefore + 1,
+                                    "S_late_press_after R1: debug_strip deferred= did not count the re-pin left to the rest of the moving strip at the insert: before=\(deferredBefore) now='\(line)'")
+        XCTAssertGreaterThanOrEqual(Self.int(line, "settles") ?? -1, settlesBefore + 1,
+                                    "S_late_press_after R2: debug_strip settles= did not count the re-pin at rest after the second glide: before=\(settlesBefore) now='\(line)'")
+        let rest = focParts(app)
+        guard rest.row != "-", rest.row != c1, !Self.topKeys.contains(rest.row) else {
+            XCTFail("focus is not on a catalog row below \(c1) after two Downs: '\(line)'")
+            throw HarnessAbort("focus off the catalog rows")
+        }
+        XCTAssertEqual(Self.int(line, "row"), rowBefore + 3,
+                       "A1b: debug_strip row= is not two Downs plus one row inserted above: before=\(rowBefore) now='\(line)'")
+        assertStripShowsFocusedRow(app, slot, row: rest.row, item: rest.item, tag: "S_late_press_after")
+    }
+
+    /// D10 r1 (finding 1, variant B): a row lands above the Menu glide's target 300 ms into that glide.
+    /// No Continue Watching, so the Watchlist becomes row 0, above the first catalog row Menu pages to;
+    /// focus on the fourth catalog row, so Menu is a long glide with a mounted span. The re-pin is left
+    /// to the strip's rest and then goes to the SAME row (never the new row 0, §4), where the strip
+    /// must end.
+    func testStage_LateWatchlistLandsDuringMenuGlide() throws {
+        try requireNoStoredContinueWatching()
+        let app = launch(Self.stageBase + ["-home_upcoming_row_enabled", "NO",
+                                           "-debug.stripPageSeconds", "1.0",
+                                           "-debug.homeWatchlistSeedJsonB64", Self.wlSeed,
+                                           "-debug.homeWatchlistSeedDelayMs", "30000",
+                                           "-debug.homeWatchlistSeedOnPageMs", "300"], settle: 4)
+        defer { app.terminate() }
+        let slot = try stageSlot(app)
+        try requireSeedNotRefused(app)
+        let c1 = try stageEnterFirstCatalogRow(app)
+        guard Self.int(strip(app), "row") == 0 else {
+            throw HarnessAbort("with no Continue Watching the first catalog row is row 0: '\(strip(app))'")
+        }
+        var deep = c1
+        for _ in 0..<3 { deep = stageStep(app, .down) }
+        guard (Self.int(strip(app), "row") ?? 0) >= 3, deep != "-", !Self.topKeys.contains(deep) else {
+            throw HarnessAbort("the leg needs a fourth catalog row (Menu from row 3 or deeper is a long glide): '\(strip(app))'")
+        }
+        try waitForArmedSeed(app)
+        let deferredBefore = Self.int(strip(app), "deferred") ?? -1
+        XCTAssertEqual(deferredBefore, 0, "no deferred re-pin before Menu: \(strip(app))")
+        remote.press(.menu)
+        guard poll(5, step: 0.1, { watchlistCount(app) > 0 }) else {
+            XCTFail("the Menu glide did not land the armed seed: '\(label(app, "debug_homeWatchlist"))' strip='\(strip(app))'")
+            throw HarnessAbort("no insert on the Menu glide")
+        }
+        pause(5.0)
+        let line = strip(app)
+        XCTAssertEqual(app.state, .runningForeground, "Menu below row 0 pages to the top, never leaves the app")
+        XCTAssertEqual(Self.int(line, "deferred"), deferredBefore + 1,
+                       "S_late_menu R1: debug_strip deferred= did not count exactly one re-pin left to the strip's rest, so the row that landed above the Menu target mid-glide was not deferred: before=\(deferredBefore) now='\(line)'")
+        XCTAssertEqual(focParts(app).row, c1,
+                       "the Menu glide still ends on \(c1), never on the new row 0 (§4: a re-pin never redirects a Menu glide): '\(line)'")
+        XCTAssertEqual(Self.int(line, "row"), 1, "A1b: \(c1) is row 1 under the new Watchlist row: '\(line)'")
+        XCTAssertEqual(Self.token(line, "atTop"), "0", "D-A: the strip no longer rests on row 0: '\(line)'")
+        assertStripShowsFocusedRow(app, slot, row: c1, item: nil, tag: "S_late_menu")
     }
 
     /// D10 (fix legs): the rest case one level deeper. Focus rests on the THIRD catalog row (index 2

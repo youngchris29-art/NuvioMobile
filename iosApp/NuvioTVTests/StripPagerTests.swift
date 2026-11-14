@@ -203,27 +203,66 @@ final class StripPagerTests: XCTestCase {
 
     func testRepinActionRules() {
         typealias P = StripRepinPolicy
-        XCTAssertEqual(P.action(changedAbove: false, onScreen: true, pageInFlight: false, reduceMotion: false), .none)
-        XCTAssertEqual(P.action(changedAbove: true, onScreen: false, pageInFlight: true, reduceMotion: false), .onAppear)
-        XCTAssertEqual(P.action(changedAbove: true, onScreen: true, pageInFlight: false, reduceMotion: false), .now)
-        XCTAssertEqual(P.action(changedAbove: true, onScreen: true, pageInFlight: true, reduceMotion: false), .retarget)
-        XCTAssertEqual(P.action(changedAbove: true, onScreen: true, pageInFlight: true, reduceMotion: true), .now,
-                       "Reduce Motion never animates a re-pin")
+        XCTAssertEqual(P.action(changedAbove: false, onScreen: true, moving: false), .none)
+        XCTAssertEqual(P.action(changedAbove: true, onScreen: false, moving: true), .onAppear)
+        XCTAssertEqual(P.action(changedAbove: true, onScreen: true, moving: false), .now)
+        XCTAssertEqual(P.action(changedAbove: true, onScreen: true, moving: true), .atRest,
+                       "a running glide is never touched: the re-pin waits for rest")
     }
 
-    func testRepinRequestsAreDistinctAndSupersedeTheirCompletion() {
+    func testRepinRequestsAreDistinct() {
         let position = StripScrollPosition()
-        var done: [String] = []
-        position.requestRepin(to: "c1", seconds: 0.5) { done.append("first") }
+        position.requestRepin(to: "c1")
         let first = position.repin
-        position.requestRepin(to: "c1", seconds: 0.5) { done.append("second") }
+        position.requestRepin(to: "c1")
         XCTAssertNotEqual(position.repin, first, "the same row twice still publishes")
-        XCTAssertEqual(done, ["first"], "a superseded request's completion runs at once")
-        position.finishRepin(first!.sequence)
-        XCTAssertEqual(done, ["first"], "a stale finish is ignored")
-        position.finishRepin(position.repin!.sequence)
-        XCTAssertEqual(done, ["first", "second"])
-        position.finishRepin(position.repin!.sequence)
-        XCTAssertEqual(done, ["first", "second"], "a completion runs once")
+    }
+
+    // MARK: At rest (D10 r1)
+
+    private func makeBox(_ clock: StageFakeClock) -> StripPagerBox {
+        let box = StripPagerBox(restSchedule: { after, work in clock.schedule(after, work) })
+        box.rest.now = { clock.now }
+        return box
+    }
+
+    func testLeavingTheScreenAtRestOwesNothing() {
+        let clock = StageFakeClock()
+        let box = makeBox(clock)
+        box.glideInterrupted()
+        XCTAssertFalse(box.repinOnAppear)
+    }
+
+    /// Finding 2 (variant B): the deferred re-pin is due when the strip stops MOVING, with no
+    /// completion involved.
+    func testTheDeferredRepinIsDueAtRest() {
+        let clock = StageFakeClock()
+        let box = makeBox(clock)
+        var due = 0
+        box.rest.onRest = { if box.restReached() { due += 1 } }
+        box.rest.glideStarted(duration: 1.0)
+        clock.advance(0.5)
+        box.repinAtRest = true   // a row landed above the anchor mid-glide
+        box.rest.armRestCheck()
+        clock.advance(0.4)
+        XCTAssertEqual(due, 0, "nothing while the strip moves")
+        clock.advance(0.2)
+        XCTAssertEqual(due, 1, "due at rest")
+        XCTAssertFalse(box.repinAtRest)
+    }
+
+    func testLeavingTheScreenMidGlideOwesTheRepinToOnAppear() {
+        let clock = StageFakeClock()
+        let box = makeBox(clock)
+        var rests = 0
+        box.rest.onRest = { rests += 1 }
+        box.rest.glideStarted(duration: 1.0)
+        box.repinAtRest = true
+        box.rest.armRestCheck()
+        box.glideInterrupted()
+        XCTAssertTrue(box.repinOnAppear)
+        XCTAssertFalse(box.repinAtRest)
+        clock.advance(2)
+        XCTAssertEqual(rests, 0, "the cancelled check never runs off screen")
     }
 }

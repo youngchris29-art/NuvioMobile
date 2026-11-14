@@ -87,4 +87,86 @@ final class StripMotionSignalTests: XCTestCase {
         clock.advance(0.5)
         XCTAssertEqual(endedByTimeout, [false, true])
     }
+    // MARK: StripRestWatch (D10 r1)
+
+    private func makeWatch(_ clock: StageFakeClock) -> StripRestWatch {
+        let watch = StripRestWatch(schedule: { after, work in clock.schedule(after, work) })
+        watch.now = { clock.now }
+        return watch
+    }
+
+    func testMovingInsideAGlideAndWhileTheOffsetChanges() {
+        let clock = StageFakeClock()
+        let watch = makeWatch(clock)
+        XCTAssertFalse(watch.isMoving)
+        watch.glideStarted(duration: 1.0)
+        clock.advance(0.5)
+        XCTAssertTrue(watch.isMoving, "mid-glide by its nominal duration, whatever the signal says")
+        clock.advance(0.5)
+        XCTAssertFalse(watch.isMoving)
+        watch.offsetChanged()
+        clock.advance(0.1)
+        XCTAssertTrue(watch.isMoving, "an offset still changing reads as moving (the glide's tail)")
+        clock.advance(0.05)
+        XCTAssertFalse(watch.isMoving)
+    }
+
+    func testRestCheckWaitsForTheGlideAndTheLastOffsetChange() {
+        let clock = StageFakeClock()
+        let watch = makeWatch(clock)
+        var rests: [TimeInterval] = []
+        watch.onRest = { rests.append(clock.now) }
+        watch.glideStarted(duration: 1.0)
+        clock.advance(0.5)
+        watch.armRestCheck()
+        clock.advance(0.5)
+        XCTAssertEqual(rests.count, 1)
+        XCTAssertEqual(rests.first ?? -1, 1.0, accuracy: 1e-6, "at the glide's nominal end")
+    }
+
+    func testRestCheckFollowsATailPastTheDeadline() {
+        let clock = StageFakeClock()
+        let watch = makeWatch(clock)
+        var rests: [TimeInterval] = []
+        watch.onRest = { rests.append(clock.now) }
+        watch.glideStarted(duration: 0.5)
+        watch.armRestCheck()
+        clock.advance(0.45)
+        watch.offsetChanged()
+        clock.advance(0.1)
+        watch.offsetChanged()   // 0.55: past the deadline, still moving
+        clock.advance(0.1)
+        XCTAssertEqual(rests, [], "still moving at 0.65")
+        clock.advance(0.1)
+        XCTAssertEqual(rests.count, 1)
+        XCTAssertEqual(rests.first ?? -1, 0.67, accuracy: 1e-6, "quiet after the last offset change")
+    }
+
+    func testRestCheckRunsOnceAndAtLeastQuietAfterArming() {
+        let clock = StageFakeClock()
+        let watch = makeWatch(clock)
+        var rests = 0
+        watch.onRest = { rests += 1 }
+        watch.armRestCheck()
+        XCTAssertEqual(rests, 0, "never synchronous: the re-pin's own offset change gets to land first")
+        watch.armRestCheck()
+        clock.advance(StripRestWatch.quiet)
+        XCTAssertEqual(rests, 1, "two arms, one call")
+        XCTAssertFalse(watch.isArmed)
+        clock.advance(5)
+        XCTAssertEqual(rests, 1, "and nothing more: the check does not re-arm itself")
+    }
+
+    func testCancelDropsAnArmedCheck() {
+        let clock = StageFakeClock()
+        let watch = makeWatch(clock)
+        var rests = 0
+        watch.onRest = { rests += 1 }
+        XCTAssertFalse(watch.cancel(), "nothing armed")
+        watch.armRestCheck()
+        XCTAssertTrue(watch.cancel())
+        clock.advance(1)
+        XCTAssertEqual(rests, 0)
+        XCTAssertEqual(clock.pendingCount, 0)
+    }
 }
