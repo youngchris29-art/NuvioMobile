@@ -218,6 +218,37 @@ final class StripPagerTests: XCTestCase {
         XCTAssertNotEqual(position.repin, first, "the same row twice still publishes")
     }
 
+    // MARK: Re-pin anchor (D10 r2)
+
+    func testAnchorIsTheFocusedRowWhenNothingOwnsTheStrip() {
+        XCTAssertEqual(StripRepinPolicy.anchor(focused: "c2", owned: false, intended: "c1", shown: "c1",
+                                               rows: ["wl", "c1", "c2"]), "c2")
+    }
+
+    /// Codex r2 P2: a row landed above mid-glide, focus left for the rail before rest, and the scroll
+    /// view wrote the displaced row (`c1`) back into the binding. The re-pin goes to the row the Down
+    /// paged to.
+    func testAnchorOutsideTheStripIsTheIntendedRowNotTheWriteBack() {
+        XCTAssertEqual(StripRepinPolicy.anchor(focused: nil, owned: false, intended: "c2", shown: "c1",
+                                               rows: ["wl", "c1", "c2"]), "c2")
+    }
+
+    func testAnchorWhileARequestOwnsTheStripIsTheIntendedRow() {
+        XCTAssertEqual(StripRepinPolicy.anchor(focused: "c4", owned: true, intended: "c1", shown: "c3",
+                                               rows: ["wl", "c1", "c2", "c3", "c4"]), "c1",
+                       "a Menu glide to c1 keeps its row (§4), whatever the scroll view reports")
+    }
+
+    func testAnchorFallsBackToTheBindingOnlyWhenTheIntendedRowIsGone() {
+        XCTAssertEqual(StripRepinPolicy.anchor(focused: nil, owned: false, intended: "wl", shown: "c1",
+                                               rows: ["c1", "c2"]), "c1", "the intended row left the data")
+        XCTAssertEqual(StripRepinPolicy.anchor(focused: nil, owned: false, intended: nil, shown: "c1",
+                                               rows: ["c1", "c2"]), "c1", "nothing recorded yet")
+        XCTAssertEqual(StripRepinPolicy.anchor(focused: "gone", owned: false, intended: "c2", shown: "c1",
+                                               rows: ["c1", "c2"]), "c2",
+                       "a focused row that left the data is no anchor")
+    }
+
     // MARK: At rest (D10 r1)
 
     private func makeBox(_ clock: StageFakeClock) -> StripPagerBox {
