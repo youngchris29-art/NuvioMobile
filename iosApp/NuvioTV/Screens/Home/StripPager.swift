@@ -142,9 +142,15 @@ final class StripPagerBox {
     var isOnScreen = false
     /// The row list changed while the pager was off screen: `onAppear` re-pins.
     var repinOnAppear = false
-    /// A row above the anchor changed height during a glide: the glide's end re-pins (instant, and a
-    /// no-op when the strip already rests on the anchor).
-    var repinAfterGlide = false
+    /// D10 r1: a re-pin ran or was deferred while the strip may still be moving: once it is at rest
+    /// (`rest`), the pager re-pins once more, instantly (a no-op when it already rests on the anchor).
+    var repinAtRest = false
+    /// D10 r1: whether the strip is still moving, and its one at-rest callback (`StripRestWatch`).
+    let rest: StripRestWatch
+
+    init(restSchedule: StageScheduling.Schedule? = nil) {
+        rest = StripRestWatch(schedule: restSchedule)
+    }
 
     // MARK: Mounted window (review r1, A P2-5)
     //
@@ -206,6 +212,24 @@ final class StripPagerBox {
     func pruneMounts(keeping live: Set<String>) {
         guard mounts.keys.contains(where: { !live.contains($0) }) else { return }
         mounts = mounts.filter { live.contains($0.key) }
+    }
+
+    // MARK: At rest (D10 r1)
+
+    /// The strip came to rest (`StripRestWatch.onRest`). True when a re-pin at rest is due.
+    func restReached() -> Bool {
+        guard repinAtRest else { return false }
+        repinAtRest = false
+        return true
+    }
+
+    /// The strip left the screen: an armed rest check or a pending re-pin at rest becomes the next
+    /// `onAppear`'s re-pin (it can no longer run here).
+    func glideInterrupted() {
+        let checkCut = rest.cancel()
+        guard checkCut || repinAtRest else { return }
+        repinAtRest = false
+        repinOnAppear = true
     }
 }
 
@@ -301,24 +325,12 @@ final class StripScrollPosition: ObservableObject {
     @Published var id: String?
     @Published private(set) var repin: StripRepinRequest?
     private var repinSequence = 0
-    private var repinCompletion: (@MainActor () -> Void)?
 
-    /// `seconds == 0`: instant. The completion runs when the scroll ends (at once for an instant
-    /// one). A newer request supersedes an older one; the older completion runs then, so a motion
-    /// signal generation it would end is never left open (an ended or superseded generation ignores it).
-    func requestRepin(to key: String, seconds: TimeInterval, completion: (@MainActor () -> Void)? = nil) {
-        let superseded = repinCompletion
-        repinCompletion = completion
+    /// An instant scroll to `key`'s row. D10 r1 (variant B): never animated, and never issued while
+    /// the strip moves (`StripRepinPolicy`), so it never competes with a running glide.
+    func requestRepin(to key: String) {
         repinSequence &+= 1
-        repin = StripRepinRequest(key: key, seconds: seconds, sequence: repinSequence)
-        superseded?()
-    }
-
-    /// The scroller's report that request `sequence` finished. Stale sequences are ignored.
-    func finishRepin(_ sequence: Int) {
-        guard sequence == repinSequence, let done = repinCompletion else { return }
-        repinCompletion = nil
-        done()
+        repin = StripRepinRequest(key: key, sequence: repinSequence)
     }
 }
 
@@ -326,7 +338,6 @@ final class StripScrollPosition: ObservableObject {
 /// distinct, so the second one still fires `onChange`.
 nonisolated struct StripRepinRequest: Equatable, Sendable {
     let key: String
-    let seconds: TimeInterval
     let sequence: Int
 }
 
@@ -335,10 +346,11 @@ nonisolated enum StripRepinPolicy {
     enum Action: Equatable, Sendable {
         /// Nothing above the anchor changed.
         case none
-        /// Instant scroll to the anchor now.
+        /// The strip is at rest: instant scroll to the anchor now.
         case now
-        /// A glide is running: re-target it to the anchor (animated, under the motion signal).
-        case retarget
+        /// The strip is moving (`StripRestWatch`): the running glide is left alone; the re-pin runs
+        /// once the strip is at rest (variant B).
+        case atRest
         /// The pager is off screen (a push, a tab switch): re-pin on its next `onAppear`.
         case onAppear
     }
@@ -352,10 +364,10 @@ nonisolated enum StripRepinPolicy {
         return !old[..<oldIndex].elementsEqual(new[..<newIndex])
     }
 
-    static func action(changedAbove: Bool, onScreen: Bool, pageInFlight: Bool, reduceMotion: Bool) -> Action {
+    static func action(changedAbove: Bool, onScreen: Bool, moving: Bool) -> Action {
         guard changedAbove else { return .none }
         guard onScreen else { return .onAppear }
-        return pageInFlight && !reduceMotion ? .retarget : .now
+        return moving ? .atRest : .now
     }
 }
 
@@ -365,10 +377,13 @@ nonisolated enum StripRepinPolicy {
 /// leaves every page slot, row and card un-invalidated.
 private struct StripScroller<Content: View>: View {
     @ObservedObject var position: StripScrollPosition
+    /// D10 r1: the box's rest watch (a stable reference, so the scroller is not invalidated by it).
+    let rest: StripRestWatch
     let content: Content
 
-    init(position: StripScrollPosition, @ViewBuilder content: () -> Content) {
+    init(position: StripScrollPosition, rest: StripRestWatch, @ViewBuilder content: () -> Content) {
         self.position = position
+        self.rest = rest
         self.content = content()
     }
 
@@ -382,22 +397,19 @@ private struct StripScroller<Content: View>: View {
                 content
             }
             .scrollPosition(id: $position.id, anchor: .top)
+            // D10 r1: the strip's own offset motion for `StripRestWatch`, on the scroll view itself (a
+            // timestamp per half point of travel, never view state: the BUG-19 rule).
+            .onScrollGeometryChange(for: Int.self, of: { geo in
+                RowsMotionClock.bucket(geo.contentOffset.y)
+            }, action: { [rest] _, _ in
+                rest.offsetChanged()
+            })
             .onChange(of: position.repin) { _, request in
                 guard let request else { return }
-                let sequence = request.sequence
-                if request.seconds > 0 {
-                    withAnimation(.easeOut(duration: request.seconds), completionCriteria: .logicallyComplete) {
-                        proxy.scrollTo(request.key, anchor: .top)
-                    } completion: {
-                        position.finishRepin(sequence)
-                    }
-                } else {
-                    var instant = Transaction()
-                    instant.disablesAnimations = true
-                    withTransaction(instant) {
-                        proxy.scrollTo(request.key, anchor: .top)
-                    }
-                    position.finishRepin(sequence)
+                var instant = Transaction()
+                instant.disablesAnimations = true
+                withTransaction(instant) {
+                    proxy.scrollTo(request.key, anchor: .top)
                 }
             }
             #if DEBUG
@@ -520,7 +532,7 @@ struct StripPager<Row: View>: View {
         // page's position write re-runs that leaf and not this body. The pages below are built
         // once per pager update and handed over as a stored value: a position write re-emits the
         // same value, so no page slot, row or card re-evaluates for a glide.
-        StripScroller(position: position) {
+        StripScroller(position: position, rest: box.rest) {
             // Not a `LazyVStack`: it recreated the row ABOVE the focused one while focus was landing
             // on it (Up from row i: focus reached row i−1's remembered card, the row was rebuilt as
             // the strip began to scroll, focus dropped to nil, and the engine re-entered the row
@@ -582,6 +594,8 @@ struct StripPager<Row: View>: View {
         .environment(\.rowRestSource, .custom(controller.signal))
         .onAppear {
             box.isOnScreen = true
+            // D10 r1: the strip's at-rest callback (`stripCameToRest`); cleared on disappear.
+            box.rest.onRest = { stripCameToRest() }
             controller.pagerHandle.install(owner: box, cancel: { reason in
                 cancelRowFocusRequest(reason: reason)
             }, syncPage: { reason in
@@ -608,6 +622,11 @@ struct StripPager<Row: View>: View {
         .onDisappear {
             box.isOnScreen = false
             controller.pagerHandle.uninstall(owner: box)
+            // D10 r1: the rest callback captures this pager (cleared like the handle); an armed rest
+            // check or a pending re-pin at rest ends here and becomes the next `onAppear`'s
+            // (`StripPagerBox.glideInterrupted`).
+            box.rest.onRest = nil
+            box.glideInterrupted()
             // Review r2 (P2-1): the box's cached ownership value captures a copy of this pager,
             // whose `@State` wrapper holds the box: released here, like the handle above, so a
             // popped folder page's model and controller are not kept alive by their own strip.
@@ -681,10 +700,10 @@ struct StripPager<Row: View>: View {
         }
         // D10: a row above the anchor changed height at once (a row just inserted there gets its
         // first measurement one turn after the insert), which moves the anchored row unless the strip
-        // is re-pinned. During a glide the glide's end does it: a Down from a morphed card collapses
-        // that card above the new anchor on every press, and re-targeting each would restart glides.
+        // is re-pinned. While the strip moves the rest check does it: a Down from a morphed card
+        // collapses that card above the new anchor on every press.
         if aboveAnchor, let anchor = positionId {
-            repin(to: anchor, why: "fit", retargets: false)
+            repin(to: anchor, why: "fit")
         }
     }
 
@@ -824,6 +843,8 @@ struct StripPager<Row: View>: View {
         controller.swap.debug.setPage(key)
         #endif
         let generation = signal.pageStarted(duration: seconds)
+        // D10 r1: the strip's motion, for the re-pin (the signal's page ends about a frame in).
+        box.rest.glideStarted(duration: seconds)
         box.onPageStart?(index, seconds)
         StageStripProbe.shared.log("page to=\(index) key=\(key) seconds=\(seconds) gen=\(generation)")
         if seconds == 0 {
@@ -831,9 +852,7 @@ struct StripPager<Row: View>: View {
             alongside?()
             signal.pageEnded(generation: generation)
             if longGlide { pagerBox.setGlideSpan(nil) }
-            glideEnded(generation: generation)
         } else {
-            let pager = self
             // #15: the page ends at its animation's real completion, not at a nominal 0.5 s.
             withAnimation(.easeOut(duration: seconds), completionCriteria: .logicallyComplete) {
                 positionId = key
@@ -841,8 +860,12 @@ struct StripPager<Row: View>: View {
             } completion: {
                 signal.pageEnded(generation: generation)
                 if longGlide, pagerBox.glideSpan == span { pagerBox.setGlideSpan(nil) }
-                pager.glideEnded(generation: generation)
             }
+            #if DEBUG
+            // D10 r1: `-debug.homeWatchlistSeedOnPageMs` lands the armed Watchlist seed that long into
+            // this glide (Home's strip only).
+            if reportsTab != nil { HomeRowsDebugPageHook.pageStarted() }
+            #endif
         }
     }
 
@@ -861,64 +884,66 @@ struct StripPager<Row: View>: View {
     /// write cannot fix that: it already names the row, so the setter and `page(to:)` drop it.
     ///
     /// At rest the correction is instant: the insert was instant too, and the viewer is looking at
-    /// the focused row, which then stays where it was. During a glide it re-targets the glide
-    /// (`retargets`), or, for a height change, leaves it to the glide's end (`glideEnded`).
-    /// Off screen it is owed to the next `onAppear`.
-    private func repin(to key: String, why: String, retargets: Bool = true) {
+    /// the focused row, which then stays where it was. D10 r1 (variant B): while the strip MOVES
+    /// (`StripRestWatch`) nothing touches the running glide (an instant scroll then lost to it, review
+    /// r1 item 5); the re-pin runs once the strip is at rest (`stripCameToRest`). Every on-screen
+    /// re-pin (`verifies`) arms that check, which also settles a press that follows an insert; the
+    /// re-pin at rest itself (`verifies: false`) arms nothing. Off screen it is owed to `onAppear`.
+    private func repin(to key: String, why: String, verifies: Bool = true) {
         guard let index = box.rowKeys.firstIndex(of: key) else { return }
-        let signal = controller.signal
-        var action = StripRepinPolicy.action(changedAbove: true, onScreen: box.isOnScreen,
-                                             pageInFlight: signal.pageInFlight,
-                                             reduceMotion: box.reduceMotion)
-        if action == .retarget, !retargets {
-            box.repinAfterGlide = true
-            action = .none
+        let action = StripRepinPolicy.action(changedAbove: true, onScreen: box.isOnScreen,
+                                             moving: box.rest.isMoving)
+        if verifies, action != .onAppear {
+            box.repinAtRest = true
+            box.rest.armRestCheck()
         }
         StageStripProbe.shared.log("repin key=\(key) row=\(index) why=\(why) action=\(action)")
+        #if DEBUG
+        // Row-list re-pins only: the height re-pin that follows an insert a turn later (`why=fit`)
+        // defers too, and would count the same insert twice.
+        if action == .atRest, why == "rows" { controller.swap.debug.noteDeferred() }
+        #endif
         switch action {
-        case .none:
+        case .none, .atRest:
             return
         case .onAppear:
             box.repinOnAppear = true
             withTransaction(Self.instant) { positionId = key }
         case .now:
             withTransaction(Self.instant) { positionId = key }
-            position.requestRepin(to: key, seconds: 0)
+            position.requestRepin(to: key)
             // Issued in the insert's own update so no frame shows the old offset. If the scroll view
-            // resolved it before laying the new row out, the same request a turn later lands it (a
-            // no-op when the first one did: the row already rests at the top).
+            // resolved it before laying the new row out, the same request a turn later lands it.
+            // Skipped once the strip moves (a press started a glide, or the first request already
+            // moved it): an instant scroll never competes with motion; the rest check follows.
             let pagerBox = box
             let scroll = position
             DispatchQueue.main.async {
-                guard pagerBox.isOnScreen, !signal.pageInFlight, scroll.id == key else { return }
-                scroll.requestRepin(to: key, seconds: 0)
-            }
-        case .retarget:
-            let seconds = StageStripTuning.pageSeconds
-            // A new generation: the running glide's completion is now stale and ends nothing, so the
-            // stage swap and the trailer dwell wait for this one (`StripMotionSignal`).
-            let generation = signal.pageStarted(duration: seconds)
-            if positionId != key {
-                withAnimation(.easeOut(duration: seconds)) { positionId = key }
-            }
-            let pager = self
-            position.requestRepin(to: key, seconds: seconds) {
-                signal.pageEnded(generation: generation)
-                pager.glideEnded(generation: generation)
+                guard pagerBox.isOnScreen, !pagerBox.rest.isMoving, scroll.id == key else { return }
+                scroll.requestRepin(to: key)
             }
         }
         #if DEBUG
         controller.swap.debug.setPage(key)
+        if why == "rest" { controller.swap.debug.noteSettle() }
         #endif
     }
 
-    /// A glide (a page or a re-target) ended: run the re-pin a height change asked for meanwhile.
-    private func glideEnded(generation: Int) {
-        let signal = controller.signal
-        guard box.repinAfterGlide, signal.generation == generation, !signal.pageInFlight,
-              let anchor = positionId else { return }
-        box.repinAfterGlide = false
-        repin(to: anchor, why: "glide-end")
+    /// D10 r1: the strip came to rest after an armed check (`StripRestWatch.onRest`, set on appear):
+    /// when a re-pin at rest is due, re-pin once to the row the strip must show now (instant).
+    private func stripCameToRest() {
+        guard box.restReached(), let anchor = restAnchor() else { return }
+        repin(to: anchor, why: "rest", verifies: false)
+    }
+
+    /// The row the strip must show at rest (§4): the focused row, unless a focus request or a held
+    /// pop restore owns the strip (then the row they put it on, `positionId`), or focus is outside
+    /// the strip (`positionId`). Not the scroll view's own write-back, which reports the row it rests
+    /// on even when that is the wrong one (iteration 1: `position …movie:top -> …series:top`).
+    private func restAnchor() -> String? {
+        guard let key = box.focusedRowKey, box.rowKeys.contains(key), box.programmaticTarget == nil,
+              !controller.uncoverHoldsPage(forRowKey: key) else { return positionId }
+        return key
     }
 
     /// `onAppear`'s owed re-pin (rows changed while the strip was off screen).
@@ -1000,7 +1025,8 @@ struct StripPager<Row: View>: View {
         // row at rest. While a glide, a focus request or a held pop restore owns the strip, it is the
         // row they put the strip on (`positionId`), so a Menu glide, a restore or a B13 hold is never
         // turned toward another row.
-        let owned = controller.signal.pageInFlight || box.programmaticTarget != nil
+        // D10 r1: "a glide" is the strip moving (`box.rest`), not the motion signal's page.
+        let owned = box.rest.isMoving || box.programmaticTarget != nil
             || controller.uncoverHoldsPage(forRowKey: key)
         let anchor = owned ? (positionId ?? key) : key
         if StripRepinPolicy.rowsAboveChanged(old: previousKeys, new: keys, anchor: anchor) {

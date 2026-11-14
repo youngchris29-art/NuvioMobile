@@ -319,6 +319,20 @@ final class HomeViewModel: ObservableObject {
             self.publishWatchlistSection(nil)
         }
     }
+
+    /// The delayed seed's delivery (`-debug.homeWatchlistSeedDelayMs`, optionally held for a strip page by
+    /// `-debug.homeWatchlistSeedOnPageMs`). W7 (P2): the refusal (guest only, no tracker progress source)
+    /// is re-read at delivery. Refused now → the real path; section() is nil there, so startWatchlist()
+    /// cannot reach the delay branch again. A no-op once `stopWatchlist()` cleared the pending flag.
+    private func deliverDelayedWatchlistSeed() {
+        guard watchlistSeedPending else { return }
+        watchlistSeedPending = false
+        if let fresh = HomeWatchlistDebugSeed.section(title: String(localized: "Watchlist")) {
+            publishWatchlistSection(fresh)
+        } else {
+            startWatchlist()
+        }
+    }
     #endif
     private lazy var watchlistReleaseGate = HomeWatchlistReleaseGate(
         inputs: { [weak self] in
@@ -1255,15 +1269,18 @@ final class HomeViewModel: ObservableObject {
                 let gen = pipelineGeneration
                 DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(delay)) { [weak self] in
                     guard let self, self.pipelineGeneration == gen, self.watchlistSeedPending else { return }
-                    self.watchlistSeedPending = false
-                    // W7 (P2): the refusal (guest only, no tracker progress source) is re-read at
-                    // delivery. Refused now → the real path; section() is nil there, so
-                    // startWatchlist() cannot reach this delay branch again.
-                    if let fresh = HomeWatchlistDebugSeed.section(title: String(localized: "Watchlist")) {
-                        self.publishWatchlistSection(fresh)
-                    } else {
-                        self.startWatchlist()
+                    // D10 r1: `-debug.homeWatchlistSeedOnPageMs` holds the due seed for the strip's next
+                    // page glide, which delivers it that long after it starts (`HomeRowsDebugPageHook`).
+                    if HomeRowsDebugKnobs.watchlistSeedOnPageMs > 0 {
+                        HomeWatchlistDebug.shared.setArmed(true)
+                        HomeRowsDebugPageHook.armNextPageStart { [weak self] in
+                            HomeWatchlistDebug.shared.setArmed(false)
+                            guard let self, self.pipelineGeneration == gen else { return }
+                            self.deliverDelayedWatchlistSeed()
+                        }
+                        return
                     }
+                    self.deliverDelayedWatchlistSeed()
                 }
                 return
             }

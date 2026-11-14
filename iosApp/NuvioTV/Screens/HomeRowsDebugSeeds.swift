@@ -211,6 +211,34 @@ enum HomeRowsDebugKnobs {
     /// `-debug.homeWatchlistSeedClearMs <ms>`: an at-once Watchlist seed is withdrawn that long after it
     /// was published (a removal above the focused row; removals are never held). 0 = never.
     nonisolated static let watchlistSeedClearMs = UserDefaults.standard.integer(forKey: "debug.homeWatchlistSeedClearMs")
+
+    /// `-debug.homeWatchlistSeedOnPageMs <ms>`: with `-debug.homeWatchlistSeedDelayMs`, the seed that has come
+    /// due waits for the Home strip's next page glide and lands `ms` after that glide starts, so the
+    /// row is inserted mid-glide (`debug_homeWatchlist armed=1` while it waits). 0 = off.
+    nonisolated static let watchlistSeedOnPageMs = UserDefaults.standard.integer(forKey: "debug.homeWatchlistSeedOnPageMs")
+}
+
+/// D10 r1: the one-shot bridge from `-debug.homeWatchlistSeedOnPageMs` to the strip. `HomeViewModel`
+/// arms it when the delayed seed comes due; `StripPager.page(to:)` reports each animated glide's start.
+@MainActor
+enum HomeRowsDebugPageHook {
+    private static var next: (@MainActor () -> Void)?
+    private static var delivery: AnyCancellable?
+
+    static func armNextPageStart(_ work: @escaping @MainActor () -> Void) {
+        next = work
+    }
+
+    /// Runs the armed work `watchlistSeedOnPageMs` after this glide's start (no-op when none is armed).
+    static func pageStarted() {
+        guard let work = next else { return }
+        next = nil
+        let seconds = Double(HomeRowsDebugKnobs.watchlistSeedOnPageMs) / 1000
+        delivery = StageScheduling.main(seconds) {
+            delivery = nil
+            work()
+        }
+    }
 }
 
 // MARK: - Readout
@@ -222,16 +250,19 @@ final class HomeWatchlistDebug: ObservableObject {
     static let shared = HomeWatchlistDebug()
     @Published private(set) var held = false
     func setHeld(_ value: Bool) { if held != value { held = value } }
+    /// D10 r1: the delayed seed is due and waits for the next strip page (`-debug.homeWatchlistSeedOnPageMs`).
+    @Published private(set) var armed = false
+    func setArmed(_ value: Bool) { if armed != value { armed = value } }
 }
 
-/// `debug_homeWatchlist on=<0|1> n=<count> first=<type:id|-> seed=<status> held=<0|1>`: the row's state
+/// `debug_homeWatchlist on=<0|1> n=<count> first=<type:id|-> seed=<status> held=<0|1> armed=<0|1>`: the row's state
 /// as the UI legs read it. Invisible (0.011 opacity) and not hit-testable, like the other `debug_*` readouts.
 struct HomeWatchlistDebugLabel: View {
     @ObservedObject var model: HomeViewModel
     @ObservedObject private var sink = HomeWatchlistDebug.shared
     let enabled: Bool
     var body: some View {
-        Text(verbatim: "debug_homeWatchlist on=\(enabled ? 1 : 0) n=\(model.watchlistSection?.items.count ?? 0) first=\(model.watchlistSection?.items.first.map { "\($0.type):\($0.id)" } ?? "-") seed=\(HomeWatchlistDebugSeed.status) held=\(sink.held ? 1 : 0)")
+        Text(verbatim: "debug_homeWatchlist on=\(enabled ? 1 : 0) n=\(model.watchlistSection?.items.count ?? 0) first=\(model.watchlistSection?.items.first.map { "\($0.type):\($0.id)" } ?? "-") seed=\(HomeWatchlistDebugSeed.status) held=\(sink.held ? 1 : 0) armed=\(sink.armed ? 1 : 0)")
             .font(.system(size: 8))
             .opacity(0.011)
             .accessibilityIdentifier("debug_homeWatchlist")

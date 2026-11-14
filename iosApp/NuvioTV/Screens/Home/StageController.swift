@@ -736,6 +736,14 @@ final class StageDebugState: ObservableObject {
         if page != key { page = key }
     }
 
+    /// D10 r1: row-list re-pins (`why=rows`) left to the strip's rest because it was moving, and
+    /// re-pins at rest that ran (`debug_strip deferred= settles=`).
+    @Published private(set) var deferred = 0
+    @Published private(set) var settles = 0
+
+    func noteDeferred() { deferred += 1 }
+    func noteSettle() { settles += 1 }
+
     /// BUG-191: the fit pages, for `debug_strip_fit` only (see `StripPager.noteFitDebug`).
     @Published private(set) var fit = "-"
 
