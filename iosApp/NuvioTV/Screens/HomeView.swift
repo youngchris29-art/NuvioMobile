@@ -5953,16 +5953,12 @@ struct HomeHeroBackdrop: View {
                 heroSurface
                     .frame(width: Theme.Size.heroNuvioArtworkWidth, height: Theme.Size.heroBackdropHeight)
                     .clipped()
-                    // The left ~30% of the image dissolves into the background color the rest
-                    // of the screen is painted with — a smooth black→artwork transition, no
-                    // hard edge and no art under the text.
+                    // The left 45% eases in on a smootherstep curve, so bright art shows no
+                    // visible start line: a smooth black→artwork transition, no hard edge and
+                    // no art under the text.
                     .mask(
                         LinearGradient(
-                            stops: [
-                                .init(color: .clear, location: 0.0),
-                                .init(color: .black.opacity(0.35), location: 0.16),
-                                .init(color: .black, location: 0.32),
-                            ],
+                            stops: HomeHeroLeadingFade.stops,
                             startPoint: .leading, endPoint: .trailing
                         )
                     )
