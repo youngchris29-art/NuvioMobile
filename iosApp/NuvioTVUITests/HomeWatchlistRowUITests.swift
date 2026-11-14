@@ -1169,17 +1169,25 @@ final class HomeWatchlistRowUITests: XCTestCase {
             XCTFail("the Down's glide did not land the armed seed: '\(label(app, "debug_homeWatchlist"))' strip='\(strip(app))'")
             throw HarnessAbort("no insert on the glide")
         }
-        remote.press(.down)
         let secondPressAfter = Date().timeIntervalSince(pressed)
-        note("S_late_press_after", "second Down sent \(Int(secondPressAfter * 1000)) ms after the first (insert at 300 ms; glide 1000 ms)")
-        XCTAssertLessThan(secondPressAfter, 0.9,
-                          "harness: the second Down was sent \(Int(secondPressAfter * 1000)) ms after the first, past the first glide's 1.0 s, so this run did not test a press landing while the strip moves")
+        remote.press(.down)
+        // Harness guard from the app's own readout, not from test-side timing (the row poll costs
+        // 0.8-0.9 s here): read right after the press, the insert's re-pin must be counted as
+        // deferred and must not have settled yet, i.e. the second page started while the first
+        // glide's re-pin was still owed. The rest re-pin only runs about 1.1 s after the second
+        // page starts, so this read sits well inside that window.
+        let mid = strip(app)
+        note("S_late_press_after", "second Down sent about \(Int(secondPressAfter * 1000)) ms after the first (insert at 300 ms; glide 1000 ms); readout right after it: '\(mid)'")
+        XCTAssertEqual(Self.int(mid, "deferred"), deferredBefore + 1,
+                       "harness: right after the second Down, debug_strip deferred= is not one above the start, so the insert was not left to the strip's rest: before=\(deferredBefore) now='\(mid)'")
+        XCTAssertEqual(Self.int(mid, "settles"), settlesBefore,
+                       "harness: right after the second Down, debug_strip settles= has already moved, so the first glide rested before the press and this run did not test a press landing while the strip moves: before=\(settlesBefore) now='\(mid)'")
         pause(5.0)
         let line = strip(app)
         XCTAssertGreaterThanOrEqual(Self.int(line, "deferred") ?? -1, deferredBefore + 1,
                                     "S_late_press_after R1: debug_strip deferred= did not count the re-pin left to the rest of the moving strip at the insert: before=\(deferredBefore) now='\(line)'")
-        XCTAssertGreaterThanOrEqual(Self.int(line, "settles") ?? -1, settlesBefore + 1,
-                                    "S_late_press_after R2: debug_strip settles= did not count the re-pin at rest after the second glide: before=\(settlesBefore) now='\(line)'")
+        XCTAssertEqual(Self.int(line, "settles"), settlesBefore + 1,
+                       "S_late_press_after R2: debug_strip settles= did not count exactly one re-pin at rest after the second glide: before=\(settlesBefore) now='\(line)'")
         let rest = focParts(app)
         guard rest.row != "-", rest.row != c1, !Self.topKeys.contains(rest.row) else {
             XCTFail("focus is not on a catalog row below \(c1) after two Downs: '\(line)'")
