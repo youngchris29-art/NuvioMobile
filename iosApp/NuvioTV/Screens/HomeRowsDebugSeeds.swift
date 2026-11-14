@@ -207,6 +207,10 @@ enum HomeRowsDebugKnobs {
 
     /// `-debug.homeWatchlistSeedDelayMs <ms>`: the Watchlist seed lands that long after `startWatchlist()` (the late-provider case). 0 = at once.
     nonisolated static let watchlistSeedDelayMs = UserDefaults.standard.integer(forKey: "debug.homeWatchlistSeedDelayMs")
+
+    /// `-debug.homeWatchlistSeedClearMs <ms>`: an at-once Watchlist seed is withdrawn that long after it
+    /// was published (a removal above the focused row; removals are never held). 0 = never.
+    nonisolated static let watchlistSeedClearMs = UserDefaults.standard.integer(forKey: "debug.homeWatchlistSeedClearMs")
 }
 
 // MARK: - Readout

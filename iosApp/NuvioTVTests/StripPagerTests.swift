@@ -172,4 +172,58 @@ final class StripPagerTests: XCTestCase {
         StripAtTopModel.exitHandler(atTop: false, atTopExit: nil, pageToTop: pageToTop)?()
         XCTAssertEqual(calls, ["rail", "page", "page"], "below row 0 it pages to the top, whatever the host exit")
     }
+
+    // MARK: StripRepinPolicy (D10)
+
+    func testRowsAboveChangedOnAnInsertAbove() {
+        XCTAssertTrue(StripRepinPolicy.rowsAboveChanged(old: ["c1", "c2"], new: ["wl", "c1", "c2"], anchor: "c1"))
+        XCTAssertTrue(StripRepinPolicy.rowsAboveChanged(old: ["cw", "c1"], new: ["cw", "wl", "up", "c1"], anchor: "c1"))
+    }
+
+    func testRowsAboveUnchangedOnAnInsertBelow() {
+        XCTAssertFalse(StripRepinPolicy.rowsAboveChanged(old: ["cw", "c1"], new: ["cw", "c1", "c2"], anchor: "c1"))
+        XCTAssertFalse(StripRepinPolicy.rowsAboveChanged(old: ["cw", "c1"], new: ["cw", "wl", "c1"], anchor: "cw"),
+                       "an insert under the anchor moves nothing it shows")
+    }
+
+    func testRowsAboveChangedOnARemovalAbove() {
+        XCTAssertTrue(StripRepinPolicy.rowsAboveChanged(old: ["cw", "wl", "c1"], new: ["cw", "c1"], anchor: "c1"))
+    }
+
+    func testRowsAboveChangedOnASameIndexReorderAbove() {
+        XCTAssertTrue(StripRepinPolicy.rowsAboveChanged(old: ["a", "b", "c"], new: ["b", "a", "c"], anchor: "c"),
+                      "same index, different rows above: fit heights differ")
+    }
+
+    func testAnchorGoneOrNew() {
+        XCTAssertFalse(StripRepinPolicy.rowsAboveChanged(old: ["a", "c1"], new: ["a"], anchor: "c1"), "anchor left")
+        XCTAssertFalse(StripRepinPolicy.rowsAboveChanged(old: [], new: ["c1", "c2"], anchor: "c1"), "first launch")
+        XCTAssertTrue(StripRepinPolicy.rowsAboveChanged(old: ["a"], new: ["a", "b", "c1"], anchor: "c1"))
+    }
+
+    func testRepinActionRules() {
+        typealias P = StripRepinPolicy
+        XCTAssertEqual(P.action(changedAbove: false, onScreen: true, pageInFlight: false, reduceMotion: false), .none)
+        XCTAssertEqual(P.action(changedAbove: true, onScreen: false, pageInFlight: true, reduceMotion: false), .onAppear)
+        XCTAssertEqual(P.action(changedAbove: true, onScreen: true, pageInFlight: false, reduceMotion: false), .now)
+        XCTAssertEqual(P.action(changedAbove: true, onScreen: true, pageInFlight: true, reduceMotion: false), .retarget)
+        XCTAssertEqual(P.action(changedAbove: true, onScreen: true, pageInFlight: true, reduceMotion: true), .now,
+                       "Reduce Motion never animates a re-pin")
+    }
+
+    func testRepinRequestsAreDistinctAndSupersedeTheirCompletion() {
+        let position = StripScrollPosition()
+        var done: [String] = []
+        position.requestRepin(to: "c1", seconds: 0.5) { done.append("first") }
+        let first = position.repin
+        position.requestRepin(to: "c1", seconds: 0.5) { done.append("second") }
+        XCTAssertNotEqual(position.repin, first, "the same row twice still publishes")
+        XCTAssertEqual(done, ["first"], "a superseded request's completion runs at once")
+        position.finishRepin(first!.sequence)
+        XCTAssertEqual(done, ["first"], "a stale finish is ignored")
+        position.finishRepin(position.repin!.sequence)
+        XCTAssertEqual(done, ["first", "second"])
+        position.finishRepin(position.repin!.sequence)
+        XCTAssertEqual(done, ["first", "second"], "a completion runs once")
+    }
 }

@@ -872,6 +872,357 @@ final class HomeWatchlistRowUITests: XCTestCase {
         shot("classic_late_watchlist_c1")
     }
 
+    // MARK: - Stage late-row legs (D10: the strip re-anchors after a row-list change)
+
+    private struct StageSlot {
+        let stageH: Double
+        let page: Double
+    }
+
+    /// `debug_stage stageH=` and `P=` once Stage Home is up.
+    private func stageSlot(_ app: XCUIApplication) throws -> StageSlot {
+        let line = try requireStage(app)
+        guard let stageH = Self.token(line, "stageH").flatMap(Double.init),
+              let page = Self.token(line, "P").flatMap(Double.init), page > 0 else {
+            throw HarnessAbort("debug_stage lacks stageH= or P=: '\(line)'")
+        }
+        return StageSlot(stageH: stageH, page: page)
+    }
+
+    /// `debug_strip foc=<rowKey>/<itemId>` split at the first "/" ("-" parts when absent).
+    private func focParts(_ app: XCUIApplication) -> (row: String, item: String) {
+        let foc = Self.token(strip(app), "foc") ?? "-"
+        guard let slash = foc.firstIndex(of: "/") else { return (foc, "-") }
+        return (String(foc[..<slash]), String(foc[foc.index(after: slash)...]))
+    }
+
+    /// `debug_stage disp=<type:id>` without the type (the comparison `stageFollowsFocus` makes).
+    private func dispId(_ app: XCUIApplication) -> String {
+        let disp = Self.token(stage(app), "disp") ?? "-"
+        return disp.firstIndex(of: ":").map { String(disp[disp.index(after: $0)...]) } ?? "-"
+    }
+
+    /// The outermost element reporting focus and its frame, from ONE snapshot (`StageStripUITests.focused`).
+    private func focusedFrame(_ app: XCUIApplication) -> (label: String, frame: CGRect)? {
+        guard let root = try? app.snapshot() else { return nil }
+        var found: (label: String, frame: CGRect)?
+        func walk(_ node: XCUIElementSnapshot) {
+            guard found == nil else { return }
+            if node.hasFocus {
+                found = (node.label, node.frame)
+                return
+            }
+            node.children.forEach(walk)
+        }
+        walk(root)
+        return found
+    }
+
+    private func watchlistCount(_ app: XCUIApplication) -> Int {
+        Self.int(label(app, "debug_homeWatchlist"), "n") ?? 0
+    }
+
+    /// Skips when the Watchlist seed is refused (not a guest, or a tracker is the progress source).
+    private func requireSeedNotRefused(_ app: XCUIApplication) throws {
+        var line = ""
+        _ = poll(15, step: 0.5) {
+            line = label(app, "debug_homeWatchlist")
+            return !line.isEmpty
+        }
+        guard !line.isEmpty else {
+            XCTFail("debug_homeWatchlist is missing: not a DEBUG build, or the readout is unmounted")
+            throw HarnessAbort("no debug_homeWatchlist")
+        }
+        if Self.token(line, "seed") == "refused" {
+            throw XCTSkip("fixture is not a guest (the Watchlist seed was refused): '\(line)'")
+        }
+    }
+
+    /// From launch (Tabs mode: focus on the tab bar), Down until a catalog row owns the strip (≤ 5 presses).
+    private func stageEnterFirstCatalogRow(_ app: XCUIApplication) throws -> String {
+        var key = "-"
+        for _ in 0..<5 {
+            key = stageStep(app, .down)
+            if key != "-", !Self.topKeys.contains(key) { return key }
+        }
+        XCTFail("focus never reached a catalog row within five Downs: '\(strip(app))'")
+        throw HarnessAbort("no catalog row")
+    }
+
+    /// A2c: the focused card sits in the strip's current-row slot, not in the peek band.
+    private func focusedCardInSlot(_ app: XCUIApplication, _ slot: StageSlot) -> (ok: Bool, detail: String) {
+        guard let focused = focusedFrame(app) else {
+            return (false, "no element reports focus (hasFocus unsupported on this runtime?)")
+        }
+        let minY = Double(focused.frame.minY)
+        let top = slot.stageH - 60
+        let bottom = slot.stageH + 0.5 * slot.page
+        let detail = "focused '\(focused.label)' minY=\(Int(minY)) slot=[\(Int(top)), \(Int(bottom))) stageH=\(Int(slot.stageH)) P=\(Int(slot.page))"
+        return (minY >= top && minY < bottom, detail)
+    }
+
+    /// The d10 oracle set, read after a rest: A1 focus unchanged, A2 the strip shows the focused row,
+    /// A3 the stage shows the focused item, A4 one Right moves exactly one item, A5 the slot again.
+    private func assertStripShowsFocusedRow(_ app: XCUIApplication, _ slot: StageSlot,
+                                            row expectRow: String, item expectItem: String?, tag: String) {
+        shot(tag)
+        let foc = focParts(app)
+        let stripLine = strip(app)
+        let inSlot = focusedCardInSlot(app, slot)
+        note(tag, "strip=\(stripLine)\nstage=\(stage(app))\nwatchlist=\(label(app, "debug_homeWatchlist"))\n\(inSlot.detail)")
+        XCTAssertEqual(foc.row, expectRow, "\(tag) A1: the focused row changed: \(stripLine)")
+        if let expectItem {
+            XCTAssertEqual(foc.item, expectItem, "\(tag) A1: the focused item changed: \(stripLine)")
+        }
+        XCTAssertEqual(stripKey(app), foc.row, "\(tag) A2a: debug_strip key= is not the focused row: \(stripLine)")
+        XCTAssertEqual(Self.token(stripLine, "page"), foc.row,
+                       "\(tag) A2b: debug_strip page= (the row the strip last paged or re-pinned to; '-' until either happens) is not the focused row, so the re-pin after the insert did not run: \(stripLine)")
+        XCTAssertTrue(inSlot.ok,
+                      "\(tag) A2c: the strip does not show the focused row in its current-row slot (d10: the row above is shown, the focused row peeks): \(inSlot.detail)")
+        XCTAssertEqual(dispId(app), foc.item,
+                       "\(tag) A3: the stage does not show the focused item: disp=\(Self.token(stage(app), "disp") ?? "-") foc=\(foc.row)/\(foc.item)")
+        let start = foc
+        remote.press(.right)
+        pause(2.0)
+        let moved = focParts(app)
+        XCTAssertEqual(moved.row, start.row, "\(tag) A4a: Right left the row: \(strip(app))")
+        XCTAssertNotEqual(moved.item, start.item, "\(tag) A4b: Right did not move focus: \(strip(app))")
+        remote.press(.left)
+        pause(2.0)
+        XCTAssertEqual(focParts(app).item, start.item,
+                       "\(tag) A4c: one Left after one Right does not return to \(start.item), so Right did not move exactly one item: \(strip(app))")
+        let after = focusedCardInSlot(app, slot)
+        XCTAssertTrue(after.ok, "\(tag) A5: after Right/Left the focused row is not in the slot: \(after.detail)")
+    }
+
+    /// d10 leg S-late-rest: focus rests on the first catalog row (below the Watchlist slot) when the
+    /// delayed Watchlist lands; Stage does not hold it (D10), and the strip must keep showing the row.
+    func testStage_LateWatchlistRestOnFirstCatalogRow() throws {
+        let app = launch(Self.stageBase + ["-home_upcoming_row_enabled", "NO",
+                                           "-debug.homeWatchlistSeedJsonB64", Self.wlSeed,
+                                           "-debug.homeWatchlistSeedDelayMs", "30000"], settle: 4)
+        defer { app.terminate() }
+        let slot = try stageSlot(app)
+        try requireSeedNotRefused(app)
+        let c1 = try stageEnterFirstCatalogRow(app)
+        guard watchlistCount(app) == 0 else {
+            XCTFail("the 30 s delay elapsed before focus reached \(c1): '\(label(app, "debug_homeWatchlist"))'")
+            throw HarnessAbort("Watchlist landed too early")
+        }
+        pause(2.0)
+        let before = focParts(app)
+        let rowBefore = Self.int(strip(app), "row") ?? -1
+        XCTAssertEqual(before.row, c1, "focus rests on \(c1) before the insert: \(strip(app))")
+        let baseline = focusedCardInSlot(app, slot)
+        guard baseline.ok else {
+            XCTFail("A2c baseline fails BEFORE the insert, so the oracle is not usable here: \(baseline.detail)")
+            throw HarnessAbort("A2c baseline")
+        }
+        guard poll(45, step: 0.5, { watchlistCount(app) > 0 }) else {
+            XCTFail("the late Watchlist never landed: '\(label(app, "debug_homeWatchlist"))'")
+            throw HarnessAbort("no late Watchlist row")
+        }
+        XCTAssertEqual(Self.token(label(app, "debug_homeWatchlist"), "held"), "0",
+                       "Stage never holds the row (D10): '\(label(app, "debug_homeWatchlist"))'")
+        try requireWatchlistSeed(app)
+        pause(5.0)
+        XCTAssertEqual(Self.int(strip(app), "row"), rowBefore + 1,
+                       "A1b: debug_strip row= did not move down by one with the insert: before=\(rowBefore) now='\(strip(app))'")
+        assertStripShowsFocusedRow(app, slot, row: c1, item: before.item, tag: "S_late_rest")
+    }
+
+    /// d10 leg S-late-inflight: the same launch, with Down/Up pressed back to back (each inside or just
+    /// after the previous page's glide, stretched to 1.0 s) until the Watchlist lands. No press after
+    /// the insert (a row change writes a new id and would repair any offset): asserted against whatever
+    /// catalog row the last pre-insert glide left focus on.
+    func testStage_LateWatchlistPressInFlight() throws {
+        let app = launch(Self.stageBase + ["-home_upcoming_row_enabled", "NO",
+                                           "-debug.stripPageSeconds", "1.0",
+                                           "-debug.homeWatchlistSeedJsonB64", Self.wlSeed,
+                                           "-debug.homeWatchlistSeedDelayMs", "30000"], settle: 4)
+        // ≈ when Home appeared and HomeView.onAppear ran startWatchlist() (launch() paused `settle` after the profile tap).
+        let t0 = Date().addingTimeInterval(-4)
+        defer { app.terminate() }
+        let slot = try stageSlot(app)
+        try requireSeedNotRefused(app)
+        let c1 = try stageEnterFirstCatalogRow(app)
+        let c2 = stageStep(app, .down)
+        guard c2 != c1, c2 != "-", !Self.topKeys.contains(c2) else {
+            throw HarnessAbort("the leg needs two catalog rows below the slot; Down from \(c1) gave \(c2): '\(strip(app))'")
+        }
+        XCTAssertEqual(stageStep(app, .up), c1, "Up from \(c2) returns to \(c1): \(strip(app))")
+        guard watchlistCount(app) == 0 else {
+            XCTFail("the 30 s delay elapsed before the press train: '\(label(app, "debug_homeWatchlist"))'")
+            throw HarnessAbort("Watchlist landed too early")
+        }
+        // Idle until ~4 s before the estimated landing (t0 + 30 s).
+        while Date() < t0.addingTimeInterval(26), watchlistCount(app) == 0 { pause(0.25) }
+        guard watchlistCount(app) == 0 else {
+            XCTFail("the Watchlist landed before the press train started: '\(label(app, "debug_homeWatchlist"))'")
+            throw HarnessAbort("Watchlist landed before the train")
+        }
+        var presses: [String] = []
+        var down = true
+        let deadline = t0.addingTimeInterval(45)
+        while watchlistCount(app) == 0, Date() < deadline {
+            remote.press(down ? .down : .up)
+            presses.append(down ? "D" : "U")
+            down.toggle()
+            pause(0.3)
+        }
+        guard watchlistCount(app) > 0 else {
+            XCTFail("the late Watchlist never landed during the press train (\(presses.count) presses)")
+            throw HarnessAbort("no late Watchlist row")
+        }
+        note("S_late_inflight_presses", "\(presses.joined(separator: " ")) | \(strip(app))")
+        XCTAssertEqual(Self.token(label(app, "debug_homeWatchlist"), "held"), "0",
+                       "Stage never holds the row (D10): '\(label(app, "debug_homeWatchlist"))'")
+        pause(5.0)
+        let rest = focParts(app)
+        guard rest.row != "-", !Self.topKeys.contains(rest.row) else {
+            XCTFail("after the train focus is not on a catalog row: '\(strip(app))'")
+            throw HarnessAbort("focus off the catalog rows")
+        }
+        assertStripShowsFocusedRow(app, slot, row: rest.row, item: rest.item, tag: "S_late_inflight")
+    }
+
+    /// D10 (fix legs): the rest case one level deeper. Focus rests on the THIRD catalog row (index 2
+    /// or more) when the delayed Watchlist lands above it. Settles whether `.scrollPosition(id:)`
+    /// keeps the offset mid-strip too; with the re-pin it must pass either way.
+    func testStage_LateWatchlistRestOnThirdCatalogRow() throws {
+        let app = launch(Self.stageBase + ["-home_upcoming_row_enabled", "NO",
+                                           "-debug.homeWatchlistSeedJsonB64", Self.wlSeed,
+                                           "-debug.homeWatchlistSeedDelayMs", "30000"], settle: 4)
+        defer { app.terminate() }
+        let slot = try stageSlot(app)
+        try requireSeedNotRefused(app)
+        let c1 = try stageEnterFirstCatalogRow(app)
+        let c2 = stageStep(app, .down)
+        let c3 = stageStep(app, .down)
+        guard c2 != c1, c3 != c2, c3 != "-", !Self.topKeys.contains(c2), !Self.topKeys.contains(c3) else {
+            throw HarnessAbort("the leg needs three catalog rows below the slot: \(c1) → \(c2) → \(c3): '\(strip(app))'")
+        }
+        guard watchlistCount(app) == 0 else {
+            XCTFail("the 30 s delay elapsed before focus reached \(c3): '\(label(app, "debug_homeWatchlist"))'")
+            throw HarnessAbort("Watchlist landed too early")
+        }
+        pause(2.0)
+        let before = focParts(app)
+        let rowBefore = Self.int(strip(app), "row") ?? -1
+        XCTAssertEqual(before.row, c3, "focus rests on \(c3) before the insert: \(strip(app))")
+        XCTAssertGreaterThanOrEqual(rowBefore, 2, "the focused row is index 2 or deeper: \(strip(app))")
+        let baseline = focusedCardInSlot(app, slot)
+        guard baseline.ok else {
+            XCTFail("A2c baseline fails BEFORE the insert, so the oracle is not usable here: \(baseline.detail)")
+            throw HarnessAbort("A2c baseline")
+        }
+        guard poll(45, step: 0.5, { watchlistCount(app) > 0 }) else {
+            XCTFail("the late Watchlist never landed: '\(label(app, "debug_homeWatchlist"))'")
+            throw HarnessAbort("no late Watchlist row")
+        }
+        XCTAssertEqual(Self.token(label(app, "debug_homeWatchlist"), "held"), "0",
+                       "Stage never holds the row (D10): '\(label(app, "debug_homeWatchlist"))'")
+        try requireWatchlistSeed(app)
+        pause(5.0)
+        XCTAssertEqual(Self.int(strip(app), "row"), rowBefore + 1,
+                       "A1b: debug_strip row= did not move down by one with the insert: before=\(rowBefore) now='\(strip(app))'")
+        assertStripShowsFocusedRow(app, slot, row: c3, item: before.item, tag: "S_late_rest_deep")
+    }
+
+    /// D10 (fix legs): a row REMOVED above the resting row. The Watchlist seed is there at launch and
+    /// withdrawn 30 s later (`-debug.homeWatchlistSeedClearMs`) while focus rests on the second
+    /// catalog row; the strip must keep showing that row as its index drops by one.
+    func testStage_WatchlistRemovedAboveRestingRow() throws {
+        let app = launch(Self.stageBase + ["-home_upcoming_row_enabled", "NO",
+                                           "-debug.homeWatchlistSeedJsonB64", Self.wlSeed,
+                                           "-debug.homeWatchlistSeedClearMs", "30000"], settle: 4)
+        defer { app.terminate() }
+        let slot = try stageSlot(app)
+        try requireWatchlistSeed(app)
+        // Passes through the Watchlist row (a top key) on the way down.
+        let c1 = try stageEnterFirstCatalogRow(app)
+        let c2 = stageStep(app, .down)
+        guard c2 != c1, c2 != "-", !Self.topKeys.contains(c2) else {
+            throw HarnessAbort("the leg needs two catalog rows below the slot; Down from \(c1) gave \(c2): '\(strip(app))'")
+        }
+        guard watchlistCount(app) > 0 else {
+            XCTFail("the seed was withdrawn before focus reached \(c2): '\(label(app, "debug_homeWatchlist"))'")
+            throw HarnessAbort("Watchlist cleared too early")
+        }
+        pause(2.0)
+        let before = focParts(app)
+        let rowBefore = Self.int(strip(app), "row") ?? -1
+        XCTAssertEqual(before.row, c2, "focus rests on \(c2) before the removal: \(strip(app))")
+        let baseline = focusedCardInSlot(app, slot)
+        guard baseline.ok else {
+            XCTFail("A2c baseline fails BEFORE the removal, so the oracle is not usable here: \(baseline.detail)")
+            throw HarnessAbort("A2c baseline")
+        }
+        guard poll(45, step: 0.5, { watchlistCount(app) == 0 }) else {
+            XCTFail("the Watchlist seed was never withdrawn: '\(label(app, "debug_homeWatchlist"))'")
+            throw HarnessAbort("no removal")
+        }
+        pause(5.0)
+        XCTAssertEqual(Self.int(strip(app), "row"), rowBefore - 1,
+                       "A1b: debug_strip row= did not move up by one with the removal: before=\(rowBefore) now='\(strip(app))'")
+        assertStripShowsFocusedRow(app, slot, row: c2, item: before.item, tag: "S_removed_rest")
+    }
+
+    /// D10 (fix legs): covered Home. Focus on the third catalog row, Select opens Detail, the delayed
+    /// Watchlist lands while Detail is up, Menu pops: the pop restore must land on the same row and
+    /// card with the strip showing that row in its slot (the owed `onAppear` re-pin).
+    func testStage_LateWatchlistLandsWhileDetailCovers() throws {
+        let app = launch(Self.stageBase + ["-home_upcoming_row_enabled", "NO",
+                                           "-debug.homeWatchlistSeedJsonB64", Self.wlSeed,
+                                           "-debug.homeWatchlistSeedDelayMs", "30000"], settle: 4)
+        // ≈ when Home appeared and HomeView.onAppear ran startWatchlist() (as in the in-flight leg).
+        let t0 = Date().addingTimeInterval(-4)
+        defer { app.terminate() }
+        let slot = try stageSlot(app)
+        try requireSeedNotRefused(app)
+        let c1 = try stageEnterFirstCatalogRow(app)
+        let c2 = stageStep(app, .down)
+        let c3 = stageStep(app, .down)
+        guard c2 != c1, c3 != c2, c3 != "-", !Self.topKeys.contains(c2), !Self.topKeys.contains(c3) else {
+            throw HarnessAbort("the leg needs three catalog rows below the slot: \(c1) → \(c2) → \(c3): '\(strip(app))'")
+        }
+        pause(2.0)
+        let before = focParts(app)
+        let rowBefore = Self.int(strip(app), "row") ?? -1
+        guard watchlistCount(app) == 0 else {
+            XCTFail("the 30 s delay elapsed before Detail could open: '\(label(app, "debug_homeWatchlist"))'")
+            throw HarnessAbort("Watchlist landed too early")
+        }
+        guard before.row == c3, before.item != "-", !before.item.hasPrefix("nuvio-folder://") else {
+            throw HarnessAbort("focus is not on a catalog card of \(c3): '\(strip(app))' — not pressing Select")
+        }
+        guard focusedCardInSlot(app, slot).ok else {
+            throw HarnessAbort("A2c baseline fails before Detail opens: \(focusedCardInSlot(app, slot).detail)")
+        }
+        // Detail must be up before the seed lands (≈ t0 + 30 s) and stay up until after it.
+        guard Date() < t0.addingTimeInterval(25) else {
+            throw HarnessAbort("too late to open Detail before the seed lands (\(Int(Date().timeIntervalSince(t0))) s)")
+        }
+        remote.press(.select)
+        pause(3.0)
+        shot("S_late_covered_detail")
+        while Date() < t0.addingTimeInterval(36) { pause(0.5) }
+        remote.press(.menu)
+        // After ~30 s on Detail its inline trailer is playing and the first Menu only stops it
+        // (screenshot evidence): press again while Home's readout is still absent.
+        pause(1.5)
+        if label(app, "debug_strip").isEmpty { remote.press(.menu) }
+        let restored = poll(6.0) { focParts(app) == before }
+        XCTAssertGreaterThan(watchlistCount(app), 0,
+                             "the Watchlist landed while Detail was up: '\(label(app, "debug_homeWatchlist"))'")
+        XCTAssertTrue(restored, "the pop restore lands on \(before.row)/\(before.item): '\(strip(app))'")
+        XCTAssertEqual(app.state, .runningForeground, "one Menu from Detail pops, never leaves the app")
+        pause(5.0)
+        XCTAssertEqual(Self.int(strip(app), "row"), rowBefore + 1,
+                       "A1b: debug_strip row= did not move down by one with the insert: before=\(rowBefore) now='\(strip(app))'")
+        assertStripShowsFocusedRow(app, slot, row: c3, item: before.item, tag: "S_late_covered")
+    }
+
     // MARK: - Test 25 (Classic: a late Watchlist stays held while the rail holds focus)
 
     private func railState(_ app: XCUIApplication) -> String { label(app, "rail_state") }

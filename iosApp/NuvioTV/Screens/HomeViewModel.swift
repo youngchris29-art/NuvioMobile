@@ -306,6 +306,19 @@ final class HomeViewModel: ObservableObject {
     nonisolated static let heldWatchlistRecheckSeconds: Double = 0.5
     #if DEBUG
     private var watchlistSeedPending = false
+    private var watchlistSeedClearScheduled = false
+
+    /// `-debug.homeWatchlistSeedClearMs`: withdraws the seed once, `ms` after its first publish.
+    private func scheduleWatchlistSeedClear() {
+        let ms = HomeRowsDebugKnobs.watchlistSeedClearMs
+        guard ms > 0, !watchlistSeedClearScheduled else { return }
+        watchlistSeedClearScheduled = true
+        let gen = pipelineGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(ms)) { [weak self] in
+            guard let self, self.pipelineGeneration == gen, self.watchlistWatcher == nil else { return }
+            self.publishWatchlistSection(nil)
+        }
+    }
     #endif
     private lazy var watchlistReleaseGate = HomeWatchlistReleaseGate(
         inputs: { [weak self] in
@@ -1255,6 +1268,7 @@ final class HomeViewModel: ObservableObject {
                 return
             }
             publishWatchlistSection(seeded)
+            scheduleWatchlistSeedClear()
             return
         }
         // Refused now (sign-in, tracker source): never leave an earlier seed on screen. Without a
