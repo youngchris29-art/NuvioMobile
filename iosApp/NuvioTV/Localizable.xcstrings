@@ -14451,7 +14451,40 @@
         }
       }
     },
-    "Continue Watching On Select": {},
+    "Continue Watching On Select": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Auswahl in Weiterschauen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Al seleccionar en Seguir viendo"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Action de sélection dans Continuer à regarder"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Selezione in Continua a guardare"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Khi chọn trong Tiếp tục xem"
+          }
+        }
+      }
+    },
     "Continue as Guest": {
       "localizations": {
         "de": {
@@ -35490,7 +35523,40 @@
         }
       }
     },
-    "Play resumes the title: the source list opens, or playback starts at once when Auto-Play Best Source is on. Details opens the title's page. Start Over and Play Manually in the hold menu always play. Also applies to Resume Watching in the Library. Synced with your phone. Default: Play.": {},
+    "Play resumes the title: the source list opens, or playback starts at once when Auto-Play Best Source is on. Details opens the title's page. Start Over and Play Manually in the hold menu always play. Also applies to Resume Watching in the Library. Synced with your phone. Default: Play.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "„Abspielen“ setzt den Titel fort: Die Quellenliste öffnet sich, oder die Wiedergabe startet sofort, wenn „Beste Quelle automatisch wiedergeben“ an ist. „Details“ öffnet die Seite des Titels. „Neu starten“ und „Manuell wiedergeben“ im Menü bei langem Drücken spielen immer ab. Gilt auch für „Fortsetzen“ in der Bibliothek. Mit deinem Handy synchronisiert. Standard: Abspielen."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "«Reproducir» reanuda el título: se abre la lista de fuentes, o la reproducción empieza al instante cuando «Reproducir automáticamente la mejor fuente» está activado. «Detalles» abre la página del título. «Empezar de nuevo» y «Reproducir manualmente» en el menú de pulsación larga siempre reproducen. También se aplica a «Reanudar» en la Biblioteca. Sincronizado con tu teléfono. Por defecto: Reproducir."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "« Lire » reprend le titre : la liste des sources s’ouvre, ou la lecture démarre aussitôt quand « Lecture auto de la meilleure source » est activée. « Détails » ouvre la page du titre. « Recommencer » et « Lire manuellement » dans le menu à appui long lancent toujours la lecture. S’applique aussi à « Reprendre la lecture » dans la Bibliothèque. Synchronisé avec votre téléphone. Par défaut : Lire."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "«Riproduci» riprende il titolo: si apre la lista delle fonti, oppure la riproduzione parte subito quando «Riproduci automaticamente la fonte migliore» è attivo. «Dettagli» apre la pagina del titolo. «Ricomincia» e «Riproduci manualmente» nel menu a pressione prolungata riproducono sempre. Vale anche per «Riprendi la visione» nella Libreria. Sincronizzato con il telefono. Predefinito: Riproduci."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "“Phát” tiếp tục xem tựa phim: danh sách nguồn mở ra, hoặc phát ngay khi “Tự động phát nguồn tốt nhất” đang bật. “Thông tin” mở trang của tựa phim. “Xem lại từ đầu” và “Phát thủ công” trong menu nhấn giữ luôn phát. Cũng áp dụng cho “Xem tiếp” trong Thư viện. Đồng bộ với điện thoại của bạn. Mặc định: Phát."
+          }
+        }
+      }
+    },
     "Play starts the best source that has arrived: highest resolution first, then HDR or Dolby Vision, then cached links, then the largest file. Hold Play to choose one.": {
       "localizations": {
         "de": {
@@ -43833,7 +43899,40 @@
         }
       }
     },
-    "Show Chapter Titles": {},
+    "Show Chapter Titles": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kapitelnamen anzeigen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostrar títulos de capítulos"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Afficher les titres des chapitres"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostra i titoli dei capitoli"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hiện tên chương"
+          }
+        }
+      }
+    },
     "Show Clock": {
       "localizations": {
         "de": {
@@ -44250,7 +44349,40 @@
         }
       }
     },
-    "Show the chapter's name above the preview while you scrub": {},
+    "Show the chapter's name above the preview while you scrub": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zeigt den Kapitelnamen über der Vorschau, während du suchst"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Muestra el nombre del capítulo sobre la vista previa mientras te desplazas"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Affiche le nom du chapitre au-dessus de l’aperçu pendant le défilement"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostra il nome del capitolo sopra l’anteprima mentre scorri"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hiện tên chương phía trên ảnh xem trước khi bạn tua"
+          }
+        }
+      }
+    },
     "Show the poster and what is happening while a video starts": {
       "localizations": {
         "de": {
@@ -45465,7 +45597,40 @@
         }
       }
     },
-    "Shows the name of the chapter you are scrubbing to, above the preview frame. The chapter marks on the timeline, the Chapters pill and Previous/Next Chapter stay either way. The Apple TV player shows its own chapter list and is not affected. Synced with your phone. On by default.": {},
+    "Shows the name of the chapter you are scrubbing to, above the preview frame. The chapter marks on the timeline, the Chapters pill and Previous/Next Chapter stay either way. The Apple TV player shows its own chapter list and is not affected. Synced with your phone. On by default.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zeigt den Namen des Kapitels, zu dem du gerade suchst, über dem Vorschaubild. Die Kapitelmarken auf der Zeitleiste, die Schaltfläche „Kapitel“ und „Vorheriges/nächstes Kapitel“ bleiben in jedem Fall erhalten. Der Apple-TV-Player zeigt seine eigene Kapitelliste und ist nicht betroffen. Mit deinem Handy synchronisiert. Standardmäßig an."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Muestra el nombre del capítulo al que te desplazas, sobre la imagen de vista previa. Las marcas de capítulo en la línea de tiempo, el botón Capítulos y Capítulo anterior/siguiente se mantienen en cualquier caso. El reproductor de Apple TV muestra su propia lista de capítulos y no se ve afectado. Sincronizado con tu teléfono. Activado por defecto."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Affiche le nom du chapitre vers lequel vous naviguez, au-dessus de l’image d’aperçu. Les repères de chapitres sur la chronologie, le bouton Chapitres et Chapitre précédent/suivant restent disponibles dans tous les cas. Le lecteur Apple TV affiche sa propre liste de chapitres et n’est pas concerné. Synchronisé avec votre téléphone. Activé par défaut."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostra il nome del capitolo a cui stai scorrendo, sopra l’immagine di anteprima. I segni dei capitoli sulla timeline, il pulsante Capitoli e Capitolo precedente/successivo restano in ogni caso. Il player di Apple TV mostra una propria lista di capitoli e non è interessato. Sincronizzato con il telefono. Attivo per impostazione predefinita."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hiện tên chương mà bạn đang tua tới, phía trên khung xem trước. Các vạch chương trên thanh thời gian, nút Chương và Chương trước/sau vẫn có dù bật hay tắt. Trình phát Apple TV có danh sách chương riêng và không bị ảnh hưởng. Đồng bộ với điện thoại của bạn. Mặc định bật."
+          }
+        }
+      }
+    },
     "Shows the poster, the title and what the player is doing (connecting, preparing, buffering) while a video starts, in both players. Off shows a plain spinner. On by default.": {
       "localizations": {
         "de": {
@@ -57280,7 +57445,40 @@
         }
       }
     },
-    "What opens when you select a Continue Watching card": {},
+    "What opens when you select a Continue Watching card": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Was sich öffnet, wenn du eine Karte in Weiterschauen auswählst"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lo que se abre al seleccionar una tarjeta de Seguir viendo"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ce qui s’ouvre quand vous sélectionnez une carte de Continuer à regarder"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cosa si apre quando selezioni una scheda di Continua a guardare"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nội dung mở ra khi bạn chọn một thẻ trong Tiếp tục xem"
+          }
+        }
+      }
+    },
     "When a title's streams load, plugin results are listed under one group per repository instead of one group per provider, so a repository with many providers takes one row. Off by default.": {
       "extractionState": "manual",
       "localizations": {
