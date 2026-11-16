@@ -5,7 +5,13 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.longOrNull
 
 internal data class LocalDebridCachedItem(
@@ -77,16 +83,7 @@ internal object LocalDebridService {
             // BUG-21: a dead token fails this check silently (rows fall back to UNKNOWN), so a
             // definitive auth status is the one place the UI can learn the credential is gone.
             DebridCredentialHealth.recordHttpStatus(DebridProviders.TORBOX_ID, response.status)
-            if (!response.isSuccessful || response.body?.success == false) {
-                null
-            } else {
-                response.body?.data.orEmpty().mapKeys { it.key.lowercase() }.mapValues { (_, value) ->
-                    LocalDebridCachedItem(
-                        name = value.name,
-                        size = value.size,
-                    )
-                }
-            }
+            if (!response.isSuccessful) null else parseTorboxCachedAnswer(response.rawBody)
         } catch (error: Exception) {
             if (error is CancellationException) throw error
             null
@@ -121,6 +118,45 @@ internal object LocalDebridService {
             if (error is CancellationException) throw error
             null
         }
+}
+
+/**
+ * Decodes a 2xx TorBox `checkcached` body. `null` means the answer could not be read (blank or
+ * invalid JSON, no envelope object, `success: false`, a `data` of an unexpected shape): a failed
+ * lookup, never a confirmed miss. A readable envelope whose `data` is null, `{}` or `[]` is a valid
+ * "none of these are cached" answer and yields an empty map.
+ */
+internal fun parseTorboxCachedAnswer(rawBody: String): Map<String, LocalDebridCachedItem>? {
+    if (rawBody.isBlank()) return null
+    val envelope = try {
+        DebridApiJson.json.parseToJsonElement(rawBody)
+    } catch (_: Exception) {
+        return null
+    } as? JsonObject ?: return null
+    if ((envelope["success"] as? JsonPrimitive)?.booleanOrNull == false) return null
+    return when (val data = envelope["data"]) {
+        null, JsonNull -> emptyMap()
+        // format=object: { "<hash>": { name, size, ... } }
+        is JsonObject -> data.entries.associate { (hash, value) -> hash.lowercase() to value.toCachedItem() }
+        // A list-shaped answer: [ { hash, name, size, ... } ]
+        is JsonArray -> buildMap {
+            for (entry in data) {
+                val hash = ((entry as? JsonObject)?.get("hash") as? JsonPrimitive)?.contentOrNull
+                    ?.trim()?.lowercase()?.takeIf { it.isNotBlank() }
+                    ?: return null
+                put(hash, entry.toCachedItem())
+            }
+        }
+        else -> null
+    }
+}
+
+private fun JsonElement.toCachedItem(): LocalDebridCachedItem {
+    val item = this as? JsonObject
+    return LocalDebridCachedItem(
+        name = (item?.get("name") as? JsonPrimitive)?.takeUnless { it is JsonNull }?.contentOrNull,
+        size = item?.get("size").asLongOrNull(),
+    )
 }
 
 private fun kotlinx.serialization.json.JsonElement?.asLongOrNull(): Long? {

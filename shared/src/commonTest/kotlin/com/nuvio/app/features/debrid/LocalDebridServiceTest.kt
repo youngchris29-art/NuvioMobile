@@ -133,4 +133,49 @@ class LocalDebridServiceTest {
         assertEquals(true, check.isCached("abc123"))
         assertEquals(false, check.isCached(requested))
     }
+
+    @Test
+    fun `a blank answer body is a failed lookup`() {
+        assertNull(parseTorboxCachedAnswer(""))
+        assertNull(parseTorboxCachedAnswer("   "))
+    }
+
+    @Test
+    fun `an invalid json answer is a failed lookup`() {
+        assertNull(parseTorboxCachedAnswer("<html>Bad Gateway</html>"))
+        assertNull(parseTorboxCachedAnswer("{\"success\":true,\"data\":"))
+        assertNull(parseTorboxCachedAnswer("[]"))
+    }
+
+    @Test
+    fun `an answer with success false or an odd data shape is a failed lookup`() {
+        assertNull(parseTorboxCachedAnswer("""{"success":false,"error":"RATE_LIMITED","data":null}"""))
+        assertNull(parseTorboxCachedAnswer("""{"success":true,"data":"nope"}"""))
+        assertNull(parseTorboxCachedAnswer("""{"success":true,"data":[{"name":"no-hash.mkv"}]}"""))
+    }
+
+    @Test
+    fun `a valid empty answer is a confirmed miss`() {
+        assertEquals(emptyMap(), parseTorboxCachedAnswer("""{"success":true,"detail":"Found 0 cached torrents","data":null}"""))
+        assertEquals(emptyMap(), parseTorboxCachedAnswer("""{"success":true,"data":{}}"""))
+        assertEquals(emptyMap(), parseTorboxCachedAnswer("""{"success":true,"data":[]}"""))
+        assertEquals(emptyMap(), parseTorboxCachedAnswer("""{"success":true}"""))
+    }
+
+    @Test
+    fun `a valid answer with items maps each hash to its item`() {
+        val objectAnswer = parseTorboxCachedAnswer(
+            """{"success":true,"data":{"ABC123":{"name":"exact.mkv","size":3,"hash":"abc123"},"$canonical":{"name":null,"size":"2"}}}""",
+        )
+        assertEquals(
+            mapOf(
+                "abc123" to LocalDebridCachedItem(name = "exact.mkv", size = 3L),
+                canonical to LocalDebridCachedItem(name = null, size = 2L),
+            ),
+            objectAnswer,
+        )
+
+        val listAnswer = parseTorboxCachedAnswer("""{"success":true,"data":[{"hash":"ABC123","name":"exact.mkv","size":3}]}""")
+        assertEquals(mapOf("abc123" to LocalDebridCachedItem(name = "exact.mkv", size = 3L)), listAnswer)
+    }
 }
