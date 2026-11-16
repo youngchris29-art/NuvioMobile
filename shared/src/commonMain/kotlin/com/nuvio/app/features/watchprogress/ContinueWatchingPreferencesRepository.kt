@@ -28,12 +28,17 @@ private data class StoredContinueWatchingPreferences(
     val showResumePromptOnLaunch: Boolean = true,
     @SerialName("sort_mode")
     val sortMode: ContinueWatchingSortMode = ContinueWatchingSortMode.DEFAULT,
+    @SerialName("click_action")
+    val clickAction: ContinueWatchingClickAction = ContinueWatchingClickAction.STREAM,
 )
 
 object ContinueWatchingPreferencesRepository {
     private val json = Json {
         ignoreUnknownKeys = true
         encodeDefaults = true
+        // A value a newer phone build adds to an enum field reads as that field's default instead
+        // of failing the whole decode (which would reset every preference, dismissed keys included).
+        coerceInputValues = true
     }
 
     private val _uiState = MutableStateFlow(ContinueWatchingPreferencesUiState())
@@ -116,6 +121,7 @@ object ContinueWatchingPreferencesRepository {
                 dismissedNextUpKeys = stored.dismissedNextUpKeys,
                 showResumePromptOnLaunch = stored.showResumePromptOnLaunch,
                 sortMode = stored.sortMode,
+                clickAction = stored.clickAction,
             )
         } else {
             ContinueWatchingPreferencesUiState()
@@ -188,6 +194,15 @@ object ContinueWatchingPreferencesRepository {
         persist()
     }
 
+    fun setClickAction(action: ContinueWatchingClickAction) {
+        ensureLoaded()
+        val previous = _uiState.getAndUpdate { state ->
+            if (state.clickAction == action) state else state.copy(clickAction = action)
+        }
+        if (previous.clickAction == action) return
+        persist()
+    }
+
     fun removeDismissedNextUpKeysForContent(contentId: String) {
         ensureLoaded()
         val normalizedContentId = contentId.trim()
@@ -218,6 +233,7 @@ object ContinueWatchingPreferencesRepository {
                     dismissedNextUpKeys = state.dismissedNextUpKeys,
                     showResumePromptOnLaunch = state.showResumePromptOnLaunch,
                     sortMode = state.sortMode,
+                    clickAction = state.clickAction,
                 ),
             ),
         )

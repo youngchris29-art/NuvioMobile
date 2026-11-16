@@ -30,6 +30,14 @@ enum class ContinueWatchingSortMode {
     SPLIT_UPCOMING,
 }
 
+/** Upstream 37e8a5c0e: what selecting a Continue Watching item opens. */
+@Serializable
+enum class ContinueWatchingClickAction {
+    STREAM,
+    DETAILS,
+    DETAILS_FOR_UPCOMING,
+}
+
 @Serializable
 data class WatchProgressEntry(
     val contentType: String,
@@ -251,6 +259,7 @@ data class ContinueWatchingPreferencesUiState(
     val dismissedNextUpKeys: Set<String> = emptySet(),
     val showResumePromptOnLaunch: Boolean = true,
     val sortMode: ContinueWatchingSortMode = ContinueWatchingSortMode.DEFAULT,
+    val clickAction: ContinueWatchingClickAction = ContinueWatchingClickAction.STREAM,
 )
 
 fun nextUpDismissKey(

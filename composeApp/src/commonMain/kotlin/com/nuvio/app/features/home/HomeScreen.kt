@@ -67,6 +67,7 @@ import com.nuvio.app.features.watchprogress.ContinueWatchingItem
 import com.nuvio.app.features.watchprogress.ContinueWatchingSortMode
 import com.nuvio.app.features.watchprogress.isMalformedNextUpSeedContentId
 import com.nuvio.app.features.watchprogress.isSeriesTypeForContinueWatching
+import com.nuvio.app.features.watchprogress.isUpcoming
 import com.nuvio.app.features.watchprogress.nextUpDismissKey
 import com.nuvio.app.features.watchprogress.parseReleaseDateToEpochMs
 import com.nuvio.app.features.watchprogress.resolvedProgressKey
@@ -1558,10 +1559,7 @@ internal fun splitUpcomingItems(
         return items to emptyList()
     }
 
-    val (upcoming, main) = items.partition { item ->
-        item.isNextUp && parseReleaseDateToEpochMs(item.released)
-            ?.let { releaseEpochMs -> releaseEpochMs > nowEpochMs } == true
-    }
+    val (upcoming, main) = items.partition { item -> item.isUpcoming(nowEpochMs) }
     val sortedUpcoming = upcoming.sortedWith { first, second ->
         val firstRelease = parseReleaseDateToEpochMs(first.released)
         val secondRelease = parseReleaseDateToEpochMs(second.released)
