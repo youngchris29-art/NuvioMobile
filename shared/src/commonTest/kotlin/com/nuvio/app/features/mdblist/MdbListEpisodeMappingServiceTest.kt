@@ -742,6 +742,28 @@ class MdbListEpisodeMappingServiceTest {
         contentType = "series", parentMetaId = "tt1", videoId = "tt1:$season:$episode",
         seasonNumber = season, episodeNumber = episode,
     )
+
+    @Test
+    fun `a video id outranks the coordinates it arrives with`() = runTest {
+        // Upstream 620acb92c: a row whose season/episode are stale still maps by its video id.
+        val mapping = splitAnimeMapping()
+        assertEquals(1 to 35, mapping.toTmdb(9, 9, "tt1:2:11")?.let { it.season to it.episode })
+    }
+
+    @Test
+    fun `an uneven add-on split maps onto one TMDB season`() = runTest {
+        // Upstream 620acb92c fixture: add-on 24 + 23 episodes, TMDB one season of 47.
+        val mapping = mdbListTestEpisodeMappings(
+            MdbListTestAddonEpisodes(seasons = listOf(24, 23)),
+            MdbListTestTmdbSeasons(seasons = listOf(47)),
+        ).resolve("tt1", 1)!!
+        assertTrue(mapping.remaps)
+        assertEquals(2 to 11, mapping.toAddon(1, 35)?.let { it.season to it.episode })
+        assertEquals("tt1:2:11", mapping.toAddon(1, 35)?.videoId)
+        assertEquals(1 to 47, mapping.toTmdb(2, 23)?.let { it.season to it.episode })
+        assertEquals(1 to 24, mapping.toTmdb(1, 24)?.let { it.season to it.episode })
+        assertNull(mapping.toAddon(1, 48))
+    }
 }
 
 /** One TMDB season of 48 episodes that the add-on splits into two seasons of 24. */
