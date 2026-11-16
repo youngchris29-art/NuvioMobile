@@ -630,7 +630,10 @@ final class MPVTVPlayerViewController: UIViewController {
                     self.state.subtitleSearchInFlight = loading
                     // A selection that waited on the search is decided on the next walk (an empty
                     // search adds no files, so no load would trigger one).
-                    if ended, self.fileLoaded { self.refreshTracksAsync() }
+                    if ended, self.fileLoaded {
+                        self.sideLoadCompletedAddonSubtitles()
+                        self.refreshTracksAsync()
+                    }
                 }
             }
 
@@ -1385,11 +1388,7 @@ final class MPVTVPlayerViewController: UIViewController {
         // A stream-picker prefetch may already have completed (the fetch call above then no-ops,
         // and the flow watcher's replay fired before fileLoaded was set) — side-load what's there.
         // Key check: never side-load a lingering list that belongs to a different title.
-        if (SubtitleRepository.shared.completedRequest.value_ as? String)
-            == SubtitleRepository.shared.requestKey(type: context.contentType, videoId: context.videoId),
-           let prefetched = SubtitleRepository.shared.addonSubtitles.value_ as? [AddonSubtitle], !prefetched.isEmpty {
-            addAddonSubtitles(prefetched)
-        }
+        sideLoadCompletedAddonSubtitles()
         applySubtitleStyle()
         // Picture fit from the synced resize mode (the phone shares it); Stretch never persists.
         let startAspect = PlayerAspectMode.initial(syncedName: playerSettings?.resizeMode.name)
@@ -1812,6 +1811,18 @@ final class MPVTVPlayerViewController: UIViewController {
             guard interval.type.trimmingCharacters(in: .whitespaces).lowercased() != "post-credits" else { return nil }
             return TransportSpan(start: interval.startTime, end: interval.endTime, kind: interval.type)
         }
+    }
+
+    /// The repository's add-on list for THIS title, side-loaded (`addedSubtitleUrls` dedupes). Key
+    /// check: never side-load a lingering list that belongs to a different title. W3 (5a): also run
+    /// when the search ends after the file loaded, so files that arrived before `FILE_LOADED` are
+    /// not lost when no later list emission follows.
+    private func sideLoadCompletedAddonSubtitles() {
+        guard (SubtitleRepository.shared.completedRequest.value_ as? String)
+                == SubtitleRepository.shared.requestKey(type: context.contentType, videoId: context.videoId),
+              let subs = SubtitleRepository.shared.addonSubtitles.value_ as? [AddonSubtitle], !subs.isEmpty
+        else { return }
+        addAddonSubtitles(subs)
     }
 
     private func addAddonSubtitles(_ subs: [AddonSubtitle]) {
@@ -3202,11 +3213,7 @@ final class MPVTVPlayerViewController: UIViewController {
         for sub in context.externalSubtitles {
             subAdd(url: sub.url, title: sub.name ?? sub.language, lang: sub.language, rank: 0)
         }
-        if (SubtitleRepository.shared.completedRequest.value_ as? String)
-            == SubtitleRepository.shared.requestKey(type: context.contentType, videoId: context.videoId),
-           let fetched = SubtitleRepository.shared.addonSubtitles.value_ as? [AddonSubtitle], !fetched.isEmpty {
-            addAddonSubtitles(fetched)
-        }
+        sideLoadCompletedAddonSubtitles()
     }
 
     /// (d) `eof-reached` just rose (keep-open holds the last frame). A stream that ran dry well
