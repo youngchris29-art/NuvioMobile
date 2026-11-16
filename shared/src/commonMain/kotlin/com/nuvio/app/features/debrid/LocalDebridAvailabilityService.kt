@@ -76,12 +76,13 @@ object LocalDebridAvailabilityService {
         return groups.updateAvailabilityStatus(eligibleGroupIds) { stream ->
             val hash = stream.localAvailabilityHash() ?: return@updateAvailabilityStatus stream
             if (stream.debridCacheStatus?.state in FINAL_CACHE_STATES) return@updateAvailabilityStatus stream
-            val cachedItem = cached[hash]
+            val cachedItem = cached.cached[hash]
             stream.copy(
                 debridCacheStatus = StreamDebridCacheStatus(
                     providerId = account.provider.id,
                     providerName = account.provider.displayName,
-                    state = if (cachedItem == null) StreamDebridCacheState.NOT_CACHED else StreamDebridCacheState.CACHED,
+                    // UNKNOWN (a failed alias re-ask) is not final: the resolver re-checks it.
+                    state = cached.stateFor(hash),
                     cachedName = cachedItem?.name,
                     cachedSize = cachedItem?.size,
                 ),
