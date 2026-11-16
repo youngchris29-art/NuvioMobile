@@ -111,6 +111,17 @@ class ChapterSkipIntervalsTest {
         assertEquals(2, intervals.size) // "More Credits" is not a whole-title match
     }
 
+    // Upstream 66bdba357: credits within the 240 s cap are kept as the outro, ending where the
+    // post-credits scene starts; the scene is only ever a post-credits target.
+    @Test
+    fun postCreditsSceneChapterIsKeptAsSkipTargetNotSkipSegment() {
+        val chapters = chapters(0L to "Movie", 5_520_000L to "Credits", 5_700_000L to "Post-Credits Scene")
+        val intervals = ChapterSkipIntervals.fromChapters(chapters, 6_000_000L)
+        assertTrue(intervals.filter { it.startTime == 5_700.0 }.all { it.type == "post-credits" })
+        assertTrue(intervals.any { it.type == "post-credits" && it.startTime == 5_700.0 })
+        assertTrue(intervals.any { it.type == "outro" && it.startTime == 5_520.0 && it.endTime == 5_700.0 })
+    }
+
     @Test
     fun sceneNamedChaptersDoNotFalseMatch() {
         val chapters = chapters(0L to "The Opening", 600_000L to "The Journey", 1_200_000L to "The Ending", 1_500_000L to "Alternate Ending")
