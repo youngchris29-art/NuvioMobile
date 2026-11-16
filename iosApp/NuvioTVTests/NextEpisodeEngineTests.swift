@@ -1574,7 +1574,7 @@ final class NextEpisodeEngineTests: XCTestCase {
             probe.resolved.append(stream)
             return probe.resolved.count == 1 ? self.notCached : self.success()
         })
-        engine.playForTesting(first, nextCandidate: { _, _ in second })
+        engine.playForTesting(first, nextCandidate: { _, _, _ in second })
         await engine.resolveTaskForTesting?.value
 
         XCTAssertEqual(probe.resolved.map(\.playbackStreamKey), [first.playbackStreamKey, second.playbackStreamKey])
@@ -1595,7 +1595,7 @@ final class NextEpisodeEngineTests: XCTestCase {
             probe.resolved.append(stream)
             return self.notCached
         })
-        engine.playForTesting(walkCandidate("first"), nextCandidate: { [self] _, _ in
+        engine.playForTesting(walkCandidate("first"), nextCandidate: { [self] _, _, _ in
             offered += 1
             return self.walkCandidate("fresh\(offered)")
         })
@@ -1616,7 +1616,7 @@ final class NextEpisodeEngineTests: XCTestCase {
             probe.resolved.append(stream)
             return self.notCached
         })
-        engine.playForTesting(walkCandidate("aaaa"), nextCandidate: { _, _ in nil })
+        engine.playForTesting(walkCandidate("aaaa"), nextCandidate: { _, _, _ in nil })
         await engine.resolveTaskForTesting?.value
 
         XCTAssertEqual(probe.resolved.count, 1)
@@ -1642,7 +1642,7 @@ final class NextEpisodeEngineTests: XCTestCase {
             return probe.resolved.count == 1 ? self.notCached : self.success()
         })
         probe.engine = engine
-        engine.playForTesting(walkCandidate("aaaa", addon: "First"), nextCandidate: { _, _ in second })
+        engine.playForTesting(walkCandidate("aaaa", addon: "First"), nextCandidate: { _, _, _ in second })
         await engine.resolveTaskForTesting?.value
 
         XCTAssertEqual(probe.phases.count, 2)
@@ -1662,7 +1662,7 @@ final class NextEpisodeEngineTests: XCTestCase {
         })
         probe.engine = engine
         engine.forceSearchingForTesting()          // so `cancel()` is not a no-op
-        engine.playForTesting(walkCandidate("aaaa"), nextCandidate: { [self] _, _ in self.walkCandidate("bbbb") })
+        engine.playForTesting(walkCandidate("aaaa"), nextCandidate: { [self] _, _, _ in self.walkCandidate("bbbb") })
         await engine.resolveTaskForTesting?.value
 
         XCTAssertEqual(probe.resolved.count, 1, "no further source after a cancel")
@@ -1680,7 +1680,7 @@ final class NextEpisodeEngineTests: XCTestCase {
             return self.success()
         })
         probe.engine = engine
-        engine.playForTesting(walkCandidate("aaaa"), nextCandidate: { [self] _, _ in self.walkCandidate("bbbb") })
+        engine.playForTesting(walkCandidate("aaaa"), nextCandidate: { [self] _, _, _ in self.walkCandidate("bbbb") })
         await engine.resolveTaskForTesting?.value
 
         XCTAssertEqual(probe.resolved.count, 1)
@@ -1695,7 +1695,7 @@ final class NextEpisodeEngineTests: XCTestCase {
             if probe.resolved.count == 1 { throw NSError(domain: "NextEpisodeEngineTests", code: 1) }
             return self.success()
         })
-        engine.playForTesting(walkCandidate("aaaa"), nextCandidate: { [self] _, _ in self.walkCandidate("bbbb") })
+        engine.playForTesting(walkCandidate("aaaa"), nextCandidate: { [self] _, _, _ in self.walkCandidate("bbbb") })
         await engine.resolveTaskForTesting?.value
 
         XCTAssertEqual(probe.resolved.count, 2)
@@ -1710,7 +1710,7 @@ final class NextEpisodeEngineTests: XCTestCase {
             probe.resolved.append(stream)
             return probe.resolved.count == 1 ? self.notCached : self.success()
         })
-        engine.playForTesting(walkCandidate("aaaa"), nextCandidate: { [self] _, _ in self.walkCandidate("bbbb") })
+        engine.playForTesting(walkCandidate("aaaa"), nextCandidate: { [self] _, _, _ in self.walkCandidate("bbbb") })
         await engine.resolveTaskForTesting?.value
 
         XCTAssertEqual(recorder.played.count, 1, "offline still walks on")
@@ -1726,7 +1726,7 @@ final class NextEpisodeEngineTests: XCTestCase {
             probe.resolved.append(stream)
             return probe.resolved.count == 1 ? DirectDebridPlayableResult.MissingApiKey.shared as DirectDebridPlayableResult : self.notCached
         })
-        engine.playForTesting(first, nextCandidate: { _, tried in
+        engine.playForTesting(first, nextCandidate: { _, tried, _ in
             tried.contains(second.playerSourceIdentityKey() ?? "") ? nil : second
         })
         await engine.resolveTaskForTesting?.value
@@ -1745,7 +1745,7 @@ final class NextEpisodeEngineTests: XCTestCase {
         let engine = makeEngine(trigger: trigger(), recorder: recorder, resolveDebrid: { [self] _, _, _ in
             self.notCached
         })
-        engine.playForTesting(first, nextCandidate: { _, tried in
+        engine.playForTesting(first, nextCandidate: { _, tried, _ in
             seen.append(tried)
             return seen.count == 1 ? second : nil
         })
@@ -1763,7 +1763,7 @@ final class NextEpisodeEngineTests: XCTestCase {
             return self.notCached
         })
         let direct = stream(url: "https://cdn.example.com/s1e2.mkv")
-        engine.playForTesting(walkCandidate("aaaa"), nextCandidate: { _, _ in direct })
+        engine.playForTesting(walkCandidate("aaaa"), nextCandidate: { _, _, _ in direct })
         await engine.resolveTaskForTesting?.value
 
         XCTAssertEqual(probe.resolved.count, 1)
@@ -1782,12 +1782,177 @@ final class NextEpisodeEngineTests: XCTestCase {
         })
         probe.engine = engine
         engine.forceSearchingForTesting()
-        engine.playForTesting(walkCandidate("aaaa"), nextCandidate: { [self] _, _ in self.walkCandidate("bbbb") })
+        engine.playForTesting(walkCandidate("aaaa"), nextCandidate: { [self] _, _, _ in self.walkCandidate("bbbb") })
         await engine.resolveTaskForTesting?.value
 
         XCTAssertEqual(probe.resolved.count, 1)
         XCTAssertEqual(recorder.played.count, 1, "only the viewer's own pick is handed over")
         XCTAssertEqual(recorder.played.first?.videoId, "tt1:1:1", "the current episode, not the next")
         XCTAssertEqual(engine.phase, .hidden)
+    }
+
+    // MARK: - Stage review r5: the walk sees sources that arrive after the first pick
+
+    private func streamsState(_ groups: [[StreamItem]], loading: Bool = false) -> StreamsUiState {
+        let built = groups.enumerated().map { index, streams in
+            AddonStreamGroup(addonName: "Addon \(index)", addonId: "addon\(index)", streams: streams,
+                             isLoading: false, error: nil)
+        }
+        return StreamsUiState(
+            requestToken: "t", groups: built, activeAddonIds: [], installedAddonIds: Set(built.map { $0.addonId }),
+            selectedFilter: nil, isAnyLoading: loading, emptyStateReason: nil, autoPlayStream: nil,
+            autoPlayCandidates: [], isDirectAutoPlayFlow: false, showDirectAutoPlayOverlay: false,
+            overlayMessage: nil
+        )
+    }
+
+    /// The live pick in first-stream order: the first source not tried yet, over every group.
+    private func firstUntried(_ groups: [AddonStreamGroup], _ tried: Set<String>) -> StreamItem? {
+        groups.flatMap { $0.streams }.first { !tried.contains($0.playerSourceIdentityKey() ?? "") }
+    }
+
+    /// A search that picked `first` early (its add-on answered first) while others still load.
+    /// Returns the search's own watcher callback.
+    private func pickEarly(_ engine: NextEpisodeEngine, _ recorder: Recorder,
+                           _ first: StreamItem) -> (StreamsUiState) -> Void {
+        engine.forceSearchingForTesting()
+        let search = recorder.callbacks.last!
+        search(streamsState([[first]], loading: true))
+        engine.selectForTesting(first)
+        return search
+    }
+
+    func testTheWalkPicksASourceThatArrivedAfterThePick() async {
+        let recorder = Recorder()
+        let probe = WalkProbe()
+        let first = walkCandidate("aaaa")
+        let late = walkCandidate("bbbb", addon: "Late")
+        let engine = makeEngine(trigger: trigger(), recorder: recorder, resolveDebrid: { [self] stream, _, _ in
+            probe.resolved.append(stream)
+            return probe.resolved.count == 1 ? self.notCached : self.success()
+        })
+        let search = pickEarly(engine, recorder, first)
+        XCTAssertTrue(engine.pickWatchActiveForTesting, "a debrid pick keeps listening to its request")
+        search(streamsState([[first], [late]]))          // the slow add-on answers during the countdown
+        engine.playForTesting(first, nextCandidate: { [self] _, tried, groups in self.firstUntried(groups, tried) })
+        await engine.resolveTaskForTesting?.value
+
+        XCTAssertEqual(probe.resolved.map(\.playbackStreamKey), [first.playbackStreamKey, late.playbackStreamKey])
+        XCTAssertEqual(recorder.played.count, 1)
+        XCTAssertEqual(recorder.played.first?.listedStream?.playbackStreamKey, late.playbackStreamKey,
+                       "the late source plays instead of the no-stream card")
+        XCTAssertFalse(engine.pickWatchActiveForTesting, "the watch ends with the walk")
+    }
+
+    func testALateEmissionForAnOlderRequestIsIgnored() async {
+        let recorder = Recorder()
+        let probe = WalkProbe()
+        let first = walkCandidate("aaaa")
+        let late = walkCandidate("bbbb", addon: "Late")
+        var seenGroups: [[AddonStreamGroup]] = []
+        let engine = makeEngine(trigger: trigger(), recorder: recorder, resolveDebrid: { [self] stream, _, _ in
+            probe.resolved.append(stream)
+            return self.notCached
+        })
+        let search = pickEarly(engine, recorder, first)
+        engine.loadSources()                               // the source list takes the flow
+        let accepted = engine.searchEmissionsAccepted
+        search(streamsState([[first], [late]]))           // queued for the superseded request
+        XCTAssertEqual(engine.searchEmissionsAccepted, accepted, "the old request's watcher is deaf")
+        engine.playForTesting(first, nextCandidate: { [self] _, tried, groups in
+            seenGroups.append(groups)
+            return self.firstUntried(groups, tried)
+        })
+        await engine.resolveTaskForTesting?.value
+
+        XCTAssertEqual(probe.resolved.count, 1, "the source from the older request was never offered")
+        XCTAssertEqual(seenGroups.first?.count, 1)
+        XCTAssertTrue(recorder.played.isEmpty)
+        XCTAssertEqual(engine.phase, .noStream)
+    }
+
+    func testADirectPickKeepsNoWatch() {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder)
+        engine.forceSearchingForTesting()
+        engine.selectForTesting(stream(url: "https://cdn.example.com/s1e2.mkv"))
+        XCTAssertFalse(engine.pickWatchActiveForTesting, "a direct link never walks")
+        engine.cancel()
+    }
+
+    /// Fires the pick's old watcher callback and checks it no longer reaches the engine.
+    private func assertWatchEnded(_ engine: NextEpisodeEngine, _ search: (StreamsUiState) -> Void,
+                                  _ message: String, line: UInt = #line) {
+        XCTAssertFalse(engine.pickWatchActiveForTesting, message, line: line)
+        let accepted = engine.searchEmissionsAccepted
+        search(streamsState([[walkCandidate("late1")], [walkCandidate("late2")]]))
+        XCTAssertEqual(engine.searchEmissionsAccepted, accepted, message, line: line)
+    }
+
+    func testThePickWatchEndsWhenTheWalkPlays() async {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder, resolveDebrid: { [self] _, _, _ in
+            self.success()
+        })
+        let first = walkCandidate("aaaa")
+        let search = pickEarly(engine, recorder, first)
+        engine.playForTesting(first, nextCandidate: { _, _, _ in nil })
+        await engine.resolveTaskForTesting?.value
+        XCTAssertEqual(recorder.played.count, 1)
+        assertWatchEnded(engine, search, "success")
+    }
+
+    func testThePickWatchEndsWhenTheWalkIsExhausted() async {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder, resolveDebrid: { [self] _, _, _ in
+            self.notCached
+        })
+        let first = walkCandidate("aaaa")
+        let search = pickEarly(engine, recorder, first)
+        engine.playForTesting(first, nextCandidate: { _, _, _ in nil })
+        await engine.resolveTaskForTesting?.value
+        XCTAssertEqual(engine.phase, .noStream)
+        assertWatchEnded(engine, search, "exhaustion")
+    }
+
+    func testThePickWatchEndsOnCancel() {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder)
+        let search = pickEarly(engine, recorder, walkCandidate("aaaa"))
+        engine.cancel()                                    // Menu / a seek back during the countdown
+        assertWatchEnded(engine, search, "cancel")
+    }
+
+    func testThePickWatchEndsOnAnEpisodeJump() {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder)
+        let search = pickEarly(engine, recorder, walkCandidate("aaaa"))
+        engine.jumpForTesting(to: episode(season: 1, episode: 3))
+        assertWatchEnded(engine, search, "episode jump")
+    }
+
+    func testThePickWatchEndsOnStop() {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder)
+        let search = pickEarly(engine, recorder, walkCandidate("aaaa"))
+        engine.stop()
+        assertWatchEnded(engine, search, "stop")
+    }
+
+    func testThePickWatchEndsOnTheViewersOwnPick() async {
+        let recorder = Recorder()
+        let probe = WalkProbe()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder, resolveDebrid: { [self] stream, _, _ in
+            probe.resolved.append(stream)
+            _ = probe.engine?.playSource(self.stream(url: "https://cdn.example.com/s1e1-other.mkv"))
+            return self.notCached
+        })
+        probe.engine = engine
+        let first = walkCandidate("aaaa")
+        let search = pickEarly(engine, recorder, first)
+        engine.playForTesting(first, nextCandidate: { [self] _, _, _ in self.walkCandidate("bbbb") })
+        await engine.resolveTaskForTesting?.value
+        XCTAssertEqual(probe.resolved.count, 1)
+        assertWatchEnded(engine, search, "manual pick")
     }
 }

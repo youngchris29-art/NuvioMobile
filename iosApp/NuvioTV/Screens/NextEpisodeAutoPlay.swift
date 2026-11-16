@@ -305,6 +305,17 @@ final class NextEpisodeEngine: ObservableObject {
     /// jump, `stop()`, the viewer's own source pick), so a resolve that lands after that is dropped
     /// without touching the card or starting a play.
     private var resolveWalkGeneration = 0
+    /// Stage review r5: after a pick that needs a resolve, the up-next search's watcher is kept
+    /// (moved here from `streamsWatcher`, so the source list may still take the flow) and feeds
+    /// `pickStreamsState` only, never a new selection. Add-ons that answer during the countdown or
+    /// a resolve then reach the fallback walk. Scoped by `searchGeneration`: the list taking the
+    /// flow (`loadSources`/`cancelSourceLoad` bump it) or a new search leaves it deaf, so results
+    /// for another episode or an older request never land. Ended with the walk (`endPickWatch`).
+    private var pickWatcher: FlowWatcher?
+    /// The pick watch is on (kept beside the watcher because the test seam's watcher is nil).
+    private var pickWatchActive = false
+    /// The latest results of the request that made the pick, while the pick watch is on.
+    private var pickStreamsState: StreamsUiState?
     /// Latest emission from `episodeStreamsState` (the exported StateFlow has no sync `.value`).
     private var latestStreamsState: StreamsUiState?
     /// The playing title's skip intervals (post-credits included), handed in by both player
@@ -680,6 +691,7 @@ final class NextEpisodeEngine: ObservableObject {
         if resolvingNext {
             print("[UpNext] source picked while the next episode resolved — Up Next stopped")
             endResolveWalk()
+            endPickWatch()
             cancelled = true
             immediatePlay = false
             phase = .hidden
@@ -800,6 +812,7 @@ final class NextEpisodeEngine: ObservableObject {
 
     private func tearDownSearch() {
         endResolveWalk()
+        endPickWatch()
         searchFromOfflineCard = false
         if phase == .offlineDeferred { phase = .hidden }
         searchGeneration += 1
@@ -1159,6 +1172,13 @@ final class NextEpisodeEngine: ObservableObject {
         #if DEBUG
         searchEmissionsAccepted += 1
         #endif
+        if pickWatchActive {
+            // Stage review r5: a stream is already picked; only remember what else arrived. A
+            // request's results only grow, so an empty state (a clear) never replaces them.
+            if !state.groups.isEmpty { pickStreamsState = state }
+            print("[UpNext] streams after the pick: groups=\(state.groups.count) loading=\(state.isAnyLoading)")
+            return
+        }
         latestStreamsState = state
         print("[UpNext] streams: groups=\(state.groups.count) playable=\(allStreams(state.groups).count) loading=\(state.isAnyLoading)")
         guard let settings else { return }
@@ -1280,11 +1300,17 @@ final class NextEpisodeEngine: ObservableObject {
 
     /// Tests only (W3): `play(stream:next:)` on the current next episode with an injected
     /// fallback pick (the live pick needs `settings`).
-    func playForTesting(_ stream: StreamItem, nextCandidate: @escaping (StreamItem, Set<String>) -> StreamItem?) {
+    /// Like `playNow`, it stops a countdown a `selectForTesting` started.
+    func playForTesting(_ stream: StreamItem,
+                        nextCandidate: @escaping (StreamItem, Set<String>, [AddonStreamGroup]) -> StreamItem?) {
         guard let next = nextVideo else { return }
+        countdownTask?.cancel()
         selectedStream = stream
         play(stream: stream, next: next, candidatePicker: nextCandidate)
     }
+
+    /// Tests only (stage review r5): the search watcher is still feeding the walk after the pick.
+    var pickWatchActiveForTesting: Bool { pickWatchActive }
 
     /// Tests only (W3): the resolve walk in flight.
     var resolveTaskForTesting: Task<Void, Never>? { resolveTask }
@@ -1671,13 +1697,31 @@ final class NextEpisodeEngine: ObservableObject {
         resolvingNext = false
     }
 
+    /// Stage review r5: stops the pick watch. The generation bump drops an emission already
+    /// queued for the old watcher, so it can never reach `handleStreams` once the pick is cleared.
+    private func endPickWatch() {
+        if pickWatchActive || pickWatcher != nil { searchGeneration += 1 }
+        pickWatcher?.cancel()
+        pickWatcher = nil
+        pickWatchActive = false
+        pickStreamsState = nil
+    }
+
     private func didSelect(_ stream: StreamItem) {
         guard selectedStream == nil, !cancelled, let next = nextVideo else { return }
         print("[UpNext] selected — \(stream.addonName): \(stream.streamLabel)")
         selectedStream = stream
         sourceName = stream.addonName
         timeoutTask?.cancel()
-        streamsWatcher?.cancel()
+        // Stage review r5: a pick that needs a resolve keeps listening to its own request, so a
+        // failed resolve walks on over what arrived since; a direct pick never walks.
+        if searchOwnsFlow, Self.directURL(stream) == nil {
+            pickWatcher = streamsWatcher
+            pickWatchActive = true
+            pickStreamsState = latestStreamsState
+        } else {
+            streamsWatcher?.cancel()
+        }
         streamsWatcher = nil
         searchOwnsFlow = false        // r2 P3: before `searchEnded()`, so its reload is not deferred
         searchEnded()
@@ -1710,6 +1754,7 @@ final class NextEpisodeEngine: ObservableObject {
 
     private func finishWithoutStream() {
         guard selectedStream == nil, !cancelled else { return }
+        endPickWatch()
         timeoutTask?.cancel()
         streamsWatcher?.cancel()
         streamsWatcher = nil
@@ -1747,10 +1792,14 @@ final class NextEpisodeEngine: ObservableObject {
     /// link's fault is remembered for eight hours (Q6, `Hooks.rememberFailedLink`, the first-play
     /// walk's rule: not while offline, not for a missing key or another provider's link). Only
     /// auto-picked streams come here; the in-player source list's own pick is `playSource`, which
-    /// never falls back. `candidatePicker` is a test seam; nil = `fallbackCandidate` over the
-    /// streams seen at selection.
+    /// never falls back. Each further pick reads the request's LATEST results (`pickStreamsState`,
+    /// stage review r5), so add-ons that answered after the first pick are in it. When nothing
+    /// playable is known the walk ends at once, even with add-ons still loading: the first pick
+    /// already had the search's deadlines, and the countdown and the resolves gave stragglers
+    /// more time on top. `candidatePicker` is a test seam (the failed source, the tried keys, the
+    /// groups the live pick would choose from); nil = `fallbackCandidate`.
     private func play(stream: StreamItem, next: MetaVideo,
-                      candidatePicker: ((StreamItem, Set<String>) -> StreamItem?)? = nil) {
+                      candidatePicker: ((StreamItem, Set<String>, [AddonStreamGroup]) -> StreamItem?)? = nil) {
         // A walk in flight owns the hand-off: nothing else starts a play until it ends.
         guard !resolvingNext else { return }
         if let url = Self.directURL(stream) {
@@ -1763,8 +1812,9 @@ final class NextEpisodeEngine: ObservableObject {
         resolvingNext = true
         resolveWalkGeneration += 1
         let generation = resolveWalkGeneration
-        let groups = latestStreamsState?.groups ?? []
-        let installed: Set<String> = latestStreamsState?.installedAddonIds ?? []
+        // Without a pick watch (a test seam, or a search that never owned the flow) the results
+        // seen at selection are all the walk has.
+        let selectionState = latestStreamsState
         let maxFurther = PlayerSourceFallback.shared.nextEpisodeMaxFurtherSources(settings: settings)
         let walk = PlayerSourceFallbackWalk(first: stream, maxSources: maxFurther)
         let resolve = hooks.resolveDebrid
@@ -1801,6 +1851,7 @@ final class NextEpisodeEngine: ObservableObject {
                 guard !self.cancelled, self.nextVideo?.id == next.id else {
                     print("[UpNext] next-episode resolve landed after the viewer moved on — dropped")
                     self.endResolveWalk()
+                    self.endPickWatch()
                     self.selectedStream = nil
                     if !self.cancelled { self.phase = .hidden }
                     return
@@ -1808,6 +1859,7 @@ final class NextEpisodeEngine: ObservableObject {
                 switch outcome {
                 case let .playable(resolved, url):
                     self.endResolveWalk()
+                    self.endPickWatch()
                     print("[UpNext] resolved — playing next episode (\(walk.attempts) further source(s) tried)")
                     self.phase = .hidden
                     self.supersedeSourceSwitch()
@@ -1821,12 +1873,18 @@ final class NextEpisodeEngine: ObservableObject {
                         print("[UpNext] failed link not remembered: offline")
                     }
                 }
-                let picker: (StreamItem, Set<String>) -> StreamItem? = candidatePicker ?? { failed, tried in
-                    self.fallbackCandidate(after: failed, tried: tried, groups: groups, installedAddonIds: installed)
+                // The request's latest results, read now: sources that arrived after the pick count.
+                let latest = self.pickStreamsState ?? selectionState
+                let groups: [AddonStreamGroup] = latest?.groups ?? []
+                let installed: Set<String> = latest?.installedAddonIds ?? []
+                let picker: (StreamItem, Set<String>) -> StreamItem? = { failed, tried in
+                    if let candidatePicker { return candidatePicker(failed, tried, groups) }
+                    return self.fallbackCandidate(after: failed, tried: tried, groups: groups, installedAddonIds: installed)
                 }
                 guard let further = walk.failed(nextCandidate: picker) else {
-                    print("[UpNext] no further source (\(walk.attempts)/\(maxFurther) tried)")
+                    print("[UpNext] no further source (\(walk.attempts)/\(maxFurther) tried, groups=\(groups.count))")
                     self.endResolveWalk()
+                    self.endPickWatch()
                     self.selectedStream = nil          // reopen finishWithoutStream's guard
                     self.finishWithoutStream()
                     return
