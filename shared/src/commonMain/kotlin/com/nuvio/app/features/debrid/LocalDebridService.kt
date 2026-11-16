@@ -122,7 +122,8 @@ internal object LocalDebridService {
 
 /**
  * Decodes a 2xx TorBox `checkcached` body. `null` means the answer could not be read (blank or
- * invalid JSON, no envelope object, `success: false`, a `data` of an unexpected shape): a failed
+ * invalid JSON, no envelope object, `success: false`, a `data` of an unexpected shape or with an
+ * entry that is not an item object): a failed
  * lookup, never a confirmed miss. A readable envelope whose `data` is null, `{}` or `[]` is a valid
  * "none of these are cached" answer and yields an empty map.
  */
@@ -137,7 +138,13 @@ internal fun parseTorboxCachedAnswer(rawBody: String): Map<String, LocalDebridCa
     return when (val data = envelope["data"]) {
         null, JsonNull -> emptyMap()
         // format=object: { "<hash>": { name, size, ... } }
-        is JsonObject -> data.entries.associate { (hash, value) -> hash.lowercase() to value.toCachedItem() }
+        // Any value that is not an item object makes the whole answer unreadable.
+        is JsonObject -> buildMap {
+            for ((hash, value) in data) {
+                if (value !is JsonObject) return null
+                put(hash.lowercase(), value.toCachedItem())
+            }
+        }
         // A list-shaped answer: [ { hash, name, size, ... } ]
         is JsonArray -> buildMap {
             for (entry in data) {

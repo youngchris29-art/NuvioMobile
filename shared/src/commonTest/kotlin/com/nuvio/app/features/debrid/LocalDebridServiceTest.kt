@@ -178,4 +178,37 @@ class LocalDebridServiceTest {
         val listAnswer = parseTorboxCachedAnswer("""{"success":true,"data":[{"hash":"ABC123","name":"exact.mkv","size":3}]}""")
         assertEquals(mapOf("abc123" to LocalDebridCachedItem(name = "exact.mkv", size = 3L)), listAnswer)
     }
+
+    @Test
+    fun `an answer with a null entry is a failed lookup`() {
+        assertNull(parseTorboxCachedAnswer("""{"success":true,"data":{"abc123":null}}"""))
+    }
+
+    @Test
+    fun `an answer with a primitive entry is a failed lookup`() {
+        assertNull(parseTorboxCachedAnswer("""{"success":true,"data":{"abc123":true}}"""))
+        assertNull(parseTorboxCachedAnswer("""{"success":true,"data":{"abc123":"cached"}}"""))
+    }
+
+    @Test
+    fun `an answer with an array entry is a failed lookup`() {
+        assertNull(parseTorboxCachedAnswer("""{"success":true,"data":{"abc123":[]}}"""))
+    }
+
+    @Test
+    fun `a mixed answer with one valid item and one null entry is a failed lookup`() {
+        assertNull(
+            parseTorboxCachedAnswer(
+                """{"success":true,"data":{"abc123":{"name":"exact.mkv","size":3},"$canonical":null}}""",
+            ),
+        )
+    }
+
+    @Test
+    fun `a normal object answer still maps after the entry check`() {
+        assertEquals(
+            mapOf(canonical to LocalDebridCachedItem(name = "aliased.mkv", size = 2L)),
+            parseTorboxCachedAnswer("""{"success":true,"data":{"$canonical":{"name":"aliased.mkv","size":2}}}"""),
+        )
+    }
 }
