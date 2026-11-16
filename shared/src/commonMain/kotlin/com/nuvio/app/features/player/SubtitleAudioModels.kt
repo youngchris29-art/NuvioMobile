@@ -46,12 +46,15 @@ data class SubtitleAutoSyncUiState(
     val errorMessage: String? = null,
 )
 
+internal const val SUBTITLE_OUTLINE_WIDTH_DEFAULT = 2
+internal val subtitleOutlineWidthRange: IntRange = 1..5
+
 data class SubtitleStyleState(
     val textColor: SubtitleColor = SubtitleColor.White,
     val backgroundColor: SubtitleColor = SubtitleColor.Transparent,
     val outlineColor: SubtitleColor = SubtitleColor.Black,
     val outlineEnabled: Boolean = true,
-    val outlineWidth: Int = 2,
+    val outlineWidth: Int = SUBTITLE_OUTLINE_WIDTH_DEFAULT,
     val bold: Boolean = false,
     val fontSizeSp: Int = 18,
     val bottomOffset: Int = 20,
