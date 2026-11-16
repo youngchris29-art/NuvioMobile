@@ -5670,7 +5670,7 @@ struct ContinueWatchingRow: View {
                         // swapping contents under the focused position — upstream's jump bug.
                         ForEach(entries, id: \.videoId) { entry in
                             let custom = customImageURL(entry)
-                            Button { onSelect(entry) } label: {
+                            Button { select(entry) } label: {
                                 LandscapeCard(
                                     title: entry.title,
                                     imageURL: custom ?? imageURL(entry),
@@ -5847,6 +5847,17 @@ struct ContinueWatchingRow: View {
 
     private func isEpisode(_ entry: WatchProgressEntry) -> Bool {
         TitleHoldMenuPolicy.isEpisode(season: entry.seasonNumber?.intValue, episode: entry.episodeNumber?.intValue)
+    }
+
+    /// W3 (upstream 37e8a5c0e): a plain select follows Continue Watching On Select (Play by
+    /// default). Cloud library items always play (`ContinueWatchingSelect`). The hold menu's Play
+    /// Manually / Start Over go straight to their callbacks and always play.
+    private func select(_ entry: WatchProgressEntry) {
+        if ContinueWatchingSelectRoute.opensDetails(entry) {
+            onGoToDetails(entry)
+        } else {
+            onSelect(entry)
+        }
     }
 
     private func perform(_ action: TitleHoldMenuPolicy.CWAction, on entry: WatchProgressEntry) {
