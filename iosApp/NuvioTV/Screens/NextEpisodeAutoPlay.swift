@@ -159,6 +159,24 @@ final class NextEpisodeEngine: ObservableObject {
             let details = try await MetaDetailsRepository.shared.fetchChecked(type: type, id: id, cacheResult: true)
             return details?.videos ?? []
         }
+        /// W3 (upstream ff7500fdd): the next episode's debrid resolve, the `@Throws` twin (a Kotlin
+        /// exception out of the plain suspend export aborts the process). Tests replace it.
+        var resolveDebrid: @MainActor (_ stream: StreamItem, _ season: KotlinInt?, _ episode: KotlinInt?) async throws -> DirectDebridPlayableResult = {
+            stream, season, episode in
+            try await DirectDebridPlaybackResolver.shared.resolveToPlayableStreamChecked(
+                stream: stream, season: season, episode: episode
+            )
+        }
+        /// W3 (Q6): a next-episode source whose resolve failed through the link's own fault is
+        /// remembered for eight hours (`RejectedStreamLinks`, keyed on the stream as listed, title =
+        /// the episode's video id) and its cached resolve dropped, exactly as the stream picker's
+        /// first-play walk does (`FirstPlayAutoPlayController.Dependencies.live`). Tests replace it.
+        var rememberFailedLink: @MainActor (_ listed: StreamItem, _ title: String, _ season: KotlinInt?, _ episode: KotlinInt?) -> Void = {
+            listed, title, season, episode in
+            RejectedStreamLinks.reject(listed.playbackStreamKey, title: title)
+            guard listed.isAddonDebridCandidate else { return }
+            DirectDebridPlaybackResolver.shared.invalidate(stream: listed, season: season, episode: episode)
+        }
 
         /// `nonisolated` so the init's default argument can be read off the main actor without a warning.
         nonisolated static var live: Hooks {
@@ -278,8 +296,15 @@ final class NextEpisodeEngine: ObservableObject {
     /// Last tick seen by `onProgress`, so a dismissal can tell whether it happened at the end.
     private var lastProgress: (positionSec: Double, durationSec: Double)?
     private var selectedStream: StreamItem?
-    /// A debrid resolve for the selected next-episode stream is in flight (play-time resolution).
+    /// A debrid resolve for the selected next-episode stream is in flight (play-time resolution),
+    /// or the W3 walk is moving on to a further source after one failed.
     private var resolvingNext = false
+    /// W3: the next-episode resolve walk in flight (`play(stream:next:)`), for tests to await.
+    private var resolveTask: Task<Void, Never>?
+    /// W3: identity of the walk in flight. `endResolveWalk()` bumps it (cancel, Menu, an episode
+    /// jump, `stop()`, the viewer's own source pick), so a resolve that lands after that is dropped
+    /// without touching the card or starting a play.
+    private var resolveWalkGeneration = 0
     /// Latest emission from `episodeStreamsState` (the exported StateFlow has no sync `.value`).
     private var latestStreamsState: StreamsUiState?
     /// The playing title's skip intervals (post-credits included), handed in by both player
@@ -648,6 +673,17 @@ final class NextEpisodeEngine: ObservableObject {
     /// link lands, ~1s for cached torrents, and a failed resolve leaves playback untouched).
     func playSource(_ stream: StreamItem) -> Bool {
         supersedeSourceSwitch()
+        // W3: the viewer picked a source for this episode while the next episode's auto pick was
+        // still resolving (or walking on to a further source): Up Next stops for this playback, as
+        // a seek back does, so the walk can never replace the viewer's own pick. Not `cancel()`:
+        // its teardown clears the shared streams flow the source list may be showing.
+        if resolvingNext {
+            print("[UpNext] source picked while the next episode resolved — Up Next stopped")
+            endResolveWalk()
+            cancelled = true
+            immediatePlay = false
+            phase = .hidden
+        }
         let generation = sourceSwitchGeneration
         let videoId = context.videoId
         let direct: String? = stream.playableDirectUrl
@@ -763,6 +799,7 @@ final class NextEpisodeEngine: ObservableObject {
     }
 
     private func tearDownSearch() {
+        endResolveWalk()
         searchFromOfflineCard = false
         if phase == .offlineDeferred { phase = .hidden }
         searchGeneration += 1
@@ -1240,6 +1277,20 @@ final class NextEpisodeEngine: ObservableObject {
 
     /// Tests only (BUG-229): the episode the card would offer.
     var nextVideoForTesting: MetaVideo? { nextVideo }
+
+    /// Tests only (W3): `play(stream:next:)` on the current next episode with an injected
+    /// fallback pick (the live pick needs `settings`).
+    func playForTesting(_ stream: StreamItem, nextCandidate: @escaping (StreamItem, Set<String>) -> StreamItem?) {
+        guard let next = nextVideo else { return }
+        selectedStream = stream
+        play(stream: stream, next: next, candidatePicker: nextCandidate)
+    }
+
+    /// Tests only (W3): the resolve walk in flight.
+    var resolveTaskForTesting: Task<Void, Never>? { resolveTask }
+
+    /// Tests only (W3): the card's source name while the walk retries.
+    var sourceNameForTesting: String? { sourceName }
     #endif
 
     private func handleStreams(_ state: StreamsUiState, settings: PlayerSettingsUiState) {
@@ -1530,8 +1581,8 @@ final class NextEpisodeEngine: ObservableObject {
     }
 
     private func select(from groups: [AddonStreamGroup], settings: PlayerSettingsUiState, bingeGroupOnly: Bool,
-                        installedAddonIds: Set<String>) -> StreamItem? {
-        let streams = selectableStreams(groups, settings: settings)
+                        installedAddonIds: Set<String>, excluding: ((StreamItem) -> Bool)? = nil) -> StreamItem? {
+        let streams = selectableStreams(groups, settings: settings).filter { !(excluding?($0) ?? false) }
         guard !streams.isEmpty else { return nil }
 
         // Mobile parity: in MANUAL mode, next-episode/binge settings force first-stream selection.
@@ -1585,6 +1636,39 @@ final class NextEpisodeEngine: ObservableObject {
             activeResolverProviderId: { let id: String? = debrid.activeResolverProviderId; return id }(),
             ranking: ranking
         )
+    }
+
+    /// W3 (upstream ff7500fdd, candidate rule of 8fba6c71e on the fork's selector): the source
+    /// auto selection would pick next, leaving out the sources already tried and other copies of
+    /// the torrent that failed from the same add-on. Same scope as the first pick (`select`, not
+    /// the binge-group filename / info-hash matches, as upstream's fallback). `selectableStreams`
+    /// also drops the links the walk has just remembered as failed.
+    private func fallbackCandidate(after failed: StreamItem, tried: Set<String>,
+                                   groups: [AddonStreamGroup], installedAddonIds: Set<String>) -> StreamItem? {
+        guard let settings else { return nil }
+        let failedAddonId: String = failed.addonId
+        let failedInfoHash: String? = failed.p2pInfoHash
+        return select(from: groups, settings: settings, bingeGroupOnly: false, installedAddonIds: installedAddonIds,
+                      excluding: { stream in
+                          PlayerSourceFallback.shared.isExcluded(stream: stream, triedKeys: tried,
+                                                                 failedAddonId: failedAddonId,
+                                                                 failedInfoHash: failedInfoHash)
+                      })
+    }
+
+    /// A stream's own playable link (no resolve needed), or nil.
+    nonisolated static func directURL(_ stream: StreamItem) -> URL? {
+        let direct: String? = stream.playableDirectUrl
+        guard let direct, !direct.isEmpty else { return nil }
+        return URL(string: direct)
+    }
+
+    /// W3: ends the next-episode resolve walk, if one is in flight. Its result is dropped when it
+    /// lands (generation), and `resolvingNext` opens at once, so a jump's own play is not refused
+    /// while the abandoned resolve is still out.
+    private func endResolveWalk() {
+        resolveWalkGeneration += 1
+        resolvingNext = false
     }
 
     private func didSelect(_ stream: StreamItem) {
@@ -1654,47 +1738,104 @@ final class NextEpisodeEngine: ObservableObject {
         }
     }
 
-    private func play(stream: StreamItem, next: MetaVideo) {
-        let urlString: String? = stream.playableDirectUrl
-        if let urlString, !urlString.isEmpty, let url = URL(string: urlString) {
+    /// Plays the auto-picked `stream` for `next`. A direct link plays at once. A debrid candidate
+    /// resolves first; when the resolve fails (not cached, expired, an error or a throw), the next
+    /// source auto selection would pick is tried, up to
+    /// `PlayerSourceFallback.nextEpisodeMaxFurtherSources` further ones (W3, upstream ff7500fdd,
+    /// decision B: 3). While it walks the card shows "Finding next episode…" with the source being
+    /// tried; only a walk with nothing left ends on the "no stream" card. A failure that is the
+    /// link's fault is remembered for eight hours (Q6, `Hooks.rememberFailedLink`, the first-play
+    /// walk's rule: not while offline, not for a missing key or another provider's link). Only
+    /// auto-picked streams come here; the in-player source list's own pick is `playSource`, which
+    /// never falls back. `candidatePicker` is a test seam; nil = `fallbackCandidate` over the
+    /// streams seen at selection.
+    private func play(stream: StreamItem, next: MetaVideo,
+                      candidatePicker: ((StreamItem, Set<String>) -> StreamItem?)? = nil) {
+        // A walk in flight owns the hand-off: nothing else starts a play until it ends.
+        guard !resolvingNext else { return }
+        if let url = Self.directURL(stream) {
             phase = .hidden
             supersedeSourceSwitch()
             onPlayNext(makeNextContext(stream: stream, url: url, next: next, listed: stream))
             return
         }
 
-        // Debrid stream — resolve to a direct link first (picker-click parity). The card keeps its
-        // last state during the ~1s resolve; failure resolves to the "no stream" card.
-        guard !resolvingNext else { return }
         resolvingNext = true
+        resolveWalkGeneration += 1
+        let generation = resolveWalkGeneration
+        let groups = latestStreamsState?.groups ?? []
+        let installed: Set<String> = latestStreamsState?.installedAddonIds ?? []
+        let maxFurther = PlayerSourceFallback.shared.nextEpisodeMaxFurtherSources(settings: settings)
+        let walk = PlayerSourceFallbackWalk(first: stream, maxSources: maxFurther)
+        let resolve = hooks.resolveDebrid
+        let title = Self.episodeVideoId(metaId: context.parentMetaId, episode: next)
         print("[UpNext] resolving debrid stream — \(stream.addonName)")
-        // The `@Throws` twin: a Kotlin exception out of the plain suspend export aborts the process.
-        Task { @MainActor [weak self] in
-            let result: DirectDebridPlayableResult?
-            do {
-                result = try await DirectDebridPlaybackResolver.shared.resolveToPlayableStreamChecked(
-                    stream: stream, season: next.season, episode: next.episode
-                )
-            } catch {
-                print("[UpNext] debrid resolve threw: \(error)")
-                result = nil
-            }
-            guard let self else { return }
-            self.resolvingNext = false
-            guard !self.cancelled else { return }
-            if let success = result as? DirectDebridPlayableResult.Success {
-                let resolved: String? = success.stream.playableDirectUrl
-                if let resolved, !resolved.isEmpty, let url = URL(string: resolved) {
-                    print("[UpNext] resolved — playing next episode")
-                    self.phase = .hidden
-                    self.supersedeSourceSwitch()
-                    self.onPlayNext(self.makeNextContext(stream: success.stream, url: url, next: next, listed: stream))
+        resolveTask = Task { @MainActor [weak self] in
+            while true {
+                let candidate = walk.candidate
+                let outcome: FirstPlayAutoPlayController.ResolveOutcome
+                if let url = NextEpisodeEngine.directURL(candidate) {
+                    // A further pick with its own link needs no resolve.
+                    outcome = .playable(candidate, url)
+                } else {
+                    do {
+                        let result = try await resolve(candidate, next.season, next.episode)
+                        outcome = FirstPlayAutoPlayController.outcome(from: result)
+                    } catch {
+                        // As the first-play walk: a network error thrown by the resolve is not the
+                        // link's fault and is not remembered.
+                        let kind = PlaybackFailureClassifier.fromNSError(error, origin: .remote).kind
+                        outcome = .failed(reason: "resolve threw (\(kind.rawValue)): \(error.localizedDescription)",
+                                          rejectsLink: kind.remembersLink)
+                    }
+                }
+                guard let self else { return }
+                // The walk was ended while this resolved (cancel, Menu, an episode jump, `stop()`,
+                // the viewer's own source pick): drop the result, touch nothing.
+                guard generation == self.resolveWalkGeneration else {
+                    print("[UpNext] next-episode resolve landed after the walk ended — dropped")
                     return
                 }
+                // The engine now targets another episode (or was cancelled without a teardown):
+                // drop the result and put the card down.
+                guard !self.cancelled, self.nextVideo?.id == next.id else {
+                    print("[UpNext] next-episode resolve landed after the viewer moved on — dropped")
+                    self.endResolveWalk()
+                    self.selectedStream = nil
+                    if !self.cancelled { self.phase = .hidden }
+                    return
+                }
+                switch outcome {
+                case let .playable(resolved, url):
+                    self.endResolveWalk()
+                    print("[UpNext] resolved — playing next episode (\(walk.attempts) further source(s) tried)")
+                    self.phase = .hidden
+                    self.supersedeSourceSwitch()
+                    self.onPlayNext(self.makeNextContext(stream: resolved, url: url, next: next, listed: candidate))
+                    return
+                case let .failed(reason, rejectsLink):
+                    print("[UpNext] source failed (\(reason)) — \(candidate.addonName)")
+                    if rejectsLink, self.hooks.networkSatisfied() {
+                        self.hooks.rememberFailedLink(candidate, title, next.season, next.episode)
+                    } else if rejectsLink {
+                        print("[UpNext] failed link not remembered: offline")
+                    }
+                }
+                let picker: (StreamItem, Set<String>) -> StreamItem? = candidatePicker ?? { failed, tried in
+                    self.fallbackCandidate(after: failed, tried: tried, groups: groups, installedAddonIds: installed)
+                }
+                guard let further = walk.failed(nextCandidate: picker) else {
+                    print("[UpNext] no further source (\(walk.attempts)/\(maxFurther) tried)")
+                    self.endResolveWalk()
+                    self.selectedStream = nil          // reopen finishWithoutStream's guard
+                    self.finishWithoutStream()
+                    return
+                }
+                print("[UpNext] falling back \(walk.attempts)/\(maxFurther) — \(further.addonName)")
+                if self.phase != .searching { self.phase = .searching }
+                self.sourceName = further.addonName
+                self.selectedStream = further
             }
-            print("[UpNext] debrid resolve failed — \(String(describing: result))")
-            self.selectedStream = nil          // reopen finishWithoutStream's guard
-            self.finishWithoutStream()
         }
     }
 

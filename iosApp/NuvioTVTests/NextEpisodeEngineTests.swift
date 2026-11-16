@@ -36,6 +36,10 @@ final class NextEpisodeEngineTests: XCTestCase {
         /// r2 P3: every flow operation in call order (`clear`, `watch`, `load:<videoId>`), so a
         /// test can see a clear that lands after the list's load (it cancels that load on device).
         var log: [String] = []
+        /// W3: every `onPlayNext` hand-off, and every `Hooks.rememberFailedLink` call as
+        /// `<streamKey>@<title>` (the spy keeps the live store and resolver cache untouched).
+        var played: [PlaybackContext] = []
+        var remembered: [String] = []
     }
 
     private func makeContext(episodes: [MetaVideo] = []) -> PlaybackContext {
@@ -210,7 +214,8 @@ final class NextEpisodeEngineTests: XCTestCase {
 
     private func makeEngine(trigger: NextEpisodeEngine.TriggerSettings, recorder: Recorder,
                             network: @escaping () -> Bool = { true },
-                            sourceListDeadline: (@MainActor () async -> Void)? = nil) -> NextEpisodeEngine {
+                            sourceListDeadline: (@MainActor () async -> Void)? = nil,
+                            resolveDebrid: (@MainActor (StreamItem, KotlinInt?, KotlinInt?) async throws -> DirectDebridPlayableResult)? = nil) -> NextEpisodeEngine {
         var hooks = NextEpisodeEngine.Hooks(loadStreams: { type, videoId, season, episode in
             recorder.calls.append(LoadCall(type: type, videoId: videoId, season: season?.value, episode: episode?.value))
             recorder.log.append("load:\(videoId)")
@@ -224,7 +229,11 @@ final class NextEpisodeEngineTests: XCTestCase {
             return nil
         })
         if let sourceListDeadline { hooks.sourceListDeadline = sourceListDeadline }
-        let engine = NextEpisodeEngine(context: makeContext(), onPlayNext: { _ in }, hooks: hooks)
+        if let resolveDebrid { hooks.resolveDebrid = resolveDebrid }
+        hooks.rememberFailedLink = { listed, title, _, _ in
+            recorder.remembered.append("\(listed.playbackStreamKey)@\(title)")
+        }
+        let engine = NextEpisodeEngine(context: makeContext(), onPlayNext: { recorder.played.append($0) }, hooks: hooks)
         engine.configureForTesting(nextVideo: episode(season: 1, episode: 2), trigger: trigger)
         return engine
     }
@@ -1523,5 +1532,262 @@ final class NextEpisodeEngineTests: XCTestCase {
         await fetch7?.value
         XCTAssertEqual(engine.episodes.count, 3)
         XCTAssertEqual(engine.nextVideoForTesting?.id, "tt1:1:3")
+    }
+
+    // MARK: - W3: next-episode source fallback (upstream ff7500fdd)
+
+    /// Holds the engine for a resolve hook that acts on it mid-walk, and counts the resolves.
+    private final class WalkProbe {
+        weak var engine: NextEpisodeEngine?
+        var resolved: [StreamItem] = []
+        var phases: [NextEpisodeEngine.Phase] = []
+        var sourceNames: [String?] = []
+    }
+
+    /// A debrid candidate (no URL: it resolves) with its own info hash and add-on name.
+    private func walkCandidate(_ hash: String, addon: String = "Add-on") -> StreamItem {
+        StreamItem(
+            name: "1080p", title: nil, description: nil, url: nil, infoHash: hash, fileIdx: nil,
+            externalUrl: nil, ytId: nil, sources: [], sourceName: nil, addonName: addon, addonId: "addon:\(addon)",
+            addonLogo: nil, streamType: nil,
+            behaviorHints: StreamBehaviorHints(bingeGroup: nil, notWebReady: false, videoHash: nil, videoSize: nil,
+                                               filename: nil, proxyHeaders: nil, audioDelayMs: nil),
+            clientResolve: nil, debridCacheStatus: nil, externalSubtitles: [], badges: [], debridResolved: false
+        )
+    }
+
+    private func success(_ url: String = "https://x/n.mkv") -> DirectDebridPlayableResult {
+        DirectDebridPlayableResult.Success(stream: stream(url: url))
+    }
+
+    private var notCached: DirectDebridPlayableResult { DirectDebridPlayableResult.NotCached.shared }
+
+    /// The title the walk remembers failures under: the next episode's video id.
+    private static let nextTitle = "tt1:1:2"
+
+    func testFailedDebridResolveFallsBackToTheNextSource() async {
+        let recorder = Recorder()
+        let probe = WalkProbe()
+        let first = walkCandidate("aaaa")
+        let second = walkCandidate("bbbb")
+        let engine = makeEngine(trigger: trigger(), recorder: recorder, resolveDebrid: { [self] stream, _, _ in
+            probe.resolved.append(stream)
+            return probe.resolved.count == 1 ? self.notCached : self.success()
+        })
+        engine.playForTesting(first, nextCandidate: { _, _ in second })
+        await engine.resolveTaskForTesting?.value
+
+        XCTAssertEqual(probe.resolved.map(\.playbackStreamKey), [first.playbackStreamKey, second.playbackStreamKey])
+        XCTAssertEqual(recorder.played.count, 1, "one hand-off, never two")
+        XCTAssertEqual(recorder.played.first?.listedStream?.playbackStreamKey, second.playbackStreamKey,
+                       "the failure memory keys on the source that played, as listed")
+        XCTAssertEqual(recorder.played.first?.url.absoluteString, "https://x/n.mkv")
+        XCTAssertEqual(engine.phase, .hidden)
+        XCTAssertEqual(recorder.remembered, ["\(first.playbackStreamKey)@\(Self.nextTitle)"],
+                       "Q6: the source that failed is remembered for the episode, like the first-play walk")
+    }
+
+    func testFallbackStopsAfterThreeFurtherSources() async {
+        let recorder = Recorder()
+        let probe = WalkProbe()
+        var offered = 0
+        let engine = makeEngine(trigger: trigger(), recorder: recorder, resolveDebrid: { [self] stream, _, _ in
+            probe.resolved.append(stream)
+            return self.notCached
+        })
+        engine.playForTesting(walkCandidate("first"), nextCandidate: { [self] _, _ in
+            offered += 1
+            return self.walkCandidate("fresh\(offered)")
+        })
+        await engine.resolveTaskForTesting?.value
+
+        XCTAssertEqual(probe.resolved.count, 1 + Int(PlayerSourceFallback.shared.NEXT_EPISODE_MAX_FURTHER_SOURCES))
+        XCTAssertEqual(probe.resolved.count, 4, "the first pick and three further sources")
+        XCTAssertEqual(offered, 3, "the picker is not asked once the limit is reached")
+        XCTAssertTrue(recorder.played.isEmpty)
+        XCTAssertEqual(engine.phase, .noStream)
+        XCTAssertEqual(recorder.remembered.count, 4)
+    }
+
+    func testAWalkWithNoCandidateEndsOnTheNoStreamCard() async {
+        let recorder = Recorder()
+        let probe = WalkProbe()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder, resolveDebrid: { [self] stream, _, _ in
+            probe.resolved.append(stream)
+            return self.notCached
+        })
+        engine.playForTesting(walkCandidate("aaaa"), nextCandidate: { _, _ in nil })
+        await engine.resolveTaskForTesting?.value
+
+        XCTAssertEqual(probe.resolved.count, 1)
+        XCTAssertTrue(recorder.played.isEmpty)
+        XCTAssertEqual(engine.phase, .noStream)
+        // The no-stream exit reopened selection: a later pick is taken (it starts the countdown).
+        let retry = walkCandidate("cccc", addon: "Retry")
+        engine.selectForTesting(retry)
+        XCTAssertEqual(engine.sourceNameForTesting, "Retry", "a later press can still pick and play")
+        engine.cancel()
+    }
+
+    func testRetryShowsTheSearchingCard() async {
+        let recorder = Recorder()
+        let probe = WalkProbe()
+        let second = walkCandidate("bbbb", addon: "Second")
+        let engine = makeEngine(trigger: trigger(), recorder: recorder, resolveDebrid: { [self] stream, _, _ in
+            probe.resolved.append(stream)
+            if let engine = probe.engine {
+                probe.phases.append(engine.phase)
+                probe.sourceNames.append(engine.sourceNameForTesting)
+            }
+            return probe.resolved.count == 1 ? self.notCached : self.success()
+        })
+        probe.engine = engine
+        engine.playForTesting(walkCandidate("aaaa", addon: "First"), nextCandidate: { _, _ in second })
+        await engine.resolveTaskForTesting?.value
+
+        XCTAssertEqual(probe.phases.count, 2)
+        XCTAssertEqual(probe.phases.last, NextEpisodeEngine.Phase.searching, "\"Finding next episode…\" while the next source resolves")
+        XCTAssertEqual(probe.sourceNames.last, "Second")
+        XCTAssertEqual(recorder.played.count, 1)
+        XCTAssertEqual(engine.phase, .hidden)
+    }
+
+    func testCancelDuringTheResolveEndsTheWalk() async {
+        let recorder = Recorder()
+        let probe = WalkProbe()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder, resolveDebrid: { [self] stream, _, _ in
+            probe.resolved.append(stream)
+            probe.engine?.cancel()
+            return self.notCached
+        })
+        probe.engine = engine
+        engine.forceSearchingForTesting()          // so `cancel()` is not a no-op
+        engine.playForTesting(walkCandidate("aaaa"), nextCandidate: { [self] _, _ in self.walkCandidate("bbbb") })
+        await engine.resolveTaskForTesting?.value
+
+        XCTAssertEqual(probe.resolved.count, 1, "no further source after a cancel")
+        XCTAssertTrue(recorder.played.isEmpty)
+        XCTAssertEqual(engine.phase, .hidden)
+        XCTAssertTrue(recorder.remembered.isEmpty, "a result that lands after the cancel is dropped whole")
+    }
+
+    func testAResultForAnotherEpisodeIsDropped() async {
+        let recorder = Recorder()
+        let probe = WalkProbe()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder, resolveDebrid: { [self] stream, _, _ in
+            probe.resolved.append(stream)
+            probe.engine?.configureForTesting(nextVideo: self.episode(season: 1, episode: 3), trigger: self.trigger())
+            return self.success()
+        })
+        probe.engine = engine
+        engine.playForTesting(walkCandidate("aaaa"), nextCandidate: { [self] _, _ in self.walkCandidate("bbbb") })
+        await engine.resolveTaskForTesting?.value
+
+        XCTAssertEqual(probe.resolved.count, 1)
+        XCTAssertTrue(recorder.played.isEmpty, "the episode it resolved for is no longer the next one")
+    }
+
+    func testAThrowCountsAsAFailure() async {
+        let recorder = Recorder()
+        let probe = WalkProbe()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder, resolveDebrid: { [self] stream, _, _ in
+            probe.resolved.append(stream)
+            if probe.resolved.count == 1 { throw NSError(domain: "NextEpisodeEngineTests", code: 1) }
+            return self.success()
+        })
+        engine.playForTesting(walkCandidate("aaaa"), nextCandidate: { [self] _, _ in self.walkCandidate("bbbb") })
+        await engine.resolveTaskForTesting?.value
+
+        XCTAssertEqual(probe.resolved.count, 2)
+        XCTAssertEqual(recorder.played.count, 1)
+    }
+
+    func testAFailureWhileOfflineIsNotRemembered() async {
+        let recorder = Recorder()
+        let probe = WalkProbe()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder, network: { false },
+                                resolveDebrid: { [self] stream, _, _ in
+            probe.resolved.append(stream)
+            return probe.resolved.count == 1 ? self.notCached : self.success()
+        })
+        engine.playForTesting(walkCandidate("aaaa"), nextCandidate: { [self] _, _ in self.walkCandidate("bbbb") })
+        await engine.resolveTaskForTesting?.value
+
+        XCTAssertEqual(recorder.played.count, 1, "offline still walks on")
+        XCTAssertTrue(recorder.remembered.isEmpty, "an offline failure is not the link's fault")
+    }
+
+    func testAMissingKeyMovesOnWithoutRememberingTheLink() async {
+        let recorder = Recorder()
+        let probe = WalkProbe()
+        let first = walkCandidate("aaaa")
+        let second = walkCandidate("bbbb")
+        let engine = makeEngine(trigger: trigger(), recorder: recorder, resolveDebrid: { [self] stream, _, _ in
+            probe.resolved.append(stream)
+            return probe.resolved.count == 1 ? DirectDebridPlayableResult.MissingApiKey.shared as DirectDebridPlayableResult : self.notCached
+        })
+        engine.playForTesting(first, nextCandidate: { _, tried in
+            tried.contains(second.playerSourceIdentityKey() ?? "") ? nil : second
+        })
+        await engine.resolveTaskForTesting?.value
+
+        XCTAssertEqual(probe.resolved.count, 2)
+        XCTAssertEqual(recorder.remembered, ["\(second.playbackStreamKey)@\(Self.nextTitle)"],
+                       "only the not-cached link is remembered, as in the first-play walk")
+        XCTAssertEqual(engine.phase, .noStream)
+    }
+
+    func testTheWalkHandsThePickerEveryTriedKey() async {
+        let recorder = Recorder()
+        let first = walkCandidate("aaaa")
+        let second = walkCandidate("bbbb")
+        var seen: [Set<String>] = []
+        let engine = makeEngine(trigger: trigger(), recorder: recorder, resolveDebrid: { [self] _, _, _ in
+            self.notCached
+        })
+        engine.playForTesting(first, nextCandidate: { _, tried in
+            seen.append(tried)
+            return seen.count == 1 ? second : nil
+        })
+        await engine.resolveTaskForTesting?.value
+
+        let keys = [first, second].compactMap { $0.playerSourceIdentityKey() }
+        XCTAssertEqual(seen, [Set(keys.prefix(1)), Set(keys)])
+    }
+
+    func testAFurtherSourceWithItsOwnLinkPlaysWithoutAResolve() async {
+        let recorder = Recorder()
+        let probe = WalkProbe()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder, resolveDebrid: { [self] stream, _, _ in
+            probe.resolved.append(stream)
+            return self.notCached
+        })
+        let direct = stream(url: "https://cdn.example.com/s1e2.mkv")
+        engine.playForTesting(walkCandidate("aaaa"), nextCandidate: { _, _ in direct })
+        await engine.resolveTaskForTesting?.value
+
+        XCTAssertEqual(probe.resolved.count, 1)
+        XCTAssertEqual(recorder.played.count, 1)
+        XCTAssertEqual(recorder.played.first?.url.absoluteString, "https://cdn.example.com/s1e2.mkv")
+    }
+
+    func testTheViewersOwnSourcePickStopsTheWalk() async {
+        let recorder = Recorder()
+        let probe = WalkProbe()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder, resolveDebrid: { [self] stream, _, _ in
+            probe.resolved.append(stream)
+            // The viewer picks a direct source for the current episode while this resolves.
+            _ = probe.engine?.playSource(self.stream(url: "https://cdn.example.com/s1e1-other.mkv"))
+            return self.success()
+        })
+        probe.engine = engine
+        engine.forceSearchingForTesting()
+        engine.playForTesting(walkCandidate("aaaa"), nextCandidate: { [self] _, _ in self.walkCandidate("bbbb") })
+        await engine.resolveTaskForTesting?.value
+
+        XCTAssertEqual(probe.resolved.count, 1)
+        XCTAssertEqual(recorder.played.count, 1, "only the viewer's own pick is handed over")
+        XCTAssertEqual(recorder.played.first?.videoId, "tt1:1:1", "the current episode, not the next")
+        XCTAssertEqual(engine.phase, .hidden)
     }
 }
