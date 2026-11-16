@@ -15,7 +15,10 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotSame
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.hours
 
 /**
  * Upstream NuvioTV facf25ec3 at the fork's ports: scrobbles and history writes reach MDBList in
@@ -544,6 +547,103 @@ class MdbListEpisodeRemapAdaptersTest {
         val remappedSeventh = remapped.single { it.trackingEpisodeKey == "mdblist:tt1:2:7" }
         assertEquals(2 to 1, remappedSeventh.seasonNumber to remappedSeventh.episodeNumber)
         assertEquals(listOf(remappedSeventh), provider.prepareNextUpProgressEntries(listOf(remappedSeventh), "tt1"))
+    }
+
+    // ── Upstream 9c2d09027: lists reused until a remap changes them ─────────────────────────
+
+    @Test
+    fun `remapped lists are built once per mapping change`() = runTest {
+        // Upstream 9c2d09027's test at the fork's constructors (no progressProvider helper here).
+        val h = MdbListSyncTestHarness(backgroundScope)
+        h.seed(h.snapshot().copy(watched = listOf(mdbListTestEpisode(1, 35))))
+        h.repository.ensureLoaded()
+        val mappings = splitAnimeMappings()
+        val progress = MdbListTrackingProgressProvider(h.repository, MdbListScrobbleService(h.http.api, h.repository), mappings, h.http.store, h.activeProfile, {})
+        val watched = MdbListWatchedSyncAdapter(h.repository, MdbListHistoryService(h.http.api, h.repository), mappings, h.http.store, h.activeProfile)
+        val entriesBefore = progress.snapshot().entries
+        assertSame(entriesBefore, progress.snapshot().entries)
+        assertSame(watched.pullExtraWatchedKeys(1), watched.pullExtraWatchedKeys(1))
+
+        progress.refreshEpisodeProgress("tt1", forceRefresh = false)
+
+        val entriesAfter = progress.snapshot().entries
+        assertNotSame(entriesBefore, entriesAfter)
+        assertEquals(2 to 11, entriesAfter.single().let { it.seasonNumber to it.episodeNumber })
+        assertSame(entriesAfter, progress.snapshot().entries)
+        assertSame(watched.pull(1, 100), watched.pull(1, 100))
+        assertSame(watched.pullExtraWatchedKeys(1), watched.pullExtraWatchedKeys(1))
+        assertEquals(listOf(2 to 11), watched.pull(1, 100).map { it.season!! to it.episode!! })
+    }
+
+    @Test
+    fun `remapped lists are rebuilt when the add-on source generation moves`() = runTest {
+        // Fork: entries retire on a generation change without a write to the cache; the lists must follow.
+        val h = MdbListSyncTestHarness(backgroundScope)
+        h.seed(h.snapshot().copy(watched = listOf(mdbListTestEpisode(1, 35))))
+        h.repository.ensureLoaded()
+        val addon = MdbListTestAddonEpisodes(seasons = listOf(24, 24))
+        val mappings = mdbListTestEpisodeMappings(addon, MdbListTestTmdbSeasons(seasons = listOf(48), lookup = mapOf("tt1" to 1)))
+        val progress = MdbListTrackingProgressProvider(h.repository, MdbListScrobbleService(h.http.api, h.repository), mappings, h.http.store, h.activeProfile, {})
+        val watched = MdbListWatchedSyncAdapter(h.repository, MdbListHistoryService(h.http.api, h.repository), mappings, h.http.store, h.activeProfile)
+        progress.refreshEpisodeProgress("tt1", forceRefresh = false)
+        val remapped = progress.snapshot().entries
+        assertEquals(2 to 11, remapped.single().let { it.seasonNumber to it.episodeNumber })
+        assertTrue(watchedItemKey("series", "tt1", 2, 11) in watched.pullExtraWatchedKeys(1))
+
+        addon.generation = 1
+
+        val raw = progress.snapshot().entries
+        assertNotSame(remapped, raw)
+        assertEquals(1 to 35, raw.single().let { it.seasonNumber to it.episodeNumber })
+        val keys = watched.pullExtraWatchedKeys(1)
+        assertTrue(watchedItemKey("series", "tt1", 1, 35) in keys)
+        assertFalse(watchedItemKey("series", "tt1", 2, 11) in keys)
+    }
+
+    @Test
+    fun `a show that keeps its numbers does not tick changes`() = runTest {
+        val h = MdbListSyncTestHarness(backgroundScope)
+        h.seed(h.snapshot().copy(watched = listOf(mdbListTestEpisode(1, 5))))
+        h.repository.ensureLoaded()
+        val mappings = mdbListTestEpisodeMappings(
+            MdbListTestAddonEpisodes(seasons = listOf(24, 24)),
+            MdbListTestTmdbSeasons(seasons = listOf(24, 24), lookup = mapOf("tt1" to 1)),
+        )
+        val provider = MdbListTrackingProgressProvider(h.repository, MdbListScrobbleService(h.http.api, h.repository), mappings, h.http.store, h.activeProfile, {})
+        val before = provider.snapshot().entries
+        var ticks = 0
+        backgroundScope.launch { provider.changes.drop(1).collect { ticks++ } }
+        runCurrent()
+        provider.refreshEpisodeProgress("tt1", forceRefresh = false)
+        runCurrent()
+        assertFalse(mappings.cached("tt1")!!.remaps)
+        assertEquals(0, ticks)
+        assertSame(before, provider.snapshot().entries)
+    }
+
+    @Test
+    fun `a snapshot served from the row cache still reloads an aged mapping`() = runTest {
+        // Invariant: the background resolve runs on every snapshot, not only when the rows are built (Codex r3 #4).
+        val h = MdbListSyncTestHarness(backgroundScope)
+        h.seed(h.snapshot().copy(watched = listOf(mdbListTestEpisode(1, 35))))
+        h.repository.ensureLoaded()
+        val clock = kotlin.time.TestTimeSource()
+        val addon = MdbListTestAddonEpisodes(seasons = listOf(24, 24))
+        val mappings = mdbListTestEpisodeMappings(addon, MdbListTestTmdbSeasons(seasons = listOf(48), lookup = mapOf("tt1" to 1)), backgroundScope, clock)
+        val provider = MdbListTrackingProgressProvider(h.repository, MdbListScrobbleService(h.http.api, h.repository), mappings, h.http.store, h.activeProfile, {})
+        provider.snapshot()
+        runCurrent()
+        assertEquals(1, addon.calls.size)
+        val remapped = provider.snapshot().entries
+        assertEquals(2 to 11, remapped.single().let { it.seasonNumber to it.episodeNumber })
+        assertSame(remapped, provider.snapshot().entries)
+        runCurrent()
+        assertEquals(1, addon.calls.size, "a fresh mapping is not reloaded")
+
+        clock += 7.hours
+        assertSame(remapped, provider.snapshot().entries)
+        runCurrent()
+        assertEquals(2, addon.calls.size, "the aged mapping reloads although the rows came from the cache")
     }
 
     private fun episodeReference(season: Int, episode: Int) = buildTrackingMediaReference(

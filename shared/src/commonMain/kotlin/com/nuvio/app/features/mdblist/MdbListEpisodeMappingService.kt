@@ -22,6 +22,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -30,6 +31,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import kotlin.concurrent.Volatile
 import kotlin.math.abs
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.hours
@@ -47,8 +49,9 @@ import kotlin.time.TimeSource
  * numbering is remapped ([TraktEpisodeMappingService]'s remap functions do the matching).
  *
  * Fork shape: the tvOS progress provider hands out a plain snapshot, not a flow, so a mapping that
- * is not cached yet is resolved in the background on [scope] and [changes] ticks once it is, which
- * makes the repositories read the snapshot again. Explicit readers and every write resolve inline.
+ * is not cached yet is resolved in the background on [scope] and [changes] ticks once it is, when
+ * the mapping moves episodes, which makes the repositories read the snapshot again. Explicit
+ * readers and every write resolve inline.
  *
  * A resolved mapping is filed under every alias of the show MDBList knows (Codex r1 #8) and tagged
  * with the add-on source's generation, so a list from a previous add-on set or metadata language
@@ -92,8 +95,55 @@ internal class MdbListEpisodeMappingService(
     private fun Resolved.servesNow(key: String): Boolean =
         reloadFailedAt.value[key]?.let { it.elapsedNow() < RELOAD_RETRY_INTERVAL } ?: isFresh()
 
-    /** Emits whenever a show's mapping resolves or the cache is cleared. */
-    val changes: Flow<Unit> = resolved.map { }
+    /** A [remapped] answer and the state it was derived from; immutable, swapped atomically. */
+    private class RemapView(
+        val resolved: Map<String, Resolved>,
+        val generation: Any,
+        val epoch: Long,
+        val mappings: Map<String, MdbListEpisodeMapping>,
+    )
+
+    @Volatile
+    private var remapView: RemapView? = null
+
+    /**
+     * Every usable mapping that moves episodes ([MdbListEpisodeMapping.remaps]), by every content
+     * id it is filed under: what [cached] would answer for those ids, minus the mappings that leave
+     * the numbers alone. The same map instance comes back until a remapping mapping is added,
+     * replaced or dropped, or the add-on generation or the epoch moves, so readers can key the
+     * lists they derive on its identity (upstream 9c2d09027's `remapped` flow; a function here
+     * because a generation change retires entries without writing [resolved]). K/N-safe: reads
+     * immutable maps and swaps one volatile reference, never mutates a shared map.
+     */
+    fun remapped(): Map<String, MdbListEpisodeMapping> {
+        val current = resolved.value
+        val generation = addonEpisodes.generation()
+        val currentEpoch = epoch.value
+        val last = remapView
+        if (last != null && last.resolved === current && last.generation == generation && last.epoch == currentEpoch) {
+            return last.mappings
+        }
+        val computed = HashMap<String, MdbListEpisodeMapping>()
+        for ((key, entry) in current) {
+            if (entry.generation == generation && entry.epoch == currentEpoch && entry.mapping.remaps) {
+                computed[key] = entry.mapping
+            }
+        }
+        // A resolve that changed nothing a reader sees (a show that keeps its numbers, a reload
+        // returning the same mapping object) keeps the old instance, so no list is rebuilt.
+        val mappings: Map<String, MdbListEpisodeMapping> = if (last != null && last.mappings == computed) last.mappings else computed
+        remapView = RemapView(current, generation, currentEpoch, mappings)
+        return mappings
+    }
+
+    /**
+     * Emits whenever [remapped] changes: a mapping that moves episodes lands, is replaced or goes
+     * (clearCache included). A show resolving to "same numbers" does not tick it (upstream
+     * 9c2d09027). [remapped] hands back the same instance while its content is equal, so identity
+     * is the comparison. A generation change alone does not tick (it writes nothing to [resolved]);
+     * readers see the retired entries gone on their next read.
+     */
+    val changes: Flow<Unit> = resolved.map { remapped() }.distinctUntilChanged { old, new -> old === new }.map { }
 
     /**
      * The mapping for [contentId] when it was already resolved, without touching the network. A

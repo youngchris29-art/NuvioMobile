@@ -65,6 +65,9 @@ class MdbListEpisodeMappingServiceTest {
         assertEquals(35, mapped!!.episode?.number)
         assertEquals("tt1:2:11", mapped!!.catalog?.videoId)
         assertTrue(service.cached("tt1")!!.remaps)
+        // Upstream 9c2d09027: the remapping view carries it, and is the same instance until it changes.
+        assertSame(service.cached("tt1"), service.remapped()["tt1"])
+        assertSame(service.remapped(), service.remapped())
         // The TMDB id came from the imdb lookup, once.
         assertEquals(listOf("find:tt1:", "counts:1", "season:1:1"), tmdb.calls)
     }
@@ -86,6 +89,7 @@ class MdbListEpisodeMappingServiceTest {
         val reference = episodeReference(2, 11)
         assertSame(reference, service.toMdbListNumbering(reference, mediaIndex = null))
         assertFalse(service.cached("tt1")!!.remaps)
+        assertTrue(service.remapped().isEmpty())
         assertEquals(listOf("find:tt1:", "counts:1"), tmdb.calls)
     }
 
@@ -179,14 +183,17 @@ class MdbListEpisodeMappingServiceTest {
         val addon = MdbListTestAddonEpisodes(seasons = listOf(24, 24))
         val service = mdbListTestEpisodeMappings(addon, MdbListTestTmdbSeasons(seasons = listOf(48)))
         assertTrue(service.resolve("tt1", 1)!!.remaps)
+        assertTrue("tt1" in service.remapped())
         addon.generation = 1
         assertNull(service.cached("tt1"))
+        assertTrue(service.remapped().isEmpty())
         addon.seasons = listOf(48)
         assertFalse(service.resolve("tt1", 1)!!.remaps)
         assertEquals(2, addon.calls.size)
 
         service.clearCache()
         assertNull(service.cached("tt1"))
+        assertTrue(service.remapped().isEmpty())
     }
 
     @Test

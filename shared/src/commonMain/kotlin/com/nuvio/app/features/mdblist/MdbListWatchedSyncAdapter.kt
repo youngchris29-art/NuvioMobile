@@ -30,6 +30,8 @@ class MdbListWatchedSyncAdapter internal constructor(
 ) : TrackingWatchedProvider {
     private val log = Logger.withTag("MdbListWatched")
     override val providerId = TrackingProviderId.MDBLIST
+    private val watchedItemsCache = MdbListRemapCache<List<WatchedItem>>()
+    private val watchedKeysCache = MdbListRemapCache<Set<String>>()
     private val changes = combine(sync.state, auth.state, activeProfile, episodeMappings.changes) { _, _, _, _ -> Unit }
 
     override suspend fun pull(profileId: Int, pageSize: Int): List<WatchedItem> {
@@ -38,17 +40,32 @@ class MdbListWatchedSyncAdapter internal constructor(
         if (sync.currentScope() != scope) throw CancellationException("MDBList account changed")
         val state = sync.state.value
         if (!state.hasLoaded && state.error != null) throw MdbListApiException(code = "sync_unavailable")
-        return sync.currentProjection().watchedItemsInAddonNumbering(episodeMappings::cached)
+        // Upstream 9c2d09027: the list is rebuilt only when the projection or a remap changed.
+        val projection = sync.currentProjection()
+        val mappings = episodeMappings.remapped()
+        if (mappings.isEmpty()) return projection.watchedItems
+        return watchedItemsCache.get(projection, mappings) {
+            projection.watchedItemsInAddonNumbering { contentId -> mappings[contentId.trim()] }
+        }
     }
 
     override suspend fun pullExtraWatchedKeys(profileId: Int): Set<String> {
         scope(profileId)
-        return sync.currentProjection().watchedKeysInAddonNumbering(episodeMappings::cached)
+        return currentWatchedKeys()
     }
 
     override fun observeExtraWatchedKeys(profileId: Int) = combine(changes, activeProfile) { _, active ->
-        if (profileId == active) sync.currentProjection().watchedKeysInAddonNumbering(episodeMappings::cached) else emptySet()
+        if (profileId == active) currentWatchedKeys() else emptySet()
     }.distinctUntilChanged()
+
+    private fun currentWatchedKeys(): Set<String> {
+        val projection = sync.currentProjection()
+        val mappings = episodeMappings.remapped()
+        if (mappings.isEmpty()) return projection.watchedKeys
+        return watchedKeysCache.get(projection, mappings) {
+            projection.watchedKeysInAddonNumbering { contentId -> mappings[contentId.trim()] }
+        }
+    }
 
     // Fork: whole-series guard on both sides (upstream MDBList has none). A mark without episode
     // coordinates becomes a bare `shows` entry (MdbListMutationTarget → SHOW), which MDBList answers

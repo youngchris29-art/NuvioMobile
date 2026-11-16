@@ -20,6 +20,7 @@ class MdbListTrackingProgressProvider internal constructor(
     override val providerId = TrackingProviderId.MDBLIST
     override val changes = combine(sync.state, auth.state, activeProfile, episodeMappings.changes) { _, _, _, _ -> Unit }
     override val ownsCompletedHistoryProjection = true
+    private val snapshotEntries = MdbListRemapCache<List<WatchProgressEntry>>()
     override fun showIdSiblings() = sync.currentProjection().showIdSiblings
 
     override fun ensureLoaded() = ensureAccountLoaded()
@@ -32,8 +33,13 @@ class MdbListTrackingProgressProvider internal constructor(
     override fun snapshot(): TrackingProgressSnapshot {
         val projection = sync.currentProjection()
         val state = sync.state.value.takeIf { it.scope == runCatching { sync.currentScope() }.getOrNull() }
+        resolveMappingsLater(projection)
+        // Upstream 9c2d09027: the rows are rebuilt only when the projection or a remap changed.
+        val mappings = episodeMappings.remapped()
         return TrackingProgressSnapshot(
-            entries = projection.entriesInAddonNumbering { contentId -> cachedMappingOrResolveLater(projection, contentId) },
+            entries = snapshotEntries.get(projection, mappings) {
+                projection.entriesInAddonNumbering { contentId -> mappings[contentId.trim()] }
+            },
             hiddenContentIds = projection.hiddenContentIds,
             hasLoadedRemoteProgress = state?.hasLoaded == true,
             errorMessage = state?.error?.localizedMdbListMessage(),
@@ -108,16 +114,20 @@ class MdbListTrackingProgressProvider internal constructor(
     }
 
     /**
-     * The show's cached mapping for this snapshot, scheduling a background resolve for shows that
-     * have none or whose mapping has aged (the service's own freshness check keeps that cheap, so an
-     * airing show's new season is picked up, Codex r3 #4). [changes] ticks when one lands.
+     * Schedules a background resolve for every show with an episode row in this snapshot that has
+     * no mapping yet or whose mapping has aged (the service's own freshness check keeps that cheap,
+     * so an airing show's new season is picked up, Codex r3 #4). [changes] ticks when one lands
+     * that moves episodes. Runs on every snapshot, outside the row cache, which only skips the build.
      */
-    private fun cachedMappingOrResolveLater(projection: MdbListProgressProjection, contentId: String): MdbListEpisodeMapping? {
-        val cached = episodeMappings.cached(contentId)
-        if (parseTrackingExternalIds(contentId).toMdbListIds() != null) {
+    private fun resolveMappingsLater(projection: MdbListProgressProjection) {
+        val seen = HashSet<String>()
+        for (entry in projection.progress.asSequence() + projection.nextUpSeeds.asSequence()) {
+            if (entry.seasonNumber == null || entry.episodeNumber == null) continue
+            val contentId = entry.parentMetaId
+            if (!seen.add(contentId)) continue
+            if (parseTrackingExternalIds(contentId).toMdbListIds() == null) continue
             episodeMappings.resolveInBackground(contentId, projection.tmdbShowId(contentId), projection.showAliases(contentId))
         }
-        return cached
     }
 
 }
