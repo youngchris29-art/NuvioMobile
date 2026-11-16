@@ -114,6 +114,13 @@ final class SettingsViewModel: ObservableObject {
     /// search ahead of the card's display threshold (`PlayerSettingsUiState.preloadNextEpisodeSources`).
     /// Same watcher.
     @Published private(set) var preloadNextEpisodeSources = false
+    /// Settings → Player: the chapter name above the scrub preview
+    /// (`PlayerSettingsUiState.chapterTitleEnabled`, shared and synced; default on). Same watcher.
+    @Published private(set) var chapterTitleEnabled = true
+    /// Settings → Home Screen: Continue Watching On Select, a `ContinueWatchingSelectRoute.keys` key
+    /// (`ContinueWatchingPreferencesUiState.clickAction`, synced in the Continue Watching blob;
+    /// default "stream" = Play; a stored Details for Upcoming reads as "stream").
+    @Published private(set) var continueWatchingClickAction = "stream"
     /// FEAT-88 (#15): Up Next's source choice, shared settings that had no tvOS row
     /// (`PlayerSettingsUiState.streamAutoPlayNextEpisodeEnabled` / `streamAutoPlayPreferBingeGroup`
     /// / `streamAutoPlayNextEpisodeFallbackEnabled`). Same watcher; initial values are the shared
@@ -174,6 +181,7 @@ final class SettingsViewModel: ObservableObject {
     private var recentSearchesWatcher: FlowWatcher?
     private var episodeShuffleWatcher: FlowWatcher?
     private var debridSourcesWatcher: FlowWatcher?
+    private var continueWatchingPrefsWatcher: FlowWatcher?
     private var enabledAddons: [ManagedAddon] = []
     /// Add-ons hub C, H4: the display titles of the enabled add-ons in installed order, the same
     /// string the catalog items carry as `addonName` (`HomeCatalogDefinitions`). Set wherever
@@ -215,9 +223,16 @@ final class SettingsViewModel: ObservableObject {
             self.assign(\.autoPlayBestSource, state.streamAutoPlayMode == StreamAutoPlayMode.firstStream)
             self.assign(\.autoPlayCachedOnly, state.streamAutoPlayCachedOnly)
             self.assign(\.preloadNextEpisodeSources, state.preloadNextEpisodeSources)
+            self.assign(\.chapterTitleEnabled, state.chapterTitleEnabled)
             self.assign(\.autoPlayNextEpisodeEnabled, state.streamAutoPlayNextEpisodeEnabled)
             self.assign(\.autoPlayPreferBingeGroup, state.streamAutoPlayPreferBingeGroup)
             self.assign(\.autoPlayNextEpisodeFallback, state.streamAutoPlayNextEpisodeFallbackEnabled)
+        }
+
+        ContinueWatchingPreferencesRepository.shared.ensureLoaded()
+        continueWatchingPrefsWatcher = FlowWatcherKt.watch(ContinueWatchingPreferencesRepository.shared.uiState) { [weak self] emitted in
+            guard let self, let state = emitted as? ContinueWatchingPreferencesUiState else { return }
+            self.assign(\.continueWatchingClickAction, ContinueWatchingSelectRoute.key(state.clickAction))
         }
 
         // Orivio batch: Sources sort / filter settings live in the debrid settings blob (shared
@@ -364,6 +379,7 @@ final class SettingsViewModel: ObservableObject {
         recentSearchesWatcher?.cancel(); recentSearchesWatcher = nil
         episodeShuffleWatcher?.cancel(); episodeShuffleWatcher = nil
         debridSourcesWatcher?.cancel(); debridSourcesWatcher = nil
+        continueWatchingPrefsWatcher?.cancel(); continueWatchingPrefsWatcher = nil
     }
 
     // MARK: - Actions
@@ -430,6 +446,14 @@ final class SettingsViewModel: ObservableObject {
 
     func setPreloadNextEpisodeSources(_ enabled: Bool) {
         PlayerSettingsRepository.shared.setPreloadNextEpisodeSources(enabled: enabled)
+    }
+
+    func setChapterTitleEnabled(_ enabled: Bool) {
+        PlayerSettingsRepository.shared.setChapterTitleEnabled(enabled: enabled)
+    }
+
+    func setContinueWatchingClickAction(_ key: String) {
+        ContinueWatchingPreferencesRepository.shared.setClickAction(action: ContinueWatchingSelectRoute.action(forKey: key))
     }
 
     func setAutoPlayNextEpisodeEnabled(_ enabled: Bool) {
@@ -1033,5 +1057,6 @@ final class SettingsViewModel: ObservableObject {
         amoledWatcher?.cancel()
         recentSearchesWatcher?.cancel()
         debridSourcesWatcher?.cancel()
+        continueWatchingPrefsWatcher?.cancel()
     }
 }

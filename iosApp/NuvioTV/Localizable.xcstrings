@@ -14451,6 +14451,7 @@
         }
       }
     },
+    "Continue Watching On Select": {},
     "Continue as Guest": {
       "localizations": {
         "de": {
@@ -35489,6 +35490,7 @@
         }
       }
     },
+    "Play resumes the title: the source list opens, or playback starts at once when Auto-Play Best Source is on. Details opens the title's page. Start Over and Play Manually in the hold menu always play. Also applies to Resume Watching in the Library. Synced with your phone. Default: Play.": {},
     "Play starts the best source that has arrived: highest resolution first, then HDR or Dolby Vision, then cached links, then the largest file. Hold Play to choose one.": {
       "localizations": {
         "de": {
@@ -43831,6 +43833,7 @@
         }
       }
     },
+    "Show Chapter Titles": {},
     "Show Clock": {
       "localizations": {
         "de": {
@@ -44247,6 +44250,7 @@
         }
       }
     },
+    "Show the chapter's name above the preview while you scrub": {},
     "Show the poster and what is happening while a video starts": {
       "localizations": {
         "de": {
@@ -45461,6 +45465,7 @@
         }
       }
     },
+    "Shows the name of the chapter you are scrubbing to, above the preview frame. The chapter marks on the timeline, the Chapters pill and Previous/Next Chapter stay either way. The Apple TV player shows its own chapter list and is not affected. Synced with your phone. On by default.": {},
     "Shows the poster, the title and what the player is doing (connecting, preparing, buffering) while a video starts, in both players. Off shows a plain spinner. On by default.": {
       "localizations": {
         "de": {
@@ -57275,6 +57280,7 @@
         }
       }
     },
+    "What opens when you select a Continue Watching card": {},
     "When a title's streams load, plugin results are listed under one group per repository instead of one group per provider, so a repository with many providers takes one row. Off by default.": {
       "extractionState": "manual",
       "localizations": {

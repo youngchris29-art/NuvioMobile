@@ -123,6 +123,19 @@ struct HomeScreenSettingsPane: View {
                 descriptionID: .homeWatchlist
             )
 
+            // What selecting a Continue Watching card opens (Classic, Stage and the Library's Resume
+            // Watching row). Synced with the phone; Play by default. Two values here: a phone-set
+            // Details for Upcoming shows as Play and stays stored until a value is picked.
+            SettingsPickerRow(
+                title: String(localized: "Continue Watching On Select"),
+                subtitle: String(localized: "What opens when you select a Continue Watching card"),
+                selection: Binding(get: { model.continueWatchingClickAction },
+                                   set: { model.setContinueWatchingClickAction($0) }),
+                options: ContinueWatchingSelectRoute.keys,
+                descriptionID: .homeContinueWatchingOnSelect,
+                label: { ContinueWatchingSelectRoute.label(forKey: $0) }
+            )
+
             if model.catalogs.isEmpty {
                 Text("Install add-ons to customize your Home rows.")
                     .font(Theme.Font.body)

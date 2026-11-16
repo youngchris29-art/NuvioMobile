@@ -7,22 +7,22 @@ import SharedCore
 /// Library's Resume Watching row follow the same setting. The hold menu's Play Manually and Start
 /// Over never come here: they always open the stream.
 ///
-/// Details for Upcoming behaves exactly like Play on tvOS (unaired Up Next cards are dropped), and
-/// nothing here ever writes the stored value: only the Settings picker calls `setClickAction`.
+/// Details for Upcoming (set from a phone) behaves exactly like Play on tvOS (unaired Up Next cards
+/// are dropped) and the picker shows it as Play. Nothing here ever writes the stored value: only the
+/// Settings picker calls `setClickAction`, and it writes `stream` or `details`.
 enum ContinueWatchingSelectRoute {
-    /// The Settings picker's keys (pickers bind strings, not bridged Kotlin enums).
-    static let keys = ["stream", "details", "detailsForUpcoming"]
+    /// The Settings picker's keys (pickers bind strings, not bridged Kotlin enums). Two values only:
+    /// a stored Details for Upcoming displays under the Play key.
+    static let keys = ["stream", "details"]
 
     static func key(_ action: ContinueWatchingClickAction) -> String {
         if action == ContinueWatchingClickAction.details { return "details" }
-        if action == ContinueWatchingClickAction.detailsForUpcoming { return "detailsForUpcoming" }
         return "stream"
     }
 
     static func action(forKey key: String) -> ContinueWatchingClickAction {
         switch key {
         case "details": return ContinueWatchingClickAction.details
-        case "detailsForUpcoming": return ContinueWatchingClickAction.detailsForUpcoming
         default: return ContinueWatchingClickAction.stream
         }
     }
@@ -30,7 +30,6 @@ enum ContinueWatchingSelectRoute {
     static func label(forKey key: String) -> String {
         switch key {
         case "details": return String(localized: "Details")
-        case "detailsForUpcoming": return String(localized: "Details for Upcoming")
         default: return String(localized: "Play")
         }
     }

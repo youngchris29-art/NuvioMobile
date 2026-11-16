@@ -81,6 +81,14 @@ struct PlayerSettingsPane: View {
                 descriptionID: .playerEdgeClick,
                 label: { $0 == "chapter" ? String(localized: "Previous/Next Chapter") : String(localized: "Skip 10 s") }
             )
+            // The chapter name above the scrub preview (mpv and Aether draw it; the native player's
+            // chapter UI is the system's). Shared and synced; On by default.
+            SettingsToggleRow(
+                title: String(localized: "Show Chapter Titles"),
+                subtitle: String(localized: "Show the chapter's name above the preview while you scrub"),
+                isOn: Binding(get: { model.chapterTitleEnabled }, set: { model.setChapterTitleEnabled($0) }),
+                descriptionID: .playerChapterTitle
+            )
             SettingsToggleRow(
                 title: String(localized: "Show Clock"),
                 subtitle: String(localized: "Show the time of day while the controls are up (mpv player)"),

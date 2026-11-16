@@ -96,6 +96,7 @@ enum SettingsDescriptionID: String, CaseIterable {
     case homeCollectionHeader = "home.collectionHeader"
     case homeUpcoming = "home.upcoming"
     case homeWatchlist = "home.watchlist"
+    case homeContinueWatchingOnSelect = "home.continueWatchingOnSelect"
     case homeRefreshAddons = "home.refreshAddons"
     case homeShowHero = "home.showHero"
     case homeNuvioStyleHero = "home.nuvioStyleHero"
@@ -147,6 +148,7 @@ enum SettingsDescriptionID: String, CaseIterable {
     case playerEdgeClick = "player.edgeClick"
     case playerShowClock = "player.showClock"
     case playerShowCast = "player.showCastInPlayer"
+    case playerChapterTitle = "player.chapterTitle"
     case playerMatchFrameRate = "player.matchFrameRate"
     case playerEnhancedRenderer = "player.enhancedRenderer"
     case playerNativeDolbyVision = "player.nativeDolbyVision"
@@ -329,6 +331,7 @@ enum SettingsDescriptions {
         case .homeCollectionHeader: return LocalizedStringResource("Sets the top of a collection folder that opens as a grid. Standard gives the folder's logo or name a large slot that shrinks once you scroll. Compact starts with the small title and uses the empty strip at the top of the screen, so the posters start higher. At the Medium poster size, a folder with one source shows two full rows; with several source tabs, one full row and most of the second. Folders that open as rows are not affected. Default: Standard.")
         case .homeUpcoming: return LocalizedStringResource("Adds a row under Continue Watching with the next episodes of your shows that air in the next 14 days. On by default.")
         case .homeWatchlist: return LocalizedStringResource("Adds a row under Continue Watching with movies and series from your Trakt watchlist and Simkl Plan to Watch, most recently added first. The row appears only when Trakt or Simkl is connected. The full list stays in the Library. On by default.")
+        case .homeContinueWatchingOnSelect: return LocalizedStringResource("Play resumes the title: the source list opens, or playback starts at once when Auto-Play Best Source is on. Details opens the title's page. Start Over and Play Manually in the hold menu always play. Also applies to Resume Watching in the Library. Synced with your phone. Default: Play.")
         case .homeRefreshAddons: return LocalizedStringResource("Checks your installed add-ons again for catalogs. Use it if Home rows are missing even though add-ons are installed.")
         case .homeShowHero: return LocalizedStringResource("On shows a rotating banner at the top of Home, built from up to two of your catalogs. Off shows the focused title's artwork and description instead. On by default.")
         case .homeNuvioStyleHero: return LocalizedStringResource("On puts the title and description on the left, the artwork on the right, and keeps the banner in place while rows scroll. Off uses the classic layout with the logo at the lower left. Off by default.")
@@ -462,6 +465,7 @@ enum SettingsDescriptions {
         case .playerHoldMode: return LocalizedStringResource("Choose what holding Left or Right does in the mpv player. Step jumps further the longer you hold and moves once when you let go. Scan plays at 2\u{00D7} and keeps going after you let go: press Right again for 3\u{00D7} or 4\u{00D7}, Select to carry on from there, Menu to go back. Default: Step.")
         case .playerEdgeClick: return LocalizedStringResource("Choose what one click on Left or Right does in the mpv player. Skip 10 s jumps ten seconds. Previous/Next Chapter jumps to the next chapter, or back to the start of this one, when the video has chapters, and skips 10 seconds when it does not. Default: Skip 10 s.")
         case .playerShowCast: return LocalizedStringResource("Adds a Cast pill under the timeline in the player. It lists the cast, guest stars and key crew for the title or episode, and opens a short biography with their best-known titles. Works whether or not TMDB Enrichment is on. Default: On.")
+        case .playerChapterTitle: return LocalizedStringResource("Shows the name of the chapter you are scrubbing to, above the preview frame. The chapter marks on the timeline, the Chapters pill and Previous/Next Chapter stay either way. The Apple TV player shows its own chapter list and is not affected. Synced with your phone. On by default.")
         case .playerShowClock: return LocalizedStringResource("Shows the time of day in the corner while the player controls are up. Off by default.")
         case .devHoldTick: return LocalizedStringResource("An A/B switch for how often a held Left or Right adds a step. Auto is 0.25 seconds.")
         case .devHoldRamp: return LocalizedStringResource("An A/B switch for how quickly a held Left or Right moves up to bigger steps. Auto reaches 60-second steps after 2 seconds; Faster after 1 second; Slower after 4 seconds.")
