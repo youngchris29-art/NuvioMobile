@@ -59,6 +59,15 @@ object StreamLinkCacheRepository {
         streamType: String? = null,
         contentLanguage: String? = null,
     ) {
+        // Fork: upstream 3d70db683 removed this guard (and the one in [getValid]) because its
+        // player refreshes a failed cached link after the error. The fork ships no reader with
+        // that refresh-after-error half (Reuse Last Link can hand the URL to an external
+        // player), so a tokenized/expiring link is never cached here.
+        if (url.isNotBlank() && url.hasLikelyExpiringPlaybackCredentials()) {
+            remove(contentKey)
+            return
+        }
+
         val entry = CachedStreamLink(
             url = url,
             streamName = streamName,
@@ -95,6 +104,11 @@ object StreamLinkCacheRepository {
         }
         val age = epochMs() - entry.cachedAtMs
         if (entry.cachedAtMs <= 0L || age > maxAgeMs) {
+            StreamLinkCacheStorage.removeEntry(hashedKey(contentKey))
+            return null
+        }
+        // Fork: kept although upstream 3d70db683 dropped it; see [save].
+        if (entry.url.isNotBlank() && entry.url.hasLikelyExpiringPlaybackCredentials()) {
             StreamLinkCacheStorage.removeEntry(hashedKey(contentKey))
             return null
         }
