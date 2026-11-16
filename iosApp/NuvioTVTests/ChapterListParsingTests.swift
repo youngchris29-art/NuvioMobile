@@ -78,6 +78,15 @@ final class ChapterListParsingTests: XCTestCase {
         m.chapters = [TransportChapter(title: "", sec: 0)]
         XCTAssertNil(m.chapterTitle(at: 5))
     }
+
+    @MainActor func testChapterTitleHiddenWhenTheSettingIsOff() {
+        let m = TransportBarModel()
+        m.chapters = [TransportChapter(title: "Act One", sec: 0), TransportChapter(title: "Act Three", sec: 300)]
+        XCTAssertEqual(m.chapterTitle(at: 400), "Act Three")
+        m.showsChapterTitle = false
+        XCTAssertNil(m.chapterTitle(at: 400))
+        XCTAssertEqual(m.chapters.count, 2, "the marks stay")
+    }
     // MARK: End markers (review r1 P2 #2)
 
     func testMarkerAtOrPastTheEndIsDropped() {

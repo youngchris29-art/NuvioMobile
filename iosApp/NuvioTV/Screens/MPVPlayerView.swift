@@ -4208,8 +4208,11 @@ struct MPVPlayerScreen: View {
                 .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
             updateTransportPills()
             state.transport.showsClock = UserDefaults.standard.bool(forKey: PlayerTuning.showClockKey)
-            pauseCardEnabled = (PlayerSettingsRepository.shared.uiState.value_ as? PlayerSettingsUiState)?
-                .pauseOverlayEnabled != false
+            let playerSettings = PlayerSettingsRepository.shared.uiState.value_ as? PlayerSettingsUiState
+            pauseCardEnabled = playerSettings?.pauseOverlayEnabled != false
+            // W3 (upstream 637b21aa0): read once per player like the pause card; mpv and Aether both
+            // draw this bar. A missing state reads as the default (On).
+            state.transport.showsChapterTitle = playerSettings?.chapterTitleEnabled != false
             if panelAdapter == nil {
                 let adapter = MPVPlayerPanelAdapter(state: state, model: panelModel, context: context)
                 // The Up Next pill plays through the engine, which needs a presenter that can swap

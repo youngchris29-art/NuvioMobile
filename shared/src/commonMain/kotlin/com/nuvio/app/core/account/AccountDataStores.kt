@@ -463,6 +463,7 @@ object AccountDataStores {
                 AppleKeySpec.ProfileScoped("next_episode_threshold_percent_v2"),
                 AppleKeySpec.ProfileScoped("next_episode_threshold_minutes_before_end_v2"),
                 AppleKeySpec.ProfileScoped("preload_next_episode_sources"),
+                AppleKeySpec.ProfileScoped("chapter_title_enabled"),
                 AppleKeySpec.ProfileScoped("use_libass"),
                 AppleKeySpec.ProfileScoped("libass_render_type"),
                 AppleKeySpec.ProfileScoped("ios_video_output_preset"),

@@ -45,6 +45,9 @@ enum PillKind: String, CaseIterable { case subtitles, audio, speed, aspect, sour
     @Published var playbackSpeed: Double = 1
     @Published var showsEndTime = false
     @Published var showsClock = false
+    /// W3 (upstream 637b21aa0): Settings > Player > Show Chapter Titles. Off hides only the chapter
+    /// name above the scrub card; the tick marks, the Chapters pill and chapter seeking stay.
+    @Published var showsChapterTitle = true
     @Published var pills: [PillKind] = []
     @Published var focusedPill: PillKind? = nil
     /// Insights (2026-11-01): the text pills under the times row (Info · Cast · Chapters · Up Next),
@@ -85,6 +88,10 @@ enum PillKind: String, CaseIterable { case subtitles, audio, speed, aspect, sour
     var pillsEngaged: Bool { focusedPill != nil }
     /// A popover or a content shelf is on screen.
     var overlayOpen: Bool { openPopover != nil || openInfoPill != nil }
-    /// The chapter title at `sec` (the one rule, `PlayerChapters.title(at:in:)`); nil = none or untitled.
-    func chapterTitle(at sec: Double) -> String? { PlayerChapters.title(at: sec, in: chapters) }
+    /// The chapter title at `sec` (the one rule, `PlayerChapters.title(at:in:)`); nil = none,
+    /// untitled, or Show Chapter Titles off.
+    func chapterTitle(at sec: Double) -> String? {
+        guard showsChapterTitle else { return nil }
+        return PlayerChapters.title(at: sec, in: chapters)
+    }
 }
