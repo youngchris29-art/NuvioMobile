@@ -186,4 +186,12 @@ class DirectDebridResolverInvalidateTest {
 
         assertNull(DirectDebridPlaybackResolver.cachedPlayableStream(stream, season = 1, episode = 2))
     }
+
+    @Test
+    fun `resolve with forceRefresh and no connected resolver is stale`() = runTest {
+        assertEquals(
+            DirectDebridResolveResult.Stale,
+            DirectDebridPlaybackResolver.resolve(directStream(), 1, 2, forceRefresh = true),
+        )
+    }
 }

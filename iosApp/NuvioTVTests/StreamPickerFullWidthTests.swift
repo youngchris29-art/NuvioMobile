@@ -32,7 +32,7 @@ final class StreamPickerFullWidthTests: XCTestCase {
             name: name, title: title, description: description, url: url, infoHash: infoHash, fileIdx: nil,
             externalUrl: nil, ytId: nil, sources: [], sourceName: nil, addonName: "AIOStreams", addonId: "aio",
             addonLogo: nil, streamType: nil, behaviorHints: hints(size: size),
-            clientResolve: nil, debridCacheStatus: cache, externalSubtitles: [], badges: badges
+            clientResolve: nil, debridCacheStatus: cache, externalSubtitles: [], badges: badges, debridResolved: false
         )
     }
 

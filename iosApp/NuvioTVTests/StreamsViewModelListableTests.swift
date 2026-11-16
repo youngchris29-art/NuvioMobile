@@ -16,7 +16,7 @@ final class StreamsViewModelListableTests: XCTestCase {
             name: "Stream", title: nil, description: nil, url: url, infoHash: infoHash, fileIdx: nil,
             externalUrl: externalUrl, ytId: ytId, sources: [], sourceName: nil, addonName: "Add-on", addonId: addonId,
             addonLogo: nil, streamType: nil, behaviorHints: hints,
-            clientResolve: nil, debridCacheStatus: nil, externalSubtitles: [], badges: []
+            clientResolve: nil, debridCacheStatus: nil, externalSubtitles: [], badges: [], debridResolved: false
         )
     }
 

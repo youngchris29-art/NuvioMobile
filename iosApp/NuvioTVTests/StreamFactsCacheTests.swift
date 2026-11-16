@@ -16,7 +16,7 @@ final class StreamFactsCacheTests: XCTestCase {
             name: name, title: nil, description: nil, url: "https://cdn.example.com/\(addonId)/\(slug).mkv",
             infoHash: nil, fileIdx: nil, externalUrl: nil, ytId: nil, sources: [], sourceName: nil,
             addonName: "Add \(addonId)", addonId: addonId, addonLogo: nil, streamType: nil, behaviorHints: hints,
-            clientResolve: nil, debridCacheStatus: nil, externalSubtitles: [], badges: []
+            clientResolve: nil, debridCacheStatus: nil, externalSubtitles: [], badges: [], debridResolved: false
         )
     }
 
@@ -99,7 +99,7 @@ final class StreamFactsCacheTests: XCTestCase {
             url: "https://resolved.example.com/movie.mkv", infoHash: plain.infoHash, fileIdx: plain.fileIdx,
             externalUrl: nil, ytId: nil, sources: [], sourceName: nil, addonName: "Add a", addonId: "a",
             addonLogo: nil, streamType: nil, behaviorHints: preparedHints, clientResolve: nil,
-            debridCacheStatus: nil, externalSubtitles: [], badges: [])
+            debridCacheStatus: nil, externalSubtitles: [], badges: [], debridResolved: false)
         vm.apply(state([AddonStreamGroup(addonName: "Add a", addonId: "a", streams: [prepared],
                                          isLoading: false, error: nil)]))
         XCTAssertEqual(vm.factsCache.missCount, 2, "the prepared copy is not served the old facts")

@@ -38,7 +38,7 @@ final class StreamRowModelTests: XCTestCase {
             name: name, title: nil, description: description, url: url, infoHash: infoHash, fileIdx: nil,
             externalUrl: nil, ytId: ytId, sources: [], sourceName: sourceName, addonName: addonName, addonId: addonId,
             addonLogo: addonLogo, streamType: nil, behaviorHints: hints(size: size),
-            clientResolve: nil, debridCacheStatus: cache, externalSubtitles: [], badges: badges
+            clientResolve: nil, debridCacheStatus: cache, externalSubtitles: [], badges: badges, debridResolved: false
         )
     }
 

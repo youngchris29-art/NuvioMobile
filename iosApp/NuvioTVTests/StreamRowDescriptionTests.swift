@@ -29,7 +29,7 @@ final class StreamRowDescriptionTests: XCTestCase {
             name: "Torrentio", title: nil, description: description, url: "https://cdn.example.com/a.mkv",
             infoHash: nil, fileIdx: nil, externalUrl: nil, ytId: nil, sources: [], sourceName: nil,
             addonName: "Add-on", addonId: "addon:x", addonLogo: nil, streamType: nil, behaviorHints: hints,
-            clientResolve: nil, debridCacheStatus: nil, externalSubtitles: [], badges: [])
+            clientResolve: nil, debridCacheStatus: nil, externalSubtitles: [], badges: [], debridResolved: false)
         return StreamRowModel.make(stream: stream,
                                    facts: StreamFactsParser.shared.parse(stream: stream),
                                    key: "k", display: StreamRowDisplay(),

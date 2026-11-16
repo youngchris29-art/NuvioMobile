@@ -76,7 +76,7 @@ final class NextEpisodeEngineTests: XCTestCase {
             addonLogo: nil, streamType: nil,
             behaviorHints: StreamBehaviorHints(bingeGroup: nil, notWebReady: false, videoHash: nil, videoSize: nil,
                                                filename: nil, proxyHeaders: nil, audioDelayMs: nil),
-            clientResolve: nil, debridCacheStatus: nil, externalSubtitles: [], badges: []
+            clientResolve: nil, debridCacheStatus: nil, externalSubtitles: [], badges: [], debridResolved: false
         )
     }
 
@@ -122,7 +122,7 @@ final class NextEpisodeEngineTests: XCTestCase {
                 addonId: "addon:t", addonLogo: nil, streamType: nil,
                 behaviorHints: StreamBehaviorHints(bingeGroup: nil, notWebReady: false, videoHash: nil, videoSize: nil,
                                                    filename: nil, proxyHeaders: nil, audioDelayMs: nil),
-                clientResolve: nil, debridCacheStatus: nil, externalSubtitles: [], badges: []
+                clientResolve: nil, debridCacheStatus: nil, externalSubtitles: [], badges: [], debridResolved: false
             )
         }
         let cases: [(StreamItem, String)] = [
@@ -161,7 +161,7 @@ final class NextEpisodeEngineTests: XCTestCase {
             addonId: "addon:t", addonLogo: nil, streamType: nil,
             behaviorHints: StreamBehaviorHints(bingeGroup: nil, notWebReady: false, videoHash: nil, videoSize: nil,
                                                filename: nil, proxyHeaders: nil, audioDelayMs: nil),
-            clientResolve: nil, debridCacheStatus: status, externalSubtitles: [], badges: []
+            clientResolve: nil, debridCacheStatus: status, externalSubtitles: [], badges: [], debridResolved: false
         )
         let plain = stream(url: "https://cdn.example.com/plain.mkv")
         XCTAssertTrue(NextEpisodeEngine.isAutoPlayCandidate(prepared, resolvesThroughDebrid: { _ in false }))
@@ -806,7 +806,7 @@ final class NextEpisodeEngineTests: XCTestCase {
             addonName: "Addon", addonId: "addon", addonLogo: nil, streamType: nil,
             behaviorHints: StreamBehaviorHints(bingeGroup: nil, notWebReady: false, videoHash: nil, videoSize: nil,
                                                filename: nil, proxyHeaders: nil, audioDelayMs: nil),
-            clientResolve: nil, debridCacheStatus: nil, externalSubtitles: [], badges: []
+            clientResolve: nil, debridCacheStatus: nil, externalSubtitles: [], badges: [], debridResolved: false
         )
     }
 

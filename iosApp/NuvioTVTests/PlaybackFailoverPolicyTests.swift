@@ -273,7 +273,7 @@ final class PlaybackFailoverPolicyTests: XCTestCase {
             addonLogo: nil, streamType: nil,
             behaviorHints: StreamBehaviorHints(bingeGroup: nil, notWebReady: false, videoHash: nil, videoSize: nil,
                                                filename: nil, proxyHeaders: nil, audioDelayMs: nil),
-            clientResolve: nil, debridCacheStatus: nil, externalSubtitles: [], badges: []
+            clientResolve: nil, debridCacheStatus: nil, externalSubtitles: [], badges: [], debridResolved: false
         )
         XCTAssertEqual(stream.playbackStreamKey, "feedface#2")
     }
@@ -287,7 +287,7 @@ final class PlaybackFailoverPolicyTests: XCTestCase {
             addonLogo: nil, streamType: nil,
             behaviorHints: StreamBehaviorHints(bingeGroup: nil, notWebReady: false, videoHash: nil, videoSize: nil,
                                                filename: nil, proxyHeaders: nil, audioDelayMs: nil),
-            clientResolve: nil, debridCacheStatus: nil, externalSubtitles: [], badges: []
+            clientResolve: nil, debridCacheStatus: nil, externalSubtitles: [], badges: [], debridResolved: false
         )
     }
 
@@ -332,7 +332,7 @@ final class PlaybackFailoverPolicyTests: XCTestCase {
             addonLogo: nil, streamType: nil,
             behaviorHints: StreamBehaviorHints(bingeGroup: nil, notWebReady: false, videoHash: nil, videoSize: nil,
                                                filename: nil, proxyHeaders: nil, audioDelayMs: nil),
-            clientResolve: nil, debridCacheStatus: nil, externalSubtitles: [], badges: []
+            clientResolve: nil, debridCacheStatus: nil, externalSubtitles: [], badges: [], debridResolved: false
         )
     }
 

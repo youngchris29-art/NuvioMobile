@@ -81,7 +81,7 @@ final class StreamBestPickModelTests: XCTestCase {
             streamType: nil,
             behaviorHints: StreamBehaviorHints(bingeGroup: nil, notWebReady: false, videoHash: nil, videoSize: nil,
                                                filename: nil, proxyHeaders: nil, audioDelayMs: nil),
-            clientResolve: nil, debridCacheStatus: nil, externalSubtitles: [], badges: []
+            clientResolve: nil, debridCacheStatus: nil, externalSubtitles: [], badges: [], debridResolved: false
         )
         let model = StreamRowModel.make(stream: item, facts: StreamFactsParser.shared.parse(stream: item),
                                         key: "k", display: StreamRowDisplay(), providerLabel: { $0.providerName })

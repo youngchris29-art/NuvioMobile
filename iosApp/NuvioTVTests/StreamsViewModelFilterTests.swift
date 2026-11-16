@@ -17,7 +17,7 @@ final class StreamsViewModelFilterTests: XCTestCase {
             name: name, title: nil, description: "\(name).release", url: url, infoHash: infoHash, fileIdx: nil,
             externalUrl: nil, ytId: nil, sources: [], sourceName: nil, addonName: "Add-on", addonId: addonId,
             addonLogo: nil, streamType: nil, behaviorHints: hints,
-            clientResolve: nil, debridCacheStatus: nil, externalSubtitles: [], badges: []
+            clientResolve: nil, debridCacheStatus: nil, externalSubtitles: [], badges: [], debridResolved: false
         )
     }
 

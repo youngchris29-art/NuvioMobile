@@ -27,7 +27,7 @@ final class StreamPickerBodyModelTests: XCTestCase {
             name: name, title: nil, description: nil, url: "https://cdn.example.com/\(addonId)/\(slug).mkv",
             infoHash: nil, fileIdx: nil, externalUrl: nil, ytId: nil, sources: [], sourceName: nil,
             addonName: addonName, addonId: addonId, addonLogo: nil, streamType: nil, behaviorHints: hints,
-            clientResolve: nil, debridCacheStatus: nil, externalSubtitles: [], badges: []
+            clientResolve: nil, debridCacheStatus: nil, externalSubtitles: [], badges: [], debridResolved: false
         )
     }
 

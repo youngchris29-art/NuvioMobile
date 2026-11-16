@@ -24,7 +24,7 @@ final class FirstPlayAutoPlayControllerTests: XCTestCase {
             addonName: addon, addonId: addon, addonLogo: nil, streamType: nil,
             behaviorHints: StreamBehaviorHints(bingeGroup: nil, notWebReady: false, videoHash: nil, videoSize: nil,
                                                filename: nil, proxyHeaders: nil, audioDelayMs: nil),
-            clientResolve: nil, debridCacheStatus: nil, externalSubtitles: [], badges: []
+            clientResolve: nil, debridCacheStatus: nil, externalSubtitles: [], badges: [], debridResolved: false
         )
     }
 
@@ -488,7 +488,7 @@ final class FirstPlayAutoPlayControllerTests: XCTestCase {
             StreamItem(name: "S", title: nil, description: nil, url: url, infoHash: infoHash, fileIdx: nil,
                        externalUrl: nil, ytId: nil, sources: [], sourceName: nil, addonName: "Add-on", addonId: "addon:x",
                        addonLogo: nil, streamType: nil, behaviorHints: hints, clientResolve: resolve,
-                       debridCacheStatus: cache, externalSubtitles: [], badges: [])
+                       debridCacheStatus: cache, externalSubtitles: [], badges: [], debridResolved: false)
         }
         let directDebrid = item(resolve: StreamClientResolve(
             type: "debrid", infoHash: nil, fileIdx: nil, magnetUri: nil, sources: [], torrentName: nil,
@@ -523,7 +523,7 @@ final class FirstPlayAutoPlayControllerTests: XCTestCase {
             StreamItem(name: name, title: nil, description: nil, url: "https://cdn.example.com/a.mkv", infoHash: nil,
                        fileIdx: nil, externalUrl: nil, ytId: nil, sources: [], sourceName: nil, addonName: "Torrentio",
                        addonId: "addon:t", addonLogo: nil, streamType: nil, behaviorHints: hints, clientResolve: nil,
-                       debridCacheStatus: nil, externalSubtitles: [], badges: [])
+                       debridCacheStatus: nil, externalSubtitles: [], badges: [], debridResolved: false)
         }
         XCTAssertTrue(Policy.isCachedDebridLink(link("[TB+] Torrentio 4k"), debridEnabled: true, activeResolverProviderId: "torbox"))
         XCTAssertFalse(Policy.isCachedDebridLink(link("[RD+] Torrentio 4k"), debridEnabled: true, activeResolverProviderId: "torbox"),
