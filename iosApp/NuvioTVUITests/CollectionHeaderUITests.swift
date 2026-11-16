@@ -24,7 +24,7 @@ final class CollectionHeaderUITests: XCTestCase {
     private static let severalSources = """
     [{"id":"zzfolderprobe-collection","title":"ZZFolderProbe","pinToTop":true,"showAllTab":true,"folders":[{"id":"zzfolderprobe-folder","title":"ZZFolderProbeFolder","hideTitle":false,"heroBackdropUrl":"https://images.metahub.space/background/medium/tt0111161/img","sources":[{"provider":"addon","addonId":"com.linvo.cinemeta","type":"movie","catalogId":"top"},{"provider":"addon","addonId":"com.linvo.cinemeta","type":"series","catalogId":"top"}]}]}]
     """
-    /// Chips: All, Popular (Movies), Discover Movies. Selecting the Discover chip makes the
+    /// Chips: All, Popular - Movies, Discover Movies. Selecting the Discover chip makes the
     /// folder's selected source editable (Classic: Edit Filters; Stage: the Edit menu).
     private static let editSeed = """
     [{"id":"zzhdre-collection","title":"ZZHeaderEdit","pinToTop":true,"showAllTab":true,"folders":[{"id":"zzhdre-folder","title":"ZZHeaderEditFolder","hideTitle":false,"heroBackdropUrl":"https://images.metahub.space/background/medium/tt0111161/img","sources":[{"provider":"addon","addonId":"com.linvo.cinemeta","type":"movie","catalogId":"top"},{"provider":"tmdb","tmdbSourceType":"DISCOVER","mediaType":"movie","title":"Discover Movies","sortBy":"popularity.desc"}]}]}]

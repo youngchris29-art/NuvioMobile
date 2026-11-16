@@ -128,20 +128,26 @@ object FolderDetailRepository {
         /// Round 7: loadTabPage filters every page through this setting, so retained ITEMS are a
         /// function of it too — flipping it between visits must refetch.
         val hideUnreleasedContent: Boolean,
+        /// Upstream 05fd435ca: add-on tab labels carry the type only when "Show catalog type" is
+        /// on, so flipping it between visits must rebuild the tabs.
+        val showCatalogType: Boolean,
     )
 
     private var activeInputsSnapshot: RetainedInputs? = null
 
-    private fun retainedInputs(collection: Collection, folder: CollectionFolder): RetainedInputs =
-        RetainedInputs(
+    private fun retainedInputs(collection: Collection, folder: CollectionFolder): RetainedInputs {
+        val homeSettings = HomeCatalogSettingsRepository.snapshot()
+        return RetainedInputs(
             folder = folder,
             collectionTitle = collection.title,
             showAllTab = collection.showAllTab,
             addonCatalogInputs = AddonRepository.uiState.value.addons.map {
                 Triple(it.manifestUrl, it.enabled, it.manifest)
             },
-            hideUnreleasedContent = HomeCatalogSettingsRepository.snapshot().hideUnreleasedContent,
+            hideUnreleasedContent = homeSettings.hideUnreleasedContent,
+            showCatalogType = homeSettings.showCatalogType,
         )
+    }
 
     private fun liveRetainedInputs(collectionId: String, folderId: String): RetainedInputs? {
         val collection = CollectionRepository.getCollection(collectionId) ?: return null
@@ -187,7 +193,8 @@ object FolderDetailRepository {
             _uiState.value = FolderDetailUiState(isLoading = false)
             return
         }
-        activeInputsSnapshot = retainedInputs(collection, folder)
+        val inputs = retainedInputs(collection, folder)
+        activeInputsSnapshot = inputs
 
         val sources = folder.resolvedSources
         val showAll = collection.showAllTab && sources.size > 1
@@ -250,13 +257,20 @@ object FolderDetailRepository {
                     // dynamic ones); request those from the declared add-on all the same.
                     val addon = addons.findCollectionAddon(catalogSource)
                     val catalog = resolvedCatalog?.catalog
-                    val label = catalog?.name
+                    val catalogName = catalog?.name
                         ?: addons.collectionSourceDisplayName(catalogSource, source.title)
                     val typeLabel = localizedMediaTypeLabel(catalogSource.type)
-                    val genreSuffix = if (catalogSource.genre != null) " · ${catalogSource.genre}" else ""
                     add(
                         FolderTab(
-                            label = "$label ($typeLabel)$genreSuffix",
+                            label = folderCatalogTabLabel(
+                                catalogName = catalogName,
+                                typeLabel = typeLabel,
+                                genre = catalogSource.genre,
+                                showCatalogType = inputs.showCatalogType,
+                                withType = { name, type ->
+                                    resourceString("$name - $type", StringKey.home_catalog_default_title, name, type)
+                                },
+                            ),
                             typeLabel = typeLabel,
                             source = source,
                             sourceKey = source.catalogRouteKey(),
@@ -638,3 +652,19 @@ private fun traktCatalogId(source: CollectionSource): String =
         TraktListSort.normalize(source.sortBy),
         TraktSortHow.normalize(source.sortHow),
     ).joinToString("_")
+
+/**
+ * Upstream 05fd435ca: a folder tab's label is the catalog name and its genre, followed by the type
+ * when "Show catalog type" is on. [withType] formats it like a home row title
+ * ("Popular · Drama - Movies").
+ */
+internal fun folderCatalogTabLabel(
+    catalogName: String,
+    typeLabel: String,
+    genre: String?,
+    showCatalogType: Boolean,
+    withType: (name: String, type: String) -> String,
+): String {
+    val name = if (genre != null) "$catalogName · $genre" else catalogName
+    return if (showCatalogType && typeLabel.isNotBlank()) withType(name, typeLabel) else name
+}
