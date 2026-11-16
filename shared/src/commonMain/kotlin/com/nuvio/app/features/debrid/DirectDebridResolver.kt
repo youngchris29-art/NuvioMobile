@@ -11,9 +11,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import com.nuvio.app.core.i18n.StringKey
@@ -137,7 +139,8 @@ private const val DEBRID_RESOLVE_CACHE_TTL_MS = 15L * 60L * 1000L
  * place of the older one, in one locked step. Concurrent forced calls share that forced
  * resolve. Only the resolve still registered for its key when it finishes may write the
  * cache, so a replaced older resolve finishing late returns its result to its own callers
- * but never overwrites the forced one.
+ * but never overwrites the forced one. That write and the in-flight cleanup belong to the
+ * shared work, not to a waiter, so they survive any waiter's cancellation.
  */
 internal class DebridResolveSingleFlight(
     private val scope: CoroutineScope,
@@ -146,6 +149,7 @@ internal class DebridResolveSingleFlight(
     private class InFlight(
         val deferred: Deferred<DirectDebridResolveResult>,
         val forced: Boolean,
+        val token: Any,
     )
 
     private val mutex = Mutex()
@@ -161,8 +165,34 @@ internal class DebridResolveSingleFlight(
             cached(cacheKey)?.let { return it }
         }
 
-        val newResolve = scope.async(start = CoroutineStart.LAZY) { resolveUncached() }
-        var owned: InFlight? = null
+        // The shared work runs in [scope] and does its own bookkeeping, so no waiter owns it:
+        // cancelling any waiter (the one that started it included) cancels neither the provider
+        // request for the others nor the cache write and in-flight cleanup, which run
+        // NonCancellable once the work ends however it ends (success, failure, cancellation).
+        val token = Any()
+        val newResolve = scope.async(start = CoroutineStart.LAZY) {
+            var result: DirectDebridResolveResult? = null
+            try {
+                result = resolveUncached()
+                result
+            } finally {
+                withContext(NonCancellable) {
+                    mutex.withLock {
+                        if (inFlightResolves[cacheKey]?.token === token) {
+                            val success = result as? DirectDebridResolveResult.Success
+                            if (success != null) {
+                                resolvedCache[cacheKey] = CachedDirectDebridResolve(
+                                    result = success,
+                                    cachedAtMs = now(),
+                                )
+                            }
+                            inFlightResolves.remove(cacheKey)
+                        }
+                    }
+                }
+            }
+        }
+        var owns = false
         val activeResolve = mutex.withLock {
             if (!forceRefresh) {
                 getCachedLocked(cacheKey)?.let { cached ->
@@ -174,9 +204,8 @@ internal class DebridResolveSingleFlight(
                 existing.deferred to null
             } else {
                 if (forceRefresh) resolvedCache.remove(cacheKey)
-                val entry = InFlight(newResolve, forced = forceRefresh)
-                inFlightResolves[cacheKey] = entry
-                owned = entry
+                inFlightResolves[cacheKey] = InFlight(newResolve, forced = forceRefresh, token = token)
+                owns = true
                 newResolve to null
             }
         }
@@ -185,29 +214,10 @@ internal class DebridResolveSingleFlight(
             return it
         }
         val deferred = activeResolve.first ?: return DirectDebridResolveResult.Error()
-        val ownedEntry = owned
-        if (ownedEntry == null) newResolve.cancel() else deferred.start()
-
-        var result: DirectDebridResolveResult? = null
-        try {
-            result = deferred.await()
-            return result
-        } finally {
-            if (ownedEntry != null) {
-                mutex.withLock {
-                    if (inFlightResolves[cacheKey] === ownedEntry) {
-                        val success = result as? DirectDebridResolveResult.Success
-                        if (success != null) {
-                            resolvedCache[cacheKey] = CachedDirectDebridResolve(
-                                result = success,
-                                cachedAtMs = now(),
-                            )
-                        }
-                        inFlightResolves.remove(cacheKey)
-                    }
-                }
-            }
-        }
+        // Started here, not lazily by await: the registered work must run even if this
+        // caller is cancelled before it awaits.
+        if (owns) deferred.start() else newResolve.cancel()
+        return deferred.await()
     }
 
     suspend fun cached(cacheKey: String): DirectDebridResolveResult.Success? =

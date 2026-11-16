@@ -1,7 +1,10 @@
 package com.nuvio.app.features.debrid
 
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
@@ -9,6 +12,7 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * Pins how [DebridResolveSingleFlight] (the coordination behind
@@ -30,9 +34,18 @@ class DirectDebridResolverForceRefreshTest {
         fun finish(index: Int, url: String) {
             calls[index].complete(link(url))
         }
+
+        fun fail(index: Int, error: Throwable) {
+            calls[index].completeExceptionally(error)
+        }
     }
 
-    private fun TestScope.singleFlight() = DebridResolveSingleFlight(backgroundScope, now = { 0L })
+    // A plain supervisor under backgroundScope (like the production SupervisorJob scope): a
+    // failed shared resolve stays in its Deferred instead of being reported as a test failure.
+    private fun TestScope.singleFlight() = DebridResolveSingleFlight(
+        CoroutineScope(backgroundScope.coroutineContext + SupervisorJob(backgroundScope.coroutineContext[Job])),
+        now = { 0L },
+    )
 
     @Test
     fun `a forced resolve during a non-forced one requests a fresh link and returns it`() = runTest {
@@ -168,6 +181,79 @@ class DirectDebridResolverForceRefreshTest {
 
         resolves.evict(KEY)
         assertNull(resolves.cached(KEY))
+    }
+
+    @Test
+    fun `a cancelled owner leaves the shared resolve to the other waiter and the key clean`() = runTest {
+        val resolves = singleFlight()
+        val provider = FakeProvider()
+
+        val owner = async { resolves.resolve(KEY, forceRefresh = true) { provider.call() } }
+        runCurrent()
+        val waiter = async { resolves.resolve(KEY, forceRefresh = true) { provider.call() } }
+        runCurrent()
+        assertEquals(1, provider.calls.size)
+
+        owner.cancel()
+        runCurrent()
+        provider.finish(0, "shared")
+        assertEquals(link("shared"), waiter.await(), "cancelling the owner must not cancel the shared request")
+        assertEquals(link("shared"), resolves.cached(KEY))
+
+        // A stale forced entry would make this join the finished resolve without a new request.
+        val next = async { resolves.resolve(KEY, forceRefresh = true) { provider.call() } }
+        runCurrent()
+        assertEquals(2, provider.calls.size)
+        provider.finish(1, "fresh")
+        assertEquals(link("fresh"), next.await())
+    }
+
+    @Test
+    fun `a cancelled sole owner still finishes the bookkeeping and the next forced call asks again`() = runTest {
+        val resolves = singleFlight()
+        val provider = FakeProvider()
+
+        val owner = async { resolves.resolve(KEY, forceRefresh = true) { provider.call() } }
+        runCurrent()
+        owner.cancel()
+        runCurrent()
+
+        provider.finish(0, "first")
+        runCurrent()
+        assertEquals(link("first"), resolves.cached(KEY), "the shared work caches its result without a waiter")
+
+        val next = async { resolves.resolve(KEY, forceRefresh = true) { provider.call() } }
+        runCurrent()
+        assertEquals(2, provider.calls.size, "the next call must issue a fresh provider request")
+        provider.finish(1, "fresh")
+        assertEquals(link("fresh"), next.await())
+        assertEquals(link("fresh"), resolves.cached(KEY))
+    }
+
+    @Test
+    fun `a provider failure reaches every waiter and leaves no in-flight entry`() = runTest {
+        val resolves = singleFlight()
+        val provider = FakeProvider()
+
+        // runCatching inside the waiters: a failed test-scope child would fail the test itself.
+        val owner = async { runCatching { resolves.resolve(KEY, forceRefresh = false) { provider.call() } } }
+        runCurrent()
+        val waiter = async { runCatching { resolves.resolve(KEY, forceRefresh = false) { provider.call() } } }
+        runCurrent()
+        assertEquals(1, provider.calls.size)
+
+        provider.fail(0, IllegalStateException("provider down"))
+        val ownerError = owner.await().exceptionOrNull()
+        val waiterError = waiter.await().exceptionOrNull()
+        assertTrue(ownerError is IllegalStateException, "owner got $ownerError")
+        assertTrue(waiterError is IllegalStateException, "waiter got $waiterError")
+        assertNull(resolves.cached(KEY))
+
+        val next = async { resolves.resolve(KEY, forceRefresh = false) { provider.call() } }
+        runCurrent()
+        assertEquals(2, provider.calls.size, "a failed resolve must not stay registered for the key")
+        provider.finish(1, "link")
+        assertEquals(link("link"), next.await())
     }
 
     private companion object {
