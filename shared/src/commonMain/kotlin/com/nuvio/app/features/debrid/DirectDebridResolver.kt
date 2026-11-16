@@ -22,11 +22,13 @@ import com.nuvio.app.core.i18n.resourceString
 object DirectDebridPlaybackResolver {
     private val localAddonStreamResolver = LocalDebridAddonStreamResolver()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("DirectDebridResolver"))
-    private val mutex = Mutex()
-    private val resolvedCache = mutableMapOf<String, CachedDirectDebridResolve>()
-    private val inFlightResolves = mutableMapOf<String, Deferred<DirectDebridResolveResult>>()
+    private val resolves = DebridResolveSingleFlight(scope)
 
-    /** [forceRefresh] drops the in-memory resolved link first, so a new one is requested from the provider. */
+    /**
+     * [forceRefresh] always requests a new link from the provider: it skips the in-memory
+     * resolved link and never joins an older in-flight resolve, and an older resolve that
+     * finishes later cannot replace the forced result in the cache.
+     */
     suspend fun resolve(
         stream: StreamItem,
         season: Int?,
@@ -40,64 +42,15 @@ object DirectDebridPlaybackResolver {
         if (cacheKey == null) {
             return resolveUncached(stream, season, episode)
         }
-        if (forceRefresh) {
-            mutex.withLock { resolvedCache.remove(cacheKey) }
-        }
-        getCachedResult(cacheKey)?.let {
-            return it
-        }
-
-        var ownsResolve = false
-        val newResolve = scope.async(start = CoroutineStart.LAZY) {
+        return resolves.resolve(cacheKey, forceRefresh) {
             resolveUncached(stream, season, episode)
-        }
-        val activeResolve = mutex.withLock {
-            getCachedResultLocked(cacheKey)?.let { cached ->
-                return@withLock null to cached
-            }
-            val existing = inFlightResolves[cacheKey]
-            if (existing != null) {
-                existing to null
-            } else {
-                inFlightResolves[cacheKey] = newResolve
-                ownsResolve = true
-                newResolve to null
-            }
-        }
-        activeResolve.second?.let {
-            newResolve.cancel()
-            return it
-        }
-        val deferred = activeResolve.first ?: return DirectDebridResolveResult.Error()
-        if (!ownsResolve) newResolve.cancel()
-        if (ownsResolve) deferred.start()
-
-        return try {
-            val result = deferred.await()
-            if (ownsResolve && result is DirectDebridResolveResult.Success) {
-                mutex.withLock {
-                    resolvedCache[cacheKey] = CachedDirectDebridResolve(
-                        result = result,
-                        cachedAtMs = epochMs(),
-                    )
-                }
-            }
-            result
-        } finally {
-            if (ownsResolve) {
-                mutex.withLock {
-                    if (inFlightResolves[cacheKey] === deferred) {
-                        inFlightResolves.remove(cacheKey)
-                    }
-                }
-            }
         }
     }
 
     suspend fun cachedPlayableStream(stream: StreamItem, season: Int?, episode: Int?): StreamItem? {
         if (!shouldResolveToPlayableStream(stream)) return null
         val cacheKey = stream.debridResolveCacheKey(season, episode) ?: return null
-        return getCachedResult(cacheKey)
+        return resolves.cached(cacheKey)
             ?.let { result -> stream.withResolvedDebridUrl(result) }
     }
 
@@ -106,29 +59,15 @@ object DirectDebridPlaybackResolver {
      * so the next [resolve] asks the provider again (e.g. after the cached link failed to play).
      * Keyed exactly like [resolve]. An in-flight resolve for the same key is left alone.
      *
-     * Non-suspend for Swift. The eviction runs undispatched under [mutex]: it completes before
-     * this returns unless the mutex is held, and then it is queued ahead of any later
-     * lookup (the mutex is fair), so a [resolve] issued after this call never reads the old entry.
-     * Suspend callers can pass `forceRefresh = true` to [resolve] instead.
+     * Non-suspend for Swift. The eviction runs undispatched under the resolver's mutex: it
+     * completes before this returns unless the mutex is held, and then it is queued ahead of
+     * any later lookup (the mutex is fair), so a [resolve] issued after this call never reads
+     * the old entry. Suspend callers can pass `forceRefresh = true` to [resolve] instead.
      */
     fun invalidate(stream: StreamItem, season: Int?, episode: Int?) {
         val cacheKey = stream.debridResolveCacheKey(season, episode) ?: return
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
-            mutex.withLock { resolvedCache.remove(cacheKey) }
-        }
-    }
-
-    private suspend fun getCachedResult(cacheKey: String): DirectDebridResolveResult.Success? =
-        mutex.withLock { getCachedResultLocked(cacheKey) }
-
-    private fun getCachedResultLocked(cacheKey: String): DirectDebridResolveResult.Success? {
-        val cached = resolvedCache[cacheKey] ?: return null
-        val age = epochMs() - cached.cachedAtMs
-        return if (age in 0..DEBRID_RESOLVE_CACHE_TTL_MS) {
-            cached.result
-        } else {
-            resolvedCache.remove(cacheKey)
-            null
+            resolves.evict(cacheKey)
         }
     }
 
@@ -186,6 +125,110 @@ object DirectDebridPlaybackResolver {
 }
 
 private const val DEBRID_RESOLVE_CACHE_TTL_MS = 15L * 60L * 1000L
+
+/**
+ * One provider request per cache key at a time, plus the 15-minute cache of successful
+ * resolves. Internal so DirectDebridResolverForceRefreshTest can drive it with a fake provider
+ * call (the real ones have no injection point).
+ *
+ * A non-forced call returns the cached result, else joins the in-flight resolve for the key
+ * (forced or not), else starts one. A forced call never reads the cache and never joins a
+ * non-forced in-flight resolve: it evicts the cached entry and registers its own resolve in
+ * place of the older one, in one locked step. Concurrent forced calls share that forced
+ * resolve. Only the resolve still registered for its key when it finishes may write the
+ * cache, so a replaced older resolve finishing late returns its result to its own callers
+ * but never overwrites the forced one.
+ */
+internal class DebridResolveSingleFlight(
+    private val scope: CoroutineScope,
+    private val now: () -> Long = ::epochMs,
+) {
+    private class InFlight(
+        val deferred: Deferred<DirectDebridResolveResult>,
+        val forced: Boolean,
+    )
+
+    private val mutex = Mutex()
+    private val resolvedCache = mutableMapOf<String, CachedDirectDebridResolve>()
+    private val inFlightResolves = mutableMapOf<String, InFlight>()
+
+    suspend fun resolve(
+        cacheKey: String,
+        forceRefresh: Boolean,
+        resolveUncached: suspend () -> DirectDebridResolveResult,
+    ): DirectDebridResolveResult {
+        if (!forceRefresh) {
+            cached(cacheKey)?.let { return it }
+        }
+
+        val newResolve = scope.async(start = CoroutineStart.LAZY) { resolveUncached() }
+        var owned: InFlight? = null
+        val activeResolve = mutex.withLock {
+            if (!forceRefresh) {
+                getCachedLocked(cacheKey)?.let { cached ->
+                    return@withLock null to cached
+                }
+            }
+            val existing = inFlightResolves[cacheKey]
+            if (existing != null && (!forceRefresh || existing.forced)) {
+                existing.deferred to null
+            } else {
+                if (forceRefresh) resolvedCache.remove(cacheKey)
+                val entry = InFlight(newResolve, forced = forceRefresh)
+                inFlightResolves[cacheKey] = entry
+                owned = entry
+                newResolve to null
+            }
+        }
+        activeResolve.second?.let {
+            newResolve.cancel()
+            return it
+        }
+        val deferred = activeResolve.first ?: return DirectDebridResolveResult.Error()
+        val ownedEntry = owned
+        if (ownedEntry == null) newResolve.cancel() else deferred.start()
+
+        var result: DirectDebridResolveResult? = null
+        try {
+            result = deferred.await()
+            return result
+        } finally {
+            if (ownedEntry != null) {
+                mutex.withLock {
+                    if (inFlightResolves[cacheKey] === ownedEntry) {
+                        val success = result as? DirectDebridResolveResult.Success
+                        if (success != null) {
+                            resolvedCache[cacheKey] = CachedDirectDebridResolve(
+                                result = success,
+                                cachedAtMs = now(),
+                            )
+                        }
+                        inFlightResolves.remove(cacheKey)
+                    }
+                }
+            }
+        }
+    }
+
+    suspend fun cached(cacheKey: String): DirectDebridResolveResult.Success? =
+        mutex.withLock { getCachedLocked(cacheKey) }
+
+    /** Drops the cached result only; an in-flight resolve for [cacheKey] is left alone. */
+    suspend fun evict(cacheKey: String) {
+        mutex.withLock { resolvedCache.remove(cacheKey) }
+    }
+
+    private fun getCachedLocked(cacheKey: String): DirectDebridResolveResult.Success? {
+        val cached = resolvedCache[cacheKey] ?: return null
+        val age = now() - cached.cachedAtMs
+        return if (age in 0..DEBRID_RESOLVE_CACHE_TTL_MS) {
+            cached.result
+        } else {
+            resolvedCache.remove(cacheKey)
+            null
+        }
+    }
+}
 
 private data class CachedDirectDebridResolve(
     val result: DirectDebridResolveResult.Success,
