@@ -7,6 +7,7 @@ enum class AppLanguage(
     ARABIC("ar"),
     BULGARIAN("bg"),
     CZECH("cs"),
+    DUTCH("nl"),
     ENGLISH("en"),
     FRENCH("fr"),
     GERMAN("de"),
@@ -25,7 +26,6 @@ enum class AppLanguage(
     TURKISH("tr"),
     URDU("ur"),
     NORWEGIAN("nb"),
-    DUTCH("nl"),
     JAPANESE("ja"),
     VIETNAMESE("vi"),
     ;
