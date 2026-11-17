@@ -69,6 +69,7 @@ enum class StringKey {
     collections_tmdb_person_credits_not_found,
     collections_tmdb_person_not_found,
     auth_account_deletion_failed,
+    auth_notice_signed_out,
     auth_sign_in_failed,
     auth_sign_out_failed,
     auth_sign_up_failed,

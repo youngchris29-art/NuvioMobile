@@ -11,6 +11,7 @@ import com.nuvio.app.core.storage.jvmSharedPreferences
 actual object AuthStorage {
     private const val PREFS_NAME = "nuvio_auth"
     private const val KEY_ANONYMOUS_USER_ID = "anonymous_user_id"
+    private const val KEY_ACCOUNT_OWNER = "account_owner"
 
     private val preferences: JvmSharedPreferences? = jvmSharedPreferences(PREFS_NAME)
 
@@ -23,5 +24,23 @@ actual object AuthStorage {
 
     actual fun clearAnonymousUserId() {
         preferences?.edit()?.remove(KEY_ANONYMOUS_USER_ID)?.apply()
+    }
+
+    actual fun loadFlag(key: String): Boolean =
+        preferences?.getBoolean(key, false) == true
+
+    actual fun saveFlag(key: String, value: Boolean) {
+        preferences?.edit()?.putBoolean(key, value)?.apply()
+    }
+
+    actual fun loadAccountOwner(): String? =
+        preferences?.getString(KEY_ACCOUNT_OWNER, null)
+
+    actual fun saveAccountOwner(userId: String?) {
+        if (userId == null) {
+            preferences?.edit()?.remove(KEY_ACCOUNT_OWNER)?.apply()
+        } else {
+            preferences?.edit()?.putString(KEY_ACCOUNT_OWNER, userId)?.apply()
+        }
     }
 }

@@ -117,6 +117,7 @@ import nuvio.composeapp.generated.resources.collections_tmdb_network_not_found
 import nuvio.composeapp.generated.resources.collections_tmdb_person_credits_not_found
 import nuvio.composeapp.generated.resources.collections_tmdb_person_not_found
 import nuvio.composeapp.generated.resources.auth_account_deletion_failed
+import nuvio.composeapp.generated.resources.auth_notice_signed_out
 import nuvio.composeapp.generated.resources.auth_sign_in_failed
 import nuvio.composeapp.generated.resources.auth_sign_out_failed
 import nuvio.composeapp.generated.resources.auth_sign_up_failed
@@ -308,6 +309,7 @@ object ComposeResourcesStringProvider : StringProvider {
         StringKey.collections_tmdb_person_credits_not_found -> Res.string.collections_tmdb_person_credits_not_found
         StringKey.collections_tmdb_person_not_found -> Res.string.collections_tmdb_person_not_found
         StringKey.auth_account_deletion_failed -> Res.string.auth_account_deletion_failed
+        StringKey.auth_notice_signed_out -> Res.string.auth_notice_signed_out
         StringKey.auth_sign_in_failed -> Res.string.auth_sign_in_failed
         StringKey.auth_sign_out_failed -> Res.string.auth_sign_out_failed
         StringKey.auth_sign_up_failed -> Res.string.auth_sign_up_failed

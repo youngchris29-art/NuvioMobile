@@ -411,6 +411,29 @@
         }
       }
     },
+    "auth_notice_signed_out": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You have been signed out of Nuvio. Please sign in again."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vous avez été déconnecté de Nuvio. Veuillez vous reconnecter."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bạn đã đăng xuất khỏi Nuvio. Vui lòng đăng nhập lại."
+          }
+        }
+      }
+    },
     "auth_sign_in_failed": {
       "extractionState": "manual",
       "localizations": {
