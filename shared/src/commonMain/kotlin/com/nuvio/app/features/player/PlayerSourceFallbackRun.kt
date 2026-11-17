@@ -9,13 +9,27 @@ import com.nuvio.app.features.streams.StreamItem
 
 /**
  * The sources auto source selection tried before the one that plays, and how many further ones.
- * [keys] are opaque: shared builds them ([including], the walk) and decides with them
- * ([contains], [PlayerSourceFallback.isExcluded]); Swift only carries them back unchanged.
+ * [keys] are opaque: shared builds them ([including], [includingFailed], the walk) and decides
+ * with them ([contains], [PlayerSourceFallback.isExcluded]); Swift only carries them back
+ * unchanged. Besides one key per tried source they hold one marker per torrent that FAILED from
+ * an add-on during the walk (review r2), so the same-add-on copy rule covers every failure of the
+ * walk, across the hand-off from Up Next into the player, not just the last one.
  */
 data class PlayerSourceFallbackTried(val keys: Set<String>, val attempts: Int) {
     /** This set with [stream] added as tried (attempts unchanged). */
     fun including(stream: StreamItem): PlayerSourceFallbackTried =
         stream.playerSourceFallbackKey()?.let { copy(keys = keys + it) } ?: this
+
+    /**
+     * This set with [stream] added as tried AND, when it is a torrent, as a failed torrent of its
+     * add-on: every other copy of that torrent from that add-on is then excluded for the rest of
+     * the walk (the same torrent from another add-on stays a candidate). Use it when the source
+     * failed; [including] when it was only tried (it started and was replaced for another reason).
+     */
+    fun includingFailed(stream: StreamItem): PlayerSourceFallbackTried {
+        val marker = stream.failedTorrentMarker() ?: return including(stream)
+        return including(stream).let { it.copy(keys = it.keys + marker) }
+    }
 
     /** Whether [stream] was tried (review r1: the one tried-test, see [PlayerSourceFallback.isTried]). */
     fun contains(stream: StreamItem): Boolean = PlayerSourceFallback.isTried(stream, keys)
@@ -52,7 +66,8 @@ internal data class PlayerSourceFallbackRun<T, F>(
  * cancellation check stays on the main actor.
  *
  * [alreadyTried] seeds a walk that continues an earlier one (Up Next's tried set carried into the
- * player): its keys are never picked again and its attempts count against [maxSources]. Kotlin
+ * player): its sources are never picked again, nor other copies of the torrents it recorded as
+ * failed from the same add-on, and its attempts count against [maxSources]. Kotlin
  * default arguments do not exist in Swift, so the plain two-argument form is its own constructor.
  */
 class PlayerSourceFallbackWalk(
@@ -81,6 +96,8 @@ class PlayerSourceFallbackWalk(
 
     fun failed(nextCandidate: (failed: StreamItem, triedKeys: Set<String>) -> StreamItem?): StreamItem? {
         candidate.playerSourceFallbackKey()?.let(triedKeys::add)
+        // Review r2: remembered for the whole walk, not only as the last failure.
+        candidate.failedTorrentMarker()?.let(triedKeys::add)
         if (attempts >= maxSources) return null
         val next = nextCandidate(candidate, triedKeys.toSet()) ?: return null
         attempts++
@@ -217,8 +234,13 @@ object PlayerSourceFallback {
     }
 
     /**
-     * Upstream's candidate filter: a source already tried, or another copy of the torrent that
-     * failed from the same add-on, is never picked again in the same walk.
+     * Upstream's candidate filter, for the whole walk: a source already tried, or another copy
+     * (any file, or none) of a torrent that failed from the same add-on, is not picked again. The
+     * failures are the ones recorded in [triedKeys] ([PlayerSourceFallbackTried.includingFailed],
+     * the walk's own [PlayerSourceFallbackWalk.failed]) plus the one named by [failedAddonId] /
+     * [failedInfoHash]. A caller that records failures with plain `including` gets only the
+     * last-failure rule (upstream's behaviour). The same torrent from another add-on stays a
+     * candidate (review r1).
      */
     fun isExcluded(
         stream: StreamItem,
@@ -227,6 +249,8 @@ object PlayerSourceFallback {
         failedInfoHash: String?,
     ): Boolean {
         if (isTried(stream, triedKeys)) return true
+        val marker = stream.failedTorrentMarker()
+        if (marker != null && marker in triedKeys) return true
         return failedInfoHash != null &&
             stream.addonId == failedAddonId &&
             stream.p2pInfoHash.equals(failedInfoHash, ignoreCase = true)
@@ -305,8 +329,8 @@ object PlayerSourceFallback {
  * W4 (review r1): the identity a fallback walk's tried set uses. The same as
  * [playerSourceIdentityKey] except for torrents, where it also names the add-on: two add-ons
  * serving the same torrent and file are two sources to the walk (a dead link or expired resolve
- * from one must not rule out the other). Other copies of a failed torrent from the SAME add-on
- * are still left out by [PlayerSourceFallback.isExcluded]'s own rule. The identity key itself is
+ * from one must not rule out the other). Other copies of a torrent that failed from the SAME
+ * add-on are left out by [PlayerSourceFallback.isExcluded]'s own rule. The identity key itself is
  * unchanged, because the phone's player marks the playing row with it.
  */
 fun StreamItem.playerSourceFallbackKey(): String? {
@@ -372,3 +396,10 @@ fun StreamItem.playerSourceIdentityKey(): String? {
         .takeIf { parts -> parts.any { it.isNotBlank() } }
         ?.joinToString(separator = "|", prefix = "meta:")
 }
+
+/**
+ * Review r2: the tried-set marker of "this torrent failed from this add-on" (hash and add-on, no
+ * file: every copy of it from that add-on is excluded). Its own prefix: never a source key.
+ */
+private fun StreamItem.failedTorrentMarker(): String? =
+    p2pInfoHash?.trim()?.lowercase()?.takeIf { it.isNotBlank() }?.let { hash -> "failed-p2p:$hash@$addonId" }
