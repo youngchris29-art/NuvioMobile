@@ -84,6 +84,12 @@ internal sealed interface AuthEvent {
 
     /** Fed by the driver right after a step whose outputs ran [AuthOutput.WipeAccountData]. */
     data class WipeFinished(val ok: Boolean) : AuthEvent
+
+    /**
+     * Fed by the driver when a gate output ([AuthOutput.isGate]) could not be durably written; the
+     * outputs after it in that step were not run (r3-4).
+     */
+    data class GateFailed(val output: AuthOutput) : AuthEvent
 }
 
 /** A library status, read fresh under the lane (see AuthSessionDriver.snapshotOf). */
@@ -111,6 +117,13 @@ internal sealed interface Snap : AuthEvent {
 }
 
 internal sealed interface AuthOutput {
+    /**
+     * A durable write the steps after it depend on (r3-4): the wipe-pending marker before a wipe,
+     * and the owner before an account is shown. If it fails, the driver runs nothing after it in
+     * that step and reports [AuthEvent.GateFailed].
+     */
+    val isGate: Boolean get() = (this is PersistWipePending && pending) || this is PersistOwner
+
     data class Publish(val state: AuthState) : AuthOutput
     /** null records "no owner" (the owner is then known to be nobody). */
     data class PersistOwner(val userId: String?) : AuthOutput
@@ -156,6 +169,8 @@ internal data class AuthModelState(
     val trustedSerial: Long?,
     /** Serial whose validation is in flight. */
     val validationInFlight: Long?,
+    /** The access token that validation is checking (r3-3: a rotation in flight re-validates). */
+    val validationInFlightToken: String? = null,
     /** Serial whose account is the one published. */
     val acceptedSerial: Long?,
     /** Serial whose pre-accept wipe failed: not retried until a new serial or a new boot. */
@@ -235,6 +250,7 @@ private class StepBuilder(var state: AuthModelState) {
             validatedSerial = null,
             trustedSerial = null,
             validationInFlight = null,
+            validationInFlightToken = null,
             acceptedSerial = null,
             validationDeferredSerial = null,
         )
@@ -283,13 +299,14 @@ private class StepBuilder(var state: AuthModelState) {
         }
         when (after) {
             is AfterWipe.Lost -> {
-                // I6: the owner is cleared only after a wipe succeeded.
-                if (ok) recordOwner(null)
                 if (after.notice) {
                     state = state.copy(noticePending = true)
                     emit(AuthOutput.PersistNotice(true))
                     emit(AuthOutput.ShowNotice)
                 }
+                // I6: the owner is cleared only after a wipe succeeded. It is a gate (r3-4), so
+                // the notice comes first and a failed owner write still publishes signed-out.
+                if (ok) recordOwner(null)
                 publishIfChanged(AuthState.Unauthenticated)
             }
             AfterWipe.Reset -> {
@@ -309,6 +326,43 @@ private class StepBuilder(var state: AuthModelState) {
                 if (ok) {
                     recordOwner(null)
                     showGuest(after.guestId)
+                } else {
+                    leaveFailedGuestStart()
+                }
+            }
+        }
+    }
+
+    /**
+     * r3-2: a guest whose pre-start wipe could not run is not a guest: no guest id was saved, and
+     * the next account session must be validated (and retry the wipe) instead of being ignored.
+     */
+    private fun leaveFailedGuestStart() {
+        if (state.live is Guest) state = state.copy(live = NoSession(mint()))
+        publishIfChanged(AuthState.Unauthenticated)
+    }
+
+    private fun gateFailed(output: AuthOutput) {
+        emit(AuthOutput.Drop("durable write failed, nothing after it ran: $output"))
+        when {
+            output is AuthOutput.PersistWipePending -> {
+                // The marker is not on disk, so the wipe never started; local data and the
+                // recorded owner are still consistent. Keep the marker in memory so the next
+                // account or guest retries, and carry on as a failed wipe.
+                state = state.copy(wipePending = true)
+                wipeFinished(ok = false)
+            }
+            output is AuthOutput.PersistOwner -> {
+                // The owner is not durably recorded: never show the account (or guest) it was for.
+                val live = state.live
+                val published = state.published
+                if (live is Account) state = state.copy(wipeFailedSerial = live.serial)
+                if (live is Guest && published is AuthState.Authenticated && published.isAnonymous && published.userId == live.guestId) {
+                    // The guest saved at boot is already shown and owns its data; the next boot
+                    // records "no owner" again.
+                    Unit
+                } else if (live is Guest) {
+                    leaveFailedGuestStart()
                 } else {
                     publishIfChanged(AuthState.Unauthenticated)
                 }
@@ -371,15 +425,19 @@ private class StepBuilder(var state: AuthModelState) {
                 // A saved guest id means the local data is that guest's: with no owner ever
                 // recorded (an upgrading guest), record "no account owner" now, with no wipe. Only
                 // "unknown owner, no guest id, no usable stored session" clears leftovers.
-                if (guestId != null && state.ownerUnknown) recordOwner(null)
                 publish(
                     if (guestId != null) AuthState.Authenticated(userId = guestId, email = null, isAnonymous = true)
                     else AuthState.Loading,
                 )
                 if (event.notice) emit(AuthOutput.ShowNotice)
+                // Last, after the guest is shown: if this write fails the guest still stands and
+                // the next boot records it again (r3-4; the guest is the saved one, its own data).
+                if (guestId != null && state.ownerUnknown) recordOwner(null)
             }
 
             is AuthEvent.WipeFinished -> wipeFinished(event.ok)
+
+            is AuthEvent.GateFailed -> gateFailed(event.output)
 
             Snap.Initializing -> {
                 // Fork rule: never re-enter Loading once the restore watchdog has fired.
@@ -436,12 +494,15 @@ private class StepBuilder(var state: AuthModelState) {
                     emit(AuthOutput.Drop("stale validation verdict ${event.verdict} for serial ${event.ticket.serial}"))
                     return
                 }
-                state = state.copy(validationInFlight = null)
+                val checkedToken = state.validationInFlightToken
+                state = state.copy(validationInFlight = null, validationInFlightToken = null)
                 // r2-3: an identity is resolved only by a Valid verdict that returns the user. Any
                 // other verdict taken while it is unresolved never counts for it later.
                 val unresolved = live.userId == null
                 if (unresolved && event.verdict != SessionVerdict.Invalid && (event.verdict != SessionVerdict.Valid || event.verifiedUserId == null)) {
-                    state = state.copy(validationDeferredSerial = live.serial)
+                    // r3-3: if the token rotated while this check ran, the current token is checked
+                    // now (settle) instead of deferring until a status that was already consumed.
+                    if (checkedToken == live.accessToken) state = state.copy(validationDeferredSerial = live.serial)
                     if (event.verdict == SessionVerdict.JwtExpired) emit(AuthOutput.KickSessionRefresh)
                     emit(AuthOutput.Drop("identity still unresolved after ${event.verdict}; validating again on the next status"))
                     return
@@ -581,7 +642,7 @@ private class StepBuilder(var state: AuthModelState) {
             val userId = live.userId ?: return
             accept(live, userId)
         } else if (state.validationInFlight == null && state.validationDeferredSerial != live.serial) {
-            state = state.copy(validationInFlight = live.serial)
+            state = state.copy(validationInFlight = live.serial, validationInFlightToken = live.accessToken)
             emit(AuthOutput.StartValidation(AuthTicket(live.serial), live.accessToken))
         }
     }

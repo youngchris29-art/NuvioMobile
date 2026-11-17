@@ -8,13 +8,17 @@ expect object AuthStorage {
     fun saveFlag(key: String, value: Boolean)
     /** User id of the account whose data is on this device; null when none or never recorded. */
     fun loadAccountOwner(): String?
-    /** null records "no owner" (kept as an empty value, so it stays distinct from never recorded). */
-    fun saveAccountOwner(userId: String?)
+    /**
+     * null records "no owner" (kept as an empty value, so it stays distinct from never recorded).
+     * Returns false when the value could not be durably written (r3-4).
+     */
+    fun saveAccountOwner(userId: String?): Boolean
     /** False on an install that never recorded an owner: its local data may belong to any account. */
     fun isAccountOwnerRecorded(): Boolean
     /** A wipe started and has not confirmed success (see AuthSessionModel). */
     fun loadAccountWipePending(): Boolean
-    fun saveAccountWipePending(pending: Boolean)
+    /** Returns false when the value could not be durably written (r3-4). */
+    fun saveAccountWipePending(pending: Boolean): Boolean
 }
 
 /**

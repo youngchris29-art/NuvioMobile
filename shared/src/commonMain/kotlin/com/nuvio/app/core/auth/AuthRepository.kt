@@ -176,11 +176,15 @@ object AuthRepository {
             _state.value = state
         }
 
-        override fun persistOwner(userId: String?) = AuthStorage.saveAccountOwner(userId)
+        override fun persistOwner(userId: String?) {
+            check(AuthStorage.saveAccountOwner(userId)) { "account owner was not durably written" }
+        }
 
         override fun persistNotice(pending: Boolean) = AuthStorage.saveFlag(KEY_SIGNED_OUT_NOTICE, pending)
 
-        override fun persistWipePending(pending: Boolean) = AuthStorage.saveAccountWipePending(pending)
+        override fun persistWipePending(pending: Boolean) {
+            check(AuthStorage.saveAccountWipePending(pending)) { "wipe marker was not durably written" }
+        }
 
         override fun showNotice() {
             val notice = signedOutNoticeText()

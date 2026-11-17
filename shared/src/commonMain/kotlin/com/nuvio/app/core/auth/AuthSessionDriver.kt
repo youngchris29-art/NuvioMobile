@@ -33,8 +33,11 @@ import kotlinx.coroutines.withContext
  */
 internal interface AuthEffects {
     fun publish(state: AuthState)
+    /** Throws when the owner could not be durably written (a gate, r3-4). */
     fun persistOwner(userId: String?)
     fun persistNotice(pending: Boolean)
+
+    /** Throws when the marker could not be durably written (a gate when set, r3-4). */
     fun persistWipePending(pending: Boolean)
     fun showNotice()
     fun hideNotice()
@@ -313,22 +316,30 @@ internal class AuthSessionDriver(
         var failure: Throwable? = null
         var wipeRan = false
         var wipeOk = true
+        var gateFailed: AuthOutput? = null
         withContext(NonCancellable) {
             for (output in result.outputs) {
                 try {
                     if (output == AuthOutput.WipeAccountData) wipeRan = true
                     run(output)
                 } catch (e: Throwable) {
-                    // I3: a failing output never skips the ones after it (the publish above all).
                     effects.log("Auth output $output failed: $e")
                     if (output == AuthOutput.WipeAccountData) wipeOk = false
                     if (failure == null) failure = e
+                    // r3-4: a failed durable write stops the step; the reducer decides what
+                    // follows (it always publishes a signed-out state, I3). Any other failing
+                    // output never skips the ones after it.
+                    if (output.isGate) {
+                        gateFailed = output
+                        break
+                    }
                 }
             }
         }
         // r1-5: the wipe's outcome goes back to the reducer, which decides what follows it.
-        if (wipeRan) {
-            val next = step(AuthEvent.WipeFinished(wipeOk))
+        val followUp = gateFailed?.let { AuthEvent.GateFailed(it) } ?: if (wipeRan) AuthEvent.WipeFinished(wipeOk) else null
+        if (followUp != null) {
+            val next = step(followUp)
             if (failure == null) failure = next.failure
         }
         return Sent(result.cleared, failure)

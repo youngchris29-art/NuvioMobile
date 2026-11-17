@@ -51,6 +51,7 @@ class AuthSessionDriverTest {
         var wipeFailure: Throwable? = null
         var signIn: suspend (String) -> Unit = {}
         var remoteSignOutFailure: Throwable? = null
+        var markerFailure: Throwable? = null
 
         fun count(entry: String) = log.count { it == entry }
 
@@ -61,7 +62,10 @@ class AuthSessionDriverTest {
 
         override fun persistOwner(userId: String?) { log += "owner:$userId" }
         override fun persistNotice(pending: Boolean) { log += "persistNotice:$pending" }
-        override fun persistWipePending(pending: Boolean) { log += "wipePending:$pending" }
+        override fun persistWipePending(pending: Boolean) {
+            log += "wipePending:$pending"
+            if (pending) markerFailure?.let { throw it }
+        }
         override fun showNotice() { log += "showNotice" }
         override fun hideNotice() { log += "hideNotice" }
         override fun saveGuestId(guestId: String) { log += "saveGuest:$guestId" }
@@ -239,7 +243,7 @@ class AuthSessionDriverTest {
         assertTrue(rig.driver.reportSessionError(ticket, SessionErrorKind.DeletedAccount))
         rig.settle()
         assertEquals(
-            listOf("clear", "cleared", "clearGuest", "wipePending:true", "wipe", "wipePending:false", "owner:null", "persistNotice:true", "showNotice", "publish:Unauthenticated"),
+            listOf("clear", "cleared", "clearGuest", "wipePending:true", "wipe", "wipePending:false", "persistNotice:true", "showNotice", "owner:null", "publish:Unauthenticated"),
             rig.effects.log.takeLast(10),
         )
         assertEquals(1, rig.effects.count("wipe"))
@@ -539,5 +543,17 @@ class AuthSessionDriverTest {
         assertTrue("owner:B" !in rig.effects.log)
         assertEquals(AuthState.Unauthenticated, rig.effects.published)
         assertFalse("wipePending:false" in rig.effects.log)
+    }
+
+    @Test
+    fun aMarkerWriteThatFailsStopsTheStepBeforeTheWipe() = runTest {
+        // r3-4, driven end to end: the gate failure skips the wipe and the reducer publishes signed-out.
+        val rig = Rig(this)
+        rig.signedIn("A", "a1")
+        rig.effects.markerFailure = IllegalStateException("not durable")
+        val result = rig.driver.signOut()
+        assertTrue(result.isFailure)
+        assertFalse("wipe" in rig.effects.log)
+        assertEquals(AuthState.Unauthenticated, rig.effects.published)
     }
 }

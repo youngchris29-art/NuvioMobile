@@ -41,9 +41,8 @@ actual object AuthStorage {
     actual fun loadAccountOwner(): String? =
         markers?.getString(KEY_ACCOUNT_OWNER, null)?.takeIf { it.isNotEmpty() }
 
-    actual fun saveAccountOwner(userId: String?) {
-        markers?.edit()?.putString(KEY_ACCOUNT_OWNER, userId.orEmpty())?.commit()
-    }
+    actual fun saveAccountOwner(userId: String?): Boolean =
+        markers?.edit()?.putString(KEY_ACCOUNT_OWNER, userId.orEmpty())?.commit() == true
 
     actual fun isAccountOwnerRecorded(): Boolean =
         markers?.getString(KEY_ACCOUNT_OWNER, null) != null
@@ -51,7 +50,6 @@ actual object AuthStorage {
     actual fun loadAccountWipePending(): Boolean =
         markers?.getBoolean(KEY_ACCOUNT_WIPE_PENDING, false) == true
 
-    actual fun saveAccountWipePending(pending: Boolean) {
-        markers?.edit()?.putBoolean(KEY_ACCOUNT_WIPE_PENDING, pending)?.commit()
-    }
+    actual fun saveAccountWipePending(pending: Boolean): Boolean =
+        markers?.edit()?.putBoolean(KEY_ACCOUNT_WIPE_PENDING, pending)?.commit() == true
 }
