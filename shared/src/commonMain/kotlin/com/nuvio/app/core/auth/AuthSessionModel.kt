@@ -461,8 +461,21 @@ private class StepBuilder(var state: AuthModelState) {
                 // Round 7: a guest whose id is not on disk is not shown (the next launch would
                 // not know it, and its data would reach the next account unwiped).
                 leaveFailedGuestStart()
-            pending is PendingGate.Owner && output is AuthOutput.PersistOwner -> when (val then = pending.then) {
-                // The owner stays what is on disk; what it was for is never shown.
+            pending is PendingGate.Owner && output is AuthOutput.PersistOwner -> {
+                // Narrow check: a write that reported failure may still have reached the disk (a
+                // setter fills the cache before the flush fails; a later flush persists it). So
+                // what the disk holds is now unknown: the next identity wipes first and its owner
+                // write is never skipped. Only a confirmed write (GatePassed) makes it known again.
+                state = state.copy(owner = null, ownerUnknown = true)
+                ownerGateFailed(pending.then)
+            }
+            else -> emit(AuthOutput.Drop("gate outcome $output does not match the pending gate $pending"))
+        }
+    }
+
+    private fun ownerGateFailed(then: OwnerThen) {
+        when (then) {
+                // What the owner write was for is never shown.
                 is OwnerThen.Accept -> {
                     acceptFailed(then.serial)
                     publishIfChanged(AuthState.Unauthenticated)
@@ -471,8 +484,6 @@ private class StepBuilder(var state: AuthModelState) {
                 is OwnerThen.GuestShow -> leaveFailedGuestStart()
                 // The boot guest is already shown and owns its data; the next boot records it again.
                 OwnerThen.BootGuest -> Unit
-            }
-            else -> emit(AuthOutput.Drop("gate outcome $output does not match the pending gate $pending"))
         }
     }
 

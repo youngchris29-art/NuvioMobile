@@ -1165,12 +1165,16 @@ class AuthSessionModelTest {
         run.ownerWriteOk = false
         run.send(acct("B", "b1"))
         run.send(ValidationFinished(run.startedValidation(), SessionVerdict.Valid))
-        assertEquals("A", run.state.owner)
+        // Narrow check: the failed write may have reached the disk, so the owner is now unknown.
+        assertNull(run.state.owner)
+        assertTrue(run.state.ownerUnknown)
         run.ownerWriteOk = true
         run.send(acct("B", "b2"))
         val accept = run.send(ValidationFinished(run.startedValidation(), SessionVerdict.Valid))
+        assertTrue(accept.indexOf(WipeAccountData) < accept.indexOf(PersistOwner("B")), "$accept")
         assertTrue(accept.indexOf(PersistOwner("B")) < accept.indexOf(Publish(account("B"))), "$accept")
         assertEquals("B", run.state.owner)
+        assertFalse(run.state.ownerUnknown)
     }
 
     // ── Review round 5: a permanently failing gate never repeats without a new event ────────────
@@ -1186,8 +1190,10 @@ class AuthSessionModelTest {
         assertEquals(1, gateWrites(noWipe.send(ValidationFinished(noWipe.startedValidation(), SessionVerdict.Valid))))
         assertEquals(0, gateWrites(noWipe.send(Snap.RefreshFailure)))
         // Round 6: a later status of the same session retries, up to the bound, then never again.
-        assertEquals(1, gateWrites(noWipe.send(acct("B", "b2", refreshedFrom = "b1"))))
-        assertEquals(1, gateWrites(noWipe.send(acct("B", "b3", refreshedFrom = "b2"))))
+        // Narrow check: after a failed owner write the owner is unknown, so each retry wipes
+        // first (marker set, marker clear) and then writes the owner.
+        assertEquals(3, gateWrites(noWipe.send(acct("B", "b2", refreshedFrom = "b1"))))
+        assertEquals(3, gateWrites(noWipe.send(acct("B", "b3", refreshedFrom = "b2"))))
         assertEquals(0, gateWrites(noWipe.send(acct("B", "b4", refreshedFrom = "b3"))))
         assertEquals(0, gateWrites(noWipe.send(Snap.RefreshFailure)))
         assertEquals(AuthState.Unauthenticated, noWipe.state.published)

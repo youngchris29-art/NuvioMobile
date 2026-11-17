@@ -285,13 +285,16 @@ internal class AuthSessionDriver(
 
     suspend fun prepareForServerSwitch(): Result<Unit> = command {
         exclusive {
-            // Round 8: a server switch must not report success after a failed step it depends on;
-            // the controller then aborts the switch.
-            val started = send(AuthEvent.ResetStarted(ResetKind.ServerSwitch))
+            // Narrow check: the reset start's only fallible outputs are the best-effort guest-id
+            // clear and the notice. Neither is a step the switch depends on: a guest id left on
+            // disk is never trusted over the account the new server's sign-in records as owner
+            // (resolveBoot). Failing the switch on it would strand every switch while the clear
+            // keeps failing. The session clear and the wipe-and-owner reset still decide it.
+            send(AuthEvent.ResetStarted(ResetKind.ServerSwitch))
             val (clear, finished) = withContext(NonCancellable) {
                 attempt { effects.clearSupabaseSession() } to send(AuthEvent.ResetFinished(ResetKind.ServerSwitch))
             }
-            throwFirst(started.failure, clear.exceptionOrNull(), finished.failure)
+            throwFirst(clear.exceptionOrNull(), finished.failure)
         }
     }
 
