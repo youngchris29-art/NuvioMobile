@@ -55,6 +55,8 @@ object AuthRepository {
         guestId = AuthStorage.loadAnonymousUserId(),
         owner = AuthStorage.loadAccountOwner(),
         notice = AuthStorage.loadFlag(KEY_SIGNED_OUT_NOTICE),
+        ownerUnknown = !AuthStorage.isAccountOwnerRecorded(),
+        wipePending = AuthStorage.loadAccountWipePending(),
     )
 
     fun initialize() {
@@ -178,6 +180,8 @@ object AuthRepository {
 
         override fun persistNotice(pending: Boolean) = AuthStorage.saveFlag(KEY_SIGNED_OUT_NOTICE, pending)
 
+        override fun persistWipePending(pending: Boolean) = AuthStorage.saveAccountWipePending(pending)
+
         override fun showNotice() {
             val notice = signedOutNoticeText()
             _error.value = notice
@@ -201,9 +205,8 @@ object AuthRepository {
 
         override suspend fun kickSessionRefresh() = SupabaseProvider.client.auth.startAutoRefreshForCurrentSession()
 
-        override suspend fun checkUser(accessToken: String) {
-            SupabaseProvider.client.auth.retrieveUser(accessToken)
-        }
+        override suspend fun checkUser(accessToken: String): String? =
+            SupabaseProvider.client.auth.retrieveUser(accessToken).id.takeIf { it.isNotBlank() }
 
         override fun log(message: String) = log.i { message }
 

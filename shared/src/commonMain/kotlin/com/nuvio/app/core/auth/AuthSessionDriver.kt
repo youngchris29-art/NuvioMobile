@@ -35,6 +35,7 @@ internal interface AuthEffects {
     fun publish(state: AuthState)
     fun persistOwner(userId: String?)
     fun persistNotice(pending: Boolean)
+    fun persistWipePending(pending: Boolean)
     fun showNotice()
     fun hideNotice()
     fun saveGuestId(guestId: String)
@@ -45,8 +46,11 @@ internal interface AuthEffects {
     /** Restarts the library's own session job for the live session; never a refresh by the app (I5). */
     suspend fun kickSessionRefresh()
 
-    /** Asks the server who [accessToken] belongs to; throws on any failure (classified by the driver). */
-    suspend fun checkUser(accessToken: String)
+    /**
+     * Asks the server who [accessToken] belongs to and returns that user's id (null if the answer
+     * carried none); throws on any failure (classified by the driver).
+     */
+    suspend fun checkUser(accessToken: String): String?
     fun log(message: String)
 
     // User-started library calls, run inside the lane.
@@ -65,18 +69,20 @@ internal data class Sent(val cleared: Boolean, val failure: Throwable?)
 internal fun snapshotOf(status: SessionStatus): Snap = when (status) {
     is SessionStatus.Initializing -> Snap.Initializing
     is SessionStatus.RefreshFailure -> Snap.RefreshFailure
-    is SessionStatus.NotAuthenticated -> Snap.NotAuthenticated
+    is SessionStatus.NotAuthenticated -> Snap.NotAuthenticated(cleared = status.isSignOut)
     is SessionStatus.Authenticated -> {
         val user = status.session.user
         if (user?.isAnonymous == true) {
             Snap.Scaffold
         } else {
             Snap.Account(
-                userId = user?.id.orEmpty(),
+                // r1-2: a session without a user has an unresolved identity, never "".
+                userId = user?.id?.takeIf { it.isNotBlank() },
                 email = user?.email,
                 accessToken = status.session.accessToken,
                 refreshToken = status.session.refreshToken,
                 refreshedFrom = (status.source as? SessionSource.Refresh)?.oldSession?.refreshToken,
+                restored = status.source is SessionSource.Storage || status.source is SessionSource.Refresh,
             )
         }
     }
@@ -111,6 +117,10 @@ internal class AuthSessionDriver(
     private var ticket: AuthTicket = AuthTicket(AuthModelState.Initial.live.serial)
 
     private var collectorJob: Job? = null
+
+    /** The flow the collector watches, and the status value last fed to the reducer (lane only). */
+    private var statusFlow: StateFlow<SessionStatus>? = null
+    private var lastFed: SessionStatus? = null
     private var watchdogJob: Job? = null
 
     fun currentTicket(): AuthTicket = ticket
@@ -131,7 +141,11 @@ internal class AuthSessionDriver(
     suspend fun restart(boot: AuthEvent.Boot, status: () -> StateFlow<SessionStatus>, collectDelay: Duration? = null) {
         collectorJob?.cancelAndJoin()
         watchdogJob?.cancelAndJoin()
-        lane.withLock { step(boot) }
+        lane.withLock {
+            statusFlow = null
+            lastFed = null
+            step(boot)
+        }
         launchWatchers(status, collectDelay)
     }
 
@@ -146,9 +160,10 @@ internal class AuthSessionDriver(
                 delay(collectDelay)
             }
             val flow = status()
+            lane.withLock { statusFlow = flow }
             // Snapshot rule: the emission only wakes the collector; the status reduced is the one
             // live when the lane is held, so a superseded status is never acted on.
-            flow.collect { lane.withLock { step(snapshotOf(flow.value)) } }
+            flow.collect { lane.withLock { feed(flow.value) } }
         }
     }
 
@@ -172,7 +187,10 @@ internal class AuthSessionDriver(
         scope.launch(start = CoroutineStart.UNDISPATCHED) { exclusive(block) }
 
     suspend fun reportSessionError(ticket: AuthTicket, kind: SessionErrorKind): Boolean =
-        lane.withLock { step(AuthEvent.SessionErrorReported(ticket, kind)).cleared }
+        lane.withLock {
+            reconcile()
+            step(AuthEvent.SessionErrorReported(ticket, kind)).cleared
+        }
 
     inner class Lane internal constructor() {
         internal var openReset: ResetKind? = null
@@ -190,11 +208,19 @@ internal class AuthSessionDriver(
             return step(event)
         }
 
-        /** Brackets one session-start library call; identity still comes only from snapshots. */
+        /**
+         * Brackets one session-start library call; identity still comes only from snapshots. The
+         * library emits the new session inside the call, so the live status is fed before the lane
+         * is released (r1-3): the previous session's ticket is retired in this hold, and a verdict
+         * queued behind it can no longer match.
+         */
         suspend fun sessionStart(kind: SessionStartKind, call: suspend () -> Unit) {
             send(AuthEvent.SessionStartStarted(kind))
             val result = attempt(call)
-            send(AuthEvent.SessionStartFinished(kind, result.isSuccess))
+            withContext(NonCancellable) {
+                reconcile()
+                send(AuthEvent.SessionStartFinished(kind, result.isSuccess))
+            }
             result.getOrThrow()
         }
     }
@@ -222,9 +248,13 @@ internal class AuthSessionDriver(
             val guest = liveIsGuest
             send(AuthEvent.ResetStarted(ResetKind.SignOut))
             val remote = if (guest) null else attempt { effects.signOutRemote() }
-            // B6: the fallback local clear; a guest always clears any stale library session.
-            val fallback = if (remote == null || remote.isFailure) attempt { effects.clearSupabaseSession() } else null
-            val finished = send(AuthEvent.ResetFinished(ResetKind.SignOut))
+            // B6: the fallback local clear; a guest always clears any stale library session. It
+            // runs with the rest of the reset, non-cancellable (r1-4): a cancelled sign-out must
+            // not wipe and publish signed-out while the session is still stored.
+            val (fallback, finished) = withContext(NonCancellable) {
+                val clear = if (remote == null || remote.isFailure) attempt { effects.clearSupabaseSession() } else null
+                clear to send(AuthEvent.ResetFinished(ResetKind.SignOut))
+            }
             // A guest's local clear is best-effort (it had no session to end); only its
             // cancellation is passed on.
             val fallbackFailure = fallback?.exceptionOrNull()?.takeIf { remote != null || it is CancellationException }
@@ -238,8 +268,10 @@ internal class AuthSessionDriver(
             effects.deleteAccountRemote()
             send(AuthEvent.ResetStarted(ResetKind.DeleteAccount))
             val remote = attempt { effects.signOutRemote() }
-            val fallback = if (remote.isFailure) attempt { effects.clearSupabaseSession() } else null
-            val finished = send(AuthEvent.ResetFinished(ResetKind.DeleteAccount))
+            val (fallback, finished) = withContext(NonCancellable) {
+                val clear = if (remote.isFailure) attempt { effects.clearSupabaseSession() } else null
+                clear to send(AuthEvent.ResetFinished(ResetKind.DeleteAccount))
+            }
             throwFirst(remote.exceptionOrNull(), fallback?.exceptionOrNull(), finished.failure)
         }
     }
@@ -247,8 +279,9 @@ internal class AuthSessionDriver(
     suspend fun prepareForServerSwitch(): Result<Unit> = command {
         exclusive {
             send(AuthEvent.ResetStarted(ResetKind.ServerSwitch))
-            val clear = attempt { effects.clearSupabaseSession() }
-            val finished = send(AuthEvent.ResetFinished(ResetKind.ServerSwitch))
+            val (clear, finished) = withContext(NonCancellable) {
+                attempt { effects.clearSupabaseSession() } to send(AuthEvent.ResetFinished(ResetKind.ServerSwitch))
+            }
             throwFirst(clear.exceptionOrNull(), finished.failure)
         }
     }
@@ -257,21 +290,46 @@ internal class AuthSessionDriver(
 
     // ── Steps ────────────────────────────────────────────────────────────────────────────────────
 
+    /** Feeds a status value to the reducer and remembers it as observed. */
+    private suspend fun feed(status: SessionStatus): Sent {
+        lastFed = status
+        return step(snapshotOf(status))
+    }
+
+    /**
+     * Under the lane, before an event that carries a ticket or closes a session start: feed the
+     * live status if the collector has not reduced it yet (r1-3). Plumbing only; the reducer decides.
+     */
+    private suspend fun reconcile() {
+        val flow = statusFlow ?: return
+        val current = flow.value
+        if (current !== lastFed) feed(current)
+    }
+
     private suspend fun step(event: AuthEvent): Sent {
         val result = reduce(state, event)
         state = result.state
         ticket = AuthTicket(result.state.live.serial)
         var failure: Throwable? = null
+        var wipeRan = false
+        var wipeOk = true
         withContext(NonCancellable) {
             for (output in result.outputs) {
                 try {
+                    if (output == AuthOutput.WipeAccountData) wipeRan = true
                     run(output)
                 } catch (e: Throwable) {
                     // I3: a failing output never skips the ones after it (the publish above all).
                     effects.log("Auth output $output failed: $e")
+                    if (output == AuthOutput.WipeAccountData) wipeOk = false
                     if (failure == null) failure = e
                 }
             }
+        }
+        // r1-5: the wipe's outcome goes back to the reducer, which decides what follows it.
+        if (wipeRan) {
+            val next = step(AuthEvent.WipeFinished(wipeOk))
+            if (failure == null) failure = next.failure
         }
         return Sent(result.cleared, failure)
     }
@@ -281,6 +339,7 @@ internal class AuthSessionDriver(
             is AuthOutput.Publish -> effects.publish(output.state)
             is AuthOutput.PersistOwner -> effects.persistOwner(output.userId)
             is AuthOutput.PersistNotice -> effects.persistNotice(output.pending)
+            is AuthOutput.PersistWipePending -> effects.persistWipePending(output.pending)
             AuthOutput.ShowNotice -> effects.showNotice()
             AuthOutput.HideNotice -> effects.hideNotice()
             is AuthOutput.SaveGuestId -> effects.saveGuestId(output.guestId)
@@ -296,15 +355,20 @@ internal class AuthSessionDriver(
     /** Outside the lane: only the verdict is reduced under it. */
     private fun launchValidation(ticket: AuthTicket, accessToken: String) {
         scope.launch {
+            var verifiedUserId: String? = null
             val verdict = try {
-                effects.checkUser(accessToken)
+                verifiedUserId = effects.checkUser(accessToken)
                 SessionVerdict.Valid
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
                 e.validationVerdict().also { effects.log("Session validation for serial ${ticket.serial}: $it ($e)") }
             }
-            lane.withLock { step(AuthEvent.ValidationFinished(ticket, verdict)) }
+            lane.withLock {
+                // r1-3: a session started while this verdict queued is observed first.
+                reconcile()
+                step(AuthEvent.ValidationFinished(ticket, verdict, verifiedUserId))
+            }
         }
     }
 }

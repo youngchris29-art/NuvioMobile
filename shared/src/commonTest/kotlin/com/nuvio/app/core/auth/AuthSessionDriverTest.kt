@@ -24,6 +24,8 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.yield
 
 /**
@@ -39,6 +41,10 @@ class AuthSessionDriverTest {
 
         /** Access token → failure for [checkUser]; absent means valid. */
         val checkFailures = mutableMapOf<String, Throwable>()
+
+        /** Access token → the user id the server returns (absent: none). */
+        val checkUserIds = mutableMapOf<String, String>()
+        var checkHook: suspend (String) -> Unit = {}
         var checkGate: CompletableDeferred<Unit>? = null
         var clearGate: CompletableDeferred<Unit>? = null
         var remoteSignOutGate: CompletableDeferred<Unit>? = null
@@ -55,6 +61,7 @@ class AuthSessionDriverTest {
 
         override fun persistOwner(userId: String?) { log += "owner:$userId" }
         override fun persistNotice(pending: Boolean) { log += "persistNotice:$pending" }
+        override fun persistWipePending(pending: Boolean) { log += "wipePending:$pending" }
         override fun showNotice() { log += "showNotice" }
         override fun hideNotice() { log += "hideNotice" }
         override fun saveGuestId(guestId: String) { log += "saveGuest:$guestId" }
@@ -68,15 +75,21 @@ class AuthSessionDriverTest {
         override suspend fun clearSupabaseSession() {
             log += "clear"
             clearGate?.await()
+            // Like the library's settings removal: suspends, and a cancelled caller fails here.
+            yield()
+            currentCoroutineContext().ensureActive()
+            log += "cleared"
             flow.value = SessionStatus.NotAuthenticated(true)
         }
 
         override suspend fun kickSessionRefresh() { log += "kick" }
 
-        override suspend fun checkUser(accessToken: String) {
+        override suspend fun checkUser(accessToken: String): String? {
             log += "check:$accessToken"
             checkGate?.await()
+            checkHook(accessToken)
             checkFailures[accessToken]?.let { throw it }
+            return checkUserIds[accessToken]
         }
 
         override fun log(message: String) = Unit
@@ -124,15 +137,15 @@ class AuthSessionDriverTest {
     }
 
     private companion object {
-        fun session(user: String, rt: String, anonymous: Boolean = false) = UserSession(
+        fun session(user: String?, rt: String, anonymous: Boolean = false) = UserSession(
             accessToken = "at-$rt",
             refreshToken = rt,
             expiresIn = 3600,
             tokenType = "bearer",
-            user = UserInfo(aud = "authenticated", id = user, email = "$user@example.test", isAnonymous = anonymous),
+            user = user?.let { UserInfo(aud = "authenticated", id = it, email = "$it@example.test", isAnonymous = anonymous) },
         )
 
-        fun authenticated(user: String, rt: String, source: SessionSource = SessionSource.SignIn(Email)) =
+        fun authenticated(user: String?, rt: String, source: SessionSource = SessionSource.SignIn(Email)) =
             SessionStatus.Authenticated(session(user, rt), source)
 
         fun account(user: String) = AuthState.Authenticated(userId = user, email = "$user@example.test", isAnonymous = false)
@@ -225,8 +238,10 @@ class AuthSessionDriverTest {
         rig.settle()
         assertTrue(rig.driver.reportSessionError(ticket, SessionErrorKind.DeletedAccount))
         rig.settle()
-        assertEquals(listOf("clear", "clearGuest", "wipe", "owner:null", "persistNotice:true", "showNotice", "publish:Unauthenticated"),
-            rig.effects.log.takeLast(7))
+        assertEquals(
+            listOf("clear", "cleared", "clearGuest", "wipePending:true", "wipe", "wipePending:false", "owner:null", "persistNotice:true", "showNotice", "publish:Unauthenticated"),
+            rig.effects.log.takeLast(10),
+        )
         assertEquals(1, rig.effects.count("wipe"))
     }
 
@@ -241,7 +256,10 @@ class AuthSessionDriverTest {
         assertTrue(result.isFailure)
         assertEquals("disk", result.exceptionOrNull()?.message)
         val tail = rig.effects.log.dropWhile { it != "wipe" }
-        assertEquals(listOf("wipe", "owner:null", "publish:Unauthenticated"), tail.take(3))
+        // r1-5: the owner stays (its data may remain) and the marker stays set; signed-out is published.
+        assertEquals(listOf("wipe", "publish:Unauthenticated"), tail)
+        assertTrue("wipePending:true" in rig.effects.log)
+        assertFalse("wipePending:false" in rig.effects.log)
         assertEquals(AuthState.Unauthenticated, rig.effects.published)
     }
 
@@ -260,6 +278,9 @@ class AuthSessionDriverTest {
         assertEquals(1, rig.effects.count("wipe"))
         assertEquals(AuthState.Unauthenticated, rig.effects.published)
         assertTrue(rig.effects.log.indexOf("wipe") < rig.effects.log.lastIndexOf("owner:null"))
+        // r1-4: the fallback clear ran to the end (non-cancellable) before the wipe.
+        assertTrue("cleared" in rig.effects.log)
+        assertTrue(rig.effects.log.indexOf("cleared") < rig.effects.log.indexOf("wipe"))
     }
 
     @Test
@@ -402,14 +423,19 @@ class AuthSessionDriverTest {
     @Test
     fun snapshotOfMapsEveryStatus() {
         assertEquals(Snap.Initializing, snapshotOf(SessionStatus.Initializing))
-        assertEquals(Snap.NotAuthenticated, snapshotOf(SessionStatus.NotAuthenticated(true)))
-        assertEquals(Snap.NotAuthenticated, snapshotOf(SessionStatus.NotAuthenticated(false)))
+        assertEquals(Snap.NotAuthenticated(cleared = true), snapshotOf(SessionStatus.NotAuthenticated(true)))
+        assertEquals(Snap.NotAuthenticated(cleared = false), snapshotOf(SessionStatus.NotAuthenticated(false)))
+        val noUser = snapshotOf(authenticated(null, "x1", SessionSource.Storage))
+        assertIs<Snap.Account>(noUser)
+        assertNull(noUser.userId)
+        assertTrue(noUser.restored)
+        assertFalse((snapshotOf(authenticated("A", "a1")) as Snap.Account).restored)
         assertEquals(
             Snap.RefreshFailure,
             snapshotOf(SessionStatus.RefreshFailure(RefreshFailureCause.NetworkError(RuntimeException("offline")))),
         )
         val refreshed = snapshotOf(authenticated("A", "a2", SessionSource.Refresh(session("A", "a1"))))
-        assertEquals(Snap.Account("A", "A@example.test", "at-a2", "a2", refreshedFrom = "a1"), refreshed)
+        assertEquals(Snap.Account("A", "A@example.test", "at-a2", "a2", refreshedFrom = "a1", restored = true), refreshed)
         listOf(SessionSource.SignIn(Email), SessionSource.Storage, SessionSource.Unknown).forEach { source ->
             val snap = snapshotOf(authenticated("A", "a1", source))
             assertIs<Snap.Account>(snap)
@@ -427,5 +453,91 @@ class AuthSessionDriverTest {
         assertEquals(SessionErrorKind.JwtExpired, RuntimeException("JWT expired").sessionErrorKind())
         assertEquals(SessionErrorKind.DeletedAccount, RuntimeException("insert violates foreign key constraint on auth.users").sessionErrorKind())
         assertEquals(SessionErrorKind.Other, RuntimeException("timeout").sessionErrorKind())
+    }
+
+    // ── Review round 1 ──────────────────────────────────────────────────────────────────────────
+
+    @Test
+    fun anOldVerdictQueuedDuringASignInNeverClearsTheNewSession() = runTest {
+        // r1-3: A's validation finishes Invalid and queues on the lane while sign-in B holds it;
+        // B is installed and the lane released before the collector has observed B.
+        val rig = Rig(this, owner = "A")
+        rig.effects.checkFailures["at-a1"] = RuntimeException("Session not found")
+        rig.effects.checkGate = CompletableDeferred()
+        rig.flow.value = authenticated("A", "a1", SessionSource.Storage)
+        rig.settle()
+        assertTrue("check:at-a1" in rig.effects.log)
+        rig.effects.signIn = {
+            rig.effects.checkGate!!.complete(Unit)
+            yield()
+            yield()
+            rig.flow.value = authenticated("B", "b1")
+        }
+        rig.driver.signInWithEmail("B", "pw")
+        rig.settle()
+        assertEquals(0, rig.effects.count("showNotice"))
+        assertFalse("clear" in rig.effects.log)
+        assertEquals(account("B"), rig.effects.published)
+        // The only wipe is decision AQ's account switch (A's data before B), never a lost reset.
+        assertEquals(1, rig.effects.count("wipe"))
+    }
+
+    @Test
+    fun aQueuedSyncReportForTheOldSessionIsDroppedAfterASignIn() = runTest {
+        val rig = Rig(this)
+        rig.signedIn("A", "a1")
+        val ticketA = rig.driver.currentTicket()
+        rig.effects.signIn = { rig.flow.value = authenticated("A", "a7") }
+        rig.driver.signInWithEmail("A", "pw")
+        assertFalse(rig.driver.reportSessionError(ticketA, SessionErrorKind.DeletedAccount))
+        rig.settle()
+        assertEquals(0, rig.effects.count("wipe"))
+        assertEquals(account("A"), rig.effects.published)
+    }
+
+    @Test
+    fun aCancelledServerSwitchStillClearsTheLibraryBeforeTheWipe() = runTest {
+        val rig = Rig(this)
+        rig.signedIn("A", "a1")
+        rig.effects.clearGate = CompletableDeferred()
+        val job = launch { rig.driver.prepareForServerSwitch() }
+        rig.settle()
+        job.cancel()
+        rig.effects.clearGate!!.complete(Unit)
+        rig.settle()
+        assertTrue("cleared" in rig.effects.log)
+        assertTrue(rig.effects.log.indexOf("cleared") < rig.effects.log.indexOf("wipe"))
+    }
+
+    @Test
+    fun aSessionWithoutAUserIsPublishedAsTheServersUser() = runTest {
+        val rig = Rig(this, owner = "A")
+        rig.effects.checkUserIds["at-x1"] = "A"
+        rig.flow.value = authenticated(null, "x1", SessionSource.Storage)
+        rig.settle()
+        assertEquals(AuthState.Authenticated("A", null, false), rig.effects.published)
+        assertEquals(0, rig.effects.count("wipe"))
+    }
+
+    @Test
+    fun aSessionWithoutAUserIsNeverPublishedOffline() = runTest {
+        val rig = Rig(this, owner = "A")
+        rig.effects.checkFailures["at-x1"] = RuntimeException("Unable to resolve host")
+        rig.flow.value = authenticated(null, "x1", SessionSource.Storage)
+        rig.settle()
+        assertEquals(AuthState.Loading, rig.effects.published)
+        assertEquals(0, rig.effects.count("wipe"))
+    }
+
+    @Test
+    fun aFailedSwitchWipeLeavesNoAccountPublished() = runTest {
+        val rig = Rig(this, owner = "A")
+        rig.effects.wipeFailure = IllegalStateException("disk")
+        rig.effects.signIn = { rig.flow.value = authenticated("B", "b1") }
+        rig.driver.signInWithEmail("B", "pw")
+        rig.settle()
+        assertTrue("owner:B" !in rig.effects.log)
+        assertEquals(AuthState.Unauthenticated, rig.effects.published)
+        assertFalse("wipePending:false" in rig.effects.log)
     }
 }
