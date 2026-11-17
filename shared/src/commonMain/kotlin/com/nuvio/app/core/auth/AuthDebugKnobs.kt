@@ -22,3 +22,21 @@ internal expect fun debugSessionRestoreStall(): Duration?
  * `defaults write <bundle-id> debug.authNetworkDown -bool true`.
  */
 internal expect fun debugAuthNetworkDown(): Boolean
+
+/**
+ * D1b: debug-build-only "the stored session expired while the app was closed". When true, the
+ * first stored session the auth library loads this launch is handed back with its expiry moved
+ * into the past, in memory only (DebugExpiredSessionManager), so the library takes its real
+ * expired-restore path: no Authenticated(Storage), an immediate refresh, and with
+ * `-debug.authNetworkDown 1` RefreshFailure while it retries. False in release builds.
+ *
+ * Apple: launch with `-debug.authSessionExpired 1`.
+ */
+internal expect fun debugAuthSessionExpired(): Boolean
+
+/**
+ * D1b: debug-build-only auth-session trace on stdout (`[AuthSession] …` lines, which the rig's
+ * console stream captures). Never carries a token, email, user id or URL. False in release builds.
+ */
+internal expect fun authSessionTraceEnabled(): Boolean
+

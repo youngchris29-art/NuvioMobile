@@ -56,6 +56,12 @@ internal interface AuthEffects {
     suspend fun checkUser(accessToken: String): String?
     fun log(message: String)
 
+    /**
+     * D1b: one rig-visible line (see describeEvent/describeOutput, which carry no token, email,
+     * id or URL). Prints only in debug builds.
+     */
+    fun trace(line: String)
+
     // User-started library calls, run inside the lane.
     suspend fun signInWithEmail(email: String, password: String)
     suspend fun signUpWithEmail(email: String, password: String)
@@ -319,6 +325,7 @@ internal class AuthSessionDriver(
     }
 
     private suspend fun step(event: AuthEvent): Sent {
+        effects.trace(describeEvent(event))
         val result = reduce(state, event)
         state = result.state
         ticket = AuthTicket(result.state.live.serial)
@@ -331,6 +338,7 @@ internal class AuthSessionDriver(
             for (output in result.outputs) {
                 if (output.isGate) gate = output
                 if (output == AuthOutput.WipeAccountData) wipeRan = true
+                describeOutput(output)?.let(effects::trace)
                 try {
                     run(output)
                 } catch (e: Throwable) {

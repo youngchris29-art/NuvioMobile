@@ -219,6 +219,11 @@ object AuthRepository {
 
         override fun log(message: String) = log.i { message }
 
+        // D1b: stdout, so the rig's console stream shows it; debug builds only.
+        override fun trace(line: String) {
+            if (authSessionTraceEnabled()) println("[AuthSession] $line")
+        }
+
         override suspend fun signInWithEmail(email: String, password: String) {
             SupabaseProvider.client.auth.signInWith(Email) {
                 this.email = email

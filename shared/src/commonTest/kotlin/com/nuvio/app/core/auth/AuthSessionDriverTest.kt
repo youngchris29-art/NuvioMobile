@@ -150,6 +150,10 @@ class AuthSessionDriverTest {
         }
 
         override fun log(message: String) = Unit
+        val traced = mutableListOf<String>()
+        override fun trace(line: String) {
+            traced += line
+        }
 
         override suspend fun signInWithEmail(email: String, password: String) {
             log += "signIn:$email"
@@ -1052,5 +1056,37 @@ class AuthSessionDriverTest {
         rig.signedIn("A", "a1")
         rig.effects.guestClearFails = { true }
         assertTrue(rig.driver.deleteAccount().isFailure)
+    }
+
+    // ── D1b: the rig-visible trace for an expired session restored with the network down ───────
+
+    @Test
+    fun anExpiredRestoreWithTheNetworkDownTracesWithoutIdentifyingAnything() = runTest {
+        val user = "user7f3aSECRET"
+        val rig = Rig(this, owner = user, longWatchdog = false)
+        rig.effects.checkUserIds["at-rt1SECRET"] = user
+        // The library's expired restore: Initializing, then RefreshFailure while it retries.
+        rig.flow.value = SessionStatus.RefreshFailure(RefreshFailureCause.NetworkError(RuntimeException("offline")))
+        rig.settle()
+        advanceTimeBy(10_001.milliseconds)
+        runCurrent()
+        assertEquals(AuthState.Unauthenticated, rig.effects.published)
+        val offline = rig.effects.traced.toList()
+        assertEquals("boot owner=account guest=none wipePending=false notice=false", offline.first())
+        assertTrue("status RefreshFailure" in offline, "$offline")
+        assertTrue(offline.indexOf("watchdog fired") < offline.indexOf("publish signed-out"), "$offline")
+        assertTrue(offline.none { it.startsWith("wipe") || it.startsWith("lost reset") || it.startsWith("notice") }, "$offline")
+        // The network comes back: the library's own refresh lands, validated, no wipe.
+        rig.flow.value = authenticated(user, "rt2SECRET", SessionSource.Refresh(session(user, "rt1SECRET")))
+        rig.settle()
+        assertEquals(account(user), rig.effects.published)
+        val all = rig.effects.traced.toList()
+        assertTrue("status Authenticated(account source=refresh)" in all, "$all")
+        assertTrue("validation started" in all, "$all")
+        assertTrue("publish account" in all, "$all")
+        assertTrue(all.none { it.startsWith("wipe") || it.startsWith("lost reset") }, "$all")
+        all.forEach { line ->
+            listOf(user, "SECRET", "at-", "rt1", "rt2", "@", "http").forEach { assertTrue(it !in line, "'$line' carries $it") }
+        }
     }
 }

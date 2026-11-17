@@ -1,10 +1,14 @@
 package com.nuvio.app.core.network
 
+import com.nuvio.app.core.auth.DebugExpiredSessionManager
 import com.nuvio.app.core.auth.debugAuthNetworkDown
+import com.nuvio.app.core.auth.debugAuthSessionExpired
+import com.nuvio.app.core.auth.defaultSessionSettingsKey
 import com.nuvio.app.core.build.AppVersionConfig
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.annotations.SupabaseInternal
 import io.github.jan.supabase.auth.Auth
+import io.github.jan.supabase.auth.SettingsSessionManager
 import io.github.jan.supabase.createSupabaseClient
 import io.github.jan.supabase.functions.Functions
 import io.github.jan.supabase.postgrest.Postgrest
@@ -106,7 +110,15 @@ object SupabaseProvider {
                     headers.append(HttpHeaders.UserAgent, userAgent)
                 }
             }
-            install(Auth)
+            install(Auth) {
+                // Debug builds only (D1b): restore the stored session as if it had expired while the
+                // app was closed, in memory only. Same store and key as the library's default.
+                if (debugAuthSessionExpired()) {
+                    sessionManager = DebugExpiredSessionManager(
+                        SettingsSessionManager(key = defaultSessionSettingsKey(configuration.backendUrl)),
+                    )
+                }
+            }
             install(Postgrest)
             install(Functions)
         }

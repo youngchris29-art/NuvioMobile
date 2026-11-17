@@ -15,3 +15,11 @@ internal actual fun debugAuthNetworkDown(): Boolean {
     if (!AppBuildConfig.IS_DEBUG_BUILD) return false
     return NSUserDefaults.standardUserDefaults.boolForKey("debug.authNetworkDown")
 }
+
+internal actual fun debugAuthSessionExpired(): Boolean {
+    if (!AppBuildConfig.IS_DEBUG_BUILD) return false
+    return NSUserDefaults.standardUserDefaults.boolForKey("debug.authSessionExpired")
+}
+
+internal actual fun authSessionTraceEnabled(): Boolean = AppBuildConfig.IS_DEBUG_BUILD
+
