@@ -14,13 +14,15 @@ final class FirstPlayAutoPlayControllerTests: XCTestCase {
 
     // MARK: - Fixtures
 
-    private func stream(_ name: String, addon: String = "addon:a", direct: Bool = false) -> StreamItem {
+    /// `torrentHash` (W4): a real 40-hex info hash, so the shared torrent-copy rule sees it.
+    private func stream(_ name: String, addon: String = "addon:a", direct: Bool = false,
+                        torrentHash: String? = nil, fileIdx: Int32? = nil) -> StreamItem {
         StreamItem(
             name: name, title: nil, description: nil,
             url: direct ? "https://cdn.example.com/\(name).mkv" : nil,
             // Resolve candidates carry an info hash, so each gets its own `playbackStreamKey`.
-            infoHash: direct ? nil : "hash-\(name)",
-            fileIdx: nil, externalUrl: nil, ytId: nil, sources: [], sourceName: nil,
+            infoHash: torrentHash ?? (direct ? nil : "hash-\(name)"),
+            fileIdx: fileIdx.map { KotlinInt(int: $0) }, externalUrl: nil, ytId: nil, sources: [], sourceName: nil,
             addonName: addon, addonId: addon, addonLogo: nil, streamType: nil,
             behaviorHints: StreamBehaviorHints(bingeGroup: nil, notWebReady: false, videoHash: nil, videoSize: nil,
                                                filename: nil, proxyHeaders: nil, audioDelayMs: nil),
@@ -44,8 +46,14 @@ final class FirstPlayAutoPlayControllerTests: XCTestCase {
     /// everything the controller asked for, in order.
     private final class Harness {
         enum Plan { case succeed, fail, failNotLinkFault, hang, throwOffline }
+        /// W4 (2b.7): what a cache-bypassing re-resolve answers.
+        enum FreshPlan { case newLink, sameLink, fail }
 
         var plans: [String: Plan] = [:]
+        var freshPlans: [String: FreshPlan] = [:]
+        private(set) var freshCalls: [String] = []
+        /// W4: the controller's clock (the refresh rule's "resolved less than a minute ago").
+        var clock: TimeInterval = 1_000
         var rejectedByTitle: [String: Set<String>] = [:]
         var cachedNames: Set<String> = []
         var cachedOnly = false
@@ -59,8 +67,10 @@ final class FirstPlayAutoPlayControllerTests: XCTestCase {
         private var cancellables: Set<AnyCancellable> = []
 
         @MainActor
-        func makeController(resolveDeadline: TimeInterval = 5, searchDeadline: TimeInterval = 30) -> FirstPlayAutoPlayController {
-            let deps = FirstPlayAutoPlayController.Dependencies(
+        func makeController(resolveDeadline: TimeInterval = 5, searchDeadline: TimeInterval = 30,
+                            maxAttempts: Int = 4, titleKey: String = "tt1",
+                            capProvider: (() -> Int)? = nil) -> FirstPlayAutoPlayController {
+            var deps = FirstPlayAutoPlayController.Dependencies(
                 expectedToken: { FirstPlayAutoPlayControllerTests.token },
                 consumeAutoPlay: { [unowned self] in self.consumed += 1 },
                 cachedOnly: { [unowned self] in self.cachedOnly },
@@ -94,7 +104,18 @@ final class FirstPlayAutoPlayControllerTests: XCTestCase {
                 searchDeadline: searchDeadline,
                 networkSatisfied: { [unowned self] in self.networkSatisfied }
             )
-            let controller = FirstPlayAutoPlayController(titleKey: "tt1", dependencies: deps)
+            deps.maxAttempts = capProvider ?? { maxAttempts }
+            deps.now = { [unowned self] in self.clock }
+            deps.resolveFresh = { [unowned self] stream in
+                let name = stream.name ?? ""
+                self.freshCalls.append(name)
+                switch self.freshPlans[name] ?? .fail {
+                case .newLink: return .playable(stream, URL(string: "https://fresh.example/\(name)")!)
+                case .sameLink: return .playable(stream, URL(string: "https://resolved.example/\(name)")!)
+                case .fail: return .failed(reason: "not cached", rejectsLink: true)
+                }
+            }
+            let controller = FirstPlayAutoPlayController(titleKey: titleKey, dependencies: deps)
             controller.events.sink { [unowned self] in self.events.append($0) }.store(in: &cancellables)
             return controller
         }
@@ -176,7 +197,9 @@ final class FirstPlayAutoPlayControllerTests: XCTestCase {
         XCTAssertTrue(harness.invalidated.isEmpty)
     }
 
-    func testSameAddonIsTriedFirstAfterAFailure() async {
+    /// W4 (decision Q3, upstream's order): after a failure the next candidate in rank order plays,
+    /// from any add-on; the failed link's add-on is no longer tried first.
+    func testTheNextRankedCandidatePlaysAfterAFailureFromAnyAddon() async {
         let harness = Harness()
         harness.plans = ["A1": .fail]
         let controller = harness.makeController()
@@ -185,8 +208,19 @@ final class FirstPlayAutoPlayControllerTests: XCTestCase {
                                          stream("A2", addon: "addon:a")]))
         await waitUntil { !harness.played.isEmpty }
 
-        XCTAssertEqual(harness.resolveCalls, ["A1", "A2"])
-        XCTAssertEqual(harness.played.map { $0.name }, ["A2"])
+        XCTAssertEqual(harness.resolveCalls, ["A1", "B1"])
+        XCTAssertEqual(harness.played.map { $0.name }, ["B1"])
+    }
+
+    /// The pure `nextIndex` keeps its preference parameter (no caller passes one since W4).
+    func testNextIndexStillHonoursAnExplicitAddonPreference() {
+        typealias Policy = FirstPlayAutoPlayController.Policy
+        let candidates = [stream("A1", addon: "addon:a"), stream("B1", addon: "addon:b"), stream("A2", addon: "addon:a")]
+            .map(FirstPlayAutoPlayController.Candidate.init(stream:))
+        XCTAssertEqual(Policy.nextIndex(in: candidates, triedIndices: [0], triedKeys: [], rejected: [],
+                                        preferAddonId: "addon:a"), 2)
+        XCTAssertEqual(Policy.nextIndex(in: candidates, triedIndices: [0], triedKeys: [], rejected: [],
+                                        preferAddonId: nil), 1)
     }
 
     func testAttemptCapIsFourPerVisit() async {
@@ -379,7 +413,7 @@ final class FirstPlayAutoPlayControllerTests: XCTestCase {
 
     // MARK: - Playback failover
 
-    func testFailoverSwapsInTheSameAddonsNextLink() async {
+    func testFailoverSwapsInTheNextRankedLink() async {
         let harness = Harness()
         let controller = harness.makeController()
         controller.arm()
@@ -389,7 +423,7 @@ final class FirstPlayAutoPlayControllerTests: XCTestCase {
         let failedKey = stream("A1", addon: "addon:a", direct: true).playbackStreamKey
 
         XCTAssertTrue(controller.failover(afterFailureOf: failedKey, addonId: "addon:a"))
-        XCTAssertEqual(harness.played.map { $0.name }, ["A1", "A2"])
+        XCTAssertEqual(harness.played.map { $0.name }, ["A1", "B1"], "W4: rank order, not the failed add-on first")
         XCTAssertEqual(harness.played.last?.attempt, 2)
         XCTAssertEqual(harness.played.last?.failover, true)
     }
@@ -472,6 +506,11 @@ final class FirstPlayAutoPlayControllerTests: XCTestCase {
     func testOverlayMessages() {
         typealias Policy = FirstPlayAutoPlayController.Policy
         XCTAssertEqual(Policy.overlayMessage(for: .searching), Policy.overlayMessage(for: .resolving(attempt: 1)))
+        // W4 (h): the "of m" follows the walk's cap (the first start plus Sources to Try).
+        XCTAssertEqual(Policy.overlayMessage(for: .resolving(attempt: 2), cap: 6),
+                       String(localized: "Trying another source (\(2) of \(6))\u{2026}"))
+        XCTAssertNotEqual(Policy.overlayMessage(for: .resolving(attempt: 2), cap: 6),
+                          Policy.overlayMessage(for: .resolving(attempt: 2), cap: 4))
         XCTAssertNotNil(Policy.overlayMessage(for: .resolving(attempt: 2)))
         XCTAssertNotEqual(Policy.overlayMessage(for: .resolving(attempt: 2)), Policy.overlayMessage(for: .searching))
         for phase: FirstPlayAutoPlayController.Phase in [.idle, .done, .cancelled, .exhausted] {
@@ -545,5 +584,264 @@ final class FirstPlayAutoPlayControllerTests: XCTestCase {
                        "res=1080 hdr=0 cached=0 size=2.5GB")
         XCTAssertEqual(Policy.rankSummary(resolution: 0, dynamicRange: 0, cached: 0, size: 0),
                        "res=- hdr=0 cached=0 size=-", "unknown resolution and size print a dash")
+    }
+
+    // MARK: - W4: source fallback budget, seeding, start-up limit, refresh
+
+    /// (a) Sources to Try 1 (cap 2): two failed resolves end the walk.
+    func testCapFromTheSettingEndsTheWalkAfterTwoAttempts() async {
+        let harness = Harness()
+        harness.plans = ["T1": .fail, "T2": .fail, "T3": .fail]
+        let controller = harness.makeController(maxAttempts: 2)
+        controller.arm()
+        controller.ingest(feed(settled: [stream("T1"), stream("T2"), stream("T3")]))
+        await waitUntil { !harness.gaveUp.isEmpty }
+
+        XCTAssertEqual(harness.resolveCalls, ["T1", "T2"])
+        XCTAssertEqual(harness.gaveUp.first?.0, .allFailed)
+        XCTAssertEqual(controller.attemptCap, 2)
+    }
+
+    /// (b) Try Another Source on Failure Off (cap 1): one attempt, then the list.
+    func testSwitchOffMakesOneAttempt() async {
+        let harness = Harness()
+        harness.plans = ["T1": .fail]
+        let controller = harness.makeController(maxAttempts: 1)
+        controller.arm()
+        controller.ingest(feed(settled: [stream("T1"), stream("T2")]))
+        await waitUntil { !harness.gaveUp.isEmpty }
+
+        XCTAssertEqual(harness.resolveCalls, ["T1"], "no second resolve with the switch off")
+        XCTAssertEqual(harness.gaveUp.first?.0, .allFailed)
+        XCTAssertFalse(controller.failover(afterFailureOf: stream("T1").playbackStreamKey, addonId: nil),
+                       "an exhausted walk has nothing to continue")
+    }
+
+    /// The cap is read when the walk starts (2b.9): a later settings change does not move it.
+    func testTheCapIsReadOnceWhenTheWalkStarts() async {
+        let harness = Harness()
+        var cap = 3
+        let controller = harness.makeController(capProvider: { cap })
+        controller.arm()
+        cap = 1
+        XCTAssertEqual(controller.attemptCap, 3)
+    }
+
+    /// (c) An Up Next episode's walk continues Up Next's count and skips what it tried.
+    func testASeededWalkContinuesTheHandedOverBudget() async {
+        let harness = Harness()
+        let a = stream("a", direct: true), b = stream("b"), c = stream("c")
+        let aKey: String = try! XCTUnwrap(a.playerSourceIdentityKey())
+        let controller = harness.makeController(maxAttempts: 4, titleKey: "tt1:1:2")
+        controller.seed(candidates: [a, b, c], alreadyTried: PlayerSourceFallbackTried(keys: [aKey], attempts: 1),
+                        playing: a)
+        XCTAssertEqual(controller.phase, .done)
+        XCTAssertTrue(controller.isFailoverWalk)
+        XCTAssertEqual(controller.attemptsUsed, 2)
+        XCTAssertTrue(controller.hasOpenCandidate())
+
+        XCTAssertTrue(controller.failover(afterFailureOf: a.playbackStreamKey, addonId: a.addonId))
+        await waitUntil { !harness.played.isEmpty }
+
+        XCTAssertEqual(harness.resolveCalls, ["b"])
+        XCTAssertEqual(harness.played.map { $0.name }, ["b"])
+        XCTAssertEqual(harness.played.first?.attempt, 3)
+        XCTAssertEqual(harness.played.first?.failover, true)
+        let tried = controller.fallbackTried
+        XCTAssertEqual(tried.attempts, 2, "two further sources moved to for the episode")
+        XCTAssertTrue(tried.keys.contains(aKey))
+        XCTAssertTrue(tried.keys.contains(try! XCTUnwrap(b.playerSourceIdentityKey())))
+
+        // b fails too: c is the last attempt the budget allows (cap 4), then the walk gives up.
+        XCTAssertTrue(controller.failover(afterFailureOf: b.playbackStreamKey, addonId: b.addonId))
+        await waitUntil { harness.played.count == 2 }
+        XCTAssertEqual(harness.played.last?.name, "c")
+        XCTAssertEqual(harness.played.last?.attempt, 4)
+        XCTAssertFalse(controller.hasOpenCandidate(), "the budget is spent")
+        XCTAssertTrue(controller.failover(afterFailureOf: c.playbackStreamKey, addonId: c.addonId))
+        XCTAssertEqual(harness.gaveUp.first?.0, .allFailed)
+        XCTAssertEqual(harness.gaveUp.first?.1, true)
+    }
+
+    /// A seeded walk whose budget Up Next already spent has nothing open.
+    func testASeededWalkWithItsBudgetSpentHasNoOpenCandidate() {
+        let harness = Harness()
+        let controller = harness.makeController(maxAttempts: 4)
+        controller.seed(candidates: [stream("x"), stream("y")], alreadyTried: PlayerSourceFallbackTried(keys: [], attempts: 3),
+                        playing: stream("w"))
+        XCTAssertEqual(controller.attemptsUsed, 4)
+        XCTAssertFalse(controller.hasOpenCandidate())
+    }
+
+    /// Only an idle controller is seeded (a second seed changes nothing).
+    func testSeedOnlyAppliesToAnIdleController() {
+        let harness = Harness()
+        let controller = harness.makeController()
+        controller.seed(candidates: [stream("x")], alreadyTried: PlayerSourceFallbackTried(keys: [], attempts: 0), playing: nil)
+        controller.seed(candidates: [stream("y"), stream("z")], alreadyTried: PlayerSourceFallbackTried(keys: [], attempts: 2),
+                        playing: nil)
+        XCTAssertEqual(controller.candidates.map { $0.stream.name ?? "" }, ["x"])
+        XCTAssertEqual(controller.attemptsUsed, 1)
+    }
+
+    /// (d) The start-up limit starts a failover; the slow source starting first drops it, and the
+    /// late resolve neither plays nor gives up.
+    func testTheSlowSourceStartingAbandonsTheLimitsFailover() async {
+        let harness = Harness()
+        harness.plans = ["NEXT": .hang]
+        let controller = harness.makeController()
+        controller.arm()
+        controller.ingest(feed(settled: [stream("SLOW", direct: true), stream("NEXT")]))
+        XCTAssertEqual(harness.played.map { $0.name }, ["SLOW"])
+        XCTAssertTrue(controller.hasOpenCandidate())
+
+        XCTAssertTrue(controller.failover(afterFailureOf: stream("SLOW", direct: true).playbackStreamKey,
+                                          addonId: nil, reason: .startupLimit))
+        await waitUntil { harness.resolveCalls == ["NEXT"] }
+        XCTAssertEqual(controller.phase, .resolving(attempt: 2))
+
+        controller.abandonFailover()
+        XCTAssertEqual(controller.phase, .done)
+        harness.releaseHung()
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(harness.played.map { $0.name }, ["SLOW"], "the late resolve is dropped")
+        XCTAssertTrue(harness.gaveUp.isEmpty)
+        XCTAssertNil(harness.rejectedByTitle["tt1"], "a start-up limit never remembers a link")
+    }
+
+    /// (d) The start-up limit's walk never ends the source it would replace: when nothing else can
+    /// start it stands down silently and the slow source keeps loading.
+    func testALimitWalkThatRunsOutStandsDownWithoutGivingUp() async {
+        let harness = Harness()
+        harness.plans = ["NEXT": .fail]
+        let controller = harness.makeController()
+        controller.arm()
+        controller.ingest(feed(settled: [stream("SLOW", direct: true), stream("NEXT")]))
+
+        XCTAssertTrue(controller.failover(afterFailureOf: stream("SLOW", direct: true).playbackStreamKey,
+                                          addonId: nil, reason: .startupLimit))
+        await waitUntil { controller.phase == .done && harness.resolveCalls == ["NEXT"] }
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        XCTAssertTrue(harness.gaveUp.isEmpty, "the slow player is never closed by its limit")
+        XCTAssertEqual(controller.phase, .done)
+        XCTAssertFalse(controller.hasOpenCandidate())
+        // The slow source then fails for real: the walk has nothing left and gives up.
+        XCTAssertTrue(controller.failover(afterFailureOf: stream("SLOW", direct: true).playbackStreamKey, addonId: nil))
+        XCTAssertEqual(harness.gaveUp.first?.0, .allFailed)
+        XCTAssertEqual(harness.gaveUp.first?.1, true)
+    }
+
+    /// (e) A failure reported while a failover resolves starts nothing new; once the slow source
+    /// has failed, running out gives up.
+    func testAFailureDuringALimitFailoverStartsNothingAndRunningOutThenGivesUp() async {
+        let harness = Harness()
+        harness.plans = ["NEXT": .hang]
+        let controller = harness.makeController(resolveDeadline: 0.1)
+        controller.arm()
+        controller.ingest(feed(settled: [stream("SLOW", direct: true), stream("NEXT")]))
+        let slowKey = stream("SLOW", direct: true).playbackStreamKey
+
+        XCTAssertTrue(controller.failover(afterFailureOf: slowKey, addonId: nil, reason: .startupLimit))
+        await waitUntil { harness.resolveCalls == ["NEXT"] }
+        XCTAssertTrue(controller.failover(afterFailureOf: slowKey, addonId: nil), "the duplicate is swallowed")
+        XCTAssertTrue(controller.failover(afterFailureOf: slowKey, addonId: nil, reason: .startupLimit))
+        XCTAssertEqual(harness.resolveCalls, ["NEXT"], "no second resolve")
+
+        await waitUntil { !harness.gaveUp.isEmpty }   // NEXT's resolve deadline passes
+        XCTAssertEqual(harness.gaveUp.first?.0, .allFailed)
+        XCTAssertEqual(harness.gaveUp.first?.1, true)
+        XCTAssertEqual(harness.played.map { $0.name }, ["SLOW"])
+    }
+
+    /// The limit asks first: no open candidate when the rest cannot play on this device.
+    func testHasOpenCandidateSkipsWhatThisDeviceCannotResolve() {
+        let harness = Harness()
+        harness.unresolvable = ["P2P"]
+        let controller = harness.makeController()
+        XCTAssertFalse(controller.hasOpenCandidate(), "nothing before a walk")
+        controller.arm()
+        controller.ingest(feed(settled: [stream("A", direct: true), stream("P2P")]))
+        XCTAssertEqual(controller.phase, .done)
+        XCTAssertFalse(controller.hasOpenCandidate())
+    }
+
+    /// (f) An HTTP failure of an auto-picked debrid link: one cache-bypassing re-resolve; a new
+    /// link plays without using an attempt; a second failure of that source moves on.
+    func testAnExpiredDebridLinkIsRefreshedOnceBeforeTheWalkMovesOn() async {
+        let harness = Harness()
+        harness.freshPlans = ["D1": .newLink]
+        let controller = harness.makeController()
+        controller.arm()
+        controller.ingest(feed(settled: [stream("D1"), stream("D2")]))
+        await waitUntil { harness.played.count == 1 }
+        let d1 = FirstPlayAutoPlayController.Candidate(stream: stream("D1"))
+        XCTAssertFalse(controller.willRefreshBeforeMovingOn(streamKey: d1.streamKey),
+                       "resolved in this walk less than a minute ago: fresh")
+        harness.clock += 61
+        XCTAssertTrue(controller.willRefreshBeforeMovingOn(streamKey: d1.streamKey))
+
+        XCTAssertTrue(controller.failover(afterFailureOf: d1.streamKey, addonId: nil, refreshFirst: d1,
+                                          failedURL: URL(string: "https://resolved.example/D1")))
+        await waitUntil { harness.played.count == 2 }
+        XCTAssertEqual(harness.freshCalls, ["D1"])
+        XCTAssertEqual(harness.played.last?.name, "D1")
+        XCTAssertEqual(harness.played.last?.attempt, 1, "a refresh does not count against Sources to Try")
+        XCTAssertNil(harness.rejectedByTitle["tt1"])
+
+        XCTAssertFalse(controller.willRefreshBeforeMovingOn(streamKey: d1.streamKey), "once per source")
+        XCTAssertTrue(controller.failover(afterFailureOf: d1.streamKey, addonId: nil, refreshFirst: d1,
+                                          failedURL: URL(string: "https://fresh.example/D1")))
+        await waitUntil { harness.played.count == 3 }
+        XCTAssertEqual(harness.freshCalls, ["D1"], "no second refresh")
+        XCTAssertEqual(harness.played.last?.name, "D2")
+        XCTAssertEqual(harness.played.last?.attempt, 2)
+    }
+
+    /// (f) A refresh that fails, or hands back the link that failed, remembers the source (the
+    /// picker left that to this step) and moves on.
+    func testARefreshThatDoesNotHelpRemembersTheSourceAndMovesOn() async {
+        for plan in [Harness.FreshPlan.fail, .sameLink] {
+            let harness = Harness()
+            harness.freshPlans = ["D1": plan]
+            let controller = harness.makeController()
+            controller.arm()
+            controller.ingest(feed(settled: [stream("D1"), stream("D2")]))
+            await waitUntil { harness.played.count == 1 }
+            harness.clock += 120
+            let d1 = FirstPlayAutoPlayController.Candidate(stream: stream("D1"))
+
+            XCTAssertTrue(controller.failover(afterFailureOf: d1.streamKey, addonId: nil, refreshFirst: d1,
+                                              failedURL: URL(string: "https://resolved.example/D1")))
+            await waitUntil { harness.played.count == 2 }
+            XCTAssertEqual(harness.played.last?.name, "D2", "\(plan)")
+            XCTAssertEqual(harness.rejectedByTitle["tt1"], [d1.streamKey], "\(plan)")
+            XCTAssertEqual(harness.invalidated, ["D1"], "\(plan)")
+        }
+    }
+
+    /// (g) After hash H from add-on X fails, X's other copies of H are skipped; Y's copy is not.
+    func testOtherCopiesOfTheFailedTorrentFromItsAddonAreSkipped() async {
+        let hash = "0123456789abcdef0123456789abcdef01234567"
+        let harness = Harness()
+        harness.plans = ["XH0": .fail]
+        let controller = harness.makeController()
+        controller.arm()
+        controller.ingest(feed(settled: [stream("XH0", addon: "addon:x", torrentHash: hash, fileIdx: 0),
+                                         stream("XH1", addon: "addon:x", torrentHash: hash, fileIdx: 1),
+                                         stream("YH2", addon: "addon:y", torrentHash: hash, fileIdx: 2)]))
+        await waitUntil { !harness.played.isEmpty }
+
+        XCTAssertEqual(harness.resolveCalls, ["XH0", "YH2"])
+        XCTAssertEqual(harness.played.map { $0.name }, ["YH2"])
+    }
+
+    /// The handed-over tried set (identity keys) is honoured by the pure policy too.
+    func testOpenIndicesLeaveOutHandedOverIdentityKeys() {
+        typealias Policy = FirstPlayAutoPlayController.Policy
+        let candidates = [stream("a"), stream("b")].map(FirstPlayAutoPlayController.Candidate.init(stream:))
+        let aKey = try! XCTUnwrap(candidates[0].identityKey)
+        XCTAssertEqual(Policy.openIndices(in: candidates, triedIndices: [], triedKeys: [], rejected: [],
+                                          triedIdentityKeys: [aKey]), [1])
     }
 }

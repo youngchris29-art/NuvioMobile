@@ -177,6 +177,11 @@ final class NextEpisodeEngine: ObservableObject {
             guard listed.isAddonDebridCandidate else { return }
             DirectDebridPlaybackResolver.shared.invalidate(stream: listed, season: season, episode: episode)
         }
+        /// W4: the next episode's further-source budget (Settings › Sources › Sources to Try; 0 with
+        /// Try Another Source on Failure off). The rule is shared; tests replace it.
+        var furtherSources: @MainActor (_ settings: PlayerSettingsUiState?) -> Int = { settings in
+            Int(PlayerSourceFallback.shared.furtherSources(settings: settings, entry: .nextEpisode))
+        }
 
         /// `nonisolated` so the init's default argument can be read off the main actor without a warning.
         nonisolated static var live: Hooks {
@@ -831,7 +836,9 @@ final class NextEpisodeEngine: ObservableObject {
         // dropped and reloaded too, instead of being left on an empty, not-loading state.
         let listWasLive = sourceListOwnsFlow
         hooks.clearStreams()
-        // The repository key was just cleared, so the next search is a fresh fetch, not a replay.
+        // The repository's collector was stopped; the next search for the same episode joins its
+        // shared session (W4, a replay of what already arrived, then the rest), so nothing here
+        // relies on a fresh fetch. `preloaded` gates only the FEAT-49 preload trigger.
         preloaded = false
         if listWasLive { cancelSourceLoad() }
         searchEnded(listWiped: listWasLive)
@@ -1292,7 +1299,8 @@ final class NextEpisodeEngine: ObservableObject {
     /// Tests only (BUG-229): the next-episode context `play` would hand over for `stream`.
     func nextContextForTesting(stream: StreamItem, url: URL) -> PlaybackContext? {
         guard let next = nextVideo else { return nil }
-        return makeNextContext(stream: stream, url: url, next: next, listed: stream)
+        return makeNextContext(stream: stream, url: url, next: next, listed: stream,
+                               sourceFallback: PlayerSourceFallbackTried.companion.None)
     }
 
     /// Tests only (BUG-229): the episode the card would offer.
@@ -1606,80 +1614,106 @@ final class NextEpisodeEngine: ObservableObject {
             streams: selectableStreams(groups, settings: settings), expectedFilename: expected, bingeGroup: nil)
     }
 
-    private func select(from groups: [AddonStreamGroup], settings: PlayerSettingsUiState, bingeGroupOnly: Bool,
-                        installedAddonIds: Set<String>, excluding: ((StreamItem) -> Bool)? = nil) -> StreamItem? {
-        let streams = selectableStreams(groups, settings: settings).filter { !(excluding?($0) ?? false) }
-        guard !streams.isEmpty else { return nil }
+    /// W4: Up Next's effective auto selection as plain values, the scope both its first pick
+    /// (`select`) and every fallback (`fallbackCandidate`, the in-player episode walk through
+    /// `EpisodeFallbackCandidates`) use. Mobile parity: MANUAL mode with the next-episode or
+    /// binge-group toggles forces first-stream selection over every source, in list order, with no
+    /// regex or add-on / plugin filter. beta.19-rc1 verdict (A, BUG-136): "Auto-Play Best Source"
+    /// (the user's own FIRST_STREAM mode) ranks by quality, as the picker's first-play walk does.
+    nonisolated static func autoPickScope(settings: PlayerSettingsUiState, playingBingeGroup: String?) -> StreamAutoPickScope {
+        autoPickScope(mode: settings.streamAutoPlayMode,
+                      source: settings.streamAutoPlaySource,
+                      regex: settings.streamAutoPlayRegex,
+                      selectedAddons: settings.streamAutoPlaySelectedAddons,
+                      selectedPlugins: settings.streamAutoPlaySelectedPlugins,
+                      nextEpisodeEnabled: settings.streamAutoPlayNextEpisodeEnabled,
+                      nextEpisodeFallbackEnabled: settings.streamAutoPlayNextEpisodeFallbackEnabled,
+                      preferBingeGroup: settings.streamAutoPlayPreferBingeGroup,
+                      playingBingeGroup: playingBingeGroup)
+    }
 
-        // Mobile parity: in MANUAL mode, next-episode/binge settings force first-stream selection.
-        let manualAutoSelect = settings.streamAutoPlayMode == StreamAutoPlayMode.manual &&
-            (settings.streamAutoPlayNextEpisodeEnabled || settings.streamAutoPlayPreferBingeGroup)
-        let bingeGroupOnlyManualMode = Self.bingeGroupOnlyManualMode(
-            manualAutoSelect: manualAutoSelect,
-            nextEpisodeEnabled: settings.streamAutoPlayNextEpisodeEnabled,
-            fallbackEnabled: settings.streamAutoPlayNextEpisodeFallbackEnabled,
-            preferBingeGroup: settings.streamAutoPlayPreferBingeGroup,
-            playingBingeGroup: context.bingeGroup
-        )
-
-        let effectiveMode = manualAutoSelect ? StreamAutoPlayMode.firstStream : settings.streamAutoPlayMode
-        let effectiveSource = effectiveAutoPlaySource(settings)
-        let effectiveAddons: Set<String> = manualAutoSelect ? [] : settings.streamAutoPlaySelectedAddons
-        let effectivePlugins: Set<String> = manualAutoSelect ? [] : settings.streamAutoPlaySelectedPlugins
-        let effectiveRegex = manualAutoSelect ? "" : settings.streamAutoPlayRegex
-        let preferredBingeGroup: String? = settings.streamAutoPlayPreferBingeGroup ? context.bingeGroup : nil
-        // beta.19-rc1 verdict (A, BUG-136): "Auto-Play Best Source" (the user's own FIRST_STREAM
-        // mode) ranks the streams that arrived by quality, the same as the stream picker's
-        // first-play walk. The mobile-parity forced first-stream (MANUAL mode with the next-episode
-        // or binge-group toggles) keeps list order. Kotlin default arguments do not bridge to
-        // Swift, so the ranking is passed explicitly.
+    /// `autoPickScope(settings:playingBingeGroup:)` on the settings fields it reads (the tests
+    /// build scopes without a whole `PlayerSettingsUiState`).
+    nonisolated static func autoPickScope(mode: StreamAutoPlayMode, source: StreamAutoPlaySource, regex: String,
+                                          selectedAddons: Set<String>, selectedPlugins: Set<String>,
+                                          nextEpisodeEnabled: Bool, nextEpisodeFallbackEnabled: Bool,
+                                          preferBingeGroup: Bool, playingBingeGroup: String?) -> StreamAutoPickScope {
+        let manualAutoSelect = mode == StreamAutoPlayMode.manual && (nextEpisodeEnabled || preferBingeGroup)
+        let effectiveMode = manualAutoSelect ? StreamAutoPlayMode.firstStream : mode
+        // Kotlin default arguments do not bridge to Swift, so the ranking is always explicit.
         let ranking: StreamAutoPlayRanking = (effectiveMode == StreamAutoPlayMode.firstStream && !manualAutoSelect)
             ? StreamAutoPlayPlatform.shared.firstStreamRanking
             : StreamAutoPlayRanking.listOrder
+        let onlyGroup = bingeGroupOnlyManualMode(
+            manualAutoSelect: manualAutoSelect,
+            nextEpisodeEnabled: nextEpisodeEnabled,
+            fallbackEnabled: nextEpisodeFallbackEnabled,
+            preferBingeGroup: preferBingeGroup,
+            playingBingeGroup: playingBingeGroup)
+        return StreamAutoPickScope(
+            mode: effectiveMode,
+            regexPattern: manualAutoSelect ? "" : regex,
+            source: manualAutoSelect ? StreamAutoPlaySource.allSources : source,
+            selectedAddons: manualAutoSelect ? [] : selectedAddons,
+            selectedPlugins: manualAutoSelect ? [] : selectedPlugins,
+            preferredBingeGroup: preferBingeGroup ? playingBingeGroup : nil,
+            preferBingeGroupInSelection: preferBingeGroup,
+            bingeGroupOnly: onlyGroup,
+            ranking: ranking)
+    }
 
-        if bingeGroupOnly && preferredBingeGroup == nil { return nil }
+    /// Only the groups the shared repository marked as installed addons count as "addons" for the
+    /// source scope; the rest are plugin groups. Previously every group was treated as an installed
+    /// addon, so INSTALLED_ADDONS_ONLY let plugins through and ENABLED_PLUGINS_ONLY matched nothing.
+    /// The set is authoritative — an EMPTY set is a valid plugin-only fan-out (Codex r1), not
+    /// "unknown", so there is deliberately no all-groups fallback.
+    private static func installedAddonNames(_ groups: [AddonStreamGroup], installedAddonIds: Set<String>) -> Set<String> {
+        Set(groups.filter { installedAddonIds.contains($0.addonId) }.map { $0.addonName })
+    }
 
+    private func select(from groups: [AddonStreamGroup], settings: PlayerSettingsUiState, bingeGroupOnly: Bool,
+                        installedAddonIds: Set<String>) -> StreamItem? {
+        let streams = selectableStreams(groups, settings: settings)
+        guard !streams.isEmpty else { return nil }
+        let scope = Self.autoPickScope(settings: settings, playingBingeGroup: context.bingeGroup)
+        if bingeGroupOnly && scope.preferredBingeGroup == nil { return nil }
         let debrid = DebridSettingsRepository.shared.snapshot()
-        // Only the groups the shared repository marked as installed addons count as "addons" for the
-        // source scope; the rest are plugin groups. Previously every group was treated as an installed
-        // addon, so INSTALLED_ADDONS_ONLY let plugins through and ENABLED_PLUGINS_ONLY matched nothing.
-        // The set is authoritative — an EMPTY set is a valid plugin-only fan-out (Codex r1), not
-        // "unknown", so there is deliberately no all-groups fallback.
-        let installedAddonNames = Set(groups.filter { installedAddonIds.contains($0.addonId) }.map { $0.addonName })
-
         return StreamAutoPlaySelector.shared.selectAutoPlayStream(
             streams: streams,
-            mode: effectiveMode,
-            regexPattern: effectiveRegex,
-            source: effectiveSource,
-            installedAddonNames: installedAddonNames,
-            selectedAddons: effectiveAddons,
-            selectedPlugins: effectivePlugins,
-            preferredBingeGroup: preferredBingeGroup,
-            preferBingeGroupInSelection: settings.streamAutoPlayPreferBingeGroup,
-            bingeGroupOnly: bingeGroupOnly || bingeGroupOnlyManualMode,
+            mode: scope.mode,
+            regexPattern: scope.regexPattern,
+            source: scope.source,
+            installedAddonNames: Self.installedAddonNames(groups, installedAddonIds: installedAddonIds),
+            selectedAddons: scope.selectedAddons,
+            selectedPlugins: scope.selectedPlugins,
+            preferredBingeGroup: scope.preferredBingeGroup,
+            preferBingeGroupInSelection: scope.preferBingeGroupInSelection,
+            bingeGroupOnly: bingeGroupOnly || scope.bingeGroupOnly,
             debridEnabled: debrid.canResolvePlayableLinks,
             activeResolverProviderId: { let id: String? = debrid.activeResolverProviderId; return id }(),
-            ranking: ranking
+            ranking: scope.ranking
         )
     }
 
-    /// W3 (upstream ff7500fdd, candidate rule of 8fba6c71e on the fork's selector): the source
-    /// auto selection would pick next, leaving out the sources already tried and other copies of
-    /// the torrent that failed from the same add-on. Same scope as the first pick (`select`, not
-    /// the binge-group filename / info-hash matches, as upstream's fallback). `selectableStreams`
-    /// also drops the links the walk has just remembered as failed.
+    /// W3/W4 (upstream ff7500fdd, candidate rule of 8fba6c71e): the source auto selection would
+    /// pick next, leaving out the sources already tried and other copies of the torrent that
+    /// failed from the same add-on: the shared `PlayerSourceFallback.nextCandidate` with Up Next's
+    /// scope (`autoPickScope`; not the binge-group filename / info-hash matches, as upstream's
+    /// fallback). `selectableStreams` also drops the links the walk has just remembered as failed.
     private func fallbackCandidate(after failed: StreamItem, tried: Set<String>,
                                    groups: [AddonStreamGroup], installedAddonIds: Set<String>) -> StreamItem? {
         guard let settings else { return nil }
-        let failedAddonId: String = failed.addonId
-        let failedInfoHash: String? = failed.p2pInfoHash
-        return select(from: groups, settings: settings, bingeGroupOnly: false, installedAddonIds: installedAddonIds,
-                      excluding: { stream in
-                          PlayerSourceFallback.shared.isExcluded(stream: stream, triedKeys: tried,
-                                                                 failedAddonId: failedAddonId,
-                                                                 failedInfoHash: failedInfoHash)
-                      })
+        let debrid = DebridSettingsRepository.shared.snapshot()
+        return PlayerSourceFallback.shared.nextCandidate(
+            streams: selectableStreams(groups, settings: settings),
+            scope: Self.autoPickScope(settings: settings, playingBingeGroup: context.bingeGroup),
+            triedKeys: tried,
+            failedAddonId: failed.addonId,
+            failedInfoHash: { let hash: String? = failed.p2pInfoHash; return hash }(),
+            installedAddonNames: Self.installedAddonNames(groups, installedAddonIds: installedAddonIds),
+            debridEnabled: debrid.canResolvePlayableLinks,
+            activeResolverProviderId: { let id: String? = debrid.activeResolverProviderId; return id }()
+        )
     }
 
     /// A stream's own playable link (no resolve needed), or nil.
@@ -1785,9 +1819,9 @@ final class NextEpisodeEngine: ObservableObject {
 
     /// Plays the auto-picked `stream` for `next`. A direct link plays at once. A debrid candidate
     /// resolves first; when the resolve fails (not cached, expired, an error or a throw), the next
-    /// source auto selection would pick is tried, up to
-    /// `PlayerSourceFallback.nextEpisodeMaxFurtherSources` further ones (W3, upstream ff7500fdd,
-    /// decision B: 3). While it walks the card shows "Finding next episode…" with the source being
+    /// source auto selection would pick is tried, up to Sources to Try further ones (W4: the
+    /// shared `PlayerSourceFallback.furtherSources` through `Hooks.furtherSources`; 0 with Try
+    /// Another Source on Failure off; W3, upstream ff7500fdd). While it walks the card shows "Finding next episode…" with the source being
     /// tried; only a walk with nothing left ends on the "no stream" card. A failure that is the
     /// link's fault is remembered for eight hours (Q6, `Hooks.rememberFailedLink`, the first-play
     /// walk's rule: not while offline, not for a missing key or another provider's link). Only
@@ -1805,7 +1839,10 @@ final class NextEpisodeEngine: ObservableObject {
         if let url = Self.directURL(stream) {
             phase = .hidden
             supersedeSourceSwitch()
-            onPlayNext(makeNextContext(stream: stream, url: url, next: next, listed: stream))
+            // W4: nothing tried before it; the player's own fallback goes on from its key.
+            let identity: String? = stream.playerSourceIdentityKey()
+            let tried = PlayerSourceFallbackTried(keys: Set([identity].compactMap { $0 }), attempts: 0)
+            onPlayNext(makeNextContext(stream: stream, url: url, next: next, listed: stream, sourceFallback: tried))
             return
         }
 
@@ -1815,8 +1852,9 @@ final class NextEpisodeEngine: ObservableObject {
         // Without a pick watch (a test seam, or a search that never owned the flow) the results
         // seen at selection are all the walk has.
         let selectionState = latestStreamsState
-        let maxFurther = PlayerSourceFallback.shared.nextEpisodeMaxFurtherSources(settings: settings)
-        let walk = PlayerSourceFallbackWalk(first: stream, maxSources: maxFurther)
+        // W4: Sources to Try (0 with Try Another Source on Failure off: one attempt, then the card).
+        let maxFurther = hooks.furtherSources(settings)
+        let walk = PlayerSourceFallbackWalk(first: stream, maxSources: Int32(maxFurther))
         let resolve = hooks.resolveDebrid
         let title = Self.episodeVideoId(metaId: context.parentMetaId, episode: next)
         print("[UpNext] resolving debrid stream — \(stream.addonName)")
@@ -1863,7 +1901,9 @@ final class NextEpisodeEngine: ObservableObject {
                     print("[UpNext] resolved — playing next episode (\(walk.attempts) further source(s) tried)")
                     self.phase = .hidden
                     self.supersedeSourceSwitch()
-                    self.onPlayNext(self.makeNextContext(stream: resolved, url: url, next: next, listed: candidate))
+                    // W4: the tried set (this source included) goes on into the player's fallback.
+                    self.onPlayNext(self.makeNextContext(stream: resolved, url: url, next: next, listed: candidate,
+                                                         sourceFallback: walk.resolved()))
                     return
                 case let .failed(reason, rejectsLink):
                     print("[UpNext] source failed (\(reason)) — \(candidate.addonName)")
@@ -1905,8 +1945,11 @@ final class NextEpisodeEngine: ObservableObject {
 
     /// `listed` is the selected stream before any debrid resolve: its key is what a failure of the
     /// next episode is remembered under (`StreamPickerView` handles the `.nextEpisode` failure).
-    private func makeNextContext(stream: StreamItem, url: URL, next: MetaVideo, listed: StreamItem) -> PlaybackContext {
-        PlaybackContext(
+    /// `sourceFallback` (W4): what auto selection tried for the episode, handed to the player's
+    /// in-place fallback (`PlaybackContext.sourceFallback`).
+    private func makeNextContext(stream: StreamItem, url: URL, next: MetaVideo, listed: StreamItem,
+                                 sourceFallback: PlayerSourceFallbackTried) -> PlaybackContext {
+        var nextContext = PlaybackContext(
             url: url,
             title: Self.episodeTitle(next),
             contentType: context.contentType,
@@ -1940,6 +1983,8 @@ final class NextEpisodeEngine: ObservableObject {
             streamKey: listed.playbackStreamKey,
             listedStream: listed
         )
+        nextContext.sourceFallback = sourceFallback
+        return nextContext
     }
 
     // MARK: - Episode resolution (Swift port of mobile's PlayerNextEpisodeRules)

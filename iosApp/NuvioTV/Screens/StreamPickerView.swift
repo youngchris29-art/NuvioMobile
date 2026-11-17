@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import SharedCore
 
@@ -104,6 +105,24 @@ struct StreamPickerView: View {
     /// has closed (`pendingFailoverTarget` waits for that).
     @State private var failoverTarget: FailoverTarget?
     @State private var pendingFailoverTarget: FailoverTarget?
+    /// W4: the id of the context the first-play walk is replacing (set when a failover starts):
+    /// its `.play` swaps only while that context is still the one presented, so a source the
+    /// viewer picked in the player meanwhile is never replaced.
+    @State private var autoFailoverContextId: String?
+    /// W4 (decision Q4a): where the first-play replacement starts (the failed position when the
+    /// source had started; nil = saved progress / Start Over).
+    @State private var autoFailoverResumeAtSec: Double?
+    /// W4 (2b.3): the in-player walk of the Up Next episode now playing (a second controller,
+    /// seeded with what Up Next tried), its event sink, the id of the context it is replacing and
+    /// where the replacement starts. Ended when the player closes or another episode plays.
+    @State private var episodeWalk: FirstPlayAutoPlayController?
+    @State private var episodeWalkCancellable: AnyCancellable?
+    @State private var episodeWalkFailedContextId: String?
+    @State private var episodeWalkResumeAtSec: Double?
+    /// W4: the episode's candidates are loading for a context (the walk does not exist yet). A
+    /// second report for that context while it loads only upgrades the start-up limit to a real
+    /// failure; the first frame drops a load the limit asked for.
+    @State private var episodeWalkLoad: EpisodeWalkLoad?
     /// Manual-pick failure alert, raised once the player has closed.
     @State private var manualFailureAlert: ManualFailureAlert?
     @State private var pendingManualFailureAlert: ManualFailureAlert?
@@ -290,7 +309,7 @@ struct StreamPickerView: View {
         ))
         _autoPlay = StateObject(wrappedValue: FirstPlayAutoPlayController(
             titleKey: videoId,
-            dependencies: .live(type: type, videoId: videoId, season: season, episode: episode)
+            dependencies: .live(type: type, videoId: videoId, season: season, episode: episode, entry: .firstPlay)
         ))
     }
 
@@ -629,6 +648,11 @@ struct StreamPickerView: View {
             // Review r2 P3-2: every playback start (a row, "Try Next Source", auto-play, the Up
             // Next hand-off — every `selected = …` site) supersedes a YouTube resolve in flight.
             .onChange(of: selected?.id) { _, playing in
+                // W4: the Up Next episode walk belongs to one episode; another one playing ends it.
+                if let walkTitle = episodeWalk?.titleKey ?? episodeWalkLoad?.videoId,
+                   playing != nil, selected?.videoId != walkTitle {
+                    endEpisodeWalk(why: "another episode plays")
+                }
                 if playing != nil {
                     coverIsCloseHold = false
                     invalidateYouTubeResolve()
@@ -648,7 +672,11 @@ struct StreamPickerView: View {
                     onPlayNext: { next in selected = next },
                     onPlaybackFailed: { failure in handlePlaybackFailure(failure, context: ctx) },
                     onPlaybackHealthy: { seconds in handlePlaybackHealthy(seconds, context: ctx) },
-                    onOpenTitle: onOpenTitle == nil ? nil : { postPlayPick = $0 }
+                    onOpenTitle: onOpenTitle == nil ? nil : { postPlayPick = $0 },
+                    // W4: auto-picked contexts only (nil for a source the viewer picked).
+                    startupLimitSec: PlaybackFailoverPolicy.startupLimit(for: ctx, settings: livePlayerSettingsSnapshot()),
+                    onStartupLimitReached: { handleStartupLimit(context: ctx) },
+                    onPlaybackStarted: { handlePlaybackStarted(context: ctx) }
                 )
                 .ignoresSafeArea()
                 .id(ctx.id)
@@ -732,7 +760,7 @@ struct StreamPickerView: View {
     /// The cover's spoken label while auto mode works; nil while it is only held.
     private var loadingCoverMessage: String? {
         StreamPickerCoverPolicy.message(armed: autoPlayArmed, phase: autoPlay.phase,
-                                        isFailoverWalk: autoPlay.isFailoverWalk)
+                                        isFailoverWalk: autoPlay.isFailoverWalk, cap: autoPlay.attemptCap)
     }
 
     /// Menu on the cover cancels auto mode only while auto mode is working; a held cover swallows it.
@@ -1653,9 +1681,7 @@ struct StreamPickerView: View {
 
     /// "Auto-Play Best Source" is the shared FIRST_STREAM auto-play mode.
     private static func firstStreamAutoPlayOn() -> Bool {
-        PlayerSettingsRepository.shared.ensureLoaded()
-        let settings = PlayerSettingsRepository.shared.uiState.value_ as? PlayerSettingsUiState
-        return settings?.streamAutoPlayMode == StreamAutoPlayMode.firstStream
+        livePlayerSettingsSnapshot()?.streamAutoPlayMode == StreamAutoPlayMode.firstStream
     }
 
     private func handleAutoPlayEvent(_ event: FirstPlayAutoPlayController.Event) {
@@ -1666,6 +1692,16 @@ struct StreamPickerView: View {
                 autoPlayLog("[AutoPlay] failover result after the player closed — dropped")
                 return
             }
+            if isFailover, let replacing = autoFailoverContextId, selected?.id != replacing {
+                // W4: something else plays now (the viewer's pick in the player's Sources list).
+                autoPlayLog("[AutoPlay] failover result after another source started — dropped")
+                autoFailoverContextId = nil
+                autoFailoverResumeAtSec = nil
+                return
+            }
+            let resumeAtSec = isFailover ? autoFailoverResumeAtSec : nil
+            autoFailoverContextId = nil
+            autoFailoverResumeAtSec = nil
             // BUG-183: the cover stays up while the player is presented (`.done` alone would hide
             // it and show the list for a beat before the player's cover is up).
             coverHold = true
@@ -1683,8 +1719,13 @@ struct StreamPickerView: View {
                 return
             }
             // Set straight from the event: during a failover this swaps the open player in place.
-            selected = context(url: url, stream: resolved, listedStream: candidate.stream,
+            var next = context(url: url, stream: resolved, listedStream: candidate.stream,
                                streamKey: candidate.streamKey, launchSource: .autoPlay, attempt: attempt - 1)
+            if let resumeAtSec {
+                // W4 (Q4a): the failed source had started: the next one goes on from there.
+                next.resumeAtSec = resumeAtSec
+            }
+            selected = next
         case let .gaveUp(reason, duringFailover):
             autoPlayArmed = false
             rejectedKeys = RejectedStreamLinks.rejected(for: videoId)
@@ -1843,7 +1884,15 @@ struct StreamPickerView: View {
             // debrid resolve is still good: neither remembered nor invalidated.
             print("[Failover] reject key=\(ctx.streamKey) kind=\(failure.kind.rawValue) transient=1 skipped")
         }
-        if PlaybackFailoverPolicy.shouldReject(failure) {
+        // W4 (2b.7): an auto-picked debrid link that failed with an HTTP error before it started is
+        // re-resolved once (cache bypassed) before the walk moves on; its memory is left to that
+        // step (the controller remembers it if the refresh does not help).
+        let refreshFirst: FirstPlayAutoPlayController.Candidate? = ctx.launchSource == .autoPlay
+            ? Self.refreshCandidate(ctx, failure).flatMap {
+                autoPlay.willRefreshBeforeMovingOn(streamKey: $0.streamKey) ? $0 : nil
+            }
+            : nil
+        let remember = {
             RejectedStreamLinks.reject(ctx.streamKey, title: ctx.videoId)
             if let listed = ctx.listedStream, listed.isAddonDebridCandidate {
                 // The resolver would hand the same dead link back for 15 minutes.
@@ -1854,9 +1903,24 @@ struct StreamPickerView: View {
                 )
             }
         }
+        if PlaybackFailoverPolicy.shouldReject(failure) {
+            if refreshFirst != nil {
+                print("[Failover] reject key=\(ctx.streamKey) deferred: the link is refreshed once first")
+            } else {
+                remember()
+            }
+        }
         rejectedKeys = RejectedStreamLinks.rejected(for: videoId)
 
-        var response = PlaybackFailoverPolicy.response(for: ctx.launchSource)
+        // W4: the shared rule decides whether an Up Next episode falls back in place.
+        let settings = livePlayerSettingsSnapshot()
+        let further = Int(PlayerSourceFallback.shared.furtherSources(settings: settings, entry: .nextEpisode))
+        var response = PlaybackFailoverPolicy.route(
+            launchSource: ctx.launchSource, failure: failure,
+            hasSourceFallback: ctx.sourceFallback != nil,
+            fallbackActive: PlayerSourceFallback.shared.isActive(settings: settings, entry: .nextEpisode),
+            attemptsLeft: PlaybackFailoverPolicy.episodeAttemptsLeft(sourceFallback: ctx.sourceFallback,
+                                                                     furtherSources: further))
         if response == .manualAlert, ctx.videoId != videoId {
             // An in-player source switch on a later episode failed: this picker's list is the
             // wrong title, so open that episode's own picker on its list instead.
@@ -1864,13 +1928,19 @@ struct StreamPickerView: View {
         }
         switch response {
         case .autoFailover:
-            if !autoPlay.failover(afterFailureOf: ctx.streamKey, addonId: ctx.providerAddonId) {
+            autoFailoverContextId = ctx.id
+            autoFailoverResumeAtSec = PlaybackFailoverPolicy.replacementResume(after: failure)
+            if !autoPlay.failover(afterFailureOf: ctx.streamKey, addonId: ctx.providerAddonId,
+                                  refreshFirst: refreshFirst, failedURL: ctx.url) {
+                if refreshFirst != nil, PlaybackFailoverPolicy.shouldReject(failure) { remember() }
+                autoFailoverContextId = nil
+                autoFailoverResumeAtSec = nil
                 handleAutoPlayEvent(.gaveUp(.allFailed, duringFailover: true))
             }
+        case .episodeFallback:
+            startEpisodeFallback(after: ctx, failure: failure)
         case .nextEpisodePicker:
-            let forceManual = ctx.launchSource == .manual || !Self.firstStreamAutoPlayOn()
-            pendingFailoverTarget = FailoverTarget(context: ctx, forceManual: forceManual)
-            selected = nil
+            openEpisodePicker(for: ctx)
         case .manualAlert:
             var retryContext: PlaybackContext?
             var retryEngine: PlaybackEngine?
@@ -1894,6 +1964,190 @@ struct StreamPickerView: View {
             selected = nil
         }
     }
+
+    /// W4 (2b.7): the listed debrid stream to re-resolve once before the walk moves on: an HTTP
+    /// failure before the start (an expired resolved link answers 401/403/404/410).
+    private static func refreshCandidate(_ ctx: PlaybackContext,
+                                         _ failure: PlaybackFailure) -> FirstPlayAutoPlayController.Candidate? {
+        guard failure.kind == .http, !failure.startedPlaying,
+              let listed = ctx.listedStream, listed.isAddonDebridCandidate else { return nil }
+        return FirstPlayAutoPlayController.Candidate(stream: listed)
+    }
+
+    /// Today's `.nextEpisodePicker` response: close the player, open the episode's own picker.
+    private func openEpisodePicker(for ctx: PlaybackContext) {
+        let forceManual = ctx.launchSource == .manual || !Self.firstStreamAutoPlayOn()
+        pendingFailoverTarget = FailoverTarget(context: ctx, forceManual: forceManual)
+        selected = nil
+    }
+
+    // MARK: - Source fallback in the player (W4)
+
+    /// The start-up limit passed on an auto-picked context with no first frame: move to the next
+    /// source only when one could start; otherwise the slow source keeps loading (the engine's
+    /// watchdog stays the backstop). Never for a source the viewer picked.
+    private func handleStartupLimit(context ctx: PlaybackContext) {
+        guard selected?.id == ctx.id else { return }
+        switch ctx.launchSource {
+        case .manual:
+            return
+        case .autoPlay:
+            guard autoPlay.hasOpenCandidate() else {
+                autoPlayLog("[AutoPlay] start-up limit passed, nothing left — keep waiting key=\(ctx.streamKey)")
+                return
+            }
+            autoFailoverContextId = ctx.id
+            autoFailoverResumeAtSec = nil
+            _ = autoPlay.failover(afterFailureOf: ctx.streamKey, addonId: ctx.providerAddonId, reason: .startupLimit)
+        case .nextEpisode:
+            startEpisodeFallback(after: ctx, failure: nil)
+        }
+    }
+
+    /// The first frame showed: a failover the start-up limit began is dropped (its late result too).
+    private func handlePlaybackStarted(context ctx: PlaybackContext) {
+        guard selected?.id == ctx.id else { return }
+        switch ctx.launchSource {
+        case .manual:
+            return
+        case .autoPlay:
+            autoPlay.abandonFailover()
+        case .nextEpisode:
+            episodeWalk?.abandonFailover()
+            if let load = episodeWalkLoad, load.contextId == ctx.id, load.failure == nil {
+                autoPlayLog("[AutoPlay] episode walk load dropped: the slow source started")
+                episodeWalkLoad = nil
+            }
+        }
+    }
+
+    /// W4 (2b.3): an Up Next episode's source failed in the player (`failure`), or passed the
+    /// start-up limit (`failure` nil): the next matching source plays in the same player. The
+    /// episode's walk is created once (its candidates joined from the shared search session,
+    /// normally a replay) and reused for every later failure of that episode; with nothing left a
+    /// failure opens the episode's own picker, a start-up limit leaves the slow source loading.
+    private func startEpisodeFallback(after ctx: PlaybackContext, failure: PlaybackFailure?) {
+        guard let tried = ctx.sourceFallback else {
+            if failure != nil { openEpisodePicker(for: ctx) }
+            return
+        }
+        let reason: FirstPlayAutoPlayController.FailoverReason = failure == nil ? .startupLimit : .playbackFailed
+        if let walk = episodeWalk, walk.titleKey == ctx.videoId {
+            runEpisodeFailover(walk, after: ctx, failure: failure, reason: reason)
+            return
+        }
+        if let load = episodeWalkLoad, load.contextId == ctx.id {
+            // Still loading for this context: a real failure replaces the limit's request.
+            if failure != nil { episodeWalkLoad?.failure = failure }
+            return
+        }
+        let settings = livePlayerSettingsSnapshot()
+        let further = Int(PlayerSourceFallback.shared.furtherSources(settings: settings, entry: .nextEpisode))
+        if failure == nil,
+           PlaybackFailoverPolicy.episodeAttemptsLeft(sourceFallback: tried, furtherSources: further) <= 0 {
+            autoPlayLog("[AutoPlay] start-up limit passed, no source left in the budget — keep waiting key=\(ctx.streamKey)")
+            return
+        }
+        let token = UUID()
+        episodeWalkLoad = EpisodeWalkLoad(contextId: ctx.id, videoId: ctx.videoId, token: token, failure: failure)
+        let season = ctx.season.map { KotlinInt(int: Int32($0)) }
+        let episode = ctx.episode.map { KotlinInt(int: Int32($0)) }
+        autoPlayLog("[AutoPlay] episode walk: loading candidates (\(failure == nil ? "start-up limit" : "playback failed")) key=\(ctx.streamKey)")
+        Task { @MainActor in
+            // The `@Throws` twin: a throw means no candidates (a Kotlin exception out of the
+            // plain suspend export would abort the process).
+            let streams: [StreamItem]
+            do {
+                streams = try await PlayerSourceFallbackCandidates.shared.loadChecked(
+                    type: ctx.contentType, videoId: ctx.videoId, season: season, episode: episode,
+                    timeoutMs: Self.episodeCandidatesTimeoutMs)
+            } catch {
+                autoPlayLog("[AutoPlay] episode walk: candidate load failed (\(error.localizedDescription))")
+                streams = []
+            }
+            guard let load = episodeWalkLoad, load.token == token else {
+                autoPlayLog("[AutoPlay] episode walk: candidates landed after the walk was dropped")
+                return
+            }
+            episodeWalkLoad = nil
+            guard selected?.id == ctx.id else {
+                autoPlayLog("[AutoPlay] episode walk: candidates landed after the viewer moved on — dropped")
+                return
+            }
+            let candidates = EpisodeFallbackCandidates.ranked(streams: streams, context: ctx,
+                                                              settings: livePlayerSettingsSnapshot(), tried: tried)
+            let walk = FirstPlayAutoPlayController(
+                titleKey: ctx.videoId,
+                dependencies: .live(type: ctx.contentType, videoId: ctx.videoId, season: ctx.season,
+                                    episode: ctx.episode, entry: .nextEpisode))
+            walk.seed(candidates: candidates, alreadyTried: tried, playing: ctx.listedStream)
+            episodeWalk = walk
+            episodeWalkCancellable = walk.events.sink { [weak walk] event in
+                guard let walk else { return }
+                handleEpisodeWalkEvent(event, walk: walk)
+            }
+            let landed = load.failure
+            runEpisodeFailover(walk, after: ctx, failure: landed,
+                               reason: landed == nil ? .startupLimit : .playbackFailed)
+        }
+    }
+
+    /// The episode walk's failover for `ctx`; a real failure with nothing to continue opens the
+    /// episode's picker (a walk that gives up says so through its `.gaveUp` event instead).
+    private func runEpisodeFailover(_ walk: FirstPlayAutoPlayController, after ctx: PlaybackContext,
+                                    failure: PlaybackFailure?, reason: FirstPlayAutoPlayController.FailoverReason) {
+        if reason == .startupLimit, !walk.hasOpenCandidate() {
+            autoPlayLog("[AutoPlay] start-up limit passed, nothing left — keep waiting key=\(ctx.streamKey)")
+            return
+        }
+        episodeWalkFailedContextId = ctx.id
+        episodeWalkResumeAtSec = PlaybackFailoverPolicy.replacementResume(after: failure)
+        if !walk.failover(afterFailureOf: ctx.streamKey, addonId: ctx.providerAddonId, reason: reason),
+           reason == .playbackFailed {
+            episodeWalkFailedContextId = nil
+            episodeWalkResumeAtSec = nil
+            openEpisodePicker(for: ctx)
+        }
+    }
+
+    private func handleEpisodeWalkEvent(_ event: FirstPlayAutoPlayController.Event, walk: FirstPlayAutoPlayController) {
+        guard walk === episodeWalk else { return }
+        // Only while the context the walk is replacing is still the one presented: the viewer's
+        // own pick, a close or another episode in between drops the result.
+        guard let replacing = episodeWalkFailedContextId, let current = selected, current.id == replacing else {
+            autoPlayLog("[AutoPlay] episode walk result after the viewer moved on — dropped")
+            return
+        }
+        episodeWalkFailedContextId = nil
+        switch event {
+        case let .play(candidate, resolved, url, _, _):
+            let next = current.replacingSource(stream: resolved, url: url, listed: candidate.stream,
+                                               attempt: current.attempt + 1, sourceFallback: walk.fallbackTried,
+                                               resumeAtSec: episodeWalkResumeAtSec)
+            episodeWalkResumeAtSec = nil
+            // Not an unattended Up Next play (I15): `consecutiveAutoPlays` is the countdown's alone.
+            selected = next
+        case .gaveUp:
+            episodeWalkResumeAtSec = nil
+            openEpisodePicker(for: current)
+        }
+    }
+
+    /// Ends the episode walk (the player closed, another episode plays), its load included.
+    private func endEpisodeWalk(why: String) {
+        guard episodeWalk != nil || episodeWalkLoad != nil else { return }
+        episodeWalk?.cancel(why: why)
+        episodeWalkCancellable?.cancel()
+        episodeWalkCancellable = nil
+        episodeWalk = nil
+        episodeWalkLoad = nil
+        episodeWalkFailedContextId = nil
+        episodeWalkResumeAtSec = nil
+    }
+
+    /// How long the episode walk waits for its candidates (a replay is immediate; an expired
+    /// session refetches and what arrived in time is used).
+    private static let episodeCandidatesTimeoutMs: Int64 = 8_000
 
     /// The link played long enough to count as healthy: forget an earlier failure of it.
     private func handlePlaybackHealthy(_ seconds: Double, context ctx: PlaybackContext) {
@@ -1963,6 +2217,10 @@ struct StreamPickerView: View {
             print("[StreamPicker] BUG-185 player close: setter \u{2192} onDismiss \(ms) ms uiKitFallback=\(StreamPickerCloseAnimation.uiKitFallback ? 1 : 0)")
         }
         guard selected == nil else { return }
+        // W4: the player closed: the Up Next episode walk (and its load) ends with it.
+        endEpisodeWalk(why: "player closed")
+        autoFailoverContextId = nil
+        autoFailoverResumeAtSec = nil
         // P5 B22 review r1 (P3-1): a post-play pick is handed to the presenter only when this
         // close also closes the picker; any other outcome drops it, so it never fires on a later Back.
         let pick = postPlayPick
@@ -2053,6 +2311,15 @@ struct StreamPickerView: View {
         }
     }
 
+    /// W4: the episode walk's candidate load in flight (see `episodeWalkLoad`).
+    private struct EpisodeWalkLoad {
+        let contextId: String
+        let videoId: String
+        let token: UUID
+        /// The failure that asked for it; nil = the start-up limit.
+        var failure: PlaybackFailure?
+    }
+
     /// The Up Next episode (or other foreign video) whose playback failed, for the nested picker.
     private struct FailoverTarget: Identifiable {
         let id = UUID()
@@ -2122,10 +2389,11 @@ enum StreamPickerCoverPolicy {
     }
 
     /// The cover's spoken label while auto mode works ("Finding the best source…"); nil otherwise.
-    static func message(armed: Bool, phase: Phase, isFailoverWalk: Bool) -> String? {
-        if phase == .idle { return armed ? FirstPlayAutoPlayController.Policy.overlayMessage(for: .searching) : nil }
+    static func message(armed: Bool, phase: Phase, isFailoverWalk: Bool,
+                        cap: Int = PlaybackFailoverPolicy.defaultMaxAutoAttempts) -> String? {
+        if phase == .idle { return armed ? FirstPlayAutoPlayController.Policy.overlayMessage(for: .searching, cap: cap) : nil }
         guard !isFailoverWalk else { return nil }
-        return FirstPlayAutoPlayController.Policy.overlayMessage(for: phase)
+        return FirstPlayAutoPlayController.Policy.overlayMessage(for: phase, cap: cap)
     }
 }
 

@@ -215,7 +215,8 @@ final class NextEpisodeEngineTests: XCTestCase {
     private func makeEngine(trigger: NextEpisodeEngine.TriggerSettings, recorder: Recorder,
                             network: @escaping () -> Bool = { true },
                             sourceListDeadline: (@MainActor () async -> Void)? = nil,
-                            resolveDebrid: (@MainActor (StreamItem, KotlinInt?, KotlinInt?) async throws -> DirectDebridPlayableResult)? = nil) -> NextEpisodeEngine {
+                            resolveDebrid: (@MainActor (StreamItem, KotlinInt?, KotlinInt?) async throws -> DirectDebridPlayableResult)? = nil,
+                            furtherSources: Int? = nil) -> NextEpisodeEngine {
         var hooks = NextEpisodeEngine.Hooks(loadStreams: { type, videoId, season, episode in
             recorder.calls.append(LoadCall(type: type, videoId: videoId, season: season?.value, episode: episode?.value))
             recorder.log.append("load:\(videoId)")
@@ -230,6 +231,7 @@ final class NextEpisodeEngineTests: XCTestCase {
         })
         if let sourceListDeadline { hooks.sourceListDeadline = sourceListDeadline }
         if let resolveDebrid { hooks.resolveDebrid = resolveDebrid }
+        if let furtherSources { hooks.furtherSources = { _ in furtherSources } }
         hooks.rememberFailedLink = { listed, title, _, _ in
             recorder.remembered.append("\(listed.playbackStreamKey)@\(title)")
         }
@@ -1955,5 +1957,132 @@ final class NextEpisodeEngineTests: XCTestCase {
         await engine.resolveTaskForTesting?.value
         XCTAssertEqual(probe.resolved.count, 1)
         assertWatchEnded(engine, search, "manual pick")
+    }
+
+    // MARK: - W4: the budget from Sources to Try, and the tried set handed to the player
+
+    func testSourcesToTryOneAllowsOneFurtherSourceThenTheNoStreamCard() async {
+        let recorder = Recorder()
+        let probe = WalkProbe()
+        var offered = 0
+        let engine = makeEngine(trigger: trigger(), recorder: recorder, resolveDebrid: { [self] stream, _, _ in
+            probe.resolved.append(stream)
+            return self.notCached
+        }, furtherSources: 1)
+        engine.playForTesting(walkCandidate("first"), nextCandidate: { [self] _, _, _ in
+            offered += 1
+            return self.walkCandidate("fresh\(offered)")
+        })
+        await engine.resolveTaskForTesting?.value
+
+        XCTAssertEqual(probe.resolved.count, 2, "the first pick and one further source")
+        XCTAssertEqual(offered, 1)
+        XCTAssertTrue(recorder.played.isEmpty)
+        XCTAssertEqual(engine.phase, .noStream)
+    }
+
+    func testWithTheSwitchOffTheFirstResolveFailureEndsOnTheCard() async {
+        let recorder = Recorder()
+        let probe = WalkProbe()
+        var offered = 0
+        let engine = makeEngine(trigger: trigger(), recorder: recorder, resolveDebrid: { [self] stream, _, _ in
+            probe.resolved.append(stream)
+            return self.notCached
+        }, furtherSources: 0)
+        engine.playForTesting(walkCandidate("first"), nextCandidate: { [self] _, _, _ in
+            offered += 1
+            return self.walkCandidate("never")
+        })
+        await engine.resolveTaskForTesting?.value
+
+        XCTAssertEqual(probe.resolved.count, 1, "one attempt")
+        XCTAssertEqual(offered, 0, "no fallback is even asked for")
+        XCTAssertEqual(engine.phase, .noStream)
+    }
+
+    func testTheHandOffAfterAWalkCarriesWhatWasTried() async {
+        let recorder = Recorder()
+        let probe = WalkProbe()
+        let first = walkCandidate("aaaa"), second = walkCandidate("bbbb", addon: "Other")
+        let engine = makeEngine(trigger: trigger(), recorder: recorder, resolveDebrid: { [self] stream, _, _ in
+            probe.resolved.append(stream)
+            return probe.resolved.count == 1 ? self.notCached : self.success()
+        })
+        engine.playForTesting(first, nextCandidate: { _, _, _ in second })
+        await engine.resolveTaskForTesting?.value
+
+        let handed = try? XCTUnwrap(recorder.played.first?.sourceFallback)
+        XCTAssertEqual(handed?.attempts, 1, "one further source moved to")
+        XCTAssertEqual(handed?.keys, Set([first, second].compactMap { $0.playerSourceIdentityKey() }),
+                       "both sources, the one that plays included")
+        XCTAssertEqual(recorder.played.first?.launchSource, .nextEpisode)
+    }
+
+    func testADirectPickCarriesItsOwnKeyAndNoAttempts() async {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder)
+        let direct = stream(url: "https://cdn.example.com/s1e2.mkv")
+        engine.playForTesting(direct, nextCandidate: { _, _, _ in nil })
+
+        let handed = try? XCTUnwrap(recorder.played.first?.sourceFallback)
+        XCTAssertEqual(handed?.attempts, 0)
+        XCTAssertEqual(handed?.keys, Set([direct.playerSourceIdentityKey()].compactMap { $0 }))
+    }
+
+    func testTheViewersOwnSourcePickCarriesNoTriedSet() async {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder)
+        _ = engine.playSource(stream(url: "https://cdn.example.com/s1e1-other.mkv"))
+        XCTAssertEqual(recorder.played.count, 1)
+        XCTAssertEqual(recorder.played.first?.launchSource, .manual)
+        XCTAssertNil(recorder.played.first?.sourceFallback, "a manual pick never falls back")
+    }
+
+    /// `autoPickScope` is the scope `select` uses (the former inline rules, case by case).
+    func testAutoPickScopeMatchesTheUpNextSelectRules() {
+        let ranking = StreamAutoPlayPlatform.shared.firstStreamRanking
+        // MANUAL + Prefer Same Source (the tvOS default): first stream over every source, list order.
+        let manualBinge = NextEpisodeEngine.autoPickScope(
+            mode: .manual, source: .installedAddonsOnly, regex: "x", selectedAddons: ["A"], selectedPlugins: ["P"],
+            nextEpisodeEnabled: false, nextEpisodeFallbackEnabled: false, preferBingeGroup: true,
+            playingBingeGroup: "grp")
+        XCTAssertEqual(manualBinge.mode, .firstStream)
+        XCTAssertEqual(manualBinge.source, .allSources)
+        XCTAssertEqual(manualBinge.regexPattern, "")
+        XCTAssertEqual(manualBinge.selectedAddons, [])
+        XCTAssertEqual(manualBinge.selectedPlugins, [])
+        XCTAssertEqual(manualBinge.ranking, .listOrder)
+        XCTAssertEqual(manualBinge.preferredBingeGroup, "grp")
+        XCTAssertTrue(manualBinge.preferBingeGroupInSelection)
+        XCTAssertTrue(manualBinge.bingeGroupOnly, "binge group only: next-episode toggle off, prefer on, a group")
+        // The user's own Auto-Play Best Source: the user scope, ranked by quality.
+        let firstStream = NextEpisodeEngine.autoPickScope(
+            mode: .firstStream, source: .installedAddonsOnly, regex: "", selectedAddons: ["A"], selectedPlugins: [],
+            nextEpisodeEnabled: true, nextEpisodeFallbackEnabled: true, preferBingeGroup: false,
+            playingBingeGroup: "grp")
+        XCTAssertEqual(firstStream.mode, .firstStream)
+        XCTAssertEqual(firstStream.source, .installedAddonsOnly)
+        XCTAssertEqual(firstStream.selectedAddons, ["A"])
+        XCTAssertEqual(firstStream.ranking, ranking)
+        XCTAssertNil(firstStream.preferredBingeGroup)
+        XCTAssertFalse(firstStream.bingeGroupOnly)
+        // Regex: the user's pattern, list order.
+        let regex = NextEpisodeEngine.autoPickScope(
+            mode: .regexMatch, source: .allSources, regex: "2160p", selectedAddons: [], selectedPlugins: [],
+            nextEpisodeEnabled: false, nextEpisodeFallbackEnabled: true, preferBingeGroup: true,
+            playingBingeGroup: nil)
+        XCTAssertEqual(regex.mode, .regexMatch)
+        XCTAssertEqual(regex.regexPattern, "2160p")
+        XCTAssertEqual(regex.ranking, .listOrder)
+        XCTAssertFalse(regex.bingeGroupOnly, "not MANUAL: no binge-group-only")
+        XCTAssertNil(regex.preferredBingeGroup, "no playing group")
+    }
+
+    func testTheTestingContextCarriesAnEmptyTriedSet() {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder)
+        let ctx = engine.nextContextForTesting(stream: stream(url: "https://cdn.example.com/s1e2.mkv"),
+                                               url: URL(string: "https://cdn.example.com/s1e2.mkv")!)
+        XCTAssertEqual(ctx?.sourceFallback, PlayerSourceFallbackTried.companion.None)
     }
 }

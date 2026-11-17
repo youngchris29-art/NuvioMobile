@@ -157,6 +157,12 @@ struct PlaybackContext: Identifiable {
     /// can be dropped (`DirectDebridPlaybackResolver.invalidate` is keyed on the listed stream).
     /// nil on launch paths without a stream.
     var listedStream: StreamItem? = nil
+    /// W4 (upstream ff7500fdd): set on an Up Next hand-off and on every in-place fallback of one:
+    /// the sources auto selection tried for this episode before the one playing (its own key
+    /// included, in `playerSourceIdentityKey` space) and how many further ones it moved to. The
+    /// in-player fallback goes on from it, so the budget is per episode. Nil on every source the
+    /// viewer picked.
+    var sourceFallback: PlayerSourceFallbackTried? = nil
     /// Failure-alert retry ("Try with mpv" / "Try Native Player"): pins the engine for this attempt.
     var forcedEngine: PlaybackEngine? = nil
     /// Failure-alert retry: both engines resume from here instead of the saved progress (> 10 s).
@@ -216,6 +222,56 @@ struct PlaybackContext: Identifiable {
     }
 }
 
+extension PlaybackContext {
+    /// W4: the same episode on another source (an in-place fallback). Stream fields come from
+    /// `stream` (the resolved one) and `listed` (as listed: the failure memory's key); the episode,
+    /// artwork, Start Over and launch source stay. `resumeAtSec` is where the replacement starts
+    /// (nil keeps this context's own rule: saved progress, or Start Over); `attempt` keeps the two
+    /// contexts' ids apart, so the player is rebuilt even when both resolve to one URL.
+    func replacingSource(stream: StreamItem, url: URL, listed: StreamItem, attempt: Int,
+                         sourceFallback: PlayerSourceFallbackTried?, resumeAtSec: Double?) -> PlaybackContext {
+        var next = PlaybackContext(
+            url: url,
+            title: title,
+            contentType: contentType,
+            parentMetaId: parentMetaId,
+            videoId: videoId,
+            season: season,
+            episode: episode,
+            poster: poster,
+            background: background,
+            providerName: stream.addonName,
+            providerAddonId: stream.addonId,
+            streamTitle: stream.streamLabel,
+            streamSubtitle: { let s: String? = stream.description_; return s }(),
+            externalSubtitles: stream.externalSubtitles.map { sub in
+                SubtitleFile(url: sub.url, language: sub.language, name: { let n: String? = sub.name; return n }())
+            },
+            bingeGroup: { let bg: String? = stream.behaviorHints.bingeGroup; return bg }(),
+            episodes: episodes,
+            synopsis: synopsis,
+            episodeStill: episodeStill,
+            logo: logo,
+            meta: meta,
+            fileSizeBytes: { let n: Int64? = stream.behaviorHints.videoSize?.int64Value; return n }(),
+            streamFilename: { let f: String? = stream.behaviorHints.filename; return f }(),
+            videoHash: { let h: String? = stream.behaviorHints.videoHash; return h }(),
+            streamAudioDelayMs: { let n: Int? = stream.behaviorHints.audioDelayMs?.intValue; return n }(),
+            requestHeaders: StreamModelsKt.sanitizePlaybackHeaders(headers: stream.behaviorHints.proxyHeaders?.request),
+            launchSource: launchSource,
+            streamKey: listed.playbackStreamKey,
+            startFromBeginning: startFromBeginning,
+            attempt: attempt,
+            listedStream: listed,
+            // Auto selection never picks a ytId-only stream; kept for the rule's sake.
+            sessionOnlySourceUrl: StreamPickerView.isYouTubeResolved(listed)
+        )
+        next.sourceFallback = sourceFallback
+        next.resumeAtSec = resumeAtSec ?? self.resumeAtSec
+        return next
+    }
+}
+
 /// Who started a playback (see `PlaybackContext.launchSource`).
 enum PlaybackLaunchSource: Equatable {
     /// The viewer picked the stream (a picker row, "Try Next Source", the in-player source list).
@@ -253,12 +309,14 @@ struct PlaybackFailure: Equatable {
 enum PlaybackFailureKind: String, Equatable, Sendable {
     // Remembered.
     case http, decode, placeholder, endedEarly, noMedia, unknown
-    // Not remembered. `.local` = our own engine failed (the B17 item rebuild).
-    case network, offline, cancelled, local
+    // Not remembered. `.local` = our own engine failed (the B17 item rebuild). `.startTimeout`
+    // (W4) = an auto-picked source passed the start-up limit with no first frame: slow is not
+    // proof of dead (the BUG-143 rule), so it is never remembered and its resolve is kept.
+    case network, offline, cancelled, local, startTimeout
 
     var remembersLink: Bool {
         switch self {
-        case .network, .offline, .cancelled, .local: false
+        case .network, .offline, .cancelled, .local, .startTimeout: false
         default: true
         }
     }
@@ -299,25 +357,97 @@ enum PlaybackFailoverPolicy {
     /// A link that played this long is healthy: its failure is not remembered, and reaching it
     /// clears an earlier rejection (`RejectedStreamLinks.keep`).
     static let healthySeconds: Double = 300
-    /// Candidates an automatic flow may try per picker visit (first start + failovers).
-    static let maxAutoAttempts = 4
+
+    /// Attempts an automatic flow may make per title or episode: the first start plus "Sources to
+    /// Try" (Settings › Sources, W4). The budget itself is shared (`PlayerSourceFallback`); this is
+    /// only the "first start included" count the walk controller works in.
+    nonisolated static func maxAutoAttempts(furtherSources: Int) -> Int {
+        1 + max(furtherSources, 0)
+    }
+
+    static func maxAutoAttempts(settings: PlayerSettingsUiState?, entry: PlayerSourceFallbackEntry) -> Int {
+        maxAutoAttempts(furtherSources: Int(PlayerSourceFallback.shared.furtherSources(settings: settings, entry: entry)))
+    }
+
+    /// The overlay's "of m" before a walk has read its own cap: the shared default budget.
+    nonisolated static var defaultMaxAutoAttempts: Int {
+        maxAutoAttempts(furtherSources: Int(PlayerSourceFallback.shared.DEFAULT_FURTHER_SOURCES))
+    }
+
+    /// W4: the start-up limit the host hands a context, nil for a source the viewer picked, for
+    /// an Up Next context that carries no tried set, and whenever falling back is off for the
+    /// entry point (`limitSeconds` answers nil then: `PlayerSourceFallback.startupLimitSeconds`).
+    static func startupLimit(launchSource: PlaybackLaunchSource, hasSourceFallback: Bool,
+                             limitSeconds: (PlayerSourceFallbackEntry) -> Int?) -> Double? {
+        let entry: PlayerSourceFallbackEntry
+        switch launchSource {
+        case .manual: return nil
+        case .autoPlay: entry = .firstPlay
+        case .nextEpisode:
+            guard hasSourceFallback else { return nil }
+            entry = .nextEpisode
+        }
+        return limitSeconds(entry).map(Double.init)
+    }
+
+    static func startupLimit(for context: PlaybackContext, settings: PlayerSettingsUiState?) -> Double? {
+        startupLimit(launchSource: context.launchSource, hasSourceFallback: context.sourceFallback != nil) { entry in
+            PlayerSourceFallback.shared.startupLimitSeconds(settings: settings, entry: entry).map { Int($0.int32Value) }
+        }
+    }
 
     /// What the picker does when a playback it presented fails.
     enum Response: Equatable {
         /// Swap the next auto-play candidate into the open player.
         case autoFailover
+        /// W4: swap the Up Next episode's next source into the open player (the episode walk).
+        case episodeFallback
         /// Close the player and open a stream picker for the episode that failed.
         case nextEpisodePicker
         /// Close the player and offer "Try Next Source" / "Back to Sources".
         case manualAlert
     }
 
+    /// Before W4: the launch source alone. Kept as the "no fallback left" answer `route` gives.
     static func response(for source: PlaybackLaunchSource) -> Response {
         switch source {
         case .autoPlay: return .autoFailover
         case .nextEpisode: return .nextEpisodePicker
         case .manual: return .manualAlert
         }
+    }
+
+    /// W4: what the picker does with a failure of a context it presented. A pick of the viewer's
+    /// never falls back. First play keeps today's walk for any failure (the controller holds its
+    /// own budget and gives up itself). An Up Next episode falls back in place while falling back
+    /// is on, its tried set is known, a further source is left in its budget and the source either
+    /// never started or failed before the healthy mark (decision Q4a); otherwise its picker opens.
+    static func route(launchSource: PlaybackLaunchSource, failure: PlaybackFailure, hasSourceFallback: Bool,
+                      fallbackActive: Bool, attemptsLeft: Int) -> Response {
+        switch launchSource {
+        case .manual: return .manualAlert
+        case .autoPlay: return .autoFailover
+        case .nextEpisode:
+            let early = !failure.startedPlaying || failure.secondsPlayed < healthySeconds
+            return (hasSourceFallback && fallbackActive && attemptsLeft > 0 && early) ? .episodeFallback : .nextEpisodePicker
+        }
+    }
+
+    /// W4: further sources an Up Next episode may still move to in the player: its budget minus
+    /// what its tried set already used (the first start and the further sources moved to).
+    static func episodeAttemptsLeft(sourceFallback: PlayerSourceFallbackTried?, furtherSources: Int) -> Int {
+        guard let sourceFallback else { return 0 }
+        return maxAutoAttempts(furtherSources: furtherSources) - (1 + Int(sourceFallback.attempts))
+    }
+
+    /// W4 (decision Q4a): where a replacement for a failed auto-picked source starts: the failed
+    /// position when it had started (more than the engines' 10 s resume floor), else nil (the
+    /// context's own rule: saved progress or Start Over). A start-up limit has no failure: nil.
+    static func replacementResume(after failure: PlaybackFailure?) -> Double? {
+        guard let failure, failure.startedPlaying, failure.positionSec.isFinite, failure.positionSec > 10 else {
+            return nil
+        }
+        return failure.positionSec
     }
 
     /// Remember the failed link only when it never got going: a source that played for five

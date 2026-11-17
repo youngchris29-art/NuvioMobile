@@ -35,9 +35,17 @@ struct FirstPlayAutoPlayFeed: Equatable {
 /// controller snapshots those, consumes them from the repository, applies the "Cached Sources
 /// Only" setting and the recently-failed links (`RejectedStreamLinks`), and walks them — a direct
 /// URL plays as is, a debrid candidate resolves first (20 s deadline) — until one opens the
-/// player, at most `PlaybackFailoverPolicy.maxAutoAttempts` attempts per picker visit. A player
-/// that then fails calls `failover(afterFailureOf:addonId:)` to continue the same walk, the failed
-/// link's add-on first.
+/// player, at most `Dependencies.maxAttempts` attempts per picker visit (W4: the first start plus
+/// Settings › Sources › Sources to Try, read once when the walk starts). A player that then fails
+/// calls `failover(afterFailureOf:addonId:)` to continue the same walk with the next candidate in
+/// rank order (W4, upstream's order: the failed link's add-on is no longer tried first; a source
+/// already tried and other copies of the failed torrent from the same add-on are skipped, the
+/// shared `PlayerSourceFallback.isExcluded` rule).
+///
+/// W4: the same controller also drives the in-player fallback of an Up Next episode
+/// (`seed(candidates:alreadyTried:playing:)`, a second instance owned by the picker), and the
+/// start-up limit's move to the next source (`hasOpenCandidate`, `failover(reason: .startupLimit)`,
+/// `abandonFailover`).
 ///
 /// The controller decides; the picker acts on its `events`. Every dependency on SharedCore
 /// singletons is a closure in `Dependencies`, so `FirstPlayAutoPlayControllerTests` drives the
@@ -63,11 +71,16 @@ final class FirstPlayAutoPlayController: ObservableObject {
         let addonId: String
         /// `StreamItem.playbackStreamKey` of the stream as listed (before any debrid resolve).
         let streamKey: String
+        /// W4: the shared `playerSourceIdentityKey()` of the stream as listed (the tried set's key
+        /// space in shared, carried between Up Next and the player).
+        let identityKey: String?
 
         init(stream: StreamItem) {
             self.stream = stream
             self.addonId = stream.addonId
             self.streamKey = stream.playbackStreamKey
+            let identity: String? = stream.playerSourceIdentityKey()
+            self.identityKey = identity
         }
     }
 
@@ -119,7 +132,30 @@ final class FirstPlayAutoPlayController: ObservableObject {
         /// P4 (BUG-143, C-6): is there a usable network path? A failure while offline is never
         /// remembered against the link (live: `NetworkPathMonitor.shared.isSatisfied`).
         var networkSatisfied: () -> Bool = { true }
+        /// W4: attempts per title or episode, the first start included
+        /// (`PlaybackFailoverPolicy.maxAutoAttempts(settings:entry:)`). Read once per walk.
+        var maxAttempts: () -> Int = { PlaybackFailoverPolicy.defaultMaxAutoAttempts }
+        /// W4 (2b.7): re-resolve a listed debrid stream bypassing the resolver's cache.
+        var resolveFresh: @MainActor (StreamItem) async throws -> ResolveOutcome = { _ in
+            .failed(reason: "no fresh resolve", rejectsLink: false)
+        }
+        /// W4: the clock for the "resolved in this walk less than a minute ago" refresh rule.
+        var now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
     }
+
+    /// W4: why a failover is asked for.
+    enum FailoverReason: Equatable {
+        /// The player reported a failure (`PlaybackFailure`).
+        case playbackFailed
+        /// The start-up limit passed with no first frame; the slow source is still loading. Such a
+        /// walk never ends the source it would replace: with nothing else able to start it stands
+        /// down silently (the engine's own watchdog stays the backstop).
+        case startupLimit
+    }
+
+    /// W4 (2b.7): a listed debrid link resolved this recently in the walk is fresh; a refresh would
+    /// hand back its twin.
+    static let freshResolveSeconds: TimeInterval = 60
 
     @Published private(set) var phase: Phase = .idle
     let events = PassthroughSubject<Event, Never>()
@@ -131,8 +167,23 @@ final class FirstPlayAutoPlayController: ObservableObject {
     /// Snapshot of the eligible candidates, in the repository's order.
     private(set) var candidates: [Candidate] = []
     private(set) var attemptsUsed = 0
+    /// W4: attempts allowed for this walk (the first start included), read at `arm()` / `seed`.
+    private(set) var attemptCap: Int
     private var triedIndices: Set<Int> = []
     private var triedKeys: Set<String> = []
+    /// W4: the same sources in `playerSourceIdentityKey` space (Kotlin), the tried set Up Next
+    /// hands over (`PlaybackContext.sourceFallback`) and the shared exclusion rule reads.
+    private var triedIdentityKeys: Set<String> = []
+    /// W4: the candidate that opened the player last (its failure excludes its torrent's copies).
+    private var lastPlayed: Candidate?
+    /// W4: the candidate whose failure the next pick follows (`PlayerSourceFallback.isExcluded`).
+    private var lastFailed: Candidate?
+    /// W4: the current failover was started by the start-up limit and the slow source has not
+    /// failed since (`FailoverReason.startupLimit`).
+    private var limitWalk = false
+    /// W4 (2b.7): listed keys already re-resolved once, and when each key last resolved here.
+    private var refreshedOnce: Set<String> = []
+    private var resolvedAt: [String: TimeInterval] = [:]
     /// The repository has reported the direct auto-play flow on for this request.
     private var sawDirectFlow = false
     /// The walk continues after a failed playback (the open player is swapped in place).
@@ -146,6 +197,13 @@ final class FirstPlayAutoPlayController: ObservableObject {
     init(titleKey: String, dependencies: Dependencies) {
         self.titleKey = titleKey
         self.deps = dependencies
+        self.attemptCap = dependencies.maxAttempts()
+    }
+
+    /// W4: the walk's tried set in the shared form (identity keys, the source playing included,
+    /// and the further sources moved to): what an in-place replacement context carries on.
+    var fallbackTried: PlayerSourceFallbackTried {
+        PlayerSourceFallbackTried(keys: triedIdentityKeys, attempts: Int32(max(attemptsUsed - 1, 0)))
     }
 
     deinit {
@@ -153,13 +211,14 @@ final class FirstPlayAutoPlayController: ObservableObject {
         resolveTimeout?.cancel()
     }
 
-    var isOverlayVisible: Bool { Policy.overlayMessage(for: phase) != nil }
+    var isOverlayVisible: Bool { Policy.overlayMessage(for: phase, cap: attemptCap) != nil }
 
     // MARK: - Lifecycle
 
     /// Start a visit's auto mode: the picker calls this once, before its first load.
     func arm() {
         guard phase == .idle else { return }
+        attemptCap = deps.maxAttempts()
         phase = .searching
         autoPlayLog("[AutoPlay] armed title=\(titleKey)")
         let deadline = deps.searchDeadline
@@ -205,19 +264,99 @@ final class FirstPlayAutoPlayController: ObservableObject {
         }
     }
 
-    /// A player this controller started failed: try the next candidate, the failed link's add-on
-    /// first. Returns false when there is no walk to continue (the picker then gives up itself).
+    /// A player this controller started failed (or, `reason: .startupLimit`, has shown no frame
+    /// within the start-up limit): try the next candidate in rank order. `addonId` only feeds the
+    /// log since W4 (upstream's order; the same-add-on-first preference was dropped, decision Q3).
+    /// `refreshFirst` (2b.7): the failed listed debrid stream, re-resolved once with the resolver's
+    /// cache bypassed before the walk moves on, unless it was resolved in this walk less than a
+    /// minute ago; `failedURL` is the link that failed (a refresh handing back the same one moves
+    /// on). Returns false when there is no walk to continue (the picker then gives up itself).
+    /// A second report while a failover resolves (the slow source failed after its limit had
+    /// started one) returns true and starts nothing.
     @discardableResult
-    func failover(afterFailureOf streamKey: String, addonId: String?) -> Bool {
-        guard phase == .done, !candidates.isEmpty else {
+    func failover(afterFailureOf streamKey: String, addonId: String?, reason: FailoverReason = .playbackFailed,
+                  refreshFirst: Candidate? = nil, failedURL: URL? = nil) -> Bool {
+        if case .resolving = phase, isFailoverWalk {
+            if reason == .playbackFailed, limitWalk {
+                // The slow source failed while its replacement resolves: running out now gives up.
+                limitWalk = false
+            }
+            autoPlayLog("[AutoPlay] \(reason == .startupLimit ? "start-up limit" : "playback failure") key=\(streamKey) while a failover resolves — nothing new started")
+            return true
+        }
+        guard phase == .done, !candidates.isEmpty || refreshFirst != nil else {
             autoPlayLog("[AutoPlay] failover requested in phase \(phase) — nothing to continue")
             return false
         }
         if !streamKey.isEmpty { triedKeys.insert(streamKey) }
+        let failed = lastPlayed.flatMap { $0.streamKey == streamKey ? $0 : nil }
+            ?? candidates.first { !streamKey.isEmpty && $0.streamKey == streamKey }
+        if let identity = failed?.identityKey { triedIdentityKeys.insert(identity) }
+        lastFailed = failed
         isFailoverWalk = true
-        autoPlayLog("[AutoPlay] playback failed key=\(streamKey) — failover (\(attemptsUsed)/\(PlaybackFailoverPolicy.maxAutoAttempts) used)")
-        tryNext(preferAddonId: addonId)
+        limitWalk = reason == .startupLimit
+        let why = reason == .startupLimit ? "start-up limit passed" : "playback failed"
+        autoPlayLog("[AutoPlay] \(why) key=\(streamKey) — failover (\(attemptsUsed)/\(attemptCap) used)")
+        if let refresh = refreshFirst, reason == .playbackFailed, willRefreshBeforeMovingOn(streamKey: refresh.streamKey) {
+            beginRefresh(refresh, failedURL: failedURL)
+            return true
+        }
+        tryNext(preferAddonId: nil)
         return true
+    }
+
+    /// W4 (2b.7): would a failover of `streamKey` re-resolve it once before moving on? False once
+    /// it was refreshed, or when it resolved in this walk less than `freshResolveSeconds` ago. The
+    /// picker asks before it remembers the failed link: a refresh decides that instead.
+    func willRefreshBeforeMovingOn(streamKey: String) -> Bool {
+        // Only a settled walk refreshes (a failover already resolving starts nothing new).
+        guard phase == .done, !streamKey.isEmpty, !refreshedOnce.contains(streamKey) else { return false }
+        if let at = resolvedAt[streamKey], deps.now() - at < Self.freshResolveSeconds { return false }
+        return true
+    }
+
+    /// W4: start a walk for an Up Next episode that already played a source the Up Next engine
+    /// picked: `snapshot` in rank order (the caller filtered and ranked it with the shared rule),
+    /// `alreadyTried` from `PlaybackContext.sourceFallback`, `playing` the listed stream that is
+    /// playing (or failed). Leaves the controller in `.done` with `isFailoverWalk`, ready for
+    /// `failover(...)`; `attemptsUsed` continues Up Next's count, so the budget is per episode.
+    func seed(candidates snapshot: [StreamItem], alreadyTried: PlayerSourceFallbackTried, playing: StreamItem?) {
+        guard phase == .idle else { return }
+        attemptCap = deps.maxAttempts()
+        candidates = snapshot.map(Candidate.init(stream:))
+        triedIdentityKeys = Set(alreadyTried.keys)
+        if let playing {
+            let current = Candidate(stream: playing)
+            if !current.streamKey.isEmpty { triedKeys.insert(current.streamKey) }
+            if let identity = current.identityKey { triedIdentityKeys.insert(identity) }
+            lastPlayed = current
+        }
+        attemptsUsed = 1 + Int(alreadyTried.attempts)
+        isFailoverWalk = true
+        phase = .done
+        autoPlayLog("[AutoPlay] episode walk seeded candidates=\(candidates.count) used=\(attemptsUsed)/\(attemptCap)")
+    }
+
+    /// W4: could a failover start another source now (the start-up limit asks before moving on)?
+    /// The walk is settled, its budget has room, and some untried, non-rejected candidate can play
+    /// on this device (a direct link, or one the debrid connection resolves).
+    func hasOpenCandidate() -> Bool {
+        guard phase == .done, attemptsUsed < attemptCap else { return false }
+        let open = Policy.openIndices(in: candidates, triedIndices: triedIndices, triedKeys: triedKeys,
+                                      rejected: deps.rejected(titleKey), triedIdentityKeys: triedIdentityKeys,
+                                      failed: lastPlayed)
+        return open.contains { deps.directURL(candidates[$0].stream) != nil || deps.canResolve(candidates[$0].stream) }
+    }
+
+    /// W4: the slow source started while its replacement resolved: drop the resolve (its result is
+    /// ignored when it lands), keep playing. The attempt it used stays used.
+    func abandonFailover() {
+        guard case .resolving = phase, isFailoverWalk else { return }
+        generation += 1
+        resolveTimeout?.cancel()
+        limitWalk = false
+        phase = .done
+        autoPlayLog("[AutoPlay] failover abandoned: the slow source started")
     }
 
     // MARK: - Walk
@@ -234,21 +373,23 @@ final class FirstPlayAutoPlayController: ObservableObject {
 
     private func tryNext(preferAddonId: String?) {
         while true {
-            guard attemptsUsed < PlaybackFailoverPolicy.maxAutoAttempts else {
-                autoPlayLog("[AutoPlay] exhausted: attempt cap \(PlaybackFailoverPolicy.maxAutoAttempts) reached")
-                giveUp(.allFailed)
+            guard attemptsUsed < attemptCap else {
+                autoPlayLog("[AutoPlay] exhausted: attempt cap \(attemptCap) reached")
+                endWalk(.allFailed)
                 return
             }
             let rejected = deps.rejected(titleKey)
             guard let index = Policy.nextIndex(in: candidates, triedIndices: triedIndices, triedKeys: triedKeys,
-                                               rejected: rejected, preferAddonId: preferAddonId) else {
+                                               rejected: rejected, preferAddonId: preferAddonId,
+                                               triedIdentityKeys: triedIdentityKeys, failed: lastFailed) else {
                 autoPlayLog("[AutoPlay] exhausted: no candidate left after \(attemptsUsed) attempt(s)")
-                giveUp(attemptsUsed == 0 && !isFailoverWalk ? .noCandidates : .allFailed)
+                endWalk(attemptsUsed == 0 && !isFailoverWalk ? .noCandidates : .allFailed)
                 return
             }
             let candidate = candidates[index]
             triedIndices.insert(index)
             if !candidate.streamKey.isEmpty { triedKeys.insert(candidate.streamKey) }
+            if let identity = candidate.identityKey { triedIdentityKeys.insert(identity) }
 
             if let url = deps.directURL(candidate.stream) {
                 attemptsUsed += 1
@@ -312,6 +453,7 @@ final class FirstPlayAutoPlayController: ObservableObject {
         resolveTimeout?.cancel()
         switch outcome {
         case let .playable(resolved, url):
+            if !candidate.streamKey.isEmpty { resolvedAt[candidate.streamKey] = deps.now() }
             succeed(candidate, resolved: resolved, url: url)
         case let .failed(reason, rejectsLink):
             autoPlayLog("[AutoPlay] attempt #\(attemptsUsed) failed key=\(candidate.streamKey): \(reason)")
@@ -323,18 +465,91 @@ final class FirstPlayAutoPlayController: ObservableObject {
                 // would otherwise blacklist every cached link for 8 h.
                 autoPlayLog("[AutoPlay] reject key=\(candidate.streamKey) transient=1 offline=1 skipped")
             }
-            tryNext(preferAddonId: candidate.addonId)
+            lastFailed = candidate
+            tryNext(preferAddonId: nil)
         }
+    }
+
+    /// W4 (2b.7): the failed debrid link may have been rotated by the provider while the resolver
+    /// (or the background preparer) still handed it out: resolve the same listed stream once more,
+    /// bypassing the cache. A new link plays without using an attempt; the same link, a failure or
+    /// the deadline remembers the source (the picker left that to this step) and moves on.
+    private func beginRefresh(_ candidate: Candidate, failedURL: URL?) {
+        refreshedOnce.insert(candidate.streamKey)
+        phase = .resolving(attempt: max(attemptsUsed, 1))
+        autoPlayLog("[AutoPlay] refreshing key=\(candidate.streamKey) once before moving on")
+        generation += 1
+        let attemptGeneration = generation
+        let resolveFresh = deps.resolveFresh
+        Task { [weak self] in
+            let outcome: ResolveOutcome
+            do {
+                outcome = try await resolveFresh(candidate.stream)
+            } catch {
+                outcome = .failed(reason: "fresh resolve threw: \(error.localizedDescription)", rejectsLink: false)
+            }
+            self?.finishRefresh(attemptGeneration, candidate, outcome, failedURL: failedURL)
+        }
+        let deadline = deps.resolveDeadline
+        resolveTimeout?.cancel()
+        resolveTimeout = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(max(deadline, 0) * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self?.finishRefresh(attemptGeneration, candidate,
+                                .failed(reason: "fresh resolve timed out after \(Int(deadline)) s", rejectsLink: false),
+                                failedURL: failedURL)
+        }
+    }
+
+    private func finishRefresh(_ attemptGeneration: Int, _ candidate: Candidate, _ outcome: ResolveOutcome,
+                               failedURL: URL?) {
+        guard attemptGeneration == generation, case .resolving = phase else { return }
+        generation += 1
+        resolveTimeout?.cancel()
+        if case let .playable(resolved, url) = outcome, url != failedURL {
+            autoPlayLog("[AutoPlay] refreshed key=\(candidate.streamKey): a new link plays")
+            succeed(candidate, resolved: resolved, url: url)
+            return
+        }
+        let why: String
+        switch outcome {
+        case .playable: why = "the same link came back"
+        case let .failed(reason, _): why = reason
+        }
+        autoPlayLog("[AutoPlay] refresh of key=\(candidate.streamKey) did not help (\(why)) — moving on")
+        // The player's failure was positive evidence against the link (an HTTP error before it
+        // started); its memory was left to this step. Never while offline (C-6).
+        if deps.networkSatisfied() {
+            deps.reject(candidate.streamKey, titleKey)
+            deps.invalidate(candidate.stream)
+        }
+        tryNext(preferAddonId: nil)
     }
 
     private func succeed(_ candidate: Candidate, resolved: StreamItem, url: URL) {
         searchTimeout?.cancel()
         resolveTimeout?.cancel()
         generation += 1
+        limitWalk = false
+        lastPlayed = candidate
         phase = .done
         autoPlayLog("[AutoPlay] play attempt #\(attemptsUsed) key=\(candidate.streamKey) failover=\(isFailoverWalk)")
         events.send(.play(candidate: candidate, resolved: resolved, url: url,
                           attempt: attemptsUsed, isFailover: isFailoverWalk))
+    }
+
+    /// W4: a walk that ran out. One the start-up limit began, whose slow source has not failed,
+    /// stands down instead (`.done`, no event): that source keeps loading.
+    private func endWalk(_ reason: GiveUpReason) {
+        guard limitWalk else {
+            giveUp(reason)
+            return
+        }
+        limitWalk = false
+        generation += 1
+        resolveTimeout?.cancel()
+        phase = .done
+        autoPlayLog("[AutoPlay] start-up limit: nothing else could start (\(reason)) — the slow source keeps loading: \(walkSummary())")
     }
 
     private func giveUp(_ reason: GiveUpReason) {
@@ -401,20 +616,38 @@ final class FirstPlayAutoPlayController: ObservableObject {
         }
 
         /// The next candidate to try: the first untried, non-rejected one from `preferAddonId`
-        /// (the add-on whose link just failed), else the first untried, non-rejected one — the
-        /// head of a stable same-add-on-first partition of what is left. A key already tried this
-        /// visit (the same torrent listed twice) is not tried again.
+        /// when one is given, else the first untried, non-rejected one in rank order. Since W4
+        /// the walk passes no preference (upstream's order, decision Q3); the parameter stays for
+        /// its tests. A key already tried this visit (the same torrent listed twice) is not tried
+        /// again, nor (W4) a source whose identity key was tried (Up Next's handed-over set) or
+        /// another copy of `failed`'s torrent from `failed`'s add-on (the shared
+        /// `PlayerSourceFallback.isExcluded`).
         static func nextIndex(in candidates: [Candidate], triedIndices: Set<Int>, triedKeys: Set<String>,
-                              rejected: Set<String>, preferAddonId: String?) -> Int? {
-            let open = candidates.indices.filter { index in
-                guard !triedIndices.contains(index) else { return false }
-                let key = candidates[index].streamKey
-                return key.isEmpty || (!triedKeys.contains(key) && !rejected.contains(key))
-            }
+                              rejected: Set<String>, preferAddonId: String?,
+                              triedIdentityKeys: Set<String> = [], failed: Candidate? = nil) -> Int? {
+            let open = openIndices(in: candidates, triedIndices: triedIndices, triedKeys: triedKeys,
+                                   rejected: rejected, triedIdentityKeys: triedIdentityKeys, failed: failed)
             if let preferAddonId, let same = open.first(where: { candidates[$0].addonId == preferAddonId }) {
                 return same
             }
             return open.first
+        }
+
+        /// Every candidate `nextIndex` could still pick, in order.
+        static func openIndices(in candidates: [Candidate], triedIndices: Set<Int>, triedKeys: Set<String>,
+                                rejected: Set<String>, triedIdentityKeys: Set<String> = [],
+                                failed: Candidate? = nil) -> [Int] {
+            let failedHash: String? = failed?.stream.p2pInfoHash
+            let failedAddonId: String? = failed?.addonId
+            return candidates.indices.filter { index in
+                guard !triedIndices.contains(index) else { return false }
+                let candidate = candidates[index]
+                let key = candidate.streamKey
+                if !key.isEmpty, triedKeys.contains(key) || rejected.contains(key) { return false }
+                return !PlayerSourceFallback.shared.isExcluded(
+                    stream: candidate.stream, triedKeys: triedIdentityKeys,
+                    failedAddonId: failedAddonId, failedInfoHash: failedHash)
+            }
         }
 
         /// A link the active debrid service already has cached: a direct-debrid result or a
@@ -453,13 +686,13 @@ final class FirstPlayAutoPlayController: ObservableObject {
             return "res=\(res) hdr=\(dynamicRange) cached=\(cached) size=\(gb)"
         }
 
-        /// Overlay text for a phase; nil hides the overlay.
-        static func overlayMessage(for phase: Phase) -> String? {
+        /// Overlay text for a phase; nil hides the overlay. `cap` is the walk's attempt cap (the
+        /// "of m"; W4: the first start plus Sources to Try).
+        static func overlayMessage(for phase: Phase, cap: Int = PlaybackFailoverPolicy.defaultMaxAutoAttempts) -> String? {
             switch phase {
             case .searching, .resolving(attempt: 1):
                 return String(localized: "Finding the best source\u{2026}")
             case let .resolving(attempt):
-                let cap = PlaybackFailoverPolicy.maxAutoAttempts
                 return String(localized: "Trying another source (\(attempt) of \(cap))\u{2026}")
             case .idle, .done, .cancelled, .exhausted:
                 return nil
@@ -470,9 +703,18 @@ final class FirstPlayAutoPlayController: ObservableObject {
 
 // MARK: - Live dependencies
 
+/// The shared player settings as they are now (nil until loaded). W4: the fallback budget and the
+/// start-up limit are read through it when a walk or a player starts.
+func livePlayerSettingsSnapshot() -> PlayerSettingsUiState? {
+    PlayerSettingsRepository.shared.ensureLoaded()
+    return PlayerSettingsRepository.shared.uiState.value_ as? PlayerSettingsUiState
+}
+
 extension FirstPlayAutoPlayController.Dependencies {
-    /// The SharedCore-backed dependencies for one picker visit.
-    static func live(type: String, videoId: String, season: Int?, episode: Int?) -> Self {
+    /// The SharedCore-backed dependencies for one picker visit (`entry: .firstPlay`), or for the
+    /// in-player walk of one Up Next episode (`entry: .nextEpisode`: `videoId` is the episode's).
+    static func live(type: String, videoId: String, season: Int?, episode: Int?,
+                     entry: PlayerSourceFallbackEntry) -> Self {
         let kotlinSeason = season.map { KotlinInt(int: Int32($0)) }
         let kotlinEpisode = episode.map { KotlinInt(int: Int32($0)) }
         return Self(
@@ -524,7 +766,14 @@ extension FirstPlayAutoPlayController.Dependencies {
                     resolution: key.resolution, dynamicRange: key.dynamicRange, cached: key.cached, size: key.size
                 )
             },
-            networkSatisfied: { NetworkPathMonitor.shared.isSatisfied }
+            networkSatisfied: { NetworkPathMonitor.shared.isSatisfied },
+            maxAttempts: { PlaybackFailoverPolicy.maxAutoAttempts(settings: livePlayerSettingsSnapshot(), entry: entry) },
+            resolveFresh: { stream in
+                let result = try await DirectDebridPlaybackResolver.shared.resolveToPlayableStreamCheckedForce(
+                    stream: stream, season: kotlinSeason, episode: kotlinEpisode
+                )
+                return FirstPlayAutoPlayController.outcome(from: result)
+            }
         )
     }
 }

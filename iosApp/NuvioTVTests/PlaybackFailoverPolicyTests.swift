@@ -382,4 +382,108 @@ final class PlaybackFailoverPolicyTests: XCTestCase {
         XCTAssertNil(PlaybackMeta.runtimeMinutes("TBA"))
         XCTAssertNil(PlaybackMeta.runtimeMinutes(nil))
     }
+
+    // MARK: W4: route, start-up limit, budget, resume
+
+    private func failure(started: Bool, played: Double, position: Double = 0) -> PlaybackFailure {
+        PlaybackFailure(reason: "x", positionSec: position, secondsPlayed: played, startedPlaying: started)
+    }
+
+    /// The upstream runtime cases as decisions: a viewer's pick never falls back; first play keeps
+    /// its walk for any failure; an Up Next episode falls back in place only with its tried set,
+    /// the switch on, budget left and a failure before the healthy mark.
+    func testRouteTable() {
+        typealias P = PlaybackFailoverPolicy
+        let early = failure(started: false, played: 0)
+        let at299 = failure(started: true, played: 299)
+        let at301 = failure(started: true, played: 301)
+        for f in [early, at299, at301] {
+            XCTAssertEqual(P.route(launchSource: .manual, failure: f, hasSourceFallback: true, fallbackActive: true,
+                                   attemptsLeft: 3), .manualAlert, "sourcePickedByTheUserNeverFallsBack")
+            XCTAssertEqual(P.route(launchSource: .autoPlay, failure: f, hasSourceFallback: false, fallbackActive: false,
+                                   attemptsLeft: 0), .autoFailover, "the controller holds first play's budget")
+        }
+        XCTAssertEqual(P.route(launchSource: .nextEpisode, failure: early, hasSourceFallback: true, fallbackActive: true,
+                               attemptsLeft: 1), .episodeFallback)
+        XCTAssertEqual(P.route(launchSource: .nextEpisode, failure: at299, hasSourceFallback: true, fallbackActive: true,
+                               attemptsLeft: 1), .episodeFallback, "Q4a: before the five-minute mark")
+        XCTAssertEqual(P.route(launchSource: .nextEpisode, failure: at301, hasSourceFallback: true, fallbackActive: true,
+                               attemptsLeft: 1), .nextEpisodePicker, "a healthy source that died is not a start failure")
+        XCTAssertEqual(P.route(launchSource: .nextEpisode, failure: early, hasSourceFallback: false, fallbackActive: true,
+                               attemptsLeft: 1), .nextEpisodePicker, "anEpisodeTheUserPickedHasNothingToFallBackFrom")
+        XCTAssertEqual(P.route(launchSource: .nextEpisode, failure: early, hasSourceFallback: true, fallbackActive: false,
+                               attemptsLeft: 1), .nextEpisodePicker, "the switch off: today's picker")
+        XCTAssertEqual(P.route(launchSource: .nextEpisode, failure: early, hasSourceFallback: true, fallbackActive: true,
+                               attemptsLeft: 0), .nextEpisodePicker, "noFallbackAfterTheConfiguredNumberOfSources")
+    }
+
+    func testEpisodeAttemptsLeftCountsTheFirstStartAndTheFurtherSourcesMovedTo() {
+        typealias P = PlaybackFailoverPolicy
+        XCTAssertEqual(P.episodeAttemptsLeft(sourceFallback: PlayerSourceFallbackTried(keys: [], attempts: 0), furtherSources: 3), 3)
+        XCTAssertEqual(P.episodeAttemptsLeft(sourceFallback: PlayerSourceFallbackTried(keys: [], attempts: 2), furtherSources: 3), 1)
+        XCTAssertEqual(P.episodeAttemptsLeft(sourceFallback: PlayerSourceFallbackTried(keys: [], attempts: 3), furtherSources: 3), 0)
+        XCTAssertEqual(P.episodeAttemptsLeft(sourceFallback: PlayerSourceFallbackTried(keys: [], attempts: 0), furtherSources: 0), 0,
+                       "the switch off: no further source")
+        XCTAssertEqual(P.episodeAttemptsLeft(sourceFallback: nil, furtherSources: 3), 0)
+    }
+
+    func testMaxAutoAttemptsIsTheFirstStartPlusSourcesToTry() {
+        typealias P = PlaybackFailoverPolicy
+        XCTAssertEqual(P.maxAutoAttempts(furtherSources: 3), 4, "today's cap with the defaults")
+        XCTAssertEqual(P.maxAutoAttempts(furtherSources: 0), 1)
+        XCTAssertEqual(P.maxAutoAttempts(furtherSources: -2), 1)
+        XCTAssertEqual(P.defaultMaxAutoAttempts, 4)
+        // Null settings read as the defaults: first play needs a non-MANUAL mode, Up Next does not.
+        XCTAssertEqual(P.maxAutoAttempts(settings: nil, entry: .firstPlay), 1)
+        XCTAssertEqual(P.maxAutoAttempts(settings: nil, entry: .nextEpisode), 4)
+    }
+
+    func testStartupLimitOnlyForAutoPickedContexts() {
+        typealias P = PlaybackFailoverPolicy
+        let fifteen: (PlayerSourceFallbackEntry) -> Int? = { _ in 15 }
+        let off: (PlayerSourceFallbackEntry) -> Int? = { _ in nil }
+        XCTAssertNil(P.startupLimit(launchSource: .manual, hasSourceFallback: true, limitSeconds: fifteen))
+        XCTAssertEqual(P.startupLimit(launchSource: .autoPlay, hasSourceFallback: false, limitSeconds: fifteen), 15)
+        XCTAssertNil(P.startupLimit(launchSource: .autoPlay, hasSourceFallback: false, limitSeconds: off), "switch off")
+        XCTAssertEqual(P.startupLimit(launchSource: .nextEpisode, hasSourceFallback: true, limitSeconds: fifteen), 15)
+        XCTAssertNil(P.startupLimit(launchSource: .nextEpisode, hasSourceFallback: false, limitSeconds: fifteen),
+                     "an Up Next context without its tried set")
+        var asked: [PlayerSourceFallbackEntry] = []
+        _ = P.startupLimit(launchSource: .autoPlay, hasSourceFallback: false) { asked.append($0); return 15 }
+        _ = P.startupLimit(launchSource: .nextEpisode, hasSourceFallback: true) { asked.append($0); return 15 }
+        XCTAssertEqual(asked, [.firstPlay, .nextEpisode])
+    }
+
+    /// The live wrapper on the shared rule with null settings (the defaults: On, 15 s; first play
+    /// inactive in the default MANUAL mode).
+    func testStartupLimitForAContextWithDefaultSettings() {
+        typealias P = PlaybackFailoverPolicy
+        var manual = makeContext()
+        manual.sourceFallback = PlayerSourceFallbackTried(keys: [], attempts: 0)
+        XCTAssertNil(P.startupLimit(for: manual, settings: nil))
+        var next = makeContext()
+        next.launchSource = .nextEpisode
+        XCTAssertNil(P.startupLimit(for: next, settings: nil))
+        next.sourceFallback = PlayerSourceFallbackTried(keys: [], attempts: 0)
+        XCTAssertEqual(P.startupLimit(for: next, settings: nil), 15)
+        var auto = makeContext()
+        auto.launchSource = .autoPlay
+        XCTAssertNil(P.startupLimit(for: auto, settings: nil), "first play is inactive in MANUAL mode")
+    }
+
+    func testAReplacementResumesAtTheFailedPositionOnlyWhenTheSourceHadStarted() {
+        typealias P = PlaybackFailoverPolicy
+        XCTAssertEqual(P.replacementResume(after: failure(started: true, played: 120, position: 734.5)), 734.5)
+        XCTAssertNil(P.replacementResume(after: failure(started: false, played: 0, position: 0)))
+        XCTAssertNil(P.replacementResume(after: failure(started: true, played: 4, position: 6)),
+                     "under the engines' 10 s resume floor")
+        XCTAssertNil(P.replacementResume(after: nil), "a start-up limit has no failure")
+    }
+
+    func testAStartTimeoutIsNeverRemembered() {
+        XCTAssertFalse(PlaybackFailureKind.startTimeout.remembersLink)
+        var timeout = failure(played: 0)
+        timeout.kind = .startTimeout
+        XCTAssertFalse(PlaybackFailoverPolicy.shouldReject(timeout))
+    }
 }
