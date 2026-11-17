@@ -217,24 +217,28 @@ internal enum class StreamSearchAdmission {
     Start,
     /** As [Start], first dropping the search held for the key (a forced reload). */
     Replace,
-    /** Run a search that is never held, joined, evicting or evicted: its plugin scrapers predate a refresh. */
+    /** Run a search that is never held, joined, evicting or evicted: it was built before a plugin refresh. */
     Private,
 }
 
 /**
  * Review r8: the one decision for a search request, taken by the store under the lock a plugin
  * refresh and a wipe also take, from the state at that moment. [held]: a search is held for the
- * request's key. A request whose plugin groups were read before the current generation is private,
- * whatever else holds; a forced reload replaces a held search and otherwise starts one.
+ * request's key. A request built before the current generation is private, whatever else holds;
+ * a forced reload replaces a held search and otherwise starts one.
+ *
+ * Review r9: with or without plugin groups. An add-on-only request read its (empty) plugin list
+ * at the old generation too, so it may predate a scraper the refresh added; held, it would evict
+ * the same episode's newer search. The generation moves only on a plugin refresh that changed
+ * something, so only a request built across one runs privately (a second fetch, never a wrong one).
  */
 internal fun streamSearchAdmission(
-    holdsPluginTargets: Boolean,
     requestGeneration: Long,
     currentGeneration: Long,
     forceRefresh: Boolean,
     held: Boolean,
 ): StreamSearchAdmission = when {
-    holdsPluginTargets && requestGeneration < currentGeneration -> StreamSearchAdmission.Private
+    requestGeneration < currentGeneration -> StreamSearchAdmission.Private
     !held -> StreamSearchAdmission.Start
     forceRefresh -> StreamSearchAdmission.Replace
     else -> StreamSearchAdmission.Join
@@ -328,11 +332,14 @@ internal class StreamSearchSessionStore(
         } finally {
             // A private search has no other consumer: it stops with this one.
             if (stale && !session.progress.value.isComplete) {
+                // Review r9: removed and cancelled in one locked step, so a wipe or a refresh never
+                // finds it gone from the set while its job still runs.
                 synchronized(lock) {
                     privateSessions.remove(session)
                     privateSessionsCancelled++
+                    session.cancel()
                 }
-                session.cancel()
+                afterPrivateConsumerLeft?.invoke()
             }
         }
     }
@@ -398,6 +405,9 @@ internal class StreamSearchSessionStore(
     /** Tests: private searches still running (review r8). */
     fun privateRunCount(): Int = synchronized(lock) { privateSessions.size }
 
+    /** Tests (review r9): runs right after a departing private consumer's release step. */
+    internal var afterPrivateConsumerLeft: (() -> Unit)? = null
+
     private fun acquire(key: StreamSearchKey, targets: StreamSearchTargets, forceRefresh: Boolean): Session {
         var created: Session? = null
         val selected = synchronized(lock) {
@@ -405,7 +415,6 @@ internal class StreamSearchSessionStore(
             // Review r8: decided once, here, against the generation a refresh changes under this
             // same lock; the rest of this block only applies the decision.
             val admission = streamSearchAdmission(
-                holdsPluginTargets = targets.pluginProviderGroups.isNotEmpty(),
                 requestGeneration = targets.pluginGeneration,
                 currentGeneration = pluginGeneration,
                 forceRefresh = forceRefresh,

@@ -428,7 +428,7 @@ class StreamSearchSessionScenarioTest {
         assertEquals(1, store.heldKeys().size)
         store.dropPluginSessions()
         assertTrue(store.heldKeys().isEmpty())
-        consume(store, SearchFixtures.targets(plugins = plugins))
+        consume(store, SearchFixtures.targets(plugins = plugins, pluginGeneration = store.pluginGeneration()))
         assertEquals(2, store.startedCount, "the next ask runs the refreshed scraper")
     }
 
@@ -441,7 +441,8 @@ class StreamSearchSessionScenarioTest {
         assertEquals(2, store.heldKeys().size)
         store.dropPluginSessions()
         assertEquals(listOf("tt1:1:1"), store.heldKeys().map { it.videoId })
-        consume(store, SearchFixtures.targets(videoId = "tt1:1:1"))
+        // Review r9: built after the refresh, as the repositories do (they read the generation first).
+        consume(store, SearchFixtures.targets(videoId = "tt1:1:1", pluginGeneration = store.pluginGeneration()))
         assertEquals(2, store.startedCount, "the add-on-only search is still reused")
     }
 
@@ -617,5 +618,41 @@ class StreamSearchSessionScenarioTest {
         store.dropPluginSessions()
         consume(store, stale, forceRefresh = true)
         assertEquals(listOf("a@tt1:1:1"), fetcher.forcedFetches, "the reload's add-on fetch skips the cache")
+    }
+
+    // MARK: Stage B review r9
+
+    @Test
+    fun anOldAddonOnlyRequestNeverEvictsAFreshPluginSearch() = runTest {
+        val store = store()
+        // Built at generation 0 while no scraper supported the title: no plugin groups.
+        val old = SearchFixtures.targets(addons = listOf("a"), videoId = "tt1:1:1")
+        store.dropPluginSessions()                                  // the refresh adds a scraper
+        fetcher.hold("a")
+        val freshTargets = pluginTargets(store.pluginGeneration())
+        val fresh = consume(store, freshTargets)
+        val oldConsumer = consume(store, old)                       // the old request acquires now
+        runCurrent()
+        assertFalse(fresh.job.isCompleted, "the fresh search is not evicted by the old request")
+        assertEquals(listOf(freshTargets.key(1)), store.heldKeys(), "only the fresh search is held")
+        assertTrue(oldConsumer.received.isNotEmpty(), "the old request still gets its own answer")
+    }
+
+    @Test
+    fun aDepartingPrivateConsumerLeavesNoRunningSearchForAWipe() = runTest {
+        val store = store()
+        val stale = pluginTargets(store.pluginGeneration())
+        store.dropPluginSessions()
+        fetcher.hold("a")
+        val consumer = consume(store, stale)
+        var runningAfterWipe = -1
+        // The pause point: right after the consumer's release step, the wipe runs.
+        store.afterPrivateConsumerLeft = {
+            store.clear()
+            runningAfterWipe = backgroundScope.coroutineContext[Job]!!.children.count { it.isActive }
+        }
+        consumer.job.cancel()
+        runCurrent()
+        assertEquals(0, runningAfterWipe, "no search of the store is still running when the wipe returns")
     }
 }

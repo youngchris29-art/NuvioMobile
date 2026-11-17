@@ -47,6 +47,7 @@ internal object SearchFixtures {
         debrid: String = "none",
         plugins: List<PluginProviderGroup> = emptyList(),
         account: DebridServiceCredential? = null,
+        pluginGeneration: Long = 0L,
     ) = StreamSearchTargets(
         type = "series",
         videoId = videoId,
@@ -55,6 +56,7 @@ internal object SearchFixtures {
         streamAddons = addons.map { target(it, requestId) },
         pluginProviderGroups = plugins,
         debrid = StreamSearchDebrid(debrid, account),
+        pluginGeneration = pluginGeneration,
     )
 
     fun torbox(apiKey: String) = DebridServiceCredential(DebridProviders.Torbox, apiKey)

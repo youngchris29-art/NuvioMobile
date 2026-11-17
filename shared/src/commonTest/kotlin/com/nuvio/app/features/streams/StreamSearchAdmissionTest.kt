@@ -16,7 +16,6 @@ import kotlin.test.assertEquals
  */
 class StreamSearchAdmissionTest {
     private data class Row(
-        val plugins: Boolean,
         val request: Long,
         val current: Long,
         val force: Boolean,
@@ -25,41 +24,31 @@ class StreamSearchAdmissionTest {
     )
 
     // request vs current: older (0 < 1), same (1 = 1), newer (2 > 1: a replaced store; not stale).
+    // Review r9: the rule does not read the plugin groups at all. An older request is private
+    // whether it carries plugin targets or none (an add-on-only request read an empty plugin list
+    // at the old generation, so it may predate a scraper the refresh added).
     private val table = listOf(
-        Row(plugins = true, request = 0, current = 1, force = false, held = false, expected = Private),
-        Row(plugins = true, request = 0, current = 1, force = false, held = true, expected = Private),
-        Row(plugins = true, request = 0, current = 1, force = true, held = false, expected = Private),
-        Row(plugins = true, request = 0, current = 1, force = true, held = true, expected = Private),
-        Row(plugins = true, request = 1, current = 1, force = false, held = false, expected = Start),
-        Row(plugins = true, request = 1, current = 1, force = false, held = true, expected = Join),
-        Row(plugins = true, request = 1, current = 1, force = true, held = false, expected = Start),
-        Row(plugins = true, request = 1, current = 1, force = true, held = true, expected = Replace),
-        Row(plugins = true, request = 2, current = 1, force = false, held = false, expected = Start),
-        Row(plugins = true, request = 2, current = 1, force = false, held = true, expected = Join),
-        Row(plugins = true, request = 2, current = 1, force = true, held = false, expected = Start),
-        Row(plugins = true, request = 2, current = 1, force = true, held = true, expected = Replace),
-        // Add-on-only searches ignore the generation entirely.
-        Row(plugins = false, request = 0, current = 1, force = false, held = false, expected = Start),
-        Row(plugins = false, request = 0, current = 1, force = false, held = true, expected = Join),
-        Row(plugins = false, request = 0, current = 1, force = true, held = false, expected = Start),
-        Row(plugins = false, request = 0, current = 1, force = true, held = true, expected = Replace),
-        Row(plugins = false, request = 1, current = 1, force = false, held = false, expected = Start),
-        Row(plugins = false, request = 1, current = 1, force = false, held = true, expected = Join),
-        Row(plugins = false, request = 1, current = 1, force = true, held = false, expected = Start),
-        Row(plugins = false, request = 1, current = 1, force = true, held = true, expected = Replace),
-        Row(plugins = false, request = 2, current = 1, force = false, held = false, expected = Start),
-        Row(plugins = false, request = 2, current = 1, force = false, held = true, expected = Join),
-        Row(plugins = false, request = 2, current = 1, force = true, held = false, expected = Start),
-        Row(plugins = false, request = 2, current = 1, force = true, held = true, expected = Replace),
+        Row(request = 0, current = 1, force = false, held = false, expected = Private),
+        Row(request = 0, current = 1, force = false, held = true, expected = Private),
+        Row(request = 0, current = 1, force = true, held = false, expected = Private),
+        Row(request = 0, current = 1, force = true, held = true, expected = Private),
+        Row(request = 1, current = 1, force = false, held = false, expected = Start),
+        Row(request = 1, current = 1, force = false, held = true, expected = Join),
+        Row(request = 1, current = 1, force = true, held = false, expected = Start),
+        Row(request = 1, current = 1, force = true, held = true, expected = Replace),
+        Row(request = 2, current = 1, force = false, held = false, expected = Start),
+        Row(request = 2, current = 1, force = false, held = true, expected = Join),
+        Row(request = 2, current = 1, force = true, held = false, expected = Start),
+        Row(request = 2, current = 1, force = true, held = true, expected = Replace),
     )
 
     @Test
     fun everyInputHasItsWrittenOutAdmission() {
-        assertEquals(24, table.map { listOf(it.plugins, it.request, it.force, it.held) }.toSet().size, "every combination once")
+        assertEquals(12, table.map { listOf(it.request, it.force, it.held) }.toSet().size, "every combination once")
         table.forEach { row ->
             assertEquals(
                 row.expected,
-                streamSearchAdmission(row.plugins, row.request, row.current, row.force, row.held),
+                streamSearchAdmission(row.request, row.current, row.force, row.held),
                 row.toString(),
             )
         }
