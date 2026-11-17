@@ -36,6 +36,11 @@ data class LibraryDisplaySettingsUiState(
     // Upstream 2da28d707: the last list and type picked, per profile (same blob as the sort).
     val selectedSectionKey: String? = null,
     val selectedType: String? = null,
+    // Fork (W5 review r1): the `LibrarySourceMode` name the list and type above were picked in. A
+    // pick belongs to one library source; tvOS applies it only while that source is active, so a
+    // Movies pick in the local library never filters Trakt, and a Trakt list key never selects an
+    // MDBList list. Null = picked by a caller that names no source (upstream's API).
+    val selectionSourceMode: String? = null,
 )
 
 object LibraryDisplaySettingsRepository {
@@ -78,6 +83,39 @@ object LibraryDisplaySettingsRepository {
         val current = _uiState.value
         if (current.selectedSectionKey == sectionKey && current.selectedType == null) return
         _uiState.value = current.copy(selectedSectionKey = sectionKey, selectedType = null)
+        persist()
+    }
+
+    /**
+     * Fork (W5 review r1): the list picked in [sourceMode]. A new list starts on All types; the
+     * pick replaces any list and type remembered for another source. No-op when nothing changes.
+     */
+    fun setSelectedSection(sectionKey: String, sourceMode: LibrarySourceMode) {
+        ensureLoaded()
+        val next = _uiState.value.copy(
+            selectedSectionKey = sectionKey,
+            selectedType = null,
+            selectionSourceMode = sourceMode.name,
+        )
+        if (next == _uiState.value) return
+        _uiState.value = next
+        persist()
+    }
+
+    /**
+     * Fork (W5 review r1): the type picked in [sourceMode] (nil = All). A pick in a source other
+     * than the remembered one drops that source's list too (its key means nothing here).
+     */
+    fun setSelectedType(type: String?, sourceMode: LibrarySourceMode) {
+        ensureLoaded()
+        val current = _uiState.value
+        val next = if (current.selectionSourceMode == sourceMode.name) {
+            current.copy(selectedType = type)
+        } else {
+            current.copy(selectedSectionKey = null, selectedType = type, selectionSourceMode = sourceMode.name)
+        }
+        if (next == current) return
+        _uiState.value = next
         persist()
     }
 
@@ -373,6 +411,7 @@ fun encodeLibraryDisplaySettings(state: LibraryDisplaySettingsUiState): String =
             sortOption = state.sortOption.name,
             selectedSectionKey = state.selectedSectionKey,
             selectedType = state.selectedType,
+            selectionSourceMode = state.selectionSourceMode,
         ),
     )
 
@@ -394,6 +433,7 @@ fun decodeLibraryDisplaySettings(payload: String?): LibraryDisplaySettingsUiStat
             ?: LibrarySortOption.DEFAULT,
         selectedSectionKey = stored?.selectedSectionKey,
         selectedType = stored?.selectedType,
+        selectionSourceMode = stored?.selectionSourceMode,
     )
 }
 
@@ -438,6 +478,9 @@ private data class StoredLibraryDisplaySettings(
     @SerialName("sort_option") val sortOption: String = LibrarySortOption.DEFAULT.name,
     @SerialName("selected_section_key") val selectedSectionKey: String? = null,
     @SerialName("selected_type") val selectedType: String? = null,
+    // Fork (W5 review r1). An older build ignores it (`ignoreUnknownKeys`); a payload without it
+    // decodes to null, which tvOS reads as "not this source".
+    @SerialName("selection_source") val selectionSourceMode: String? = null,
 )
 
 private fun libraryProviderOrderComparator(ranks: Map<String, Int>): Comparator<LibraryItem> =

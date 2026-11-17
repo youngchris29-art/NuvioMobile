@@ -212,6 +212,45 @@ class LibraryFilterProjectionTest {
     }
 
     @Test
+    fun `a list or type pick remembers the source it was made in`() {
+        val repo = LibraryDisplaySettingsRepository
+        repo.setSelectedType("movie", LibrarySourceMode.LOCAL)
+        assertEquals("movie", repo.uiState.value.selectedType)
+        assertEquals("LOCAL", repo.uiState.value.selectionSourceMode)
+
+        // A pick in another source drops the old source's list and type.
+        repo.setSelectedSection("trakt:list:1", LibrarySourceMode.TRAKT)
+        assertEquals("trakt:list:1", repo.uiState.value.selectedSectionKey)
+        assertNull(repo.uiState.value.selectedType)
+        assertEquals("TRAKT", repo.uiState.value.selectionSourceMode)
+        repo.setSelectedType("series", LibrarySourceMode.TRAKT)
+        assertEquals("trakt:list:1", repo.uiState.value.selectedSectionKey)
+        repo.setSelectedType("movie", LibrarySourceMode.MDBLIST)
+        assertNull(repo.uiState.value.selectedSectionKey)
+        assertEquals("movie", repo.uiState.value.selectedType)
+        assertEquals("MDBLIST", repo.uiState.value.selectionSourceMode)
+
+        // Survives a reload (relaunch / profile switch).
+        repo.onProfileChanged()
+        assertEquals("MDBLIST", repo.uiState.value.selectionSourceMode)
+        assertEquals("movie", repo.uiState.value.selectedType)
+    }
+
+    @Test
+    fun `the selection source round trips and an old payload decodes to none`() {
+        val state = LibraryDisplaySettingsUiState(
+            sortOption = LibrarySortOption.TITLE_ASC,
+            selectedSectionKey = "watchlist",
+            selectedType = "series",
+            selectionSourceMode = "TRAKT",
+        )
+        assertEquals(state, decodeLibraryDisplaySettings(encodeLibraryDisplaySettings(state)))
+        val old = decodeLibraryDisplaySettings("""{"layout_mode":"VERTICAL","selected_section_key":"watchlist","selected_type":"series"}""")
+        assertEquals("watchlist", old.selectedSectionKey)
+        assertNull(old.selectionSourceMode)
+    }
+
+    @Test
     fun `the filter fixture parses into years and genres`() {
         val state = LibraryFilterFixture.uiState(provider = false)
         val projection = buildLibraryVerticalProjection(

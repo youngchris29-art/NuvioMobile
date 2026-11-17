@@ -40,23 +40,27 @@ final class LibraryViewModel: ObservableObject {
     /// empty for the local library, which has no lists.
     @Published private(set) var sections: [LibrarySection] = []
     @Published private(set) var selectedSectionKey: String?
-    /// Type keys present in the chosen list (`movie`, `series`, `anime`, …), sorted.
-    @Published private(set) var types: [String] = []
-    /// Nil = All.
+    /// The Type menu's rows: the chosen list's types in menu order, with counts under the Show
+    /// choice, genre and year (`LibraryBarResolver`). Nil type = All.
+    @Published private(set) var types: [LibraryGridPolicy.FacetOption] = []
     @Published private(set) var selectedType: String?
+    @Published private(set) var allTypesCount = 0
+    /// The smart filters the Show menu offers (`LibraryBarResolver`).
     @Published private(set) var visibleSmartFilters: [LibraryGridPolicy.SmartFilter] = []
     @Published private(set) var activeSmartFilters: Set<LibraryGridPolicy.SmartFilter> = []
-    /// The list's genres (faceted against the chosen year), alphabetical, with counts. Empty when
-    /// the source carries none (Simkl).
+    /// The Genre menu's rows (under the Show choice, type and year), alphabetical, with counts.
+    /// Empty when the source carries none (Simkl).
     @Published private(set) var genres: [LibraryGridPolicy.FacetOption] = []
-    /// What the projection actually used (nil = All, also when the pick isn't in this list).
+    /// The genre applied (nil = All), spelled as its menu row.
     @Published private(set) var selectedGenre: String?
-    /// The list's release years (faceted against the chosen genre), newest first, with counts.
+    /// The Year menu's rows (under the Show choice, type and genre), newest first, with counts.
     @Published private(set) var years: [LibraryGridPolicy.FacetOption] = []
     @Published private(set) var selectedYear: String?
-    /// Titles per type key and in all, under the chosen genre and year (the type menu's counts).
-    @Published private(set) var typeCounts: [String: Int] = [:]
-    @Published private(set) var allTypesCount = 0
+    /// Which menus the bar draws (`LibraryBarResolver.shows`).
+    @Published private(set) var showsType = false
+    @Published private(set) var showsGenre = false
+    @Published private(set) var showsYear = false
+    @Published private(set) var showsShow = false
 
     /// Any filter that narrows the grid below the list and type: genre, year or a smart filter.
     var filtersActive: Bool { !activeSmartFilters.isEmpty || selectedGenre != nil || selectedYear != nil }
@@ -97,11 +101,16 @@ final class LibraryViewModel: ObservableObject {
     /// Newest drawable progress per content id (`WatchProgressEntry.parentMetaId`).
     private var progressByContentId: [String: Double] = [:]
     /// What the viewer picked. List and type come from the shared display settings (remembered per
-    /// profile, upstream 2da28d707); genre and year live here for the session, like the smart
-    /// filters. The projection falls back (first list, All) when a pick no longer exists, and the
-    /// published `selected…` values show what it actually used.
+    /// profile, upstream 2da28d707, and per source: review r1, a pick is applied only while the
+    /// source it was made in is active); genre and year live here for the session, like the smart
+    /// filters. An unavailable pick is forgotten (`LibraryBarResolver.Clear`), never re-applied
+    /// later on its own.
     private var requestedSectionKey: String?
     private var requestedType: String?
+    /// The display settings' remembered picks and the source they belong to (provider mode).
+    private var rememberedSectionKey: String?
+    private var rememberedType: String?
+    private var rememberedSource: String?
     private var requestedGenre: String?
     private var requestedYear: String?
     /// DEBUG fixture (mockups, UI leg, unit tests): a canned library, no repository reads or writes.
@@ -159,8 +168,9 @@ final class LibraryViewModel: ObservableObject {
         watchers.append(FlowWatcherKt.watch(LibraryDisplaySettingsRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? LibraryDisplaySettingsUiState else { return }
             self.sortOption = state.sortOption
-            self.requestedSectionKey = state.selectedSectionKey
-            self.requestedType = state.selectedType
+            self.rememberedSectionKey = state.selectedSectionKey
+            self.rememberedType = state.selectedType
+            self.rememberedSource = state.selectionSourceMode
             self.scheduleRepublish()
         })
         // Watched marks are read per title in `republish` through the repository's own
@@ -201,8 +211,10 @@ final class LibraryViewModel: ObservableObject {
             republish()
             return
         }
-        // Persisted per profile; the display-settings watcher republishes. A new list starts on All.
-        LibraryDisplaySettingsRepository.shared.setSelectedSection(sectionKey: key)
+        // Persisted per profile and source; the display-settings watcher republishes. A new list
+        // starts on All types.
+        guard let source = libraryState?.sourceMode else { return }
+        LibraryDisplaySettingsRepository.shared.setSelectedSection(sectionKey: key, sourceMode: source)
     }
 
     /// Nil = All.
@@ -212,7 +224,8 @@ final class LibraryViewModel: ObservableObject {
             republish()
             return
         }
-        LibraryDisplaySettingsRepository.shared.setSelectedType(type: type)
+        guard let source = libraryState?.sourceMode else { return }
+        LibraryDisplaySettingsRepository.shared.setSelectedType(type: type, sourceMode: source)
     }
 
     /// Nil = All.
@@ -365,8 +378,8 @@ final class LibraryViewModel: ObservableObject {
         if lastSourceModeName != modeName {
             // A different library (Settings → Library Source changed): its genres, years and watch
             // states are different, so the session filters go. The remembered list and type stay in
-            // the shared settings; the projection falls back (first list, All) when this library
-            // lacks them.
+            // the shared settings tagged with their source: another source opens on its first list
+            // and All types, and the old source gets them back until a pick is made elsewhere.
             if lastSourceModeName != nil {
                 requestedGenre = nil
                 requestedYear = nil
@@ -381,6 +394,18 @@ final class LibraryViewModel: ObservableObject {
             sourceMode: state.sourceMode
         )
         update(\.effectiveSortOption, effective)
+
+        // The remembered list and type apply only in the source they were picked in (review r1).
+        if fixture == .off {
+            let picks = LibraryGridPolicy.rememberedPicks(
+                sectionKey: rememberedSectionKey,
+                type: rememberedType,
+                pickedIn: rememberedSource,
+                activeSource: modeName
+            )
+            requestedSectionKey = picks.sectionKey
+            requestedType = picks.type
+        }
 
         // Provider orders (batch D review r1 P2, mobile's `rememberLibraryProviderOrders`): for a
         // provider library, the chosen list's order under the effective sort comes from the
@@ -404,26 +429,21 @@ final class LibraryViewModel: ObservableObject {
         } else {
             providerOrders = [:]
         }
+        // The shared projection picks the list, de-duplicates and sorts; type, genre, year and the
+        // Show choice are the bar's (`LibraryBarResolver`), so every count honours the Show choice
+        // without a Kotlin-to-Swift callback per title.
         let projection = LibraryDisplaySettingsKt.buildLibraryVerticalProjection(
             sections: state.sections,
             sourceMode: state.sourceMode,
             selectedSectionKey: requestedSectionKey,
-            selectedType: requestedType,
+            selectedType: nil,
             sortOption: providerOrderFailed ? LibrarySortOption.default_ : sortOption,
             providerOrders: providerOrders,
-            selectedGenre: requestedGenre,
-            selectedYear: requestedYear
+            selectedGenre: nil,
+            selectedYear: nil
         )
         update(\.sections, projection.availableSections)
         update(\.selectedSectionKey, projection.selectedSectionKey)
-        update(\.types, projection.availableTypes)
-        update(\.selectedType, projection.selectedType)
-        update(\.genres, projection.availableGenres.map { LibraryGridPolicy.FacetOption(key: $0.key, count: Int($0.count)) })
-        update(\.selectedGenre, projection.selectedGenre)
-        update(\.years, projection.availableYears.map { LibraryGridPolicy.FacetOption(key: $0.key, count: Int($0.count)) })
-        update(\.selectedYear, projection.selectedYear)
-        update(\.typeCounts, projection.typeCounts.mapValues { $0.intValue })
-        update(\.allTypesCount, Int(projection.allTypesCount))
 
         let all = projection.entries.map { entry -> LibraryGridEntry in
             let item = entry.item
@@ -435,13 +455,43 @@ final class LibraryViewModel: ObservableObject {
                 kind: item.mediaCategory ?? item.type
             )
         }
-        update(\.visibleSmartFilters, LibraryGridPolicy.visibleSmartFilters(
-            states: all.map(\.state),
-            active: activeSmartFilters
-        ))
-        let shown = activeSmartFilters.isEmpty
-            ? all
-            : all.filter { LibraryGridPolicy.passes($0.state, filters: activeSmartFilters) }
+        let titles = all.map { entry in
+            LibraryBarResolver.Title(
+                typeKey: entry.kind,
+                genres: entry.item.genres,
+                year: LibraryBarResolver.releaseYear(entry.item.releaseInfo),
+                state: entry.state
+            )
+        }
+        let bar = LibraryBarResolver.resolve(
+            titles: titles,
+            request: .init(type: requestedType, genre: requestedGenre, year: requestedYear, smartFilters: activeSmartFilters),
+            typeOrder: projection.availableTypes
+        )
+        // Forget what is unavailable here, so it never comes back on its own.
+        if bar.clear.contains(.genre) { requestedGenre = nil }
+        if bar.clear.contains(.year) { requestedYear = nil }
+        if bar.clear.contains(.type) {
+            requestedType = nil
+            if fixture == .off {
+                rememberedType = nil
+                LibraryDisplaySettingsRepository.shared.setSelectedType(type: nil, sourceMode: state.sourceMode)
+            }
+        }
+        update(\.types, bar.types)
+        update(\.selectedType, bar.selectedType)
+        update(\.allTypesCount, bar.allTypesCount)
+        update(\.genres, bar.genres)
+        update(\.selectedGenre, bar.selectedGenre)
+        update(\.years, bar.years)
+        update(\.selectedYear, bar.selectedYear)
+        update(\.visibleSmartFilters, bar.visibleSmartFilters)
+        update(\.showsType, bar.showsType)
+        update(\.showsGenre, bar.showsGenre)
+        update(\.showsYear, bar.showsYear)
+        update(\.showsShow, bar.showsShow)
+
+        let shown = bar.shown.map { all[$0] }
         update(\.entries, shown)
         update(\.countLine, LibraryGridPolicy.countLine(kinds: shown.map(\.kind)))
         update(\.isLoading, state.isLoading)
@@ -551,6 +601,16 @@ nonisolated enum LibraryDebugFlags {
         Fixture(rawValue: UserDefaults.standard.string(forKey: "debug.libraryFixture") ?? "") ?? .off
         #else
         .off
+        #endif
+    }
+
+    /// `-debug.libraryCountLine "<text>"`: the header's count line replaced by `<text>` (the UI
+    /// leg's long-string check of the header with Refresh). Nil = the real count line.
+    static var countLineOverride: String? {
+        #if DEBUG
+        UserDefaults.standard.string(forKey: "debug.libraryCountLine").flatMap { $0.isEmpty ? nil : $0 }
+        #else
+        nil
         #endif
     }
 

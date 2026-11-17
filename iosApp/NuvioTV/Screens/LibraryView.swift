@@ -67,8 +67,9 @@ struct LibraryView: View {
                         }
                     }
                     // W5 probe: the pane's laid-out width inside the screen padding (writes only on change).
-                    .onGeometryChange(for: CGFloat.self) { $0.size.width } action: {
-                        barGeometry.pane = Int($0.rounded())
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
+                        barGeometry.pane = Int($0.width.rounded())
+                        barGeometry.paneGlobalMinX = Int($0.minX.rounded())
                     }
                     // The probe measures each bar control's frame in the pane's own space.
                     .coordinateSpace(.named(LibraryBarGeometry.paneSpace))
@@ -180,6 +181,8 @@ struct LibraryView: View {
         !(showingCloud && cloud.hasConnectedProvider)
     }
 
+    /// Title, count line and source badge; for a provider library, the Refresh pill at the trailing
+    /// end (W5, the owner's call: out of the filter row, so the row fits the pane at rest).
     private var header: some View {
         HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.md) {
             Text("Library")
@@ -187,14 +190,35 @@ struct LibraryView: View {
                 .foregroundStyle(Theme.Palette.textPrimary)
 
             if showsSavedChrome {
-                CountLine(
-                    text: model.content == .grid ? model.countLine : nil,
-                    badge: LibraryGridPolicy.sourceBadge(sourceModeName: model.sourceModeName),
-                    badgeAccessibilityLabel: model.providerName
-                )
+                countLine
+                    .lineLimit(1)
+                    .layoutPriority(1)
+                    .modifier(LibraryHeaderProbe(enabled: LibraryDebugFlags.geometryProbe, geometry: $barGeometry, ideal: countLineIdeal))
+
+                if model.showsProviderControls {
+                    Spacer(minLength: Theme.Spacing.md)
+                    // Batch D review r2 P2: the user-initiated pull for a provider library.
+                    if model.isLoading { ProgressView() }
+                    refreshPill
+                }
             }
         }
+        // One full-width focus section: Up from any pill of the filter row reaches Refresh (and a
+        // second Up the tab bar), wherever the row has scrolled to.
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .focusSection()
     }
+
+    private var countLine: CountLine {
+        CountLine(
+            text: LibraryDebugFlags.countLineOverride ?? (model.content == .grid ? model.countLine : nil),
+            badge: LibraryGridPolicy.sourceBadge(sourceModeName: model.sourceModeName),
+            badgeAccessibilityLabel: model.providerName
+        )
+    }
+
+    /// The count line at its ideal width, for the probe's truncation check.
+    private var countLineIdeal: AnyView { AnyView(countLine.lineLimit(1).fixedSize()) }
 
     // MARK: - Saved library
 
@@ -265,14 +289,18 @@ struct LibraryView: View {
                 }
             }
         }
+        // W5: one focus section as wide as the pane, so Down from a pill at the far end of the filter
+        // row (Clear Filters, Sort) reaches a card even when the filtered grid is one short row.
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .focusSection()
     }
 
     // MARK: - Filter bar (W5: List · Type · Genre · Year · Show · Sort · Refresh · Clear Filters)
 
-    private var showsGenre: Bool { LibraryGridPolicy.showsFacet(model.genres, selected: model.selectedGenre) }
-    private var showsYear: Bool { LibraryGridPolicy.showsFacet(model.years, selected: model.selectedYear) }
-    /// The Show menu draws when a smart filter would split the set, or one is on.
-    private var showsWatch: Bool { !model.visibleSmartFilters.isEmpty || !model.activeSmartFilters.isEmpty }
+    // Which menus draw is `LibraryBarResolver`'s call (published by the model).
+    private var showsGenre: Bool { model.showsGenre }
+    private var showsYear: Bool { model.showsYear }
+    private var showsWatch: Bool { model.showsShow }
 
     /// One horizontal row of pills on the stock platter (today's height). In a provider library the
     /// row is wider than the pane and scrolls sideways; the focus engine scrolls the focused pill in.
@@ -280,26 +308,28 @@ struct LibraryView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: Theme.Spacing.md) {
                 if model.sections.count > 1 { listMenu }
-                if model.types.count > 1 { typeMenu }
+                if model.showsType { typeMenu }
                 if showsGenre { genreMenu }
                 if showsYear { yearMenu }
                 if showsWatch { watchMenu }
                 if !model.availableSortOptions.isEmpty { sortMenu }
-                if model.showsProviderControls {
-                    // Batch D review r2 P2: the user-initiated pull for a provider library.
-                    refreshPill
-                    if model.isLoading { ProgressView() }
-                }
                 if model.filtersActive { clearPill }
             }
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { barGeometry.row1w = Int($0.rounded()) }
             .padding(.vertical, Theme.Spacing.xs)
         }
-        // The stock Menu buttons lift on focus; don't crop the lift.
+        // The stock Menu buttons lift on focus; don't crop the lift…
         .scrollClipDisabled()
+        // …but clip at the pane's leading and trailing edges (W5: a scrolled pill drew under the
+        // rail). The mask reaches well above and below the row, so the lift and its shadow stay.
+        .mask { Rectangle().padding(.vertical, -LibraryBarGeometry.liftAllowance) }
         // Full width: the focus engine searches straight up and down.
         .frame(maxWidth: .infinity, alignment: .leading)
         .focusSection()
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
+            barGeometry.barGlobalMinY = Int($0.minY.rounded())
+            barGeometry.barGlobalMaxY = Int($0.maxY.rounded())
+        }
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
             barGeometry.row1 = Int($0.rounded())
             barGeometry.bar = Int($0.rounded())
@@ -362,12 +392,12 @@ struct LibraryView: View {
             title: model.selectedType.map(LibraryGridPolicy.typeLabel) ?? String(localized: "All types"),
             systemImage: "film.stack",
             selection: Binding(get: { model.selectedType ?? "" }, set: { model.selectType($0.isEmpty ? nil : $0) }),
-            options: [""] + model.types,
+            options: [""] + model.types.map(\.key),
             id: "library.typePicker",
             pickerTitle: String(localized: "Type"),
             label: { key in
                 key.isEmpty ? LibraryGridPolicy.typeOptionLabel(nil, count: model.allTypesCount)
-                    : LibraryGridPolicy.typeOptionLabel(key, count: model.typeCounts[key] ?? 0)
+                    : LibraryGridPolicy.typeOptionLabel(key, count: model.types.first { $0.key == key }?.count ?? 0)
             },
             accessibilityName: String(localized: "Type"),
             accessibilityCurrentValue: model.selectedType.map(LibraryGridPolicy.typeLabel) ?? String(localized: "All types")
@@ -419,7 +449,7 @@ struct LibraryView: View {
             let g = barGeometry
             let focused = barFocus.flatMap { g.frames[$0] }
             let widths = LibraryBarFocus.allCases.compactMap { c in g.frames[c].map { "\(c.rawValue):\($0.width)" } }
-            Text(verbatim: "debug_library_bar pane=\(g.pane) pill=\(g.pill) row1=\(g.row1) row2=0 row1w=\(g.row1w) bar=\(g.bar) count=\(model.entries.count) content=\(LibraryBarGeometry.contentToken(model.content)) list=\(model.selectedSectionKey ?? "-") type=\(model.selectedType ?? "-") genre=\(model.selectedGenre ?? "-") year=\(model.selectedYear ?? "-") show=\(LibraryGridPolicy.watchChoice(for: model.activeSmartFilters).rawValue) focus=\(barFocus?.rawValue ?? "-") fminx=\(focused.map { "\($0.minX)" } ?? "-") fmaxx=\(focused.map { "\($0.maxX)" } ?? "-") widths=\(widths.joined(separator: ","))")
+            Text(verbatim: "debug_library_bar pane=\(g.pane) pill=\(g.pill) row1=\(g.row1) row2=0 row1w=\(g.row1w) bar=\(g.bar) count=\(model.entries.count) content=\(LibraryBarGeometry.contentToken(model.content)) list=\(model.selectedSectionKey ?? "-") type=\(model.selectedType ?? "-") genre=\(model.selectedGenre ?? "-") year=\(model.selectedYear ?? "-") show=\(LibraryGridPolicy.watchChoice(for: model.activeSmartFilters).rawValue) focus=\(barFocus?.rawValue ?? "-") fminx=\(focused.map { "\($0.minX)" } ?? "-") fmaxx=\(focused.map { "\($0.maxX)" } ?? "-") panegx=\(g.paneGlobalMinX) bary=\(g.barGlobalMinY)-\(g.barGlobalMaxY) cminx=\(g.countMinX) cmaxx=\(g.countMaxX) cideal=\(g.countIdeal) hdry=\(g.headerGlobalMidY) widths=\(widths.joined(separator: ","))")
                 .font(.system(size: 8))
                 .opacity(0.011)
                 .allowsHitTesting(false)
@@ -622,7 +652,15 @@ enum LibraryBarFocus: String, Hashable, CaseIterable {
 struct LibraryBarGeometry: Equatable {
     static let paneSpace = "libraryPane"
 
+    /// How far the row's mask reaches above and below it, so a focused pill's lift and shadow are
+    /// never cut (the mask only clips the pane's leading and trailing edges).
+    static let liftAllowance: CGFloat = 60
+
     var pane = 0, pill = 0, row1 = 0, row1w = 0, bar = 0
+    /// Screen positions, for the UI leg's pixel check of the clipped edges.
+    var paneGlobalMinX = 0, barGlobalMinY = 0, barGlobalMaxY = 0, headerGlobalMidY = 0
+    /// The header's count line: laid-out extent in the pane and its ideal (untruncated) width.
+    var countMinX = 0, countMaxX = 0, countIdeal = 0
     /// Each control's laid-out frame in the pane's coordinate space (scroll offset included).
     var frames: [LibraryBarFocus: LibraryBarFrame] = [:]
 
@@ -660,6 +698,36 @@ struct LibraryBarControl: ViewModifier {
                 } action: { geometry.frames[control] = $0 }
         } else {
             content.focused(focus, equals: control)
+        }
+    }
+}
+
+/// W5: with the probe on, records the header count line's laid-out extent (pane space), its ideal
+/// width (a hidden fixed-size copy) and the header's screen position.
+struct LibraryHeaderProbe: ViewModifier {
+    let enabled: Bool
+    @Binding var geometry: LibraryBarGeometry
+    let ideal: AnyView
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(LibraryBarGeometry.paneSpace)) } action: {
+                    geometry.countMinX = Int($0.minX.rounded())
+                    geometry.countMaxX = Int($0.maxX.rounded())
+                }
+                .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).midY } action: {
+                    geometry.headerGlobalMidY = Int($0.rounded())
+                }
+                .background(alignment: .leading) {
+                    ideal
+                        .hidden()
+                        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: {
+                            geometry.countIdeal = Int($0.rounded())
+                        }
+                }
+        } else {
+            content
         }
     }
 }

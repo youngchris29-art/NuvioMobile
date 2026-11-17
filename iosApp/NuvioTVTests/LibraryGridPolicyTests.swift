@@ -204,17 +204,6 @@ final class LibraryGridPolicyTests: XCTestCase {
 
     // MARK: - Genre and year (W5)
 
-    private typealias Facet = LibraryGridPolicy.FacetOption
-
-    func testFacetShowsWithTwoOptionsOrASelection() {
-        let one = [Facet(key: "Drama", count: 3)]
-        let two = one + [Facet(key: "Comedy", count: 1)]
-        XCTAssertFalse(Policy.showsFacet([], selected: nil))
-        XCTAssertFalse(Policy.showsFacet(one, selected: nil))
-        XCTAssertTrue(Policy.showsFacet(two, selected: nil))
-        XCTAssertTrue(Policy.showsFacet(one, selected: "Drama"))
-        XCTAssertTrue(Policy.showsFacet([], selected: "Drama"))
-    }
 
     func testGenreLabelUsesDiscoverNamesThenSlugWords() {
         XCTAssertEqual(Policy.genreLabel("drama"), "Drama")
@@ -283,5 +272,25 @@ final class LibraryGridPolicyTests: XCTestCase {
         XCTAssertEqual(Policy.watchChoices(visible: [.unwatched, .watched]), [.all, .unwatched, .watched])
         XCTAssertEqual(Policy.watchChoices(visible: Policy.SmartFilter.allCases), [.all, .unwatched, .inProgress, .watched])
         XCTAssertEqual(Policy.WatchChoice.all.title, "All Titles")
+    }
+
+    // MARK: - Remembered list and type per source (W5 review r1)
+
+    /// A live switch (Settings → Library Source while the tab is open) and a reopen after a switch
+    /// both reach this with the new source: picks made elsewhere are not applied.
+    func testRememberedPicksApplyOnlyInTheirSource() {
+        let local = Policy.rememberedPicks(sectionKey: nil, type: "movie", pickedIn: "LOCAL", activeSource: "LOCAL")
+        XCTAssertEqual(local.type, "movie")
+        let trakt = Policy.rememberedPicks(sectionKey: nil, type: "movie", pickedIn: "LOCAL", activeSource: "TRAKT")
+        XCTAssertNil(trakt.type)
+        XCTAssertNil(trakt.sectionKey)
+        let list = Policy.rememberedPicks(sectionKey: "watchlist", type: "series", pickedIn: "TRAKT", activeSource: "MDBLIST")
+        XCTAssertNil(list.sectionKey, "a Trakt list key must not select an MDBList list")
+        let back = Policy.rememberedPicks(sectionKey: "watchlist", type: "series", pickedIn: "TRAKT", activeSource: "TRAKT")
+        XCTAssertEqual(back.sectionKey, "watchlist")
+        XCTAssertEqual(back.type, "series")
+        let untagged = Policy.rememberedPicks(sectionKey: "watchlist", type: "series", pickedIn: nil, activeSource: "TRAKT")
+        XCTAssertNil(untagged.sectionKey)
+        XCTAssertNil(untagged.type)
     }
 }

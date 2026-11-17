@@ -83,24 +83,58 @@ final class LibraryViewModelFilterTests: XCTestCase {
         XCTAssertEqual(m.content, .grid)
     }
 
-    /// Reachable only programmatically: the Year menu is faceted against the genre.
-    func testAYearTheGenreLacksGivesNoMatches() {
+    /// Review r1 finding 2: a year the genre lacks (reachable only programmatically; the Year menu
+    /// is faceted) is forgotten, not kept as an empty filter.
+    func testAYearTheGenreLacksIsForgotten() {
         let m = model()
         m.selectGenre("Comedy")
         m.selectYear("1995")
         XCTAssertEqual(m.selectedGenre, "Comedy")
-        XCTAssertEqual(m.selectedYear, "1995")
-        XCTAssertTrue(m.entries.isEmpty)
-        XCTAssertEqual(m.content, .noMatches)
+        XCTAssertNil(m.selectedYear)
+        XCTAssertEqual(m.entries.count, 5)
+        XCTAssertEqual(m.content, .grid)
+        m.selectGenre(nil)
+        XCTAssertNil(m.selectedYear, "the forgotten year must not come back when Heat is listed again")
+        XCTAssertEqual(m.entries.count, 14)
     }
 
-    func testGenreAndSmartFilterWithNothingLeftGivesNoMatches() {
+    /// A Show choice that leaves the genre without titles drops the genre.
+    func testAShowChoiceThatEmptiesTheGenreForgetsIt() {
         let m = model()
         m.selectGenre("Horror")
         XCTAssertEqual(names(m), ["Nope"])
         m.toggleSmartFilter(.watched)
-        XCTAssertTrue(m.entries.isEmpty)
-        XCTAssertEqual(m.content, .noMatches)
+        XCTAssertNil(m.selectedGenre)
+        XCTAssertEqual(Set(names(m)), ["Heat", "Fleabag"])
+        XCTAssertEqual(m.content, .grid)
+    }
+
+    /// Review r1 finding 2: Horror, then a type without Horror, then All types: Horror stays gone.
+    func testAGenreForgottenByATypeDoesNotComeBack() {
+        let m = model()
+        m.selectGenre("Horror")
+        m.selectType("series")
+        XCTAssertNil(m.selectedGenre)
+        XCTAssertEqual(m.entries.count, 4)
+        m.selectType(nil)
+        XCTAssertNil(m.selectedGenre)
+        XCTAssertEqual(m.entries.count, 14)
+    }
+
+    /// Review r1 finding 3: with Show = Watched (Heat, Fleabag) every menu counts those two only.
+    func testCountsFollowTheShowChoice() {
+        let m = model()
+        m.selectWatchChoice(.watched)
+        XCTAssertEqual(m.allTypesCount, 2)
+        XCTAssertEqual(m.types.map(\.key), ["movie", "series"])
+        XCTAssertEqual(m.types.map(\.count), [1, 1])
+        XCTAssertFalse(m.genres.contains { $0.key == "Horror" }, "\(m.genres)")
+        XCTAssertEqual(Set(m.genres.map { $0.key.lowercased() }), ["crime", "drama", "comedy"])
+        XCTAssertEqual(Set(m.years.map(\.key)), ["1995", "2016"])
+        m.selectWatchChoice(.inProgress)
+        XCTAssertEqual(Set(names(m)), ["Dune", "Severance"])
+        XCTAssertEqual(m.allTypesCount, 2)
+        XCTAssertEqual(Set(m.years.map(\.key)), ["2021", "2022"])
     }
 
     func testClearFiltersKeepsTheType() {

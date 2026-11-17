@@ -1,13 +1,14 @@
 import XCTest
 
 /// W5 (upstream ports, Library filters): the Library filter bar, one row of menus (the owner's
-/// pick, decision G: List · Type · Genre · Year · Show · Sort · Refresh · Clear Filters), on the
+/// pick, decision G: List · Type · Genre · Year · Show · Sort · Clear Filters; Refresh sits in the
+/// header beside the count line, the owner's call in review r1), on the
 /// canned libraries `-debug.libraryFixture provider|local` (no repository reads or writes). Spec:
 /// `docs/batch-upstream-ports-spec-w5.md` 4.3 and 6.3 in the outer repo.
 ///
 /// Oracle: the DEBUG probe `debug_library_bar` (`-debug.libraryBarGeometry YES`):
 /// `pane= pill= row1= row2= row1w= bar= count= content= list= type= genre= year= show= focus=
-/// fminx= fmaxx= widths=`. Sizes are laid-out values from `onGeometryChange` (never accessibility
+/// fminx= fmaxx= panegx= bary= cminx= cmaxx= cideal= hdry= widths=`. Sizes are laid-out values from `onGeometryChange` (never accessibility
 /// frames, which carry the focus lift); `focus=` is the bar's own `@FocusState` token and
 /// `fminx`/`fmaxx` that control's laid-out extent in the pane's coordinate space, scroll offset
 /// included, so "the focused pill is on screen" is `0 <= fminx` and `fmaxx <= pane`.
@@ -58,7 +59,8 @@ final class LibraryFilterBarUITests: XCTestCase {
 
     // MARK: - Launch
 
-    private static func arguments(fixture: String = "provider", navigation: String = "tabs") -> [String] {
+    private static func arguments(fixture: String = "provider", navigation: String = "tabs", countLine: String? = nil) -> [String] {
+        (countLine.map { ["-debug.libraryCountLine", $0] } ?? []) +
         ["-debug.libraryFixture", fixture, "-debug.libraryBarGeometry", "YES",
          "-sidebar_style", navigation, "-rail_visibility", "always", "-discover_placement", "off",
          "-home_upcoming_row_enabled", "NO", "-inline_trailers_enabled", "NO",
@@ -195,7 +197,14 @@ final class LibraryFilterBarUITests: XCTestCase {
             remote.press(tabBarFocused(app) ? .down : .up)
             pause(0.8)
         }
-        guard barFocus(app) != "-" else { throw HarnessAbort("focus never reached the bar — \(probe(app)) | \(focusedSummary(app))") }
+        // Down from the tab bar can stop on Refresh (the header's focus section) first.
+        for _ in 0..<2 where barFocus(app) == "refresh" {
+            remote.press(.down)
+            pause(0.8)
+        }
+        guard barFocus(app) != "-", barFocus(app) != "refresh" else {
+            throw HarnessAbort("focus never reached the bar's row — \(probe(app)) | \(focusedSummary(app))")
+        }
     }
 
     @discardableResult
@@ -256,11 +265,96 @@ final class LibraryFilterBarUITests: XCTestCase {
         return tokens
     }
 
-    // MARK: - Geometry (spec 4.3)
+    // MARK: - Header and edges
 
-    /// Option B keeps today's height: one row, `row = pill + 16`, `bar = row`, no row 2. The local
-    /// library (no List, no Refresh) fits the pane; a provider library is expected to scroll, so
-    /// there the leg records the widths and checks the last control is reachable by Right presses.
+    /// The header holds the title, the count line and (provider sources) Refresh: the count line is
+    /// never truncated (laid-out width = its ideal width) and Refresh ends inside the pane, after it.
+    private func assertHeaderFits(_ app: XCUIApplication, tag: String) {
+        let line = probe(app)
+        guard let cMin = Self.int(line, "cminx"), let cMax = Self.int(line, "cmaxx"),
+              let ideal = Self.int(line, "cideal"), let pane = Self.int(line, "pane") else {
+            XCTFail("\(tag): no header numbers — \(line)")
+            return
+        }
+        XCTAssertGreaterThanOrEqual(cMax - cMin, ideal - 1, "\(tag): the count line is truncated — \(line)")
+        guard let refresh = Self.widths(line)["refresh"], let rMax = Self.refreshMaxX(line) else {
+            XCTFail("\(tag): no Refresh in the header — \(line)")
+            return
+        }
+        XCTAssertLessThanOrEqual(rMax, pane + 1, "\(tag): Refresh overflows the pane — \(line)")
+        XCTAssertGreaterThanOrEqual(rMax - refresh, cMax, "\(tag): Refresh overlaps the count line — \(line)")
+    }
+
+    private static func widths(_ line: String) -> [String: Int] {
+        var out: [String: Int] = [:]
+        for pair in (token(line, "widths") ?? "").split(separator: ",") {
+            let kv = pair.split(separator: ":")
+            if kv.count == 2, let v = Int(kv[1]) { out[String(kv[0])] = v }
+        }
+        return out
+    }
+
+    /// Refresh's right edge: the probe's `fmaxx` while it holds focus, else pane width when it is
+    /// trailing-aligned (read by focusing it).
+    private static func refreshMaxX(_ line: String) -> Int? {
+        token(line, "focus") == "refresh" ? int(line, "fmaxx") : nil
+    }
+
+    /// Focus Refresh from the row (Up from Sort) and read the header numbers there.
+    private func focusRefresh(_ app: XCUIApplication) -> Bool {
+        if barFocus(app) == "refresh" { return true }
+        moveBar(app, to: "sort", .right, max: 8)
+        for _ in 0..<2 where barFocus(app) != "refresh" {
+            remote.press(.up)
+            pause(0.8)
+        }
+        return barFocus(app) == "refresh"
+    }
+
+    /// Mean luminance of a screen strip `x0..<x1` (points) at row `y` (points), from a screenshot.
+    private func luminance(_ image: CGImage, x0: Int, x1: Int, y: Int, screenWidth: CGFloat = 1920) -> (mean: Double, max: Double) {
+        let scale = CGFloat(image.width) / screenWidth
+        let width = image.width, height = image.height
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        guard let ctx = CGContext(data: &pixels, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return (0, 0) }
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        let py = min(height - 1, max(0, Int(CGFloat(y) * scale)))
+        var total = 0.0, peak = 0.0, n = 0.0
+        for px in stride(from: Int(CGFloat(x0) * scale), to: Int(CGFloat(x1) * scale), by: 1) where px >= 0 && px < width {
+            // CGContext rows run bottom-up.
+            let i = ((height - 1 - py) * width + px) * 4
+            let l = 0.2126 * Double(pixels[i]) + 0.7152 * Double(pixels[i + 1]) + 0.0722 * Double(pixels[i + 2])
+            total += l; peak = max(peak, l); n += 1
+        }
+        return (n > 0 ? total / n : 0, peak)
+    }
+
+    /// After the row has scrolled, nothing of it draws in the strip just left of the pane: that strip
+    /// at the bar's height reads like the same strip at the header's height (plain background).
+    private func assertNothingLeftOfPane(_ app: XCUIApplication, tag: String) {
+        let line = probe(app)
+        guard let paneX = Self.int(line, "panegx"), let hdrY = Self.int(line, "hdry"),
+              let bary = Self.token(line, "bary")?.split(separator: "-").compactMap({ Int($0) }), bary.count == 2,
+              let image = XCUIScreen.main.screenshot().image.cgImage else {
+            XCTFail("\(tag): no screen numbers — \(line)")
+            return
+        }
+        let barMid = (bary[0] + bary[1]) / 2
+        let strip = luminance(image, x0: paneX - 40, x1: paneX - 2, y: barMid)
+        let reference = luminance(image, x0: paneX - 40, x1: paneX - 2, y: hdrY)
+        note("\(tag)-edge", "strip mean=\(strip.mean) max=\(strip.max) | reference mean=\(reference.mean) max=\(reference.max)\n\(line)")
+        XCTAssertLessThan(abs(strip.mean - reference.mean), 4, "\(tag): something draws left of the pane at the bar — \(line)")
+        XCTAssertLessThan(strip.max, reference.max + 12, "\(tag): something draws left of the pane at the bar — \(line)")
+    }
+
+    // MARK: - Geometry (spec 4.3, review r1)
+
+    /// The bar keeps today's height: one row, `row = pill + 16`, `bar = row`, no row 2. With Refresh
+    /// in the header the row fits the pane at rest for the local library and the provider fixture,
+    /// in both placements; the header fits too, with a long count line. With a filter set the row may
+    /// scroll; its last control stays reachable and visible.
     func testOneRowBarGeometry() throws {
         do {
             let app = launch(Self.arguments(fixture: "local"))
@@ -270,28 +364,35 @@ final class LibraryFilterBarUITests: XCTestCase {
             note("geometry-local", line)
             let pill = try XCTUnwrap(Self.int(line, "pill")), row1 = try XCTUnwrap(Self.int(line, "row1"))
             let bar = try XCTUnwrap(Self.int(line, "bar")), pane = try XCTUnwrap(Self.int(line, "pane"))
-            let row1w = try XCTUnwrap(Self.int(line, "row1w"))
             XCTAssertEqual(Double(row1), Double(pill + 16), accuracy: 1, line)
             XCTAssertEqual(Self.int(line, "row2"), 0, line)
             XCTAssertEqual(Double(bar), Double(row1), accuracy: 1, line)
-            XCTAssertLessThanOrEqual(row1w, pane, "the local library's row must fit the pane: \(line)")
+            XCTAssertLessThanOrEqual(try XCTUnwrap(Self.int(line, "row1w")), pane, "the local library's row must fit: \(line)")
+            XCTAssertNil(Self.widths(line)["refresh"], "no Refresh for the local library: \(line)")
             shot("geometry-local")
         }
-        do {
-            let app = launch(Self.arguments(fixture: "provider"))
+        for rail in [false, true] {
+            let tag = rail ? "rail" : "tabs"
+            let long = "1,234 movies \u{00B7} 567 series \u{00B7} 89 anime \u{00B7} 12 other titles"
+            let app = launch(Self.arguments(fixture: "provider", navigation: rail ? "rail" : "tabs", countLine: rail ? long : nil))
             defer { app.terminate() }
-            try openLibrary(app, rail: false)
+            try openLibrary(app, rail: rail)
             let line = probe(app)
-            note("geometry-provider", line)
+            note("geometry-provider-\(tag)", line)
             let pill = try XCTUnwrap(Self.int(line, "pill")), row1 = try XCTUnwrap(Self.int(line, "row1"))
+            let pane = try XCTUnwrap(Self.int(line, "pane"))
             XCTAssertEqual(Double(row1), Double(pill + 16), accuracy: 1, line)
             XCTAssertEqual(Self.int(line, "row2"), 0, line)
             XCTAssertEqual(Double(try XCTUnwrap(Self.int(line, "bar"))), Double(row1), accuracy: 1, line)
+            XCTAssertLessThanOrEqual(try XCTUnwrap(Self.int(line, "row1w")), pane, "\(tag): the provider row must fit at rest: \(line)")
+            shot("geometry-provider-\(tag)-rest")
             try enterBar(app)
-            let tokens = walkRow(app, tag: "geometry-provider")
-            note("geometry-provider-walk", "\(tokens.joined(separator: " → "))\n\(probe(app))")
-            XCTAssertEqual(tokens.last, "refresh", "the last control must be reachable by Right presses: \(tokens)")
-            shot("geometry-provider-last")
+            let tokens = walkRow(app, tag: "geometry-\(tag)")
+            XCTAssertEqual(tokens.last, "sort", "\(tag): \(tokens)")
+            XCTAssertTrue(focusRefresh(app), "\(tag): Up from Sort must reach Refresh — \(probe(app))")
+            note("geometry-provider-\(tag)-refresh", probe(app))
+            assertHeaderFits(app, tag: "geometry-\(tag)")
+            shot("geometry-provider-\(tag)-refresh")
         }
     }
 
@@ -315,19 +416,24 @@ final class LibraryFilterBarUITests: XCTestCase {
             // The whole row, left to right, every pill on screen as it takes focus.
             let tokens = walkRow(app, tag: tag)
             log.append("walk: \(tokens.joined(separator: " → "))")
-            XCTAssertEqual(tokens, ["list", "type", "genre", "year", "watch", "sort", "refresh"], "\(tag): \(probe(app))")
-            shot("traversal-\(tag)-1-refresh")
+            XCTAssertEqual(tokens, ["list", "type", "genre", "year", "watch", "sort"], "\(tag): \(probe(app))")
 
-            // Back to Genre (the row scrolls back), pick Comedy.
-            XCTAssertTrue(moveBar(app, to: "genre", .left), "\(tag): \(probe(app))")
+            // Refresh: Up from the row, Down back into it.
+            XCTAssertTrue(focusRefresh(app), "\(tag): Up must reach Refresh — \(probe(app))")
+            log.append("refresh: \(probe(app))")
+            remote.press(.down)
+            pause(0.8)
+            XCTAssertNotEqual(barFocus(app), "refresh", "\(tag): Down from Refresh must return to the row — \(probe(app))")
+            XCTAssertNotEqual(barFocus(app), "-", "\(tag): Down from Refresh must land in the row — \(probe(app))")
+
+            // Genre Comedy, year 2022.
+            XCTAssertTrue(moveBar(app, to: "genre", .left) || moveBar(app, to: "genre", .right), "\(tag): \(probe(app))")
             XCTAssertTrue(focusedControlVisible(app), "\(tag): Genre must be on screen — \(probe(app))")
             remote.press(.select)
             XCTAssertTrue(pick(app, "Comedy", step: "traversal-\(tag)-genre"))
             log.append("comedy: \(probe(app))")
             XCTAssertEqual(value(app, "genre"), "Comedy")
             XCTAssertEqual(number(app, "count"), 5, probe(app))
-
-            // Year 2022.
             XCTAssertTrue(moveBar(app, to: "year", .right), "\(tag): \(probe(app))")
             remote.press(.select)
             XCTAssertTrue(pick(app, "2022", step: "traversal-\(tag)-year"))
@@ -335,9 +441,11 @@ final class LibraryFilterBarUITests: XCTestCase {
             XCTAssertEqual(value(app, "year"), "2022")
             XCTAssertEqual(number(app, "count"), 1, probe(app))
 
-            // Clear Filters, at the far end: on screen when focused, then focus on a visible Genre.
+            // Show Watched while Comedy + 2022 leaves one title: not offered (counts honour it).
+            // Clear Filters at the far end: on screen when focused.
             XCTAssertTrue(moveBar(app, to: "clear", .right, max: 12), "\(tag): \(probe(app))")
             XCTAssertTrue(focusedControlVisible(app), "\(tag): Clear Filters must be on screen — \(probe(app))")
+            if rail { assertNothingLeftOfPane(app, tag: "traversal-rail-scrolled") }
             shot("traversal-\(tag)-2-clear-focused")
             remote.press(.select)
             pause(1.5)
@@ -347,8 +455,21 @@ final class LibraryFilterBarUITests: XCTestCase {
             XCTAssertEqual(value(app, "show"), "all", probe(app))
             XCTAssertEqual(number(app, "count"), 14, probe(app))
             XCTAssertEqual(barFocus(app), "genre", probe(app))
-            XCTAssertTrue(focusedControlVisible(app), "\(tag): Genre must be scrolled back on screen — \(probe(app))")
+            XCTAssertTrue(focusedControlVisible(app), "\(tag): Genre must be on screen after Clear Filters — \(probe(app))")
             shot("traversal-\(tag)-3-cleared")
+
+            // A filter that widens the row past the pane: Show Watched (+ Clear Filters), scrolled to
+            // the end and back, every pill visible; in the rail placement nothing left of the pane.
+            XCTAssertTrue(moveBar(app, to: "watch", .right), "\(tag): \(probe(app))")
+            remote.press(.select)
+            XCTAssertTrue(pick(app, "Watched", step: "traversal-\(tag)-watched"))
+            log.append("watched: \(probe(app))")
+            XCTAssertEqual(number(app, "count"), 2, probe(app))
+            let wide = walkRow(app, tag: "\(tag)-watched")
+            log.append("walk watched: \(wide.joined(separator: " → ")) | \(probe(app))")
+            XCTAssertEqual(wide.last, "clear", "\(tag): \(wide)")
+            if rail { assertNothingLeftOfPane(app, tag: "traversal-rail-watched") }
+            shot("traversal-\(tag)-4-watched-end")
 
             // Down into the grid, Up back into the bar.
             remote.press(.down)
@@ -365,11 +486,11 @@ final class LibraryFilterBarUITests: XCTestCase {
         }
     }
 
-    // MARK: - States and menus
+    // MARK: - Menus
 
-    /// The no-matches state's own Clear Filters, a list change resetting the type, the Genre menu's
-    /// two science-fiction rows, and the pill widths with filters set (for the owner's question).
-    func testNoMatchesListResetAndMenuRows() throws {
+    /// A list change resetting the type, the Genre menu's two science-fiction rows, the counts under
+    /// Show = Watched (review r1 finding 3), and the pill widths with filters set.
+    func testListResetAndMenuRows() throws {
         let app = launch(Self.arguments(fixture: "provider"))
         defer { app.terminate() }
         try openLibrary(app, rail: false)
@@ -388,34 +509,35 @@ final class LibraryFilterBarUITests: XCTestCase {
         remote.press(.menu)
         pause(1.0)
 
-        // Watched, then Horror: nothing matches; the state's own Clear Filters restores the grid.
+        // Show Watched: the Type and Genre menus count the two watched titles only.
         XCTAssertTrue(moveBar(app, to: "watch", .right), probe(app))
         remote.press(.select)
-        XCTAssertTrue(pick(app, "Watched", step: "nomatch-watched"))
+        XCTAssertTrue(pick(app, "Watched", step: "watched"))
         note("widths-show-watched", probe(app))
-        XCTAssertTrue(moveBar(app, to: "genre", .left), probe(app))
-        remote.press(.select)
-        XCTAssertTrue(pick(app, "Horror", step: "nomatch-horror"))
-        note("widths-genre-and-show", probe(app))
-        XCTAssertEqual(value(app, "content"), "noMatches", probe(app))
-        shot("nomatches")
-        let clear = app.descendants(matching: .any)["library.noMatches.clearFilters"].firstMatch
-        XCTAssertTrue(clear.waitForExistence(timeout: 3))
-        for _ in 0..<3 where !hasFocusByFrame(app, clear) {
-            remote.press(.down)
-            pause(0.8)
-        }
-        XCTAssertTrue(hasFocusByFrame(app, clear), focusedSummary(app))
+        XCTAssertEqual(number(app, "count"), 2, probe(app))
+        XCTAssertTrue(moveBar(app, to: "type", .left), probe(app))
         remote.press(.select)
         pause(1.5)
-        note("nomatches-cleared", probe(app))
-        XCTAssertEqual(value(app, "content"), "grid", probe(app))
+        let allTypes = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "All types (")).firstMatch
+        note("type-rows-watched", allTypes.exists ? allTypes.label : "missing")
+        XCTAssertTrue(allTypes.exists && allTypes.label.hasPrefix("All types (2)"), allTypes.exists ? allTypes.label : "missing")
+        remote.press(.menu)
+        pause(1.0)
+        XCTAssertTrue(moveBar(app, to: "genre", .right), probe(app))
+        remote.press(.select)
+        pause(1.5)
+        let horror = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "Horror")).firstMatch
+        XCTAssertFalse(horror.exists, "Horror has no watched title, so it must not be offered")
+        XCTAssertTrue(pick(app, "Crime", step: "genre-crime"))
+        note("widths-genre-and-show", probe(app))
+        XCTAssertEqual(number(app, "count"), 1, probe(app))
+        // Clear Filters from the row.
+        XCTAssertTrue(moveBar(app, to: "clear", .right, max: 12), probe(app))
+        remote.press(.select)
+        pause(1.5)
         XCTAssertEqual(number(app, "count"), 14, probe(app))
-        XCTAssertEqual(value(app, "genre"), "-")
-        XCTAssertEqual(value(app, "show"), "all")
 
         // Type Series, then another list: the type goes back to All.
-        try enterBar(app)
         XCTAssertTrue(moveBar(app, to: "type", .left, max: 6) || moveBar(app, to: "type", .right, max: 6), probe(app))
         remote.press(.select)
         XCTAssertTrue(pick(app, "Series", step: "type-series"))

@@ -107,12 +107,6 @@ nonisolated enum LibraryGridPolicy {
         let count: Int
     }
 
-    /// A Genre or Year pill shows when it can split the list (two or more options) or when one is
-    /// chosen, so it can always be set back to All. Simkl lists carry no genres, so no Genre pill.
-    static func showsFacet(_ options: [FacetOption], selected: String?) -> Bool {
-        options.count >= 2 || selected != nil
-    }
-
     /// Display label for a library genre: Discover's table of standard names (localized), else a
     /// Trakt slug ("science-fiction") read as words ("Science Fiction"), else the name as given.
     static func genreLabel(_ raw: String) -> String {
@@ -154,6 +148,21 @@ nonisolated enum LibraryGridPolicy {
 
     static func yearAccessibilityValue(selected: String?) -> String {
         selected ?? String(localized: "All years")
+    }
+
+    // MARK: - Remembered list and type (W5 review r1)
+
+    /// The remembered list and type to apply in `activeSource` (a `LibrarySourceMode` name): the
+    /// stored picks when they were made in that source, else none (first list, All types). A pick
+    /// stored without a source (upstream's API) belongs to no source.
+    static func rememberedPicks(
+        sectionKey: String?,
+        type: String?,
+        pickedIn source: String?,
+        activeSource: String
+    ) -> (sectionKey: String?, type: String?) {
+        guard let source, source == activeSource else { return (nil, nil) }
+        return (sectionKey, type)
     }
 
     // MARK: - The Show menu's single watch choice
