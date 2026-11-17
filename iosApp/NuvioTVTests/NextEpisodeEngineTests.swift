@@ -40,6 +40,8 @@ final class NextEpisodeEngineTests: XCTestCase {
         /// `<streamKey>@<title>` (the spy keeps the live store and resolver cache untouched).
         var played: [PlaybackContext] = []
         var remembered: [String] = []
+        /// W4 review r1: `onViewerChoice` calls (the host's walk invalidation).
+        var viewerChoices = 0
     }
 
     private func makeContext(episodes: [MetaVideo] = []) -> PlaybackContext {
@@ -235,7 +237,8 @@ final class NextEpisodeEngineTests: XCTestCase {
         hooks.rememberFailedLink = { listed, title, _, _ in
             recorder.remembered.append("\(listed.playbackStreamKey)@\(title)")
         }
-        let engine = NextEpisodeEngine(context: makeContext(), onPlayNext: { recorder.played.append($0) }, hooks: hooks)
+        let engine = NextEpisodeEngine(context: makeContext(), onPlayNext: { recorder.played.append($0) }, hooks: hooks,
+                                       onViewerChoice: { recorder.viewerChoices += 1 })
         engine.configureForTesting(nextVideo: episode(season: 1, episode: 2), trigger: trigger)
         return engine
     }
@@ -2084,5 +2087,35 @@ final class NextEpisodeEngineTests: XCTestCase {
         let ctx = engine.nextContextForTesting(stream: stream(url: "https://cdn.example.com/s1e2.mkv"),
                                                url: URL(string: "https://cdn.example.com/s1e2.mkv")!)
         XCTAssertEqual(ctx?.sourceFallback, PlayerSourceFallbackTried.companion.None)
+    }
+
+    // MARK: - W4 review r1: the viewer's own choice is told before anything resolves
+
+    /// A debrid (or YouTube) pick resolves asynchronously: the host hears of it at the pick, with
+    /// nothing handed over yet, so its automatic walks are void before the old context is replaced.
+    func testASourcePickTellsTheHostBeforeAnythingIsHandedOver() {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder)
+        _ = engine.playSource(walkCandidate("cccc"))
+        XCTAssertEqual(recorder.viewerChoices, 1)
+        XCTAssertTrue(recorder.played.isEmpty, "the pick has not replaced the context yet")
+        _ = engine.playSource(stream(url: "https://cdn.example.com/s1e1-other.mkv"))
+        XCTAssertEqual(recorder.viewerChoices, 2)
+        XCTAssertEqual(recorder.played.count, 1)
+    }
+
+    func testAnEpisodeJumpTellsTheHost() {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder)
+        engine.jumpForTesting(to: episode(season: 1, episode: 3))
+        XCTAssertEqual(recorder.viewerChoices, 1)
+    }
+
+    func testAnAutomaticHandOffIsNotAViewerChoice() async {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder)
+        engine.playForTesting(stream(url: "https://cdn.example.com/s1e2.mkv"), nextCandidate: { _, _, _ in nil })
+        XCTAssertEqual(recorder.played.count, 1)
+        XCTAssertEqual(recorder.viewerChoices, 0, "the host counts the hand-off itself (onPlayNext)")
     }
 }

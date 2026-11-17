@@ -272,6 +272,43 @@ extension PlaybackContext {
     }
 }
 
+/// W4 review r1: "what the viewer last asked for", as a generation. Every choice of the viewer's own
+/// (a source picked in the list or in the player's Sources panel, even one still resolving; Menu or
+/// close; an episode jump; Play Next; Up Next's hand-off) bumps it. An automatic walk (first-play
+/// failover, the in-player episode walk) takes a ticket when it starts, and every event of it
+/// (`.play`, `.gaveUp`, a late refresh, its candidate load) is applied only while the ticket is still
+/// current: the viewer's choice wins even before `selected` has changed. While a choice is pending
+/// (asked for, not on screen yet) no automatic walk starts for the context still on screen.
+struct AutoWalkIntentGate: Equatable {
+    private(set) var generation = 0
+    private(set) var presentedGeneration = 0
+
+    /// The viewer chose something.
+    mutating func viewerChose() { generation += 1 }
+    /// A context went on screen (or the player closed): it is what the viewer last asked for.
+    mutating func contextPresented() { presentedGeneration = generation }
+
+    /// The ticket a walk started now carries.
+    var ticket: Int { generation }
+    /// The viewer asked for something the screen does not show yet (a pick still resolving).
+    var viewerChoicePending: Bool { generation != presentedGeneration }
+    /// May an automatic walk start (or react) for the context on screen?
+    var allowsAutomaticWalk: Bool { !viewerChoicePending }
+    /// Is an event of the walk holding `ticket` still allowed to change the screen?
+    func accepts(_ ticket: Int?) -> Bool {
+        guard let ticket else { return false }
+        return ticket == generation && !viewerChoicePending
+    }
+
+    /// A walk's `.play` swap: its ticket is current and the context it replaces (when known) is
+    /// still the one presented.
+    func admitsSwap(ticket: Int?, replacing: String?, presented: String?) -> Bool {
+        guard accepts(ticket) else { return false }
+        guard let replacing else { return true }
+        return replacing == presented
+    }
+}
+
 /// Who started a playback (see `PlaybackContext.launchSource`).
 enum PlaybackLaunchSource: Equatable {
     /// The viewer picked the stream (a picker row, "Try Next Source", the in-player source list).

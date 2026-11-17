@@ -41,6 +41,8 @@ struct NativePlayerScreen: View {
     /// W4: the first frame showed (`coordinator.loadingStage.isStarted`). `PlayerScreen` forwards
     /// it once per context to the host.
     var onPlaybackStarted: (() -> Void)? = nil
+    /// W4 review r1: the viewer made a choice of their own in this player (see `MPVPlayerScreen`).
+    var onViewerChoice: (() -> Void)? = nil
 
     @StateObject private var coordinator: NativePlaybackCoordinator
     @StateObject private var moreLikeThisLoader = PostPlayMoreLikeThisLoader()
@@ -77,10 +79,12 @@ struct NativePlayerScreen: View {
          onPlaybackFailed: ((PlaybackFailure) -> Void)? = nil,
          onPlaybackHealthy: ((Double) -> Void)? = nil,
          onOpenTitle: ((MetaPreview) -> Void)? = nil,
-         onPlaybackStarted: (() -> Void)? = nil) {
+         onPlaybackStarted: (() -> Void)? = nil,
+         onViewerChoice: (() -> Void)? = nil) {
         self.context = context
         self.onOpenTitle = onOpenTitle
         self.onPlaybackStarted = onPlaybackStarted
+        self.onViewerChoice = onViewerChoice
         self.onPlayNext = onPlayNext
         self.onFallback = onFallback
         self.routingNote = routingNote
@@ -88,7 +92,8 @@ struct NativePlayerScreen: View {
         self.onPlaybackHealthy = onPlaybackHealthy
         _loadingOverlayOn = State(initialValue: PlayerLoadingOverlaySetting.enabled)
         _coordinator = StateObject(wrappedValue: NativePlaybackCoordinator(context: context))
-        _upNext = StateObject(wrappedValue: NextEpisodeEngine(context: context, onPlayNext: onPlayNext ?? { _ in }))
+        _upNext = StateObject(wrappedValue: NextEpisodeEngine(context: context, onPlayNext: onPlayNext ?? { _ in },
+                                                              onViewerChoice: onViewerChoice))
         _panelModel = StateObject(wrappedValue: PlayerTopPanelModel(
             info: PlayerPanelInfo(header: NativeInfoHeader(context: context))))
     }

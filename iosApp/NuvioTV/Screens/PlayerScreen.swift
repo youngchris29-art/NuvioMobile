@@ -39,6 +39,9 @@ struct PlayerScreen: View {
     var onStartupLimitReached: (() -> Void)? = nil
     /// W4: the first frame showed, on whichever engine. Fired at most once per context.
     var onPlaybackStarted: (() -> Void)? = nil
+    /// W4 review r1: the viewer made a choice of their own in the player (a Sources pick, even one
+    /// still resolving; an episode jump; Play Next). The host invalidates its automatic walks.
+    var onViewerChoice: (() -> Void)? = nil
 
     @State private var decision: EngineDecision?
     /// The probe behind `decision` (nil with the native flag off or no probe): decides whether the
@@ -101,7 +104,8 @@ struct PlayerScreen: View {
                                    onPlaybackFailed: annotated(.native),
                                    onPlaybackHealthy: onPlaybackHealthy,
                                    onOpenTitle: onOpenTitle,
-                                   onPlaybackStarted: noteStarted)
+                                   onPlaybackStarted: noteStarted,
+                                   onViewerChoice: onViewerChoice)
             case .aether:
                 // Its own `switch` case: the representable builds its controller once, so Aether and
                 // the mpv screen after a handoff are different identities.
@@ -122,7 +126,8 @@ struct PlayerScreen: View {
                                     forcedMPV = true
                                 },
                                 startupLimitSec: startupLimitSec,
-                                onPlaybackStarted: noteStarted)
+                                onPlaybackStarted: noteStarted,
+                                onViewerChoice: onViewerChoice)
             case .mpv:
                 MPVPlayerScreen(context: context, onPlayNext: onPlayNext,
                                 routingNote: mpvRoutingNote,
@@ -134,7 +139,8 @@ struct PlayerScreen: View {
                                 handoffPositionSec: forcedMPV ? handoffPositionSec : nil,
                                 onOpenTitle: onOpenTitle,
                                 startupLimitSec: startupLimitSec,
-                                onPlaybackStarted: noteStarted)
+                                onPlaybackStarted: noteStarted,
+                                onViewerChoice: onViewerChoice)
             case .deciding:
                 // B24: the probe is the first startup phase; the loading screen draws it from the
                 // first frame (`.checking`, the only stage MediaProbe has). Off: the old spinner.

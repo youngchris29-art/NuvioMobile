@@ -210,6 +210,10 @@ final class NextEpisodeEngine: ObservableObject {
     private let context: PlaybackContext
     private let onPlayNext: (PlaybackContext) -> Void
     private let hooks: Hooks
+    /// W4 review r1: the viewer made a choice of their own in the player (a source from the
+    /// Sources panel, even one that still resolves; an episode jump; Play Next). Fired when the
+    /// choice is made, before any resolve, so the host invalidates its automatic walks at once.
+    private let onViewerChoice: (() -> Void)?
 
     /// Panel accessors (the playback-settings panel renders episode/source sections from these).
     /// BUG-229: the launch's list, or the one fetched after launch when it arrived empty (see
@@ -327,10 +331,12 @@ final class NextEpisodeEngine: ObservableObject {
     /// screens once fetched. Drives the post-credits hold in `onProgress` (upstream 77ce8a73).
     var skipIntervals: [SkipInterval] = []
 
-    init(context: PlaybackContext, onPlayNext: @escaping (PlaybackContext) -> Void, hooks: Hooks = .live) {
+    init(context: PlaybackContext, onPlayNext: @escaping (PlaybackContext) -> Void, hooks: Hooks = .live,
+         onViewerChoice: (() -> Void)? = nil) {
         self.context = UpNextEmptyEpisodesDebugKnob.apply(to: context)
         self.onPlayNext = onPlayNext
         self.hooks = hooks
+        self.onViewerChoice = onViewerChoice
     }
 
     /// Tests only: skip `prime()` (shared settings + shuffle singletons) and set the next episode
@@ -553,6 +559,7 @@ final class NextEpisodeEngine: ObservableObject {
     }
 
     private func performJump(to episode: MetaVideo) {
+        onViewerChoice?()
         // r2 P3: the Sources column beside the Episodes column must show the jump's busy line, not
         // "No alternate sources found yet.": capture whether the list is up before the teardown
         // and `cancelSourceLoad()` blank it, and set the busy state before the search starts (a
@@ -688,6 +695,8 @@ final class NextEpisodeEngine: ObservableObject {
     /// stream resolves asynchronously first (the panel may dismiss; playback switches when the
     /// link lands, ~1s for cached torrents, and a failed resolve leaves playback untouched).
     func playSource(_ stream: StreamItem) -> Bool {
+        // W4 review r1: the viewer's own pick, told to the host before any resolve starts.
+        onViewerChoice?()
         supersedeSourceSwitch()
         // W3: the viewer picked a source for this episode while the next episode's auto pick was
         // still resolving (or walking on to a further source): Up Next stops for this playback, as
@@ -1042,6 +1051,7 @@ final class NextEpisodeEngine: ObservableObject {
         // (`finishWithoutStream`), so a press after reconnect can still retry.
         if phase == .offlineDeferred, selectedStream == nil, nextVideo != nil, !cancelled {
             print("[UpNext] offline card pressed — starting the search")
+            onViewerChoice?()
             startSearchFromOfflineCard(pressed: true)
             return true
         }
@@ -1050,6 +1060,7 @@ final class NextEpisodeEngine: ObservableObject {
         case .counting, .stillWatching:
             countdownTask?.cancel()
             Self.consecutiveAutoPlays = 0
+            onViewerChoice?()
             play(stream: stream, next: next)
             return true
         default:

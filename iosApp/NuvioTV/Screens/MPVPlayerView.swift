@@ -3991,6 +3991,9 @@ struct MPVPlayerScreen: View {
     /// W4: the first frame showed (`state.playbackStarted` became true). `PlayerScreen` forwards
     /// it once per context to the host.
     var onPlaybackStarted: (() -> Void)? = nil
+    /// W4 review r1: the viewer made a choice of their own in this player (`NextEpisodeEngine`'s
+    /// Sources pick, episode jump, Play Next), before any resolve. Read once, when the engine is made.
+    var onViewerChoice: (() -> Void)? = nil
 
     @StateObject private var state: MPVPlaybackState
     @StateObject private var upNext: NextEpisodeEngine
@@ -4032,10 +4035,12 @@ struct MPVPlayerScreen: View {
          engine: PlaybackEngine = .mpv,
          onFallback: ((PlaybackHandoff) -> Void)? = nil,
          startupLimitSec: Double? = nil,
-         onPlaybackStarted: (() -> Void)? = nil) {
+         onPlaybackStarted: (() -> Void)? = nil,
+         onViewerChoice: (() -> Void)? = nil) {
         self.context = context
         self.startupLimitSec = startupLimitSec
         self.onPlaybackStarted = onPlaybackStarted
+        self.onViewerChoice = onViewerChoice
         self.onOpenTitle = onOpenTitle
         self.engine = engine
         self.onFallback = onFallback
@@ -4058,7 +4063,8 @@ struct MPVPlayerScreen: View {
                 guard let onPlayNext else { return }
                 playbackState?.playbackFailoverSuppressed = true
                 onPlayNext(next)
-            }
+            },
+            onViewerChoice: onViewerChoice
         ))
         _panelModel = StateObject(wrappedValue: PlayerTopPanelModel(
             info: PlayerPanelInfo(header: NativeInfoHeader(context: context))))
