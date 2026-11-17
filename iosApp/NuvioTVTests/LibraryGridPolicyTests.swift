@@ -136,8 +136,8 @@ final class LibraryGridPolicyTests: XCTestCase {
 
     func testEmptyVersusNoMatches() {
         XCTAssertEqual(content(hasAnySection: false), .empty)
-        XCTAssertEqual(content(hasAnySection: true, visibleCount: 0, smartFiltersActive: true), .noMatches)
-        XCTAssertEqual(content(hasAnySection: true, visibleCount: 0, smartFiltersActive: false), .empty)
+        XCTAssertEqual(content(hasAnySection: true, visibleCount: 0, filtersActive: true), .noMatches)
+        XCTAssertEqual(content(hasAnySection: true, visibleCount: 0, filtersActive: false), .empty)
     }
 
     func testProviderAwareCopy() {
@@ -161,7 +161,7 @@ final class LibraryGridPolicyTests: XCTestCase {
         errorMessage: String? = nil,
         hasAnySection: Bool = true,
         visibleCount: Int = 0,
-        smartFiltersActive: Bool = false
+        filtersActive: Bool = false
     ) -> LibraryGridPolicy.Content {
         LibraryGridPolicy.content(
             isLoaded: isLoaded,
@@ -169,7 +169,7 @@ final class LibraryGridPolicyTests: XCTestCase {
             errorMessage: errorMessage,
             hasAnySection: hasAnySection,
             visibleCount: visibleCount,
-            smartFiltersActive: smartFiltersActive
+            filtersActive: filtersActive
         )
     }
 

@@ -46,6 +46,20 @@ final class LibraryViewModel: ObservableObject {
     @Published private(set) var selectedType: String?
     @Published private(set) var visibleSmartFilters: [LibraryGridPolicy.SmartFilter] = []
     @Published private(set) var activeSmartFilters: Set<LibraryGridPolicy.SmartFilter> = []
+    /// The list's genres (faceted against the chosen year), alphabetical, with counts. Empty when
+    /// the source carries none (Simkl).
+    @Published private(set) var genres: [LibraryGridPolicy.FacetOption] = []
+    /// What the projection actually used (nil = All, also when the pick isn't in this list).
+    @Published private(set) var selectedGenre: String?
+    /// The list's release years (faceted against the chosen genre), newest first, with counts.
+    @Published private(set) var years: [LibraryGridPolicy.FacetOption] = []
+    @Published private(set) var selectedYear: String?
+    /// Titles per type key and in all, under the chosen genre and year (Option B's type menu).
+    @Published private(set) var typeCounts: [String: Int] = [:]
+    @Published private(set) var allTypesCount = 0
+
+    /// Any filter that narrows the grid below the list and type: genre, year or a smart filter.
+    var filtersActive: Bool { !activeSmartFilters.isEmpty || selectedGenre != nil || selectedYear != nil }
     @Published private(set) var sortOption: LibrarySortOption = .addedDesc
     /// What the grid is actually sorted by: the local library has no provider order, so a stored
     /// DEFAULT sorts (and is labelled) as Recently Added there, as on mobile.
@@ -82,10 +96,20 @@ final class LibraryViewModel: ObservableObject {
     private var libraryState: LibraryUiState?
     /// Newest drawable progress per content id (`WatchProgressEntry.parentMetaId`).
     private var progressByContentId: [String: Double] = [:]
-    /// What the viewer picked. The projection falls back (first list, All) when a pick no longer
-    /// exists, and the published `selected…` values show what it actually used.
+    /// What the viewer picked. List and type come from the shared display settings (remembered per
+    /// profile, upstream 2da28d707); genre and year live here for the session, like the smart
+    /// filters. The projection falls back (first list, All) when a pick no longer exists, and the
+    /// published `selected…` values show what it actually used.
     private var requestedSectionKey: String?
     private var requestedType: String?
+    private var requestedGenre: String?
+    private var requestedYear: String?
+    /// DEBUG fixture (mockups, UI leg, unit tests): a canned library, no repository reads or writes.
+    let fixture: LibraryDebugFlags.Fixture
+
+    init(fixture: LibraryDebugFlags.Fixture = LibraryDebugFlags.fixture) {
+        self.fixture = fixture
+    }
     private var lastSourceModeName: String?
     /// Watched flag per entry id. `WatchedRepository.isWatched` runs the tracker registry's
     /// `ensureLoaded` on every call, so it is asked once per title and again only after the watched
@@ -114,6 +138,13 @@ final class LibraryViewModel: ObservableObject {
     private var providerOrderFailed = false
 
     func start() {
+        if fixture != .off {
+            // No flows: the fixture is the whole library. `libraryState` set once keeps this idempotent.
+            guard libraryState == nil else { return }
+            libraryState = LibraryFilterFixture.shared.uiState(provider: fixture == .provider)
+            republish()
+            return
+        }
         guard watchers.isEmpty else { return }
         LibraryRepository.shared.ensureLoaded()
         LibraryDisplaySettingsRepository.shared.ensureLoaded()
@@ -128,6 +159,8 @@ final class LibraryViewModel: ObservableObject {
         watchers.append(FlowWatcherKt.watch(LibraryDisplaySettingsRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? LibraryDisplaySettingsUiState else { return }
             self.sortOption = state.sortOption
+            self.requestedSectionKey = state.selectedSectionKey
+            self.requestedType = state.selectedType
             self.scheduleRepublish()
         })
         // Watched marks are read per title in `republish` through the repository's own
@@ -162,13 +195,35 @@ final class LibraryViewModel: ObservableObject {
     // MARK: - Viewer actions
 
     func selectSection(_ key: String) {
-        requestedSectionKey = key
-        republish()
+        guard fixture == .off else {
+            requestedSectionKey = key
+            requestedType = nil
+            republish()
+            return
+        }
+        // Persisted per profile; the display-settings watcher republishes. A new list starts on All.
+        LibraryDisplaySettingsRepository.shared.setSelectedSection(sectionKey: key)
     }
 
     /// Nil = All.
     func selectType(_ type: String?) {
-        requestedType = type
+        guard fixture == .off else {
+            requestedType = type
+            republish()
+            return
+        }
+        LibraryDisplaySettingsRepository.shared.setSelectedType(type: type)
+    }
+
+    /// Nil = All.
+    func selectGenre(_ genre: String?) {
+        requestedGenre = genre
+        republish()
+    }
+
+    /// Nil = All.
+    func selectYear(_ year: String?) {
+        requestedYear = year
         republish()
     }
 
@@ -177,13 +232,28 @@ final class LibraryViewModel: ObservableObject {
         republish()
     }
 
-    func clearSmartFilters() {
+    /// Option B's Show menu: one choice, mapped onto the same smart-filter set.
+    func selectWatchChoice(_ choice: LibraryGridPolicy.WatchChoice) {
+        activeSmartFilters = LibraryGridPolicy.smartFilters(for: choice)
+        republish()
+    }
+
+    /// Clear Filters (the bar's pill and the no-matches state): genre, year and smart filters.
+    /// List, type and sort stay.
+    func clearFilters() {
         activeSmartFilters = []
+        requestedGenre = nil
+        requestedYear = nil
         republish()
     }
 
     /// Persist a new sort (shared repo: profile-scoped NSUserDefaults). The watcher republishes.
     func setSort(_ option: LibrarySortOption) {
+        guard fixture == .off else {
+            sortOption = option
+            republish()
+            return
+        }
         LibraryDisplaySettingsRepository.shared.setSortOption(sortOption: option)
     }
 
@@ -193,6 +263,7 @@ final class LibraryViewModel: ObservableObject {
 
     /// Retry after a failed load (the same pull mobile's Retry runs). Failure-contained in Kotlin.
     func retry() {
+        guard fixture == .off else { return }
         resetProviderOrderSubscription()
         LibraryRepository.shared.retryLoadAsync()
     }
@@ -202,6 +273,7 @@ final class LibraryViewModel: ObservableObject {
     /// MDBList re-downloads the lists (a list re-sorted on mdblist.com keeps its `updatedAt`, so
     /// nothing else would notice). Ignored while a pull is already in flight.
     func refresh() {
+        guard fixture == .off else { return }
         guard !isLoading else { return }
         retry()
     }
@@ -230,6 +302,7 @@ final class LibraryViewModel: ObservableObject {
     /// `listKey` / `listTitle` are what the menu showed, read when it was built, so a sync that
     /// changes the open list while the menu is up can't make the action disagree with its label.
     func requestRemove(_ entry: LibraryGridEntry, listKey: String?, listTitle: String?) {
+        guard fixture == .off else { return }
         guard let key = listKey else {
             if LibraryRepository.shared.isSaved(id: entry.item.id, type: entry.item.type) {
                 LibraryRepository.shared.toggleSaved(item: entry.item)
@@ -290,11 +363,13 @@ final class LibraryViewModel: ObservableObject {
         }
         let modeName = state.sourceMode.name
         if lastSourceModeName != modeName {
-            // A different library (Settings → Library Source changed): its lists and types are
-            // different, so forget the old picks.
+            // A different library (Settings → Library Source changed): its genres, years and watch
+            // states are different, so the session filters go. The remembered list and type stay in
+            // the shared settings; the projection falls back (first list, All) when this library
+            // lacks them.
             if lastSourceModeName != nil {
-                requestedSectionKey = nil
-                requestedType = nil
+                requestedGenre = nil
+                requestedYear = nil
                 activeSmartFilters = []
             }
             lastSourceModeName = modeName
@@ -315,8 +390,8 @@ final class LibraryViewModel: ObservableObject {
         // projection reads off `listKey`; TITLE_*), so those cost nothing. One watcher at a time,
         // re-created when the (source, list, effective sort) triple changes. On a failed sorter
         // the projection falls back to DEFAULT, as mobile's grid does; the pill keeps showing the
-        // selected sort (`effectiveSortOption` is untouched).
-        let orderListKey: String? = LibraryGridPolicy.providerName(sourceModeName: modeName) == nil
+        // selected sort (`effectiveSortOption` is untouched). The DEBUG fixture has no provider.
+        let orderListKey: String? = (fixture != .off || LibraryGridPolicy.providerName(sourceModeName: modeName) == nil)
             ? nil
             : (state.sections.first { $0.type == requestedSectionKey } ?? state.sections.first)?.type
         observeProviderOrder(
@@ -335,12 +410,20 @@ final class LibraryViewModel: ObservableObject {
             selectedSectionKey: requestedSectionKey,
             selectedType: requestedType,
             sortOption: providerOrderFailed ? LibrarySortOption.default_ : sortOption,
-            providerOrders: providerOrders
+            providerOrders: providerOrders,
+            selectedGenre: requestedGenre,
+            selectedYear: requestedYear
         )
         update(\.sections, projection.availableSections)
         update(\.selectedSectionKey, projection.selectedSectionKey)
         update(\.types, projection.availableTypes)
         update(\.selectedType, projection.selectedType)
+        update(\.genres, projection.availableGenres.map { LibraryGridPolicy.FacetOption(key: $0.key, count: Int($0.count)) })
+        update(\.selectedGenre, projection.selectedGenre)
+        update(\.years, projection.availableYears.map { LibraryGridPolicy.FacetOption(key: $0.key, count: Int($0.count)) })
+        update(\.selectedYear, projection.selectedYear)
+        update(\.typeCounts, projection.typeCounts.mapValues { $0.intValue })
+        update(\.allTypesCount, Int(projection.allTypesCount))
 
         let all = projection.entries.map { entry -> LibraryGridEntry in
             let item = entry.item
@@ -348,10 +431,7 @@ final class LibraryViewModel: ObservableObject {
             return LibraryGridEntry(
                 id: id,
                 item: item,
-                state: LibraryGridPolicy.WatchState(
-                    isWatched: isWatched(item, entryID: id),
-                    progress: progressByContentId[item.id]
-                ),
+                state: watchState(item, entryID: id),
                 kind: item.mediaCategory ?? item.type
             )
         }
@@ -371,8 +451,19 @@ final class LibraryViewModel: ObservableObject {
             errorMessage: state.errorMessage,
             hasAnySection: !state.sections.isEmpty,
             visibleCount: shown.count,
-            smartFiltersActive: !activeSmartFilters.isEmpty
+            filtersActive: filtersActive
         ))
+    }
+
+    /// A title's watch state: the repositories', or the fixture's id convention.
+    private func watchState(_ item: LibraryItem, entryID: String) -> LibraryGridPolicy.WatchState {
+        if fixture != .off {
+            return LibraryDebugFlags.fixtureWatchState(id: item.id)
+        }
+        return LibraryGridPolicy.WatchState(
+            isWatched: isWatched(item, entryID: entryID),
+            progress: progressByContentId[item.id]
+        )
     }
 
     /// Keeps exactly one provider-order watcher, for `key`; a nil key (local library) stops any.
@@ -446,5 +537,46 @@ final class LibraryViewModel: ObservableObject {
     deinit {
         watchers.forEach { $0.cancel() }
         providerOrderWatcher?.cancel()
+    }
+}
+
+/// W5: DEBUG-only launch arguments for the Library bar mockups, its UI leg and the VM tests.
+/// Release builds always read `.off` / `.twoRows` / false.
+nonisolated enum LibraryDebugFlags {
+    enum Fixture: String, Sendable { case off, local, provider }
+
+    /// `-debug.libraryFixture local|provider`.
+    static var fixture: Fixture {
+        #if DEBUG
+        Fixture(rawValue: UserDefaults.standard.string(forKey: "debug.libraryFixture") ?? "") ?? .off
+        #else
+        .off
+        #endif
+    }
+
+    /// `-debug.libraryBarLayout A|B` (removed with the losing layout after decision G).
+    static var barLayout: LibraryGridPolicy.BarLayout {
+        #if DEBUG
+        LibraryGridPolicy.barLayout(flag: UserDefaults.standard.string(forKey: "debug.libraryBarLayout"))
+        #else
+        .twoRows
+        #endif
+    }
+
+    /// `-debug.libraryBarGeometry YES`: the `debug_library_bar` probe.
+    static var geometryProbe: Bool {
+        #if DEBUG
+        UserDefaults.standard.bool(forKey: "debug.libraryBarGeometry")
+        #else
+        false
+        #endif
+    }
+
+    /// `LibraryFilterFixture` ids: `fx-w-` watched, `fx-p-` 40 % in.
+    static func fixtureWatchState(id: String) -> LibraryGridPolicy.WatchState {
+        LibraryGridPolicy.WatchState(
+            isWatched: id.hasPrefix("fx-w-"),
+            progress: id.hasPrefix("fx-p-") ? 0.4 : nil
+        )
     }
 }

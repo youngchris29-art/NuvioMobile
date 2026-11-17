@@ -9,9 +9,9 @@ import SharedCore
 /// Library L1 (2026-10-04, `docs/library-l1-grid-plan-2026-10-04.md` in the outer repo):
 /// - header: title, a count line ("31 movies · 17 series") and a source badge (TRAKT / SIMKL /
 ///   MDBLIST);
-/// - one control row: a List pill (the provider's lists), type segments (only with more than one
-///   type), a Sort pill, and the smart filters Unwatched / In Progress / Watched (only the ones
-///   that would change the grid);
+/// - a filter bar: List, type, Sort and Refresh in the first row; Genre, Year, the smart filters
+///   and Clear Filters in the second (W5, upstream 2da28d707). List and type are remembered per
+///   profile. (Until the layout pick, `-debug.libraryBarLayout B` draws the one-row alternative.)
 /// - cards with a watched tick or a progress bar (`PosterCard.watchBadge`);
 /// - a hold menu with Mark as Watched / Unwatched and a list-aware Remove;
 /// - real loading, failed (with Retry), empty and no-match states.
@@ -34,6 +34,11 @@ struct LibraryView: View {
     @Environment(\.posterStyle) private var posterStyle
     @State private var showingCloud = false
     @State private var filePicker: CloudFilePickerRoute?
+    /// The filter bar's focus, so Clear Filters can hand focus to a pill that stays.
+    @FocusState private var barFocus: LibraryBarFocus?
+    /// DEBUG probe values (`-debug.libraryBarGeometry YES`), whole points.
+    @State private var barGeometry = LibraryBarGeometry()
+    private let barLayout = LibraryDebugFlags.barLayout
 
     private var columns: [GridItem] {
         [GridItem(
@@ -60,6 +65,10 @@ struct LibraryView: View {
                         } else {
                             savedContent
                         }
+                    }
+                    // W5 probe: the pane's laid-out width inside the screen padding (writes only on change).
+                    .onGeometryChange(for: CGFloat.self) { $0.size.width } action: {
+                        barGeometry.pane = Int($0.rounded())
                     }
                     .padding(Theme.Spacing.screen)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -251,47 +260,227 @@ struct LibraryView: View {
         }
     }
 
-    // MARK: - Control row (List · type · Sort · Refresh · smart filters)
+    // MARK: - Filter bar (W5: list · type · sort · refresh, then genre · year · watch filters)
 
+    @ViewBuilder
     private var controls: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: Theme.Spacing.md) {
-                if model.sections.count > 1 {
-                    listMenu
-                }
+        Group {
+            switch barLayout {
+            case .twoRows: twoRowBar
+            case .oneRow: oneRowBar
+            }
+        }
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { barGeometry.bar = Int($0.rounded()) }
+        .overlay(alignment: .topLeading) { barProbe }
+    }
+
+    private var showsGenre: Bool { LibraryGridPolicy.showsFacet(model.genres, selected: model.selectedGenre) }
+    private var showsYear: Bool { LibraryGridPolicy.showsFacet(model.years, selected: model.selectedYear) }
+    /// Option A's second row draws only when it has a control.
+    private var showsFilterRow: Bool {
+        LibraryGridPolicy.showsFilterRow(showsGenre: showsGenre, showsYear: showsYear,
+                                         smartFilters: model.visibleSmartFilters)
+    }
+
+    // Option A
+    private var twoRowBar: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+            barRow(measure: \.row1, width: \.row1w) {
+                if model.sections.count > 1 { listMenu }
                 if model.types.count > 1 {
-                    FilterChip(title: String(localized: "All"), isActive: model.selectedType == nil) {
+                    FilterChip(title: String(localized: "All"), isActive: model.selectedType == nil, id: "library.type.all") {
                         model.selectType(nil)
                     }
                     ForEach(model.types, id: \.self) { type in
-                        FilterChip(title: LibraryGridPolicy.typeLabel(type), isActive: model.selectedType == type) {
+                        FilterChip(title: LibraryGridPolicy.typeLabel(type), isActive: model.selectedType == type,
+                                   id: "library.type.\(type)") {
                             model.selectType(type)
                         }
                     }
                 }
-                if !model.availableSortOptions.isEmpty {
-                    sortMenu
-                }
+                if !model.availableSortOptions.isEmpty { sortMenu }
                 if model.showsProviderControls {
-                    // Batch D review r2 P2: the user-initiated pull for a provider library (the
-                    // Debrid Cloud pane's Refresh, same shape). Lives in this row so Right from the
-                    // Sort pill reaches it and Up keeps the full-width source-chip section above.
+                    // Batch D review r2 P2: the user-initiated pull for a provider library.
                     refreshPill
-                    if model.isLoading {
-                        ProgressView()
-                    }
-                }
-                ForEach(model.visibleSmartFilters, id: \.self) { filter in
-                    FilterChip(title: filter.title, isActive: model.activeSmartFilters.contains(filter)) {
-                        model.toggleSmartFilter(filter)
-                    }
+                    if model.isLoading { ProgressView() }
                 }
             }
-            .padding(.vertical, Theme.Spacing.xs)
+            .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named("libraryBar")).maxY } action: {
+                barGeometry.row1MaxY = Int($0.rounded())
+            }
+            if showsFilterRow {
+                barRow(measure: \.row2, width: \.row2w) {
+                    if showsGenre { genreMenu }
+                    if showsYear { yearMenu }
+                    ForEach(model.visibleSmartFilters, id: \.self) { filter in
+                        FilterChip(title: filter.title, isActive: model.activeSmartFilters.contains(filter),
+                                   id: "library.smart.\(filter.rawValue)") {
+                            model.toggleSmartFilter(filter)
+                        }
+                        .focused($barFocus, equals: .smart(filter))
+                    }
+                    if model.filtersActive { clearPill }
+                }
+                .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named("libraryBar")).minY } action: {
+                    barGeometry.row2MinY = Int($0.rounded())
+                }
+            }
         }
-        // The List and Sort pills are stock `Menu` buttons, which lift on focus; don't crop the lift.
+        .coordinateSpace(.named("libraryBar"))
+    }
+
+    // Option B
+    private var oneRowBar: some View {
+        barRow(measure: \.row1, width: \.row1w) {
+            if model.sections.count > 1 { listMenu }
+            if model.types.count > 1 { typeMenu }
+            if showsGenre { genreMenu }
+            if showsYear { yearMenu }
+            if !model.visibleSmartFilters.isEmpty || !model.activeSmartFilters.isEmpty { watchMenu }
+            if !model.availableSortOptions.isEmpty { sortMenu }
+            if model.showsProviderControls {
+                refreshPill
+                if model.isLoading { ProgressView() }
+            }
+            if model.filtersActive { clearPill }
+        }
+    }
+
+    /// One bar row: a full-width horizontal scroll row and its own focus section, measured for the probe.
+    private func barRow<Content: View>(
+        measure height: WritableKeyPath<LibraryBarGeometry, Int>,
+        width: WritableKeyPath<LibraryBarGeometry, Int>,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: Theme.Spacing.md) { content() }
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { barGeometry[keyPath: width] = Int($0.rounded()) }
+                .padding(.vertical, Theme.Spacing.xs)
+        }
+        // The stock Menu buttons lift on focus; don't crop the lift.
         .scrollClipDisabled()
+        // Full width: the focus engine searches straight up and down.
+        .frame(maxWidth: .infinity, alignment: .leading)
         .focusSection()
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { barGeometry[keyPath: height] = Int($0.rounded()) }
+    }
+
+    private var genreMenu: some View {
+        let keys = model.genres.map(\.key)
+        let labels = LibraryGridPolicy.genreLabels(keys)
+        let counts = Dictionary(model.genres.map { ($0.key, $0.count) }, uniquingKeysWith: { first, _ in first })
+        let selectedLabel = model.selectedGenre.map { labels[$0] ?? LibraryGridPolicy.genreLabel($0) }
+        return PillMenu(
+            title: LibraryGridPolicy.genrePillTitle(selectedLabel: selectedLabel),
+            systemImage: model.selectedGenre == nil ? "theatermasks" : "theatermasks.fill",
+            selection: Binding(get: { model.selectedGenre ?? "" }, set: { model.selectGenre($0.isEmpty ? nil : $0) }),
+            options: [""] + keys,
+            id: "library.genrePicker",
+            pickerTitle: String(localized: "Genre"),
+            label: { key in
+                key.isEmpty ? String(localized: "All")
+                    : LibraryGridPolicy.facetOptionLabel(labels[key] ?? key, count: counts[key] ?? 0)
+            },
+            accessibilityName: String(localized: "Genre"),
+            accessibilityCurrentValue: LibraryGridPolicy.genreAccessibilityValue(selectedLabel: selectedLabel),
+            optionAccessibilityLabel: { key in
+                key.isEmpty ? String(localized: "All genres")
+                    : LibraryGridPolicy.facetOptionAccessibilityLabel(labels[key] ?? key, count: counts[key] ?? 0)
+            }
+        )
+        .focused($barFocus, equals: .genre)
+    }
+
+    private var yearMenu: some View {
+        let keys = model.years.map(\.key)
+        let counts = Dictionary(model.years.map { ($0.key, $0.count) }, uniquingKeysWith: { first, _ in first })
+        return PillMenu(
+            title: LibraryGridPolicy.yearPillTitle(selected: model.selectedYear),
+            systemImage: "calendar",
+            selection: Binding(get: { model.selectedYear ?? "" }, set: { model.selectYear($0.isEmpty ? nil : $0) }),
+            options: [""] + keys,
+            id: "library.yearPicker",
+            pickerTitle: String(localized: "Year"),
+            label: { key in
+                key.isEmpty ? String(localized: "All") : LibraryGridPolicy.facetOptionLabel(key, count: counts[key] ?? 0)
+            },
+            accessibilityName: String(localized: "Year"),
+            accessibilityCurrentValue: LibraryGridPolicy.yearAccessibilityValue(selected: model.selectedYear),
+            optionAccessibilityLabel: { key in
+                key.isEmpty ? String(localized: "All years")
+                    : LibraryGridPolicy.facetOptionAccessibilityLabel(key, count: counts[key] ?? 0)
+            }
+        )
+        .focused($barFocus, equals: .year)
+    }
+
+    // Option B only
+    private var typeMenu: some View {
+        PillMenu(
+            title: model.selectedType.map(LibraryGridPolicy.typeLabel) ?? String(localized: "All types"),
+            systemImage: "film.stack",
+            selection: Binding(get: { model.selectedType ?? "" }, set: { model.selectType($0.isEmpty ? nil : $0) }),
+            options: [""] + model.types,
+            id: "library.typePicker",
+            pickerTitle: String(localized: "Type"),
+            label: { key in
+                key.isEmpty ? LibraryGridPolicy.typeOptionLabel(nil, count: model.allTypesCount)
+                    : LibraryGridPolicy.typeOptionLabel(key, count: model.typeCounts[key] ?? 0)
+            },
+            accessibilityName: String(localized: "Type"),
+            accessibilityCurrentValue: model.selectedType.map(LibraryGridPolicy.typeLabel) ?? String(localized: "All types")
+        )
+    }
+
+    // Option B only
+    private var watchMenu: some View {
+        let current = LibraryGridPolicy.watchChoice(for: model.activeSmartFilters)
+        return PillMenu(
+            title: current.title,
+            systemImage: "eye",
+            selection: Binding(get: { current }, set: { model.selectWatchChoice($0) }),
+            options: LibraryGridPolicy.watchChoices(visible: model.visibleSmartFilters),
+            id: "library.watchPicker",
+            pickerTitle: String(localized: "Show"),
+            label: { $0.title },
+            accessibilityName: String(localized: "Show"),
+            accessibilityCurrentValue: current.title
+        )
+        .focused($barFocus, equals: .watch)
+    }
+
+    private var clearPill: some View {
+        PillButton(title: String(localized: "Clear Filters"), systemImage: "xmark.circle", id: "library.clearFilters") {
+            model.clearFilters()
+            // The pill goes with the filters; hand focus to a control that stays.
+            barFocus = focusAfterClear()
+        }
+        .focused($barFocus, equals: .clear)
+    }
+
+    private func focusAfterClear() -> LibraryBarFocus? {
+        if showsGenre { return .genre }
+        if showsYear { return .year }
+        if barLayout == .oneRow { return .watch }
+        guard let first = model.visibleSmartFilters.first else { return nil }
+        return .smart(first)
+    }
+
+    @ViewBuilder
+    private var barProbe: some View {
+        if LibraryDebugFlags.geometryProbe {
+            let g = barGeometry
+            // Row 2's numbers count only while Option A draws it (its callbacks stop when it goes).
+            let row2Drawn = barLayout == .twoRows && showsFilterRow
+            let row2 = row2Drawn ? g.row2 : 0
+            let row2w = row2Drawn ? g.row2w : 0
+            let gap = row2Drawn ? g.row2MinY - g.row1MaxY : 0
+            Text(verbatim: "debug_library_bar layout=\(barLayout.rawValue) pane=\(g.pane) pill=\(g.pill) row1=\(g.row1) row2=\(row2) row1w=\(g.row1w) row2w=\(row2w) bar=\(g.bar) gap=\(gap) count=\(model.entries.count) genre=\(model.selectedGenre ?? "-") year=\(model.selectedYear ?? "-") focus=\(barFocus?.probeToken ?? "-")")
+                .font(.system(size: 8))
+                .opacity(0.011)
+                .allowsHitTesting(false)
+                .accessibilityIdentifier("debug_library_bar")
+        }
     }
 
     /// The provider's lists (Trakt watchlist and lists, Simkl statuses, MDBList lists) as a native
@@ -307,7 +496,9 @@ struct LibraryView: View {
             options: model.sections.map(\.type),
             id: "library.listPicker",
             pickerTitle: String(localized: "List"),
-            label: { key in model.sections.first { $0.type == key }?.displayTitle ?? key }
+            label: { key in model.sections.first { $0.type == key }?.displayTitle ?? key },
+            accessibilityName: String(localized: "List"),
+            accessibilityCurrentValue: model.selectedSectionTitle ?? ""
         )
     }
 
@@ -328,8 +519,12 @@ struct LibraryView: View {
             options: model.availableSortOptions,
             id: "library.sortPicker",
             pickerTitle: String(localized: "Sort"),
-            label: { model.sortLabel($0) }
+            label: { model.sortLabel($0) },
+            accessibilityName: String(localized: "Sort"),
+            accessibilityCurrentValue: model.sortLabel(model.effectiveSortOption)
         )
+        // W5 probe: the stock Menu platter's laid-out height.
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { barGeometry.pill = Int($0.rounded()) }
     }
 
     // MARK: - States
@@ -374,7 +569,7 @@ struct LibraryView: View {
                 .font(Theme.Font.sectionTitle)
                 .foregroundStyle(Theme.Palette.textPrimary)
             Button {
-                model.clearSmartFilters()
+                model.clearFilters()
             } label: {
                 Label("Clear Filters", systemImage: "xmark.circle")
                     .font(Theme.Font.meta)
@@ -463,4 +658,26 @@ struct LibraryView: View {
             filePicker = CloudFilePickerRoute(item: item)
         }
     }
+}
+
+/// W5: the Library filter bar's focusable controls that Clear Filters can hand focus to (and the
+/// DEBUG probe reports).
+enum LibraryBarFocus: Hashable {
+    case genre, year, watch, clear
+    case smart(LibraryGridPolicy.SmartFilter)
+
+    var probeToken: String {
+        switch self {
+        case .genre: return "genre"
+        case .year: return "year"
+        case .watch: return "watch"
+        case .clear: return "clear"
+        case .smart(let filter): return "smart.\(filter.rawValue)"
+        }
+    }
+}
+
+/// W5: the filter bar's laid-out sizes for the DEBUG probe, whole points.
+struct LibraryBarGeometry: Equatable {
+    var pane = 0, pill = 0, row1 = 0, row2 = 0, row1w = 0, row2w = 0, bar = 0, row1MaxY = 0, row2MinY = 0
 }

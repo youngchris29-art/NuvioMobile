@@ -99,6 +99,115 @@ nonisolated enum LibraryGridPolicy {
         }
     }
 
+    // MARK: - Genre and year (W5, upstream 2da28d707)
+
+    /// One Genre or Year menu option: the shared projection's key and its title count.
+    nonisolated struct FacetOption: Equatable, Hashable, Sendable {
+        let key: String
+        let count: Int
+    }
+
+    /// A Genre or Year pill shows when it can split the list (two or more options) or when one is
+    /// chosen, so it can always be set back to All. Simkl lists carry no genres, so no Genre pill.
+    static func showsFacet(_ options: [FacetOption], selected: String?) -> Bool {
+        options.count >= 2 || selected != nil
+    }
+
+    /// Display label for a library genre: Discover's table of standard names (localized), else a
+    /// Trakt slug ("science-fiction") read as words ("Science Fiction"), else the name as given.
+    static func genreLabel(_ raw: String) -> String {
+        let shown = DiscoverGenreNames.display(raw)
+        guard shown == raw else { return shown }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed == trimmed.lowercased(), !trimmed.isEmpty else { return raw }
+        return trimmed.split(separator: "-").map { $0.prefix(1).uppercased() + $0.dropFirst() }.joined(separator: " ")
+    }
+
+    /// Labels for a genre list keyed by genre, with Discover's de-duplication: a later genre whose
+    /// label repeats an earlier one shows its raw name.
+    static func genreLabels(_ keys: [String]) -> [String: String] {
+        Dictionary(zip(keys, DiscoverGenreNames.displayLabels(keys, display: genreLabel)),
+                   uniquingKeysWith: { first, _ in first })
+    }
+
+    /// A menu row: "Drama (12)".
+    static func facetOptionLabel(_ label: String, count: Int) -> String {
+        String(localized: "\(label) (\(count))")
+    }
+
+    /// The same row for VoiceOver: "Drama, 12 titles".
+    static func facetOptionAccessibilityLabel(_ label: String, count: Int) -> String {
+        count == 1 ? String(localized: "\(label), 1 title") : String(localized: "\(label), \(count) titles")
+    }
+
+    static func genrePillTitle(selectedLabel: String?) -> String {
+        selectedLabel ?? String(localized: "Genre")
+    }
+
+    static func yearPillTitle(selected: String?) -> String {
+        selected ?? String(localized: "Year")
+    }
+
+    static func genreAccessibilityValue(selectedLabel: String?) -> String {
+        selectedLabel ?? String(localized: "All genres")
+    }
+
+    static func yearAccessibilityValue(selected: String?) -> String {
+        selected ?? String(localized: "All years")
+    }
+
+    /// Option A: the second row draws only when it has a control.
+    static func showsFilterRow(showsGenre: Bool, showsYear: Bool, smartFilters: [SmartFilter]) -> Bool {
+        showsGenre || showsYear || !smartFilters.isEmpty
+    }
+
+    // MARK: - Option B's single watch choice
+
+    /// The four outcomes the smart chips can reach (Unwatched + In Progress = In Progress).
+    nonisolated enum WatchChoice: String, CaseIterable, Hashable, Sendable {
+        case all, unwatched, inProgress, watched
+
+        var title: String {
+            switch self {
+            case .all: return String(localized: "All Titles")
+            case .unwatched: return SmartFilter.unwatched.title
+            case .inProgress: return SmartFilter.inProgress.title
+            case .watched: return SmartFilter.watched.title
+            }
+        }
+    }
+
+    static func watchChoice(for active: Set<SmartFilter>) -> WatchChoice {
+        if active.contains(.watched) { return .watched }
+        if active.contains(.inProgress) { return .inProgress }
+        if active.contains(.unwatched) { return .unwatched }
+        return .all
+    }
+
+    static func smartFilters(for choice: WatchChoice) -> Set<SmartFilter> {
+        switch choice {
+        case .all: return []
+        case .unwatched: return [.unwatched]
+        case .inProgress: return [.inProgress]
+        case .watched: return [.watched]
+        }
+    }
+
+    /// The Show menu's options: All Titles plus each choice whose chip would show.
+    static func watchChoices(visible: [SmartFilter]) -> [WatchChoice] {
+        [.all] + WatchChoice.allCases.filter { choice in
+            choice != .all && visible.contains(where: { smartFilters(for: choice).contains($0) })
+        }
+    }
+
+    // MARK: - Bar layout (mockups; the loser is deleted after decision G)
+
+    nonisolated enum BarLayout: String, Sendable { case twoRows = "A", oneRow = "B" }
+
+    static func barLayout(flag: String?) -> BarLayout {
+        BarLayout(rawValue: (flag ?? "").uppercased()) ?? .twoRows
+    }
+
     // MARK: - Header
 
     /// The count line under the title, e.g. "31 movies · 17 series". `kinds` are each visible
@@ -152,6 +261,11 @@ nonisolated enum LibraryGridPolicy {
         case "anime": return String(localized: "Anime")
         default: return kind.capitalized
         }
+    }
+
+    /// Option B's type menu: "All types (14)", "Movies (8)".
+    static func typeOptionLabel(_ kind: String?, count: Int) -> String {
+        facetOptionLabel(kind.map(typeLabel) ?? String(localized: "All types"), count: count)
     }
 
     // MARK: - Source
@@ -215,7 +329,7 @@ nonisolated enum LibraryGridPolicy {
         case failed(message: String)
         /// Nothing saved at all (in this provider, for a provider library).
         case empty
-        /// Titles exist, but the smart filters leave none. Offers Clear Filters.
+        /// Titles exist, but the filters (genre, year, smart filters) leave none. Offers Clear Filters.
         case noMatches
         case grid
     }
@@ -228,13 +342,13 @@ nonisolated enum LibraryGridPolicy {
         errorMessage: String?,
         hasAnySection: Bool,
         visibleCount: Int,
-        smartFiltersActive: Bool
+        filtersActive: Bool
     ) -> Content {
         if !isLoaded || (isLoading && !hasAnySection) { return .loading }
         let message = errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !message.isEmpty, !hasAnySection { return .failed(message: message) }
         if !hasAnySection { return .empty }
-        if visibleCount == 0 { return smartFiltersActive ? .noMatches : .empty }
+        if visibleCount == 0 { return filtersActive ? .noMatches : .empty }
         return .grid
     }
 

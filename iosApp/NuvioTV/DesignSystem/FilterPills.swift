@@ -42,6 +42,12 @@ struct PillMenu<Selection: Hashable>: View {
     let id: String
     var pickerTitle: String? = nil
     let label: (Selection) -> String
+    /// VoiceOver: the control's name ("Genre") and current value ("Drama"). Nil keeps the default
+    /// (the visible title).
+    var accessibilityName: String? = nil
+    var accessibilityCurrentValue: String? = nil
+    /// VoiceOver text per option ("Drama, 12 titles"); nil reads `label(option)`.
+    var optionAccessibilityLabel: ((Selection) -> String)? = nil
 
     init(
         title: String,
@@ -50,7 +56,10 @@ struct PillMenu<Selection: Hashable>: View {
         options: [Selection],
         id: String,
         pickerTitle: String? = nil,
-        label: @escaping (Selection) -> String
+        label: @escaping (Selection) -> String,
+        accessibilityName: String? = nil,
+        accessibilityCurrentValue: String? = nil,
+        optionAccessibilityLabel: ((Selection) -> String)? = nil
     ) {
         self.title = title
         self.systemImage = systemImage
@@ -59,19 +68,54 @@ struct PillMenu<Selection: Hashable>: View {
         self.id = id
         self.pickerTitle = pickerTitle
         self.label = label
+        self.accessibilityName = accessibilityName
+        self.accessibilityCurrentValue = accessibilityCurrentValue
+        self.optionAccessibilityLabel = optionAccessibilityLabel
     }
 
     var body: some View {
         Menu {
             Picker(pickerTitle ?? title, selection: $selection) {
                 ForEach(options, id: \.self) { option in
-                    Text(label(option)).tag(option)
+                    Text(label(option))
+                        .accessibilityLabel(Text(optionAccessibilityLabel?(option) ?? label(option)))
+                        .tag(option)
                 }
             }
         } label: {
             PillLabel(title: title, systemImage: systemImage)
         }
         .accessibilityIdentifier(id)
+        .modifier(PillAccessibility(name: accessibilityName, value: accessibilityCurrentValue))
+    }
+}
+
+/// Applies a VoiceOver name and value only when given, so pills without them are untouched.
+private struct PillAccessibility: ViewModifier {
+    let name: String?
+    let value: String?
+
+    func body(content: Content) -> some View {
+        if let name {
+            content
+                .accessibilityLabel(Text(name))
+                .accessibilityValue(Text(value ?? ""))
+        } else {
+            content
+        }
+    }
+}
+
+/// Sets an accessibility identifier only when one is given, so chips without one are untouched.
+private struct OptionalAccessibilityIdentifier: ViewModifier {
+    let id: String?
+
+    func body(content: Content) -> some View {
+        if let id {
+            content.accessibilityIdentifier(id)
+        } else {
+            content
+        }
     }
 }
 
@@ -98,6 +142,9 @@ struct FilterChip: View {
     let title: String
     var systemImage: String? = nil
     let isActive: Bool
+    /// Accessibility identifier (Library's bar, W5); nil leaves the chip without one, as before.
+    /// Declared after `isActive` so call sites read `FilterChip(title:isActive:id:)`.
+    var id: String? = nil
     let action: () -> Void
 
     var body: some View {
@@ -105,8 +152,10 @@ struct FilterChip: View {
             HStack(spacing: Theme.Spacing.xs) {
                 if isActive {
                     Image(systemName: "checkmark.circle.fill")
+                        .accessibilityHidden(true)
                 } else if let systemImage {
                     Image(systemName: systemImage)
+                        .accessibilityHidden(true)
                 }
                 Text(title)
             }
@@ -115,6 +164,8 @@ struct FilterChip: View {
             .padding(.vertical, Theme.Spacing.xs)
         }
         .buttonStyle(.chip(selected: isActive))
+        .accessibilityAddTraits(isActive ? .isSelected : [])
+        .modifier(OptionalAccessibilityIdentifier(id: id))
     }
 }
 
