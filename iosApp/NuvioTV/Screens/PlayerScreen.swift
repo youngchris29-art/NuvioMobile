@@ -31,6 +31,14 @@ struct PlayerScreen: View {
     /// P5 B22: a post-play More Like This poster was chosen. The host stores it and navigates
     /// after its player cover dismisses; nil = no row.
     var onOpenTitle: ((MetaPreview) -> Void)? = nil
+    /// W4: the auto-picked context's start-up limit in seconds (nil: none). Set by the host
+    /// (`PlaybackFailoverPolicy.startupLimit(for:settings:)`); a manual pick never carries one.
+    var startupLimitSec: Double? = nil
+    /// W4: the limit passed with no first frame. The engine keeps loading; the host decides
+    /// whether another source replaces it. Fired at most once per context.
+    var onStartupLimitReached: (() -> Void)? = nil
+    /// W4: the first frame showed, on whichever engine. Fired at most once per context.
+    var onPlaybackStarted: (() -> Void)? = nil
 
     @State private var decision: EngineDecision?
     /// The probe behind `decision` (nil with the native flag off or no probe): decides whether the
@@ -46,6 +54,10 @@ struct PlayerScreen: View {
     @State private var handoffPositionSec: Double?
     /// P4 B24: Settings › Playback › Loading Screen, read once (default on).
     @State private var loadingOverlayOn = PlayerLoadingOverlaySetting.enabled
+    /// W4: the start-up limit's clock (a box, so its timer never captures this struct). Armed on
+    /// appear and on a context change, re-armed by an engine handoff before the first frame,
+    /// stood down by the first frame, cancelled on disappear.
+    @StateObject private var startupClock = PlayerStartupLimitClock()
 
     private var nativeDVEnabled: Bool { UserDefaults.standard.bool(forKey: PlayerTuning.nativeDVKey) }
 
@@ -74,6 +86,8 @@ struct PlayerScreen: View {
             case .native:
                 NativePlayerScreen(context: context, onPlayNext: onPlayNext,
                                    onFallback: context.forcedEngine == .native ? nil : { position, secondsPlayed, startedPlaying in
+                                       // W4: mpv gets the full start-up limit (a no-op once a frame showed).
+                                       startupClock.noteHandoff()
                                        nativeSecondsPlayed = secondsPlayed
                                        // W3-C: the position the native engine reached now reaches mpv's
                                        // resume (it was discarded before; remove this line to restore).
@@ -86,7 +100,8 @@ struct PlayerScreen: View {
                                    routingNote: decision?.displayNote,
                                    onPlaybackFailed: annotated(.native),
                                    onPlaybackHealthy: onPlaybackHealthy,
-                                   onOpenTitle: onOpenTitle)
+                                   onOpenTitle: onOpenTitle,
+                                   onPlaybackStarted: noteStarted)
             case .aether:
                 // Its own `switch` case: the representable builds its controller once, so Aether and
                 // the mpv screen after a handoff are different identities.
@@ -97,13 +112,17 @@ struct PlayerScreen: View {
                                 onOpenTitle: onOpenTitle,
                                 engine: .aether,
                                 onFallback: { handoff in
+                                    // W4: mpv gets the full start-up limit (a no-op once a frame showed).
+                                    startupClock.noteHandoff()
                                     nativeSecondsPlayed = handoff.secondsPlayed
                                     // Readiness, not the play clock: only an Aether run that never showed
                                     // a frame shortens mpv's start budget.
                                     nativeFailedBeforeStart = !handoff.startedPlaying
                                     handoffPositionSec = handoff.positionSec
                                     forcedMPV = true
-                                })
+                                },
+                                startupLimitSec: startupLimitSec,
+                                onPlaybackStarted: noteStarted)
             case .mpv:
                 MPVPlayerScreen(context: context, onPlayNext: onPlayNext,
                                 routingNote: mpvRoutingNote,
@@ -113,7 +132,9 @@ struct PlayerScreen: View {
                                 nativeSecondsPlayedBeforeFallback: forcedMPV ? nativeSecondsPlayed : 0,
                                 forcesGpuNext: mpvForcesGpuNext,
                                 handoffPositionSec: forcedMPV ? handoffPositionSec : nil,
-                                onOpenTitle: onOpenTitle)
+                                onOpenTitle: onOpenTitle,
+                                startupLimitSec: startupLimitSec,
+                                onPlaybackStarted: noteStarted)
             case .deciding:
                 // B24: the probe is the first startup phase; the loading screen draws it from the
                 // first frame (`.checking`, the only stage MediaProbe has). Off: the old spinner.
@@ -134,13 +155,32 @@ struct PlayerScreen: View {
         .overlay { PlayerLoadingHistoryLabel() }
         #endif
         .task(id: context.id) { await decideEngine() }
+        // W4: one start-up clock per context (the probe counts: it is the first startup stage).
+        // `arm` is idempotent per context id: modifiers on this `Group` reach each engine view it
+        // switches to, so `onAppear` runs again on deciding → native → mpv. No `onDisappear`
+        // cancel for the same reason (the deciding view disappearing is not the player leaving);
+        // the clock's timer goes with the `@StateObject` when the player closes, and the host
+        // drops a callback for a context it no longer presents.
+        .onAppear { armStartupLimit() }
         // Hosts that swap the context without rebuilding this view keep mpv pinned (`forcedMPV`),
         // but the native engine never played the new context: its carried-over state is reset.
         .onChange(of: context.id) { _, _ in
             nativeSecondsPlayed = 0
             nativeFailedBeforeStart = false
             handoffPositionSec = nil
+            armStartupLimit()
         }
+    }
+
+    /// W4: arms the start-up clock for the current context; nothing without a limit or a host.
+    private func armStartupLimit() {
+        startupClock.arm(contextID: context.id, limitSeconds: startupLimitSec, onReached: onStartupLimitReached)
+    }
+
+    /// W4: the first frame showed on some engine: the limit stands down and the host hears it once.
+    private func noteStarted() {
+        guard startupClock.noteStarted() else { return }
+        onPlaybackStarted?()
     }
 
     /// B10 (BUG-166): mpv renders a Dolby Vision profile 5 stream with `gpu-next`. The router flags

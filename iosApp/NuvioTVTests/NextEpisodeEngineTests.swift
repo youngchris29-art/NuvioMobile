@@ -1601,7 +1601,8 @@ final class NextEpisodeEngineTests: XCTestCase {
         })
         await engine.resolveTaskForTesting?.value
 
-        XCTAssertEqual(probe.resolved.count, 1 + Int(PlayerSourceFallback.shared.NEXT_EPISODE_MAX_FURTHER_SOURCES))
+        // W4: the live budget with settings not loaded (nil) is the shared default, Sources to Try 3.
+        XCTAssertEqual(probe.resolved.count, 1 + Int(PlayerSourceFallback.shared.DEFAULT_FURTHER_SOURCES))
         XCTAssertEqual(probe.resolved.count, 4, "the first pick and three further sources")
         XCTAssertEqual(offered, 3, "the picker is not asked once the limit is reached")
         XCTAssertTrue(recorder.played.isEmpty)

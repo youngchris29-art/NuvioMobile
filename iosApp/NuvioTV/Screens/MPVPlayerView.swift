@@ -457,6 +457,9 @@ final class MPVTVPlayerViewController: UIViewController {
     var onPlaybackHealthy: ((Double) -> Void)?
     /// The native engine already failed before start, so this attempt gets the shortened budget.
     var startWatchdogShortened = false
+    /// W4: the auto-picked context's start-up limit; one above the watchdog's budget extends it
+    /// (`MPVStartWatchdog.limitSeconds(shortened:startupLimitSec:)`). nil for every other start.
+    var startupLimitSec: Double?
     /// Seconds the engine before this one (native today) played before it fell back to this player
     /// (added to `secondsPlayed`).
     var secondsPlayedBeforeFallback: Double = 0
@@ -3286,7 +3289,8 @@ final class MPVTVPlayerViewController: UIViewController {
     /// failure (a dead host or stalled handshake makes mpv go quiet, not report an error).
     private func armStartWatchdog() {
         guard onPlaybackFailed != nil else { return }
-        startWatchdog = MPVStartWatchdog(limitSeconds: MPVStartWatchdog.limitSeconds(shortened: startWatchdogShortened))
+        startWatchdog = MPVStartWatchdog(limitSeconds: MPVStartWatchdog.limitSeconds(
+            shortened: startWatchdogShortened, startupLimitSec: startupLimitSec))
         startWatchdog.noteLoadStarted(at: ProcessInfo.processInfo.systemUptime)
         print("[Failover] mpv start watchdog armed: \(Int(startWatchdog.limitSeconds)) s")
         startWatchdogTimer?.invalidate()
@@ -3916,6 +3920,8 @@ private struct MPVPlayerRepresentable: UIViewControllerRepresentable {
     let forcesGpuNext: Bool
     /// Aether W3-C: see `MPVTVPlayerViewController.handoffPositionSec`.
     let handoffPositionSec: Double?
+    /// W4: see `MPVTVPlayerViewController.startupLimitSec` (Aether has the same property).
+    let startupLimitSec: Double?
 
     func makeUIViewController(context ctx: Context) -> UIViewController {
         let controller: ChromePlayerController
@@ -3924,12 +3930,14 @@ private struct MPVPlayerRepresentable: UIViewControllerRepresentable {
             let aether = AetherTVPlayerViewController(context: context, state: state)
             aether.onFallback = onFallback
             aether.failureDecider = AetherFailurePolicy()   // W3-C: the ladder incl. the 10 s interruption window
+            aether.startupLimitSec = startupLimitSec
             controller = aether
         default:
             let mpv = MPVTVPlayerViewController(context: context, state: state)
             // Before anything touches `controller.view`: `viewDidLoad` runs `setupMpv`, which reads it.
             mpv.forcesGpuNext = forcesGpuNext
             mpv.handoffPositionSec = handoffPositionSec
+            mpv.startupLimitSec = startupLimitSec
             controller = mpv
         }
         controller.onExit = onExit
@@ -3977,6 +3985,12 @@ struct MPVPlayerScreen: View {
     var engine: PlaybackEngine = .mpv
     /// The Aether controller's handoff to mpv; never fired by mpv.
     var onFallback: ((PlaybackHandoff) -> Void)? = nil
+    /// W4: the auto-picked context's start-up limit, handed to the controller's start watchdog
+    /// (read once, when the controller is made). nil for every other start.
+    var startupLimitSec: Double? = nil
+    /// W4: the first frame showed (`state.playbackStarted` became true). `PlayerScreen` forwards
+    /// it once per context to the host.
+    var onPlaybackStarted: (() -> Void)? = nil
 
     @StateObject private var state: MPVPlaybackState
     @StateObject private var upNext: NextEpisodeEngine
@@ -4016,8 +4030,12 @@ struct MPVPlayerScreen: View {
          handoffPositionSec: Double? = nil,
          onOpenTitle: ((MetaPreview) -> Void)? = nil,
          engine: PlaybackEngine = .mpv,
-         onFallback: ((PlaybackHandoff) -> Void)? = nil) {
+         onFallback: ((PlaybackHandoff) -> Void)? = nil,
+         startupLimitSec: Double? = nil,
+         onPlaybackStarted: (() -> Void)? = nil) {
         self.context = context
+        self.startupLimitSec = startupLimitSec
+        self.onPlaybackStarted = onPlaybackStarted
         self.onOpenTitle = onOpenTitle
         self.engine = engine
         self.onFallback = onFallback
@@ -4069,7 +4087,8 @@ struct MPVPlayerScreen: View {
                 startWatchdogShortened: startWatchdogShortened,
                 secondsPlayedBeforeFallback: nativeSecondsPlayedBeforeFallback,
                 forcesGpuNext: forcesGpuNext,
-                handoffPositionSec: handoffPositionSec
+                handoffPositionSec: handoffPositionSec,
+                startupLimitSec: startupLimitSec
             )
             .ignoresSafeArea()
 
@@ -4179,6 +4198,11 @@ struct MPVPlayerScreen: View {
             PlayerLoadingHistory.shared.note(stage, contextID: context.id)
         }
         #endif
+        // W4: every published value, so a start that lands in the same turn as another change is
+        // still seen. `PlayerScreen.noteStarted` forwards it once per context.
+        .onReceive(state.$playbackStarted.removeDuplicates()) { started in
+            if started { onPlaybackStarted?() }
+        }
         .fullScreenCover(
             isPresented: Binding(
                 get: { state.isEnded && upNext.phase == .hidden },

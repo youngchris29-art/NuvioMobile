@@ -38,6 +38,9 @@ struct NativePlayerScreen: View {
     /// P5 B22: set by presenters that can push a Detail page after the player closes; enables the
     /// post-play More Like This row.
     var onOpenTitle: ((MetaPreview) -> Void)? = nil
+    /// W4: the first frame showed (`coordinator.loadingStage.isStarted`). `PlayerScreen` forwards
+    /// it once per context to the host.
+    var onPlaybackStarted: (() -> Void)? = nil
 
     @StateObject private var coordinator: NativePlaybackCoordinator
     @StateObject private var moreLikeThisLoader = PostPlayMoreLikeThisLoader()
@@ -73,9 +76,11 @@ struct NativePlayerScreen: View {
          routingNote: String? = nil,
          onPlaybackFailed: ((PlaybackFailure) -> Void)? = nil,
          onPlaybackHealthy: ((Double) -> Void)? = nil,
-         onOpenTitle: ((MetaPreview) -> Void)? = nil) {
+         onOpenTitle: ((MetaPreview) -> Void)? = nil,
+         onPlaybackStarted: (() -> Void)? = nil) {
         self.context = context
         self.onOpenTitle = onOpenTitle
+        self.onPlaybackStarted = onPlaybackStarted
         self.onPlayNext = onPlayNext
         self.onFallback = onFallback
         self.routingNote = routingNote
@@ -208,6 +213,10 @@ struct NativePlayerScreen: View {
             PlayerLoadingHistory.shared.note(stage, contextID: context.id)
         }
         #endif
+        // W4: every published value (a no-op until `.started`; `PlayerScreen` forwards it once).
+        .onReceive(coordinator.$loadingStage) { stage in
+            if stage.isStarted { onPlaybackStarted?() }
+        }
         // P5 B22: the item played to its end with no Up Next hand-off pending (same gate as mpv).
         .fullScreenCover(
             isPresented: Binding(

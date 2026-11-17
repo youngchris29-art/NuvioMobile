@@ -106,4 +106,15 @@ final class MPVStartWatchdogTests: XCTestCase {
         XCTAssertEqual(watchdog.verdict(now: t0 + 15), .waiting)
         XCTAssertEqual(watchdog.verdict(now: t0 + 25), .fired(elapsed: 25))
     }
+
+    // MARK: W4: the start-up limit extends, never shortens
+
+    func testAStartupLimitAboveTheBudgetExtendsIt() {
+        XCTAssertEqual(MPVStartWatchdog.limitSeconds(shortened: false, startupLimitSec: nil), 25)
+        XCTAssertEqual(MPVStartWatchdog.limitSeconds(shortened: true, startupLimitSec: nil), 15)
+        XCTAssertEqual(MPVStartWatchdog.limitSeconds(shortened: false, startupLimitSec: 45), 45)
+        XCTAssertEqual(MPVStartWatchdog.limitSeconds(shortened: false, startupLimitSec: 15), 25)
+        XCTAssertEqual(MPVStartWatchdog.limitSeconds(shortened: true, startupLimitSec: 30), 30)
+        XCTAssertEqual(MPVStartWatchdog.limitSeconds(shortened: true, startupLimitSec: 5), 15)
+    }
 }

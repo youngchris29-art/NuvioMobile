@@ -65,6 +65,9 @@ final class AetherTVPlayerViewController: UIViewController {
     var onPlaybackHealthy: ((Double) -> Void)?
     /// The engine before this one failed before start (never the case in Phase 1: Aether is first).
     var startWatchdogShortened = false
+    /// W4: the auto-picked context's start-up limit; one above the watchdog's budget extends it
+    /// (`MPVStartWatchdog.limitSeconds(shortened:startupLimitSec:)`). Set by the representable.
+    var startupLimitSec: Double?
     /// Seconds the engine before this one played (0 in Phase 1).
     var secondsPlayedBeforeFallback: Double = 0
 
@@ -1052,7 +1055,8 @@ final class AetherTVPlayerViewController: UIViewController {
 
     private func armStartWatchdog() {
         guard onPlaybackFailed != nil || onFallback != nil, !handedOff else { return }
-        startWatchdog = MPVStartWatchdog(limitSeconds: MPVStartWatchdog.limitSeconds(shortened: startWatchdogShortened))
+        startWatchdog = MPVStartWatchdog(limitSeconds: MPVStartWatchdog.limitSeconds(
+            shortened: startWatchdogShortened, startupLimitSec: startupLimitSec))
         startWatchdog.noteLoadStarted(at: ProcessInfo.processInfo.systemUptime)
         print("[Failover] aether start watchdog armed: \(Int(startWatchdog.limitSeconds)) s")
         startWatchdogTimer?.invalidate()

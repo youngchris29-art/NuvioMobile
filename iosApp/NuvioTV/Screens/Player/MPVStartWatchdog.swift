@@ -21,6 +21,13 @@ struct MPVStartWatchdog: Equatable {
         shortened ? shortenedLimitSeconds : defaultLimitSeconds
     }
 
+    /// W4: an auto-picked source's start-up limit (Settings › Sources › Start-Up Limit) above the
+    /// normal budget extends it, never shortens it: the limit moves to the next source only when
+    /// one exists, and this watchdog stays the backstop that ends a source nothing replaced.
+    static func limitSeconds(shortened: Bool, startupLimitSec: Double?) -> Double {
+        max(limitSeconds(shortened: shortened), startupLimitSec ?? 0)
+    }
+
     enum Verdict: Equatable {
         /// Armed and still inside the budget.
         case waiting
