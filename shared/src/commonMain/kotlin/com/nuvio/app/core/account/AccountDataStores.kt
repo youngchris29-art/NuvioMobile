@@ -112,11 +112,15 @@ object AccountDataStores {
      *    `client_instance_id` — upstream never clears it on sign-out, and wiping it would silently
      *    bounce a self-hosted user back to api.nuvio.tv after every sign-out (and mid
      *    server-switch, whose prepare step runs this very wipe). It must SURVIVE sign-out.
-     *  - `AuthStorage`'s `account_owner` (user id of the account whose data is on the device) and
-     *    `signed_out_notice` flag (Apple plain keys; Android and JVM inside `nuvio_auth`, which the
-     *    AuthStorage entry below wipes as a whole): owned by `AuthSessionModel`, which writes them
-     *    AFTER every wipe it runs, so a lost session can announce itself at the next launch and the
-     *    owner is cleared only once its data is gone. On Apple they are deliberately not wiped.
+     *  - `AuthStorage`'s `account_owner` (user id of the account whose data is on the device; an
+     *    empty value records "nobody", an absent one means never recorded), `account_wipe_pending`
+     *    (a wipe started and has not confirmed success) and `signed_out_notice` (Apple plain keys;
+     *    Android and JVM inside `nuvio_auth`, which the AuthStorage entry below wipes as a whole):
+     *    owned by `AuthSessionModel`, which sets the wipe marker BEFORE every wipe and writes all
+     *    three AFTER it succeeds, so an interrupted or failed wipe is retried and the owner is
+     *    cleared only once its data is gone. On Apple they are deliberately not wiped. On Android
+     *    and JVM the wipe erases them with the file; a crash before they are rewritten reads as
+     *    "owner never recorded", which the model treats conservatively (wipe before any account).
      */
     val all: List<AccountDataStore> = listOf(
 

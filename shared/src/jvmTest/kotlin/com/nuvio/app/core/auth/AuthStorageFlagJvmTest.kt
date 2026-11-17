@@ -13,6 +13,7 @@ class AuthStorageFlagJvmTest {
     fun cleanUp() {
         AuthStorage.saveFlag("signed_out_notice", false)
         AuthStorage.saveAccountOwner(null)
+        AuthStorage.saveAccountWipePending(false)
     }
 
     @Test
@@ -32,7 +33,18 @@ class AuthStorageFlagJvmTest {
     fun accountOwnerRoundTripsAndClears() {
         AuthStorage.saveAccountOwner("user-a")
         assertEquals("user-a", AuthStorage.loadAccountOwner())
+        assertTrue(AuthStorage.isAccountOwnerRecorded())
         AuthStorage.saveAccountOwner(null)
         assertNull(AuthStorage.loadAccountOwner())
+        // "No owner" stays recorded: it is not the unknown owner of an install that never wrote one.
+        assertTrue(AuthStorage.isAccountOwnerRecorded())
+    }
+
+    @Test
+    fun wipePendingRoundTrips() {
+        AuthStorage.saveAccountWipePending(true)
+        assertTrue(AuthStorage.loadAccountWipePending())
+        AuthStorage.saveAccountWipePending(false)
+        assertFalse(AuthStorage.loadAccountWipePending())
     }
 }
