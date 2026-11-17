@@ -21,7 +21,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-private const val KEY_SIGNED_OUT_NOTICE = "signed_out_notice"
+private const val KEY_SIGNED_OUT_NOTICE = AuthMarkerKeys.SIGNED_OUT_NOTICE
 private const val SIGNED_OUT_NOTICE_FALLBACK = "You have been signed out of Nuvio. Please sign in again."
 
 /**

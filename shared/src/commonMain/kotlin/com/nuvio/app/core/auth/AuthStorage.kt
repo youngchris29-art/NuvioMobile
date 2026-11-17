@@ -16,3 +16,20 @@ expect object AuthStorage {
     fun loadAccountWipePending(): Boolean
     fun saveAccountWipePending(pending: Boolean)
 }
+
+/**
+ * Where the session model's recovery state lives (review r2-1): the account owner, the wipe-pending
+ * marker and the signed-out notice must survive the very wipe they guard, so they are kept OUTSIDE
+ * everything `AccountDataStores` erases. Apple: plain keys in `NSUserDefaults.standardUserDefaults`
+ * that match no registry key, prefix or profile pattern. Android and JVM: their own preferences
+ * file [ANDROID_PREFS], which is not in the registry (the wipe clears `nuvio_auth` whole).
+ * `AuthMarkerKeysTest` pins both against the registry.
+ */
+internal object AuthMarkerKeys {
+    const val OWNER = "account_owner"
+    const val WIPE_PENDING = "account_wipe_pending"
+    const val SIGNED_OUT_NOTICE = "signed_out_notice"
+    const val ANDROID_PREFS = "nuvio_auth_markers"
+    val all = listOf(OWNER, WIPE_PENDING, SIGNED_OUT_NOTICE)
+}
+

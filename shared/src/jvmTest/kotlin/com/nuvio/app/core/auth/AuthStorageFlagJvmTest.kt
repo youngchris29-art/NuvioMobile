@@ -47,4 +47,20 @@ class AuthStorageFlagJvmTest {
         AuthStorage.saveAccountWipePending(false)
         assertFalse(AuthStorage.loadAccountWipePending())
     }
+
+    @Test
+    fun theRecoveryStateSurvivesTheAccountWipeOfNuvioAuth() {
+        AuthStorage.saveAccountOwner("user-a")
+        AuthStorage.saveAccountWipePending(true)
+        AuthStorage.saveFlag(AuthMarkerKeys.SIGNED_OUT_NOTICE, true)
+        AuthStorage.saveAnonymousUserId("guest-1")
+        // What the Android/JVM account cleaner does to every registry file, nuvio_auth included.
+        com.nuvio.app.core.account.AccountDataStores.androidPreferenceNames().forEach { name ->
+            com.nuvio.app.core.storage.jvmSharedPreferences(name).edit().clear().commit()
+        }
+        assertNull(AuthStorage.loadAnonymousUserId())
+        assertEquals("user-a", AuthStorage.loadAccountOwner())
+        assertTrue(AuthStorage.loadAccountWipePending())
+        assertTrue(AuthStorage.loadFlag(AuthMarkerKeys.SIGNED_OUT_NOTICE))
+    }
 }

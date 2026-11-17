@@ -4,8 +4,8 @@ import platform.Foundation.NSUserDefaults
 
 actual object AuthStorage {
     private const val KEY_ANONYMOUS_USER_ID = "anonymous_user_id"
-    private const val KEY_ACCOUNT_OWNER = "account_owner"
-    private const val KEY_ACCOUNT_WIPE_PENDING = "account_wipe_pending"
+    private const val KEY_ACCOUNT_OWNER = AuthMarkerKeys.OWNER
+    private const val KEY_ACCOUNT_WIPE_PENDING = AuthMarkerKeys.WIPE_PENDING
 
     actual fun loadAnonymousUserId(): String? =
         NSUserDefaults.standardUserDefaults.stringForKey(KEY_ANONYMOUS_USER_ID)
