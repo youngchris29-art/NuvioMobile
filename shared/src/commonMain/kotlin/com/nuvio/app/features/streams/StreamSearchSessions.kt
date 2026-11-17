@@ -235,6 +235,8 @@ internal class StreamSearchSessionStore(
 
     /** Tests: how many searches were started (a join does not count). Written under [lock]. */
     var startedCount = 0
+    /** Review r7: private (stale-generation) searches cancelled because their consumer went away. */
+    var privateSessionsCancelled = 0
         private set
 
     private data class Progress(
@@ -273,17 +275,45 @@ internal class StreamSearchSessionStore(
      * the key or [forceRefresh] is set (which drops the held one: its consumers complete).
      */
     fun search(profileId: Int, targets: StreamSearchTargets, forceRefresh: Boolean): Flow<StreamLoadCompletion> = flow {
-        val session = acquire(targets.key(profileId), targets, forceRefresh)
+        val key = targets.key(profileId)
+        // Review r7: targets whose plugin scrapers predate a refresh run privately: never stored,
+        // never joined, and never evicting a search of the current generation.
+        val stale = targets.pluginProviderGroups.isNotEmpty() && targets.pluginGeneration < pluginGeneration()
+        val session = if (stale) startPrivate(key, targets) else acquire(key, targets, forceRefresh)
         var emitted = 0
-        emitAll(
-            session.progress.transformWhile { progress ->
-                while (emitted < progress.completions.size) {
-                    emit(progress.completions[emitted])
-                    emitted++
-                }
-                !progress.isComplete
-            },
-        )
+        try {
+            emitAll(
+                session.progress.transformWhile { progress ->
+                    while (emitted < progress.completions.size) {
+                        emit(progress.completions[emitted])
+                        emitted++
+                    }
+                    !progress.isComplete
+                },
+            )
+        } finally {
+            // A private search has no other consumer: it stops with this one.
+            if (stale && !session.progress.value.isComplete) {
+                session.cancel()
+                synchronized(lock) { privateSessionsCancelled++ }
+            }
+        }
+    }
+
+    /** Review r7: a search for stale targets, outside the map (see [search]). */
+    private fun startPrivate(key: StreamSearchKey, targets: StreamSearchTargets): Session {
+        val session = Session()
+        session.job = scope.launch(start = CoroutineStart.LAZY) {
+            try {
+                coroutineScope { launchTasks(session, targets, forceRefresh = false) }
+            } finally {
+                complete(key, session)      // not in the map: only marks it complete
+            }
+        }
+        synchronized(lock) { startedCount++ }
+        StreamDiagnostics.log("search start ${key.type} ${key.videoId} (stale plugin scrapers, not shared)")
+        session.job?.start()
+        return session
     }
 
     /**

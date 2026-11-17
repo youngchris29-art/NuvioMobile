@@ -495,6 +495,8 @@ class StreamSearchSessionScenarioTest {
 
     @Test
     fun currentSearchDropsTheStaleSameEpisodeSession() = runTest {
+        // Review r7: a stale-generation search runs privately, so the current search is held alone
+        // and neither run cancels the other; the private run ends with its own consumer.
         val store = store()
         val staleConsumer = run {
             val stale = pluginTargets(store.pluginGeneration())
@@ -503,8 +505,42 @@ class StreamSearchSessionScenarioTest {
             consume(store, stale)
         }
         assertTrue(!staleConsumer.job.isCompleted)
-        consume(store, pluginTargets(store.pluginGeneration()))
+        val current = pluginTargets(store.pluginGeneration())
+        consume(store, current)
         runCurrent()
-        assertTrue(staleConsumer.job.isCompleted, "the stale search is cancelled; its consumer completes")
+        assertEquals(listOf(current.key(1)), store.heldKeys(), "only the current search is held")
+    }
+
+    // MARK: Stage B review r7 finding 2: a stale builder that resumes after the fresh search
+
+    @Test
+    fun freshSearchSurvivesAStaleBuilderThatResumesAfterIt() = runTest {
+        val store = store()
+        val stale = pluginTargets(store.pluginGeneration())   // read before the refresh
+        store.dropPluginSessions()                            // the refresh
+        fetcher.hold("a")                                     // the fresh search stays running
+        val freshTargets = pluginTargets(store.pluginGeneration())
+        val fresh = consume(store, freshTargets)
+        val staleConsumer = consume(store, stale)             // the suspended builder resumes now
+        runCurrent()
+        assertTrue(!fresh.job.isCompleted, "the fresh search is not cancelled by the stale one")
+        assertEquals(listOf(freshTargets.key(1)), store.heldKeys(), "the stale run is never held")
+        assertTrue(staleConsumer.received.isNotEmpty(), "the stale request still gets its own answer")
+    }
+
+    @Test
+    fun aPrivateStaleSearchStopsWhenItsConsumerGoesAway() = runTest {
+        val store = store()
+        val stale = pluginTargets(store.pluginGeneration())
+        store.dropPluginSessions()
+        val gate = fetcher.hold("a")
+        val consumer = consume(store, stale)
+        assertTrue(store.heldKeys().isEmpty(), "never stored")
+        consumer.job.cancel()
+        runCurrent()
+        gate.complete(Result.success(listOf(SearchFixtures.stream(SearchFixtures.target("a").addonId, "late"))))
+        runCurrent()
+        assertTrue(store.heldKeys().isEmpty())
+        assertEquals(1, store.privateSessionsCancelled, "its work was cancelled with its consumer")
     }
 }
