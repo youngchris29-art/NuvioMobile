@@ -10,6 +10,9 @@ import com.nuvio.app.features.streams.StreamAutoPlaySelector
 import com.nuvio.app.features.streams.StreamBadgePresentation
 import com.nuvio.app.features.streams.StreamBadgeSettingsRepository
 import com.nuvio.app.features.streams.StreamDiagnostics
+import com.nuvio.app.features.streams.GenerationalStreamsState
+import com.nuvio.app.features.streams.StreamSearchKey
+import com.nuvio.app.features.plugins.PluginsUiState
 import com.nuvio.app.features.streams.StreamSearchAccumulator
 import com.nuvio.app.features.streams.StreamSearchEnvironment
 import com.nuvio.app.features.streams.StreamSearchRequests
@@ -22,16 +25,12 @@ import com.nuvio.app.features.streams.presentSearchGroup
 import com.nuvio.app.features.streams.streamAddonTargets
 import com.nuvio.app.features.streams.withoutPendingGroups
 import com.nuvio.app.features.tmdb.TmdbService
-import kotlin.concurrent.Volatile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 /**
@@ -44,26 +43,36 @@ object PlayerStreamsRepository {
     private val log = Logger.withTag("PlayerStreamsRepo")
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("PlayerStreamsRepository"))
 
+    /**
+     * One state flow and the load feeding it. W4 (review r1): the state carries the generation of
+     * the load that owns it inside its compared value ([GenerationalStreamsState]), so a superseded
+     * load can never commit; [searchKey] / [imdbVideoId] name the session search the state comes
+     * from (null when it is no session's), for the store-backed repeat check.
+     */
+    private class Slot {
+        val state = GenerationalStreamsState()
+        var job: Job? = null
+        var requestKey: String? = null
+        var searchKey: StreamSearchKey? = null
+        var imdbVideoId: String? = null
+
+        fun reset() {
+            state.takeOver(StreamsUiState())
+            job?.cancel()
+            job = null
+            requestKey = null
+            searchKey = null
+            imdbVideoId = null
+        }
+    }
+
     // source panel
-    private val _sourceState = MutableStateFlow(StreamsUiState())
-    val sourceState: StateFlow<StreamsUiState> = _sourceState.asStateFlow()
-    private var sourceJob: Job? = null
-    private var sourceRequestKey: String? = null
+    private val sourceSlot = Slot()
+    val sourceState: StateFlow<StreamsUiState> = sourceSlot.state.view
 
     // episode streams panel
-    private val _episodeStreamsState = MutableStateFlow(StreamsUiState())
-    val episodeStreamsState: StateFlow<StreamsUiState> = _episodeStreamsState.asStateFlow()
-    private var episodeStreamsJob: Job? = null
-    private var episodeStreamsRequestKey: String? = null
-
-    // W4: one counter per state flow, bumped whenever that flow is handed to a new load or
-    // cleared; a load writes only while it still holds the number it started with (see
-    // StreamsRepository.loadGeneration).
-    @Volatile
-    private var sourceGeneration = 0L
-
-    @Volatile
-    private var episodeStreamsGeneration = 0L
+    private val episodeSlot = Slot()
+    val episodeStreamsState: StateFlow<StreamsUiState> = episodeSlot.state.view
 
     fun loadSources(
         type: String,
@@ -72,20 +81,7 @@ object PlayerStreamsRepository {
         episode: Int? = null,
         forceRefresh: Boolean = false,
     ) {
-        fetchStreams(
-            type = type,
-            videoId = videoId,
-            season = season,
-            episode = episode,
-            forceRefresh = forceRefresh,
-            stateFlow = _sourceState,
-            requestKeyHolder = { sourceRequestKey },
-            setRequestKey = { sourceRequestKey = it },
-            jobHolder = { sourceJob },
-            setJob = { sourceJob = it },
-            generationHolder = { sourceGeneration },
-            nextGeneration = { sourceGeneration += 1; sourceGeneration },
-        )
+        fetchStreams(type = type, videoId = videoId, season = season, episode = episode, forceRefresh = forceRefresh, slot = sourceSlot)
     }
 
     fun loadEpisodeStreams(
@@ -95,44 +91,32 @@ object PlayerStreamsRepository {
         episode: Int? = null,
         forceRefresh: Boolean = false,
     ) {
-        fetchStreams(
-            type = type,
-            videoId = videoId,
-            season = season,
-            episode = episode,
-            forceRefresh = forceRefresh,
-            stateFlow = _episodeStreamsState,
-            requestKeyHolder = { episodeStreamsRequestKey },
-            setRequestKey = { episodeStreamsRequestKey = it },
-            jobHolder = { episodeStreamsJob },
-            setJob = { episodeStreamsJob = it },
-            generationHolder = { episodeStreamsGeneration },
-            nextGeneration = { episodeStreamsGeneration += 1; episodeStreamsGeneration },
-        )
+        fetchStreams(type = type, videoId = videoId, season = season, episode = episode, forceRefresh = forceRefresh, slot = episodeSlot)
     }
 
     fun selectSourceFilter(addonId: String?) {
-        _sourceState.update { it.copy(selectedFilter = addonId) }
+        sourceSlot.state.update { it.copy(selectedFilter = addonId) }
     }
 
     fun selectEpisodeStreamsFilter(addonId: String?) {
-        _episodeStreamsState.update { it.copy(selectedFilter = addonId) }
+        episodeSlot.state.update { it.copy(selectedFilter = addonId) }
     }
 
     /** Stops this consumer only: the shared search goes on, and the next load of the episode replays it. */
     fun clearEpisodeStreams() {
-        episodeStreamsGeneration += 1
-        episodeStreamsJob?.cancel()
-        episodeStreamsRequestKey = null
-        _episodeStreamsState.value = StreamsUiState()
+        episodeSlot.reset()
     }
 
     fun clearAll() {
-        sourceGeneration += 1
-        sourceJob?.cancel()
-        sourceRequestKey = null
-        _sourceState.value = StreamsUiState()
+        sourceSlot.reset()
         clearEpisodeStreams()
+    }
+
+    /** See StreamsRepository.isStillServed: the store's identity and expiry rule, nothing weaker. */
+    private fun Slot.isStillServed(type: String, videoId: String, season: Int?, episode: Int?, pluginUiState: PluginsUiState): Boolean {
+        val key = searchKey ?: return true
+        return StreamSearchRequests.currentKey(type, videoId, season, episode, imdbVideoId, pluginUiState) == key &&
+            StreamSearchSessions.isHeld(key)
     }
 
     private fun fetchStreams(
@@ -141,31 +125,27 @@ object PlayerStreamsRepository {
         season: Int?,
         episode: Int?,
         forceRefresh: Boolean,
-        stateFlow: MutableStateFlow<StreamsUiState>,
-        requestKeyHolder: () -> String?,
-        setRequestKey: (String?) -> Unit,
-        jobHolder: () -> Job?,
-        setJob: (Job) -> Unit,
-        generationHolder: () -> Long,
-        nextGeneration: () -> Long,
+        slot: Slot,
         imdbVideoId: String? = null,
         remapAttempted: Boolean = false,
     ) {
         val pluginUiState = StreamSearchRequests.pluginUiState()
         val requestKey = "$type::$videoId::$season::$episode::pluginsGrouped=${pluginUiState.groupStreamsByRepository}"
-        val current = stateFlow.value
+        val current = slot.state.value
         if (
             !forceRefresh &&
-            requestKeyHolder() == requestKey &&
-            (current.groups.isNotEmpty() || current.emptyStateReason != null || current.isAnyLoading)
+            slot.requestKey == requestKey &&
+            (current.groups.isNotEmpty() || current.emptyStateReason != null || current.isAnyLoading) &&
+            slot.isStillServed(type, videoId, season, episode, pluginUiState)
         ) {
             return
         }
 
-        setRequestKey(requestKey)
-        val generation = nextGeneration()
-        jobHolder()?.cancel()
-        stateFlow.value = StreamsUiState()
+        slot.requestKey = requestKey
+        slot.searchKey = null
+        slot.imdbVideoId = null
+        slot.job?.cancel()
+        val generation = slot.state.takeOver(StreamsUiState())
 
         val streamBadgeRules = StreamBadgeSettingsRepository.snapshot()
         val embeddedStreams = MetaDetailsRepository.findEmbeddedStreams(videoId)
@@ -181,14 +161,14 @@ object PlayerStreamsRepository {
                 groups = listOf(group),
                 rules = streamBadgeRules,
             ).firstOrNull() ?: group
-            stateFlow.value = StreamsUiState(
+            slot.state.setIfCurrent(generation, StreamsUiState(
                 groups = listOf(presentedGroup),
                 activeAddonIds = setOf("embedded"),
                 // Embedded streams come from the (installed) meta addon, so they classify as an
                 // installed-addon source for the auto-play scope (Codex r2 on the 58864ec1 port).
                 installedAddonIds = setOf("embedded"),
                 isAnyLoading = false,
-            )
+            ))
             return
         }
 
@@ -199,10 +179,10 @@ object PlayerStreamsRepository {
         val pluginProviderGroups = StreamSearchRequests.pluginProviderGroups(type, pluginUiState)
 
         if (installedAddons.isEmpty() && pluginProviderGroups.isEmpty()) {
-            stateFlow.value = StreamsUiState(
+            slot.state.setIfCurrent(generation, StreamsUiState(
                 isAnyLoading = false,
                 emptyStateReason = StreamsEmptyStateReason.NoAddonsInstalled,
-            )
+            ))
             return
         }
 
@@ -220,7 +200,7 @@ object PlayerStreamsRepository {
             tmdbId != null &&
             StreamVideoIdRemap.wouldReachMoreAddons(videoId, typeStreamIdPrefixes)
         ) {
-            stateFlow.value = StreamsUiState(isAnyLoading = true)
+            slot.state.setIfCurrent(generation, StreamsUiState(isAnyLoading = true))
             val remapJob = scope.launch(start = CoroutineStart.LAZY) {
                 val imdbId = TmdbService.tmdbToImdb(tmdbId = tmdbId, mediaType = type)
                 val remapped = imdbId?.let { StreamVideoIdRemap.withImdbId(videoId, it) }
@@ -233,44 +213,38 @@ object PlayerStreamsRepository {
                 }
                 // W4: a lookup that returned after a newer load or a clear took this flow over
                 // must not re-enter over it.
-                if (generationHolder() != generation) return@launch
+                if (slot.state.generation != generation) return@launch
                 // Re-enter either way, so a failed resolution never costs the user an addon that
-                // did accept the original id.
-                setRequestKey(null)
+                // did accept the original id. Release the request key so the re-entry is not
+                // skipped, and the job so it does not cancel THIS coroutine (StreamsRepository
+                // nulls `activeJob` before its own re-entry for the same reason).
+                slot.requestKey = null
+                slot.job = null
                 fetchStreams(
                     type = type,
                     videoId = videoId,
                     season = season,
                     episode = episode,
                     forceRefresh = forceRefresh,
-                    stateFlow = stateFlow,
-                    requestKeyHolder = requestKeyHolder,
-                    setRequestKey = setRequestKey,
-                    // `{ null }`, not `jobHolder`: the re-entry cancels whatever the holder
-                    // reports, and right now that is THIS coroutine. Same reason
-                    // StreamsRepository nulls `activeJob` before its own re-entry.
-                    jobHolder = { null },
-                    setJob = setJob,
-                    generationHolder = generationHolder,
-                    nextGeneration = nextGeneration,
+                    slot = slot,
                     imdbVideoId = remapped,
                     remapAttempted = true,
                 )
             }
-            setJob(remapJob)
+            slot.job = remapJob
             remapJob.start()
             return
         }
 
         if (streamAddons.isEmpty() && pluginProviderGroups.isEmpty()) {
-            stateFlow.value = StreamsUiState(
+            slot.state.setIfCurrent(generation, StreamsUiState(
                 isAnyLoading = false,
                 emptyStateReason = if (tmdbId != null) {
                     StreamsEmptyStateReason.IncompatibleContentId
                 } else {
                     StreamsEmptyStateReason.NoCompatibleAddons
                 },
-            )
+            ))
             return
         }
 
@@ -291,12 +265,12 @@ object PlayerStreamsRepository {
             )
         }, installedAddonOrder)
         val isInitiallyLoading = initialGroups.any { it.isLoading }
-        stateFlow.value = StreamsUiState(
+        slot.state.setIfCurrent(generation, StreamsUiState(
             groups = initialGroups,
             activeAddonIds = initialGroups.map { it.addonId }.toSet(),
             installedAddonIds = streamAddons.map { it.addonId }.toSet(),
             isAnyLoading = isInitiallyLoading,
-        )
+        ))
 
         val searchTargets = StreamSearchTargets(
             type = type,
@@ -305,16 +279,18 @@ object PlayerStreamsRepository {
             episode = episode,
             streamAddons = streamAddons,
             pluginProviderGroups = pluginProviderGroups,
-            debridConfiguration = StreamSearchEnvironment.debridConfiguration(),
+            debrid = StreamSearchEnvironment.debrid(),
         )
         val searchProfileId = StreamSearchEnvironment.profileId()
+        slot.searchKey = searchTargets.key(searchProfileId)
+        slot.imdbVideoId = imdbVideoId
 
         val job = scope.launch {
             val installedAddonIds = streamAddons.map { it.addonId }.toSet()
             val installedAddonNames = installedAddonOrder.toSet()
 
             fun updateIfCurrent(transform: (StreamsUiState) -> StreamsUiState) {
-                stateFlow.update { current -> if (generationHolder() == generation) transform(current) else current }
+                slot.state.updateIfCurrent(generation, transform)
             }
 
             // W4 (upstream 8fba6c71e / 4c414a5f4): the fan-out and the debrid cache check run once
@@ -336,7 +312,7 @@ object PlayerStreamsRepository {
 
             launch {
                 DirectDebridStreamPreparer.prepare(
-                    streams = stateFlow.value.groups
+                    streams = slot.state.value.groups
                         .filter { it.addonId in installedAddonIds }
                         .flatMap { it.streams },
                     season = season,
@@ -357,7 +333,7 @@ object PlayerStreamsRepository {
                 }
             }
         }
-        setJob(job)
+        slot.job = job
     }
 }
 

@@ -333,6 +333,87 @@ class StreamSearchSessionScenarioTest {
         assertTrue(first.job.isCompleted)
     }
 
+    @Test
+    fun s19AccountChangeWhileAFetchIsInFlightKeepsItsResultOffBothAccounts() = runTest {
+        // Review r1 (finding 5): a search checks with the account it started under, and a search of
+        // another account drops it, so an answer still in flight is kept under neither key.
+        val store = store()
+        fetcher.gatesIgnoreCancellation = true
+        val gate = fetcher.hold("a")
+        val onA = consume(store, SearchFixtures.targets(debrid = "torbox:A", account = SearchFixtures.torbox("keyA")))
+        assertEquals(listOf<String?>("keyA"), fetcher.checkedWith, "b answered at once and was checked with A")
+        consume(store, SearchFixtures.targets(videoId = "tt2:1:1", debrid = "torbox:B", account = SearchFixtures.torbox("keyB")))
+
+        assertTrue(onA.job.isCompleted, "the switch drops account A's search, any episode")
+        gate.complete(answer("a", "late"))
+        runCurrent()
+        // The late answer is checked with its own search's account, never B's, and then not kept.
+        assertEquals(listOf<String?>("keyA", "keyB", "keyB", "keyA"), fetcher.checkedWith)
+        assertEquals(listOf("torbox:B"), store.heldKeys().map { it.debridConfiguration })
+
+        val backOnA = consume(store, SearchFixtures.targets(debrid = "torbox:A", account = SearchFixtures.torbox("keyA")))
+        assertEquals(3, store.startedCount, "switching back to A searches again")
+        assertEquals(listOf("a:a-tt1:1:1", "b:b-tt1:1:1"), backOnA.labels)
+        assertEquals(listOf<String?>("keyA", "keyA"), fetcher.checkedWith.takeLast(2))
+    }
+
+    @Test
+    fun s20SearchStartedRightAfterTheWipeNeverJoinsTheOutgoingOne() = runTest {
+        // Review r1 (finding 6): the wipe invalidates at its call, before any scheduler turn.
+        val store = store()
+        fetcher.gatesIgnoreCancellation = true
+        val gate = fetcher.hold("a")
+        val outgoing = consume(store)
+        store.clear()
+        assertEquals(emptyList(), store.heldKeys(), "nothing is held once clear returns")
+        val incoming = consume(store)
+        gate.complete(answer("a", "outgoing"))
+        runCurrent()
+
+        assertEquals(2, store.startedCount)
+        assertTrue(outgoing.job.isCompleted)
+        assertEquals(listOf("a:a-tt1:1:1", "b:b-tt1:1:1"), incoming.labels, "fresh answers only, none of the outgoing search")
+    }
+
+    @Test
+    fun s21WipeNeverReachesASearchStartedAfterIt() = runTest {
+        val store = store()
+        StreamSearchSessions.installForTesting(store)
+        try {
+            consume(store)
+            StreamSearchSessions.clear()
+            assertEquals(emptyList(), store.heldKeys())
+            val gate = fetcher.hold("a")
+            val incoming = consume(store)
+            // Every queued task runs here: an asynchronous wipe would land now and cancel it.
+            runCurrent()
+            gate.complete(answer("a", "a1"))
+            runCurrent()
+
+            assertEquals(listOf("b:b-tt1:1:1", "a:a1"), incoming.labels)
+            assertEquals(1, store.heldKeys().size)
+        } finally {
+            StreamSearchSessions.resetForTesting()
+        }
+    }
+
+    @Test
+    fun s22IsHeldFollowsTheStoreRules() = runTest {
+        // Review r1 (finding 3): the repositories' repeat check asks this, so it must follow expiry.
+        val store = store()
+        val key = SearchFixtures.targets().key(1)
+        assertFalse(store.isHeld(key))
+        val gate = fetcher.hold("a")
+        consume(store)
+        assertTrue(store.isHeld(key), "a running search is held")
+        gate.complete(answer("a", "a1"))
+        runCurrent()
+        clock += 15 * MINUTE - 1
+        assertTrue(store.isHeld(key))
+        clock += 1
+        assertFalse(store.isHeld(key), "expired")
+    }
+
     private companion object {
         const val MINUTE = 60_000L
     }

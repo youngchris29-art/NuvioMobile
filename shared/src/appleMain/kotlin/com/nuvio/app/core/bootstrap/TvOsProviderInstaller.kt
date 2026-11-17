@@ -299,7 +299,7 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
         CatalogRepository.clear()
         StreamsRepository.clear()
         // W4: the shared source searches hold the old account's results (and debrid key hash).
-        StreamSearchSessions.clearAsync()
+        StreamSearchSessions.clear()
         MetaDetailsRepository.clear()
         SearchRepository.reset()
         SubtitleRepository.clear()

@@ -5,7 +5,6 @@ import com.nuvio.app.core.profile.ActiveProfileProvider
 import com.nuvio.app.features.addons.AddonRepository
 import com.nuvio.app.features.addons.ManagedAddon
 import com.nuvio.app.features.addons.enabledAddons
-import com.nuvio.app.features.debrid.LocalDebridAvailabilityService
 import com.nuvio.app.features.plugins.PluginScraperHostProvider
 import com.nuvio.app.features.plugins.PluginsUiState
 import com.nuvio.app.features.tmdb.TmdbService
@@ -18,7 +17,7 @@ import com.nuvio.app.features.tmdb.TmdbService
  */
 internal object StreamSearchEnvironment {
     private val defaultInstalledAddons: () -> List<ManagedAddon> = { AddonRepository.uiState.value.addons.enabledAddons() }
-    private val defaultDebridConfiguration: () -> String = { LocalDebridAvailabilityService.cacheCheckConfiguration() }
+    private val defaultDebrid: () -> StreamSearchDebrid = { StreamSearchDebrid.current() }
 
     // The provider tvOS and the phone install over ProfileRepository at start-up (a direct
     // ProfileRepository import from here would re-introduce the cycle the provider exists to avoid).
@@ -27,8 +26,8 @@ internal object StreamSearchEnvironment {
     /** The enabled add-ons, in the user's order. */
     var installedAddons: () -> List<ManagedAddon> = defaultInstalledAddons
 
-    /** [LocalDebridAvailabilityService.cacheCheckConfiguration]: the account torrents are cache-checked with. */
-    var debridConfiguration: () -> String = defaultDebridConfiguration
+    /** The account torrents are cache-checked with, and its key-safe identity (captured per search). */
+    var debrid: () -> StreamSearchDebrid = defaultDebrid
 
     /** The active profile, part of every search key. */
     var profileId: () -> Int = defaultProfileId
@@ -36,7 +35,7 @@ internal object StreamSearchEnvironment {
     /** Tests: back to the app's sources. */
     fun resetForTesting() {
         installedAddons = defaultInstalledAddons
-        debridConfiguration = defaultDebridConfiguration
+        debrid = defaultDebrid
         profileId = defaultProfileId
     }
 }
@@ -97,7 +96,27 @@ internal object StreamSearchRequests {
             episode = episode,
             streamAddons = addons,
             pluginProviderGroups = groups,
-            debridConfiguration = StreamSearchEnvironment.debridConfiguration(),
+            debrid = StreamSearchEnvironment.debrid(),
         )
+    }
+
+    /**
+     * The key a load of this request would search under right now, with [imdbVideoId] as the
+     * second BUG-74 pass resolved it last time; null when nothing would be searched. Lets a
+     * repository skip a repeated load only while the store still serves exactly that search.
+     */
+    fun currentKey(
+        type: String,
+        videoId: String,
+        season: Int?,
+        episode: Int?,
+        imdbVideoId: String?,
+        pluginUiState: PluginsUiState,
+    ): StreamSearchKey? {
+        val addons = streamAddonTargets(StreamSearchEnvironment.installedAddons(), type, videoId, imdbVideoId)
+        val groups = pluginProviderGroups(type, pluginUiState)
+        if (addons.isEmpty() && groups.isEmpty()) return null
+        return StreamSearchTargets(type, videoId, season, episode, addons, groups, StreamSearchEnvironment.debrid())
+            .key(StreamSearchEnvironment.profileId())
     }
 }

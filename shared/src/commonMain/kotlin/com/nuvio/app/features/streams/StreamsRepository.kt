@@ -6,36 +6,39 @@ import com.nuvio.app.features.debrid.DirectDebridStreamPreparer
 import com.nuvio.app.features.debrid.DebridSettingsRepository
 import com.nuvio.app.features.details.MetaDetailsRepository
 import com.nuvio.app.features.player.PlayerSettingsRepository
+import com.nuvio.app.features.plugins.PluginsUiState
 import com.nuvio.app.features.tmdb.TmdbService
-import kotlin.concurrent.Volatile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 object StreamsRepository {
     private val log = Logger.withTag("StreamsRepo")
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("StreamsRepository"))
-    private val _uiState = MutableStateFlow(StreamsUiState())
-    val uiState: StateFlow<StreamsUiState> = _uiState.asStateFlow()
+    /**
+     * W4 (review r1): the state and the generation of the load that owns it, swapped as one value.
+     * Every new load, [cancelLoading] and [clear] take it over; a load writes only with the
+     * generation it took, so a superseded load can never commit (see [GenerationalStreamsState]).
+     */
+    private val state = GenerationalStreamsState()
+    val uiState: StateFlow<StreamsUiState> = state.view
 
     private var activeJob: Job? = null
     private var activeRequestKey: String? = null
 
     /**
-     * W4: bumped whenever the state is handed to someone else (a new load, [cancelLoading],
-     * [clear]); a load writes only while it still holds the number it started with. Written
-     * before the replacing state, so a write already in flight retries its CAS and sees it.
+     * W4 (review r1): the session search the current state comes from, and the BUG-74 id it was
+     * built with; null while the state is not a session's (embedded streams, an empty outcome, a
+     * remap in progress). A repeated request is skipped only while the store still serves exactly
+     * this search, so its identity (profile, add-ons, debrid account) and expiry rule apply.
      */
-    @Volatile
-    private var loadGeneration = 0L
+    private var activeSearchKey: StreamSearchKey? = null
+    private var activeImdbVideoId: String? = null
 
     fun requestToken(
         type: String,
@@ -85,25 +88,26 @@ object StreamsRepository {
             manualSelection = manualSelection,
         )
         val requestKey = "$requestToken::pluginsGrouped=${pluginUiState.groupStreamsByRepository}"
-        val currentState = _uiState.value
+        val currentState = state.value
         if (
             !forceRefresh &&
             activeRequestKey == requestKey &&
-            (currentState.groups.isNotEmpty() || currentState.emptyStateReason != null || currentState.isAnyLoading)
+            (currentState.groups.isNotEmpty() || currentState.emptyStateReason != null || currentState.isAnyLoading) &&
+            isStillServed(type, videoId, season, episode, pluginUiState)
         ) {
             log.d { "Skipping stream reload for unchanged request type=$type id=$videoId" }
             return
         }
 
         activeRequestKey = requestKey
-        loadGeneration += 1
-        val generation = loadGeneration
+        activeSearchKey = null
+        activeImdbVideoId = null
         activeJob?.cancel()
         // Stream picker A, P0.1: the per-add-on chip survives a refresh of the same title (tvOS
         // only, see StreamFilterRetention) and resets on a new one. Every fresh state built below
         // carries it, and the fan-out drops it if the add-on is no longer asked.
         val carriedFilter = StreamFilterRetention.carriedFilter(currentState, requestToken)
-        _uiState.value = StreamsUiState(requestToken = requestToken, selectedFilter = carriedFilter)
+        val generation = state.takeOver(StreamsUiState(requestToken = requestToken, selectedFilter = carriedFilter))
 
         PlayerSettingsRepository.ensureLoaded()
         val playerSettings = PlayerSettingsRepository.uiState.value
@@ -130,12 +134,12 @@ object StreamsRepository {
         val isDirectAutoPlayFlow = isAutoPlayEnabled || bingeGroupDirectFlow
 
         if (isDirectAutoPlayFlow) {
-            _uiState.value = StreamsUiState(
+            state.setIfCurrent(generation, StreamsUiState(
                 requestToken = requestToken,
                 selectedFilter = carriedFilter,
                 isDirectAutoPlayFlow = true,
                 showDirectAutoPlayOverlay = true,
-            )
+            ))
         }
 
         val embeddedStreams = MetaDetailsRepository.findEmbeddedStreams(videoId)
@@ -151,7 +155,7 @@ object StreamsRepository {
                 groups = listOf(group),
                 rules = streamBadgeRules,
             ).firstOrNull() ?: group
-            _uiState.value = StreamsUiState(
+            state.setIfCurrent(generation, StreamsUiState(
                 requestToken = requestToken,
                 groups = listOf(presentedGroup),
                 activeAddonIds = setOf("embedded"),
@@ -160,7 +164,7 @@ object StreamsRepository {
                 // installed-addon source for the auto-play scope (Codex r2 on the 58864ec1 port).
                 installedAddonIds = setOf("embedded"),
                 isAnyLoading = false,
-            )
+            ))
             return
         }
 
@@ -168,12 +172,12 @@ object StreamsRepository {
         val pluginProviderGroups = StreamSearchRequests.pluginProviderGroups(type, pluginUiState)
 
         if (installedAddons.isEmpty() && pluginProviderGroups.isEmpty()) {
-            _uiState.value = StreamsUiState(
+            state.setIfCurrent(generation, StreamsUiState(
                 requestToken = requestToken,
                 selectedFilter = carriedFilter,
                 isAnyLoading = false,
                 emptyStateReason = StreamsEmptyStateReason.NoAddonsInstalled,
-            )
+            ))
             return
         }
 
@@ -201,7 +205,7 @@ object StreamsRepository {
             tmdbId != null &&
             StreamVideoIdRemap.wouldReachMoreAddons(videoId, typeStreamIdPrefixes)
         ) {
-            _uiState.value = StreamsUiState(requestToken = requestToken, selectedFilter = carriedFilter, isAnyLoading = true)
+            state.setIfCurrent(generation, StreamsUiState(requestToken = requestToken, selectedFilter = carriedFilter, isAnyLoading = true))
             // LAZY + assign + start, not a bare `activeJob = scope.launch {}`: the body must not be
             // able to run before the field holds it. It nulls that same field below, and a plain
             // launch could interleave the two so `activeJob` ended up pointing at this finished
@@ -229,7 +233,7 @@ object StreamsRepository {
                 // cache, not an addon request.
                 // W4: and a lookup that returned after a newer load (or clear) took over must not
                 // re-enter over it; cancellation alone misses a lookup that ignores it.
-                if (loadGeneration != generation) return@launch
+                if (state.generation != generation) return@launch
                 activeRequestKey = null
                 activeJob = null
                 load(
@@ -250,7 +254,7 @@ object StreamsRepository {
         }
 
         if (streamAddons.isEmpty() && pluginProviderGroups.isEmpty()) {
-            _uiState.value = StreamsUiState(
+            state.setIfCurrent(generation, StreamsUiState(
                 requestToken = requestToken,
                 selectedFilter = carriedFilter,
                 isAnyLoading = false,
@@ -262,7 +266,7 @@ object StreamsRepository {
                 } else {
                     StreamsEmptyStateReason.NoCompatibleAddons
                 },
-            )
+            ))
             return
         }
 
@@ -284,7 +288,7 @@ object StreamsRepository {
             )
         }, installedAddonOrder)
         val isInitiallyLoading = initialGroups.any { it.isLoading }
-        _uiState.value = StreamsUiState(
+        state.setIfCurrent(generation, StreamsUiState(
             requestToken = requestToken,
             groups = initialGroups,
             activeAddonIds = initialGroups.map { it.addonId }.toSet(),
@@ -294,7 +298,7 @@ object StreamsRepository {
             emptyStateReason = null,
             isDirectAutoPlayFlow = isDirectAutoPlayFlow,
             showDirectAutoPlayOverlay = isDirectAutoPlayFlow,
-        )
+        ))
 
         val searchTargets = StreamSearchTargets(
             type = type,
@@ -303,9 +307,11 @@ object StreamsRepository {
             episode = episode,
             streamAddons = streamAddons,
             pluginProviderGroups = pluginProviderGroups,
-            debridConfiguration = StreamSearchEnvironment.debridConfiguration(),
+            debrid = StreamSearchEnvironment.debrid(),
         )
         val searchProfileId = StreamSearchEnvironment.profileId()
+        activeSearchKey = searchTargets.key(searchProfileId)
+        activeImdbVideoId = imdbVideoId
 
         activeJob = scope.launch {
             val installedAddonNames = installedAddonOrder.toSet()
@@ -317,12 +323,12 @@ object StreamsRepository {
             // clear, cancelLoading) cannot land a late write on the state that replaced it, even
             // from a write already in flight on another thread when the job was cancelled.
             fun updateIfCurrent(transform: (StreamsUiState) -> StreamsUiState) {
-                _uiState.update { current -> if (loadGeneration == generation) transform(current) else current }
+                state.updateIfCurrent(generation, transform)
             }
 
             fun evaluateAutoPlay(bingeGroupOnly: Boolean = false): StreamAutoPlayEvaluation =
                 StreamAutoPlaySelector.evaluateAutoPlayStream(
-                    streams = _uiState.value.groups.flatMap { it.streams },
+                    streams = state.value.groups.flatMap { it.streams },
                     mode = autoPlayMode,
                     regexPattern = playerSettings.streamAutoPlayRegex,
                     source = playerSettings.streamAutoPlaySource,
@@ -373,7 +379,7 @@ object StreamsRepository {
                 }
 
                 if (
-                    _uiState.value.groups.areAutoPlaySourcesLoaded(
+                    state.value.groups.areAutoPlaySourcesLoaded(
                         source = playerSettings.streamAutoPlaySource,
                         installedAddonIds = installedAddonIds,
                     )
@@ -411,7 +417,7 @@ object StreamsRepository {
                         delay(timeoutSeconds * 1_000L)
                         timeoutElapsed = true
                         if (!autoSelectTriggered) {
-                            val allStreams = _uiState.value.groups.flatMap { it.streams }
+                            val allStreams = state.value.groups.flatMap { it.streams }
                             if (allStreams.isNotEmpty()) {
                                 val evaluation = evaluateAutoPlay()
                                 if (evaluation.stream != null || !evaluation.hasPendingDebridCandidate) {
@@ -447,7 +453,7 @@ object StreamsRepository {
 
             launch {
                 DirectDebridStreamPreparer.prepare(
-                    streams = _uiState.value.groups
+                    streams = state.value.groups
                         .filter { it.addonId in installedAddonIds }
                         .flatMap { it.streams },
                     season = season,
@@ -476,13 +482,25 @@ object StreamsRepository {
         }
     }
 
+    /**
+     * W4 (review r1): a repeated request may keep the current state only while the session store
+     * still serves the very search it came from: same key now (profile, add-ons and the ids they
+     * are asked with, plugin groups, debrid account) and held (running, or finished and within its
+     * reuse time). States that are no session's keep the old rule.
+     */
+    private fun isStillServed(type: String, videoId: String, season: Int?, episode: Int?, pluginUiState: PluginsUiState): Boolean {
+        val key = activeSearchKey ?: return true
+        return StreamSearchRequests.currentKey(type, videoId, season, episode, activeImdbVideoId, pluginUiState) == key &&
+            StreamSearchSessions.isHeld(key)
+    }
+
     fun selectFilter(addonId: String?) {
-        _uiState.update { it.copy(selectedFilter = addonId) }
+        state.update { it.copy(selectedFilter = addonId) }
     }
 
     fun consumeAutoPlay() {
         activeRequestKey = null
-        _uiState.update {
+        state.update {
             it.copy(
                 autoPlayStream = null,
                 autoPlayCandidates = emptyList(),
@@ -494,7 +512,7 @@ object StreamsRepository {
 
     fun skipAutoPlayStream(stream: StreamItem): Boolean {
         var hasNext = false
-        _uiState.update { current ->
+        state.update { current ->
             val failedIndex = current.autoPlayCandidates.indexOf(stream)
             val remaining = if (failedIndex >= 0) {
                 current.autoPlayCandidates.drop(failedIndex + 1)
@@ -513,10 +531,13 @@ object StreamsRepository {
     }
 
     fun cancelLoading() {
-        loadGeneration += 1
         activeJob?.cancel()
         activeJob = null
-        _uiState.update { current ->
+        // W4 (review r1): the state stops following its search here, so the next identical load
+        // replays the search (cheap while it is held) instead of keeping this settled snapshot.
+        activeRequestKey = null
+        activeSearchKey = null
+        state.takeOver { current ->
             if (!current.isAnyLoading && current.groups.none { it.isLoading }) {
                 current
             } else {
@@ -537,15 +558,16 @@ object StreamsRepository {
     }
 
     fun clear() {
-        loadGeneration += 1
+        state.takeOver(StreamsUiState())
         activeJob?.cancel()
         activeJob = null
         activeRequestKey = null
-        _uiState.value = StreamsUiState()
+        activeSearchKey = null
+        activeImdbVideoId = null
     }
 
     fun setOverlayVisible(visible: Boolean, message: String? = null) {
-        _uiState.update { it.copy(showDirectAutoPlayOverlay = visible, overlayMessage = message) }
+        state.update { it.copy(showDirectAutoPlayOverlay = visible, overlayMessage = message) }
     }
 }
 

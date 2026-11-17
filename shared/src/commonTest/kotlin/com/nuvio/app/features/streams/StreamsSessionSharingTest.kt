@@ -29,7 +29,8 @@ import kotlin.test.assertTrue
 class StreamsSessionSharingTest {
     private val fetcher = ScriptedSearchFetcher()
     private val storeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default.limitedParallelism(1))
-    private val store = StreamSearchSessionStore(fetcher, now = { 0L }, scope = storeScope)
+    private var clock = 0L
+    private val store = StreamSearchSessionStore(fetcher, now = { clock }, scope = storeScope)
     private var debridConfiguration = "none"
 
     @BeforeTest
@@ -38,7 +39,7 @@ class StreamsSessionSharingTest {
         PlayerStreamsRepository.clearAll()
         StreamSearchSessions.installForTesting(store)
         StreamSearchEnvironment.installedAddons = { listOf(SearchFixtures.managedAddon("a"), SearchFixtures.managedAddon("b")) }
-        StreamSearchEnvironment.debridConfiguration = { debridConfiguration }
+        StreamSearchEnvironment.debrid = { StreamSearchDebrid(debridConfiguration, null) }
         StreamSearchEnvironment.profileId = { 1 }
     }
 
@@ -127,7 +128,7 @@ class StreamsSessionSharingTest {
         // The first title's search itself finishes (it outlives its consumer) ...
         val firstSearch = withContext(Dispatchers.Default) {
             withTimeout(10_000) {
-                store.search(1, StreamSearchTargets("movie", "tt5", null, null, listOf(SearchFixtures.target("a", "tt5"), SearchFixtures.target("b", "tt5")), emptyList(), "none"), false).toList()
+                store.search(1, StreamSearchTargets("movie", "tt5", null, null, listOf(SearchFixtures.target("a", "tt5"), SearchFixtures.target("b", "tt5")), emptyList(), StreamSearchDebrid.None), false).toList()
             }
         }
         assertEquals(2, firstSearch.size)
@@ -169,6 +170,60 @@ class StreamsSessionSharingTest {
             PlayerSourceFallbackCandidates.load("series", EPISODE, 1, 1, timeoutMs = 500)
         }
         assertEquals(listOf("a-$EPISODE"), candidates.map { it.name })
+    }
+
+    @Test
+    fun r9RepeatedPlayerLoadAfterTheUnknownReuseMinuteSearchesAgain() = runTest {
+        // Review r1 (finding 3): the Up Next example. The repository no longer keeps its state past
+        // the store's rule: an UNKNOWN cache answer is re-checked after a minute.
+        fetcher.cacheCheck = { group ->
+            group.copy(streams = group.streams.map {
+                it.copy(debridCacheStatus = StreamDebridCacheStatus("torbox", "TorBox", StreamDebridCacheState.UNKNOWN))
+            })
+        }
+        PlayerStreamsRepository.loadEpisodeStreams(type = "series", videoId = EPISODE, season = 1, episode = 1)
+        await(PlayerStreamsRepository.episodeStreamsState, settled)
+        clock += 59_000
+        PlayerStreamsRepository.loadEpisodeStreams(type = "series", videoId = EPISODE, season = 1, episode = 1)
+        assertEquals(1, store.startedCount, "within the minute the repeat is skipped")
+        clock += 2_000
+        PlayerStreamsRepository.loadEpisodeStreams(type = "series", videoId = EPISODE, season = 1, episode = 1)
+        await(PlayerStreamsRepository.episodeStreamsState, settled)
+
+        assertEquals(2, store.startedCount)
+        assertEquals(4, fetcher.addonFetches.size)
+    }
+
+    @Test
+    fun r10RepeatedLoadsFollowTheProfileAndTheDebridAccount() = runTest {
+        StreamsRepository.load(type = "series", videoId = EPISODE, season = 1, episode = 1)
+        await(StreamsRepository.uiState, settled)
+        debridConfiguration = "torbox:2"
+        StreamsRepository.load(type = "series", videoId = EPISODE, season = 1, episode = 1)
+        await(StreamsRepository.uiState, settled)
+        assertEquals(2, store.startedCount, "another debrid account is another search")
+
+        PlayerStreamsRepository.loadEpisodeStreams(type = "series", videoId = EPISODE, season = 1, episode = 1)
+        await(PlayerStreamsRepository.episodeStreamsState, settled)
+        StreamSearchEnvironment.profileId = { 2 }
+        PlayerStreamsRepository.loadEpisodeStreams(type = "series", videoId = EPISODE, season = 1, episode = 1)
+        await(PlayerStreamsRepository.episodeStreamsState, settled)
+        assertEquals(3, store.startedCount, "another profile is another search")
+        assertEquals(listOf(2), store.heldKeys().map { it.profileId })
+    }
+
+    @Test
+    fun r11RepeatedPickerLoadAfterExpirySearchesAgainAndBeforeItKeepsTheState() = runTest {
+        StreamsRepository.load(type = "series", videoId = EPISODE, season = 1, episode = 1)
+        val first = await(StreamsRepository.uiState, settled)
+        clock += 14 * 60_000L
+        StreamsRepository.load(type = "series", videoId = EPISODE, season = 1, episode = 1)
+        assertEquals(first, StreamsRepository.uiState.value, "a held search: the repeat is skipped")
+        clock += 60_000L
+        StreamsRepository.load(type = "series", videoId = EPISODE, season = 1, episode = 1)
+        await(StreamsRepository.uiState, settled)
+
+        assertEquals(2, store.startedCount)
     }
 
     private companion object {

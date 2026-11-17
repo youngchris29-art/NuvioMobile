@@ -9,8 +9,10 @@ object LocalDebridAvailabilityService {
     fun hasPendingCacheCheck(
         groups: List<AddonStreamGroup>,
         eligibleGroupIds: Set<String>? = null,
+        // W4 (review r1): a source search passes the account it started under; others read the live one.
+        account: DebridServiceCredential? = cacheCheckAccount(),
     ): Boolean {
-        cacheCheckAccount() ?: return false
+        account ?: return false
         return groups
             .filter { group -> eligibleGroupIds == null || group.addonId in eligibleGroupIds }
             .any { group ->
@@ -24,8 +26,9 @@ object LocalDebridAvailabilityService {
     fun markChecking(
         groups: List<AddonStreamGroup>,
         eligibleGroupIds: Set<String>? = null,
+        account: DebridServiceCredential? = cacheCheckAccount(),
     ): List<AddonStreamGroup> {
-        val account = cacheCheckAccount() ?: return groups
+        account ?: return groups
         return groups.updateAvailabilityStatus(eligibleGroupIds) { stream ->
             if (stream.localAvailabilityHash() == null || stream.debridCacheStatus?.state == StreamDebridCacheState.CACHED) {
                 stream
@@ -44,8 +47,9 @@ object LocalDebridAvailabilityService {
     suspend fun annotateCachedAvailability(
         groups: List<AddonStreamGroup>,
         eligibleGroupIds: Set<String>? = null,
+        account: DebridServiceCredential? = cacheCheckAccount(),
     ): List<AddonStreamGroup> {
-        val account = cacheCheckAccount() ?: return groups
+        account ?: return groups
         val hashes = groups
             .filter { group -> eligibleGroupIds == null || group.addonId in eligibleGroupIds }
             .flatMap { group ->
@@ -100,8 +104,14 @@ object LocalDebridAvailabilityService {
      * checked with another account or none is not reused (upstream 4c414a5f4). "none" whenever
      * playable links are off or the active resolver has no local cache check.
      */
-    fun cacheCheckConfiguration(): String =
-        cacheCheckAccount()?.let { account -> "${account.provider.id}:${account.apiKey.hashCode()}" } ?: "none"
+    fun cacheCheckConfiguration(): String = configurationOf(cacheCheckAccount())
+
+    /** The account cache checks run with now, or null (W4: captured by a source search when it starts). */
+    internal fun currentCacheCheckAccount(): DebridServiceCredential? = cacheCheckAccount()
+
+    /** [cacheCheckConfiguration] for a given account. */
+    internal fun configurationOf(account: DebridServiceCredential?): String =
+        account?.let { "${it.provider.id}:${it.apiKey.hashCode()}" } ?: "none"
 
     private fun cacheCheckAccount(): DebridServiceCredential? {
         val settings = DebridSettingsRepository.snapshot()

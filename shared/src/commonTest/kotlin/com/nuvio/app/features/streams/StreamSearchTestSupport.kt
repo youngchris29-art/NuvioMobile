@@ -3,6 +3,8 @@ package com.nuvio.app.features.streams
 import com.nuvio.app.features.addons.AddonManifest
 import com.nuvio.app.features.addons.AddonResource
 import com.nuvio.app.features.addons.ManagedAddon
+import com.nuvio.app.features.debrid.DebridProviders
+import com.nuvio.app.features.debrid.DebridServiceCredential
 import com.nuvio.app.features.plugins.PluginScraper
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.NonCancellable
@@ -44,6 +46,7 @@ internal object SearchFixtures {
         requestId: String = videoId,
         debrid: String = "none",
         plugins: List<PluginProviderGroup> = emptyList(),
+        account: DebridServiceCredential? = null,
     ) = StreamSearchTargets(
         type = "series",
         videoId = videoId,
@@ -51,8 +54,10 @@ internal object SearchFixtures {
         episode = episode,
         streamAddons = addons.map { target(it, requestId) },
         pluginProviderGroups = plugins,
-        debridConfiguration = debrid,
+        debrid = StreamSearchDebrid(debrid, account),
     )
+
+    fun torbox(apiKey: String) = DebridServiceCredential(DebridProviders.Torbox, apiKey)
 
     fun scraper(id: String) = PluginScraper(
         id = id,
@@ -90,6 +95,9 @@ internal class ScriptedSearchFetcher : StreamSearchFetcher {
     var scraperRuns = 0
     var cacheChecks = 0
 
+    /** The API key of the account each cache check ran with (null: no account), in call order. */
+    val checkedWith = mutableListOf<String?>()
+
     /** A gated fetch that ignores cancellation, so its answer arrives after its search was dropped. */
     var gatesIgnoreCancellation = false
 
@@ -121,8 +129,12 @@ internal class ScriptedSearchFetcher : StreamSearchFetcher {
         return scraperAnswer(group, scraper)
     }
 
-    override suspend fun withDebridAvailability(group: AddonStreamGroup): AddonStreamGroup {
+    override suspend fun withDebridAvailability(
+        group: AddonStreamGroup,
+        account: com.nuvio.app.features.debrid.DebridServiceCredential?,
+    ): AddonStreamGroup {
         cacheChecks++
+        checkedWith += account?.apiKey
         return cacheCheck(group)
     }
 }
