@@ -176,6 +176,7 @@ object PlayerStreamsRepository {
         PlayerSettingsRepository.ensureLoaded()
         val playerSettings = PlayerSettingsRepository.uiState.value
         val debridSettings = DebridSettingsRepository.snapshot()
+        val pluginGeneration = StreamSearchSessions.pluginGeneration()   // review r6: before the groups
         val pluginProviderGroups = StreamSearchRequests.pluginProviderGroups(type, pluginUiState)
 
         if (installedAddons.isEmpty() && pluginProviderGroups.isEmpty()) {
@@ -280,6 +281,7 @@ object PlayerStreamsRepository {
             streamAddons = streamAddons,
             pluginProviderGroups = pluginProviderGroups,
             debrid = StreamSearchEnvironment.debrid(),
+            pluginGeneration = pluginGeneration,
         )
         val searchProfileId = StreamSearchEnvironment.profileId()
         slot.searchKey = searchTargets.key(searchProfileId)

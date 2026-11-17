@@ -169,6 +169,7 @@ object StreamsRepository {
         }
 
         val installedAddons = StreamSearchEnvironment.installedAddons()
+        val pluginGeneration = StreamSearchSessions.pluginGeneration()   // review r6: before the groups
         val pluginProviderGroups = StreamSearchRequests.pluginProviderGroups(type, pluginUiState)
 
         if (installedAddons.isEmpty() && pluginProviderGroups.isEmpty()) {
@@ -308,6 +309,7 @@ object StreamsRepository {
             streamAddons = streamAddons,
             pluginProviderGroups = pluginProviderGroups,
             debrid = StreamSearchEnvironment.debrid(),
+            pluginGeneration = pluginGeneration,
         )
         val searchProfileId = StreamSearchEnvironment.profileId()
         activeSearchKey = searchTargets.key(searchProfileId)

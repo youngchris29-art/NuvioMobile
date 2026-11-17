@@ -79,6 +79,7 @@ internal object StreamSearchRequests {
     suspend fun resolveTargets(type: String, videoId: String, season: Int?, episode: Int?): StreamSearchTargets? {
         val pluginUiState = pluginUiState()
         val installed = StreamSearchEnvironment.installedAddons()
+        val pluginGeneration = StreamSearchSessions.pluginGeneration()   // review r6: before the groups
         val groups = pluginProviderGroups(type, pluginUiState)
         var addons = streamAddonTargets(installed, type, videoId, imdbVideoId = null)
         val tmdbId = StreamVideoIdRemap.parseTmdbId(videoId)
@@ -97,6 +98,7 @@ internal object StreamSearchRequests {
             streamAddons = addons,
             pluginProviderGroups = groups,
             debrid = StreamSearchEnvironment.debrid(),
+            pluginGeneration = pluginGeneration,
         )
     }
 
@@ -114,9 +116,11 @@ internal object StreamSearchRequests {
         pluginUiState: PluginsUiState,
     ): StreamSearchKey? {
         val addons = streamAddonTargets(StreamSearchEnvironment.installedAddons(), type, videoId, imdbVideoId)
+        val pluginGeneration = StreamSearchSessions.pluginGeneration()   // review r6: before the groups
         val groups = pluginProviderGroups(type, pluginUiState)
         if (addons.isEmpty() && groups.isEmpty()) return null
-        return StreamSearchTargets(type, videoId, season, episode, addons, groups, StreamSearchEnvironment.debrid())
+        return StreamSearchTargets(type, videoId, season, episode, addons, groups, StreamSearchEnvironment.debrid(),
+                                   pluginGeneration)
             .key(StreamSearchEnvironment.profileId())
     }
 }

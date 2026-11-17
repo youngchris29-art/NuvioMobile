@@ -73,6 +73,12 @@ internal class StreamSearchTargets(
     val pluginProviderGroups: List<PluginProviderGroup>,
     /** Upstream 4c414a5f4: the account streams are cache-checked with; the checked streams are kept. */
     val debrid: StreamSearchDebrid = StreamSearchEnvironment.debrid(),
+    /**
+     * Stage B review r6 (finding 3): the store's plugin generation when [pluginProviderGroups] was
+     * read (callers read it BEFORE the groups). A search whose scrapers predate a refresh gets a
+     * key of its own, which no search built after the refresh joins.
+     */
+    val pluginGeneration: Long = 0L,
 ) {
     val debridConfiguration: String
         get() = debrid.configuration
@@ -89,7 +95,7 @@ internal class StreamSearchTargets(
         get() = buildList {
             streamAddons.forEach { add("addon:${it.addonId}@${it.videoId}") }
             pluginProviderGroups.forEach { group ->
-                add("plugin:${group.addonId}:${group.scrapers.joinToString(",") { it.id }}")
+                add("plugin:${group.addonId}:${group.scrapers.joinToString(",") { it.id }}@g$pluginGeneration")
             }
             add("debrid:$debridConfiguration")
         }.joinToString("|")
@@ -299,6 +305,9 @@ internal class StreamSearchSessionStore(
      */
     fun dropPluginSessions() {
         synchronized(lock) {
+            // Review r6: targets built before this point carry the old generation, so a search
+            // they start later is never joined by one built after it.
+            pluginGeneration++
             sessions.keys.filter { it.holdsPluginTargets }.forEach { key ->
                 val session = sessions[key]       // K/N: read the entry before removing it
                 sessions.remove(key)
@@ -306,6 +315,11 @@ internal class StreamSearchSessionStore(
             }
         }
     }
+
+    /** Review r6: read by every target builder before it reads the plugin groups. */
+    fun pluginGeneration(): Long = synchronized(lock) { pluginGeneration }
+
+    private var pluginGeneration = 0L
 
     /**
      * Whether a search for [key] is held and would be served to a new consumer right now (running,
@@ -509,6 +523,9 @@ object StreamSearchSessions {
     fun dropPluginSessions() {
         store.dropPluginSessions()
     }
+
+    /** Review r6: the current plugin generation; read BEFORE the plugin groups a search will use. */
+    internal fun pluginGeneration(): Long = store.pluginGeneration()
 
     /** Whether the search for [key] is still held and would be served (see [StreamSearchSessionStore.isHeld]). */
     internal fun isHeld(key: StreamSearchKey): Boolean = store.isHeld(key)

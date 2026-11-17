@@ -456,4 +456,55 @@ class StreamSearchSessionScenarioTest {
         runCurrent()
         assertTrue(consumer.job.isCompleted, "its consumer completes")
     }
+
+    // MARK: Stage B review r6 finding 3: targets prepared before a plugin refresh
+
+    private fun pluginTargets(generation: Long, videoId: String = "tt1:1:1") = StreamSearchTargets(
+        type = "series",
+        videoId = videoId,
+        season = 1,
+        episode = 1,
+        streamAddons = listOf(SearchFixtures.target("a", videoId)),
+        pluginProviderGroups = listOf(PluginProviderGroup("plugin:p", "P", listOf(SearchFixtures.scraper("s1")))),
+        debrid = StreamSearchDebrid("none", null),
+        pluginGeneration = generation,
+    )
+
+    @Test
+    fun searchPreparedBeforeAPluginRefreshIsNeverJoinedAfterIt() = runTest {
+        val store = store()
+        val stale = pluginTargets(store.pluginGeneration())   // read before the refresh, used after it
+        store.dropPluginSessions()                            // the refresh
+        consume(store, stale)                                 // the suspended builder resumes
+        val fresh = consume(store, pluginTargets(store.pluginGeneration()))
+        assertEquals(2, store.startedCount, "the search built after the refresh runs the new scrapers")
+        assertTrue(fresh.received.isNotEmpty())
+        assertEquals(1, store.heldKeys().size, "the stale search of the same episode was dropped by the current one")
+        assertEquals(store.pluginGeneration(), 1L)
+    }
+
+    @Test
+    fun addonOnlyKeysIgnoreThePluginGeneration() = runTest {
+        val store = store()
+        val before = SearchFixtures.targets()
+        store.dropPluginSessions()
+        assertEquals(before.key(1), SearchFixtures.targets().key(1))
+        val withPlugins = pluginTargets(0)
+        assertTrue(withPlugins.key(1) != pluginTargets(1).key(1), "a plugin search is keyed by its generation")
+    }
+
+    @Test
+    fun currentSearchDropsTheStaleSameEpisodeSession() = runTest {
+        val store = store()
+        val staleConsumer = run {
+            val stale = pluginTargets(store.pluginGeneration())
+            fetcher.hold("a")
+            store.dropPluginSessions()
+            consume(store, stale)
+        }
+        assertTrue(!staleConsumer.job.isCompleted)
+        consume(store, pluginTargets(store.pluginGeneration()))
+        runCurrent()
+        assertTrue(staleConsumer.job.isCompleted, "the stale search is cancelled; its consumer completes")
+    }
 }
