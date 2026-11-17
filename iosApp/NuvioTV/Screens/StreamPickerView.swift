@@ -658,7 +658,9 @@ struct StreamPickerView: View {
             // Next hand-off — every `selected = …` site) supersedes a YouTube resolve in flight.
             .onChange(of: selected?.id) { _, playing in
                 // W4 review r1: what is on screen now is what the viewer last asked for.
-                ledger.contextPresented()
+                // Review r3: an open failure of a context that left the screen is dropped (its
+                // deferred link rejection applied).
+                applyDeferredRejection(ledger.contextPresented(selected?.id))
                 // W4: the Up Next episode walk belongs to one episode; another one playing ends it.
                 if let walkTitle = episodeWalk?.titleKey ?? episodeWalkLoad?.videoId,
                    playing != nil, selected?.videoId != walkTitle {
@@ -1729,6 +1731,10 @@ struct StreamPickerView: View {
                 return
             }
             let resumeAtSec = isFailover ? autoFailoverResumeAtSec : nil
+            if isFailover, let replaced = autoFailoverContextId, let failed = selected, failed.id == replaced {
+                // Review r3: the failure is handled (a refresh that failed already remembered its link).
+                closeFailure(failed, rejectionSettled: true)
+            }
             autoFailoverContextId = nil
             autoFailoverResumeAtSec = nil
             if isFailover { ledger.walkEnded(.autoFailover) }
@@ -1763,7 +1769,10 @@ struct StreamPickerView: View {
                 autoPlayLog("[AutoPlay] walk ended (\(reason)) after the viewer's own choice — nothing closed")
                 return
             }
-            if duringFailover { ledger.walkEnded(.autoFailover) }
+            if duringFailover {
+                ledger.walkEnded(.autoFailover)
+                if let failed = selected { closeFailure(failed, rejectionSettled: false) }
+            }
             autoPlayArmed = false
             rejectedKeys = RejectedStreamLinks.rejected(for: videoId)
             if duringFailover {
@@ -1929,29 +1938,20 @@ struct StreamPickerView: View {
                 autoPlay.willRefreshBeforeMovingOn(streamKey: $0.streamKey) ? $0 : nil
             }
             : nil
-        let remember = {
-            RejectedStreamLinks.reject(ctx.streamKey, title: ctx.videoId)
-            if let listed = ctx.listedStream, listed.isAddonDebridCandidate {
-                // The resolver would hand the same dead link back for 15 minutes.
-                DirectDebridPlaybackResolver.shared.invalidate(
-                    stream: listed,
-                    season: ctx.season.map { KotlinInt(int: Int32($0)) },
-                    episode: ctx.episode.map { KotlinInt(int: Int32($0)) }
-                )
-            }
-        }
+        let deferRejection = refreshFirst != nil && PlaybackFailoverPolicy.shouldReject(failure)
         if PlaybackFailoverPolicy.shouldReject(failure) {
-            if refreshFirst != nil {
+            if deferRejection {
                 print("[Failover] reject key=\(ctx.streamKey) deferred: the link is refreshed once first")
             } else {
-                remember()
+                rememberFailedLink(ctx)
             }
         }
-        rejectedKeys = RejectedStreamLinks.rejected(for: videoId)
 
-        // Review r2: while an in-player choice is pending the failure is held; it is routed by the
-        // normal rules below if that choice is abandoned, and dropped if it reaches the screen.
-        switch ledger.failureArrived(contextId: ctx.id, failure: failure) {
+        // Review r2/r3: the ledger owns the failure from here until a terminal outcome or until
+        // another context takes the screen (the deferred rejection travels with it). While an
+        // in-player choice is pending it is held; it is routed by the normal rules below if that
+        // choice is abandoned, and dropped if it reaches the screen.
+        switch ledger.failureArrived(context: ctx, failure: failure, rejectionDeferred: deferRejection) {
         case .hold:
             print("[Failover] failure while the viewer's own choice is pending — held until it ends")
         case .route:
@@ -1967,16 +1967,9 @@ struct StreamPickerView: View {
                 autoPlay.willRefreshBeforeMovingOn(streamKey: $0.streamKey) ? $0 : nil
             }
             : nil
-        let remember = {
-            RejectedStreamLinks.reject(ctx.streamKey, title: ctx.videoId)
-            if let listed = ctx.listedStream, listed.isAddonDebridCandidate {
-                DirectDebridPlaybackResolver.shared.invalidate(
-                    stream: listed,
-                    season: ctx.season.map { KotlinInt(int: Int32($0)) },
-                    episode: ctx.episode.map { KotlinInt(int: Int32($0)) }
-                )
-            }
-        }
+        // Review r3: a rejection deferred for a refresh that will not run now (it was interrupted,
+        // or this is a replay) is applied here.
+        applyDeferredRejection(ledger.refreshDecided(willRefresh: refreshFirst != nil))
         // W4: the shared rule decides whether an Up Next episode falls back in place.
         let settings = livePlayerSettingsSnapshot()
         let further = Int(PlayerSourceFallback.shared.furtherSources(settings: settings, entry: .nextEpisode))
@@ -1995,12 +1988,11 @@ struct StreamPickerView: View {
         case .autoFailover:
             // A report while a failover resolves keeps that failover's ticket (the duplicate guard).
             let resolving: Bool = { if case .resolving = autoPlay.phase { return true }; return false }()
-            ledger.walkStarted(.autoFailover, contextId: ctx.id, failure: failure, keepTicket: resolving)
+            ledger.walkStarted(.autoFailover, keepTicket: resolving)
             autoFailoverContextId = ctx.id
             autoFailoverResumeAtSec = PlaybackFailoverPolicy.replacementResume(after: failure)
             if !autoPlay.failover(afterFailureOf: ctx.streamKey, addonId: ctx.providerAddonId,
                                   refreshFirst: refreshFirst, failedURL: ctx.url) {
-                if refreshFirst != nil, PlaybackFailoverPolicy.shouldReject(failure) { remember() }
                 autoFailoverContextId = nil
                 autoFailoverResumeAtSec = nil
                 handleAutoPlayEvent(.gaveUp(.allFailed, duringFailover: true))
@@ -2009,8 +2001,10 @@ struct StreamPickerView: View {
         case .episodeFallback:
             startEpisodeFallback(after: ctx, failure: failure)
         case .nextEpisodePicker:
+            closeFailure(ctx, rejectionSettled: false)
             openEpisodePicker(for: ctx)
         case .manualAlert:
+            closeFailure(ctx, rejectionSettled: false)
             var retryContext: PlaybackContext?
             var retryEngine: PlaybackEngine?
             if failure.otherEngineEligible {
@@ -2032,6 +2026,32 @@ struct StreamPickerView: View {
             )
             selected = nil
         }
+    }
+
+    /// The failed link goes into the 8-hour memory and its 15-minute resolve cache entry is dropped
+    /// (the resolver would hand the same dead link back).
+    private func rememberFailedLink(_ ctx: PlaybackContext) {
+        RejectedStreamLinks.reject(ctx.streamKey, title: ctx.videoId)
+        if let listed = ctx.listedStream, listed.isAddonDebridCandidate {
+            DirectDebridPlaybackResolver.shared.invalidate(
+                stream: listed,
+                season: ctx.season.map { KotlinInt(int: Int32($0)) },
+                episode: ctx.episode.map { KotlinInt(int: Int32($0)) }
+            )
+        }
+        rejectedKeys = RejectedStreamLinks.rejected(for: videoId)
+    }
+
+    /// Review r3: a failure the ledger handed back with its deferred rejection still unapplied.
+    private func applyDeferredRejection(_ open: PlayerChoiceLedger.OpenFailure?) {
+        guard let open else { return }
+        print("[Failover] reject key=\(open.context.streamKey): the deferred rejection is applied (no refresh settled it)")
+        rememberFailedLink(open.context)
+    }
+
+    /// Review r3: the failure of `ctx` reached a terminal outcome.
+    private func closeFailure(_ ctx: PlaybackContext, rejectionSettled: Bool) {
+        applyDeferredRejection(ledger.failureHandled(contextId: ctx.id, rejectionSettled: rejectionSettled))
     }
 
     /// W4 (2b.7): the listed debrid stream to re-resolve once before the walk moves on: an HTTP
@@ -2070,7 +2090,7 @@ struct StreamPickerView: View {
                 autoPlayLog("[AutoPlay] start-up limit passed, nothing left — keep waiting key=\(ctx.streamKey)")
                 return
             }
-            ledger.walkStarted(.autoFailover, contextId: ctx.id, failure: nil)
+            ledger.walkStarted(.autoFailover)
             autoFailoverContextId = ctx.id
             autoFailoverResumeAtSec = nil
             _ = autoPlay.failover(afterFailureOf: ctx.streamKey, addonId: ctx.providerAddonId, reason: .startupLimit)
@@ -2103,7 +2123,10 @@ struct StreamPickerView: View {
     /// failure opens the episode's own picker, a start-up limit leaves the slow source loading.
     private func startEpisodeFallback(after ctx: PlaybackContext, failure: PlaybackFailure?) {
         guard let tried = ctx.sourceFallback else {
-            if failure != nil { openEpisodePicker(for: ctx) }
+            if failure != nil {
+                closeFailure(ctx, rejectionSettled: false)
+                openEpisodePicker(for: ctx)
+            }
             return
         }
         let reason: FirstPlayAutoPlayController.FailoverReason = failure == nil ? .startupLimit : .playbackFailed
@@ -2177,13 +2200,14 @@ struct StreamPickerView: View {
             return
         }
         let resolving: Bool = { if case .resolving = walk.phase { return true }; return false }()
-        ledger.walkStarted(.episode, contextId: ctx.id, failure: failure, keepTicket: resolving)
+        ledger.walkStarted(.episode, keepTicket: resolving)
         episodeWalkFailedContextId = ctx.id
         episodeWalkResumeAtSec = PlaybackFailoverPolicy.replacementResume(after: failure)
         if !walk.failover(afterFailureOf: ctx.streamKey, addonId: ctx.providerAddonId, reason: reason),
            reason == .playbackFailed {
             episodeWalkFailedContextId = nil
             episodeWalkResumeAtSec = nil
+            closeFailure(ctx, rejectionSettled: false)
             openEpisodePicker(for: ctx)
         }
     }
@@ -2205,10 +2229,12 @@ struct StreamPickerView: View {
                                                attempt: current.attempt + 1, sourceFallback: walk.fallbackTried,
                                                resumeAtSec: episodeWalkResumeAtSec)
             episodeWalkResumeAtSec = nil
+            closeFailure(current, rejectionSettled: true)
             // Not an unattended Up Next play (I15): `consecutiveAutoPlays` is the countdown's alone.
             selected = next
         case .gaveUp:
             episodeWalkResumeAtSec = nil
+            closeFailure(current, rejectionSettled: false)
             openEpisodePicker(for: current)
         }
     }
@@ -2233,21 +2259,18 @@ struct StreamPickerView: View {
         interruptWalks(why)
     }
 
-    /// Review r2: an in-player choice began; it is pending until it reaches the screen or the
-    /// player reports it abandoned. The walk that was resolving for a failure of the context on
-    /// screen is interrupted (the ledger holds that failure, to route it again if the choice is
-    /// abandoned); its own result can never land (stale ticket, controller generation).
+    /// Review r2/r3: an in-player choice began; it is pending until it reaches the screen or the
+    /// player reports it abandoned. The ledger holds the open failure of the context on screen, in
+    /// whatever phase its handling was (candidate load, refresh, a replacement resolving), and the
+    /// walks' in-flight work is dropped (its result can never land: stale ticket, controller
+    /// generation; an untried candidate is given back).
     private func viewerChoiceBegan(_ id: UUID) {
-        var inFlight: PlayerChoiceLedger.Walk?
-        if case .resolving = autoPlay.phase, autoPlay.isFailoverWalk { inFlight = .autoFailover }
-        if let walk = episodeWalk, case .resolving = walk.phase { inFlight = .episode }
-        if episodeWalkLoad?.failure != nil { inFlight = .episode }
-        ledger.choiceBegan(id, walkInFlight: inFlight)
+        ledger.choiceBegan(id)
         interruptWalks("choice in the player")
     }
 
-    /// Review r2: the player gave up on choice `id`. Pending ends; a failure of the context still
-    /// on screen that was held (or whose walk the choice interrupted) is routed from scratch.
+    /// Review r2/r3: the player gave up on choice `id`. Pending ends; the held failure of the
+    /// context still on screen is routed from scratch by the normal rules.
     private func viewerChoiceAbandoned(_ id: UUID) {
         guard let held = ledger.choiceAbandoned(id) else { return }
         guard let current = selected, current.id == held.contextId else { return }

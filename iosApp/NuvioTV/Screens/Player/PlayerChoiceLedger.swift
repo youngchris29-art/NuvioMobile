@@ -1,28 +1,37 @@
 import Foundation
 
-/// W4 review r2: the stream picker's bookkeeping of the viewer's own choices against its automatic
-/// walks (the first-play failover and the in-player episode walk). `StreamPickerView` keeps one in
-/// `@State` and its handlers are thin calls into it; every decision about "may this walk event or
-/// this failure change the screen now" is made here, so the tests drive the same code the view runs.
+/// W4 review r1–r3: the stream picker's bookkeeping of the viewer's own choices against its
+/// automatic walks (the first-play failover and the in-player episode walk), and the single owner
+/// of "there is an unhandled failure for the source on screen". `StreamPickerView` keeps one in
+/// `@State` and its handlers are thin calls into it, so the tests drive the code the view runs.
 ///
-/// Two kinds of choice:
-/// - one that takes over (or closes) at once (`viewerActed`): a list pick, a player hand-off, Menu;
-/// - one made in the player that may still fail (`choiceBegan(id)`): a Sources pick that resolves,
-///   an episode jump, Play Next, the offline card. It is pending until it reaches the screen
-///   (`contextPresented`) or the player reports it abandoned (`choiceAbandoned(id)`: resolve
-///   failed, nothing found, cancelled). A newer choice supersedes an older one (its id no longer
-///   matches, so its late abandon changes nothing).
+/// **The open failure.** A failure of the presented context is opened here the instant the player
+/// reports it (`failureArrived`), before anything routes it, and stays open through every phase of
+/// its handling: held for a pending choice, a candidate load, a refresh, the resolve of a
+/// replacement. It closes only on a terminal outcome (`failureHandled`: a replacement swapped in,
+/// the walk gave up and the player closed, the alert or the episode picker opened), or is dropped
+/// when another context takes the screen or the player closes (`contextPresented`). No step can run
+/// for a failure the ledger does not know, and every exit of every step either closes it or leaves
+/// it open, where a viewer choice holds it (`choiceBegan`) and an abandoned choice hands it back to
+/// be routed from scratch (`choiceAbandoned`). A link rejection deferred for a refresh travels with
+/// it: every close or drop where the refresh did not settle it hands the failure back to apply it.
 ///
-/// Every choice stales the tickets of the walks running before it (`AutoWalkIntentGate`), so
-/// nothing an old walk does can change the screen afterwards. While a choice is pending, a failure
-/// of the context on screen is held; if the choice is abandoned, it is handed back to be routed by
-/// the normal rules (`choiceAbandoned` returns it). A failure whose walk the choice interrupted is
-/// handed back the same way: the walk itself never resumes on its own.
-struct PlayerChoiceLedger: Equatable {
-    /// A playback failure of one presented context (nil `failure`: none to replay).
-    struct HeldFailure: Equatable {
-        let contextId: String
-        let failure: PlaybackFailure
+/// **Choices.** One that takes over (or closes) at once (`viewerActed`: a list pick, a hand-off,
+/// Menu), or one made in the player that may still fail (`choiceBegan(id)`): pending until it
+/// reaches the screen (`contextPresented`) or the player abandons it (`choiceAbandoned(id)`). A
+/// newer choice supersedes an older one. Every choice stales the walk tickets taken before it
+/// (`AutoWalkIntentGate`), so nothing an old walk does changes the screen afterwards.
+struct PlayerChoiceLedger {
+    /// An unhandled failure of one presented context.
+    struct OpenFailure {
+        let context: PlaybackContext
+        var failure: PlaybackFailure
+        /// The link's 8-hour rejection waits for a refresh (2b.7); applied on every exit where
+        /// the refresh did not settle it.
+        var rejectionDeferred: Bool
+        /// Held for a pending viewer choice (no step runs for it until the choice ends).
+        var held: Bool
+        var contextId: String { context.id }
     }
 
     enum Walk: Equatable { case autoFailover, episode }
@@ -37,91 +46,103 @@ struct PlayerChoiceLedger: Equatable {
     private(set) var gate = AutoWalkIntentGate()
     /// The in-player choice still on its way (nil: none pending).
     private(set) var pendingChoice: UUID?
-    /// The failure of the context on screen that waits for the pending choice to end.
-    private(set) var heldFailure: HeldFailure?
+    private(set) var openFailure: OpenFailure?
     private(set) var autoFailoverTicket: Int?
     private(set) var episodeWalkTicket: Int?
-    /// The failure each walk is handling now (nil for a walk the start-up limit began).
-    private var walkFailure: [Walk: HeldFailure] = [:]
 
     var choicePending: Bool { pendingChoice != nil }
+    var failureHeld: Bool { openFailure?.held ?? false }
 
     // MARK: Viewer choices
 
     /// A choice that takes over the screen, or closes the player, at once. Earlier walks go stale;
-    /// nothing is pending afterwards.
+    /// nothing is pending afterwards. The screen change that follows drops an open failure
+    /// (`contextPresented`).
     mutating func viewerActed() {
         gate.viewerChose()
         gate.contextPresented()
         pendingChoice = nil
-        heldFailure = nil
-        clearWalks()
+        clearTickets()
     }
 
-    /// An in-player choice began (it may still fail). Earlier walks go stale. `walkInFlight` names
-    /// the walk that was resolving for a failure of the context on screen: the choice interrupts it,
-    /// and that failure is held, to be routed again from scratch if the choice is abandoned.
-    mutating func choiceBegan(_ id: UUID, walkInFlight: Walk?) {
-        if let walk = walkInFlight, let failure = walkFailure[walk], heldFailure == nil {
-            heldFailure = failure
-        }
+    /// An in-player choice began (it may still fail). Earlier walks go stale; an open failure of
+    /// the context on screen, in whatever phase its handling was, is held for the choice.
+    mutating func choiceBegan(_ id: UUID) {
         gate.viewerChose()
         pendingChoice = id
-        clearWalks()
+        openFailure?.held = true
+        clearTickets()
     }
 
-    /// A context went on screen (or the player closed): the pending choice, if any, is done, and a
-    /// failure held for the context that left is dropped with it.
-    mutating func contextPresented() {
+    /// `presentedId` is on screen now (nil: the player closed). A pending choice is done; an open
+    /// failure of a context that left the screen is dropped and returned when its deferred link
+    /// rejection must still be applied.
+    @discardableResult
+    mutating func contextPresented(_ presentedId: String?) -> OpenFailure? {
         gate.contextPresented()
         pendingChoice = nil
-        heldFailure = nil
+        guard let open = openFailure, open.contextId != presentedId else { return nil }
+        openFailure = nil
+        return open.rejectionDeferred ? open : nil
     }
 
-    /// The player gave up on choice `id` (resolve failed, nothing found, cancelled). When it is
-    /// the pending one, pending ends with the old context still on screen, and a failure held for
-    /// that context is returned to be routed by the normal rules. A superseded or unknown id
-    /// changes nothing.
-    mutating func choiceAbandoned(_ id: UUID) -> HeldFailure? {
+    /// The player gave up on choice `id`. When it is the pending one, pending ends with the old
+    /// context still on screen, and a held failure is returned to be routed from scratch.
+    mutating func choiceAbandoned(_ id: UUID) -> OpenFailure? {
         guard pendingChoice == id else { return nil }
         pendingChoice = nil
         gate.contextPresented()
-        let held = heldFailure
-        heldFailure = nil
-        return held
+        guard var open = openFailure, open.held else { return nil }
+        open.held = false
+        openFailure = open
+        return open
     }
 
-    // MARK: Failures and the start-up limit
+    // MARK: The open failure
 
-    /// A failure of the context on screen arrived.
-    mutating func failureArrived(contextId: String, failure: PlaybackFailure) -> FailureVerdict {
-        guard choicePending else { return .route }
-        heldFailure = HeldFailure(contextId: contextId, failure: failure)
-        return .hold
+    /// The player reported a failure of `context` (on screen). Opens it (a second report of the
+    /// same context while it is open updates it and keeps a deferral); held while a choice is pending.
+    mutating func failureArrived(context: PlaybackContext, failure: PlaybackFailure,
+                                 rejectionDeferred: Bool) -> FailureVerdict {
+        let deferred = rejectionDeferred || (openFailure?.contextId == context.id && openFailure?.rejectionDeferred == true)
+        openFailure = OpenFailure(context: context, failure: failure, rejectionDeferred: deferred,
+                                  held: choicePending)
+        return choicePending ? .hold : .route
+    }
+
+    /// Routing decided whether the refresh will run: when it will not, the deferred rejection is
+    /// returned (to apply now) and no longer deferred.
+    mutating func refreshDecided(willRefresh: Bool) -> OpenFailure? {
+        guard var open = openFailure, open.rejectionDeferred, !willRefresh else { return nil }
+        open.rejectionDeferred = false
+        openFailure = open
+        return open
+    }
+
+    /// The failure of `contextId` reached a terminal outcome. `rejectionSettled`: a replacement
+    /// swapped in (a refresh that helped, or a walk that already remembered its link). Returns
+    /// the failure when its deferred rejection must be applied now.
+    @discardableResult
+    mutating func failureHandled(contextId: String, rejectionSettled: Bool) -> OpenFailure? {
+        guard let open = openFailure, open.contextId == contextId else { return nil }
+        openFailure = nil
+        return open.rejectionDeferred && !rejectionSettled ? open : nil
     }
 
     /// May the start-up limit (or anything else automatic) start a walk now?
     var allowsAutomaticStart: Bool { !choicePending && gate.allowsAutomaticWalk }
 
-    // MARK: Walks
+    // MARK: Walk tickets
 
-    /// A walk starts (or continues) for `failure` of `contextId` (nil: the start-up limit). A
-    /// report that a walk already resolving swallows keeps that walk's ticket (`keepTicket`).
-    mutating func walkStarted(_ walk: Walk, contextId: String, failure: PlaybackFailure?, keepTicket: Bool = false) {
-        if !keepTicket || ticket(walk) == nil {
-            switch walk {
-            case .autoFailover: autoFailoverTicket = gate.ticket
-            case .episode: episodeWalkTicket = gate.ticket
-            }
-        }
-        if let failure {
-            walkFailure[walk] = HeldFailure(contextId: contextId, failure: failure)
-        } else if !keepTicket {
-            walkFailure[walk] = nil
+    /// A walk starts (or, `keepTicket`, a walk already resolving swallows a second report).
+    mutating func walkStarted(_ walk: Walk, keepTicket: Bool = false) {
+        guard !keepTicket || ticket(walk) == nil else { return }
+        switch walk {
+        case .autoFailover: autoFailoverTicket = gate.ticket
+        case .episode: episodeWalkTicket = gate.ticket
         }
     }
 
-    /// The ticket of `walk`'s current run.
     func ticket(_ walk: Walk) -> Int? {
         switch walk {
         case .autoFailover: autoFailoverTicket
@@ -129,32 +150,26 @@ struct PlayerChoiceLedger: Equatable {
         }
     }
 
-    /// May `walk`'s `.play` swap `replacing` (the context it set out to replace) for its result
-    /// while `presented` is on screen?
+    /// May `walk`'s `.play` swap `replacing` for its result while `presented` is on screen?
     func admitsSwap(_ walk: Walk, replacing: String?, presented: String?) -> Bool {
         gate.admitsSwap(ticket: ticket(walk), replacing: replacing, presented: presented)
     }
 
     /// May `walk`'s give-up close the player now?
-    func admitsGiveUp(_ walk: Walk) -> Bool {
-        gate.accepts(ticket(walk))
-    }
+    func admitsGiveUp(_ walk: Walk) -> Bool { gate.accepts(ticket(walk)) }
 
-    /// May a load or other result the walk asked for with `ticket` be used now?
+    /// May a load or other result asked for with `ticket` be used now?
     func accepts(_ ticket: Int?) -> Bool { gate.accepts(ticket) }
 
-    /// The walk's run ended (it swapped, gave up, or was dropped).
     mutating func walkEnded(_ walk: Walk) {
         switch walk {
         case .autoFailover: autoFailoverTicket = nil
         case .episode: episodeWalkTicket = nil
         }
-        walkFailure[walk] = nil
     }
 
-    private mutating func clearWalks() {
+    private mutating func clearTickets() {
         autoFailoverTicket = nil
         episodeWalkTicket = nil
-        walkFailure = [:]
     }
 }

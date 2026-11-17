@@ -181,6 +181,9 @@ final class FirstPlayAutoPlayController: ObservableObject {
     /// W4 (2b.7): listed keys already re-resolved once, and when each key last resolved here.
     private var refreshedOnce: Set<String> = []
     private var resolvedAt: [String: TimeInterval] = [:]
+    /// Review r3: the pick whose resolve is in flight, with the tried set from before it, so an
+    /// interruption (`abandonFailover`) can give the never-started candidate and its attempt back.
+    private var inFlightPick: (index: Int, triedBefore: PlayerSourceFallbackTried)?
     /// The repository has reported the direct auto-play flow on for this request.
     private var sawDirectFlow = false
     /// The walk continues after a failed playback (the open player is swapped in place).
@@ -350,13 +353,24 @@ final class FirstPlayAutoPlayController: ObservableObject {
 
     /// W4: the slow source started while its replacement resolved: drop the resolve (its result is
     /// ignored when it lands), keep playing. The attempt it used stays used.
+    /// Review r3: the candidate whose resolve is dropped never started, so it goes back to untried
+    /// and its attempt is returned (a refresh that is dropped gives nothing back: its source failed
+    /// for real, and the host applies the link rejection the refresh would have).
     func abandonFailover() {
         guard case .resolving = phase, isFailoverWalk else { return }
         generation += 1
         resolveTimeout?.cancel()
         limitWalk = false
+        if let pick = inFlightPick {
+            triedIndices.remove(pick.index)
+            tried = pick.triedBefore
+            attemptsUsed = max(attemptsUsed - 1, 0)
+            inFlightPick = nil
+            autoPlayLog("[AutoPlay] failover abandoned: the resolving candidate goes back untried (\(attemptsUsed)/\(attemptCap) used)")
+        } else {
+            autoPlayLog("[AutoPlay] failover abandoned")
+        }
         phase = .done
-        autoPlayLog("[AutoPlay] failover abandoned: the slow source started")
     }
 
     // MARK: - Walk
@@ -387,6 +401,7 @@ final class FirstPlayAutoPlayController: ObservableObject {
                 return
             }
             let candidate = candidates[index]
+            let triedBefore = tried
             triedIndices.insert(index)
             tried = tried.including(stream: candidate.stream)
 
@@ -407,6 +422,7 @@ final class FirstPlayAutoPlayController: ObservableObject {
             attemptsUsed += 1
             phase = .resolving(attempt: attemptsUsed)
             autoPlayLog("[AutoPlay] pick #\(attemptsUsed) resolving key=\(candidate.streamKey)\(rankSuffix(candidate))")
+            inFlightPick = (index, triedBefore)
             beginResolve(candidate)
             return
         }
@@ -450,6 +466,7 @@ final class FirstPlayAutoPlayController: ObservableObject {
         guard attemptGeneration == generation, case .resolving = phase else { return }
         generation += 1
         resolveTimeout?.cancel()
+        inFlightPick = nil       // the resolve answered: the candidate was really tried
         switch outcome {
         case let .playable(resolved, url):
             if !candidate.streamKey.isEmpty { resolvedAt[candidate.streamKey] = deps.now() }
@@ -477,6 +494,7 @@ final class FirstPlayAutoPlayController: ObservableObject {
     /// the deadline remembers the source (the picker left that to this step) and moves on.
     private func beginRefresh(_ candidate: Candidate, failedURL: URL?) {
         refreshedOnce.insert(candidate.streamKey)
+        inFlightPick = nil       // a refresh is no pick: nothing to give back if it is dropped
         phase = .resolving(attempt: max(attemptsUsed, 1))
         autoPlayLog("[AutoPlay] refreshing key=\(candidate.streamKey) once before moving on")
         generation += 1
