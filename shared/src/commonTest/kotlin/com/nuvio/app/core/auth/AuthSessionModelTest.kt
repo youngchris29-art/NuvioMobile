@@ -73,7 +73,10 @@ class AuthSessionModelTest {
             val collected = mutableListOf<AuthOutput>()
             var next: AuthEvent? = event
             var first = true
+            var reductions = 0
             while (next != null) {
+                // Round 5: one external event may only lead to a bounded chain of follow-ups.
+                check(++reductions <= 20) { "event $event did not settle: ${collected.takeLast(6)}" }
                 val step = reduce(state, next)
                 state = step.state
                 if (first) cleared = step.cleared
@@ -1163,5 +1166,63 @@ class AuthSessionModelTest {
         val accept = run.send(ValidationFinished(run.startedValidation(), SessionVerdict.Valid))
         assertTrue(accept.indexOf(PersistOwner("B")) < accept.indexOf(Publish(account("B"))), "$accept")
         assertEquals("B", run.state.owner)
+    }
+
+    // ── Review round 5: a permanently failing gate never repeats without a new event ────────────
+
+    private fun gateWrites(outputs: List<AuthOutput>) = outputs.count { it.isGate }
+
+    @Test
+    fun aPermanentlyFailingOwnerWriteForAnAccountIsNotRetriedOnAnyAcceptBranch() {
+        // No wipe needed (known no owner).
+        val noWipe = Run(owner = null)
+        noWipe.ownerWriteOk = false
+        noWipe.send(acct("B", "b1"))
+        assertEquals(1, gateWrites(noWipe.send(ValidationFinished(noWipe.startedValidation(), SessionVerdict.Valid))))
+        assertEquals(0, gateWrites(noWipe.send(Snap.RefreshFailure)))
+        assertEquals(0, gateWrites(noWipe.send(acct("B", "b2", refreshedFrom = "b1"))))
+        assertEquals(AuthState.Unauthenticated, noWipe.state.published)
+        // Wipe needed (another owner): marker and owner each written once.
+        val withWipe = Run(owner = "A")
+        withWipe.ownerWriteOk = false
+        withWipe.send(acct("B", "b1"))
+        assertEquals(2, gateWrites(withWipe.send(ValidationFinished(withWipe.startedValidation(), SessionVerdict.Valid))))
+        assertEquals(0, gateWrites(withWipe.send(Snap.RefreshFailure)))
+        // Owner already confirmed as B: no write at all, so nothing to fail.
+        val confirmed = Run(owner = "B")
+        confirmed.ownerWriteOk = false
+        confirmed.send(acct("B", "b1"))
+        assertEquals(0, gateWrites(confirmed.send(ValidationFinished(confirmed.startedValidation(), SessionVerdict.Valid))))
+        assertEquals(account("B"), confirmed.state.published)
+    }
+
+    @Test
+    fun aPermanentlyFailingMarkerOrOwnerWriteEndsForEveryContinuation() {
+        // Marker before an account, a reset, a lost session and a guest.
+        val markerAccept = Run(owner = "A").apply { markerWriteOk = false }
+        markerAccept.send(acct("B", "b1"))
+        markerAccept.send(ValidationFinished(markerAccept.startedValidation(), SessionVerdict.Valid))
+        assertEquals(0, gateWrites(markerAccept.send(Snap.RefreshFailure)))
+        val markerReset = Run().apply { signInPublished("A", "a1"); markerWriteOk = false }
+        markerReset.send(ResetStarted(ResetKind.SignOut))
+        markerReset.send(ResetFinished(ResetKind.SignOut))
+        assertEquals(0, gateWrites(markerReset.send(Snap.NotAuthenticated())))
+        val markerGuest = Run(owner = "A").apply { markerWriteOk = false }
+        markerGuest.send(GuestChosen("g1"))
+        assertEquals(0, gateWrites(markerGuest.send(Snap.RefreshFailure)))
+        // Owner after a reset, a lost session, a new guest and the boot guest.
+        val ownerReset = Run().apply { signInPublished("A", "a1"); ownerWriteOk = false }
+        ownerReset.send(ResetStarted(ResetKind.SignOut))
+        assertEquals(2, gateWrites(ownerReset.send(ResetFinished(ResetKind.SignOut))))
+        assertEquals(0, gateWrites(ownerReset.send(Snap.NotAuthenticated())))
+        val ownerLost = Run().apply { signInPublished("A", "a1"); ownerWriteOk = false }
+        assertEquals(2, gateWrites(ownerLost.send(Snap.NotAuthenticated())))
+        assertEquals(0, gateWrites(ownerLost.send(Snap.RefreshFailure)))
+        val ownerGuest = Run(owner = "A").apply { ownerWriteOk = false }
+        assertEquals(2, gateWrites(ownerGuest.send(GuestChosen("g1"))))
+        assertEquals(0, gateWrites(ownerGuest.send(Snap.RefreshFailure)))
+        val bootGuest = Run().apply { ownerWriteOk = false }
+        assertEquals(1, gateWrites(bootGuest.send(Boot(guestId = "g1", owner = null, notice = false, ownerUnknown = true))))
+        assertEquals(0, gateWrites(bootGuest.send(Snap.RefreshFailure)))
     }
 }

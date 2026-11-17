@@ -632,4 +632,39 @@ class AuthSessionDriverTest {
         rig.settle()
         assertEquals(account("B"), rig.effects.published)
     }
+
+    // ── Review round 5: a permanently failing owner write never loops ────────────────────────────
+
+    @Test
+    fun aPermanentlyFailingOwnerWriteIsTriedOnceAndLeavesTheLaneUsable() = runTest {
+        // Known "no owner", no pending wipe. Every owner write fails; after 20 attempts the fake
+        // gives up failing, so a loop ends (and fails the count below) instead of hanging.
+        val rig = Rig(this, owner = null)
+        var attempts = 0
+        rig.effects.ownerWriteFails = { attempts++; attempts <= 20 }
+        rig.effects.signIn = { rig.flow.value = authenticated("B", "b1") }
+        rig.driver.signInWithEmail("B", "pw")
+        rig.settle()
+        assertEquals(1, attempts)
+        assertEquals(AuthState.Unauthenticated, rig.effects.published)
+        assertEquals(1, rig.effects.log.count { it == "publish:Unauthenticated" })
+        assertTrue(rig.effects.accountsShown.isEmpty())
+        // The lane is free: a status event and commands are handled.
+        rig.flow.value = SessionStatus.NotAuthenticated(true)
+        rig.settle()
+        assertEquals(1, rig.effects.count("showNotice"))
+        rig.driver.chooseGuest("g1")
+        rig.settle()
+        assertEquals(AuthState.Authenticated("g1", null, true), rig.effects.published)
+        assertTrue(rig.driver.signOut().isSuccess)
+        rig.settle()
+        // The write starts succeeding: the next B session is validated, written and shown.
+        rig.effects.ownerWriteFails = { false }
+        rig.effects.signIn = { rig.flow.value = authenticated("B", "b2") }
+        rig.driver.signInWithEmail("B", "pw")
+        rig.settle()
+        assertEquals(account("B"), rig.effects.published)
+        assertEquals("B", rig.effects.diskOwner)
+        assertTrue(rig.effects.accountsShown.all { (user, disk) -> disk == user })
+    }
 }

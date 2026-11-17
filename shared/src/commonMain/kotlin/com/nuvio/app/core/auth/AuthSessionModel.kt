@@ -439,6 +439,10 @@ private class StepBuilder(var state: AuthModelState) {
 
     /** An account is about to be shown: wipe first when its data could be someone else's (AQ, r1-1, r1-5). */
     private fun accept(live: Account, userId: String) {
+        // Round 5: a serial whose wipe or owner write failed is not accepted again in this run,
+        // on any branch (wipe needed or not). Checked first, so a permanently failing write is
+        // tried once per session and never re-emitted from the same reduction.
+        if (state.wipeFailedSerial == live.serial) return
         val needsWipe = state.wipePending ||
             (state.ownerUnknown && !live.restored) ||
             (state.owner != null && state.owner != userId)
@@ -446,7 +450,6 @@ private class StepBuilder(var state: AuthModelState) {
             finishAccept(live, userId)
             return
         }
-        if (state.wipeFailedSerial == live.serial) return
         startWipe(AfterWipe.Accept(live.serial), "account $userId replaces the previous local data")
     }
 
