@@ -1,5 +1,6 @@
 package com.nuvio.app.features.profiles
 
+import kotlin.concurrent.Volatile
 import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import co.touchlab.kermit.Logger
 import com.nuvio.app.core.auth.AuthRepository
@@ -46,6 +47,8 @@ object ProfileRepository {
     private val _state = MutableStateFlow(ProfileState())
     val state: StateFlow<ProfileState> = _state.asStateFlow()
 
+    // Review r10: read off the main thread by the source-search store when a request arrives.
+    @Volatile
     private var activeProfileIndex: Int = 1
     private var loadedCacheForUserId: String? = null
 

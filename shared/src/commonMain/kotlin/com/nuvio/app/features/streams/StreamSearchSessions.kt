@@ -79,6 +79,11 @@ internal class StreamSearchTargets(
      * key of its own, which no search built after the refresh joins.
      */
     val pluginGeneration: Long = 0L,
+    /**
+     * Review r10: the world this request was built in ([StreamSearchEnvironment.stamp], read first).
+     * Null only in store-level tests that build targets by hand; such a request is not compared.
+     */
+    val environment: StreamSearchEnvironmentStamp? = null,
 ) {
     val debridConfiguration: String
         get() = debrid.configuration
@@ -217,8 +222,13 @@ internal enum class StreamSearchAdmission {
     Start,
     /** As [Start], first dropping the search held for the key (a forced reload). */
     Replace,
-    /** Run a search that is never held, joined, evicting or evicted: it was built before a plugin refresh. */
+    /**
+     * Run a search that is never held, joined, evicting or evicted: it was built before a plugin
+     * refresh, or (review r10) under another profile, debrid account, add-on set or plugin setup.
+     */
     Private,
+    /** Review r10: built before a wipe ([StreamSearchSessionStore.clear]): nothing is fetched, the consumer completes. */
+    Reject,
 }
 
 /**
@@ -231,14 +241,22 @@ internal enum class StreamSearchAdmission {
  * at the old generation too, so it may predate a scraper the refresh added; held, it would evict
  * the same episode's newer search. The generation moves only on a plugin refresh that changed
  * something, so only a request built across one runs privately (a second fetch, never a wrong one).
+ *
+ * Review r10: [clearedGeneration] is the generation a wipe left; a request built before it is
+ * rejected. [environmentMatches]: the request's stamp equals the world at its arrival; a request
+ * built under another profile, account, add-on set or plugin setup runs privately, so only a
+ * request of the current world can evict (an older one can never evict a newer search).
  */
 internal fun streamSearchAdmission(
     requestGeneration: Long,
     currentGeneration: Long,
+    clearedGeneration: Long,
+    environmentMatches: Boolean,
     forceRefresh: Boolean,
     held: Boolean,
 ): StreamSearchAdmission = when {
-    requestGeneration < currentGeneration -> StreamSearchAdmission.Private
+    requestGeneration < clearedGeneration -> StreamSearchAdmission.Reject
+    requestGeneration < currentGeneration || !environmentMatches -> StreamSearchAdmission.Private
     !held -> StreamSearchAdmission.Start
     forceRefresh -> StreamSearchAdmission.Replace
     else -> StreamSearchAdmission.Join
@@ -261,6 +279,8 @@ internal class StreamSearchSessionStore(
     private val now: () -> Long = ::epochMs,
     private val scope: CoroutineScope =
         CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("StreamSearchSessions")),
+    /** Review r10: the world now, compared with a request's stamp when it arrives. */
+    private val currentEnvironment: () -> StreamSearchEnvironmentStamp = { StreamSearchEnvironment.stamp() },
 ) {
     private val log = Logger.withTag("StreamSearchSessions")
     // Every operation on the map is short and non-suspending, so a plain lock serves: [clear] and
@@ -351,6 +371,9 @@ internal class StreamSearchSessionStore(
      */
     fun clear() {
         synchronized(lock) {
+            // Review r10: a request built before this point is rejected when it arrives.
+            pluginGeneration++
+            clearedGeneration = pluginGeneration
             sessions.values.forEach { it.cancel() }
             sessions.clear()
             cancelPrivateLocked()
@@ -387,7 +410,9 @@ internal class StreamSearchSessionStore(
     /** Review r6: read by every target builder before it reads the plugin groups. */
     fun pluginGeneration(): Long = synchronized(lock) { pluginGeneration }
 
+    // Review r10: also bumped by [clear]; [clearedGeneration] is the value the last wipe left.
     private var pluginGeneration = 0L
+    private var clearedGeneration = 0L
 
     /**
      * Whether a search for [key] is held and would be served to a new consumer right now (running,
@@ -417,10 +442,16 @@ internal class StreamSearchSessionStore(
             val admission = streamSearchAdmission(
                 requestGeneration = targets.pluginGeneration,
                 currentGeneration = pluginGeneration,
+                clearedGeneration = clearedGeneration,
+                environmentMatches = targets.environment.let { it == null || it == currentEnvironment() },
                 forceRefresh = forceRefresh,
                 held = sessions.containsKey(key),
             )
             when (admission) {
+                StreamSearchAdmission.Reject -> {
+                    StreamDiagnostics.log("search rejected ${key.type} ${key.videoId} (built before a wipe)")
+                    return@synchronized Session().also { it.progress.value = Progress(isComplete = true) }
+                }
                 StreamSearchAdmission.Join -> {
                     log.d { "Joining source search for ${key.type} ${key.videoId}" }
                     StreamDiagnostics.log("search join ${key.type} ${key.videoId}")

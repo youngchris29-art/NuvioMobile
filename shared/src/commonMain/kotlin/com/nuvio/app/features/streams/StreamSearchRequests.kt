@@ -32,6 +32,21 @@ internal object StreamSearchEnvironment {
     /** The active profile, part of every search key. */
     var profileId: () -> Int = defaultProfileId
 
+    /**
+     * Review r10: everything outside the store a search is built from, read FIRST by every builder
+     * (before the profile, the account, the add-ons or the plugins it then uses). The store reads it
+     * again when the request arrives and runs the request privately when anything changed between.
+     */
+    fun stamp(): StreamSearchEnvironmentStamp = StreamSearchEnvironmentStamp(
+        profileId = profileId(),
+        debridConfiguration = debrid().configuration,
+        addons = installedAddons(),
+        // A repository's refresh flags, error and timestamp flip on a refresh that changes nothing.
+        plugins = StreamSearchRequests.pluginUiState().let { state ->
+            state.copy(repositories = state.repositories.map { it.copy(isRefreshing = false, errorMessage = null, lastUpdated = 0L) })
+        },
+    )
+
     /** Tests: back to the app's sources. */
     fun resetForTesting() {
         installedAddons = defaultInstalledAddons
@@ -39,6 +54,17 @@ internal object StreamSearchEnvironment {
         profileId = defaultProfileId
     }
 }
+
+/**
+ * Review r10: the profile, debrid account, enabled add-ons (manifests included) and plugin settings
+ * (scrapers and their code included) one request was built under. Equal stamps: the same world.
+ */
+internal data class StreamSearchEnvironmentStamp(
+    val profileId: Int,
+    val debridConfiguration: String,
+    val addons: List<ManagedAddon>,
+    val plugins: PluginsUiState,
+)
 
 internal object StreamSearchRequests {
     /** The plugin groups for [type] under the current plugin settings (the lines both repositories ran). */
@@ -77,6 +103,7 @@ internal object StreamSearchRequests {
      * outside the repositories (the fallback facade). Null when there is nothing to search.
      */
     suspend fun resolveTargets(type: String, videoId: String, season: Int?, episode: Int?): StreamSearchTargets? {
+        val environment = StreamSearchEnvironment.stamp()                // review r10: before anything else
         val pluginUiState = pluginUiState()
         val installed = StreamSearchEnvironment.installedAddons()
         val pluginGeneration = StreamSearchSessions.pluginGeneration()   // review r6: before the groups
@@ -99,6 +126,7 @@ internal object StreamSearchRequests {
             pluginProviderGroups = groups,
             debrid = StreamSearchEnvironment.debrid(),
             pluginGeneration = pluginGeneration,
+            environment = environment,
         )
     }
 

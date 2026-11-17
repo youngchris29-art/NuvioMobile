@@ -129,6 +129,7 @@ object PlayerStreamsRepository {
         imdbVideoId: String? = null,
         remapAttempted: Boolean = false,
     ) {
+        val environment = StreamSearchEnvironment.stamp()                // review r10: before anything else
         val pluginUiState = StreamSearchRequests.pluginUiState()
         val requestKey = "$type::$videoId::$season::$episode::pluginsGrouped=${pluginUiState.groupStreamsByRepository}"
         val current = slot.state.value
@@ -282,6 +283,7 @@ object PlayerStreamsRepository {
             pluginProviderGroups = pluginProviderGroups,
             debrid = StreamSearchEnvironment.debrid(),
             pluginGeneration = pluginGeneration,
+            environment = environment,
         )
         val searchProfileId = StreamSearchEnvironment.profileId()
         slot.searchKey = searchTargets.key(searchProfileId)

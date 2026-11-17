@@ -79,6 +79,7 @@ object StreamsRepository {
      * addons are keyed on. Addons are then matched against whichever of the two they accept.
      */
     private fun load(type: String, videoId: String, parentMetaId: String?, season: Int?, episode: Int?, manualSelection: Boolean, forceRefresh: Boolean, imdbVideoId: String? = null, remapAttempted: Boolean = false) {
+        val environment = StreamSearchEnvironment.stamp()                // review r10: before anything else
         val pluginUiState = StreamSearchRequests.pluginUiState()
         val requestToken = requestToken(
             type = type,
@@ -310,6 +311,7 @@ object StreamsRepository {
             pluginProviderGroups = pluginProviderGroups,
             debrid = StreamSearchEnvironment.debrid(),
             pluginGeneration = pluginGeneration,
+            environment = environment,
         )
         val searchProfileId = StreamSearchEnvironment.profileId()
         activeSearchKey = searchTargets.key(searchProfileId)

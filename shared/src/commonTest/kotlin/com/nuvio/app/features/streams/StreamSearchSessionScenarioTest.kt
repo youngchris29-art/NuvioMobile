@@ -276,7 +276,7 @@ class StreamSearchSessionScenarioTest {
 
         assertTrue(first.job.isCompleted)
         assertEquals(emptyList(), store.heldKeys())
-        consume(store)
+        consume(store, SearchFixtures.targets(pluginGeneration = store.pluginGeneration()))   // review r10: built after the wipe
         assertEquals(2, fetcher.fetchCount("a"))
     }
 
@@ -366,7 +366,7 @@ class StreamSearchSessionScenarioTest {
         val outgoing = consume(store)
         store.clear()
         assertEquals(emptyList(), store.heldKeys(), "nothing is held once clear returns")
-        val incoming = consume(store)
+        val incoming = consume(store, SearchFixtures.targets(pluginGeneration = store.pluginGeneration()))   // review r10: built after the wipe
         gate.complete(answer("a", "outgoing"))
         runCurrent()
 
@@ -384,7 +384,7 @@ class StreamSearchSessionScenarioTest {
             StreamSearchSessions.clear()
             assertEquals(emptyList(), store.heldKeys())
             val gate = fetcher.hold("a")
-            val incoming = consume(store)
+            val incoming = consume(store, SearchFixtures.targets(pluginGeneration = store.pluginGeneration()))   // review r10: built after the wipe
             // Every queued task runs here: an asynchronous wipe would land now and cancel it.
             runCurrent()
             gate.complete(answer("a", "a1"))

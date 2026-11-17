@@ -2,6 +2,7 @@ package com.nuvio.app.features.streams
 
 import com.nuvio.app.features.streams.StreamSearchAdmission.Join
 import com.nuvio.app.features.streams.StreamSearchAdmission.Private
+import com.nuvio.app.features.streams.StreamSearchAdmission.Reject
 import com.nuvio.app.features.streams.StreamSearchAdmission.Replace
 import com.nuvio.app.features.streams.StreamSearchAdmission.Start
 import kotlinx.coroutines.launch
@@ -17,38 +18,68 @@ import kotlin.test.assertEquals
 class StreamSearchAdmissionTest {
     private data class Row(
         val request: Long,
+        val cleared: Long,
         val current: Long,
+        val sameWorld: Boolean,
         val force: Boolean,
         val held: Boolean,
         val expected: StreamSearchAdmission,
     )
 
-    // request vs current: older (0 < 1), same (1 = 1), newer (2 > 1: a replaced store; not stale).
-    // Review r9: the rule does not read the plugin groups at all. An older request is private
-    // whether it carries plugin targets or none (an add-on-only request read an empty plugin list
-    // at the old generation, so it may predate a scraper the refresh added).
+    // Review r9: the rule does not read the plugin groups at all; an older request is private
+    // whether it carries plugin targets or none.
+    // Review r10: the generation relation (before the last wipe, before the last refresh, current,
+    // newer) x the stamp equal to the world at arrival x forced x held: every combination once.
     private val table = listOf(
-        Row(request = 0, current = 1, force = false, held = false, expected = Private),
-        Row(request = 0, current = 1, force = false, held = true, expected = Private),
-        Row(request = 0, current = 1, force = true, held = false, expected = Private),
-        Row(request = 0, current = 1, force = true, held = true, expected = Private),
-        Row(request = 1, current = 1, force = false, held = false, expected = Start),
-        Row(request = 1, current = 1, force = false, held = true, expected = Join),
-        Row(request = 1, current = 1, force = true, held = false, expected = Start),
-        Row(request = 1, current = 1, force = true, held = true, expected = Replace),
-        Row(request = 2, current = 1, force = false, held = false, expected = Start),
-        Row(request = 2, current = 1, force = false, held = true, expected = Join),
-        Row(request = 2, current = 1, force = true, held = false, expected = Start),
-        Row(request = 2, current = 1, force = true, held = true, expected = Replace),
+        // Request before a wipe: request 0, cleared 1, current 2.
+        Row(request = 0, cleared = 1, current = 2, sameWorld = true, force = false, held = false, expected = Reject),
+        Row(request = 0, cleared = 1, current = 2, sameWorld = true, force = false, held = true, expected = Reject),
+        Row(request = 0, cleared = 1, current = 2, sameWorld = true, force = true, held = false, expected = Reject),
+        Row(request = 0, cleared = 1, current = 2, sameWorld = true, force = true, held = true, expected = Reject),
+        Row(request = 0, cleared = 1, current = 2, sameWorld = false, force = false, held = false, expected = Reject),
+        Row(request = 0, cleared = 1, current = 2, sameWorld = false, force = false, held = true, expected = Reject),
+        Row(request = 0, cleared = 1, current = 2, sameWorld = false, force = true, held = false, expected = Reject),
+        Row(request = 0, cleared = 1, current = 2, sameWorld = false, force = true, held = true, expected = Reject),
+        // Request after the wipe, before a refresh: request 1, cleared 1, current 2.
+        Row(request = 1, cleared = 1, current = 2, sameWorld = true, force = false, held = false, expected = Private),
+        Row(request = 1, cleared = 1, current = 2, sameWorld = true, force = false, held = true, expected = Private),
+        Row(request = 1, cleared = 1, current = 2, sameWorld = true, force = true, held = false, expected = Private),
+        Row(request = 1, cleared = 1, current = 2, sameWorld = true, force = true, held = true, expected = Private),
+        Row(request = 1, cleared = 1, current = 2, sameWorld = false, force = false, held = false, expected = Private),
+        Row(request = 1, cleared = 1, current = 2, sameWorld = false, force = false, held = true, expected = Private),
+        Row(request = 1, cleared = 1, current = 2, sameWorld = false, force = true, held = false, expected = Private),
+        Row(request = 1, cleared = 1, current = 2, sameWorld = false, force = true, held = true, expected = Private),
+        // Request current: request 2, cleared 1, current 2.
+        Row(request = 2, cleared = 1, current = 2, sameWorld = true, force = false, held = false, expected = Start),
+        Row(request = 2, cleared = 1, current = 2, sameWorld = true, force = false, held = true, expected = Join),
+        Row(request = 2, cleared = 1, current = 2, sameWorld = true, force = true, held = false, expected = Start),
+        Row(request = 2, cleared = 1, current = 2, sameWorld = true, force = true, held = true, expected = Replace),
+        Row(request = 2, cleared = 1, current = 2, sameWorld = false, force = false, held = false, expected = Private),
+        Row(request = 2, cleared = 1, current = 2, sameWorld = false, force = false, held = true, expected = Private),
+        Row(request = 2, cleared = 1, current = 2, sameWorld = false, force = true, held = false, expected = Private),
+        Row(request = 2, cleared = 1, current = 2, sameWorld = false, force = true, held = true, expected = Private),
+        // Request newer than the store (a replaced store): request 3, cleared 1, current 2.
+        Row(request = 3, cleared = 1, current = 2, sameWorld = true, force = false, held = false, expected = Start),
+        Row(request = 3, cleared = 1, current = 2, sameWorld = true, force = false, held = true, expected = Join),
+        Row(request = 3, cleared = 1, current = 2, sameWorld = true, force = true, held = false, expected = Start),
+        Row(request = 3, cleared = 1, current = 2, sameWorld = true, force = true, held = true, expected = Replace),
+        Row(request = 3, cleared = 1, current = 2, sameWorld = false, force = false, held = false, expected = Private),
+        Row(request = 3, cleared = 1, current = 2, sameWorld = false, force = false, held = true, expected = Private),
+        Row(request = 3, cleared = 1, current = 2, sameWorld = false, force = true, held = false, expected = Private),
+        Row(request = 3, cleared = 1, current = 2, sameWorld = false, force = true, held = true, expected = Private),
     )
 
     @Test
     fun everyInputHasItsWrittenOutAdmission() {
-        assertEquals(12, table.map { listOf(it.request, it.force, it.held) }.toSet().size, "every combination once")
+        assertEquals(
+            32,
+            table.map { listOf(it.request, it.sameWorld, it.force, it.held) }.toSet().size,
+            "every combination once",
+        )
         table.forEach { row ->
             assertEquals(
                 row.expected,
-                streamSearchAdmission(row.request, row.current, row.force, row.held),
+                streamSearchAdmission(row.request, row.current, row.cleared, row.sameWorld, row.force, row.held),
                 row.toString(),
             )
         }
