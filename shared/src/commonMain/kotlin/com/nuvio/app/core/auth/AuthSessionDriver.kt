@@ -316,28 +316,32 @@ internal class AuthSessionDriver(
         var failure: Throwable? = null
         var wipeRan = false
         var wipeOk = true
-        var gateFailed: AuthOutput? = null
+        var gate: AuthOutput? = null
+        var gateOk = true
         withContext(NonCancellable) {
             for (output in result.outputs) {
+                if (output.isGate) gate = output
+                if (output == AuthOutput.WipeAccountData) wipeRan = true
                 try {
-                    if (output == AuthOutput.WipeAccountData) wipeRan = true
                     run(output)
                 } catch (e: Throwable) {
+                    // I3: a failing output never skips the ones after it. A gate is always the
+                    // step's last output (the reducer guarantees it), so nothing follows it here.
                     effects.log("Auth output $output failed: $e")
                     if (output == AuthOutput.WipeAccountData) wipeOk = false
+                    if (output.isGate) gateOk = false
                     if (failure == null) failure = e
-                    // r3-4: a failed durable write stops the step; the reducer decides what
-                    // follows (it always publishes a signed-out state, I3). Any other failing
-                    // output never skips the ones after it.
-                    if (output.isGate) {
-                        gateFailed = output
-                        break
-                    }
                 }
             }
         }
-        // r1-5: the wipe's outcome goes back to the reducer, which decides what follows it.
-        val followUp = gateFailed?.let { AuthEvent.GateFailed(it) } ?: if (wipeRan) AuthEvent.WipeFinished(wipeOk) else null
+        // r1-5 and round 4: a gate's or a wipe's outcome goes back to the reducer, which decides
+        // what follows it.
+        val gateOutput = gate
+        val followUp = when {
+            gateOutput != null -> if (gateOk) AuthEvent.GatePassed(gateOutput) else AuthEvent.GateFailed(gateOutput)
+            wipeRan -> AuthEvent.WipeFinished(wipeOk)
+            else -> null
+        }
         if (followUp != null) {
             val next = step(followUp)
             if (failure == null) failure = next.failure

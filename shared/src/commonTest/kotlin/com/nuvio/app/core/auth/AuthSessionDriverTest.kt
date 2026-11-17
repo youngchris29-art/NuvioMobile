@@ -55,12 +55,24 @@ class AuthSessionDriverTest {
 
         fun count(entry: String) = log.count { it == entry }
 
+        /** What the owner store holds; a failed write leaves it unchanged (round 4). */
+        var diskOwner: String? = null
+        var ownerWriteFails: (String?) -> Boolean = { false }
+
+        /** Every account shown, with the owner on disk at that moment. */
+        val accountsShown = mutableListOf<Pair<String, String?>>()
+
         override fun publish(state: AuthState) {
             published = state
             log += "publish:${describe(state)}"
+            if (state is AuthState.Authenticated && !state.isAnonymous) accountsShown += state.userId to diskOwner
         }
 
-        override fun persistOwner(userId: String?) { log += "owner:$userId" }
+        override fun persistOwner(userId: String?) {
+            log += "owner:$userId"
+            if (ownerWriteFails(userId)) throw IllegalStateException("owner not durable")
+            diskOwner = userId
+        }
         override fun persistNotice(pending: Boolean) { log += "persistNotice:$pending" }
         override fun persistWipePending(pending: Boolean) {
             log += "wipePending:$pending"
@@ -127,6 +139,7 @@ class AuthSessionDriverTest {
         }
 
         init {
+            effects.diskOwner = owner
             driver.start(AuthEvent.Boot(guestId = guestId, owner = owner, notice = false), { flow })
             scope.runCurrent()
         }
@@ -555,5 +568,68 @@ class AuthSessionDriverTest {
         assertTrue(result.isFailure)
         assertFalse("wipe" in rig.effects.log)
         assertEquals(AuthState.Unauthenticated, rig.effects.published)
+    }
+
+    // ── Review round 4: a failed owner write, driven end to end ─────────────────────────────────
+
+    @Test
+    fun aFailedOwnerWriteNeverShowsTheAccountWhileTheDiskOwnerIsStaleAndARestartKeepsItsData() = runTest {
+        val rig = Rig(this, owner = "A")
+        var failuresLeft = 1
+        rig.effects.ownerWriteFails = { it == "B" && failuresLeft-- > 0 }
+        rig.effects.signIn = { rig.flow.value = authenticated("B", "b1") }
+        rig.driver.signInWithEmail("B", "pw")
+        rig.settle()
+        assertEquals("A", rig.effects.diskOwner)
+        assertFalse(rig.effects.published is AuthState.Authenticated)
+        // A new session for B: the owner write is retried before B is shown.
+        rig.effects.signIn = { rig.flow.value = authenticated("B", "b2") }
+        rig.driver.signInWithEmail("B", "pw")
+        rig.settle()
+        assertEquals(account("B"), rig.effects.published)
+        assertTrue(rig.effects.accountsShown.all { (user, disk) -> disk == user }, "${rig.effects.accountsShown}")
+        // Restart with what is on disk: restoring B must not wipe B's data.
+        val wipesBefore = rig.effects.count("wipe")
+        val restored = MutableStateFlow<SessionStatus>(authenticated("B", "b2", SessionSource.Storage))
+        rig.driver.restart(AuthEvent.Boot(guestId = null, owner = rig.effects.diskOwner, notice = false), { restored })
+        rig.settle()
+        assertEquals(wipesBefore, rig.effects.count("wipe"))
+        assertEquals(account("B"), rig.effects.published)
+    }
+
+    @Test
+    fun aFailedOwnerWriteAfterASignOutStillShowsSignedOut() = runTest {
+        val rig = Rig(this)
+        rig.signedIn("A", "a1")
+        rig.effects.ownerWriteFails = { true }
+        rig.driver.signOut()
+        rig.settle()
+        assertEquals(AuthState.Unauthenticated, rig.effects.published)
+    }
+
+    @Test
+    fun aFailedOwnerWriteAfterALostSessionStillShowsSignedOut() = runTest {
+        val rig = Rig(this)
+        rig.signedIn("A", "a1")
+        rig.effects.ownerWriteFails = { true }
+        rig.flow.value = SessionStatus.NotAuthenticated(true)
+        rig.settle()
+        assertEquals(AuthState.Unauthenticated, rig.effects.published)
+        assertEquals(1, rig.effects.count("showNotice"))
+    }
+
+    @Test
+    fun aFailedOwnerWriteBeforeAGuestLeavesNoInvisibleGuestAndASignInWorks() = runTest {
+        val rig = Rig(this, owner = "A")
+        rig.effects.ownerWriteFails = { it == null }
+        rig.driver.chooseGuest("g1")
+        rig.settle()
+        assertEquals(AuthState.Unauthenticated, rig.effects.published)
+        assertFalse("saveGuest:g1" in rig.effects.log)
+        rig.effects.ownerWriteFails = { false }
+        rig.effects.signIn = { rig.flow.value = authenticated("B", "b1") }
+        rig.driver.signInWithEmail("B", "pw")
+        rig.settle()
+        assertEquals(account("B"), rig.effects.published)
     }
 }

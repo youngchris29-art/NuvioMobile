@@ -66,8 +66,8 @@ class AuthSessionModelTest {
         }
 
         /**
-         * Reduces [event] and, like the driver, stops a step at a failed gate write (GateFailed) or
-         * answers a wipe output with WipeFinished.
+         * Reduces [event] and, like the driver, answers a step ending in a gate with GatePassed or
+         * GateFailed, and a wipe output with WipeFinished.
          */
         fun send(event: AuthEvent): List<AuthOutput> {
             val collected = mutableListOf<AuthOutput>()
@@ -78,12 +78,11 @@ class AuthSessionModelTest {
                 state = step.state
                 if (first) cleared = step.cleared
                 first = false
-                val failedGate = step.outputs.firstOrNull { it.isGate && !gateOk(it) }
-                val ran = if (failedGate != null) step.outputs.subList(0, step.outputs.indexOf(failedGate) + 1) else step.outputs
-                collected += ran
+                collected += step.outputs
+                val gate = step.outputs.lastOrNull()?.takeIf { it.isGate }
                 next = when {
-                    failedGate != null -> AuthEvent.GateFailed(failedGate)
-                    WipeAccountData in ran -> AuthEvent.WipeFinished(wipeOk)
+                    gate != null -> if (gateOk(gate)) AuthEvent.GatePassed(gate) else AuthEvent.GateFailed(gate)
+                    WipeAccountData in step.outputs -> AuthEvent.WipeFinished(wipeOk)
                     else -> null
                 }
             }
@@ -1129,5 +1128,40 @@ class AuthSessionModelTest {
         run.send(ResetStarted(ResetKind.SignOut))
         run.send(ResetFinished(ResetKind.SignOut))
         assertEquals(AuthState.Unauthenticated, run.state.published)
+    }
+
+    // ── Review round 4: a gate ends its step ─────────────────────────────────────────────────────
+
+    @Test
+    fun aGateIsAlwaysTheLastOutputOfItsStep() {
+        // Every step of a long mixed sequence: nothing follows a gate output.
+        val run = Run(owner = "A", ownerUnknown = false)
+        val events = listOf(
+            acct("B", "b1"), Snap.RefreshFailure, ResetStarted(ResetKind.SignOut), ResetFinished(ResetKind.SignOut),
+            Snap.NotAuthenticated(), GuestChosen("g1"),
+        )
+        var state = run.state
+        events.forEach { event ->
+            listOf(event).forEach { e ->
+                val step = reduce(state, e)
+                state = step.state
+                val gateIndex = step.outputs.indexOfFirst { it.isGate }
+                if (gateIndex >= 0) assertEquals(step.outputs.lastIndex, gateIndex, "$e: ${step.outputs}")
+            }
+        }
+    }
+
+    @Test
+    fun aFailedOwnerWriteLeavesTheConfirmedOwnerAndTheNextSessionWritesItAgain() {
+        val run = Run(owner = "A")
+        run.ownerWriteOk = false
+        run.send(acct("B", "b1"))
+        run.send(ValidationFinished(run.startedValidation(), SessionVerdict.Valid))
+        assertEquals("A", run.state.owner)
+        run.ownerWriteOk = true
+        run.send(acct("B", "b2"))
+        val accept = run.send(ValidationFinished(run.startedValidation(), SessionVerdict.Valid))
+        assertTrue(accept.indexOf(PersistOwner("B")) < accept.indexOf(Publish(account("B"))), "$accept")
+        assertEquals("B", run.state.owner)
     }
 }
