@@ -18,6 +18,8 @@ import com.nuvio.app.features.streams.StreamSearchEnvironment
 import com.nuvio.app.features.streams.StreamSearchRequests
 import com.nuvio.app.features.streams.StreamSearchSessions
 import com.nuvio.app.features.streams.StreamSearchTargets
+import com.nuvio.app.features.streams.STREAM_SEARCH_MAX_WORLD_RETRIES
+import com.nuvio.app.core.profile.ActiveProfileProvider
 import com.nuvio.app.features.streams.StreamVideoIdRemap
 import com.nuvio.app.features.streams.StreamsEmptyStateReason
 import com.nuvio.app.features.streams.StreamsUiState
@@ -31,6 +33,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
@@ -128,7 +131,12 @@ object PlayerStreamsRepository {
         slot: Slot,
         imdbVideoId: String? = null,
         remapAttempted: Boolean = false,
+        searchGeneration: Long? = null,
+        worldRetries: Int = 0,
     ) {
+        // Review r10 findings: the store generation before any other input; the BUG-74 second pass
+        // keeps the first pass's, so a wipe during the lookup still refuses it.
+        val pluginGeneration = searchGeneration ?: StreamSearchSessions.pluginGeneration()
         val environment = StreamSearchEnvironment.stamp()                // review r10: before anything else
         val pluginUiState = StreamSearchRequests.pluginUiState()
         val requestKey = "$type::$videoId::$season::$episode::pluginsGrouped=${pluginUiState.groupStreamsByRepository}"
@@ -177,7 +185,6 @@ object PlayerStreamsRepository {
         PlayerSettingsRepository.ensureLoaded()
         val playerSettings = PlayerSettingsRepository.uiState.value
         val debridSettings = DebridSettingsRepository.snapshot()
-        val pluginGeneration = StreamSearchSessions.pluginGeneration()   // review r6: before the groups
         val pluginProviderGroups = StreamSearchRequests.pluginProviderGroups(type, pluginUiState)
 
         if (installedAddons.isEmpty() && pluginProviderGroups.isEmpty()) {
@@ -231,6 +238,7 @@ object PlayerStreamsRepository {
                     slot = slot,
                     imdbVideoId = remapped,
                     remapAttempted = true,
+                    searchGeneration = pluginGeneration,
                 )
             }
             slot.job = remapJob
@@ -305,11 +313,33 @@ object PlayerStreamsRepository {
                 present = { group -> presentSearchGroup(group, streamBadgeRules, debridSettings) },
                 debridSettings = debridSettings,
             )
+            var rebuild = false
             StreamSearchSessions.search(
                 profileId = searchProfileId,
                 targets = searchTargets,
                 forceRefresh = forceRefresh,
+                onRebuild = { rebuild = true },
             ).collect { completion -> updateIfCurrent(accumulator.record(completion)) }
+            // Review r10 findings: built for another profile or account, so nothing ran. Rebuilt in
+            // the current world instead of settling on an empty list (see StreamsRepository).
+            if (rebuild && worldRetries < STREAM_SEARCH_MAX_WORLD_RETRIES) {
+                ActiveProfileProvider.transition.first { !it.changing }
+                if (slot.state.generation != generation) return@launch
+                slot.requestKey = null
+                slot.job = null
+                fetchStreams(
+                    type = type,
+                    videoId = videoId,
+                    season = season,
+                    episode = episode,
+                    forceRefresh = forceRefresh,
+                    slot = slot,
+                    imdbVideoId = imdbVideoId,
+                    remapAttempted = remapAttempted,
+                    worldRetries = worldRetries + 1,
+                )
+                return@launch
+            }
             // A search dropped before it finished (a forced refresh elsewhere, eviction, a wipe)
             // leaves its remaining sources without a result.
             updateIfCurrent { it.withoutPendingGroups() }

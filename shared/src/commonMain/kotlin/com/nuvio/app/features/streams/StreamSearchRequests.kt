@@ -2,6 +2,7 @@ package com.nuvio.app.features.streams
 
 import com.nuvio.app.core.build.FeaturePolicyProvider
 import com.nuvio.app.core.profile.ActiveProfileProvider
+import com.nuvio.app.core.profile.ProfileTransition
 import com.nuvio.app.features.addons.AddonRepository
 import com.nuvio.app.features.addons.ManagedAddon
 import com.nuvio.app.features.addons.enabledAddons
@@ -38,9 +39,13 @@ internal object StreamSearchEnvironment {
      * again when the request arrives and runs the request privately when anything changed between.
      */
     fun stamp(): StreamSearchEnvironmentStamp = StreamSearchEnvironmentStamp(
+        // Review r10 findings: the profile transition first, so a selection that starts after this
+        // read is seen at admission even when the id and the account it reads look unchanged.
+        profileTransition = ActiveProfileProvider.transition.value,
         profileId = profileId(),
         debridConfiguration = debrid().configuration,
-        addons = installedAddons(),
+        // Review r10 findings: an add-on's refresh flag and error flip on a refresh that changes nothing.
+        addons = installedAddons().map { it.copy(isRefreshing = false, errorMessage = null) },
         // A repository's refresh flags, error and timestamp flip on a refresh that changes nothing.
         plugins = StreamSearchRequests.pluginUiState().let { state ->
             state.copy(repositories = state.repositories.map { it.copy(isRefreshing = false, errorMessage = null, lastUpdated = 0L) })
@@ -60,11 +65,29 @@ internal object StreamSearchEnvironment {
  * (scrapers and their code included) one request was built under. Equal stamps: the same world.
  */
 internal data class StreamSearchEnvironmentStamp(
+    val profileTransition: ProfileTransition,
     val profileId: Int,
     val debridConfiguration: String,
     val addons: List<ManagedAddon>,
     val plugins: PluginsUiState,
-)
+) {
+    /**
+     * Review r10 findings: the same profile and debrid account as [now], with no profile change
+     * started, finished or running in between. A request for another account is never executed.
+     */
+    fun sameAccountAs(now: StreamSearchEnvironmentStamp): Boolean =
+        !profileTransition.changing && profileTransition == now.profileTransition &&
+            profileId == now.profileId && debridConfiguration == now.debridConfiguration
+
+    /** The same enabled add-ons (manifests included) and plugin setup as [now]. */
+    fun sameSourcesAs(now: StreamSearchEnvironmentStamp): Boolean = addons == now.addons && plugins == now.plugins
+}
+
+/**
+ * Review r10 findings: how many times one load is rebuilt after its request was refused for another
+ * profile or account (each refusal means the world changed while it was being built).
+ */
+internal const val STREAM_SEARCH_MAX_WORLD_RETRIES = 3
 
 internal object StreamSearchRequests {
     /** The plugin groups for [type] under the current plugin settings (the lines both repositories ran). */
@@ -103,10 +126,11 @@ internal object StreamSearchRequests {
      * outside the repositories (the fallback facade). Null when there is nothing to search.
      */
     suspend fun resolveTargets(type: String, videoId: String, season: Int?, episode: Int?): StreamSearchTargets? {
+        // Review r10 findings: the store generation (wipes, plugin refreshes) before any other input.
+        val pluginGeneration = StreamSearchSessions.pluginGeneration()
         val environment = StreamSearchEnvironment.stamp()                // review r10: before anything else
         val pluginUiState = pluginUiState()
         val installed = StreamSearchEnvironment.installedAddons()
-        val pluginGeneration = StreamSearchSessions.pluginGeneration()   // review r6: before the groups
         val groups = pluginProviderGroups(type, pluginUiState)
         var addons = streamAddonTargets(installed, type, videoId, imdbVideoId = null)
         val tmdbId = StreamVideoIdRemap.parseTmdbId(videoId)

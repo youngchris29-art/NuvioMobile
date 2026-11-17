@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.transformWhile
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlin.concurrent.Volatile
 
 /** One source search: the same title, episode and source setup for the same profile (upstream 8fba6c71e). */
 internal data class StreamSearchKey(
@@ -98,7 +99,9 @@ internal class StreamSearchTargets(
      */
     val sourceConfiguration: String
         get() = buildList {
-            streamAddons.forEach { add("addon:${it.addonId}@${it.videoId}") }
+            // Review r10 findings: with the URL it is fetched from, which a manifest refresh can
+            // change under the same instance id.
+            streamAddons.forEach { add("addon:${it.addonId}@${it.videoId}~${it.manifest.transportUrl}") }
             pluginProviderGroups.forEach { group ->
                 add("plugin:${group.addonId}:${group.scrapers.joinToString(",") { it.id }}@g$pluginGeneration")
             }
@@ -229,6 +232,12 @@ internal enum class StreamSearchAdmission {
     Private,
     /** Review r10: built before a wipe ([StreamSearchSessionStore.clear]): nothing is fetched, the consumer completes. */
     Reject,
+    /**
+     * Review r10 findings: built for another profile or debrid account, or across a profile change:
+     * nothing is fetched or cache-checked, the consumer completes at once and is told to rebuild
+     * the request in the current world.
+     */
+    Rebuild,
 }
 
 /**
@@ -243,20 +252,25 @@ internal enum class StreamSearchAdmission {
  * something, so only a request built across one runs privately (a second fetch, never a wrong one).
  *
  * Review r10: [clearedGeneration] is the generation a wipe left; a request built before it is
- * rejected. [environmentMatches]: the request's stamp equals the world at its arrival; a request
- * built under another profile, account, add-on set or plugin setup runs privately, so only a
+ * rejected. A request built under another add-on set or plugin setup runs privately, so only a
  * request of the current world can evict (an older one can never evict a newer search).
+ *
+ * Review r10 findings: [sameAccount] (profile, profile transition and debrid account) and
+ * [sameSources] (add-ons, plugins) apart. A request for another account is never executed: it is
+ * told to rebuild. Only a sources difference still runs privately.
  */
 internal fun streamSearchAdmission(
     requestGeneration: Long,
     currentGeneration: Long,
     clearedGeneration: Long,
-    environmentMatches: Boolean,
+    sameAccount: Boolean,
+    sameSources: Boolean,
     forceRefresh: Boolean,
     held: Boolean,
 ): StreamSearchAdmission = when {
     requestGeneration < clearedGeneration -> StreamSearchAdmission.Reject
-    requestGeneration < currentGeneration || !environmentMatches -> StreamSearchAdmission.Private
+    !sameAccount -> StreamSearchAdmission.Rebuild
+    requestGeneration < currentGeneration || !sameSources -> StreamSearchAdmission.Private
     !held -> StreamSearchAdmission.Start
     forceRefresh -> StreamSearchAdmission.Replace
     else -> StreamSearchAdmission.Join
@@ -302,7 +316,8 @@ internal class StreamSearchSessionStore(
     )
 
     /** [isPrivate]: review r7/r8, a stale-generation run in [privateSessions], never in [sessions]. */
-    private class Session(val isPrivate: Boolean = false) {
+    /** [rebuild]: review r10 findings, refused for another profile or account; never run. */
+    private class Session(val isPrivate: Boolean = false, val rebuild: Boolean = false) {
         val progress = MutableStateFlow(Progress())
         var job: Job? = null
 
@@ -310,6 +325,8 @@ internal class StreamSearchSessionStore(
         // read under the lock.
         var completedAtMs: Long? = null
         var reuseTtlMs: Long = COMPLETED_TTL_MS
+        // Review r10 findings: read by consumers outside the lock before each delivery.
+        @Volatile
         var invalidated = false
 
         /** A cache check that threw: its group was kept unchecked, so the search is re-run soon. */
@@ -332,17 +349,27 @@ internal class StreamSearchSessionStore(
      * completing when the search ends or is dropped. A new search starts only when none is held for
      * the key or [forceRefresh] is set (which drops the held one: its consumers complete).
      */
-    fun search(profileId: Int, targets: StreamSearchTargets, forceRefresh: Boolean): Flow<StreamLoadCompletion> = flow {
+    fun search(
+        profileId: Int,
+        targets: StreamSearchTargets,
+        forceRefresh: Boolean,
+        /** Review r10 findings: called when the request was built for another profile or account. */
+        onRebuild: (() -> Unit)? = null,
+    ): Flow<StreamLoadCompletion> = flow {
         val key = targets.key(profileId)
         // Review r7/r8: whether the targets are stale is decided inside [acquire], under the lock
         // a plugin refresh takes, with the store change it implies.
         val session = acquire(key, targets, forceRefresh)
+        if (session.rebuild) onRebuild?.invoke()
         val stale = session.isPrivate
         var emitted = 0
         try {
             emitAll(
                 session.progress.transformWhile { progress ->
                     while (emitted < progress.completions.size) {
+                        // Review r10 findings: nothing more once the search was dropped (a wipe,
+                        // a refresh), even from a snapshot this consumer already holds.
+                        if (session.invalidated) return@transformWhile false
                         emit(progress.completions[emitted])
                         emitted++
                     }
@@ -437,13 +464,16 @@ internal class StreamSearchSessionStore(
         var created: Session? = null
         val selected = synchronized(lock) {
             removeExpiredLocked()
+            val built = targets.environment
+            val now = if (built == null) null else currentEnvironment()
             // Review r8: decided once, here, against the generation a refresh changes under this
             // same lock; the rest of this block only applies the decision.
             val admission = streamSearchAdmission(
                 requestGeneration = targets.pluginGeneration,
                 currentGeneration = pluginGeneration,
                 clearedGeneration = clearedGeneration,
-                environmentMatches = targets.environment.let { it == null || it == currentEnvironment() },
+                sameAccount = built == null || built.sameAccountAs(now!!),
+                sameSources = built == null || built.sameSourcesAs(now!!),
                 forceRefresh = forceRefresh,
                 held = sessions.containsKey(key),
             )
@@ -451,6 +481,10 @@ internal class StreamSearchSessionStore(
                 StreamSearchAdmission.Reject -> {
                     StreamDiagnostics.log("search rejected ${key.type} ${key.videoId} (built before a wipe)")
                     return@synchronized Session().also { it.progress.value = Progress(isComplete = true) }
+                }
+                StreamSearchAdmission.Rebuild -> {
+                    StreamDiagnostics.log("search refused ${key.type} ${key.videoId} (another profile or account)")
+                    return@synchronized Session(rebuild = true).also { it.progress.value = Progress(isComplete = true) }
                 }
                 StreamSearchAdmission.Join -> {
                     log.d { "Joining source search for ${key.type} ${key.videoId}" }
@@ -632,8 +666,12 @@ object StreamSearchSessions {
     internal var store: StreamSearchSessionStore = StreamSearchSessionStore(LiveStreamSearchFetcher)
         private set
 
-    internal fun search(profileId: Int, targets: StreamSearchTargets, forceRefresh: Boolean): Flow<StreamLoadCompletion> =
-        store.search(profileId, targets, forceRefresh)
+    internal fun search(
+        profileId: Int,
+        targets: StreamSearchTargets,
+        forceRefresh: Boolean,
+        onRebuild: (() -> Unit)? = null,
+    ): Flow<StreamLoadCompletion> = store.search(profileId, targets, forceRefresh, onRebuild)
 
     /**
      * Account wipe: drops and cancels every held search before it returns (review r1: it used to

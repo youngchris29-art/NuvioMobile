@@ -1,6 +1,7 @@
 package com.nuvio.app.features.profiles
 
 import kotlin.concurrent.Volatile
+import com.nuvio.app.core.profile.ActiveProfileProvider
 import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import co.touchlab.kermit.Logger
 import com.nuvio.app.core.auth.AuthRepository
@@ -124,7 +125,12 @@ object ProfileRepository {
         }
     }
 
-    fun selectProfile(profileIndex: Int) {
+    // Stage B review r10 findings: the id write and the fan-out below are one profile transition
+    // (ActiveProfileProvider.transition), so a source search built or admitted in between is
+    // refused instead of mixing this profile's id with the previous one's add-ons or account.
+    fun selectProfile(profileIndex: Int) = ActiveProfileProvider.changing { selectProfileNow(profileIndex) }
+
+    private fun selectProfileNow(profileIndex: Int) {
         activeProfileIndex = profileIndex
         val selectedProfile = _state.value.profiles.find { it.profileIndex == profileIndex }
         _state.value = _state.value.copy(

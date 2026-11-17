@@ -655,4 +655,27 @@ class StreamSearchSessionScenarioTest {
         runCurrent()
         assertEquals(0, runningAfterWipe, "no search of the store is still running when the wipe returns")
     }
+
+    // MARK: Stage B review r10 findings
+
+    @Test
+    fun aWipeStopsDeliveringResultsAConsumerHadNotTakenYet() = runTest {
+        val store = store()
+        val resume = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val received = mutableListOf<StreamLoadCompletion>()
+        // The pause point: the consumer holds the first answer in its collector while the wipe runs;
+        // the second answer is already in the snapshot it is working through.
+        backgroundScope.launch {
+            store.search(1, SearchFixtures.targets(), forceRefresh = false).collect { completion ->
+                received += completion
+                if (received.size == 1) resume.await()
+            }
+        }
+        runCurrent()
+        assertEquals(1, received.size, "the consumer is paused on its first answer")
+        store.clear()
+        resume.complete(Unit)
+        runCurrent()
+        assertEquals(1, received.size, "nothing it had not taken is delivered after the wipe")
+    }
 }

@@ -1,5 +1,8 @@
 package com.nuvio.app.features.player
 
+import com.nuvio.app.core.profile.ActiveProfileProvider
+import com.nuvio.app.features.streams.STREAM_SEARCH_MAX_WORLD_RETRIES
+import kotlinx.coroutines.flow.first
 import com.nuvio.app.features.debrid.DebridSettingsRepository
 import com.nuvio.app.features.details.MetaDetailsRepository
 import com.nuvio.app.features.streams.AddonStreamGroup
@@ -45,22 +48,30 @@ object PlayerSourceFallbackCandidates {
         // so a timeout still returns what arrived.
         var state: StreamsUiState? = null
         withTimeoutOrNull(timeoutMs) {
-            val targets = StreamSearchRequests.resolveTargets(type, videoId, season, episode) ?: return@withTimeoutOrNull
-            val debridSettings = DebridSettingsRepository.snapshot()
-            val installedAddonOrder = targets.streamAddons.map { it.addonName }
-            val accumulator = StreamSearchAccumulator(
-                installedAddonOrder = installedAddonOrder,
-                pluginProviderGroups = targets.pluginProviderGroups,
-                present = { group -> presentSearchGroup(group, badgeRules, debridSettings) },
-                debridSettings = debridSettings,
-            )
-            var current = initialState(targets, installedAddonOrder)
-            state = current
-            StreamSearchSessions.search(StreamSearchEnvironment.profileId(), targets, forceRefresh = false)
-                .collect { completion ->
-                    current = accumulator.apply(current, completion)
-                    state = current
-                }
+            // Review r10 findings: a request refused for another profile or account ran nothing; it
+            // is rebuilt in the current world (after a profile change in progress has finished)
+            // instead of answering "no other source".
+            repeat(STREAM_SEARCH_MAX_WORLD_RETRIES + 1) {
+                val targets = StreamSearchRequests.resolveTargets(type, videoId, season, episode) ?: return@withTimeoutOrNull
+                val debridSettings = DebridSettingsRepository.snapshot()
+                val installedAddonOrder = targets.streamAddons.map { it.addonName }
+                val accumulator = StreamSearchAccumulator(
+                    installedAddonOrder = installedAddonOrder,
+                    pluginProviderGroups = targets.pluginProviderGroups,
+                    present = { group -> presentSearchGroup(group, badgeRules, debridSettings) },
+                    debridSettings = debridSettings,
+                )
+                var current = initialState(targets, installedAddonOrder)
+                state = current
+                var rebuild = false
+                StreamSearchSessions.search(StreamSearchEnvironment.profileId(), targets, forceRefresh = false, onRebuild = { rebuild = true })
+                    .collect { completion ->
+                        current = accumulator.apply(current, completion)
+                        state = current
+                    }
+                if (!rebuild) return@withTimeoutOrNull
+                ActiveProfileProvider.transition.first { !it.changing }
+            }
         }
         return state?.withoutPendingGroups()?.groups?.flatMap { it.streams }.orEmpty()
     }

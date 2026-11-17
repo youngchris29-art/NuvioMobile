@@ -71,7 +71,9 @@ class StreamSearchSessionsTest {
     fun theKeyCarriesEachAddonsRequestIdAndTheDebridAccount() {
         val plain = SearchFixtures.targets(requestId = "tt1").sourceConfiguration
         assertEquals(
-            "addon:addon:a:https://a.example.com/manifest.json@tt1|addon:addon:b:https://b.example.com/manifest.json@tt1|debrid:none",
+            // Review r10 findings: each add-on with the URL it is fetched from.
+            "addon:addon:a:https://a.example.com/manifest.json@tt1~https://a.example.com/manifest.json|" +
+                "addon:addon:b:https://b.example.com/manifest.json@tt1~https://b.example.com/manifest.json|debrid:none",
             plain,
         )
         assertNotEquals(plain, SearchFixtures.targets(requestId = "tmdb:1").sourceConfiguration)

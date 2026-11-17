@@ -15,6 +15,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
+import com.nuvio.app.core.profile.ActiveProfileProvider
 import kotlinx.coroutines.launch
 
 object StreamsRepository {
@@ -78,7 +80,10 @@ object StreamsRepository {
      * suspend TMDB lookup below has turned a `tmdb:` request into the `tt` one that most stream
      * addons are keyed on. Addons are then matched against whichever of the two they accept.
      */
-    private fun load(type: String, videoId: String, parentMetaId: String?, season: Int?, episode: Int?, manualSelection: Boolean, forceRefresh: Boolean, imdbVideoId: String? = null, remapAttempted: Boolean = false) {
+    private fun load(type: String, videoId: String, parentMetaId: String?, season: Int?, episode: Int?, manualSelection: Boolean, forceRefresh: Boolean, imdbVideoId: String? = null, remapAttempted: Boolean = false, searchGeneration: Long? = null, worldRetries: Int = 0) {
+        // Review r10 findings: the store generation before any other input; the BUG-74 second pass
+        // keeps the first pass's, so a wipe during the lookup still refuses it.
+        val pluginGeneration = searchGeneration ?: StreamSearchSessions.pluginGeneration()
         val environment = StreamSearchEnvironment.stamp()                // review r10: before anything else
         val pluginUiState = StreamSearchRequests.pluginUiState()
         val requestToken = requestToken(
@@ -170,7 +175,6 @@ object StreamsRepository {
         }
 
         val installedAddons = StreamSearchEnvironment.installedAddons()
-        val pluginGeneration = StreamSearchSessions.pluginGeneration()   // review r6: before the groups
         val pluginProviderGroups = StreamSearchRequests.pluginProviderGroups(type, pluginUiState)
 
         if (installedAddons.isEmpty() && pluginProviderGroups.isEmpty()) {
@@ -248,6 +252,7 @@ object StreamsRepository {
                     forceRefresh = forceRefresh,
                     imdbVideoId = remapped,
                     remapAttempted = true,
+                    searchGeneration = pluginGeneration,
                 )
             }
             activeJob = remapJob
@@ -443,13 +448,37 @@ object StreamsRepository {
                 present = { group -> presentSearchGroup(group, streamBadgeRules, debridSettings) },
                 debridSettings = debridSettings,
             )
+            var rebuild = false
             StreamSearchSessions.search(
                 profileId = searchProfileId,
                 targets = searchTargets,
                 forceRefresh = forceRefresh,
+                onRebuild = { rebuild = true },
             ).collect { completion ->
                 updateIfCurrent(accumulator.record(completion))
                 updateAutoPlayAfterStreamsChanged()
+            }
+            // Review r10 findings: built for another profile or account, so nothing ran. The load is
+            // rebuilt in the current world (after a profile change in progress has finished) instead
+            // of settling on an empty list, unless a newer load or a clear took over.
+            if (rebuild && worldRetries < STREAM_SEARCH_MAX_WORLD_RETRIES) {
+                ActiveProfileProvider.transition.first { !it.changing }
+                if (state.generation != generation) return@launch
+                activeRequestKey = null
+                activeJob = null
+                load(
+                    type = type,
+                    videoId = videoId,
+                    parentMetaId = parentMetaId,
+                    season = season,
+                    episode = episode,
+                    manualSelection = manualSelection,
+                    forceRefresh = forceRefresh,
+                    imdbVideoId = imdbVideoId,
+                    remapAttempted = remapAttempted,
+                    worldRetries = worldRetries + 1,
+                )
+                return@launch
             }
             // A search dropped before it finished (a forced refresh elsewhere, eviction, a wipe)
             // leaves its remaining sources without a result.
