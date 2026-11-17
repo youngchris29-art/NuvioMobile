@@ -82,6 +82,11 @@ data class PlayerSettingsUiState(
     val preloadNextEpisodeSources: Boolean = false,
     // Upstream 637b21aa0: the current chapter's name above the scrub preview (mpv and Aether).
     val chapterTitleEnabled: Boolean = true,
+    // Upstream 8fba6c71e: fall back to the next matching source when an auto-picked one fails.
+    // Fork default On (W4 Question 1; upstream false).
+    val streamAutoPlayFallbackOnFailure: Boolean = DEFAULT_SOURCE_FALLBACK_ON_FAILURE,
+    val streamAutoPlayFallbackMaxSources: Int = DEFAULT_SOURCE_FALLBACK_MAX_SOURCES,
+    val streamAutoPlayFallbackStartupTimeoutSeconds: Int = DEFAULT_SOURCE_STARTUP_TIMEOUT_SECONDS,
     val useLibass: Boolean = false,
     val libassRenderType: String = "CUES",
     val iosVideoOutputPreset: IosVideoOutputPreset = IosVideoOutputPreset.NativeEdr,
@@ -100,6 +105,35 @@ data class PlayerSettingsUiState(
     val iosSaturation: Int = 0,
     val iosGamma: Int = 0,
 )
+
+/** Fork (tvOS): On. Upstream 8fba6c71e ships Off; Off on the TV would drop today's first-play walk. */
+const val DEFAULT_SOURCE_FALLBACK_ON_FAILURE = true
+
+/** How many further sources falling back may try after the auto-selected one fails, by default and at most. */
+const val DEFAULT_SOURCE_FALLBACK_MAX_SOURCES = 3
+val SOURCE_FALLBACK_MAX_SOURCES_RANGE = 1..10
+
+/** How long a source may take to start before falling back treats it as failed, in seconds. */
+const val DEFAULT_SOURCE_STARTUP_TIMEOUT_SECONDS = 15
+val SOURCE_STARTUP_TIMEOUT_SECONDS_RANGE = 5..45
+const val SOURCE_STARTUP_TIMEOUT_SECONDS_STEP = 5
+
+/** "Sources to Try" as stored, set or synced: clamped to 1..10. */
+fun normalizeSourceFallbackMaxSources(count: Int): Int = count.coerceIn(SOURCE_FALLBACK_MAX_SOURCES_RANGE)
+
+/**
+ * "Start-Up Limit" as stored, set or synced: rounded to the nearest 5 s step, then clamped to
+ * 5..45, so a synced odd value lands on a row the picker shows.
+ */
+fun normalizeSourceStartupTimeoutSeconds(seconds: Int): Int =
+    ((seconds + SOURCE_STARTUP_TIMEOUT_SECONDS_STEP / 2) / SOURCE_STARTUP_TIMEOUT_SECONDS_STEP * SOURCE_STARTUP_TIMEOUT_SECONDS_STEP)
+        .coerceIn(SOURCE_STARTUP_TIMEOUT_SECONDS_RANGE)
+
+/** Upstream's rule (composeApp parity). tvOS uses [PlayerSourceFallback.isActive], which also covers Up Next in MANUAL mode. */
+val PlayerSettingsUiState.streamAutoPlayFallbackActive: Boolean
+    get() = streamAutoPlayFallbackOnFailure &&
+        streamAutoPlayMode != StreamAutoPlayMode.MANUAL &&
+        !externalPlayerEnabled
 
 object PlayerSettingsRepository {
     private val _uiState = MutableStateFlow(PlayerSettingsUiState())
@@ -153,6 +187,9 @@ object PlayerSettingsRepository {
     private var nextEpisodeThresholdMinutesBeforeEnd = 2f
     private var preloadNextEpisodeSources = false
     private var chapterTitleEnabled = true
+    private var streamAutoPlayFallbackOnFailure = DEFAULT_SOURCE_FALLBACK_ON_FAILURE
+    private var streamAutoPlayFallbackMaxSources = DEFAULT_SOURCE_FALLBACK_MAX_SOURCES
+    private var streamAutoPlayFallbackStartupTimeoutSeconds = DEFAULT_SOURCE_STARTUP_TIMEOUT_SECONDS
     private var useLibass = false
     private var libassRenderType = "CUES"
     private var iosVideoOutputPreset = IosVideoOutputPreset.NativeEdr
@@ -232,6 +269,9 @@ object PlayerSettingsRepository {
         nextEpisodeThresholdMinutesBeforeEnd = 2f
         preloadNextEpisodeSources = false
         chapterTitleEnabled = true
+        streamAutoPlayFallbackOnFailure = DEFAULT_SOURCE_FALLBACK_ON_FAILURE
+        streamAutoPlayFallbackMaxSources = DEFAULT_SOURCE_FALLBACK_MAX_SOURCES
+        streamAutoPlayFallbackStartupTimeoutSeconds = DEFAULT_SOURCE_STARTUP_TIMEOUT_SECONDS
         useLibass = false
         libassRenderType = "CUES"
         iosVideoOutputPreset = IosVideoOutputPreset.NativeEdr
@@ -366,6 +406,12 @@ object PlayerSettingsRepository {
         nextEpisodeThresholdMinutesBeforeEnd = PlayerSettingsStorage.loadNextEpisodeThresholdMinutesBeforeEnd() ?: 2f
         preloadNextEpisodeSources = PlayerSettingsStorage.loadPreloadNextEpisodeSources() ?: false
         chapterTitleEnabled = PlayerSettingsStorage.loadChapterTitleEnabled() ?: true
+        streamAutoPlayFallbackOnFailure = PlayerSettingsStorage.loadStreamAutoPlayFallbackOnFailure()
+            ?: DEFAULT_SOURCE_FALLBACK_ON_FAILURE
+        streamAutoPlayFallbackMaxSources = PlayerSettingsStorage.loadStreamAutoPlayFallbackMaxSources()
+            ?.let(::normalizeSourceFallbackMaxSources) ?: DEFAULT_SOURCE_FALLBACK_MAX_SOURCES
+        streamAutoPlayFallbackStartupTimeoutSeconds = PlayerSettingsStorage.loadStreamAutoPlayFallbackStartupTimeoutSeconds()
+            ?.let(::normalizeSourceStartupTimeoutSeconds) ?: DEFAULT_SOURCE_STARTUP_TIMEOUT_SECONDS
         useLibass = PlayerSettingsStorage.loadUseLibass() ?: false
         libassRenderType = PlayerSettingsStorage.loadLibassRenderType() ?: "CUES"
         iosVideoOutputPreset = PlayerSettingsStorage.loadIosVideoOutputPreset()
@@ -828,6 +874,32 @@ object PlayerSettingsRepository {
         PlayerSettingsStorage.saveChapterTitleEnabled(enabled)
     }
 
+    fun setStreamAutoPlayFallbackOnFailure(enabled: Boolean) {
+        ensureLoaded()
+        if (streamAutoPlayFallbackOnFailure == enabled) return
+        streamAutoPlayFallbackOnFailure = enabled
+        publish()
+        PlayerSettingsStorage.saveStreamAutoPlayFallbackOnFailure(enabled)
+    }
+
+    fun setStreamAutoPlayFallbackMaxSources(count: Int) {
+        ensureLoaded()
+        val normalized = normalizeSourceFallbackMaxSources(count)
+        if (streamAutoPlayFallbackMaxSources == normalized) return
+        streamAutoPlayFallbackMaxSources = normalized
+        publish()
+        PlayerSettingsStorage.saveStreamAutoPlayFallbackMaxSources(normalized)
+    }
+
+    fun setStreamAutoPlayFallbackStartupTimeoutSeconds(seconds: Int) {
+        ensureLoaded()
+        val normalized = normalizeSourceStartupTimeoutSeconds(seconds)
+        if (streamAutoPlayFallbackStartupTimeoutSeconds == normalized) return
+        streamAutoPlayFallbackStartupTimeoutSeconds = normalized
+        publish()
+        PlayerSettingsStorage.saveStreamAutoPlayFallbackStartupTimeoutSeconds(normalized)
+    }
+
     fun setUseLibass(enabled: Boolean) {
         ensureLoaded()
         if (useLibass == enabled) return
@@ -1058,6 +1130,9 @@ object PlayerSettingsRepository {
             nextEpisodeThresholdMinutesBeforeEnd = nextEpisodeThresholdMinutesBeforeEnd,
             preloadNextEpisodeSources = preloadNextEpisodeSources,
             chapterTitleEnabled = chapterTitleEnabled,
+            streamAutoPlayFallbackOnFailure = streamAutoPlayFallbackOnFailure,
+            streamAutoPlayFallbackMaxSources = streamAutoPlayFallbackMaxSources,
+            streamAutoPlayFallbackStartupTimeoutSeconds = streamAutoPlayFallbackStartupTimeoutSeconds,
             useLibass = useLibass,
             libassRenderType = libassRenderType,
             iosVideoOutputPreset = iosVideoOutputPreset,

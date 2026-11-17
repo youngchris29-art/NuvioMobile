@@ -118,6 +118,12 @@ expect object PlayerSettingsStorage {
     fun savePreloadNextEpisodeSources(enabled: Boolean)
     fun loadChapterTitleEnabled(): Boolean?
     fun saveChapterTitleEnabled(enabled: Boolean)
+    fun loadStreamAutoPlayFallbackOnFailure(): Boolean?
+    fun saveStreamAutoPlayFallbackOnFailure(enabled: Boolean)
+    fun loadStreamAutoPlayFallbackMaxSources(): Int?
+    fun saveStreamAutoPlayFallbackMaxSources(count: Int)
+    fun loadStreamAutoPlayFallbackStartupTimeoutSeconds(): Int?
+    fun saveStreamAutoPlayFallbackStartupTimeoutSeconds(seconds: Int)
     fun loadUseLibass(): Boolean?
     fun saveUseLibass(enabled: Boolean)
     fun loadLibassRenderType(): String?

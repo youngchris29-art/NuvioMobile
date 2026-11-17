@@ -84,6 +84,9 @@ actual object PlayerSettingsStorage {
     private const val nextEpisodeThresholdMinutesBeforeEndKey = "next_episode_threshold_minutes_before_end_v2"
     private const val preloadNextEpisodeSourcesKey = "preload_next_episode_sources"
     private const val chapterTitleEnabledKey = "chapter_title_enabled"
+    private const val streamAutoPlayFallbackOnFailureKey = "stream_auto_play_fallback_on_failure"
+    private const val streamAutoPlayFallbackMaxSourcesKey = "stream_auto_play_fallback_max_sources"
+    private const val streamAutoPlayFallbackStartupTimeoutSecondsKey = "stream_auto_play_fallback_startup_timeout_seconds"
     private const val useLibassKey = "use_libass"
     private const val libassRenderTypeKey = "libass_render_type"
     private const val iosVideoOutputPresetKey = "ios_video_output_preset"
@@ -158,6 +161,9 @@ actual object PlayerSettingsStorage {
         nextEpisodeThresholdMinutesBeforeEndKey,
         preloadNextEpisodeSourcesKey,
         chapterTitleEnabledKey,
+        streamAutoPlayFallbackOnFailureKey,
+        streamAutoPlayFallbackMaxSourcesKey,
+        streamAutoPlayFallbackStartupTimeoutSecondsKey,
         useLibassKey,
         libassRenderTypeKey,
         iosVideoOutputPresetKey,
@@ -1043,6 +1049,57 @@ actual object PlayerSettingsStorage {
             ?.apply()
     }
 
+    actual fun loadStreamAutoPlayFallbackOnFailure(): Boolean? =
+        preferences?.let { sharedPreferences ->
+            val key = ProfileScopedKey.of(streamAutoPlayFallbackOnFailureKey)
+            if (sharedPreferences.contains(key)) {
+                sharedPreferences.getBoolean(key, DEFAULT_SOURCE_FALLBACK_ON_FAILURE)
+            } else {
+                null
+            }
+        }
+
+    actual fun saveStreamAutoPlayFallbackOnFailure(enabled: Boolean) {
+        preferences
+            ?.edit()
+            ?.putBoolean(ProfileScopedKey.of(streamAutoPlayFallbackOnFailureKey), enabled)
+            ?.apply()
+    }
+
+    actual fun loadStreamAutoPlayFallbackMaxSources(): Int? =
+        preferences?.let { sharedPreferences ->
+            val key = ProfileScopedKey.of(streamAutoPlayFallbackMaxSourcesKey)
+            if (sharedPreferences.contains(key)) {
+                sharedPreferences.getInt(key, DEFAULT_SOURCE_FALLBACK_MAX_SOURCES)
+            } else {
+                null
+            }
+        }
+
+    actual fun saveStreamAutoPlayFallbackMaxSources(count: Int) {
+        preferences
+            ?.edit()
+            ?.putInt(ProfileScopedKey.of(streamAutoPlayFallbackMaxSourcesKey), count)
+            ?.apply()
+    }
+
+    actual fun loadStreamAutoPlayFallbackStartupTimeoutSeconds(): Int? =
+        preferences?.let { sharedPreferences ->
+            val key = ProfileScopedKey.of(streamAutoPlayFallbackStartupTimeoutSecondsKey)
+            if (sharedPreferences.contains(key)) {
+                sharedPreferences.getInt(key, DEFAULT_SOURCE_STARTUP_TIMEOUT_SECONDS)
+            } else {
+                null
+            }
+        }
+
+    actual fun saveStreamAutoPlayFallbackStartupTimeoutSeconds(seconds: Int) {
+        preferences
+            ?.edit()
+            ?.putInt(ProfileScopedKey.of(streamAutoPlayFallbackStartupTimeoutSecondsKey), seconds)
+            ?.apply()
+    }
+
     actual fun loadUseLibass(): Boolean? =
         preferences?.let { sharedPreferences ->
             val key = ProfileScopedKey.of(useLibassKey)
@@ -1249,6 +1306,11 @@ actual object PlayerSettingsStorage {
         loadNextEpisodeThresholdMinutesBeforeEnd()?.let { put(nextEpisodeThresholdMinutesBeforeEndKey, encodeSyncFloat(it)) }
         loadPreloadNextEpisodeSources()?.let { put(preloadNextEpisodeSourcesKey, encodeSyncBoolean(it)) }
         loadChapterTitleEnabled()?.let { put(chapterTitleEnabledKey, encodeSyncBoolean(it)) }
+        loadStreamAutoPlayFallbackOnFailure()?.let { put(streamAutoPlayFallbackOnFailureKey, encodeSyncBoolean(it)) }
+        loadStreamAutoPlayFallbackMaxSources()?.let { put(streamAutoPlayFallbackMaxSourcesKey, encodeSyncInt(it)) }
+        loadStreamAutoPlayFallbackStartupTimeoutSeconds()?.let {
+            put(streamAutoPlayFallbackStartupTimeoutSecondsKey, encodeSyncInt(it))
+        }
         loadUseLibass()?.let { put(useLibassKey, encodeSyncBoolean(it)) }
         loadLibassRenderType()?.let { put(libassRenderTypeKey, encodeSyncString(it)) }
         loadIosVideoOutputPreset()?.let { put(iosVideoOutputPresetKey, encodeSyncString(it)) }
@@ -1331,6 +1393,11 @@ actual object PlayerSettingsStorage {
         payload.decodeSyncFloat(nextEpisodeThresholdMinutesBeforeEndKey)?.let(::saveNextEpisodeThresholdMinutesBeforeEnd)
         payload.decodeSyncBoolean(preloadNextEpisodeSourcesKey)?.let(::savePreloadNextEpisodeSources)
         payload.decodeSyncBoolean(chapterTitleEnabledKey)?.let(::saveChapterTitleEnabled)
+        payload.decodeSyncBoolean(streamAutoPlayFallbackOnFailureKey)?.let(::saveStreamAutoPlayFallbackOnFailure)
+        payload.decodeSyncInt(streamAutoPlayFallbackMaxSourcesKey)
+            ?.let { saveStreamAutoPlayFallbackMaxSources(normalizeSourceFallbackMaxSources(it)) }
+        payload.decodeSyncInt(streamAutoPlayFallbackStartupTimeoutSecondsKey)
+            ?.let { saveStreamAutoPlayFallbackStartupTimeoutSeconds(normalizeSourceStartupTimeoutSeconds(it)) }
         payload.decodeSyncBoolean(useLibassKey)?.let(::saveUseLibass)
         payload.decodeSyncString(libassRenderTypeKey)?.let(::saveLibassRenderType)
         payload.decodeSyncString(iosVideoOutputPresetKey)?.let(::saveIosVideoOutputPreset)
