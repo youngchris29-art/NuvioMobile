@@ -849,9 +849,9 @@ final class FirstPlayAutoPlayControllerTests: XCTestCase {
     // MARK: - Review r1 (finding 4): the same torrent from another add-on is another source
 
     /// First play: after add-on X's copy of hash H fails, Y's copy of the same torrent AND file is
-    /// still a candidate and X's other copy is skipped; a tried source is never picked again. The
-    /// copy rule follows the source that just failed (shared's rule, as upstream and the Up Next
-    /// walk), so once Y's copy has failed too, X's other file is open again.
+    /// still a candidate and X's other copy is skipped; a tried source is never picked again.
+    /// Review r2: X's torrent stays failed for X for the whole walk, so X's other file does not
+    /// come back after Y's copy fails too.
     func testFirstPlayKeepsTheSameTorrentFromAnotherAddon() async {
         let hash = "89abcdef0123456789abcdef0123456789abcdef"
         let harness = Harness()
@@ -871,8 +871,8 @@ final class FirstPlayAutoPlayControllerTests: XCTestCase {
         // Y0 then fails in the player: neither tried source comes back.
         XCTAssertTrue(controller.failover(afterFailureOf: y0.playbackStreamKey, addonId: y0.addonId))
         await waitUntil { harness.played.count == 2 }
-        XCTAssertEqual(harness.resolveCalls, ["X0", "Y0", "X1"])
-        XCTAssertEqual(harness.played.last?.name, "X1")
+        XCTAssertEqual(harness.resolveCalls, ["X0", "Y0", "Z"])
+        XCTAssertEqual(harness.played.last?.name, "Z")
         XCTAssertTrue(controller.fallbackTried.contains(stream: x0))
         XCTAssertTrue(controller.fallbackTried.contains(stream: y0))
     }
@@ -913,5 +913,60 @@ final class FirstPlayAutoPlayControllerTests: XCTestCase {
         XCTAssertTrue(controller.fallbackTried.contains(stream: x0))
         XCTAssertTrue(controller.fallbackTried.contains(stream: y0))
         XCTAssertFalse(controller.fallbackTried.contains(stream: x1))
+    }
+
+    // MARK: - Review r2: a real failure marks its torrent failed for its add-on for the whole walk
+
+    /// A's copy 1 of torrent H fails, then B's source fails: A's copy 2 of H is still never picked
+    /// (the copy rule no longer forgets A once a later source failed).
+    func testAFailedTorrentStaysFailedForItsAddonAfterALaterFailure() async {
+        let hash = "fedcba9876543210fedcba9876543210fedcba98"
+        let harness = Harness()
+        harness.plans = ["A1": .fail, "B": .fail]
+        let controller = harness.makeController()
+        controller.arm()
+        controller.ingest(feed(settled: [stream("A1", addon: "addon:a", torrentHash: hash, fileIdx: 0),
+                                         stream("B", addon: "addon:b"),
+                                         stream("A2", addon: "addon:a", torrentHash: hash, fileIdx: 1),
+                                         stream("Z", addon: "addon:z")]))
+        await waitUntil { !harness.played.isEmpty }
+        XCTAssertEqual(harness.resolveCalls, ["A1", "B", "Z"])
+        XCTAssertEqual(harness.played.map { $0.name }, ["Z"])
+    }
+
+    /// The same after a playback failure in the player (the failover path).
+    func testAPlaybackFailureMarksItsTorrentFailedForTheWholeWalk() async {
+        let hash = "fedcba9876543210fedcba9876543210fedcba98"
+        let harness = Harness()
+        harness.plans = ["B": .fail]
+        let a1 = stream("A1", addon: "addon:a", direct: true, torrentHash: hash, fileIdx: 0)
+        let controller = harness.makeController()
+        controller.arm()
+        controller.ingest(feed(settled: [a1, stream("B", addon: "addon:b"),
+                                         stream("A2", addon: "addon:a", torrentHash: hash, fileIdx: 1),
+                                         stream("Z", addon: "addon:z")]))
+        XCTAssertEqual(harness.played.map { $0.name }, ["A1"])
+        XCTAssertTrue(controller.failover(afterFailureOf: a1.playbackStreamKey, addonId: a1.addonId))
+        await waitUntil { harness.played.count == 2 }
+        XCTAssertEqual(harness.resolveCalls, ["B", "Z"], "A2 is skipped although B failed after A1")
+        XCTAssertEqual(harness.played.last?.name, "Z")
+    }
+
+    /// A start-up-limit move-on is not a failure: the slow torrent's other copy from the same
+    /// add-on stays a candidate (and is next in rank order here).
+    func testAStartupLimitMoveOnDoesNotMarkTheTorrentFailed() async {
+        let hash = "fedcba9876543210fedcba9876543210fedcba98"
+        let harness = Harness()
+        let a1 = stream("A1", addon: "addon:a", direct: true, torrentHash: hash, fileIdx: 0)
+        let controller = harness.makeController()
+        controller.arm()
+        controller.ingest(feed(settled: [a1, stream("A2", addon: "addon:a", torrentHash: hash, fileIdx: 1),
+                                         stream("Z", addon: "addon:z")]))
+        XCTAssertTrue(controller.hasOpenCandidate())
+        XCTAssertTrue(controller.failover(afterFailureOf: a1.playbackStreamKey, addonId: a1.addonId, reason: .startupLimit))
+        await waitUntil { harness.played.count == 2 }
+        XCTAssertEqual(harness.resolveCalls, ["A2"])
+        XCTAssertEqual(harness.played.last?.name, "A2")
+        XCTAssertTrue(controller.fallbackTried.contains(stream: a1), "still tried: never picked again")
     }
 }

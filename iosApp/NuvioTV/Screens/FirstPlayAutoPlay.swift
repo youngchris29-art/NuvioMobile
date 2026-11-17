@@ -287,8 +287,15 @@ final class FirstPlayAutoPlayController: ObservableObject {
         }
         let failed = lastPlayed.flatMap { $0.streamKey == streamKey ? $0 : nil }
             ?? candidates.first { !streamKey.isEmpty && $0.streamKey == streamKey }
-        if let failed { tried = tried.including(stream: failed.stream) }
-        lastFailed = failed
+        // Review r2: a real failure marks its torrent failed for its add-on for the whole walk
+        // (every other copy from that add-on is dropped); a start-up limit only records it as
+        // tried (slow is not proof the torrent is dead).
+        if let failed {
+            tried = reason == .playbackFailed ? tried.includingFailed(stream: failed.stream)
+                                              : tried.including(stream: failed.stream)
+        }
+        // A start-up limit is not a failure: the slow torrent's other copies stay candidates.
+        lastFailed = reason == .playbackFailed ? failed : nil
         isFailoverWalk = true
         limitWalk = reason == .startupLimit
         let why = reason == .startupLimit ? "start-up limit passed" : "playback failed"
@@ -458,6 +465,8 @@ final class FirstPlayAutoPlayController: ObservableObject {
                 autoPlayLog("[AutoPlay] reject key=\(candidate.streamKey) transient=1 offline=1 skipped")
             }
             lastFailed = candidate
+            // Review r2: the resolve failed: its torrent is a failed one for its add-on.
+            tried = tried.includingFailed(stream: candidate.stream)
             tryNext(preferAddonId: nil)
         }
     }
