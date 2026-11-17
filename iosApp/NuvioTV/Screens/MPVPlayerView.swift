@@ -3993,7 +3993,9 @@ struct MPVPlayerScreen: View {
     var onPlaybackStarted: (() -> Void)? = nil
     /// W4 review r1: the viewer made a choice of their own in this player (`NextEpisodeEngine`'s
     /// Sources pick, episode jump, Play Next), before any resolve. Read once, when the engine is made.
-    var onViewerChoice: (() -> Void)? = nil
+    var onViewerChoice: ((UUID) -> Void)? = nil
+    /// Review r2: that choice will not reach the screen (same id).
+    var onViewerChoiceAbandoned: ((UUID) -> Void)? = nil
 
     @StateObject private var state: MPVPlaybackState
     @StateObject private var upNext: NextEpisodeEngine
@@ -4036,11 +4038,13 @@ struct MPVPlayerScreen: View {
          onFallback: ((PlaybackHandoff) -> Void)? = nil,
          startupLimitSec: Double? = nil,
          onPlaybackStarted: (() -> Void)? = nil,
-         onViewerChoice: (() -> Void)? = nil) {
+         onViewerChoice: ((UUID) -> Void)? = nil,
+         onViewerChoiceAbandoned: ((UUID) -> Void)? = nil) {
         self.context = context
         self.startupLimitSec = startupLimitSec
         self.onPlaybackStarted = onPlaybackStarted
         self.onViewerChoice = onViewerChoice
+        self.onViewerChoiceAbandoned = onViewerChoiceAbandoned
         self.onOpenTitle = onOpenTitle
         self.engine = engine
         self.onFallback = onFallback
@@ -4064,7 +4068,8 @@ struct MPVPlayerScreen: View {
                 playbackState?.playbackFailoverSuppressed = true
                 onPlayNext(next)
             },
-            onViewerChoice: onViewerChoice
+            onViewerChoice: onViewerChoice,
+            onViewerChoiceAbandoned: onViewerChoiceAbandoned
         ))
         _panelModel = StateObject(wrappedValue: PlayerTopPanelModel(
             info: PlayerPanelInfo(header: NativeInfoHeader(context: context))))

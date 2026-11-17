@@ -42,7 +42,9 @@ struct NativePlayerScreen: View {
     /// it once per context to the host.
     var onPlaybackStarted: (() -> Void)? = nil
     /// W4 review r1: the viewer made a choice of their own in this player (see `MPVPlayerScreen`).
-    var onViewerChoice: (() -> Void)? = nil
+    var onViewerChoice: ((UUID) -> Void)? = nil
+    /// Review r2: that choice will not reach the screen (same id).
+    var onViewerChoiceAbandoned: ((UUID) -> Void)? = nil
 
     @StateObject private var coordinator: NativePlaybackCoordinator
     @StateObject private var moreLikeThisLoader = PostPlayMoreLikeThisLoader()
@@ -80,11 +82,13 @@ struct NativePlayerScreen: View {
          onPlaybackHealthy: ((Double) -> Void)? = nil,
          onOpenTitle: ((MetaPreview) -> Void)? = nil,
          onPlaybackStarted: (() -> Void)? = nil,
-         onViewerChoice: (() -> Void)? = nil) {
+         onViewerChoice: ((UUID) -> Void)? = nil,
+         onViewerChoiceAbandoned: ((UUID) -> Void)? = nil) {
         self.context = context
         self.onOpenTitle = onOpenTitle
         self.onPlaybackStarted = onPlaybackStarted
         self.onViewerChoice = onViewerChoice
+        self.onViewerChoiceAbandoned = onViewerChoiceAbandoned
         self.onPlayNext = onPlayNext
         self.onFallback = onFallback
         self.routingNote = routingNote
@@ -93,7 +97,8 @@ struct NativePlayerScreen: View {
         _loadingOverlayOn = State(initialValue: PlayerLoadingOverlaySetting.enabled)
         _coordinator = StateObject(wrappedValue: NativePlaybackCoordinator(context: context))
         _upNext = StateObject(wrappedValue: NextEpisodeEngine(context: context, onPlayNext: onPlayNext ?? { _ in },
-                                                              onViewerChoice: onViewerChoice))
+                                                              onViewerChoice: onViewerChoice,
+                                                              onViewerChoiceAbandoned: onViewerChoiceAbandoned))
         _panelModel = StateObject(wrappedValue: PlayerTopPanelModel(
             info: PlayerPanelInfo(header: NativeInfoHeader(context: context))))
     }

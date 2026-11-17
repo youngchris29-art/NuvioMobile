@@ -41,7 +41,9 @@ struct PlayerScreen: View {
     var onPlaybackStarted: (() -> Void)? = nil
     /// W4 review r1: the viewer made a choice of their own in the player (a Sources pick, even one
     /// still resolving; an episode jump; Play Next). The host invalidates its automatic walks.
-    var onViewerChoice: (() -> Void)? = nil
+    var onViewerChoice: ((UUID) -> Void)? = nil
+    /// Review r2: that choice will not reach the screen (same id): the host ends its pending state.
+    var onViewerChoiceAbandoned: ((UUID) -> Void)? = nil
 
     @State private var decision: EngineDecision?
     /// The probe behind `decision` (nil with the native flag off or no probe): decides whether the
@@ -105,7 +107,8 @@ struct PlayerScreen: View {
                                    onPlaybackHealthy: onPlaybackHealthy,
                                    onOpenTitle: onOpenTitle,
                                    onPlaybackStarted: noteStarted,
-                                   onViewerChoice: onViewerChoice)
+                                   onViewerChoice: onViewerChoice,
+                                onViewerChoiceAbandoned: onViewerChoiceAbandoned)
             case .aether:
                 // Its own `switch` case: the representable builds its controller once, so Aether and
                 // the mpv screen after a handoff are different identities.
@@ -127,7 +130,8 @@ struct PlayerScreen: View {
                                 },
                                 startupLimitSec: startupLimitSec,
                                 onPlaybackStarted: noteStarted,
-                                onViewerChoice: onViewerChoice)
+                                onViewerChoice: onViewerChoice,
+                                onViewerChoiceAbandoned: onViewerChoiceAbandoned)
             case .mpv:
                 MPVPlayerScreen(context: context, onPlayNext: onPlayNext,
                                 routingNote: mpvRoutingNote,
@@ -140,7 +144,8 @@ struct PlayerScreen: View {
                                 onOpenTitle: onOpenTitle,
                                 startupLimitSec: startupLimitSec,
                                 onPlaybackStarted: noteStarted,
-                                onViewerChoice: onViewerChoice)
+                                onViewerChoice: onViewerChoice,
+                                onViewerChoiceAbandoned: onViewerChoiceAbandoned)
             case .deciding:
                 // B24: the probe is the first startup phase; the loading screen draws it from the
                 // first frame (`.checking`, the only stage MediaProbe has). Off: the old spinner.

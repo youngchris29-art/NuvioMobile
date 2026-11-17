@@ -211,9 +211,18 @@ final class NextEpisodeEngine: ObservableObject {
     private let onPlayNext: (PlaybackContext) -> Void
     private let hooks: Hooks
     /// W4 review r1: the viewer made a choice of their own in the player (a source from the
-    /// Sources panel, even one that still resolves; an episode jump; Play Next). Fired when the
-    /// choice is made, before any resolve, so the host invalidates its automatic walks at once.
-    private let onViewerChoice: (() -> Void)?
+    /// Sources panel, even one that still resolves; an episode jump; Play Next; the offline card).
+    /// Fired when the choice is made, before any resolve, so the host invalidates its automatic
+    /// walks at once. Review r2: every choice then ends exactly once: it reaches the screen (a
+    /// hand-off through `onPlayNext`), or `onViewerChoiceAbandoned` reports it with the same id
+    /// (resolve failed, cannot play, nothing found, cancelled). A newer choice supersedes it.
+    private let onViewerChoice: ((UUID) -> Void)?
+    private let onViewerChoiceAbandoned: ((UUID) -> Void)?
+    /// Review r2: the choice that has neither reached the screen nor been abandoned yet, and what
+    /// kind it is (a Sources pick resolves on its own; a jump, Play Next or the offline card runs
+    /// through Up Next's search and ends with it).
+    private var openChoice: UUID?
+    private var openChoiceIsUpNext = false
 
     /// Panel accessors (the playback-settings panel renders episode/source sections from these).
     /// BUG-229: the launch's list, or the one fetched after launch when it arrived empty (see
@@ -332,11 +341,35 @@ final class NextEpisodeEngine: ObservableObject {
     var skipIntervals: [SkipInterval] = []
 
     init(context: PlaybackContext, onPlayNext: @escaping (PlaybackContext) -> Void, hooks: Hooks = .live,
-         onViewerChoice: (() -> Void)? = nil) {
+         onViewerChoice: ((UUID) -> Void)? = nil, onViewerChoiceAbandoned: ((UUID) -> Void)? = nil) {
         self.context = UpNextEmptyEpisodesDebugKnob.apply(to: context)
         self.onPlayNext = onPlayNext
         self.hooks = hooks
         self.onViewerChoice = onViewerChoice
+        self.onViewerChoiceAbandoned = onViewerChoiceAbandoned
+    }
+
+    /// Review r2: a choice of the viewer's begins (it supersedes an open one).
+    private func beginViewerChoice(upNext: Bool) {
+        let id = UUID()
+        openChoice = id
+        openChoiceIsUpNext = upNext
+        onViewerChoice?(id)
+    }
+
+    /// Review r2: the open choice will not reach the screen. `onlyUpNext`: only a choice that runs
+    /// through Up Next's search (a seek back cancels Up Next, not a Sources pick that resolves).
+    private func abandonViewerChoice(_ why: String, onlyUpNext: Bool = false) {
+        guard let id = openChoice, !onlyUpNext || openChoiceIsUpNext else { return }
+        openChoice = nil
+        print("[UpNext] viewer choice abandoned: \(why)")
+        onViewerChoiceAbandoned?(id)
+    }
+
+    /// Every hand-off goes through here: the open choice, if any, has reached the screen.
+    private func handOff(_ next: PlaybackContext) {
+        openChoice = nil
+        onPlayNext(next)
     }
 
     /// Tests only: skip `prime()` (shared settings + shuffle singletons) and set the next episode
@@ -528,6 +561,7 @@ final class NextEpisodeEngine: ObservableObject {
     }
 
     func stop() {
+        abandonViewerChoice("the player stopped")
         lateEpisodesTask?.cancel()
         lateEpisodesTask = nil
         lateEpisodesRetryOnReconnect = false
@@ -559,7 +593,7 @@ final class NextEpisodeEngine: ObservableObject {
     }
 
     private func performJump(to episode: MetaVideo) {
-        onViewerChoice?()
+        beginViewerChoice(upNext: true)
         // r2 P3: the Sources column beside the Episodes column must show the jump's busy line, not
         // "No alternate sources found yet.": capture whether the list is up before the teardown
         // and `cancelSourceLoad()` blank it, and set the busy state before the search starts (a
@@ -696,7 +730,7 @@ final class NextEpisodeEngine: ObservableObject {
     /// link lands, ~1s for cached torrents, and a failed resolve leaves playback untouched).
     func playSource(_ stream: StreamItem) -> Bool {
         // W4 review r1: the viewer's own pick, told to the host before any resolve starts.
-        onViewerChoice?()
+        beginViewerChoice(upNext: false)
         supersedeSourceSwitch()
         // W3: the viewer picked a source for this episode while the next episode's auto pick was
         // still resolving (or walking on to a further source): Up Next stops for this playback, as
@@ -736,13 +770,17 @@ final class NextEpisodeEngine: ObservableObject {
                 guard let resolved, let resolvedUrl, !resolvedUrl.isEmpty, let url = URL(string: resolvedUrl) else {
                     print("[UpNext] YouTube source switch: no playable link")
                     self.reportSourceSwitchFailure(StreamPickerView.youTubeResolveFailedMessage)
+                    self.abandonViewerChoice("YouTube resolve failed")
                     return
                 }
                 self.switchToSource(stream: resolved, url: url, listed: stream)
             }
             return true
         }
-        guard DirectDebridPlaybackResolver.shared.shouldResolveToPlayableStream(stream: stream) else { return false }
+        guard DirectDebridPlaybackResolver.shared.shouldResolveToPlayableStream(stream: stream) else {
+            abandonViewerChoice("the source cannot play on this device")
+            return false
+        }
         let season = context.season.map { KotlinInt(int: Int32($0)) }
         let episode = context.episode.map { KotlinInt(int: Int32($0)) }
         // The `@Throws` twin: a Kotlin exception out of the plain suspend export aborts the process.
@@ -756,13 +794,20 @@ final class NextEpisodeEngine: ObservableObject {
                 print("[UpNext] source switch resolve threw: \(error)")
                 result = nil
             }
-            guard let self, let success = result as? DirectDebridPlayableResult.Success else { return }
+            guard let self else { return }
             guard generation == self.sourceSwitchGeneration, videoId == self.context.videoId else {
                 print("[UpNext] debrid source switch landed after the viewer moved on — dropped")
                 return
             }
+            guard let success = result as? DirectDebridPlayableResult.Success else {
+                self.abandonViewerChoice("the source's debrid resolve failed")
+                return
+            }
             let resolved: String? = success.stream.playableDirectUrl
-            guard let resolved, !resolved.isEmpty, let url = URL(string: resolved) else { return }
+            guard let resolved, !resolved.isEmpty, let url = URL(string: resolved) else {
+                self.abandonViewerChoice("the source resolved without a playable link")
+                return
+            }
             self.switchToSource(stream: success.stream, url: url, listed: stream)
         }
         return true
@@ -821,7 +866,7 @@ final class NextEpisodeEngine: ObservableObject {
             // Batch D U2: a link resolved from a ytId expires within hours — session-only.
             sessionOnlySourceUrl: StreamPickerView.isYouTubeResolved(listed)
         )
-        onPlayNext(switched)
+        handOff(switched)
     }
 
     private func tearDownSearch() {
@@ -1051,7 +1096,7 @@ final class NextEpisodeEngine: ObservableObject {
         // (`finishWithoutStream`), so a press after reconnect can still retry.
         if phase == .offlineDeferred, selectedStream == nil, nextVideo != nil, !cancelled {
             print("[UpNext] offline card pressed — starting the search")
-            onViewerChoice?()
+            beginViewerChoice(upNext: true)
             startSearchFromOfflineCard(pressed: true)
             return true
         }
@@ -1060,7 +1105,7 @@ final class NextEpisodeEngine: ObservableObject {
         case .counting, .stillWatching:
             countdownTask?.cancel()
             Self.consecutiveAutoPlays = 0
-            onViewerChoice?()
+            beginViewerChoice(upNext: true)
             play(stream: stream, next: next)
             return true
         default:
@@ -1070,6 +1115,8 @@ final class NextEpisodeEngine: ObservableObject {
 
     /// Backward seek / exit: abandon autoplay (or an in-flight jump) for this playback session.
     func cancel() {
+        // Review r2: a jump or Play Next still searching or resolving is abandoned with it.
+        abandonViewerChoice("Up Next cancelled", onlyUpNext: true)
         guard triggered || phase != .hidden else { return }
         cancelled = true
         immediatePlay = false
@@ -1812,6 +1859,7 @@ final class NextEpisodeEngine: ObservableObject {
         searchFromOfflineCard = false
         if backToOfflineCard {
             print("[UpNext] no stream found while still offline — back to the offline card")
+            abandonViewerChoice("no stream found (offline)", onlyUpNext: true)
             immediatePlay = false
             sourceName = nil
             phase = .offlineDeferred
@@ -1819,6 +1867,7 @@ final class NextEpisodeEngine: ObservableObject {
             return
         }
         print("[UpNext] no stream found")
+        abandonViewerChoice("no stream found", onlyUpNext: true)
         phase = .noStream
         searchEnded()
         hideTask = Task { [weak self] in
@@ -1853,7 +1902,7 @@ final class NextEpisodeEngine: ObservableObject {
             // W4: nothing tried before it; the player's own fallback goes on from it (the key is
             // shared's, opaque here: review r1).
             let tried = PlayerSourceFallbackTried.companion.None.including(stream: stream)
-            onPlayNext(makeNextContext(stream: stream, url: url, next: next, listed: stream, sourceFallback: tried))
+            handOff(makeNextContext(stream: stream, url: url, next: next, listed: stream, sourceFallback: tried))
             return
         }
 
@@ -1913,7 +1962,7 @@ final class NextEpisodeEngine: ObservableObject {
                     self.phase = .hidden
                     self.supersedeSourceSwitch()
                     // W4: the tried set (this source included) goes on into the player's fallback.
-                    self.onPlayNext(self.makeNextContext(stream: resolved, url: url, next: next, listed: candidate,
+                    self.handOff(self.makeNextContext(stream: resolved, url: url, next: next, listed: candidate,
                                                          sourceFallback: walk.resolved()))
                     return
                 case let .failed(reason, rejectsLink):

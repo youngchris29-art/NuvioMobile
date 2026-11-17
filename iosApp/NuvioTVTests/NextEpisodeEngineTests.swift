@@ -40,8 +40,11 @@ final class NextEpisodeEngineTests: XCTestCase {
         /// `<streamKey>@<title>` (the spy keeps the live store and resolver cache untouched).
         var played: [PlaybackContext] = []
         var remembered: [String] = []
-        /// W4 review r1: `onViewerChoice` calls (the host's walk invalidation).
+        /// W4 review r1: `onViewerChoice` calls (the host's walk invalidation), and (review r2)
+        /// the ids begun and abandoned, in order.
         var viewerChoices = 0
+        var choiceIds: [UUID] = []
+        var abandoned: [UUID] = []
     }
 
     private func makeContext(episodes: [MetaVideo] = []) -> PlaybackContext {
@@ -238,7 +241,8 @@ final class NextEpisodeEngineTests: XCTestCase {
             recorder.remembered.append("\(listed.playbackStreamKey)@\(title)")
         }
         let engine = NextEpisodeEngine(context: makeContext(), onPlayNext: { recorder.played.append($0) }, hooks: hooks,
-                                       onViewerChoice: { recorder.viewerChoices += 1 })
+                                       onViewerChoice: { id in recorder.viewerChoices += 1; recorder.choiceIds.append(id) },
+                                       onViewerChoiceAbandoned: { id in recorder.abandoned.append(id) })
         engine.configureForTesting(nextVideo: episode(season: 1, episode: 2), trigger: trigger)
         return engine
     }
@@ -2025,7 +2029,7 @@ final class NextEpisodeEngineTests: XCTestCase {
 
         let handed = try? XCTUnwrap(recorder.played.first?.sourceFallback)
         XCTAssertEqual(handed?.attempts, 1, "one further source moved to")
-        XCTAssertEqual(handed?.keys.count, 2)
+        // The keys are shared's and opaque (a failed torrent also leaves a marker): assert meaning.
         XCTAssertEqual(handed?.contains(stream: first), true, "both sources, the one that plays included")
         XCTAssertEqual(handed?.contains(stream: second), true)
         XCTAssertEqual(recorder.played.first?.launchSource, .nextEpisode)
@@ -2171,5 +2175,74 @@ final class NextEpisodeEngineTests: XCTestCase {
         XCTAssertEqual(handed?.contains(stream: x0), true)
         XCTAssertEqual(handed?.contains(stream: y0), true)
         XCTAssertEqual(handed?.contains(stream: x1), false)
+    }
+
+    // MARK: - Review r2: every viewer choice ends exactly once
+
+    /// A Sources pick this device cannot play is abandoned at once, with its own id.
+    func testASourcePickThatCannotPlayIsAbandoned() {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder)
+        XCTAssertFalse(engine.playSource(walkCandidate("cccc")), "no debrid connection in the tests")
+        XCTAssertEqual(recorder.choiceIds.count, 1)
+        XCTAssertEqual(recorder.abandoned, recorder.choiceIds)
+        XCTAssertTrue(recorder.played.isEmpty)
+    }
+
+    /// A pick that reaches the screen is never reported abandoned (nor by a later stop).
+    func testAPickThatHandsOverIsNotAbandoned() {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder)
+        XCTAssertTrue(engine.playSource(stream(url: "https://cdn.example.com/s1e1-other.mkv")))
+        XCTAssertEqual(recorder.played.count, 1)
+        engine.stop()
+        XCTAssertTrue(recorder.abandoned.isEmpty)
+    }
+
+    /// A jump that is still searching when the player stops is abandoned with it.
+    func testAJumpTheViewerLeavesIsAbandoned() {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder)
+        engine.jumpForTesting(to: episode(season: 1, episode: 3))
+        XCTAssertEqual(recorder.choiceIds.count, 1)
+        XCTAssertTrue(recorder.abandoned.isEmpty, "still on its way")
+        engine.stop()
+        XCTAssertEqual(recorder.abandoned, recorder.choiceIds)
+        engine.stop()
+        XCTAssertEqual(recorder.abandoned.count, 1, "exactly once")
+    }
+
+    /// A jump whose search ends with nothing is abandoned (the no-stream card).
+    func testAJumpThatFindsNothingIsAbandoned() async {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder, resolveDebrid: { [self] _, _, _ in
+            self.notCached
+        }, furtherSources: 0)
+        engine.jumpForTesting(to: episode(season: 1, episode: 2))
+        engine.playForTesting(walkCandidate("aaaa"), nextCandidate: { _, _, _ in nil })
+        await engine.resolveTaskForTesting?.value
+        XCTAssertEqual(engine.phase, .noStream)
+        XCTAssertEqual(recorder.abandoned, recorder.choiceIds)
+    }
+
+    /// A newer choice supersedes an open one: only the newer one can end it.
+    func testANewerChoiceSupersedesTheOpenOne() {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder)
+        engine.jumpForTesting(to: episode(season: 1, episode: 3))
+        _ = engine.playSource(walkCandidate("cccc"))            // abandoned at once (cannot play)
+        XCTAssertEqual(recorder.choiceIds.count, 2)
+        XCTAssertEqual(recorder.abandoned, [recorder.choiceIds[1]])
+        engine.stop()
+        XCTAssertEqual(recorder.abandoned, [recorder.choiceIds[1]], "the superseded jump is not reported")
+    }
+
+    /// A seek back cancels Up Next, not a Sources pick that is still resolving.
+    func testCancellingUpNextAbandonsOnlyAnUpNextChoice() {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder)
+        engine.jumpForTesting(to: episode(season: 1, episode: 3))
+        engine.cancel()
+        XCTAssertEqual(recorder.abandoned, recorder.choiceIds)
     }
 }
