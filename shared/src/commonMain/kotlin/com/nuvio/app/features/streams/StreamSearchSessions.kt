@@ -209,6 +209,37 @@ internal object LiveStreamSearchFetcher : StreamSearchFetcher {
     }
 }
 
+/** Review r8: what one search request does to the store; see [streamSearchAdmission]. */
+internal enum class StreamSearchAdmission {
+    /** Serve the search already held for the key. */
+    Join,
+    /** Start a search and hold it (dropping the same episode's searches with another setup). */
+    Start,
+    /** As [Start], first dropping the search held for the key (a forced reload). */
+    Replace,
+    /** Run a search that is never held, joined, evicting or evicted: its plugin scrapers predate a refresh. */
+    Private,
+}
+
+/**
+ * Review r8: the one decision for a search request, taken by the store under the lock a plugin
+ * refresh and a wipe also take, from the state at that moment. [held]: a search is held for the
+ * request's key. A request whose plugin groups were read before the current generation is private,
+ * whatever else holds; a forced reload replaces a held search and otherwise starts one.
+ */
+internal fun streamSearchAdmission(
+    holdsPluginTargets: Boolean,
+    requestGeneration: Long,
+    currentGeneration: Long,
+    forceRefresh: Boolean,
+    held: Boolean,
+): StreamSearchAdmission = when {
+    holdsPluginTargets && requestGeneration < currentGeneration -> StreamSearchAdmission.Private
+    !held -> StreamSearchAdmission.Start
+    forceRefresh -> StreamSearchAdmission.Replace
+    else -> StreamSearchAdmission.Join
+}
+
 private fun scraperFailureText(scraper: PluginScraper): String =
     resourceString("Failed to load ${scraper.name}", StringKey.streams_failed_to_load_scraper, scraper.name)
 
@@ -232,6 +263,8 @@ internal class StreamSearchSessionStore(
     // [isHeld] are synchronous (review r1: a wipe invalidates at its call, not later).
     private val lock = SynchronizedObject()
     private val sessions = LinkedHashMap<StreamSearchKey, Session>()
+    /** Review r8: running private searches, never joinable; cancelled by a plugin refresh and [clear]. */
+    private val privateSessions = LinkedHashSet<Session>()
 
     /** Tests: how many searches were started (a join does not count). Written under [lock]. */
     var startedCount = 0
@@ -244,7 +277,8 @@ internal class StreamSearchSessionStore(
         val isComplete: Boolean = false,
     )
 
-    private class Session {
+    /** [isPrivate]: review r7/r8, a stale-generation run in [privateSessions], never in [sessions]. */
+    private class Session(val isPrivate: Boolean = false) {
         val progress = MutableStateFlow(Progress())
         var job: Job? = null
 
@@ -276,10 +310,10 @@ internal class StreamSearchSessionStore(
      */
     fun search(profileId: Int, targets: StreamSearchTargets, forceRefresh: Boolean): Flow<StreamLoadCompletion> = flow {
         val key = targets.key(profileId)
-        // Review r7: targets whose plugin scrapers predate a refresh run privately: never stored,
-        // never joined, and never evicting a search of the current generation.
-        val stale = targets.pluginProviderGroups.isNotEmpty() && targets.pluginGeneration < pluginGeneration()
-        val session = if (stale) startPrivate(key, targets) else acquire(key, targets, forceRefresh)
+        // Review r7/r8: whether the targets are stale is decided inside [acquire], under the lock
+        // a plugin refresh takes, with the store change it implies.
+        val session = acquire(key, targets, forceRefresh)
+        val stale = session.isPrivate
         var emitted = 0
         try {
             emitAll(
@@ -294,26 +328,13 @@ internal class StreamSearchSessionStore(
         } finally {
             // A private search has no other consumer: it stops with this one.
             if (stale && !session.progress.value.isComplete) {
+                synchronized(lock) {
+                    privateSessions.remove(session)
+                    privateSessionsCancelled++
+                }
                 session.cancel()
-                synchronized(lock) { privateSessionsCancelled++ }
             }
         }
-    }
-
-    /** Review r7: a search for stale targets, outside the map (see [search]). */
-    private fun startPrivate(key: StreamSearchKey, targets: StreamSearchTargets): Session {
-        val session = Session()
-        session.job = scope.launch(start = CoroutineStart.LAZY) {
-            try {
-                coroutineScope { launchTasks(session, targets, forceRefresh = false) }
-            } finally {
-                complete(key, session)      // not in the map: only marks it complete
-            }
-        }
-        synchronized(lock) { startedCount++ }
-        StreamDiagnostics.log("search start ${key.type} ${key.videoId} (stale plugin scrapers, not shared)")
-        session.job?.start()
-        return session
     }
 
     /**
@@ -325,7 +346,15 @@ internal class StreamSearchSessionStore(
         synchronized(lock) {
             sessions.values.forEach { it.cancel() }
             sessions.clear()
+            cancelPrivateLocked()
         }
+    }
+
+    /** Review r8: every private run is reachable here, so a refresh or a wipe also stops it. */
+    private fun cancelPrivateLocked() {
+        val running = privateSessions.toList()
+        privateSessions.clear()
+        running.forEach { it.cancel() }
     }
 
     /**
@@ -343,6 +372,8 @@ internal class StreamSearchSessionStore(
                 sessions.remove(key)
                 session?.cancel()
             }
+            // Review r8: a private run is stale by definition, and staler still after this refresh.
+            cancelPrivateLocked()
         }
     }
 
@@ -364,22 +395,37 @@ internal class StreamSearchSessionStore(
     /** Tests: the keys held, oldest first. */
     fun heldKeys(): List<StreamSearchKey> = synchronized(lock) { sessions.keys.toList() }
 
+    /** Tests: private searches still running (review r8). */
+    fun privateRunCount(): Int = synchronized(lock) { privateSessions.size }
+
     private fun acquire(key: StreamSearchKey, targets: StreamSearchTargets, forceRefresh: Boolean): Session {
         var created: Session? = null
         val selected = synchronized(lock) {
             removeExpiredLocked()
-            removeObsoleteLocked(key)
-            if (forceRefresh) {
-                sessions.remove(key)?.cancel()
-            } else {
-                val existing = sessions[key]
-                if (existing != null) {
+            // Review r8: decided once, here, against the generation a refresh changes under this
+            // same lock; the rest of this block only applies the decision.
+            val admission = streamSearchAdmission(
+                holdsPluginTargets = targets.pluginProviderGroups.isNotEmpty(),
+                requestGeneration = targets.pluginGeneration,
+                currentGeneration = pluginGeneration,
+                forceRefresh = forceRefresh,
+                held = sessions.containsKey(key),
+            )
+            when (admission) {
+                StreamSearchAdmission.Join -> {
                     log.d { "Joining source search for ${key.type} ${key.videoId}" }
                     StreamDiagnostics.log("search join ${key.type} ${key.videoId}")
-                    return@synchronized existing
+                    return@synchronized sessions.getValue(key)
+                }
+                StreamSearchAdmission.Private -> Unit      // never stored, joined, evicting or evicted
+                StreamSearchAdmission.Start -> removeObsoleteLocked(key)
+                StreamSearchAdmission.Replace -> {
+                    removeObsoleteLocked(key)
+                    sessions.remove(key)?.cancel()
                 }
             }
-            Session().also { session ->
+            val isPrivate = admission == StreamSearchAdmission.Private
+            Session(isPrivate).also { session ->
                 session.job = scope.launch(start = CoroutineStart.LAZY) {
                     try {
                         coroutineScope { launchTasks(session, targets, forceRefresh) }
@@ -387,13 +433,18 @@ internal class StreamSearchSessionStore(
                         complete(key, session)
                     }
                 }
-                sessions[key] = session
+                if (isPrivate) {
+                    privateSessions += session
+                } else {
+                    sessions[key] = session
+                    trimLocked()
+                }
                 startedCount++
-                trimLocked()
                 created = session
                 StreamDiagnostics.log(
                     "search start ${key.type} ${key.videoId} tasks=${targets.totalTasks}" +
-                        if (forceRefresh) " (refresh)" else "",
+                        (if (forceRefresh) " (refresh)" else "") +
+                        (if (isPrivate) " (stale plugin scrapers, not shared)" else ""),
                 )
             }
         }
@@ -447,6 +498,10 @@ internal class StreamSearchSessionStore(
     private fun complete(key: StreamSearchKey, session: Session) {
         session.progress.update { it.copy(isComplete = true) }
         synchronized(lock) {
+            if (session.isPrivate) {
+                privateSessions.remove(session)
+                return@synchronized
+            }
             // A dropped session (forced refresh, eviction, profile or setup change, clear) is no
             // longer in the map under its key, or never was the one held there.
             if (session.invalidated || sessions[key] !== session) return@synchronized

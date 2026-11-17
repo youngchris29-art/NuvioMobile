@@ -543,4 +543,79 @@ class StreamSearchSessionScenarioTest {
         assertTrue(store.heldKeys().isEmpty())
         assertEquals(1, store.privateSessionsCancelled, "its work was cancelled with its consumer")
     }
+
+    // MARK: Stage B review r8: the stale decision, private runs and reloads
+
+    @Test
+    fun aRefreshBetweenTheStaleCheckAndTheAcquisitionNeverEvictsTheFreshSearch() = runTest {
+        // The pause point: the store's first clock read during the old search's acquisition. On a
+        // store that checks staleness before it takes the lock, that read is after the check.
+        lateinit var store: StreamSearchSessionStore
+        var interleave: (() -> Unit)? = null
+        store = StreamSearchSessionStore(fetcher, now = {
+            interleave?.also { interleave = null }?.invoke()
+            clock
+        }, scope = backgroundScope)
+        val old = pluginTargets(store.pluginGeneration())          // generation 0
+        fetcher.hold("a")
+        fetcher.hold("a")
+        val freshReceived = mutableListOf<StreamLoadCompletion>()
+        var freshJob: Job? = null
+        var freshTargets: StreamSearchTargets? = null
+        interleave = {
+            store.dropPluginSessions()                              // the refresh lands here
+            val targets = pluginTargets(store.pluginGeneration())   // generation 1
+            freshTargets = targets
+            freshJob = backgroundScope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+                store.search(1, targets, forceRefresh = false).collect { freshReceived += it }
+            }
+        }
+        val oldConsumer = consume(store, old)
+        runCurrent()
+        assertEquals(1L, store.pluginGeneration())
+        assertEquals(listOf(freshTargets!!.key(1)), store.heldKeys(), "only the fresh search is held")
+        assertFalse(freshJob!!.isCompleted, "the fresh search is not evicted by the old one")
+        assertFalse(oldConsumer.job.isCompleted, "the old request runs on its own")
+    }
+
+    @Test
+    fun aSecondRefreshStopsAPrivateSearch() = runTest {
+        val store = store()
+        val stale = pluginTargets(store.pluginGeneration())
+        store.dropPluginSessions()                                  // first refresh: the run is private
+        val gate = fetcher.hold("a")
+        val consumer = consume(store, stale)
+        assertFalse(consumer.job.isCompleted)
+        store.dropPluginSessions()                                  // second refresh while it runs
+        runCurrent()
+        gate.complete(answer("a", "late"))
+        runCurrent()
+        assertTrue(consumer.job.isCompleted, "the private run ends with the second refresh")
+        assertFalse(consumer.labels.any { it.endsWith("late") }, "nothing arrives after the refresh")
+    }
+
+    @Test
+    fun clearStopsAPrivateSearch() = runTest {
+        val store = store()
+        val stale = pluginTargets(store.pluginGeneration())
+        store.dropPluginSessions()
+        val gate = fetcher.hold("a")
+        val consumer = consume(store, stale)
+        assertFalse(consumer.job.isCompleted)
+        store.clear()
+        runCurrent()
+        gate.complete(answer("a", "late"))
+        runCurrent()
+        assertTrue(consumer.job.isCompleted, "a wipe ends the private run")
+        assertFalse(consumer.labels.any { it.endsWith("late") }, "nothing arrives after the wipe")
+    }
+
+    @Test
+    fun aStaleReloadStillAsksTheAddOnsAfresh() = runTest {
+        val store = store()
+        val stale = pluginTargets(store.pluginGeneration())
+        store.dropPluginSessions()
+        consume(store, stale, forceRefresh = true)
+        assertEquals(listOf("a@tt1:1:1"), fetcher.forcedFetches, "the reload's add-on fetch skips the cache")
+    }
 }

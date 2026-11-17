@@ -92,6 +92,9 @@ internal class ScriptedSearchFetcher : StreamSearchFetcher {
 
     /** Every add-on fetch, as "<add-on name>@<request id>", in call order. */
     val addonFetches = mutableListOf<String>()
+
+    /** Review r8: the add-on fetches asked with `forceRefresh` (no-cache), same form. */
+    val forcedFetches = mutableListOf<String>()
     var scraperRuns = 0
     var cacheChecks = 0
 
@@ -116,6 +119,7 @@ internal class ScriptedSearchFetcher : StreamSearchFetcher {
 
     override suspend fun fetchAddon(target: InstalledStreamAddonTarget, type: String, forceRefresh: Boolean): Result<List<StreamItem>> {
         addonFetches += "${target.addonName}@${target.videoId}"
+        if (forceRefresh) forcedFetches += "${target.addonName}@${target.videoId}"
         val gate = gates[target.addonName]?.removeFirstOrNull() ?: return answer(target)
         return if (gatesIgnoreCancellation) withContext(NonCancellable) { gate.await() } else gate.await()
     }
