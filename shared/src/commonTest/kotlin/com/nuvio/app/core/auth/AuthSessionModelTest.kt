@@ -560,4 +560,39 @@ class AuthSessionModelTest {
             assertNull(run.state.owner)
         }
     }
+
+    // ── Decision AQ (spec C7): a different account wipes the previous account's data ────────────
+
+    @Test
+    fun signingIntoADifferentAccountWipesThePreviousAccountsData() {
+        val run = Run(owner = "A")
+        run.send(Snap.RefreshFailure)
+        run.send(WatchdogFired)
+        run.send(acct("B", "b1"))
+        val accept = run.send(ValidationFinished(run.startedValidation(), SessionVerdict.Valid))
+        assertEquals(
+            listOf(WipeAccountData, PersistOwner("B"), PersistNotice(false), HideNotice, Publish(account("B"))),
+            accept,
+        )
+        assertEquals("B", run.state.owner)
+        assertEquals(0, run.notices())
+    }
+
+    @Test
+    fun sameAccountNoWipe() {
+        val run = Run(owner = "A")
+        run.send(acct("A", "a1"))
+        val accept = run.send(ValidationFinished(run.startedValidation(), SessionVerdict.Unreachable))
+        assertEquals(listOf(PersistNotice(false), HideNotice, Publish(account("A"))), accept)
+        assertEquals(0, run.wipes())
+    }
+
+    @Test
+    fun noOwnerNoWipe() {
+        val run = Run(owner = null)
+        run.send(acct("B", "b1"))
+        val accept = run.send(ValidationFinished(run.startedValidation(), SessionVerdict.Valid))
+        assertEquals(listOf(PersistOwner("B"), PersistNotice(false), HideNotice, Publish(account("B"))), accept)
+        assertEquals(0, run.wipes())
+    }
 }

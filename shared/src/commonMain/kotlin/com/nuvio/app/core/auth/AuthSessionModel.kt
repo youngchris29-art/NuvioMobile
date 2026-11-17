@@ -185,7 +185,13 @@ private class StepBuilder(var state: AuthModelState) {
     }
 
     private fun accept(account: Account) {
+        // Decision AQ (spec C7): signing into a different account wipes the previous account's
+        // local data first. The first sign-in after the update never wipes: owner is unset then.
         val previousOwner = state.owner
+        if (previousOwner != null && previousOwner != account.userId) {
+            emit(AuthOutput.Drop("account switch: wiping the previous account's local data"))
+            emit(AuthOutput.WipeAccountData)
+        }
         if (previousOwner != account.userId) {
             state = state.copy(owner = account.userId)
             emit(AuthOutput.PersistOwner(account.userId))
