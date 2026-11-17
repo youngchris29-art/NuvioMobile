@@ -98,11 +98,69 @@ class PlayerSourceFallbackWalk(
         candidate.playerSourceFallbackKey()?.let(triedKeys::add)
         // Review r2: remembered for the whole walk, not only as the last failure.
         candidate.failedTorrentMarker()?.let(triedKeys::add)
+        return moveOn(nextCandidate)
+    }
+
+    /** Decision BC: a further source may still be moved to ("Sources to Try" not used up). */
+    val hasBudget: Boolean
+        get() = attempts < maxSources
+
+    /**
+     * Decision BC: after [failed] found nothing and the walk waited for the search, look again.
+     * The failed source is already recorded; a source found here counts against [maxSources]
+     * exactly like one found by [failed], so the cap holds across the wait.
+     */
+    fun moveOn(nextCandidate: (failed: StreamItem, triedKeys: Set<String>) -> StreamItem?): StreamItem? {
         if (attempts >= maxSources) return null
         val next = nextCandidate(candidate, triedKeys.toSet()) ?: return null
         attempts++
         candidate = next
         return next
+    }
+}
+
+/** Decision BC: what the next-episode walk does after a source failed. */
+sealed interface PlayerSourceFallbackStep {
+    /** Resolve and play this source next. */
+    data class Try(val stream: StreamItem) : PlayerSourceFallbackStep
+
+    /**
+     * No further source is known yet but the episode's search is still open: wait for new sources
+     * at most [atMostMillis] (the time left to the search deadline), then look again.
+     */
+    data class Wait(val atMostMillis: Long) : PlayerSourceFallbackStep
+
+    /** Nothing left to try: the no-stream card. */
+    data object End : PlayerSourceFallbackStep
+}
+
+/**
+ * Decision BC (Christian, 2026-11-17: "Wait up to the search deadline"). Device row R25 showed the
+ * next-episode walk ending the moment its candidates ran out while an add-on was still answering
+ * (it did, 12 s later). The walk now waits for new sources while the episode's search is still
+ * open, never past the search deadline, never once the search has settled, and never after the
+ * viewer acted (Menu, a source pick, leaving the player). "Sources to Try" still caps the walk:
+ * waiting costs nothing, a source tried after it counts.
+ */
+object PlayerSourceFallbackWaitPolicy {
+    /**
+     * [next] is the walk's next source ([PlayerSourceFallbackWalk.failed] or
+     * [PlayerSourceFallbackWalk.moveOn], so the tried set is already applied); [hasBudget] is
+     * [PlayerSourceFallbackWalk.hasBudget]; [searchOpen] says add-ons are still answering;
+     * [millisToDeadline] is the time left to the search deadline; [cancelled] is a viewer action.
+     */
+    fun decide(
+        next: StreamItem?,
+        hasBudget: Boolean,
+        searchOpen: Boolean,
+        millisToDeadline: Long,
+        cancelled: Boolean,
+    ): PlayerSourceFallbackStep = when {
+        cancelled -> PlayerSourceFallbackStep.End
+        next != null -> PlayerSourceFallbackStep.Try(next)
+        !hasBudget -> PlayerSourceFallbackStep.End
+        searchOpen && millisToDeadline > 0 -> PlayerSourceFallbackStep.Wait(millisToDeadline)
+        else -> PlayerSourceFallbackStep.End
     }
 }
 

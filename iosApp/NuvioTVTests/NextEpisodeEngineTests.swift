@@ -221,7 +221,7 @@ final class NextEpisodeEngineTests: XCTestCase {
                             network: @escaping () -> Bool = { true },
                             sourceListDeadline: (@MainActor () async -> Void)? = nil,
                             resolveDebrid: (@MainActor (StreamItem, KotlinInt?, KotlinInt?) async throws -> DirectDebridPlayableResult)? = nil,
-                            furtherSources: Int? = nil) -> NextEpisodeEngine {
+                            furtherSources: Int? = nil, waitPoll: TimeInterval? = nil) -> NextEpisodeEngine {
         var hooks = NextEpisodeEngine.Hooks(loadStreams: { type, videoId, season, episode in
             recorder.calls.append(LoadCall(type: type, videoId: videoId, season: season?.value, episode: episode?.value))
             recorder.log.append("load:\(videoId)")
@@ -237,6 +237,7 @@ final class NextEpisodeEngineTests: XCTestCase {
         if let sourceListDeadline { hooks.sourceListDeadline = sourceListDeadline }
         if let resolveDebrid { hooks.resolveDebrid = resolveDebrid }
         if let furtherSources { hooks.furtherSources = { _ in furtherSources } }
+        if let waitPoll { hooks.waitPollSeconds = waitPoll }
         hooks.rememberFailedLink = { listed, title, _, _ in
             recorder.remembered.append("\(listed.playbackStreamKey)@\(title)")
         }
@@ -2244,5 +2245,123 @@ final class NextEpisodeEngineTests: XCTestCase {
         engine.jumpForTesting(to: episode(season: 1, episode: 3))
         engine.cancel()
         XCTAssertEqual(recorder.abandoned, recorder.choiceIds)
+    }
+
+    // MARK: - Decision BC: the retry walk waits for an open search, up to its deadline
+
+    /// A pick watched with its search still loading, and a deadline `deadline` seconds away.
+    private func pickWhileLoading(_ engine: NextEpisodeEngine, _ recorder: Recorder, _ first: StreamItem,
+                                  deadline: TimeInterval) -> (StreamsUiState) -> Void {
+        engine.forceSearchingForTesting(deadlineIn: deadline)
+        let search = recorder.callbacks.last!
+        search(streamsState([[first]], loading: true))
+        engine.selectForTesting(first)
+        return search
+    }
+
+    private func waitFor(_ condition: () -> Bool) async {
+        let deadline = Date().addingTimeInterval(3)
+        while !condition(), Date() < deadline { try? await Task.sleep(nanoseconds: 10_000_000) }
+    }
+
+    /// Device row R25: the first candidate fails fast while an add-on is still answering; the walk
+    /// waits, and the source that arrives inside the deadline is tried and plays.
+    func testTheWalkWaitsForAnOpenSearchAndTriesALateSource() async {
+        let recorder = Recorder()
+        let probe = WalkProbe()
+        let first = walkCandidate("aaaa")
+        let late = walkCandidate("bbbb", addon: "Late")
+        let engine = makeEngine(trigger: trigger(), recorder: recorder, resolveDebrid: { [self] stream, _, _ in
+            probe.resolved.append(stream)
+            return probe.resolved.count == 1 ? self.notCached : self.success()
+        }, waitPoll: 0.02)
+        let search = pickWhileLoading(engine, recorder, first, deadline: 5)
+        engine.playForTesting(first, nextCandidate: { [self] _, tried, groups in self.firstUntried(groups, tried) })
+        await waitFor { probe.resolved.count == 1 }
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertTrue(recorder.played.isEmpty, "waiting, not ended")
+        XCTAssertNotEqual(engine.phase, .noStream)
+        search(streamsState([[first], [late]]))               // the slow add-on answers
+        await engine.resolveTaskForTesting?.value
+        XCTAssertEqual(probe.resolved.map(\.playbackStreamKey), [first.playbackStreamKey, late.playbackStreamKey])
+        XCTAssertEqual(recorder.played.first?.listedStream?.playbackStreamKey, late.playbackStreamKey)
+    }
+
+    /// Nothing arrives: the walk ends on the no-stream card at the deadline, not before.
+    func testAWaitWithNothingArrivingEndsAtTheDeadline() async {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder, resolveDebrid: { [self] _, _, _ in
+            self.notCached
+        }, waitPoll: 0.02)
+        let first = walkCandidate("aaaa")
+        _ = pickWhileLoading(engine, recorder, first, deadline: 0.4)
+        let started = Date()
+        engine.playForTesting(first, nextCandidate: { [self] _, tried, groups in self.firstUntried(groups, tried) })
+        await engine.resolveTaskForTesting?.value
+        XCTAssertEqual(engine.phase, .noStream)
+        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(started), 0.3, "it waited for the deadline")
+        XCTAssertTrue(recorder.played.isEmpty)
+    }
+
+    /// The search had settled: no wait at all.
+    func testASettledSearchEndsTheWalkWithoutWaiting() async {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder, resolveDebrid: { [self] _, _, _ in
+            self.notCached
+        }, waitPoll: 0.02)
+        let first = walkCandidate("aaaa")
+        let search = pickWhileLoading(engine, recorder, first, deadline: 30)
+        search(streamsState([[first]], loading: false))
+        let started = Date()
+        engine.playForTesting(first, nextCandidate: { [self] _, tried, groups in self.firstUntried(groups, tried) })
+        await engine.resolveTaskForTesting?.value
+        XCTAssertEqual(engine.phase, .noStream)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1, "ended at once")
+    }
+
+    /// A viewer action (a source pick) during the wait ends it at once; the late source never plays.
+    func testAViewerPickDuringTheWaitEndsIt() async {
+        let recorder = Recorder()
+        let probe = WalkProbe()
+        let first = walkCandidate("aaaa")
+        let late = walkCandidate("bbbb", addon: "Late")
+        let engine = makeEngine(trigger: trigger(), recorder: recorder, resolveDebrid: { [self] stream, _, _ in
+            probe.resolved.append(stream)
+            return probe.resolved.count == 1 ? self.notCached : self.success()
+        }, waitPoll: 0.02)
+        let search = pickWhileLoading(engine, recorder, first, deadline: 5)
+        engine.playForTesting(first, nextCandidate: { [self] _, tried, groups in self.firstUntried(groups, tried) })
+        await waitFor { probe.resolved.count == 1 }
+        try? await Task.sleep(nanoseconds: 60_000_000)
+        _ = engine.playSource(stream(url: "https://cdn.example.com/s1e1-other.mkv"))   // the viewer's own pick
+        search(streamsState([[first], [late]]))
+        await engine.resolveTaskForTesting?.value
+        XCTAssertEqual(probe.resolved.count, 1, "the late source is never resolved")
+        XCTAssertEqual(recorder.played.count, 1)
+        XCTAssertEqual(recorder.played.first?.videoId, "tt1:1:1", "only the viewer's pick (the current episode)")
+    }
+
+    /// Sources to Try still caps the walk across the wait: with 1, the one further source is the
+    /// late one, and its failure ends the walk with no second wait.
+    func testSourcesToTryCapsTheWalkAcrossTheWait() async {
+        let recorder = Recorder()
+        let probe = WalkProbe()
+        let first = walkCandidate("aaaa")
+        let late = walkCandidate("bbbb", addon: "Late")
+        let later = walkCandidate("cccc", addon: "Later")
+        let engine = makeEngine(trigger: trigger(), recorder: recorder, resolveDebrid: { [self] stream, _, _ in
+            probe.resolved.append(stream)
+            return self.notCached
+        }, furtherSources: 1, waitPoll: 0.02)
+        let search = pickWhileLoading(engine, recorder, first, deadline: 5)
+        engine.playForTesting(first, nextCandidate: { [self] _, tried, groups in self.firstUntried(groups, tried) })
+        await waitFor { probe.resolved.count == 1 }
+        try? await Task.sleep(nanoseconds: 60_000_000)
+        search(streamsState([[first], [late]], loading: true))
+        await waitFor { probe.resolved.count == 2 }
+        search(streamsState([[first], [late], [later]], loading: true))
+        await engine.resolveTaskForTesting?.value
+        XCTAssertEqual(probe.resolved.map(\.playbackStreamKey), [first.playbackStreamKey, late.playbackStreamKey])
+        XCTAssertEqual(engine.phase, .noStream)
     }
 }

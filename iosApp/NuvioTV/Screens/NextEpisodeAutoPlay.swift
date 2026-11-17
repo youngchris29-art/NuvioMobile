@@ -131,6 +131,10 @@ final class NextEpisodeEngine: ObservableObject {
         /// Live value is the shared path monitor (true until its first update, so a cold start
         /// never blocks). Tests replace it.
         var networkSatisfied: () -> Bool = { NetworkPathMonitor.shared.isSatisfied }
+        /// Decision BC: the clock for the search deadline the retry walk may wait up to (uptime).
+        var now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+        /// Decision BC: how often the waiting walk looks for new sources (tests shorten it).
+        var waitPollSeconds: TimeInterval = 0.25
         /// BUG-129 seams: the shared flow's reset and its subscription, used by `loadSources`,
         /// `beginSearch` and `tearDownSearch`. Tests replace them with spies (a nil watcher).
         var clearStreams: () -> Void = { PlayerStreamsRepository.shared.clearEpisodeStreams() }
@@ -334,6 +338,41 @@ final class NextEpisodeEngine: ObservableObject {
     private var pickWatchActive = false
     /// The latest results of the request that made the pick, while the pick watch is on.
     private var pickStreamsState: StreamsUiState?
+    /// Decision BC: emissions the pick watch has seen (the waiting walk looks again on a new one),
+    /// and the search's hard deadline (uptime; nil: no search to wait for).
+    private var pickEmissions = 0
+    private var searchDeadlineAt: TimeInterval?
+    /// The grace past the soft auto-select timeout before the search resolves with what it has.
+    static let searchGraceSeconds: TimeInterval = 12
+
+    /// Decision BC: the episode's search is still answering (add-ons loading) and its deadline has
+    /// not passed. Only a pick that keeps watching its request can know; otherwise false.
+    private var searchStillOpen: Bool {
+        guard pickWatchActive, let state = pickStreamsState, state.isAnyLoading else { return false }
+        return millisToSearchDeadline > 0
+    }
+
+    private var millisToSearchDeadline: Int64 {
+        guard let deadline = searchDeadlineAt else { return 0 }
+        return Int64(max(0, (deadline - hooks.now()) * 1000))
+    }
+
+    /// Decision BC: returns when the pick watch sees a new emission (true), or after `atMostMillis`
+    /// (false). The caller re-checks the walk's generation (any viewer action ends the wait).
+    private func waitForPickEmission(atMostMillis: Int64) async -> Bool {
+        let start = pickEmissions
+        let generation = resolveWalkGeneration
+        var waited: TimeInterval = 0
+        let limit = TimeInterval(atMostMillis) / 1000
+        while waited < limit {
+            let step = min(hooks.waitPollSeconds, limit - waited)
+            try? await Task.sleep(nanoseconds: UInt64(max(step, 0) * 1_000_000_000))
+            waited += step
+            if Task.isCancelled || generation != resolveWalkGeneration || cancelled { return false }
+            if pickEmissions != start { return true }
+        }
+        return false
+    }
     /// Latest emission from `episodeStreamsState` (the exported StateFlow has no sync `.value`).
     private var latestStreamsState: StreamsUiState?
     /// The playing title's skip intervals (post-credits included), handed in by both player
@@ -1198,6 +1237,8 @@ final class NextEpisodeEngine: ObservableObject {
 
         // Bounded auto-select timeout (mobile default 3s, clamped 1–30).
         let timeoutSeconds = min(max(Int(settings.streamAutoPlayTimeoutSeconds), 1), 30)
+        // Decision BC: the hard deadline below (soft timeout + 12 s grace) bounds the retry wait too.
+        searchDeadlineAt = hooks.now() + TimeInterval(timeoutSeconds) + Self.searchGraceSeconds
         timeoutTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(timeoutSeconds) * 1_000_000_000)
             guard let self, !Task.isCancelled, self.selectedStream == nil, !self.cancelled else { return }
@@ -1213,7 +1254,7 @@ final class NextEpisodeEngine: ObservableObject {
             // Hard deadline: a hung addon can leave the flow "loading" forever, which used to strand
             // the card at "Finding source…" with no terminal state. Give stragglers a grace window
             // past the soft timeout, then resolve with whatever exists (or "no stream").
-            try? await Task.sleep(nanoseconds: 12_000_000_000)
+            try? await Task.sleep(nanoseconds: UInt64(Self.searchGraceSeconds * 1_000_000_000))
             guard !Task.isCancelled, self.selectedStream == nil, !self.cancelled else { return }
             let late = self.latestStreamsState
             print("[UpNext] hard deadline: groups=\(late?.groups.count ?? 0) loading=\(late?.isAnyLoading ?? false) — resolving")
@@ -1241,6 +1282,7 @@ final class NextEpisodeEngine: ObservableObject {
             // Stage review r5: a stream is already picked; only remember what else arrived. A
             // request's results only grow, so an empty state (a clear) never replaces them.
             if !state.groups.isEmpty { pickStreamsState = state }
+            pickEmissions += 1
             print("[UpNext] streams after the pick: groups=\(state.groups.count) loading=\(state.isAnyLoading)")
             return
         }
@@ -1320,10 +1362,11 @@ final class NextEpisodeEngine: ObservableObject {
     #if DEBUG
     /// Tests only (BUG-129): `phase = .searching` plus `beginSearch()`'s watcher wiring, without
     /// `settings`, the stream load or the subtitle prefetch, so the guards are reachable.
-    func forceSearchingForTesting() {
+    func forceSearchingForTesting(deadlineIn seconds: TimeInterval? = nil) {
         takeFlowFromSourceList()
         phase = .searching
         installSearchWatcher()
+        searchDeadlineAt = seconds.map { hooks.now() + $0 }
     }
 
     /// Tests only (r1 P3): ends the forced search WITHOUT bumping `searchGeneration`, so a test
@@ -1973,16 +2016,55 @@ final class NextEpisodeEngine: ObservableObject {
                         print("[UpNext] failed link not remembered: offline")
                     }
                 }
-                // The request's latest results, read now: sources that arrived after the pick count.
-                let latest = self.pickStreamsState ?? selectionState
-                let groups: [AddonStreamGroup] = latest?.groups ?? []
-                let installed: Set<String> = latest?.installedAddonIds ?? []
-                let picker: (StreamItem, Set<String>) -> StreamItem? = { failed, tried in
-                    if let candidatePicker { return candidatePicker(failed, tried, groups) }
-                    return self.fallbackCandidate(after: failed, tried: tried, groups: groups, installedAddonIds: installed)
+                // The request's latest results, read at each look: sources that arrived after the
+                // pick (and, decision BC, during a wait) count.
+                @MainActor func picker() -> (StreamItem, Set<String>) -> StreamItem? {
+                    let latest = self.pickStreamsState ?? selectionState
+                    let groups: [AddonStreamGroup] = latest?.groups ?? []
+                    let installed: Set<String> = latest?.installedAddonIds ?? []
+                    return { failed, tried in
+                        if let candidatePicker { return candidatePicker(failed, tried, groups) }
+                        return self.fallbackCandidate(after: failed, tried: tried, groups: groups, installedAddonIds: installed)
+                    }
                 }
-                guard let further = walk.failed(nextCandidate: picker) else {
-                    print("[UpNext] no further source (\(walk.attempts)/\(maxFurther) tried, groups=\(groups.count))")
+                var nextSource = walk.failed(nextCandidate: picker())
+                var further: StreamItem?
+                // Decision BC: out of sources while the search is still open → wait for new ones up
+                // to the search deadline (the shared policy decides; a viewer action ends it).
+                decide: while true {
+                    let step = PlayerSourceFallbackWaitPolicy.shared.decide(
+                        next: nextSource, hasBudget: walk.hasBudget, searchOpen: self.searchStillOpen,
+                        millisToDeadline: self.millisToSearchDeadline,
+                        cancelled: generation != self.resolveWalkGeneration || self.cancelled)
+                    switch step {
+                    case let tryStep as PlayerSourceFallbackStepTry:
+                        further = tryStep.stream
+                        break decide
+                    case let wait as PlayerSourceFallbackStepWait:
+                        print("[UpNext] no further source yet — waiting up to \(wait.atMostMillis) ms for the search")
+                        if self.phase != .searching { self.phase = .searching }
+                        let landed = await self.waitForPickEmission(atMostMillis: wait.atMostMillis)
+                        guard generation == self.resolveWalkGeneration else {
+                            print("[UpNext] wait for sources ended by the viewer — dropped")
+                            return
+                        }
+                        guard !self.cancelled, self.nextVideo?.id == next.id else {
+                            print("[UpNext] wait for sources ended: the viewer moved on")
+                            self.endResolveWalk()
+                            self.endPickWatch()
+                            self.selectedStream = nil
+                            if !self.cancelled { self.phase = .hidden }
+                            return
+                        }
+                        print("[UpNext] wait for sources: \(landed ? "new results" : "no new results")")
+                        nextSource = walk.moveOn(nextCandidate: picker())
+                    default:
+                        break decide
+                    }
+                }
+                guard let further else {
+                    let groups = (self.pickStreamsState ?? selectionState)?.groups.count ?? 0
+                    print("[UpNext] no further source (\(walk.attempts)/\(maxFurther) tried, groups=\(groups))")
                     self.endResolveWalk()
                     self.endPickWatch()
                     self.selectedStream = nil          // reopen finishWithoutStream's guard
