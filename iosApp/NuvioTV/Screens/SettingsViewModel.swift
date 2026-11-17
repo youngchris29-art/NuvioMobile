@@ -110,6 +110,12 @@ final class SettingsViewModel: ObservableObject {
     /// With auto-play on: only start a link the debrid service already has cached, otherwise show
     /// the source list (`PlayerSettingsUiState.streamAutoPlayCachedOnly`). Same watcher.
     @Published private(set) var autoPlayCachedOnly = false
+    /// Source fallback (Settings → Sources → Source Fallback): when a source the app picked fails or
+    /// does not start in time, play the next matching one (`PlayerSettingsUiState.streamAutoPlayFallback*`).
+    /// Same watcher. Defaults match the shared ones: on, 3 further sources, 15 s.
+    @Published private(set) var fallbackOnFailure = true
+    @Published private(set) var fallbackSourcesToTry = 3
+    @Published private(set) var fallbackStartupLimit = 15
     /// FEAT-49 (upstream 22c9ab20, Settings → Playback → Next Episode): start the Up Next source
     /// search ahead of the card's display threshold (`PlayerSettingsUiState.preloadNextEpisodeSources`).
     /// Same watcher.
@@ -222,6 +228,9 @@ final class SettingsViewModel: ObservableObject {
             self.assign(\.showLoadingOverlay, state.showLoadingOverlay)
             self.assign(\.autoPlayBestSource, state.streamAutoPlayMode == StreamAutoPlayMode.firstStream)
             self.assign(\.autoPlayCachedOnly, state.streamAutoPlayCachedOnly)
+            self.assign(\.fallbackOnFailure, state.streamAutoPlayFallbackOnFailure)
+            self.assign(\.fallbackSourcesToTry, Int(state.streamAutoPlayFallbackMaxSources))
+            self.assign(\.fallbackStartupLimit, Int(state.streamAutoPlayFallbackStartupTimeoutSeconds))
             self.assign(\.preloadNextEpisodeSources, state.preloadNextEpisodeSources)
             self.assign(\.chapterTitleEnabled, state.chapterTitleEnabled)
             self.assign(\.autoPlayNextEpisodeEnabled, state.streamAutoPlayNextEpisodeEnabled)
@@ -442,6 +451,18 @@ final class SettingsViewModel: ObservableObject {
 
     func setAutoPlayCachedOnly(_ enabled: Bool) {
         PlayerSettingsRepository.shared.setStreamAutoPlayCachedOnly(enabled: enabled)
+    }
+
+    func setFallbackOnFailure(_ enabled: Bool) {
+        PlayerSettingsRepository.shared.setStreamAutoPlayFallbackOnFailure(enabled: enabled)
+    }
+
+    func setFallbackSourcesToTry(_ count: Int) {
+        PlayerSettingsRepository.shared.setStreamAutoPlayFallbackMaxSources(count: Int32(count))
+    }
+
+    func setFallbackStartupLimit(_ seconds: Int) {
+        PlayerSettingsRepository.shared.setStreamAutoPlayFallbackStartupTimeoutSeconds(seconds: Int32(seconds))
     }
 
     func setPreloadNextEpisodeSources(_ enabled: Bool) {

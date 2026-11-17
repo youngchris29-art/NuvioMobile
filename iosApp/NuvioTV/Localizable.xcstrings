@@ -7592,6 +7592,40 @@
         }
       }
     },
+    "Applies to sources picked for you: Auto-Play Best Source and Up Next. A source you choose yourself never changes.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gilt für Quellen, die für dich gewählt werden: „Beste Quelle automatisch wiedergeben“ und „Als Nächstes“. Eine Quelle, die du selbst wählst, wird nie ersetzt."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Se aplica a las fuentes elegidas por ti: «Reproducir automáticamente la mejor fuente» y «A continuación». Una fuente que eliges tú mismo nunca cambia."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "S’applique aux sources choisies pour vous : « Lecture auto de la meilleure source » et « À suivre ». Une source que vous choisissez vous-même ne change jamais."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Si applica alle fonti scelte per te: «Riproduci automaticamente la fonte migliore» e «Prossimo». Una fonte che scegli tu non cambia mai."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Áp dụng cho các nguồn được chọn giúp bạn: “Tự động phát nguồn tốt nhất” và “Tiếp theo”. Nguồn do chính bạn chọn sẽ không bao giờ bị thay đổi."
+          }
+        }
+      }
+    },
     "Applies to the next playback.": {
       "localizations": {
         "de": {
@@ -23894,6 +23928,40 @@
         }
       }
     },
+    "How long a source picked for you may take to show a picture before the next matching one is tried. If no other source matches, the first one keeps loading. Shown while Try Another Source on Failure is on. 15 s by default.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wie lange eine für dich gewählte Quelle brauchen darf, bis ein Bild erscheint, bevor die nächste passende versucht wird. Passt keine andere Quelle, lädt die erste weiter. Wird angezeigt, solange „Bei Fehler andere Quelle versuchen“ an ist. Standard: 15 s."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cuánto puede tardar una fuente elegida por ti en mostrar imagen antes de probar la siguiente que coincida. Si ninguna otra fuente coincide, la primera sigue cargando. Se muestra mientras «Probar otra fuente si falla» está activado. Por defecto: 15 s."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Combien de temps une source choisie pour vous peut mettre à afficher une image avant que la suivante qui correspond soit essayée. Si aucune autre source ne correspond, la première continue de charger. Affiché tant que « Essayer une autre source en cas d’échec » est activé. Par défaut : 15 s."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quanto tempo può impiegare una fonte scelta per te a mostrare l’immagine prima che venga provata la successiva corrispondente. Se nessun’altra fonte corrisponde, la prima continua a caricare. Visibile finché «Prova un’altra fonte in caso di errore» è attivo. Predefinito: 15 s."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Một nguồn được chọn giúp bạn được phép mất bao lâu để hiện hình ảnh trước khi thử nguồn phù hợp tiếp theo. Nếu không có nguồn nào khác phù hợp, nguồn đầu tiên tiếp tục tải. Hiển thị khi “Thử nguồn khác khi lỗi” đang bật. Mặc định: 15 s."
+          }
+        }
+      }
+    },
     "How long a title page waits before a trailer starts": {
       "extractionState": "manual",
       "localizations": {
@@ -23925,6 +23993,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Thời gian trang chi tiết chờ trước khi phát trailer"
+          }
+        }
+      }
+    },
+    "How many more sources to try after the first one fails, for each title or episode. Shown while Try Another Source on Failure is on. 3 by default.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wie viele weitere Quellen nach dem Fehlschlag der ersten versucht werden, pro Titel oder Episode. Wird angezeigt, solange „Bei Fehler andere Quelle versuchen“ an ist. Standard: 3."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cuántas fuentes más se prueban después de que falle la primera, por cada título o episodio. Se muestra mientras «Probar otra fuente si falla» está activado. Por defecto: 3."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Combien de sources supplémentaires essayer après l’échec de la première, pour chaque titre ou épisode. Affiché tant que « Essayer une autre source en cas d’échec » est activé. Par défaut : 3."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quante altre fonti provare dopo che la prima non funziona, per ogni titolo o episodio. Visibile finché «Prova un’altra fonte in caso di errore» è attivo. Predefinito: 3."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Số nguồn thử thêm sau khi nguồn đầu tiên lỗi, cho mỗi tựa phim hoặc tập. Hiển thị khi “Thử nguồn khác khi lỗi” đang bật. Mặc định: 3."
           }
         }
       }
@@ -24027,6 +24129,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Chỉ biểu tượng"
+          }
+        }
+      }
+    },
+    "If a source picked for you fails or does not start in time, play the next matching one.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wenn eine für dich gewählte Quelle fehlschlägt oder nicht rechtzeitig startet, wird die nächste passende abgespielt."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Si una fuente elegida por ti falla o no empieza a tiempo, se reproduce la siguiente que coincida."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Si une source choisie pour vous échoue ou ne démarre pas à temps, la suivante qui correspond est lue."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Se una fonte scelta per te non funziona o non parte in tempo, viene riprodotta la successiva corrispondente."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nếu nguồn được chọn giúp bạn bị lỗi hoặc không khởi động kịp, nguồn phù hợp tiếp theo sẽ được phát."
           }
         }
       }
@@ -47638,6 +47774,40 @@
         }
       }
     },
+    "Source Fallback": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quellen-Ausweichen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fuente alternativa"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Source de secours"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fonte alternativa"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nguồn dự phòng"
+          }
+        }
+      }
+    },
     "Source Filters": {
       "localizations": {
         "de": {
@@ -47806,6 +47976,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Nguồn"
+          }
+        }
+      }
+    },
+    "Sources to Try": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zu versuchende Quellen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fuentes a probar"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sources à essayer"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fonti da provare"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Số nguồn thử"
           }
         }
       }
@@ -48357,6 +48561,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Bắt đầu tìm nguồn trong nền trước khi thẻ tập tiếp theo xuất hiện."
+          }
+        }
+      }
+    },
+    "Start-Up Limit": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Startlimit"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Límite de inicio"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Limite de démarrage"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Limite di avvio"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Giới hạn khởi động"
           }
         }
       }
@@ -54293,6 +54531,40 @@
         }
       }
     },
+    "Try Another Source on Failure": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bei Fehler andere Quelle versuchen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Probar otra fuente si falla"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Essayer une autre source en cas d’échec"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Prova un’altra fonte in caso di errore"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thử nguồn khác khi lỗi"
+          }
+        }
+      }
+    },
     "Try Native Player": {
       "localizations": {
         "de": {
@@ -57475,6 +57747,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Nội dung mở ra khi bạn chọn một thẻ trong Tiếp tục xem"
+          }
+        }
+      }
+    },
+    "When Auto-Play Best Source or Up Next picks a source for you and it fails before it plays, or does not start within the start-up limit, the next matching source plays instead. A source you choose yourself is never replaced. On by default.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wenn „Beste Quelle automatisch wiedergeben“ oder „Als Nächstes“ eine Quelle für dich wählt und diese fehlschlägt, bevor sie abspielt, oder nicht innerhalb des Startlimits startet, wird stattdessen die nächste passende Quelle abgespielt. Eine Quelle, die du selbst wählst, wird nie ersetzt. Standardmäßig an."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cuando «Reproducir automáticamente la mejor fuente» o «A continuación» elige una fuente por ti y esta falla antes de reproducirse, o no empieza dentro del límite de inicio, se reproduce en su lugar la siguiente fuente que coincida. Una fuente que eliges tú mismo nunca se reemplaza. Activado por defecto."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quand « Lecture auto de la meilleure source » ou « À suivre » choisit une source pour vous et qu’elle échoue avant la lecture, ou ne démarre pas dans la limite de démarrage, la source suivante qui correspond est lue à la place. Une source que vous choisissez vous-même n’est jamais remplacée. Activé par défaut."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quando «Riproduci automaticamente la fonte migliore» o «Prossimo» sceglie una fonte per te e questa non funziona prima di partire, oppure non parte entro il limite di avvio, viene riprodotta al suo posto la fonte successiva corrispondente. Una fonte che scegli tu non viene mai sostituita. Attivo per impostazione predefinita."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Khi “Tự động phát nguồn tốt nhất” hoặc “Tiếp theo” chọn một nguồn giúp bạn và nguồn đó lỗi trước khi phát, hoặc không khởi động trong giới hạn khởi động, nguồn phù hợp tiếp theo sẽ được phát thay thế. Nguồn do chính bạn chọn sẽ không bao giờ bị thay thế. Mặc định: bật."
           }
         }
       }

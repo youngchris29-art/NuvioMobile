@@ -36,6 +36,15 @@ final class SettingsDescriptionsTests: XCTestCase {
         XCTAssertTrue(used.isSubset(of: known), "unknown: \(used.subtracting(known).sorted())")
     }
 
+    func testSourceFallbackIDsHaveCopy() {
+        for id in [SettingsDescriptionID.sourcesFallbackOnFailure, .sourcesFallbackSourcesToTry, .sourcesFallbackStartupLimit] {
+            XCTAssertFalse(String(localized: SettingsDescriptions.text(for: id)).isEmpty, "\(id)")
+        }
+        XCTAssertEqual(SettingsDescriptionID.sourcesFallbackOnFailure.rawValue, "sources.fallbackOnFailure")
+        XCTAssertEqual(SettingsDescriptionID.sourcesFallbackSourcesToTry.rawValue, "sources.fallbackSourcesToTry")
+        XCTAssertEqual(SettingsDescriptionID.sourcesFallbackStartupLimit.rawValue, "sources.fallbackStartupLimit")
+    }
+
     func testEveryIDIsUsedAndOnlyKnownIDsAreUsed() throws {
         let used = try usedCaseNames()
         let known = Set(SettingsDescriptionID.allCases.map { String(describing: $0) })

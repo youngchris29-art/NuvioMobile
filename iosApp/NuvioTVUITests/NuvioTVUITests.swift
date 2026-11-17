@@ -1530,6 +1530,14 @@ final class NuvioTVUITests: XCTestCase {
         remote.press(.menu)
         pause(1.5)
         XCTAssertTrue(openSettingsCategory(app, named: "Sources"), "Settings › Sources pane did not open")
+        // Source Fallback section (before the Search section, so walked first, top to bottom):
+        // the switch is On by default, which shows the other two rows.
+        for row in ["Try Another Source on Failure", "Sources to Try", "Start-Up Limit"] {
+            try walkToRowByTreeIndex(app, targetLabelPrefix: row, sidebarMaxX: 0, category: "Sources")
+            XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", row)).firstMatch.exists,
+                          "\(row) row (Source Fallback section) missing from the Sources pane")
+        }
+        shot(app, "16d_source_fallback_section")
         try walkToRowByTreeIndex(app, targetLabelPrefix: "Recent Searches", sidebarMaxX: 0, category: "Sources")
         pause(1)
         shot(app, "16b_search_sources_section")

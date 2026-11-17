@@ -65,6 +65,36 @@ struct SourcesSettingsPane: View {
                 }
             }
 
+            // Upstream 8fba6c71e: when a source the app picked fails, play the next match. Covers
+            // Auto-Play Best Source and Up Next; a source the viewer picks never changes.
+            SettingsSection(
+                String(localized: "Source Fallback"),
+                footer: String(localized: "Applies to sources picked for you: Auto-Play Best Source and Up Next. A source you choose yourself never changes.")
+            ) {
+                SettingsToggleRow(
+                    title: String(localized: "Try Another Source on Failure"),
+                    subtitle: String(localized: "If a source picked for you fails or does not start in time, play the next matching one."),
+                    isOn: Binding(get: { model.fallbackOnFailure }, set: { model.setFallbackOnFailure($0) }),
+                    descriptionID: .sourcesFallbackOnFailure
+                )
+                if model.fallbackOnFailure {
+                    SettingsPickerRow(
+                        title: String(localized: "Sources to Try"),
+                        selection: Binding(get: { model.fallbackSourcesToTry }, set: { model.setFallbackSourcesToTry($0) }),
+                        options: PlayerSourceFallback.shared.sourcesToTryOptions.map { Int($0.int32Value) },
+                        descriptionID: .sourcesFallbackSourcesToTry,
+                        label: { String($0) }
+                    )
+                    SettingsPickerRow(
+                        title: String(localized: "Start-Up Limit"),
+                        selection: Binding(get: { model.fallbackStartupLimit }, set: { model.setFallbackStartupLimit($0) }),
+                        options: PlayerSourceFallback.shared.startupLimitOptions.map { Int($0.int32Value) },
+                        descriptionID: .sourcesFallbackStartupLimit,
+                        label: { String(localized: "\($0) s") }
+                    )
+                }
+            }
+
             // Orivio batch: global source ordering + filters, applied to every add-on's streams.
             SettingsSection(
                 String(localized: "Source Filters"),

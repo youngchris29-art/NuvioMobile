@@ -170,6 +170,9 @@ enum SettingsDescriptionID: String, CaseIterable {
     // MARK: Sources
     case sourcesAutoPlayBest = "sources.autoPlayBest"
     case sourcesAutoPlayCachedOnly = "sources.autoPlayCachedOnly"
+    case sourcesFallbackOnFailure = "sources.fallbackOnFailure"
+    case sourcesFallbackSourcesToTry = "sources.fallbackSourcesToTry"
+    case sourcesFallbackStartupLimit = "sources.fallbackStartupLimit"
     case sourcesSort = "sources.sort"
     case sourcesMinResolution = "sources.minResolution"
     case sourcesDvFilter = "sources.dvFilter"
@@ -400,6 +403,9 @@ enum SettingsDescriptions {
         // beta.19-rc1 verdict (A): Best is now a real ranking (shared `StreamQualityRank`, W3-A).
         case .sourcesAutoPlayBest: return LocalizedStringResource("A plain press of Play starts the best source found so far: highest resolution, then HDR or Dolby Vision, then cached, then file size. Your source filters still apply. Hold Play to choose a source yourself. Off by default.")
         case .sourcesAutoPlayCachedOnly: return LocalizedStringResource("Auto-play only starts a link your debrid service already has cached. Otherwise it shows the source list. Off by default.")
+        case .sourcesFallbackOnFailure: return LocalizedStringResource("When Auto-Play Best Source or Up Next picks a source for you and it fails before it plays, or does not start within the start-up limit, the next matching source plays instead. A source you choose yourself is never replaced. On by default.")
+        case .sourcesFallbackSourcesToTry: return LocalizedStringResource("How many more sources to try after the first one fails, for each title or episode. Shown while Try Another Source on Failure is on. 3 by default.")
+        case .sourcesFallbackStartupLimit: return LocalizedStringResource("How long a source picked for you may take to show a picture before the next matching one is tried. If no other source matches, the first one keeps loading. Shown while Try Another Source on Failure is on. 15 s by default.")
         case .sourcesSort: return LocalizedStringResource("Sets the order of sources in the list, for every add-on. Default keeps each add-on's own order.")
         case .sourcesMinResolution: return LocalizedStringResource("Hides sources below this resolution. Sources with no resolution tag are kept.")
         case .sourcesDvFilter: return LocalizedStringResource("Any shows all sources. Only keeps Dolby Vision sources. Exclude hides them.")
