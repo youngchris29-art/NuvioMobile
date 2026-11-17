@@ -222,7 +222,8 @@ final class NextEpisodeEngineTests: XCTestCase {
                             sourceListDeadline: (@MainActor () async -> Void)? = nil,
                             resolveDebrid: (@MainActor (StreamItem, KotlinInt?, KotlinInt?) async throws -> DirectDebridPlayableResult)? = nil,
                             furtherSources: Int? = nil, waitPoll: TimeInterval? = nil,
-                            clock: (() -> TimeInterval)? = nil) -> NextEpisodeEngine {
+                            clock: (() -> TimeInterval)? = nil,
+                            resolveDeadline: TimeInterval? = nil) -> NextEpisodeEngine {
         var hooks = NextEpisodeEngine.Hooks(loadStreams: { type, videoId, season, episode in
             recorder.calls.append(LoadCall(type: type, videoId: videoId, season: season?.value, episode: episode?.value))
             recorder.log.append("load:\(videoId)")
@@ -240,6 +241,7 @@ final class NextEpisodeEngineTests: XCTestCase {
         if let furtherSources { hooks.furtherSources = { _ in furtherSources } }
         if let waitPoll { hooks.waitPollSeconds = waitPoll }
         if let clock { hooks.now = clock }
+        if let resolveDeadline { hooks.resolveDeadline = resolveDeadline }
         hooks.rememberFailedLink = { listed, title, _, _ in
             recorder.remembered.append("\(listed.playbackStreamKey)@\(title)")
         }
@@ -2485,5 +2487,125 @@ final class NextEpisodeEngineTests: XCTestCase {
         await engine.resolveTaskForTesting?.value
         XCTAssertEqual(engine.phase, .noStream)
         XCTAssertLessThan(Date().timeIntervalSince(jumped), 1, "no nominal sleeps past the deadline")
+    }
+
+    // MARK: - Stage B review r6: every hold and resolve has a bound
+
+    /// The countdown reaches "Still watching?" with the Sources column open: the pick watch ends
+    /// there and the held list loads; the viewer's later Play Next still has the results.
+    func testSourcesOpenedAtStillWatchingLoadOnceTheGateIsReached() async {
+        let saved = NextEpisodeEngine.consecutiveAutoPlays
+        NextEpisodeEngine.consecutiveAutoPlays = NextEpisodeEngine.stillWatchingThreshold - 1
+        defer { NextEpisodeEngine.consecutiveAutoPlays = saved }
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder)
+        _ = pickWhileLoading(engine, recorder, walkCandidate("aaaa"), deadline: 60)
+        engine.sourceColumnAppeared()
+        engine.loadSources()
+        XCTAssertEqual(loads(recorder), 0, "held while the countdown runs")
+        let until = Date().addingTimeInterval(7)               // the 3 s countdown, then the gate
+        while engine.phase != .stillWatching, Date() < until { try? await Task.sleep(nanoseconds: 50_000_000) }
+        await waitFor { self.loads(recorder) == 1 }
+        XCTAssertEqual(engine.phase, .stillWatching)
+        XCTAssertFalse(engine.pickWatchActiveForTesting, "the pick watch ends at the gate")
+        XCTAssertEqual(loads(recorder), 1, "the held list loads at the gate, not when the viewer answers")
+        engine.cancel()
+    }
+
+    /// The hold never outlives the search deadline, even while the pick watch is still active.
+    func testTheListHoldEndsAtTheSearchDeadline() async {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder)
+        _ = pickWhileLoading(engine, recorder, walkCandidate("aaaa"), deadline: 0.3)
+        engine.sourceColumnAppeared()
+        engine.loadSources()
+        XCTAssertEqual(loads(recorder), 0)
+        await waitFor { self.loads(recorder) == 1 }
+        XCTAssertEqual(loads(recorder), 1, "released at the deadline")
+        XCTAssertTrue(engine.pickWatchActiveForTesting, "the countdown is still running: the bound did it")
+        engine.cancel()
+    }
+
+    /// Past the deadline a newly opened list does not wait at all.
+    func testAListAskedForPastTheDeadlineLoadsAtOnce() async {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder)
+        _ = pickWhileLoading(engine, recorder, walkCandidate("aaaa"), deadline: 0.05)
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        engine.sourceColumnAppeared()
+        engine.loadSources()
+        XCTAssertEqual(loads(recorder), 1)
+        engine.cancel()
+    }
+
+    /// The Up Next walk's resolve that never answers moves on at its deadline (not the link's
+    /// fault: nothing remembered), as first play's does.
+    func testAHangingNextEpisodeResolveMovesOnAtItsDeadline() async {
+        let recorder = Recorder()
+        let probe = WalkProbe()
+        let first = walkCandidate("aaaa")
+        let second = walkCandidate("bbbb", addon: "Other")
+        let engine = makeEngine(trigger: trigger(), recorder: recorder, resolveDebrid: { [self] stream, _, _ in
+            probe.resolved.append(stream)
+            if probe.resolved.count == 1 {
+                try? await Task.sleep(nanoseconds: 10_000_000_000)   // never in time
+                return self.notCached
+            }
+            return self.success()
+        }, resolveDeadline: 0.1)
+        engine.playForTesting(first, nextCandidate: { _, _, _ in second })
+        await engine.resolveTaskForTesting?.value
+        XCTAssertEqual(recorder.played.first?.listedStream?.playbackStreamKey, second.playbackStreamKey)
+        XCTAssertTrue(recorder.remembered.isEmpty, "a timeout is not the link's fault")
+    }
+
+    func testAutoResolveDeadlineDropsALateAnswer() async throws {
+        let late: Int? = try await AutoResolveDeadline.run(seconds: 0.05) {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            return 1
+        }
+        XCTAssertNil(late)
+        let fast: Int? = try await AutoResolveDeadline.run(seconds: 2) { 7 }
+        XCTAssertEqual(fast, 7)
+    }
+
+    func testAutoResolveDeadlinePassesAThrowThrough() async {
+        struct Boom: Error {}
+        do {
+            let _: Int? = try await AutoResolveDeadline.run(seconds: 2) { throw Boom() }
+            XCTFail("the throw passes through")
+        } catch {
+            XCTAssertTrue(error is Boom)
+        }
+    }
+
+    // MARK: - SourcesListHold (pure)
+
+    func testSourcesListHoldReleasesAtTheDeadline() {
+        var hold = SourcesListHold()
+        XCTAssertTrue(hold.holds(pickWatchActive: true, now: 100, searchDeadline: 110))
+        hold.begin(now: 100, searchDeadline: 110)
+        XCTAssertEqual(hold.secondsUntilRelease(now: 104), 6)
+        XCTAssertTrue(hold.holds(pickWatchActive: true, now: 109.9, searchDeadline: 110))
+        XCTAssertFalse(hold.holds(pickWatchActive: true, now: 110, searchDeadline: 110))
+    }
+
+    func testSourcesListHoldReleasesAtTheBoundWithoutADeadline() {
+        var hold = SourcesListHold()
+        hold.begin(now: 100, searchDeadline: nil)
+        XCTAssertEqual(hold.releaseAt, 100 + SourcesListHold.boundSeconds)
+        XCTAssertFalse(hold.holds(pickWatchActive: true, now: 100 + SourcesListHold.boundSeconds, searchDeadline: nil))
+    }
+
+    func testSourcesListHoldNeverHoldsWithoutAPickWatchOrPastTheDeadline() {
+        let hold = SourcesListHold()
+        XCTAssertFalse(hold.holds(pickWatchActive: false, now: 100, searchDeadline: 200))
+        XCTAssertFalse(hold.holds(pickWatchActive: true, now: 200, searchDeadline: 150), "the deadline already passed")
+        var begun = SourcesListHold()
+        begun.begin(now: 100, searchDeadline: 110)
+        begun.begin(now: 105, searchDeadline: 500)
+        XCTAssertEqual(begun.releaseAt, 110, "a second begin keeps the first bound")
+        begun.end()
+        XCTAssertFalse(begun.isHeld)
     }
 }

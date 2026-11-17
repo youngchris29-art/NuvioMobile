@@ -119,7 +119,7 @@ final class FirstPlayAutoPlayController: ObservableObject {
         var canResolve: (StreamItem) -> Bool
         /// Main-actor bound: the Kotlin resolve is started from the main thread, as everywhere else.
         var resolve: @MainActor (StreamItem) async throws -> ResolveOutcome
-        var resolveDeadline: TimeInterval = 20
+        var resolveDeadline: TimeInterval = FirstPlayAutoPlayController.defaultResolveDeadline
         var searchDeadline: TimeInterval = 40
         /// The `[AutoPlay] pick` line's ranking facts for a candidate (`Policy.rankSummary`), so a
         /// device log shows why a link came first. Empty in tests unless a test sets it.
@@ -147,6 +147,10 @@ final class FirstPlayAutoPlayController: ObservableObject {
         /// down silently (the engine's own watchdog stays the backstop).
         case startupLimit
     }
+
+    /// The deadline every automatic resolve gets (first play, the episode walk; review r6: Up Next
+    /// and the in-player Sources pick too).
+    nonisolated static let defaultResolveDeadline: TimeInterval = 20
 
     /// W4 (2b.7): a listed debrid link resolved this recently in the walk is fresh; a refresh would
     /// hand back its twin.
@@ -470,8 +474,7 @@ final class FirstPlayAutoPlayController: ObservableObject {
             try? await Task.sleep(nanoseconds: UInt64(max(deadline, 0) * 1_000_000_000))
             guard !Task.isCancelled else { return }
             // BUG-143: a slow resolve is the debrid API or the network, not proof the link is dead.
-            self?.finishResolve(attemptGeneration, candidate,
-                                .failed(reason: "resolve timed out after \(Int(deadline)) s (transient=1 skipped)", rejectsLink: false))
+            self?.finishResolve(attemptGeneration, candidate, Policy.resolveTimedOut(after: deadline))
         }
     }
 
@@ -665,6 +668,13 @@ final class FirstPlayAutoPlayController: ObservableObject {
                 return same
             }
             return open.first
+        }
+
+        /// Review r6: what a resolve that ran out its deadline means, for every auto walk (first
+        /// play, the episode walk, Up Next): a failure that is not the link's fault (BUG-143: slow
+        /// is the debrid API or the network), so the walk moves on and nothing is remembered.
+        nonisolated static func resolveTimedOut(after seconds: TimeInterval) -> ResolveOutcome {
+            .failed(reason: "resolve timed out after \(Int(seconds)) s (transient=1 skipped)", rejectsLink: false)
         }
 
         /// Every candidate `nextIndex` could still pick, in order.

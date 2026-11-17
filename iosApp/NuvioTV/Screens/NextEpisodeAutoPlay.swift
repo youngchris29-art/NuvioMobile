@@ -102,6 +102,14 @@ final class NextEpisodeEngine: ObservableObject {
     /// line until the pick watch ends (every exit: the walk's hand-off, its end on the card, the
     /// viewer's pick, Menu / cancel, a jump, the player's teardown).
     private var sourcesHeldForPick = false
+    /// Review r6 (finding 1): the hold's bound (the search deadline, or `SourcesListHold.boundSeconds`
+    /// with none known) and the task that releases the list when it passes.
+    private var sourcesListHold = SourcesListHold()
+    private var sourcesHoldReleaseTask: Task<Void, Never>?
+    /// Review r6: a list asked for now waits for the pick watch (bounded; see `SourcesListHold`).
+    private var pickHoldsList: Bool {
+        sourcesListHold.holds(pickWatchActive: pickWatchActive, now: hooks.now(), searchDeadline: searchDeadlineAt)
+    }
     /// Review r5 (P3): the current list load's soft deadline (`Hooks.sourceListDeadline`).
     private var sourcesDeadlineTask: Task<Void, Never>?
     /// Matches the up-next search's soft timeout plus its grace window (3 s + 12 s).
@@ -141,6 +149,8 @@ final class NextEpisodeEngine: ObservableObject {
         var now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
         /// Decision BC: how often the waiting walk looks for new sources (tests shorten it).
         var waitPollSeconds: TimeInterval = 0.25
+        /// Review r6: the Up Next walk's and the Sources pick's resolve deadline (tests shorten it).
+        var resolveDeadline: TimeInterval = FirstPlayAutoPlayController.defaultResolveDeadline
         /// BUG-129 seams: the shared flow's reset and its subscription, used by `loadSources`,
         /// `beginSearch` and `tearDownSearch`. Tests replace them with spies (a nil watcher).
         var clearStreams: () -> Void = { PlayerStreamsRepository.shared.clearEpisodeStreams() }
@@ -678,11 +688,11 @@ final class NextEpisodeEngine: ObservableObject {
         // owns the flow, the list is deferred (the column shows a busy line). Keyed on a live
         // watcher OR `searchOwnsFlow` (the test seam's watcher is nil), not on the phase: the
         // phase is still `.searching` when a search ends by selecting a stream (r2 P3).
-        guard streamsWatcher == nil, !searchOwnsFlow, !pickWatchActive else {
+        guard streamsWatcher == nil, !searchOwnsFlow, !pickHoldsList else {
             sourcesBlockedBySearch = true
             sourcesBlockedByJump = immediatePlay
             sourcesLoading = false
-            if pickWatchActive { sourcesHeldForPick = true }
+            if pickHoldsList { holdForPick() }
             print("[UpNext] source list deferred: up-next search in flight")
             return
         }
@@ -831,12 +841,19 @@ final class NextEpisodeEngine: ObservableObject {
         let season = context.season.map { KotlinInt(int: Int32($0)) }
         let episode = context.episode.map { KotlinInt(int: Int32($0)) }
         // The `@Throws` twin: a Kotlin exception out of the plain suspend export aborts the process.
+        let resolveDeadline = hooks.resolveDeadline
         Task { @MainActor [weak self] in
             let result: DirectDebridPlayableResult?
+            var timedOut = false
             do {
-                result = try await DirectDebridPlaybackResolver.shared.resolveToPlayableStreamChecked(
-                    stream: stream, season: season, episode: episode
-                )
+                // Review r6: bounded like every automatic resolve; running out abandons the
+                // viewer's choice (the host then routes what it held for it).
+                result = try await AutoResolveDeadline.run(seconds: resolveDeadline, {
+                    try await DirectDebridPlaybackResolver.shared.resolveToPlayableStreamChecked(
+                        stream: stream, season: season, episode: episode
+                    )
+                })
+                timedOut = result == nil
             } catch {
                 print("[UpNext] source switch resolve threw: \(error)")
                 result = nil
@@ -847,7 +864,8 @@ final class NextEpisodeEngine: ObservableObject {
                 return
             }
             guard let success = result as? DirectDebridPlayableResult.Success else {
-                self.abandonViewerChoice("the source's debrid resolve failed")
+                self.abandonViewerChoice(timedOut ? "the source's debrid resolve timed out"
+                                                  : "the source's debrid resolve failed")
                 return
             }
             let resolved: String? = success.stream.playableDirectUrl
@@ -1320,14 +1338,15 @@ final class NextEpisodeEngine: ObservableObject {
     /// `listWiped`: the teardown's clear dropped a list that owned the flow; reload it the same way.
     private func searchEnded(listWiped: Bool = false) {
         let wasBlocked = sourcesBlockedBySearch || listWiped
-        if pickWatchActive, wasBlocked {
+        if pickHoldsList, wasBlocked {
             // Finding 1: the pick still listens to its request on this flow; the list waits.
-            sourcesHeldForPick = true
+            holdForPick()
             sourcesBlockedBySearch = true
             print("[UpNext] source list held: the pick watch still listens to the next episode's request")
             return
         }
         sourcesHeldForPick = false
+        endPickHoldBound()
         sourcesHeldForPreload = false
         sourcesBlockedBySearch = false
         sourcesBlockedByJump = false
@@ -1869,9 +1888,33 @@ final class NextEpisodeEngine: ObservableObject {
             searchEnded()
         } else {
             sourcesHeldForPick = false
+            endPickHoldBound()
             sourcesBlockedBySearch = false
             sourcesBlockedByJump = false
         }
+    }
+
+    /// Review r6 (finding 1): the list waits for the pick watch, never past the hold's bound: a
+    /// task releases it then, whatever the pick watch is doing (the walk keeps the results it read;
+    /// past the search deadline it waits for nothing).
+    private func holdForPick() {
+        sourcesHeldForPick = true
+        sourcesListHold.begin(now: hooks.now(), searchDeadline: searchDeadlineAt)
+        guard sourcesHoldReleaseTask == nil, let wait = sourcesListHold.secondsUntilRelease(now: hooks.now()) else { return }
+        sourcesHoldReleaseTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+            guard let self, !Task.isCancelled else { return }
+            self.sourcesHoldReleaseTask = nil
+            guard self.sourcesHeldForPick else { return }
+            print("[UpNext] source list hold reached its bound — loading the list")
+            self.releasePickHold(reload: true)
+        }
+    }
+
+    private func endPickHoldBound() {
+        sourcesListHold.end()
+        sourcesHoldReleaseTask?.cancel()
+        sourcesHoldReleaseTask = nil
     }
 
     private func didSelect(_ stream: StreamItem) {
@@ -1912,6 +1955,14 @@ final class NextEpisodeEngine: ObservableObject {
             // a row, ask instead of playing — a down-press (playNow) resumes and resets the run.
             if Self.consecutiveAutoPlays >= Self.stillWatchingThreshold - 1 {
                 self.phase = .stillWatching
+                // Review r6 (finding 1): the walk waits for the viewer here, so the pick stops
+                // listening: its latest results are kept for a later Play Next, and a held list
+                // loads now.
+                if self.pickWatchActive {
+                    self.latestStreamsState = self.pickStreamsState ?? self.latestStreamsState
+                    self.endPickWatch()
+                    self.releasePickHold(reload: true)
+                }
                 return
             }
             Self.consecutiveAutoPlays += 1
@@ -1993,6 +2044,7 @@ final class NextEpisodeEngine: ObservableObject {
         let resolve = hooks.resolveDebrid
         let title = Self.episodeVideoId(metaId: context.parentMetaId, episode: next)
         print("[UpNext] resolving debrid stream — \(stream.addonName)")
+        let resolveDeadline = hooks.resolveDeadline
         resolveTask = Task { @MainActor [weak self] in
             while true {
                 let candidate = walk.candidate
@@ -2002,8 +2054,14 @@ final class NextEpisodeEngine: ObservableObject {
                     outcome = .playable(candidate, url)
                 } else {
                     do {
-                        let result = try await resolve(candidate, next.season, next.episode)
-                        outcome = FirstPlayAutoPlayController.outcome(from: result)
+                        // Review r6: the same deadline and the same meaning as first play's.
+                        if let result = try await AutoResolveDeadline.run(seconds: resolveDeadline, {
+                            try await resolve(candidate, next.season, next.episode)
+                        }) {
+                            outcome = FirstPlayAutoPlayController.outcome(from: result)
+                        } else {
+                            outcome = FirstPlayAutoPlayController.Policy.resolveTimedOut(after: resolveDeadline)
+                        }
                     } catch {
                         // As the first-play walk: a network error thrown by the resolve is not the
                         // link's fault and is not remembered.
@@ -2256,5 +2314,69 @@ enum NextEpisodeTriggerPolicy {
                                         endOfFileSlack: Double) -> Bool {
         guard dismissedByUser, !alreadyRearmed, durationSec > 0 else { return false }
         return positionSec >= durationSec - endOfFileSlack
+    }
+}
+
+/// Review r6 (finding 1): how long the in-player Sources list may wait for a pick watch. Pure: the
+/// engine passes the clock. The bound is the episode search's deadline (past it the walk waits for
+/// nothing new), or `boundSeconds` when no deadline is known, so no exit can leave it busy forever.
+nonisolated struct SourcesListHold: Equatable {
+    static let boundSeconds: TimeInterval = 30
+    private(set) var releaseAt: TimeInterval?
+
+    var isHeld: Bool { releaseAt != nil }
+
+    static func releaseTime(now: TimeInterval, searchDeadline: TimeInterval?) -> TimeInterval {
+        searchDeadline.map { max($0, now) } ?? now + boundSeconds
+    }
+
+    /// The hold begins (a second call keeps the first bound).
+    mutating func begin(now: TimeInterval, searchDeadline: TimeInterval?) {
+        guard releaseAt == nil else { return }
+        releaseAt = Self.releaseTime(now: now, searchDeadline: searchDeadline)
+    }
+
+    mutating func end() { releaseAt = nil }
+
+    /// Whether a list asked for at `now` waits: only for an active pick watch, and only before the
+    /// bound (the running hold's, or the one a hold starting now would get).
+    func holds(pickWatchActive: Bool, now: TimeInterval, searchDeadline: TimeInterval?) -> Bool {
+        guard pickWatchActive else { return false }
+        return now < (releaseAt ?? Self.releaseTime(now: now, searchDeadline: searchDeadline))
+    }
+
+    func secondsUntilRelease(now: TimeInterval) -> TimeInterval? {
+        releaseAt.map { max(0, $0 - now) }
+    }
+}
+
+/// Review r6: an automatic resolve raced against its deadline. Returns nil when the deadline
+/// passes first (the resolve's late answer is dropped); a throw passes through.
+@MainActor
+enum AutoResolveDeadline {
+    private final class Once { var done = false }
+
+    static func run<T>(seconds: TimeInterval, _ operation: @escaping @MainActor () async throws -> T) async throws -> T? {
+        let once = Once()
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<T?, Error>) in
+            Task { @MainActor in
+                do {
+                    let value = try await operation()
+                    guard !once.done else { return }
+                    once.done = true
+                    continuation.resume(returning: value)
+                } catch {
+                    guard !once.done else { return }
+                    once.done = true
+                    continuation.resume(throwing: error)
+                }
+            }
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: UInt64(max(seconds, 0) * 1_000_000_000))
+                guard !once.done else { return }
+                once.done = true
+                continuation.resume(returning: nil)
+            }
+        }
     }
 }
