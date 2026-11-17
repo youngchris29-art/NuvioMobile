@@ -101,6 +101,16 @@ class PlayerSourceFallbackWalk(
         return moveOn(nextCandidate)
     }
 
+    /**
+     * Review r7: the source did not answer in time (a resolve time-out). It is recorded as tried
+     * only, with no failed-torrent marker, so the other files of its torrent from its add-on stay
+     * candidates (a time-out is not proof the torrent is dead); then the walk moves on as [moveOn].
+     */
+    fun passed(nextCandidate: (failed: StreamItem, triedKeys: Set<String>) -> StreamItem?): StreamItem? {
+        candidate.playerSourceFallbackKey()?.let(triedKeys::add)
+        return moveOn(nextCandidate)
+    }
+
     /** Decision BC: a further source may still be moved to ("Sources to Try" not used up). */
     val hasBudget: Boolean
         get() = attempts < maxSources

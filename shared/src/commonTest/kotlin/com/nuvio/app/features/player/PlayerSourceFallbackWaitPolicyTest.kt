@@ -194,4 +194,24 @@ class PlayerSourceFallbackWaitPolicyTest {
             PlayerSourceFallbackWaitPolicy.decide(again, walk.hasBudget, searchOpen = true, millisToDeadline = 1, cancelled = false),
         )
     }
+
+    // MARK: Stage B review r7 finding 1: a time-out is not a failure of the torrent
+
+    @Test
+    fun aTransientFailureRecordsTheSourceButNotItsTorrent() {
+        val hash = "0123456789abcdef0123456789abcdef01234567"
+        fun copy(name: String, file: Int) = StreamItem(name = name, infoHash = hash, fileIdx = file, addonName = "X", addonId = "addon:x")
+        val x0 = copy("x0", 0)
+        val x1 = copy("x1", 1)
+        val picker: (StreamItem, Set<String>) -> StreamItem? = { _, keys ->
+            listOf(x0, x1).firstOrNull { !PlayerSourceFallback.isExcluded(it, keys, null, null) }
+        }
+        val timedOut = PlayerSourceFallbackWalk(x0, maxSources = 3)
+        assertEquals(x1, timedOut.passed(picker), "the torrent's other file stays a candidate")
+        assertEquals(1, timedOut.attempts)
+        assertEquals(true, timedOut.tried.contains(x0), "the source itself is tried")
+
+        val failed = PlayerSourceFallbackWalk(x0, maxSources = 3)
+        assertEquals(null, failed.failed(picker), "a real failure still rules the torrent out")
+    }
 }

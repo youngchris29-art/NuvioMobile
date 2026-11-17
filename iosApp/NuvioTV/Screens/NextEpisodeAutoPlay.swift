@@ -1837,15 +1837,17 @@ final class NextEpisodeEngine: ObservableObject {
     /// scope (`autoPickScope`; not the binge-group filename / info-hash matches, as upstream's
     /// fallback). `selectableStreams` also drops the links the walk has just remembered as failed.
     private func fallbackCandidate(after failed: StreamItem, tried: Set<String>,
-                                   groups: [AddonStreamGroup], installedAddonIds: Set<String>) -> StreamItem? {
+                                   groups: [AddonStreamGroup], installedAddonIds: Set<String>,
+                                   failedTorrent: Bool = true) -> StreamItem? {
         guard let settings else { return nil }
         let debrid = DebridSettingsRepository.shared.snapshot()
         return PlayerSourceFallback.shared.nextCandidate(
             streams: selectableStreams(groups, settings: settings),
             scope: Self.autoPickScope(settings: settings, playingBingeGroup: context.bingeGroup),
             triedKeys: tried,
-            failedAddonId: failed.addonId,
-            failedInfoHash: { let hash: String? = failed.p2pInfoHash; return hash }(),
+            // Review r7: after a time-out the source is not a failed torrent: no copy rule for it.
+            failedAddonId: failedTorrent ? failed.addonId : nil,
+            failedInfoHash: failedTorrent ? { let hash: String? = failed.p2pInfoHash; return hash }() : nil,
             installedAddonNames: Self.installedAddonNames(groups, installedAddonIds: installedAddonIds),
             debridEnabled: debrid.canResolvePlayableLinks,
             activeResolverProviderId: { let id: String? = debrid.activeResolverProviderId; return id }()
@@ -2049,6 +2051,7 @@ final class NextEpisodeEngine: ObservableObject {
             while true {
                 let candidate = walk.candidate
                 let outcome: FirstPlayAutoPlayController.ResolveOutcome
+                var timedOut = false
                 if let url = NextEpisodeEngine.directURL(candidate) {
                     // A further pick with its own link needs no resolve.
                     outcome = .playable(candidate, url)
@@ -2061,6 +2064,7 @@ final class NextEpisodeEngine: ObservableObject {
                             outcome = FirstPlayAutoPlayController.outcome(from: result)
                         } else {
                             outcome = FirstPlayAutoPlayController.Policy.resolveTimedOut(after: resolveDeadline)
+                            timedOut = true
                         }
                     } catch {
                         // As the first-play walk: a network error thrown by the resolve is not the
@@ -2116,10 +2120,13 @@ final class NextEpisodeEngine: ObservableObject {
                     let installed: Set<String> = latest?.installedAddonIds ?? []
                     return { failed, tried in
                         if let candidatePicker { return candidatePicker(failed, tried, groups) }
-                        return self.fallbackCandidate(after: failed, tried: tried, groups: groups, installedAddonIds: installed)
+                        return self.fallbackCandidate(after: failed, tried: tried, groups: groups, installedAddonIds: installed,
+                                                      failedTorrent: !timedOut)
                     }
                 }
-                var nextSource = walk.failed(nextCandidate: picker())
+                // Review r7: a time-out records the source as tried only (`passed`); every other
+                // failure keeps today's rule (`failed`: its torrent is failed for its add-on).
+                var nextSource = timedOut ? walk.passed(nextCandidate: picker()) : walk.failed(nextCandidate: picker())
                 var further: StreamItem?
                 // Decision BC: out of sources while the search is still open → wait for new ones up
                 // to the search deadline (the shared policy decides; a viewer action ends it).

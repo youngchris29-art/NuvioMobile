@@ -2608,4 +2608,51 @@ final class NextEpisodeEngineTests: XCTestCase {
         begun.end()
         XCTAssertFalse(begun.isHeld)
     }
+
+    // MARK: - Stage B review r7 finding 1: a timed-out resolve is not a failed torrent
+
+    private func torrentFile(_ name: String, file: Int32) -> StreamItem {
+        StreamItem(
+            name: name, title: nil, description: nil, url: nil, infoHash: "0123456789abcdef0123456789abcdef01234567",
+            fileIdx: KotlinInt(int: file), externalUrl: nil, ytId: nil, sources: [], sourceName: nil,
+            addonName: "X", addonId: "addon:x", addonLogo: nil, streamType: nil,
+            behaviorHints: StreamBehaviorHints(bingeGroup: nil, notWebReady: false, videoHash: nil, videoSize: nil,
+                                               filename: nil, proxyHeaders: nil, audioDelayMs: nil),
+            clientResolve: nil, debridCacheStatus: nil, externalSubtitles: [], badges: [], debridResolved: false)
+    }
+
+    func testATimedOutResolveKeepsTheOtherFilesOfItsTorrent() async {
+        let recorder = Recorder()
+        let probe = WalkProbe()
+        let x0 = torrentFile("x0", file: 0), x1 = torrentFile("x1", file: 1)
+        let engine = makeEngine(trigger: trigger(), recorder: recorder, resolveDebrid: { [self] stream, _, _ in
+            probe.resolved.append(stream)
+            if probe.resolved.count == 1 {
+                try? await Task.sleep(nanoseconds: 10_000_000_000)   // never in time
+                return self.notCached
+            }
+            return self.success()
+        }, resolveDeadline: 0.1)
+        engine.playForTesting(x0, nextCandidate: { _, tried, _ in
+            [x1].first { !PlayerSourceFallback.shared.isExcluded(stream: $0, triedKeys: tried, failedAddonId: nil, failedInfoHash: nil) }
+        })
+        await engine.resolveTaskForTesting?.value
+        XCTAssertEqual(recorder.played.first?.listedStream?.name, "x1", "the timed-out file's sibling is still tried")
+    }
+
+    /// The narrowing is deliberate: a failure that is not a time-out (here not cached) still rules
+    /// the torrent's other files out for the walk.
+    func testANonTimeoutResolveFailureStillRulesTheTorrentOut() async {
+        let recorder = Recorder()
+        let x0 = torrentFile("x0", file: 0), x1 = torrentFile("x1", file: 1)
+        let engine = makeEngine(trigger: trigger(), recorder: recorder, resolveDebrid: { [self] _, _, _ in
+            self.notCached
+        })
+        engine.playForTesting(x0, nextCandidate: { _, tried, _ in
+            [x1].first { !PlayerSourceFallback.shared.isExcluded(stream: $0, triedKeys: tried, failedAddonId: nil, failedInfoHash: nil) }
+        })
+        await engine.resolveTaskForTesting?.value
+        XCTAssertTrue(recorder.played.isEmpty)
+        XCTAssertEqual(engine.phase, .noStream)
+    }
 }

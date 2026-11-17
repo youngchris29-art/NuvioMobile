@@ -1070,4 +1070,37 @@ final class FirstPlayAutoPlayControllerTests: XCTestCase {
         XCTAssertFalse(Policy.inFlightStillEligible(a1, triedBefore: failed))
         XCTAssertTrue(Policy.inFlightStillEligible(b1, triedBefore: failed), "another add-on's copy stays")
     }
+
+    // MARK: - Stage B review r7 finding 1: a resolve time-out is not a failed torrent
+
+    /// First play (and the in-player episode walk, the same controller): X0's resolve runs out its
+    /// deadline; X1, another file of the same torrent from the same add-on, is still tried.
+    func testAFirstPlayResolveTimeoutKeepsTheOtherFilesOfItsTorrent() async {
+        let hash = "fedcba9876543210fedcba9876543210fedcba98"
+        let harness = Harness()
+        harness.plans = ["X0": .hang]
+        let controller = harness.makeController(resolveDeadline: 0.1)
+        controller.arm()
+        controller.ingest(feed(settled: [stream("X0", addon: "addon:x", torrentHash: hash, fileIdx: 0),
+                                         stream("X1", addon: "addon:x", torrentHash: hash, fileIdx: 1)]))
+        await waitUntil { !harness.played.isEmpty || !harness.gaveUp.isEmpty }
+        XCTAssertEqual(harness.resolveCalls, ["X0", "X1"])
+        XCTAssertEqual(harness.played.map { $0.name }, ["X1"])
+        harness.releaseHung()
+    }
+
+    /// Unchanged on purpose: a failure that is not a time-out (a missing key here, not the link's
+    /// fault) still rules the torrent's other files out.
+    func testANonTimeoutFailureStillRulesTheTorrentOut() async {
+        let hash = "fedcba9876543210fedcba9876543210fedcba98"
+        let harness = Harness()
+        harness.plans = ["X0": .failNotLinkFault]
+        let controller = harness.makeController()
+        controller.arm()
+        controller.ingest(feed(settled: [stream("X0", addon: "addon:x", torrentHash: hash, fileIdx: 0),
+                                         stream("X1", addon: "addon:x", torrentHash: hash, fileIdx: 1),
+                                         stream("Z", addon: "addon:z")]))
+        await waitUntil { !harness.played.isEmpty }
+        XCTAssertEqual(harness.resolveCalls, ["X0", "Z"])
+    }
 }

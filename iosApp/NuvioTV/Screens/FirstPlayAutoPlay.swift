@@ -488,11 +488,12 @@ final class FirstPlayAutoPlayController: ObservableObject {
             try? await Task.sleep(nanoseconds: UInt64(max(deadline, 0) * 1_000_000_000))
             guard !Task.isCancelled else { return }
             // BUG-143: a slow resolve is the debrid API or the network, not proof the link is dead.
-            self?.finishResolve(attemptGeneration, candidate, Policy.resolveTimedOut(after: deadline))
+            self?.finishResolve(attemptGeneration, candidate, Policy.resolveTimedOut(after: deadline), timedOut: true)
         }
     }
 
-    private func finishResolve(_ attemptGeneration: Int, _ candidate: Candidate, _ outcome: ResolveOutcome) {
+    private func finishResolve(_ attemptGeneration: Int, _ candidate: Candidate, _ outcome: ResolveOutcome,
+                               timedOut: Bool = false) {
         // A late result (the deadline already moved on, or the viewer cancelled) is ignored.
         guard attemptGeneration == generation, case .resolving = phase else { return }
         generation += 1
@@ -519,9 +520,15 @@ final class FirstPlayAutoPlayController: ObservableObject {
                 // would otherwise blacklist every cached link for 8 h.
                 autoPlayLog("[AutoPlay] reject key=\(candidate.streamKey) transient=1 offline=1 skipped")
             }
-            lastFailed = candidate
-            // Review r2: the resolve failed: its torrent is a failed one for its add-on.
-            tried = tried.includingFailed(stream: candidate.stream)
+            if timedOut {
+                // Review r7: a time-out is not a failed torrent: the source stays tried only (from
+                // its pick) and its torrent's other files stay candidates.
+                lastFailed = nil
+            } else {
+                lastFailed = candidate
+                // Review r2: the resolve failed: its torrent is a failed one for its add-on.
+                tried = tried.includingFailed(stream: candidate.stream)
+            }
             tryNext(preferAddonId: nil)
         }
     }
