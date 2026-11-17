@@ -4,7 +4,6 @@ import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import co.touchlab.kermit.Logger
 import com.nuvio.app.core.network.ServerConfigurationRepository
 import com.nuvio.app.core.network.SupabaseProvider
-import io.github.jan.supabase.auth.auth
 import io.github.jan.supabase.functions.functions
 import io.github.jan.supabase.postgrest.postgrest
 import io.github.jan.supabase.postgrest.rpc
@@ -195,23 +194,19 @@ object TvLoginRepository {
         }
         val response = SupabaseProvider.client.functions.invoke(function = "tv-logins-exchange", body = body)
         val tokens = json.decodeFromString<TvLoginExchangeResult>(response.bodyAsText())
-        SupabaseProvider.client.auth.importAuthToken(
-            accessToken = tokens.accessToken,
-            refreshToken = tokens.refreshToken,
-            retrieveUser = true,
-            autoRefresh = true,
-        )
+        // The import runs under AuthRepository's session lane (the library emits the new session
+        // inside the call); the session collector then validates and publishes it.
+        AuthRepository.importTvLoginSession(accessToken = tokens.accessToken, refreshToken = tokens.refreshToken)
         _uiState.value = _uiState.value.copy(completed = true)
     }
 
     /**
      * The backend requires an authenticated caller even to START a login session; a throwaway
-     * anonymous Supabase session provides that. AuthRepository's session collector skips
-     * anonymous sessions, so this never surfaces in the UI.
+     * anonymous Supabase session provides that. AuthRepository's session model never publishes
+     * anonymous sessions as an account, so this never surfaces in the UI.
      */
     private suspend fun ensureScaffoldSession() {
-        val auth = SupabaseProvider.client.auth
-        if (auth.currentUserOrNull() != null && auth.currentAccessTokenOrNull() != null) return
-        auth.signInAnonymously()
+        // Under AuthRepository's session lane, like every library session start the app issues.
+        AuthRepository.ensureTvLoginScaffold()
     }
 }

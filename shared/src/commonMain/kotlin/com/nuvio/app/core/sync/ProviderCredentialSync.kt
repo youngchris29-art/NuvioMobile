@@ -207,6 +207,7 @@ object ProviderCredentialSync {
     suspend fun syncFromRemote(profileId: Int): Boolean = syncMutex.withLock {
         ensureRepositoriesLoaded()
         val credentialScope = currentScope(profileId) ?: return@withLock false
+        val ticket = AuthRepository.sessionTicket()
         try {
             val localSnapshot = currentSnapshot(profileId)
             // Upstream 1854dfc3 removed the push-before-pull retry that used to run here (and the
@@ -434,7 +435,7 @@ object ProviderCredentialSync {
         } catch (error: CancellationException) {
             throw error
         } catch (error: Throwable) {
-            AuthRepository.signOutIfSessionInvalid(error, "Provider credential sync")
+            AuthRepository.reportSessionError(ticket, error, "Provider credential sync")
             log.e(error) { "Provider credential sync failed for profile $profileId" }
             throw error
         }
@@ -616,6 +617,7 @@ object ProviderCredentialSync {
                 return@withLock
             }
 
+            val ticket = AuthRepository.sessionTicket()
             try {
                 pushSnapshot(snapshot)
                 synchronized(stateLock) {
@@ -644,7 +646,7 @@ object ProviderCredentialSync {
                         pendingEdits.getOrPut(credentialScope) { mutableMapOf() }.putAll(edits)
                     }
                 }
-                AuthRepository.signOutIfSessionInvalid(error, "Provider credential push")
+                AuthRepository.reportSessionError(ticket, error, "Provider credential push")
                 log.e(error) {
                     "Failed to push provider credentials for profile ${snapshot.profileId} " +
                         "— ${edits.size} edit(s) held for the next sync"

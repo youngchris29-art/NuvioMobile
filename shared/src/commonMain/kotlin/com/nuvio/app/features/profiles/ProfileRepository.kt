@@ -103,6 +103,7 @@ object ProfileRepository {
             }
             return
         }
+        val ticket = AuthRepository.sessionTicket()
         try {
             val result = SupabaseProvider.client.postgrest.rpc("sync_pull_profiles")
             val profiles = result.decodeList<NuvioProfile>()
@@ -117,7 +118,7 @@ object ProfileRepository {
             }
             persist()
         } catch (e: Throwable) {
-            if (AuthRepository.signOutIfSessionInvalid(e, "Profile pull")) return
+            if (AuthRepository.reportSessionError(ticket, e, "Profile pull")) return
             log.e(e) { "Failed to pull profiles" }
             if (!_state.value.isLoaded) {
                 _state.value = _state.value.copy(isLoaded = true)
@@ -153,6 +154,7 @@ object ProfileRepository {
             applyPayloadsLocally(profiles)
             return
         }
+        val ticket = AuthRepository.sessionTicket()
         try {
             val params = buildJsonObject {
                 put("p_client_max_profiles", MAX_PROFILES)
@@ -162,7 +164,7 @@ object ProfileRepository {
             SupabaseProvider.client.postgrest.rpc("sync_push_profiles", params)
             pullProfiles()
         } catch (e: Throwable) {
-            if (AuthRepository.signOutIfSessionInvalid(e, "Profile push")) return
+            if (AuthRepository.reportSessionError(ticket, e, "Profile push")) return
             log.e(e) { "Failed to push profiles" }
         }
     }
@@ -248,6 +250,7 @@ object ProfileRepository {
             removeDeletedProfileTrackerData(profileIndex)
             return
         }
+        val ticket = AuthRepository.sessionTicket()
         try {
             val params = buildJsonObject {
                 put("p_profile_id", profileIndex)
@@ -259,7 +262,7 @@ object ProfileRepository {
             removeDeletedProfileTrackerData(profileIndex)
             pullProfiles()
         } catch (e: Throwable) {
-            if (AuthRepository.signOutIfSessionInvalid(e, "Profile delete")) return
+            if (AuthRepository.reportSessionError(ticket, e, "Profile delete")) return
             log.e(e) { "Failed to delete profile $profileIndex" }
         }
     }

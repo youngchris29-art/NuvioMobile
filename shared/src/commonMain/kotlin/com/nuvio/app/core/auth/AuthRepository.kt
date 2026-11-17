@@ -9,27 +9,28 @@ import com.nuvio.app.core.network.SupabaseProvider
 import com.nuvio.app.core.account.AccountDataCleanerProvider
 import io.github.jan.supabase.auth.auth
 import io.github.jan.supabase.auth.providers.builtin.Email
-import io.github.jan.supabase.auth.status.SessionStatus
 import io.github.jan.supabase.auth.exception.AuthRestException
 import io.github.jan.supabase.exceptions.RestException
 import io.github.jan.supabase.functions.functions
 import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
-import kotlin.time.Duration.Companion.seconds
 
+private const val KEY_SIGNED_OUT_NOTICE = "signed_out_notice"
+private const val SIGNED_OUT_NOTICE_FALLBACK = "You have been signed out of Nuvio. Please sign in again."
+
+/**
+ * The app's auth surface. Every session decision lives in the pure reducer (AuthSessionModel); the
+ * driver (AuthSessionDriver) feeds it events under one lane and runs its outputs against
+ * [RealAuthEffects] below. Each public function here only brackets one library call with its
+ * events. Design: docs/batch-upstream-ports-spec-auth.md.
+ */
 object AuthRepository {
-    private val SESSION_RESTORE_TIMEOUT = 10.seconds
-
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("AuthRepository"))
     private val log = Logger.withTag("AuthRepository")
 
@@ -39,300 +40,206 @@ object AuthRepository {
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
+    // Fork: the lost-session notice on its own flow, so the tvOS Welcome screen can show it without
+    // also showing sign-in/sign-out errors. [error] still carries it too (composeApp's AuthScreen,
+    // as upstream). Raised only by the model's ShowNotice output; cleared by HideNotice and clearError.
+    private val _signedOutNotice = MutableStateFlow<String?>(null)
+    val signedOutNotice: StateFlow<String?> = _signedOutNotice.asStateFlow()
+
     private var initialized = false
-    private var validatedRemoteUserId: String? = null
-    private var sessionRestoreTimedOut = false
-    private var sessionStatusJob: Job? = null
-    // Fork: the restore watchdog is a second launch upstream doesn't have; reinitialize() must
-    // cancel it too or a stale watchdog fires into the NEW client's restore.
-    private var restoreWatchdogJob: Job? = null
+
+    // Created on first use, so touching [state] or [error] (tests, previews) never builds a client.
+    private val driver: AuthSessionDriver by lazy { AuthSessionDriver(RealAuthEffects, scope) }
+
+    private fun boot(): AuthEvent.Boot = AuthEvent.Boot(
+        guestId = AuthStorage.loadAnonymousUserId(),
+        owner = AuthStorage.loadAccountOwner(),
+        notice = AuthStorage.loadFlag(KEY_SIGNED_OUT_NOTICE),
+    )
 
     fun initialize() {
         if (initialized) return
         initialized = true
-
-        val savedAnonId = AuthStorage.loadAnonymousUserId()
-        if (savedAnonId != null) {
-            _state.value = AuthState.Authenticated(
-                userId = savedAnonId,
-                email = null,
-                isAnonymous = true,
-            )
-        }
-
-        // A damaged or wedged stored session must not brick boot: supabase-kt's session restore
-        // can stall without ever leaving Initializing (storage read that never returns, restore
-        // coroutine dying), which would pin the root gate on the splash forever. If we are still
-        // Loading after the timeout, fall back to signed-out — a late successful restore still
-        // flips the gate to Authenticated through the collector below.
-        restoreWatchdogJob = scope.launch {
-            delay(SESSION_RESTORE_TIMEOUT)
-            sessionRestoreTimedOut = true
-            if (_state.compareAndSet(AuthState.Loading, AuthState.Unauthenticated)) {
-                log.w { "Session restore still pending after $SESSION_RESTORE_TIMEOUT; treating as signed out (stored session may be damaged or unreadable)" }
-            }
-        }
-
-        sessionStatusJob = scope.launch {
-            debugSessionRestoreStall()?.let { stall ->
-                log.w { "debug.authRestoreStallSeconds active — delaying session-status collection by $stall to simulate a wedged restore" }
-                delay(stall)
-            }
-            SupabaseProvider.client.auth.sessionStatus.collect { status ->
-                if (AuthStorage.loadAnonymousUserId() != null) return@collect
-                when (status) {
-                    is SessionStatus.Authenticated -> {
-                        val user = status.session.user
-                        // Anonymous Supabase sessions are QR-login scaffolding
-                        // (TvLoginRepository), never a signed-in account. A RESTORED one (the
-                        // scaffolding got persisted, e.g. the app quit mid-pairing) used to be
-                        // silently ignored here, pinning the gate on the splash until the 10s
-                        // watchdog — surface it as signed out immediately instead. During live
-                        // pairing the state is already Unauthenticated, so this is a no-op there.
-                        if (user?.isAnonymous == true) {
-                            if (_state.compareAndSet(AuthState.Loading, AuthState.Unauthenticated)) {
-                                log.i { "Restored session is anonymous QR scaffolding — treating as signed out" }
-                            }
-                            return@collect
-                        }
-                        val userId = user?.id.orEmpty()
-                        if (!validateRemoteSession(userId)) return@collect
-                        _state.value = AuthState.Authenticated(
-                            userId = userId,
-                            email = user?.email,
-                            isAnonymous = false,
-                        )
-                    }
-                    is SessionStatus.NotAuthenticated -> {
-                        _state.value = AuthState.Unauthenticated
-                    }
-                    is SessionStatus.Initializing -> {
-                        // Never re-enter Loading once the restore watchdog has fired — that
-                        // would re-brick the gate the watchdog just unbricked.
-                        if (AuthStorage.loadAnonymousUserId() == null && !sessionRestoreTimedOut) {
-                            _state.value = AuthState.Loading
-                        }
-                    }
-                    is SessionStatus.RefreshFailure -> {
-                        _state.value = AuthState.Unauthenticated
-                    }
-                }
-            }
-        }
+        driver.start(
+            boot = boot(),
+            status = { SupabaseProvider.client.auth.sessionStatus },
+            collectDelay = debugSessionRestoreStall(),
+        )
     }
 
     /**
      * Step 1 of a server switch (see ServerConnectionController.switchServer): drop the current
      * session and every piece of account-scoped local state, BEFORE the new server is saved.
      * Returns failure if any step threw; the controller then aborts the switch.
+     *
+     * Fork: runs the FULL account-data wipe (same semantics as signOut()). Upstream only clears the
+     * session here; on this fork the wipe is what erases per-profile payloads, sync cursors,
+     * provider credentials and Trakt/Simkl tokens — nothing from server A may sync into server B.
      */
-    suspend fun prepareForServerSwitch(): Result<Unit> {
+    internal suspend fun prepareForServerSwitch(): Result<Unit> {
         _error.value = null
-        val anonymousClear = runCatching { AuthStorage.clearAnonymousUserId() }
-        validatedRemoteUserId = null
-        val sessionClear = runCatching { SupabaseProvider.client.auth.clearSession() }
-        // Fork: run the FULL account-data wipe (same semantics as signOut()). Upstream only clears
-        // the session here; on this fork the wipe is what erases per-profile payloads, sync
-        // cursors, provider credentials and Trakt/Simkl tokens — nothing from server A may sync
-        // into server B. Mobile's LocalAccountDataCleaner is installed by the fork's composeApp
-        // too, so the divergence applies to every frontend of this fork.
-        val localCleanup = runCatching { AccountDataCleanerProvider.cleaner.wipe() }
-        _state.value = AuthState.Unauthenticated
-        val failure = anonymousClear.exceptionOrNull()
-            ?: sessionClear.exceptionOrNull()
-            ?: localCleanup.exceptionOrNull()
-        val cancellation = sessionClear.exceptionOrNull() as? CancellationException
-        if (cancellation != null) throw cancellation
-        return if (failure == null) {
-            Result.success(Unit)
-        } else {
-            log.e(failure) { "Server-switch preparation did not complete cleanly" }
-            Result.failure(failure)
-        }
+        return driver.prepareForServerSwitch()
+            .onFailure { e -> log.e(e) { "Server-switch preparation did not complete cleanly" } }
     }
 
     /**
-     * Step 3 of a server switch (after SupabaseProvider.reset()): tear down the collectors that
-     * captured the previous client and run [initialize] again against the new one. Observers of
-     * [state] (Swift AuthViewModel, Compose) keep working — same StateFlow instance.
+     * Step 3 of a server switch (after SupabaseProvider.reset()): drop the collector and watchdog
+     * that captured the previous client and boot again against the new one. Observers of [state]
+     * keep working — same StateFlow instance.
      */
-    fun reinitialize() {
-        sessionStatusJob?.cancel()
-        sessionStatusJob = null
-        restoreWatchdogJob?.cancel()
-        restoreWatchdogJob = null
-        // Fork: a watchdog that fired for the OLD client must not suppress Loading for the new one.
-        sessionRestoreTimedOut = false
-        initialized = false
-        validatedRemoteUserId = null
-        _state.value = AuthState.Loading
-        initialize()
+    internal suspend fun reinitialize() {
+        initialized = true
+        driver.restart(
+            boot = boot(),
+            status = { SupabaseProvider.client.auth.sessionStatus },
+            collectDelay = debugSessionRestoreStall(),
+        )
     }
 
-    private suspend fun validateRemoteSession(userId: String): Boolean {
-        if (userId.isBlank() || validatedRemoteUserId == userId) return true
+    /** Taken BEFORE a request whose failure may be reported with [reportSessionError]. */
+    internal fun sessionTicket(): AuthTicket = driver.currentTicket()
 
-        return runCatching {
-            SupabaseProvider.client.auth.retrieveUserForCurrentSession(false)
-            validatedRemoteUserId = userId
-            true
-        }.getOrElse { e ->
-            if (isInvalidRemoteSessionError(e)) {
-                log.w(e) { "Stored Supabase session no longer belongs to an active account; clearing local auth" }
-                clearLocalSessionAfterRemoteInvalidation()
-                false
-            } else {
-                log.w(e) { "Unable to validate stored Supabase session; keeping cached auth state" }
-                true
-            }
-        }
+    /**
+     * A sync request taken under [ticket] failed. Returns true when the report cleared the session
+     * (a deleted account): the caller stops. A report about an older session does nothing (I2).
+     */
+    internal suspend fun reportSessionError(ticket: AuthTicket, error: Throwable, source: String): Boolean {
+        val kind = error.sessionErrorKind()
+        if (kind != SessionErrorKind.Other) log.w(error) { "$source failed: $kind" }
+        return driver.reportSessionError(ticket, kind)
+    }
+
+    /** QR sign-in (TvLoginRepository.exchange): imports the approved session under the lane. */
+    internal suspend fun importTvLoginSession(accessToken: String, refreshToken: String) {
+        driver.importTvLoginTokens(accessToken, refreshToken).getOrThrow()
+    }
+
+    /** QR sign-in scaffolding: an anonymous library session, started under the lane. */
+    internal suspend fun ensureTvLoginScaffold() {
+        driver.ensureTvLoginScaffold().getOrThrow()
     }
 
     @OptIn(ExperimentalUuidApi::class)
     fun signInAnonymously() {
         _error.value = null
-        val userId = Uuid.random().toString()
-        AuthStorage.saveAnonymousUserId(userId)
-        _state.value = AuthState.Authenticated(
-            userId = userId,
-            email = null,
-            isAnonymous = true,
-        )
+        driver.chooseGuest(Uuid.random().toString())
     }
 
-    suspend fun signUpWithEmail(email: String, password: String): Result<Unit> = runCatching {
+    suspend fun signUpWithEmail(email: String, password: String): Result<Unit> {
         _error.value = null
-        SupabaseProvider.client.auth.signUpWith(Email) {
-            this.email = email
-            this.password = password
+        return driver.signUpWithEmail(email, password).onFailure { e ->
+            log.e(e) { "Email sign-up failed" }
+            _error.value = e.safeAuthErrorDescription()
+                ?: resourceString("Sign-up failed", StringKey.auth_sign_up_failed)
         }
-        Unit
-    }.onFailure { e ->
-        log.e(e) { "Email sign-up failed" }
-        _error.value = e.safeAuthErrorDescription()
-            ?: resourceString("Sign-up failed", StringKey.auth_sign_up_failed)
     }
 
-    suspend fun signInWithEmail(email: String, password: String): Result<Unit> = runCatching {
+    suspend fun signInWithEmail(email: String, password: String): Result<Unit> {
         _error.value = null
-        SupabaseProvider.client.auth.signInWith(Email) {
-            this.email = email
-            this.password = password
+        return driver.signInWithEmail(email, password).onFailure { e ->
+            log.e(e) { "Email sign-in failed" }
+            _error.value = e.safeAuthErrorDescription()
+                ?: resourceString("Sign-in failed", StringKey.auth_sign_in_failed)
         }
-    }.onFailure { e ->
-        log.e(e) { "Email sign-in failed" }
-        _error.value = e.safeAuthErrorDescription()
-            ?: resourceString("Sign-in failed", StringKey.auth_sign_in_failed)
     }
 
     suspend fun signOut(): Result<Unit> {
         _error.value = null
-        val anonymousRead = runCatching { AuthStorage.loadAnonymousUserId() }
-        val wasAnonymous = anonymousRead.getOrNull() != null
-        val anonymousClear = runCatching { AuthStorage.clearAnonymousUserId() }
-        validatedRemoteUserId = null
-        val remoteSignOut = if (wasAnonymous) {
-            Result.success(Unit)
-        } else {
-            runCatching { SupabaseProvider.client.auth.signOut() }
-        }
-
-        val fallbackSessionClear = if (remoteSignOut.isFailure) {
-            runCatching { SupabaseProvider.client.auth.clearSession() }
-                .onFailure { error -> log.w(error) { "Failed to clear Supabase session after sign-out failure" } }
-        } else {
-            Result.success(Unit)
-        }
-        // Fork: route local cleanup through the AccountDataCleanerProvider seam
-        // (LocalAccountDataCleaner is composeApp-only).
-        val localCleanup = runCatching { AccountDataCleanerProvider.cleaner.wipe() }
-        _state.value = AuthState.Unauthenticated
-
-        val failure = anonymousRead.exceptionOrNull()
-            ?: anonymousClear.exceptionOrNull()
-            ?: remoteSignOut.exceptionOrNull()
-            ?: fallbackSessionClear.exceptionOrNull()
-            ?: localCleanup.exceptionOrNull()
-        val cancellation = remoteSignOut.exceptionOrNull() as? CancellationException
-            ?: fallbackSessionClear.exceptionOrNull() as? CancellationException
-        if (cancellation != null) throw cancellation
-        return if (failure == null) {
-            Result.success(Unit)
-        } else {
+        return driver.signOut().onFailure { failure ->
             log.e(failure) { "Sign-out did not complete cleanly; all local cleanup steps were attempted" }
             _error.value = failure.message
                 ?: resourceString("Sign out failed", StringKey.auth_sign_out_failed)
-            Result.failure(failure)
         }
     }
 
-    suspend fun signOutIfSessionInvalid(error: Throwable, source: String): Boolean {
-        if (!isInvalidRemoteSessionError(error)) return false
-
-        log.w(error) { "$source failed because the current Supabase account/session is no longer valid; clearing local auth" }
-        clearLocalSessionAfterRemoteInvalidation()
-        return true
-    }
-
-    private suspend fun clearLocalSessionAfterRemoteInvalidation() {
+    suspend fun deleteAccount(): Result<Unit> {
         _error.value = null
-        AuthStorage.clearAnonymousUserId()
-        validatedRemoteUserId = null
-        runCatching {
-            SupabaseProvider.client.auth.clearSession()
-        }.onFailure { e ->
-            log.w(e) { "Failed to clear Supabase session after remote invalidation; continuing local reset" }
+        return driver.deleteAccount().onFailure { e ->
+            log.e(e) { "Account deletion failed" }
+            _error.value = e.message ?: resourceString("Account deletion failed", StringKey.auth_account_deletion_failed)
         }
-        val localCleanup = runCatching { AccountDataCleanerProvider.cleaner.wipe() }
-        _state.value = AuthState.Unauthenticated
-        localCleanup.onFailure { error ->
-            log.e(error) { "Local account cleanup failed after remote session invalidation" }
-        }
-    }
-
-    suspend fun deleteAccount(): Result<Unit> = runCatching {
-        _error.value = null
-        SupabaseProvider.client.functions.invoke("delete-account")
-        SupabaseProvider.client.auth.signOut()
-        validatedRemoteUserId = null
-        try {
-            AccountDataCleanerProvider.cleaner.wipe()
-        } finally {
-            _state.value = AuthState.Unauthenticated
-        }
-    }.onFailure { e ->
-        log.e(e) { "Account deletion failed" }
-        _error.value = e.message ?: resourceString("Account deletion failed", StringKey.auth_account_deletion_failed)
     }
 
     fun clearError() {
         _error.value = null
+        _signedOutNotice.value = null
     }
 
-    private fun isInvalidRemoteSessionError(error: Throwable): Boolean {
-        val restError = error.findCause<RestException>()
-        if (restError?.statusCode == 401 || restError?.statusCode == 403) return true
+    private fun signedOutNoticeText(): String =
+        resourceString(SIGNED_OUT_NOTICE_FALLBACK, StringKey.auth_notice_signed_out)
 
-        val message = buildString {
-            append(error.message.orEmpty())
-            if (restError != null) {
-                append(' ')
-                append(restError.error)
-                append(' ')
-                append(restError.description)
+    /** One body per model output (spec 3d and 5d); no decisions here. */
+    private object RealAuthEffects : AuthEffects {
+        override fun publish(state: AuthState) {
+            _state.value = state
+        }
+
+        override fun persistOwner(userId: String?) = AuthStorage.saveAccountOwner(userId)
+
+        override fun persistNotice(pending: Boolean) = AuthStorage.saveFlag(KEY_SIGNED_OUT_NOTICE, pending)
+
+        override fun showNotice() {
+            val notice = signedOutNoticeText()
+            _error.value = notice
+            _signedOutNotice.value = notice
+        }
+
+        override fun hideNotice() {
+            val notice = _signedOutNotice.value
+            _signedOutNotice.value = null
+            if (notice != null) _error.compareAndSet(notice, null)
+        }
+
+        override fun saveGuestId(guestId: String) = AuthStorage.saveAnonymousUserId(guestId)
+
+        override fun clearGuestId() = AuthStorage.clearAnonymousUserId()
+
+        // Fork: through the AccountDataCleanerProvider seam (the one AccountDataStores registry).
+        override fun wipeAccountData() = AccountDataCleanerProvider.cleaner.wipe()
+
+        override suspend fun clearSupabaseSession() = SupabaseProvider.client.auth.clearSession()
+
+        override suspend fun kickSessionRefresh() = SupabaseProvider.client.auth.startAutoRefreshForCurrentSession()
+
+        override suspend fun checkUser(accessToken: String) {
+            SupabaseProvider.client.auth.retrieveUser(accessToken)
+        }
+
+        override fun log(message: String) = log.i { message }
+
+        override suspend fun signInWithEmail(email: String, password: String) {
+            SupabaseProvider.client.auth.signInWith(Email) {
+                this.email = email
+                this.password = password
             }
-        }.lowercase()
+        }
 
-        return (
-            "jwt" in message &&
-                ("invalid" in message || "expired" in message || "malformed" in message)
-            ) || (
-            "user" in message &&
-                ("does not exist" in message || "not found" in message || "deleted" in message)
-            ) || (
-            "foreign key" in message &&
-                ("auth.users" in message || "user_id" in message)
+        override suspend fun signUpWithEmail(email: String, password: String) {
+            SupabaseProvider.client.auth.signUpWith(Email) {
+                this.email = email
+                this.password = password
+            }
+        }
+
+        override suspend fun signOutRemote() = SupabaseProvider.client.auth.signOut()
+
+        override suspend fun deleteAccountRemote() {
+            SupabaseProvider.client.functions.invoke("delete-account")
+        }
+
+        override suspend fun importTvLoginTokens(accessToken: String, refreshToken: String) =
+            SupabaseProvider.client.auth.importAuthToken(
+                accessToken = accessToken,
+                refreshToken = refreshToken,
+                retrieveUser = true,
+                autoRefresh = true,
             )
+
+        override suspend fun ensureTvLoginScaffold() {
+            val auth = SupabaseProvider.client.auth
+            if (auth.currentUserOrNull() != null && auth.currentAccessTokenOrNull() != null) return
+            auth.signInAnonymously()
+        }
     }
 
     private fun Throwable.safeAuthErrorDescription(): String? =
@@ -344,13 +251,4 @@ object AuthRepository {
                 ?.description
                 ?.trim()
                 ?.takeIf { it.isNotEmpty() }
-
-    private inline fun <reified T : Throwable> Throwable.findCause(): T? {
-        var current: Throwable? = this
-        while (current != null) {
-            if (current is T) return current
-            current = current.cause
-        }
-        return null
-    }
 }
