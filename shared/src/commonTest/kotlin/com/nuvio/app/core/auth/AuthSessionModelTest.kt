@@ -1226,8 +1226,8 @@ class AuthSessionModelTest {
         assertEquals(3, gateWrites(ownerReset.send(ResetFinished(ResetKind.SignOut))))
         assertEquals(0, gateWrites(ownerReset.send(Snap.NotAuthenticated())))
         val ownerLost = Run().apply { signInPublished("A", "a1"); ownerWriteOk = false }
-        // Guest-id clear, marker set, marker clear, owner (round 7: four gates, each once).
-        assertEquals(4, gateWrites(ownerLost.send(Snap.NotAuthenticated())))
+        // Marker set, marker clear, owner (the guest-id clear is best-effort since round 8).
+        assertEquals(3, gateWrites(ownerLost.send(Snap.NotAuthenticated())))
         assertEquals(0, gateWrites(ownerLost.send(Snap.RefreshFailure)))
         val ownerGuest = Run(owner = "A").apply { ownerWriteOk = false }
         assertEquals(3, gateWrites(ownerGuest.send(GuestChosen("g1"))))
@@ -1374,34 +1374,63 @@ class AuthSessionModelTest {
         assertEquals(1, run.all.count { it == Publish(AuthState.Unauthenticated) })
     }
 
+    // ── Review round 8: a guest id on disk is trusted only when no account owns the data ─────────
+
     @Test
-    fun aGuestIdClearThatFailsBlocksTheNextAccountUntilARetrySucceeds() {
-        val run = Run(guestId = "g1")
-        run.guestClearOk = false
-        run.send(ResetStarted(ResetKind.SignOut))
-        run.send(ResetFinished(ResetKind.SignOut))
-        assertTrue(run.state.guestIdClearPending)
-        assertEquals(AuthState.Unauthenticated, run.state.published)
-        // B's session: the clear is retried first, fails again, and B is not shown.
-        run.send(acct("B", "b1"))
-        val first = run.send(ValidationFinished(run.startedValidation(), SessionVerdict.Valid))
-        assertEquals(listOf(ClearGuestId), first)
-        assertEquals(AuthState.Unauthenticated, run.state.published)
-        // The next status of the same session retries; now the clear works and B is shown.
-        run.guestClearOk = true
-        run.send(acct("B", "b2", refreshedFrom = "b1"))
-        assertEquals(account("B"), run.state.published)
-        assertFalse(run.state.guestIdClearPending)
+    fun resolveBootDecidesFromTheDurableOwnerOnly() {
+        assertEquals(BootResolution(null, false), resolveBoot(guestId = null, owner = null))
+        assertEquals(BootResolution(null, false), resolveBoot(guestId = null, owner = "A"))
+        // Owner recorded as nobody, or never recorded (an upgrading guest): the data is the guest's.
+        assertEquals(BootResolution("g", false), resolveBoot(guestId = "g", owner = null))
+        // A recorded account owns the data: the guest id is stale.
+        assertEquals(BootResolution(null, true), resolveBoot(guestId = "g", owner = "A"))
     }
 
     @Test
-    fun aGuestIdClearThatFailsDuringALostResetStillWipesAndPublishesSignedOut() {
+    fun aStaleGuestIdAtBootIsClearedAndTheAccountsSessionRestores() {
+        val run = Run(owner = "A", guestId = "g1")
+        assertEquals(listOf(Publish(AuthState.Loading), ClearGuestId), run.last)
+        assertIs<Booting>(run.state.live)
+        run.send(acct("A", "a1", restored = true))
+        run.send(ValidationFinished(run.startedValidation(), SessionVerdict.Valid))
+        assertEquals(account("A"), run.state.published)
+        assertEquals(0, run.wipes())
+    }
+
+    @Test
+    fun aStaleGuestIdWithAPendingWipeAtBootStillWipesBeforeTheAccount() {
+        val run = Run(owner = "A", guestId = "g1", wipePending = true)
+        assertIs<Booting>(run.state.live)
+        run.send(acct("A", "a1", restored = true))
+        run.send(ValidationFinished(run.startedValidation(), SessionVerdict.Valid))
+        assertEquals(1, run.wipes())
+        assertEquals(account("A"), run.state.published)
+    }
+
+    @Test
+    fun aStaleGuestIdWithALostAccountSessionAtBootIsALostReset() {
+        val run = Run(owner = "A", guestId = "g1")
+        run.send(Snap.NotAuthenticated(cleared = true))
+        assertEquals(1, run.wipes())
+        assertEquals(1, run.notices())
+        assertEquals(AuthState.Unauthenticated, run.state.published)
+    }
+
+    @Test
+    fun aGuestWithNoRecordedAccountOwnerIsStillTrusted() {
+        val recordedNobody = Run(owner = null, guestId = "g1")
+        assertEquals(guest("g1"), recordedNobody.state.published)
+        val unknown = Run(ownerUnknown = true, guestId = "g1")
+        assertEquals(guest("g1"), unknown.state.published)
+    }
+
+    @Test
+    fun aLostResetClearsTheGuestIdBestEffortAndStillWipes() {
         val run = Run()
         run.signInPublished("A", "a1")
-        run.guestClearOk = false
         val lost = run.send(Snap.NotAuthenticated())
+        assertTrue(ClearGuestId in lost)
         assertTrue(WipeAccountData in lost)
         assertEquals(AuthState.Unauthenticated, run.state.published)
-        assertTrue(run.state.guestIdClearPending)
     }
 }

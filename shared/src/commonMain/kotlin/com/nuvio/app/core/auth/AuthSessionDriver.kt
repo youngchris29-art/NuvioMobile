@@ -252,7 +252,8 @@ internal class AuthSessionDriver(
     suspend fun signOut(): Result<Unit> = command {
         exclusive {
             val guest = liveIsGuest
-            send(AuthEvent.ResetStarted(ResetKind.SignOut))
+            // Round 8: the reset start's own failure (a guest-id clear, say) is part of the result.
+            val started = send(AuthEvent.ResetStarted(ResetKind.SignOut))
             val remote = if (guest) null else attempt { effects.signOutRemote() }
             // B6: the fallback local clear; a guest always clears any stale library session. It
             // runs with the rest of the reset, non-cancellable (r1-4): a cancelled sign-out must
@@ -264,7 +265,7 @@ internal class AuthSessionDriver(
             // A guest's local clear is best-effort (it had no session to end); only its
             // cancellation is passed on.
             val fallbackFailure = fallback?.exceptionOrNull()?.takeIf { remote != null || it is CancellationException }
-            throwFirst(remote?.exceptionOrNull(), fallbackFailure, finished.failure)
+            throwFirst(remote?.exceptionOrNull(), fallbackFailure, started.failure, finished.failure)
         }
     }
 
@@ -272,23 +273,25 @@ internal class AuthSessionDriver(
         exclusive {
             // A failed delete request resets nothing.
             effects.deleteAccountRemote()
-            send(AuthEvent.ResetStarted(ResetKind.DeleteAccount))
+            val started = send(AuthEvent.ResetStarted(ResetKind.DeleteAccount))
             val remote = attempt { effects.signOutRemote() }
             val (fallback, finished) = withContext(NonCancellable) {
                 val clear = if (remote.isFailure) attempt { effects.clearSupabaseSession() } else null
                 clear to send(AuthEvent.ResetFinished(ResetKind.DeleteAccount))
             }
-            throwFirst(remote.exceptionOrNull(), fallback?.exceptionOrNull(), finished.failure)
+            throwFirst(remote.exceptionOrNull(), fallback?.exceptionOrNull(), started.failure, finished.failure)
         }
     }
 
     suspend fun prepareForServerSwitch(): Result<Unit> = command {
         exclusive {
-            send(AuthEvent.ResetStarted(ResetKind.ServerSwitch))
+            // Round 8: a server switch must not report success after a failed step it depends on;
+            // the controller then aborts the switch.
+            val started = send(AuthEvent.ResetStarted(ResetKind.ServerSwitch))
             val (clear, finished) = withContext(NonCancellable) {
                 attempt { effects.clearSupabaseSession() } to send(AuthEvent.ResetFinished(ResetKind.ServerSwitch))
             }
-            throwFirst(clear.exceptionOrNull(), finished.failure)
+            throwFirst(started.failure, clear.exceptionOrNull(), finished.failure)
         }
     }
 

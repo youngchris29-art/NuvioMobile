@@ -127,7 +127,7 @@ internal sealed interface AuthOutput {
      * [AuthEvent.GateFailed], and nothing that depends on it is emitted or committed before that.
      */
     val isGate: Boolean
-        get() = this is PersistWipePending || this is PersistOwner || this is SaveGuestId || this == ClearGuestId
+        get() = this is PersistWipePending || this is PersistOwner || this is SaveGuestId
 
     data class Publish(val state: AuthState) : AuthOutput
     /** null records "no owner" (the owner is then known to be nobody). */
@@ -172,15 +172,6 @@ internal sealed interface PendingGate {
     /** Round 7: a newly chosen guest's id; the guest is shown only once it is on disk. */
     data class GuestId(val guestId: String) : PendingGate
 
-    /** Round 7: clearing a saved guest id; [then] continues whatever the clear was part of. */
-    data class GuestIdClear(val then: GuestClearThen) : PendingGate
-}
-
-/** What follows a guest-id clear (round 7). */
-internal sealed interface GuestClearThen {
-    data object ResetNotice : GuestClearThen
-    data class LostWipe(val notice: Boolean, val reason: String) : GuestClearThen
-    data class Accept(val serial: Long) : GuestClearThen
 }
 
 /** What a wipe in progress continues with once its outcome is known. */
@@ -234,11 +225,6 @@ internal data class AuthModelState(
     val watchdogFired: Boolean,
     /** A gate output whose outcome is awaited; nothing else happens until it is known. */
     val pendingGate: PendingGate? = null,
-    /**
-     * Round 7: a saved guest id could not be cleared. Until a clear succeeds no account is shown:
-     * the next launch would boot as that guest over the account's data.
-     */
-    val guestIdClearPending: Boolean = false,
 ) {
     companion object {
         /** Before the first Boot. Serial 0 is never live after a Boot. */
@@ -274,6 +260,26 @@ internal fun reduce(state: AuthModelState, event: AuthEvent): AuthStep {
     b.apply(event)
     b.settle()
     return AuthStep(b.state.copy(nextSerial = b.nextSerial), b.outputs.toList(), b.cleared)
+}
+
+/** What a boot makes of a guest id found on disk (round 8). */
+internal data class BootResolution(val trustedGuestId: String?, val clearStaleGuestId: Boolean)
+
+/**
+ * Round 8: whether a guest id found on disk can be trusted is decided from durable state that is
+ * already gated, never from a flag held in memory. A guest is only ever shown after the owner was
+ * durably recorded as "no account" (a guest start wipes and records nobody first), and the owner
+ * names an account only after that account was accepted, which cannot happen while a guest is
+ * live. So a guest id next to a recorded account owner is stale by construction: a guest-id save
+ * that failed after storing, or a guest-id clear that failed, at reset, lost reset or server
+ * switch. Boot ignores it (the account's session path runs) and clears it, best-effort. An owner
+ * that is unknown (an install that never recorded one) or recorded as nobody keeps the guest:
+ * the data is the guest's.
+ */
+internal fun resolveBoot(guestId: String?, owner: String?): BootResolution = when {
+    guestId == null -> BootResolution(trustedGuestId = null, clearStaleGuestId = false)
+    owner != null -> BootResolution(trustedGuestId = null, clearStaleGuestId = true)
+    else -> BootResolution(trustedGuestId = guestId, clearStaleGuestId = false)
 }
 
 /** Attempts per session serial per run to make an account's data its own (round 6). */
@@ -341,35 +347,10 @@ private class StepBuilder(var state: AuthModelState) {
         clearCaches()
         emit(AuthOutput.Drop("lost session: $reason"))
         if (clearLibrary) emit(AuthOutput.ClearSupabaseSession)
-        clearGuestId(GuestClearThen.LostWipe(notice, reason))
-    }
-
-    /** The guest-id clear is a gate (round 7); [then] follows its outcome. */
-    private fun clearGuestId(then: GuestClearThen) {
-        state = state.copy(pendingGate = PendingGate.GuestIdClear(then))
+        // Best-effort (round 8): a guest id left on disk is never trusted over a recorded account
+        // owner at the next boot (resolveBoot), so its failure cannot leak data either way.
         emit(AuthOutput.ClearGuestId)
-    }
-
-    private fun guestIdCleared(then: GuestClearThen, ok: Boolean) {
-        state = state.copy(guestIdClearPending = !ok)
-        when (then) {
-            GuestClearThen.ResetNotice -> {
-                // Upstream for sign-out; decision R for a server switch.
-                emit(AuthOutput.PersistNotice(false))
-                emit(AuthOutput.HideNotice)
-            }
-            // The wipe runs either way; a stale guest id only blocks the next account (above).
-            is GuestClearThen.LostWipe -> startWipe(AfterWipe.Lost(then.notice), then.reason)
-            is GuestClearThen.Accept -> if (!ok) {
-                acceptFailed(then.serial)
-                publishIfChanged(AuthState.Unauthenticated)
-            } else if (state.acceptBlockedSerial == then.serial) {
-                // Same attempt, continued: settle() re-runs accept() for this session in this
-                // reduction, so the retry this attempt consumed is handed back to it.
-                state = state.copy(acceptRetryArmed = true)
-            }
-            // On success settle() re-runs accept() for the same session in this reduction.
-        }
+        startWipe(AfterWipe.Lost(notice), reason)
     }
 
     private fun wipeFinished(ok: Boolean) {
@@ -448,8 +429,6 @@ private class StepBuilder(var state: AuthModelState) {
             }
             pending is PendingGate.GuestId && output is AuthOutput.SaveGuestId && output.guestId == pending.guestId ->
                 guestSaved(pending.guestId)
-            pending is PendingGate.GuestIdClear && output == AuthOutput.ClearGuestId ->
-                guestIdCleared(pending.then, ok = true)
             pending is PendingGate.Owner && output is AuthOutput.PersistOwner && output.userId == pending.userId -> {
                 // Only a confirmed write changes the owner (round-4 finding 1).
                 state = state.copy(owner = pending.userId, ownerUnknown = false)
@@ -482,8 +461,6 @@ private class StepBuilder(var state: AuthModelState) {
                 // Round 7: a guest whose id is not on disk is not shown (the next launch would
                 // not know it, and its data would reach the next account unwiped).
                 leaveFailedGuestStart()
-            pending is PendingGate.GuestIdClear && output == AuthOutput.ClearGuestId ->
-                guestIdCleared(pending.then, ok = false)
             pending is PendingGate.Owner && output is AuthOutput.PersistOwner -> when (val then = pending.then) {
                 // The owner stays what is on disk; what it was for is never shown.
                 is OwnerThen.Accept -> {
@@ -549,11 +526,6 @@ private class StepBuilder(var state: AuthModelState) {
             // Round 6: a retry re-armed by a later library status; consumed now.
             state = state.copy(acceptRetryArmed = false)
         }
-        if (state.guestIdClearPending) {
-            // Round 7: a stale guest id on disk would boot over this account's data next launch.
-            clearGuestId(GuestClearThen.Accept(live.serial))
-            return
-        }
         val needsWipe = state.wipePending ||
             (state.ownerUnknown && !live.restored) ||
             (state.owner != null && state.owner != userId)
@@ -574,8 +546,6 @@ private class StepBuilder(var state: AuthModelState) {
     }
 
     private fun guestSaved(guestId: String) {
-        // The new id replaced any stale one on disk.
-        state = state.copy(guestIdClearPending = false)
         // Decision R: choosing guest acknowledges the notice.
         emit(AuthOutput.PersistNotice(false))
         emit(AuthOutput.HideNotice)
@@ -586,7 +556,8 @@ private class StepBuilder(var state: AuthModelState) {
         when (event) {
             is AuthEvent.Boot -> {
                 val serial = mint()
-                val guestId = event.guestId
+                val boot = resolveBoot(event.guestId, event.owner)
+                val guestId = boot.trustedGuestId
                 state = state.copy(
                     live = if (guestId != null) Guest(serial, guestId) else Booting(serial),
                     owner = event.owner,
@@ -599,7 +570,6 @@ private class StepBuilder(var state: AuthModelState) {
                     acceptRetryArmed = false,
                     afterWipe = null,
                     pendingGate = null,
-                    guestIdClearPending = false,
                 )
                 clearCaches()
                 // A saved guest id means the local data is that guest's: with no owner ever
@@ -610,6 +580,11 @@ private class StepBuilder(var state: AuthModelState) {
                     else AuthState.Loading,
                 )
                 if (event.notice) emit(AuthOutput.ShowNotice)
+                if (boot.clearStaleGuestId) {
+                    emit(AuthOutput.Drop("boot: guest id ${event.guestId} is stale, account ${event.owner} owns the data"))
+                    // Best-effort; if it fails the next boot decides the same way again.
+                    emit(AuthOutput.ClearGuestId)
+                }
                 // Last, after the guest is shown: if this write fails the guest still stands and
                 // the next boot records it again (r3-4; the guest is the saved one, its own data).
                 if (guestId != null && state.ownerUnknown) recordOwner(null, OwnerThen.BootGuest)
@@ -731,7 +706,11 @@ private class StepBuilder(var state: AuthModelState) {
             is AuthEvent.ResetStarted -> {
                 state = state.copy(live = NoSession(mint()), noticePending = false)
                 clearCaches()
-                clearGuestId(GuestClearThen.ResetNotice)
+                // Best-effort (round 8): see resolveBoot.
+                emit(AuthOutput.ClearGuestId)
+                // Upstream for sign-out; decision R for a server switch.
+                emit(AuthOutput.PersistNotice(false))
+                emit(AuthOutput.HideNotice)
             }
 
             is AuthEvent.ResetFinished -> startWipe(AfterWipe.Reset, "deliberate reset ${event.kind}")

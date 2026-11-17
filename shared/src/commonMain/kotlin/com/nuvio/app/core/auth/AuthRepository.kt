@@ -202,6 +202,7 @@ object AuthRepository {
             check(AuthStorage.saveAnonymousUserIdDurably(guestId)) { "guest id was not durably written" }
         }
 
+        // Reports durability so a failed clear reaches the reset's result (round 8).
         override fun clearGuestId() {
             check(AuthStorage.clearAnonymousUserIdDurably()) { "guest id clear was not durably written" }
         }

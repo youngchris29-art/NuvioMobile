@@ -98,9 +98,13 @@ class AuthSessionDriverTest {
         var guestClearFails: () -> Boolean = { false }
         val accountsShownWithGuestOnDisk = mutableListOf<String>()
 
+        /** A failed save that still reached the store (round 8): the setter wrote, the flush failed. */
+        var guestSaveFailsAfterStoring = false
+
         override fun saveGuestId(guestId: String) {
             log += "saveGuest:$guestId"
             diskGuestId = guestId
+            if (guestSaveFailsAfterStoring) throw IllegalStateException("guest id flush failed")
         }
 
         override fun clearGuestId() {
@@ -837,21 +841,85 @@ class AuthSessionDriverTest {
     }
 
     @Test
-    fun aGuestIdThatCouldNotBeClearedNeverLetsAnAccountShowAndTheNextStatusRetries() = runTest {
-        // A guest signs out but its id cannot be cleared; then B signs in. Showing B now would
-        // let the next launch boot as that guest over B's data.
+    fun aGuestIdThatCouldNotBeClearedAtSignOutNeverBootsOverTheNextAccount() = runTest {
+        // Round 8 replaces round 7's in-memory block: a guest signs out, its id cannot be
+        // cleared, B signs in. B may be shown; the next launch decides from the durable owner.
         val rig = Rig(this, guestId = "g1")
-        var clearFailures = 1
-        rig.effects.guestClearFails = { clearFailures-- > 0 }
-        rig.driver.signOut()
+        rig.effects.guestClearFails = { true }
+        assertTrue(rig.driver.signOut().isFailure)
         rig.settle()
         assertEquals(AuthState.Unauthenticated, rig.effects.published)
         assertEquals("g1", rig.effects.diskGuestId)
         rig.effects.signIn = { rig.flow.value = authenticated("B", "b1") }
         rig.driver.signInWithEmail("B", "pw")
         rig.settle()
-        assertTrue(rig.effects.accountsShownWithGuestOnDisk.isEmpty(), "${rig.effects.accountsShownWithGuestOnDisk}")
         assertEquals(account("B"), rig.effects.published)
-        assertNull(rig.effects.diskGuestId)
+        assertEquals("B", rig.effects.diskOwner)
+        val restored = MutableStateFlow<SessionStatus>(authenticated("B", "b1", SessionSource.Storage))
+        rig.driver.restart(
+            AuthEvent.Boot(guestId = rig.effects.diskGuestId, owner = rig.effects.diskOwner, notice = false, wipePending = rig.effects.diskMarker),
+            { restored },
+        )
+        rig.settle()
+        assertEquals(account("B"), rig.effects.published)
+        assertTrue("clearGuest" in rig.effects.log.takeLast(8), "${rig.effects.log.takeLast(8)}")
+    }
+
+    // ── Review round 8: a stale guest id on disk never boots over an account ─────────────────────
+
+    @Test
+    fun aGuestSaveThatFailedButStoredTheIdNeverBootsOverTheNextAccount() = runTest {
+        val rig = Rig(this, owner = null)
+        rig.effects.guestSaveFailsAfterStoring = true
+        rig.driver.chooseGuest("g1")
+        rig.settle()
+        assertEquals(AuthState.Unauthenticated, rig.effects.published)
+        assertEquals("g1", rig.effects.diskGuestId)
+        rig.effects.signIn = { rig.flow.value = authenticated("B", "b1") }
+        rig.driver.signInWithEmail("B", "pw")
+        rig.settle()
+        assertEquals(account("B"), rig.effects.published)
+        // Cold launch from what is on disk: the stale guest id must not win over B.
+        val restored = MutableStateFlow<SessionStatus>(authenticated("B", "b1", SessionSource.Storage))
+        rig.driver.restart(
+            AuthEvent.Boot(guestId = rig.effects.diskGuestId, owner = rig.effects.diskOwner, notice = false, wipePending = rig.effects.diskMarker),
+            { restored },
+        )
+        rig.settle()
+        assertEquals(account("B"), rig.effects.published)
+    }
+
+    @Test
+    fun aGuestClearThatFailsDuringAServerSwitchFailsTheSwitch() = runTest {
+        val rig = Rig(this, guestId = "g1")
+        rig.effects.guestClearFails = { true }
+        // The switch must not report success after a failed step it depends on.
+        assertTrue(rig.driver.prepareForServerSwitch().isFailure)
+    }
+
+    @Test
+    fun aGuestIdLeftOnDiskByAServerSwitchNeverBootsOverTheNextAccount() = runTest {
+        val rig = Rig(this, guestId = "g1")
+        rig.effects.guestClearFails = { true }
+        rig.driver.prepareForServerSwitch()
+        rig.settle()
+        assertEquals("g1", rig.effects.diskGuestId)
+        // Reinitialisation reads the process cache, which (Android) already lost the id.
+        rig.effects.guestClearFails = { false }
+        val newServer = MutableStateFlow<SessionStatus>(SessionStatus.NotAuthenticated(false))
+        rig.driver.restart(AuthEvent.Boot(guestId = null, owner = rig.effects.diskOwner, notice = false), { newServer })
+        rig.settle()
+        rig.effects.signIn = { newServer.value = authenticated("C", "c1") }
+        rig.driver.signInWithEmail("C", "pw")
+        rig.settle()
+        assertEquals(account("C"), rig.effects.published)
+        // A cold launch reads the disk, where the old guest id survived.
+        val restored = MutableStateFlow<SessionStatus>(authenticated("C", "c1", SessionSource.Storage))
+        rig.driver.restart(
+            AuthEvent.Boot(guestId = rig.effects.diskGuestId, owner = rig.effects.diskOwner, notice = false, wipePending = rig.effects.diskMarker),
+            { restored },
+        )
+        rig.settle()
+        assertEquals(account("C"), rig.effects.published)
     }
 }
