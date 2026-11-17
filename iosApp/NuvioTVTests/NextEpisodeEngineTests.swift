@@ -1732,8 +1732,8 @@ final class NextEpisodeEngineTests: XCTestCase {
             probe.resolved.append(stream)
             return probe.resolved.count == 1 ? DirectDebridPlayableResult.MissingApiKey.shared as DirectDebridPlayableResult : self.notCached
         })
-        engine.playForTesting(first, nextCandidate: { _, tried, _ in
-            tried.contains(second.playerSourceIdentityKey() ?? "") ? nil : second
+        engine.playForTesting(first, nextCandidate: { [self] _, tried, _ in
+            self.isTried(second, tried) ? nil : second
         })
         await engine.resolveTaskForTesting?.value
 
@@ -1757,8 +1757,12 @@ final class NextEpisodeEngineTests: XCTestCase {
         })
         await engine.resolveTaskForTesting?.value
 
-        let keys = [first, second].compactMap { $0.playerSourceIdentityKey() }
-        XCTAssertEqual(seen, [Set(keys.prefix(1)), Set(keys)])
+        // Review r1: the keys are shared's and opaque; assert what they mean.
+        XCTAssertEqual(seen.count, 2)
+        XCTAssertTrue(isTried(first, seen[0]))
+        XCTAssertFalse(isTried(second, seen[0]))
+        XCTAssertTrue(isTried(first, seen[1]))
+        XCTAssertTrue(isTried(second, seen[1]))
     }
 
     func testAFurtherSourceWithItsOwnLinkPlaysWithoutAResolve() async {
@@ -1814,7 +1818,12 @@ final class NextEpisodeEngineTests: XCTestCase {
 
     /// The live pick in first-stream order: the first source not tried yet, over every group.
     private func firstUntried(_ groups: [AddonStreamGroup], _ tried: Set<String>) -> StreamItem? {
-        groups.flatMap { $0.streams }.first { !tried.contains($0.playerSourceIdentityKey() ?? "") }
+        groups.flatMap { $0.streams }.first { !isTried($0, tried) }
+    }
+
+    /// Review r1: tried-ness is shared's (keys are opaque to Swift).
+    private func isTried(_ stream: StreamItem, _ keys: Set<String>) -> Bool {
+        PlayerSourceFallback.shared.isTried(stream: stream, triedKeys: keys)
     }
 
     /// A search that picked `first` early (its add-on answered first) while others still load.
@@ -2016,8 +2025,9 @@ final class NextEpisodeEngineTests: XCTestCase {
 
         let handed = try? XCTUnwrap(recorder.played.first?.sourceFallback)
         XCTAssertEqual(handed?.attempts, 1, "one further source moved to")
-        XCTAssertEqual(handed?.keys, Set([first, second].compactMap { $0.playerSourceIdentityKey() }),
-                       "both sources, the one that plays included")
+        XCTAssertEqual(handed?.keys.count, 2)
+        XCTAssertEqual(handed?.contains(stream: first), true, "both sources, the one that plays included")
+        XCTAssertEqual(handed?.contains(stream: second), true)
         XCTAssertEqual(recorder.played.first?.launchSource, .nextEpisode)
     }
 
@@ -2029,7 +2039,8 @@ final class NextEpisodeEngineTests: XCTestCase {
 
         let handed = try? XCTUnwrap(recorder.played.first?.sourceFallback)
         XCTAssertEqual(handed?.attempts, 0)
-        XCTAssertEqual(handed?.keys, Set([direct.playerSourceIdentityKey()].compactMap { $0 }))
+        XCTAssertEqual(handed?.keys.count, 1)
+        XCTAssertEqual(handed?.contains(stream: direct), true)
     }
 
     func testTheViewersOwnSourcePickCarriesNoTriedSet() async {
@@ -2117,5 +2128,48 @@ final class NextEpisodeEngineTests: XCTestCase {
         engine.playForTesting(stream(url: "https://cdn.example.com/s1e2.mkv"), nextCandidate: { _, _, _ in nil })
         XCTAssertEqual(recorder.played.count, 1)
         XCTAssertEqual(recorder.viewerChoices, 0, "the host counts the hand-off itself (onPlayNext)")
+    }
+
+    // MARK: - Review r1 (finding 4): the same torrent from another add-on is another source
+
+    /// The Up Next walk records shared's add-on-aware keys: after add-on X's copy fails, the shared
+    /// exclusion over the walk's own tried set keeps Y's copy of the same torrent and file and drops
+    /// X's other copy; nothing tried is offered again.
+    func testTheUpNextWalkKeepsTheSameTorrentFromAnotherAddon() async {
+        let hash = "89abcdef0123456789abcdef0123456789abcdef"
+        func copy(_ name: String, addon: String, file: Int32) -> StreamItem {
+            StreamItem(
+                name: name, title: nil, description: nil, url: nil, infoHash: hash, fileIdx: KotlinInt(int: file),
+                externalUrl: nil, ytId: nil, sources: [], sourceName: nil, addonName: addon, addonId: "addon:\(addon)",
+                addonLogo: nil, streamType: nil,
+                behaviorHints: StreamBehaviorHints(bingeGroup: nil, notWebReady: false, videoHash: nil, videoSize: nil,
+                                                   filename: nil, proxyHeaders: nil, audioDelayMs: nil),
+                clientResolve: nil, debridCacheStatus: nil, externalSubtitles: [], badges: [], debridResolved: false)
+        }
+        let x0 = copy("X0", addon: "X", file: 0), x1 = copy("X1", addon: "X", file: 1), y0 = copy("Y0", addon: "Y", file: 0)
+        let recorder = Recorder()
+        let probe = WalkProbe()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder, resolveDebrid: { [self] stream, _, _ in
+            probe.resolved.append(stream)
+            return probe.resolved.count == 1 ? self.notCached : self.success()
+        })
+        var offered: [[String]] = []
+        engine.playForTesting(x0, nextCandidate: { failed, tried, _ in
+            let open = [x0, x1, y0].filter {
+                !PlayerSourceFallback.shared.isExcluded(stream: $0, triedKeys: tried, failedAddonId: failed.addonId,
+                                                        failedInfoHash: failed.p2pInfoHash)
+            }
+            offered.append(open.map { $0.name ?? "" })
+            return open.first
+        })
+        await engine.resolveTaskForTesting?.value
+
+        XCTAssertEqual(offered, [["Y0"]], "Y's copy of the same file is open, X's other copy and X0 are not")
+        XCTAssertEqual(probe.resolved.map { $0.name ?? "" }, ["X0", "Y0"])
+        XCTAssertEqual(recorder.played.first?.listedStream?.name, "Y0")
+        let handed = recorder.played.first?.sourceFallback
+        XCTAssertEqual(handed?.contains(stream: x0), true)
+        XCTAssertEqual(handed?.contains(stream: y0), true)
+        XCTAssertEqual(handed?.contains(stream: x1), false)
     }
 }

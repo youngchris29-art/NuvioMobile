@@ -1850,9 +1850,9 @@ final class NextEpisodeEngine: ObservableObject {
         if let url = Self.directURL(stream) {
             phase = .hidden
             supersedeSourceSwitch()
-            // W4: nothing tried before it; the player's own fallback goes on from its key.
-            let identity: String? = stream.playerSourceIdentityKey()
-            let tried = PlayerSourceFallbackTried(keys: Set([identity].compactMap { $0 }), attempts: 0)
+            // W4: nothing tried before it; the player's own fallback goes on from it (the key is
+            // shared's, opaque here: review r1).
+            let tried = PlayerSourceFallbackTried.companion.None.including(stream: stream)
             onPlayNext(makeNextContext(stream: stream, url: url, next: next, listed: stream, sourceFallback: tried))
             return
         }

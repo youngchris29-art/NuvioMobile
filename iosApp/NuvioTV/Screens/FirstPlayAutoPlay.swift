@@ -71,16 +71,11 @@ final class FirstPlayAutoPlayController: ObservableObject {
         let addonId: String
         /// `StreamItem.playbackStreamKey` of the stream as listed (before any debrid resolve).
         let streamKey: String
-        /// W4: the shared `playerSourceIdentityKey()` of the stream as listed (the tried set's key
-        /// space in shared, carried between Up Next and the player).
-        let identityKey: String?
 
         init(stream: StreamItem) {
             self.stream = stream
             self.addonId = stream.addonId
             self.streamKey = stream.playbackStreamKey
-            let identity: String? = stream.playerSourceIdentityKey()
-            self.identityKey = identity
         }
     }
 
@@ -170,10 +165,12 @@ final class FirstPlayAutoPlayController: ObservableObject {
     /// W4: attempts allowed for this walk (the first start included), read at `arm()` / `seed`.
     private(set) var attemptCap: Int
     private var triedIndices: Set<Int> = []
-    private var triedKeys: Set<String> = []
-    /// W4: the same sources in `playerSourceIdentityKey` space (Kotlin), the tried set Up Next
-    /// hands over (`PlaybackContext.sourceFallback`) and the shared exclusion rule reads.
-    private var triedIdentityKeys: Set<String> = []
+    /// W4 (review r1): the sources this walk tried (and, seeded, what Up Next tried), as shared
+    /// builds them (`including(stream:)`): opaque keys Swift never builds, compares or parses.
+    /// Tried-ness is shared's alone (`PlayerSourceFallback.isExcludedAfter`): a torrent's key names
+    /// its add-on, so the same torrent and file from another add-on is still a candidate. The
+    /// listed `playbackStreamKey` stays for the 8-hour link memory only (`rejected`).
+    private var tried: PlayerSourceFallbackTried = PlayerSourceFallbackTried.companion.None
     /// W4: the candidate that opened the player last (its failure excludes its torrent's copies).
     private var lastPlayed: Candidate?
     /// W4: the candidate whose failure the next pick follows (`PlayerSourceFallback.isExcluded`).
@@ -203,7 +200,7 @@ final class FirstPlayAutoPlayController: ObservableObject {
     /// W4: the walk's tried set in the shared form (identity keys, the source playing included,
     /// and the further sources moved to): what an in-place replacement context carries on.
     var fallbackTried: PlayerSourceFallbackTried {
-        PlayerSourceFallbackTried(keys: triedIdentityKeys, attempts: Int32(max(attemptsUsed - 1, 0)))
+        PlayerSourceFallbackTried(keys: tried.keys, attempts: Int32(max(attemptsUsed - 1, 0)))
     }
 
     deinit {
@@ -288,10 +285,9 @@ final class FirstPlayAutoPlayController: ObservableObject {
             autoPlayLog("[AutoPlay] failover requested in phase \(phase) — nothing to continue")
             return false
         }
-        if !streamKey.isEmpty { triedKeys.insert(streamKey) }
         let failed = lastPlayed.flatMap { $0.streamKey == streamKey ? $0 : nil }
             ?? candidates.first { !streamKey.isEmpty && $0.streamKey == streamKey }
-        if let identity = failed?.identityKey { triedIdentityKeys.insert(identity) }
+        if let failed { tried = tried.including(stream: failed.stream) }
         lastFailed = failed
         isFailoverWalk = true
         limitWalk = reason == .startupLimit
@@ -324,12 +320,10 @@ final class FirstPlayAutoPlayController: ObservableObject {
         guard phase == .idle else { return }
         attemptCap = deps.maxAttempts()
         candidates = snapshot.map(Candidate.init(stream:))
-        triedIdentityKeys = Set(alreadyTried.keys)
+        tried = alreadyTried
         if let playing {
-            let current = Candidate(stream: playing)
-            if !current.streamKey.isEmpty { triedKeys.insert(current.streamKey) }
-            if let identity = current.identityKey { triedIdentityKeys.insert(identity) }
-            lastPlayed = current
+            tried = tried.including(stream: playing)
+            lastPlayed = Candidate(stream: playing)
         }
         attemptsUsed = 1 + Int(alreadyTried.attempts)
         isFailoverWalk = true
@@ -342,9 +336,8 @@ final class FirstPlayAutoPlayController: ObservableObject {
     /// on this device (a direct link, or one the debrid connection resolves).
     func hasOpenCandidate() -> Bool {
         guard phase == .done, attemptsUsed < attemptCap else { return false }
-        let open = Policy.openIndices(in: candidates, triedIndices: triedIndices, triedKeys: triedKeys,
-                                      rejected: deps.rejected(titleKey), triedIdentityKeys: triedIdentityKeys,
-                                      failed: lastPlayed)
+        let open = Policy.openIndices(in: candidates, triedIndices: triedIndices,
+                                      rejected: deps.rejected(titleKey), tried: tried, failed: lastPlayed)
         return open.contains { deps.directURL(candidates[$0].stream) != nil || deps.canResolve(candidates[$0].stream) }
     }
 
@@ -379,17 +372,16 @@ final class FirstPlayAutoPlayController: ObservableObject {
                 return
             }
             let rejected = deps.rejected(titleKey)
-            guard let index = Policy.nextIndex(in: candidates, triedIndices: triedIndices, triedKeys: triedKeys,
+            guard let index = Policy.nextIndex(in: candidates, triedIndices: triedIndices,
                                                rejected: rejected, preferAddonId: preferAddonId,
-                                               triedIdentityKeys: triedIdentityKeys, failed: lastFailed) else {
+                                               tried: tried, failed: lastFailed) else {
                 autoPlayLog("[AutoPlay] exhausted: no candidate left after \(attemptsUsed) attempt(s)")
                 endWalk(attemptsUsed == 0 && !isFailoverWalk ? .noCandidates : .allFailed)
                 return
             }
             let candidate = candidates[index]
             triedIndices.insert(index)
-            if !candidate.streamKey.isEmpty { triedKeys.insert(candidate.streamKey) }
-            if let identity = candidate.identityKey { triedIdentityKeys.insert(identity) }
+            tried = tried.including(stream: candidate.stream)
 
             if let url = deps.directURL(candidate.stream) {
                 attemptsUsed += 1
@@ -618,15 +610,16 @@ final class FirstPlayAutoPlayController: ObservableObject {
         /// The next candidate to try: the first untried, non-rejected one from `preferAddonId`
         /// when one is given, else the first untried, non-rejected one in rank order. Since W4
         /// the walk passes no preference (upstream's order, decision Q3); the parameter stays for
-        /// its tests. A key already tried this visit (the same torrent listed twice) is not tried
-        /// again, nor (W4) a source whose identity key was tried (Up Next's handed-over set) or
-        /// another copy of `failed`'s torrent from `failed`'s add-on (the shared
-        /// `PlayerSourceFallback.isExcluded`).
-        static func nextIndex(in candidates: [Candidate], triedIndices: Set<Int>, triedKeys: Set<String>,
+        /// its tests. Tried-ness is shared's (`PlayerSourceFallback.isExcludedAfter`, review r1): a
+        /// source in `tried` (this walk's, or Up Next's handed-over set) or another copy of
+        /// `failed`'s torrent from `failed`'s add-on is left out; the same torrent and file from
+        /// ANOTHER add-on is not. `rejected` is the 8-hour link memory (listed keys).
+        static func nextIndex(in candidates: [Candidate], triedIndices: Set<Int>,
                               rejected: Set<String>, preferAddonId: String?,
-                              triedIdentityKeys: Set<String> = [], failed: Candidate? = nil) -> Int? {
-            let open = openIndices(in: candidates, triedIndices: triedIndices, triedKeys: triedKeys,
-                                   rejected: rejected, triedIdentityKeys: triedIdentityKeys, failed: failed)
+                              tried: PlayerSourceFallbackTried = PlayerSourceFallbackTried.companion.None,
+                              failed: Candidate? = nil) -> Int? {
+            let open = openIndices(in: candidates, triedIndices: triedIndices,
+                                   rejected: rejected, tried: tried, failed: failed)
             if let preferAddonId, let same = open.first(where: { candidates[$0].addonId == preferAddonId }) {
                 return same
             }
@@ -634,19 +627,15 @@ final class FirstPlayAutoPlayController: ObservableObject {
         }
 
         /// Every candidate `nextIndex` could still pick, in order.
-        static func openIndices(in candidates: [Candidate], triedIndices: Set<Int>, triedKeys: Set<String>,
-                                rejected: Set<String>, triedIdentityKeys: Set<String> = [],
+        static func openIndices(in candidates: [Candidate], triedIndices: Set<Int>, rejected: Set<String>,
+                                tried: PlayerSourceFallbackTried = PlayerSourceFallbackTried.companion.None,
                                 failed: Candidate? = nil) -> [Int] {
-            let failedHash: String? = failed?.stream.p2pInfoHash
-            let failedAddonId: String? = failed?.addonId
-            return candidates.indices.filter { index in
+            candidates.indices.filter { index in
                 guard !triedIndices.contains(index) else { return false }
                 let candidate = candidates[index]
-                let key = candidate.streamKey
-                if !key.isEmpty, triedKeys.contains(key) || rejected.contains(key) { return false }
-                return !PlayerSourceFallback.shared.isExcluded(
-                    stream: candidate.stream, triedKeys: triedIdentityKeys,
-                    failedAddonId: failedAddonId, failedInfoHash: failedHash)
+                if !candidate.streamKey.isEmpty, rejected.contains(candidate.streamKey) { return false }
+                return !PlayerSourceFallback.shared.isExcludedAfter(
+                    stream: candidate.stream, tried: tried, failed: failed?.stream)
             }
         }
 

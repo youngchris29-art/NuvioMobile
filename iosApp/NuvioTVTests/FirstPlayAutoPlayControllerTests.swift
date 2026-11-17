@@ -217,9 +217,9 @@ final class FirstPlayAutoPlayControllerTests: XCTestCase {
         typealias Policy = FirstPlayAutoPlayController.Policy
         let candidates = [stream("A1", addon: "addon:a"), stream("B1", addon: "addon:b"), stream("A2", addon: "addon:a")]
             .map(FirstPlayAutoPlayController.Candidate.init(stream:))
-        XCTAssertEqual(Policy.nextIndex(in: candidates, triedIndices: [0], triedKeys: [], rejected: [],
+        XCTAssertEqual(Policy.nextIndex(in: candidates, triedIndices: [0], rejected: [],
                                         preferAddonId: "addon:a"), 2)
-        XCTAssertEqual(Policy.nextIndex(in: candidates, triedIndices: [0], triedKeys: [], rejected: [],
+        XCTAssertEqual(Policy.nextIndex(in: candidates, triedIndices: [0], rejected: [],
                                         preferAddonId: nil), 1)
     }
 
@@ -631,10 +631,10 @@ final class FirstPlayAutoPlayControllerTests: XCTestCase {
     func testASeededWalkContinuesTheHandedOverBudget() async {
         let harness = Harness()
         let a = stream("a", direct: true), b = stream("b"), c = stream("c")
-        let aKey: String = try! XCTUnwrap(a.playerSourceIdentityKey())
+        let handedOver = PlayerSourceFallbackTried(keys: PlayerSourceFallbackTried.companion.None.including(stream: a).keys,
+                                                   attempts: 1)
         let controller = harness.makeController(maxAttempts: 4, titleKey: "tt1:1:2")
-        controller.seed(candidates: [a, b, c], alreadyTried: PlayerSourceFallbackTried(keys: [aKey], attempts: 1),
-                        playing: a)
+        controller.seed(candidates: [a, b, c], alreadyTried: handedOver, playing: a)
         XCTAssertEqual(controller.phase, .done)
         XCTAssertTrue(controller.isFailoverWalk)
         XCTAssertEqual(controller.attemptsUsed, 2)
@@ -649,8 +649,9 @@ final class FirstPlayAutoPlayControllerTests: XCTestCase {
         XCTAssertEqual(harness.played.first?.failover, true)
         let tried = controller.fallbackTried
         XCTAssertEqual(tried.attempts, 2, "two further sources moved to for the episode")
-        XCTAssertTrue(tried.keys.contains(aKey))
-        XCTAssertTrue(tried.keys.contains(try! XCTUnwrap(b.playerSourceIdentityKey())))
+        XCTAssertTrue(tried.contains(stream: a))
+        XCTAssertTrue(tried.contains(stream: b))
+        XCTAssertFalse(tried.contains(stream: c))
 
         // b fails too: c is the last attempt the budget allows (cap 4), then the walk gives up.
         XCTAssertTrue(controller.failover(afterFailureOf: b.playbackStreamKey, addonId: b.addonId))
@@ -836,12 +837,81 @@ final class FirstPlayAutoPlayControllerTests: XCTestCase {
         XCTAssertEqual(harness.played.map { $0.name }, ["YH2"])
     }
 
-    /// The handed-over tried set (identity keys) is honoured by the pure policy too.
-    func testOpenIndicesLeaveOutHandedOverIdentityKeys() {
+    /// The handed-over tried set is honoured by the pure policy too.
+    func testOpenIndicesLeaveOutAHandedOverTriedSource() {
         typealias Policy = FirstPlayAutoPlayController.Policy
-        let candidates = [stream("a"), stream("b")].map(FirstPlayAutoPlayController.Candidate.init(stream:))
-        let aKey = try! XCTUnwrap(candidates[0].identityKey)
-        XCTAssertEqual(Policy.openIndices(in: candidates, triedIndices: [], triedKeys: [], rejected: [],
-                                          triedIdentityKeys: [aKey]), [1])
+        let a = stream("a"), b = stream("b")
+        let candidates = [a, b].map(FirstPlayAutoPlayController.Candidate.init(stream:))
+        XCTAssertEqual(Policy.openIndices(in: candidates, triedIndices: [], rejected: [],
+                                          tried: PlayerSourceFallbackTried.companion.None.including(stream: a)), [1])
+    }
+
+    // MARK: - Review r1 (finding 4): the same torrent from another add-on is another source
+
+    /// First play: after add-on X's copy of hash H fails, Y's copy of the same torrent AND file is
+    /// still a candidate and X's other copy is skipped; a tried source is never picked again. The
+    /// copy rule follows the source that just failed (shared's rule, as upstream and the Up Next
+    /// walk), so once Y's copy has failed too, X's other file is open again.
+    func testFirstPlayKeepsTheSameTorrentFromAnotherAddon() async {
+        let hash = "89abcdef0123456789abcdef0123456789abcdef"
+        let harness = Harness()
+        // Failures that are not the link's fault (a missing key): nothing goes into the 8-hour
+        // link memory, so only the tried set decides.
+        harness.plans = ["X0": .failNotLinkFault]
+        let x0 = stream("X0", addon: "addon:x", torrentHash: hash, fileIdx: 0)
+        let x1 = stream("X1", addon: "addon:x", torrentHash: hash, fileIdx: 1)
+        let y0 = stream("Y0", addon: "addon:y", torrentHash: hash, fileIdx: 0)
+        let controller = harness.makeController()
+        controller.arm()
+        controller.ingest(feed(settled: [x0, x1, y0, stream("Z", addon: "addon:z")]))
+        await waitUntil { !harness.played.isEmpty }
+        XCTAssertEqual(harness.resolveCalls, ["X0", "Y0"], "Y's copy of the same file; X's other copy skipped")
+        XCTAssertEqual(harness.played.map { $0.name }, ["Y0"])
+
+        // Y0 then fails in the player: neither tried source comes back.
+        XCTAssertTrue(controller.failover(afterFailureOf: y0.playbackStreamKey, addonId: y0.addonId))
+        await waitUntil { harness.played.count == 2 }
+        XCTAssertEqual(harness.resolveCalls, ["X0", "Y0", "X1"])
+        XCTAssertEqual(harness.played.last?.name, "X1")
+        XCTAssertTrue(controller.fallbackTried.contains(stream: x0))
+        XCTAssertTrue(controller.fallbackTried.contains(stream: y0))
+    }
+
+    /// The 8-hour link memory is a different rule and stays add-on-blind: a "not cached" answer is
+    /// the debrid service's about that torrent and file, whoever listed it (`playbackStreamKey` is
+    /// `hash#file`), so a remembered failure of X's copy still skips Y's copy.
+    func testARememberedLinkFailureStillCoversEveryAddonsCopy() async {
+        let hash = "89abcdef0123456789abcdef0123456789abcdef"
+        let harness = Harness()
+        harness.plans = ["X0": .fail]
+        let controller = harness.makeController()
+        controller.arm()
+        controller.ingest(feed(settled: [stream("X0", addon: "addon:x", torrentHash: hash, fileIdx: 0),
+                                         stream("Y0", addon: "addon:y", torrentHash: hash, fileIdx: 0),
+                                         stream("Z", addon: "addon:z")]))
+        await waitUntil { !harness.played.isEmpty }
+        XCTAssertEqual(harness.resolveCalls, ["X0", "Z"])
+        XCTAssertEqual(harness.rejectedByTitle["tt1"], [stream("X0", addon: "addon:x", torrentHash: hash, fileIdx: 0).playbackStreamKey])
+    }
+
+    /// The in-player episode walk, seeded with Up Next's set: add-on X's failed copy rules out X's
+    /// other copy, not Y's copy of the same file; the seeded source itself is never picked.
+    func testTheEpisodeWalkKeepsTheSameTorrentFromAnotherAddon() async {
+        let hash = "89abcdef0123456789abcdef0123456789abcdef"
+        let harness = Harness()
+        let x0 = stream("X0", addon: "addon:x", torrentHash: hash, fileIdx: 0)
+        let x1 = stream("X1", addon: "addon:x", torrentHash: hash, fileIdx: 1)
+        let y0 = stream("Y0", addon: "addon:y", torrentHash: hash, fileIdx: 0)
+        let controller = harness.makeController(titleKey: "tt1:1:2")
+        controller.seed(candidates: [x0, x1, y0], alreadyTried: PlayerSourceFallbackTried.companion.None, playing: x0)
+        XCTAssertTrue(controller.hasOpenCandidate())
+        XCTAssertTrue(controller.failover(afterFailureOf: x0.playbackStreamKey, addonId: x0.addonId))
+        await waitUntil { !harness.played.isEmpty }
+
+        XCTAssertEqual(harness.resolveCalls, ["Y0"])
+        XCTAssertEqual(harness.played.map { $0.name }, ["Y0"])
+        XCTAssertTrue(controller.fallbackTried.contains(stream: x0))
+        XCTAssertTrue(controller.fallbackTried.contains(stream: y0))
+        XCTAssertFalse(controller.fallbackTried.contains(stream: x1))
     }
 }

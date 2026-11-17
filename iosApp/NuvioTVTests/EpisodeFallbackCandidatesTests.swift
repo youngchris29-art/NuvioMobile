@@ -47,8 +47,24 @@ final class EpisodeFallbackCandidatesTests: XCTestCase {
 
     func testTriedSourcesAreLeftOut() {
         let a = stream("a"), b = stream("b"), c = stream("c")
-        let tried = Set([a, c].compactMap { $0.playerSourceIdentityKey() })
+        let tried = PlayerSourceFallbackTried.companion.None.including(stream: a).including(stream: c).keys
         XCTAssertEqual(ranked([a, b, c], tried: tried), ["b"])
+    }
+
+    /// Review r1 (finding 4): the in-player walk's candidates after add-on X's copy of a torrent
+    /// failed: Y's copy of the same file stays, X's other copy and the tried source go.
+    func testTheSameTorrentFromAnotherAddonStaysACandidate() {
+        let hash = "89abcdef0123456789abcdef0123456789abcdef"
+        // Resolved links that carry their torrent's hash (as a debrid add-on's are).
+        let x0 = stream("X0", addon: "addon:x", url: "https://x.example/0.mkv", hash: hash, fileIdx: 0)
+        let x1 = stream("X1", addon: "addon:x", url: "https://x.example/1.mkv", hash: hash, fileIdx: 1)
+        let y0 = stream("Y0", addon: "addon:y", url: "https://y.example/0.mkv", hash: hash, fileIdx: 0)
+        let tried = PlayerSourceFallbackTried.companion.None.including(stream: x0).keys
+        XCTAssertEqual(EpisodeFallbackCandidates.ranked(
+            streams: [x0, x1, y0], tried: PlayerSourceFallbackTried(keys: tried, attempts: 0), failed: x0,
+            rejected: [], cachedOnly: false, scope: manualBingeScope, debridEnabled: false,
+            activeResolverProviderId: nil, resolvesThroughDebrid: { _ in false }
+        ).map { $0.name ?? "" }, ["Y0"])
     }
 
     func testRecentlyFailedLinksAreLeftOut() {

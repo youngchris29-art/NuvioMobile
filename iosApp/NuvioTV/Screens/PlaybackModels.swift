@@ -159,7 +159,7 @@ struct PlaybackContext: Identifiable {
     var listedStream: StreamItem? = nil
     /// W4 (upstream ff7500fdd): set on an Up Next hand-off and on every in-place fallback of one:
     /// the sources auto selection tried for this episode before the one playing (its own key
-    /// included, in `playerSourceIdentityKey` space) and how many further ones it moved to. The
+    /// included; shared's opaque keys, never built here) and how many further ones it moved to. The
     /// in-player fallback goes on from it, so the budget is per episode. Nil on every source the
     /// viewer picked.
     var sourceFallback: PlayerSourceFallbackTried? = nil
