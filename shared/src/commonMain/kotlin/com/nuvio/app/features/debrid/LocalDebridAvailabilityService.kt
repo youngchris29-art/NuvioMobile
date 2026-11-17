@@ -95,6 +95,14 @@ object LocalDebridAvailabilityService {
         return LocalDebridService.isCached(account, hash)
     }
 
+    /**
+     * Identifies the account used for cache checks, without the raw key, so a source search
+     * checked with another account or none is not reused (upstream 4c414a5f4). "none" whenever
+     * playable links are off or the active resolver has no local cache check.
+     */
+    fun cacheCheckConfiguration(): String =
+        cacheCheckAccount()?.let { account -> "${account.provider.id}:${account.apiKey.hashCode()}" } ?: "none"
+
     private fun cacheCheckAccount(): DebridServiceCredential? {
         val settings = DebridSettingsRepository.snapshot()
         if (!settings.canResolvePlayableLinks) return null
