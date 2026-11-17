@@ -251,6 +251,16 @@ final class LibraryViewModel: ObservableObject {
         republish()
     }
 
+    #if DEBUG
+    /// Tests only (fixture mode): replace the canned library with `state`, e.g. a partial provider
+    /// snapshot, and derive as a library emission would.
+    func replaceFixtureLibrary(_ state: LibraryUiState) {
+        guard fixture != .off else { return }
+        libraryState = state
+        republish()
+    }
+    #endif
+
     /// Clear Filters (the bar's pill and the no-matches state): genre, year and smart filters.
     /// List, type and sort stay.
     func clearFilters() {
@@ -468,10 +478,21 @@ final class LibraryViewModel: ObservableObject {
             request: .init(type: requestedType, genre: requestedGenre, year: requestedYear, smartFilters: activeSmartFilters),
             typeOrder: projection.availableTypes
         )
-        // Forget what is unavailable here, so it never comes back on its own.
-        if bar.clear.contains(.genre) { requestedGenre = nil }
-        if bar.clear.contains(.year) { requestedYear = nil }
-        if bar.clear.contains(.type) {
+        // Forget what is unavailable here, so it never comes back on its own, but only against the
+        // requested list's own complete titles (review r2: a partial or failed provider snapshot, or
+        // a fallback list while the picked one is missing, must not cost the viewer a pick).
+        let authoritative = LibraryBarResolver.mayForget(.init(
+            isLoaded: state.isLoaded,
+            isLoading: state.isLoading,
+            hasError: !(state.errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true),
+            requestedListKey: requestedSectionKey,
+            projectedListKey: projection.selectedSectionKey,
+            titleCount: titles.count
+        ))
+        let clear = authoritative ? bar.clear : []
+        if clear.contains(.genre) { requestedGenre = nil }
+        if clear.contains(.year) { requestedYear = nil }
+        if clear.contains(.type) {
             requestedType = nil
             if fixture == .off {
                 rememberedType = nil

@@ -9,7 +9,8 @@ import Foundation
 /// - Requests resolve in order type → genre → year, each against the titles that pass the Show
 ///   choice and the facets resolved before it. A request with no title there is unavailable: it is
 ///   not applied and it is reported in `clear`, so the view model forgets it (it never comes back
-///   on its own when the titles change again). A genre matches case-insensitively and resolves to
+///   on its own when the titles change again; the caller applies `clear` only when `mayForget`
+///   says the titles are authoritative). A genre matches case-insensitively and resolves to
 ///   the spelling the menu shows, so a request survives a narrowing that changes the spelling.
 /// - Each menu's options and counts are computed over the titles that pass every OTHER active
 ///   filter, Show included (type counts: Show, genre, year; genres: Show, type, year; years: Show,
@@ -169,6 +170,36 @@ nonisolated enum LibraryBarResolver {
             shown: shown,
             clear: clear
         )
+    }
+
+    // MARK: - When a forget may be applied (review r2)
+
+    /// What the titles handed to `resolve` were cut from, for `mayForget`.
+    struct Source: Equatable, Sendable {
+        /// The library state has loaded once.
+        var isLoaded: Bool
+        /// A pull is in flight: a provider publishes partial snapshots meanwhile (Trakt: the
+        /// watchlist before the personal lists, a list with no items yet left out of the sections).
+        var isLoading: Bool
+        /// The last pull failed: the sections are whatever was published before the failure.
+        var hasError: Bool
+        /// The list the viewer picked (nil = none, the source's first list or the local library).
+        var requestedListKey: String?
+        /// The list the projection actually cut the titles from (nil = the local library).
+        var projectedListKey: String?
+        var titleCount: Int
+    }
+
+    /// Whether `resolve`'s `clear` may be applied, i.e. the requests forgotten (and the type's
+    /// remembered pick overwritten). Only when the titles are the requested list's own complete
+    /// titles: loaded, no pull in flight, no failed pull, the requested list is the one projected
+    /// (not a fallback while it is missing from a partial snapshot), and at least one title. Until
+    /// then a request that has no title here is simply not applied this time; it stays remembered and
+    /// applies again when its titles arrive.
+    static func mayForget(_ source: Source) -> Bool {
+        guard source.isLoaded, !source.isLoading, !source.hasError, source.titleCount > 0 else { return false }
+        if let requested = source.requestedListKey { return requested == source.projectedListKey }
+        return true
     }
 
     /// A menu is worth showing when it can split its titles or has a selection to undo. One option

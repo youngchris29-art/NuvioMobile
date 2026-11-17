@@ -1,5 +1,6 @@
 import XCTest
 import SharedCore
+import class SharedCore.LibraryItem
 @testable import NuvioTV
 
 /// W5 (upstream 2da28d707): the Library view model's list, type, genre, year and smart filters over
@@ -211,5 +212,93 @@ final class LibraryViewModelFilterTests: XCTestCase {
         m.start()
         XCTAssertEqual(m.entries, before)
         XCTAssertEqual(m.selectedGenre, "Comedy")
+    }
+
+    // MARK: - Partial provider snapshots (review r2)
+
+    /// The fixture's provider library re-cut: a watchlist of `watchlist` and a personal list of
+    /// `personal`, as a Trakt-style snapshot.
+    private func snapshot(
+        watchlist: [LibraryItem],
+        personal: [LibraryItem]?,
+        isLoading: Bool,
+        errorMessage: String? = nil
+    ) -> LibraryUiState {
+        let base = LibraryFilterFixture.shared.uiState(provider: true)
+        var sections = [LibrarySection(type: "watchlist", displayTitle: "Watchlist", items: watchlist)]
+        if let personal { sections.append(LibrarySection(type: "fx-personal", displayTitle: "Personal", items: personal)) }
+        return base.doCopy(
+            sourceMode: base.sourceMode,
+            items: watchlist + (personal ?? []),
+            sections: sections,
+            isLoaded: true,
+            isLoading: isLoading,
+            errorMessage: errorMessage
+        )
+    }
+
+    private var fixtureItems: [LibraryItem] { LibraryFilterFixture.shared.uiState(provider: false).items }
+    private var movies: [LibraryItem] { fixtureItems.filter { $0.type == "movie" } }
+    /// Series and anime (Severance, Fleabag, Dark, The Bear, Frieren, Mob Psycho 100).
+    private var shows: [LibraryItem] { fixtureItems.filter { $0.type == "series" } }
+
+    /// Trakt publishes the watchlist before the personal lists (and omits a list still empty). A
+    /// personal-list type pick must survive that partial snapshot.
+    func testATypePickSurvivesAPartialSnapshotWithoutItsList() {
+        let m = model(.provider)
+        m.replaceFixtureLibrary(snapshot(watchlist: movies, personal: shows, isLoading: false))
+        m.selectSection("fx-personal")
+        m.selectType("series")
+        XCTAssertEqual(m.selectedType, "series")
+        XCTAssertEqual(m.entries.count, 4)
+
+        m.replaceFixtureLibrary(snapshot(watchlist: movies, personal: nil, isLoading: true))
+        XCTAssertEqual(m.selectedSectionKey, "watchlist", "the projection falls back while the list is missing")
+
+        m.replaceFixtureLibrary(snapshot(watchlist: movies, personal: shows, isLoading: false))
+        XCTAssertEqual(m.selectedSectionKey, "fx-personal")
+        XCTAssertEqual(m.selectedType, "series", "the type pick was forgotten against the fallback list")
+        XCTAssertEqual(m.entries.count, 4)
+    }
+
+    func testGenreAndYearPicksSurviveAPartialSnapshotWithoutTheirList() {
+        let m = model(.provider)
+        m.replaceFixtureLibrary(snapshot(watchlist: movies, personal: shows, isLoading: false))
+        m.selectSection("fx-personal")
+        m.selectGenre("Fantasy")
+        m.selectYear("2023")
+        XCTAssertEqual(names(m), ["Frieren"])
+
+        m.replaceFixtureLibrary(snapshot(watchlist: movies, personal: nil, isLoading: true))
+        m.replaceFixtureLibrary(snapshot(watchlist: movies, personal: shows, isLoading: false))
+        XCTAssertEqual(m.selectedGenre, "Fantasy", "the genre pick was forgotten against the fallback list")
+        XCTAssertEqual(m.selectedYear, "2023", "the year pick was forgotten against the fallback list")
+        XCTAssertEqual(names(m), ["Frieren"])
+    }
+
+    /// The list itself present but mid-refresh, or a failed refresh, is not authoritative either.
+    func testPicksSurviveALoadingOrFailedSnapshotOfTheirOwnList() {
+        let m = model(.provider)
+        m.replaceFixtureLibrary(snapshot(watchlist: movies, personal: shows, isLoading: false))
+        m.selectSection("fx-personal")
+        m.selectGenre("Fantasy")
+        let partial = shows.filter { $0.name != "Frieren" }
+        m.replaceFixtureLibrary(snapshot(watchlist: movies, personal: partial, isLoading: true))
+        m.replaceFixtureLibrary(snapshot(watchlist: movies, personal: partial, isLoading: false, errorMessage: "HTTP 500"))
+        m.replaceFixtureLibrary(snapshot(watchlist: movies, personal: shows, isLoading: false))
+        XCTAssertEqual(m.selectedGenre, "Fantasy")
+        XCTAssertEqual(names(m), ["Frieren"])
+    }
+
+    /// A complete snapshot of the list itself does forget an unavailable pick (review r1 holds).
+    func testACompleteSnapshotOfTheListStillForgets() {
+        let m = model(.provider)
+        m.replaceFixtureLibrary(snapshot(watchlist: movies, personal: shows, isLoading: false))
+        m.selectSection("fx-personal")
+        m.selectGenre("Fantasy")
+        m.replaceFixtureLibrary(snapshot(watchlist: movies, personal: shows.filter { $0.name != "Frieren" }, isLoading: false))
+        XCTAssertNil(m.selectedGenre)
+        m.replaceFixtureLibrary(snapshot(watchlist: movies, personal: shows, isLoading: false))
+        XCTAssertNil(m.selectedGenre, "forgotten against the list's own complete titles: it stays forgotten")
     }
 }

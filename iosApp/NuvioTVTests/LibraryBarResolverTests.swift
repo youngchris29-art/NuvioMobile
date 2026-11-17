@@ -227,4 +227,25 @@ final class LibraryBarResolverTests: XCTestCase {
         print("[LibraryBarResolverTests] 500 titles: \(String(format: "%.2f", ms)) ms per resolve")
         XCTAssertLessThan(ms, 50)
     }
+
+    // MARK: - When a forget may be applied (review r2)
+
+    private func source(loaded: Bool = true, loading: Bool = false, error: Bool = false,
+                        requested: String? = "personal", projected: String? = "personal", titles: Int = 3) -> R.Source {
+        R.Source(isLoaded: loaded, isLoading: loading, hasError: error,
+                 requestedListKey: requested, projectedListKey: projected, titleCount: titles)
+    }
+
+    func testMayForgetOnlyAgainstTheRequestedListsCompleteTitles() {
+        XCTAssertTrue(R.mayForget(source()), "the list's own titles, settled")
+        XCTAssertFalse(R.mayForget(source(loading: true)), "a pull in flight (Trakt's partial snapshots)")
+        XCTAssertFalse(R.mayForget(source(projected: "watchlist")), "a fallback while the list is missing")
+        XCTAssertFalse(R.mayForget(source(loading: true, projected: "watchlist")), "Trakt: watchlist first")
+        XCTAssertFalse(R.mayForget(source(error: true)), "a failed pull leaves whatever was published")
+        XCTAssertFalse(R.mayForget(source(loaded: false)), "not loaded yet")
+        XCTAssertFalse(R.mayForget(source(titles: 0)), "an empty snapshot (signed out, refresh emptied it)")
+        XCTAssertFalse(R.mayForget(source(projected: nil, titles: 0)), "no sections at all")
+        XCTAssertTrue(R.mayForget(source(requested: nil, projected: "watchlist")), "no list picked: the first list is the viewer's")
+        XCTAssertTrue(R.mayForget(source(requested: nil, projected: nil)), "the local library (no lists)")
+    }
 }
