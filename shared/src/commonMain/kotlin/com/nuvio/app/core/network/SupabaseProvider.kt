@@ -1,5 +1,6 @@
 package com.nuvio.app.core.network
 
+import com.nuvio.app.core.auth.debugAuthNetworkDown
 import com.nuvio.app.core.build.AppVersionConfig
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.annotations.SupabaseInternal
@@ -8,9 +9,11 @@ import io.github.jan.supabase.createSupabaseClient
 import io.github.jan.supabase.functions.Functions
 import io.github.jan.supabase.postgrest.Postgrest
 import io.ktor.client.plugins.HttpRequestRetry
+import io.ktor.client.plugins.api.createClientPlugin
 import io.ktor.client.plugins.defaultRequest
 import io.ktor.http.HttpHeaders
 import io.ktor.http.takeFrom
+import io.ktor.utils.io.errors.IOException
 import kotlinx.atomicfu.locks.SynchronizedObject
 import kotlinx.atomicfu.locks.synchronized
 
@@ -36,6 +39,8 @@ object SupabaseProvider {
             supabaseKey = configuration.publishableKey,
         ) {
             httpConfig {
+                // Debug builds only (spec C6): the offline device rows without taking the box off Wi-Fi.
+                if (debugAuthNetworkDown()) install(DebugNetworkDownPlugin)
                 install(BackendRateLimitPlugin) {
                     coordinator = rateLimitCoordinator
                 }
@@ -118,5 +123,12 @@ object SupabaseProvider {
         }
         rateLimitCoordinator.clear()
         previous?.close()
+    }
+}
+
+/** Fails every request before it is sent, as an offline device would (`-debug.authNetworkDown`). */
+private val DebugNetworkDownPlugin = createClientPlugin("DebugNetworkDown") {
+    onRequest { request, _ ->
+        throw IOException("debug.authNetworkDown: simulated network failure for ${request.url.host}")
     }
 }

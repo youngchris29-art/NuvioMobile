@@ -11,3 +11,14 @@ import kotlin.time.Duration
  * Apple: `defaults write <bundle-id> debug.authRestoreStallSeconds -int 30`
  */
 internal expect fun debugSessionRestoreStall(): Duration?
+
+/**
+ * Debug-build-only "network down" for the offline cold-launch device rows (spec C6, decision AS):
+ * when true, every Supabase request fails with an IOException before it leaves the device, so the
+ * auth library sees exactly what it sees offline (RefreshFailure, an unreachable validation) while
+ * the rig can still talk to the box. False in release builds and when unset.
+ *
+ * Apple: launch with `-debug.authNetworkDown 1` (argument domain) or
+ * `defaults write <bundle-id> debug.authNetworkDown -bool true`.
+ */
+internal expect fun debugAuthNetworkDown(): Boolean

@@ -10,3 +10,8 @@ internal actual fun debugSessionRestoreStall(): Duration? {
     val seconds = NSUserDefaults.standardUserDefaults.integerForKey("debug.authRestoreStallSeconds")
     return if (seconds > 0) seconds.seconds else null
 }
+
+internal actual fun debugAuthNetworkDown(): Boolean {
+    if (!AppBuildConfig.IS_DEBUG_BUILD) return false
+    return NSUserDefaults.standardUserDefaults.boolForKey("debug.authNetworkDown")
+}
