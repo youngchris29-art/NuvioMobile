@@ -1,5 +1,10 @@
 package com.nuvio.app.features.player
 
+import com.nuvio.app.features.streams.StreamAutoPlayMode
+import com.nuvio.app.features.streams.StreamAutoPlayPlatform
+import com.nuvio.app.features.streams.StreamAutoPlayRanking
+import com.nuvio.app.features.streams.StreamAutoPlaySelector
+import com.nuvio.app.features.streams.StreamAutoPlaySource
 import com.nuvio.app.features.streams.StreamItem
 
 /** The sources auto source selection tried before the one that plays, and how many further ones. */
@@ -34,16 +39,26 @@ internal data class PlayerSourceFallbackRun<T, F>(
  * next source to resolve or null when the walk ends (no candidate left, or [maxSources] further
  * sources already tried). tvOS drives it from Swift (`NextEpisodeEngine.play`), so every await and
  * cancellation check stays on the main actor.
+ *
+ * [alreadyTried] seeds a walk that continues an earlier one (Up Next's tried set carried into the
+ * player): its keys are never picked again and its attempts count against [maxSources]. Kotlin
+ * default arguments do not exist in Swift, so the plain two-argument form is its own constructor.
  */
-class PlayerSourceFallbackWalk(first: StreamItem, private val maxSources: Int) {
+class PlayerSourceFallbackWalk(
+    first: StreamItem,
+    private val maxSources: Int,
+    alreadyTried: PlayerSourceFallbackTried,
+) {
+    constructor(first: StreamItem, maxSources: Int) : this(first, maxSources, PlayerSourceFallbackTried.None)
+
     var candidate: StreamItem = first
         private set
 
-    /** Further sources moved to after the first. */
-    var attempts: Int = 0
+    /** Further sources moved to after the first, the seeded attempts included. */
+    var attempts: Int = alreadyTried.attempts
         private set
 
-    private val triedKeys = mutableSetOf<String>()
+    private val triedKeys = alreadyTried.keys.toMutableSet()
 
     val tried: PlayerSourceFallbackTried
         get() = PlayerSourceFallbackTried(triedKeys.toSet(), attempts)
@@ -87,17 +102,89 @@ internal suspend fun <T : Any, F : Any> resolveWithSourceFallback(
     }
 }
 
-/** The fork's source-fallback rules until W4 brings upstream's settings (8fba6c71e). */
-object PlayerSourceFallback {
-    /** Decision B (batch 2026-11-16): up to 3 further sources for the next episode's auto pick. */
-    const val NEXT_EPISODE_MAX_FURTHER_SOURCES = 3
+/** Where an auto-picked source is being played from (W4). */
+enum class PlayerSourceFallbackEntry {
+    /** The stream picker's Auto-Play Best Source start. */
+    FIRST_PLAY,
 
-    /**
-     * How many further sources the next episode's auto pick may try. W4 replaces the body with
-     * `if (settings.streamAutoPlayFallbackActive) settings.streamAutoPlayFallbackMaxSources else 0`.
-     */
-    @Suppress("UNUSED_PARAMETER")
-    fun nextEpisodeMaxFurtherSources(settings: PlayerSettingsUiState?): Int = NEXT_EPISODE_MAX_FURTHER_SOURCES
+    /** Up Next's pick for the next episode (any auto-play mode: Up Next auto-picks in MANUAL too). */
+    NEXT_EPISODE,
+}
+
+/**
+ * What auto selection may pick from, as plain values: the first play's user settings, or Up Next's
+ * effective selection (MANUAL with the next-episode toggles forces first-stream over all sources).
+ */
+data class StreamAutoPickScope(
+    val mode: StreamAutoPlayMode,
+    val regexPattern: String,
+    val source: StreamAutoPlaySource,
+    val selectedAddons: Set<String>,
+    val selectedPlugins: Set<String>,
+    val preferredBingeGroup: String?,
+    val preferBingeGroupInSelection: Boolean,
+    val bingeGroupOnly: Boolean,
+    val ranking: StreamAutoPlayRanking,
+) {
+    companion object {
+        /** The stream picker repository's own evaluation (`StreamsRepository.load`). */
+        fun firstPlay(settings: PlayerSettingsUiState) = StreamAutoPickScope(
+            mode = settings.streamAutoPlayMode,
+            regexPattern = settings.streamAutoPlayRegex,
+            source = settings.streamAutoPlaySource,
+            selectedAddons = settings.streamAutoPlaySelectedAddons,
+            selectedPlugins = settings.streamAutoPlaySelectedPlugins,
+            preferredBingeGroup = null,
+            preferBingeGroupInSelection = false,
+            bingeGroupOnly = false,
+            ranking = StreamAutoPlayPlatform.firstStreamRanking,
+        )
+    }
+}
+
+/** The fork's source-fallback rules (upstream 8fba6c71e / ff7500fdd, W4). */
+object PlayerSourceFallback {
+    /** Upstream's default, for tests and Swift's options. */
+    const val DEFAULT_FURTHER_SOURCES = DEFAULT_SOURCE_FALLBACK_MAX_SOURCES
+
+    /** The "Sources to Try" values (1 to 10) and the "Start-Up Limit" values (5 to 45 s in 5 s steps), for Swift. */
+    val sourcesToTryOptions: List<Int> = SOURCE_FALLBACK_MAX_SOURCES_RANGE.toList()
+    val startupLimitOptions: List<Int> =
+        SOURCE_STARTUP_TIMEOUT_SECONDS_RANGE.step(SOURCE_STARTUP_TIMEOUT_SECONDS_STEP).toList()
+
+    /** Null settings (not loaded yet; tests) read as the defaults. */
+    fun isActive(settings: PlayerSettingsUiState?, entry: PlayerSourceFallbackEntry): Boolean {
+        val on = settings?.streamAutoPlayFallbackOnFailure ?: DEFAULT_SOURCE_FALLBACK_ON_FAILURE
+        if (!on) return false
+        return when (entry) {
+            PlayerSourceFallbackEntry.FIRST_PLAY ->
+                (settings?.streamAutoPlayMode ?: StreamAutoPlayMode.MANUAL) != StreamAutoPlayMode.MANUAL
+            PlayerSourceFallbackEntry.NEXT_EPISODE -> true
+        }
+    }
+
+    /** Further sources after the first, 0 when falling back is off for [entry]. */
+    fun furtherSources(settings: PlayerSettingsUiState?, entry: PlayerSourceFallbackEntry): Int =
+        if (!isActive(settings, entry)) {
+            0
+        } else {
+            normalizeSourceFallbackMaxSources(
+                settings?.streamAutoPlayFallbackMaxSources ?: DEFAULT_SOURCE_FALLBACK_MAX_SOURCES,
+            )
+        }
+
+    /** Stage A's name, kept for its call site: the next episode's budget. */
+    fun nextEpisodeMaxFurtherSources(settings: PlayerSettingsUiState?): Int =
+        furtherSources(settings, PlayerSourceFallbackEntry.NEXT_EPISODE)
+
+    /** Seconds an auto-picked source may take to show its first frame, or null when no limit applies. */
+    fun startupLimitSeconds(settings: PlayerSettingsUiState?, entry: PlayerSourceFallbackEntry): Int? =
+        if (!isActive(settings, entry)) {
+            null
+        } else {
+            (settings?.streamAutoPlayFallbackStartupTimeoutSeconds ?: DEFAULT_SOURCE_STARTUP_TIMEOUT_SECONDS)
+                .coerceIn(SOURCE_STARTUP_TIMEOUT_SECONDS_RANGE)
+        }
 
     /**
      * Upstream's candidate filter: a source already tried, or another copy of the torrent that
@@ -115,6 +202,70 @@ object PlayerSourceFallback {
             stream.addonId == failedAddonId &&
             stream.p2pInfoHash.equals(failedInfoHash, ignoreCase = true)
     }
+
+    /**
+     * Upstream `nextSourceFallbackCandidate`, every match in order: what auto selection would pick
+     * from [streams] once the tried sources and other copies of the failed torrent are left out.
+     *
+     * [StreamAutoPlaySelector.evaluateAutoPlayStream] returns the full ranked list in `readyStreams`
+     * for FIRST_STREAM and REGEX_MATCH (a binge-group preference only moves its stream to the front).
+     * Only the binge-group-only scope returns just one stream, so that scope is expanded by picking
+     * repeatedly with the picked stream left out each time (`nextCandidate` stays the first entry
+     * either way).
+     */
+    fun rankedCandidates(
+        streams: List<StreamItem>,
+        scope: StreamAutoPickScope,
+        triedKeys: Set<String>,
+        failedAddonId: String?,
+        failedInfoHash: String?,
+        installedAddonNames: Set<String>,
+        debridEnabled: Boolean,
+        activeResolverProviderId: String?,
+    ): List<StreamItem> {
+        val untried = streams.filterNot { isExcluded(it, triedKeys, failedAddonId, failedInfoHash) }
+        fun evaluate(from: List<StreamItem>): List<StreamItem> =
+            StreamAutoPlaySelector.evaluateAutoPlayStream(
+                streams = from,
+                mode = scope.mode,
+                regexPattern = scope.regexPattern,
+                source = scope.source,
+                installedAddonNames = installedAddonNames,
+                selectedAddons = scope.selectedAddons,
+                selectedPlugins = scope.selectedPlugins,
+                preferredBingeGroup = scope.preferredBingeGroup,
+                preferBingeGroupInSelection = scope.preferBingeGroupInSelection,
+                bingeGroupOnly = scope.bingeGroupOnly,
+                debridEnabled = debridEnabled,
+                activeResolverProviderId = activeResolverProviderId,
+                ranking = scope.ranking,
+            ).readyStreams
+        if (!scope.bingeGroupOnly) return evaluate(untried)
+
+        val remaining = untried.toMutableList()
+        val ranked = mutableListOf<StreamItem>()
+        while (remaining.isNotEmpty()) {
+            val pick = evaluate(remaining).firstOrNull() ?: break
+            ranked += pick
+            val index = remaining.indexOf(pick)
+            if (index < 0) break
+            remaining.removeAt(index)
+        }
+        return ranked
+    }
+
+    fun nextCandidate(
+        streams: List<StreamItem>,
+        scope: StreamAutoPickScope,
+        triedKeys: Set<String>,
+        failedAddonId: String?,
+        failedInfoHash: String?,
+        installedAddonNames: Set<String>,
+        debridEnabled: Boolean,
+        activeResolverProviderId: String?,
+    ): StreamItem? = rankedCandidates(
+        streams, scope, triedKeys, failedAddonId, failedInfoHash, installedAddonNames, debridEnabled, activeResolverProviderId,
+    ).firstOrNull()
 }
 
 /**

@@ -17,3 +17,17 @@ suspend fun DirectDebridPlaybackResolver.resolveToPlayableStreamChecked(
     season: Int?,
     episode: Int?,
 ): DirectDebridPlayableResult = resolveToPlayableStream(stream = stream, season = season, episode = episode)
+
+/**
+ * [DirectDebridPlaybackResolver.resolveToPlayableStream] with `forceRefresh = true`: skips the
+ * resolver's 15 minute cache and asks the provider again. The in-player fallback uses it once per
+ * source when a cached link expired before playback started (W4). Swift:
+ * `try await DirectDebridPlaybackResolver.shared.resolveToPlayableStreamCheckedForce(stream:season:episode:)`.
+ */
+@Throws(Throwable::class)
+suspend fun DirectDebridPlaybackResolver.resolveToPlayableStreamCheckedForce(
+    stream: StreamItem,
+    season: Int?,
+    episode: Int?,
+): DirectDebridPlayableResult =
+    resolveToPlayableStream(stream = stream, season = season, episode = episode, forceRefresh = true)

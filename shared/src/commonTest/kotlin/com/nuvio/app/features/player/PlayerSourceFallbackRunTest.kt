@@ -117,7 +117,7 @@ class PlayerSourceFallbackRunTest {
 
     @Test
     fun nextEpisodeLimitIsThree() {
-        assertEquals(3, PlayerSourceFallback.NEXT_EPISODE_MAX_FURTHER_SOURCES)
+        assertEquals(3, PlayerSourceFallback.DEFAULT_FURTHER_SOURCES)
         assertEquals(3, PlayerSourceFallback.nextEpisodeMaxFurtherSources(null))
     }
 
