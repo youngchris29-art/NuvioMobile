@@ -237,9 +237,12 @@ class AuthSessionModelTest {
         run.send(acct("A", "a1"))
         val tA = run.startedValidation()
         run.send(WatchdogFired)
+        // r2-2: the new guest does not inherit A's data, so its start wipes once.
         run.send(GuestChosen("g1"))
+        assertEquals(1, run.wipes())
         assertEquals(emptyList(), run.send(ValidationFinished(tA, SessionVerdict.Invalid)))
-        assertTrue(run.all.none { it == ClearSupabaseSession || it == WipeAccountData || it == ClearGuestId })
+        assertTrue(run.all.none { it == ClearSupabaseSession || it == ClearGuestId })
+        assertEquals(1, run.wipes())
         assertEquals(guest("g1"), run.state.published)
     }
 
@@ -893,5 +896,104 @@ class AuthSessionModelTest {
         assertEquals(account("A"), run.state.published)
         assertEquals(0, run.wipes())
         assertEquals("A", run.state.owner)
+    }
+
+    // ── Review r2-2: a newly chosen guest never inherits an account's data ──────────────────────
+
+    @Test
+    fun aGuestChosenWhileAnUnknownOwnersSessionIsRestoringWipesFirst() {
+        // First launch after the update: A's stored session is still restoring when the watchdog
+        // shows Welcome, and the viewer picks guest.
+        val run = Run(ownerUnknown = true)
+        run.send(Snap.Initializing)
+        run.send(Snap.RefreshFailure)
+        run.send(WatchdogFired)
+        assertEquals(
+            listOf(PersistWipePending(true), WipeAccountData, PersistWipePending(false), PersistOwner(null), SaveGuestId("g1"), PersistNotice(false), HideNotice, Publish(guest("g1"))),
+            run.send(GuestChosen("g1")),
+        )
+        assertFalse(run.state.ownerUnknown)
+        assertNull(run.state.owner)
+    }
+
+    @Test
+    fun aRestoreThatFinishesAfterTheGuestChoiceNeverPublishesTheAccountOrWipesAgain() {
+        val run = Run(ownerUnknown = true)
+        run.send(Snap.RefreshFailure)
+        run.send(WatchdogFired)
+        run.send(GuestChosen("g1"))
+        assertEquals(emptyList(), run.send(acct("A", "a2", refreshedFrom = "a1")))
+        assertEquals(emptyList(), run.send(Snap.RefreshFailure))
+        assertEquals(guest("g1"), run.state.published)
+        assertEquals(1, run.wipes())
+        assertNull(run.state.owner)
+    }
+
+    @Test
+    fun aGuestChosenOverARecordedAccountOwnerWipesFirst() {
+        val run = Run(owner = "A")
+        run.send(Snap.RefreshFailure)
+        run.send(WatchdogFired)
+        val outputs = run.send(GuestChosen("g1"))
+        assertTrue(outputs.indexOf(WipeAccountData) < outputs.indexOf(Publish(guest("g1"))))
+        assertEquals(1, run.wipes())
+        assertNull(run.state.owner)
+    }
+
+    @Test
+    fun aGuestChosenWithNoOwnerDoesNotWipe() {
+        val run = Run()
+        run.send(Snap.NotAuthenticated(cleared = false))
+        assertEquals(listOf(SaveGuestId("g1"), PersistNotice(false), HideNotice, Publish(guest("g1"))), run.send(GuestChosen("g1")))
+        assertEquals(0, run.wipes())
+    }
+
+    @Test
+    fun aFailedWipeBeforeAGuestShowsNoGuest() {
+        val run = Run(owner = "A")
+        run.wipeOk = false
+        run.send(GuestChosen("g1"))
+        assertEquals(AuthState.Unauthenticated, run.state.published)
+        assertTrue(run.all.none { it is SaveGuestId })
+        assertEquals("A", run.state.owner)
+    }
+
+    // ── Review r2-3: an unresolved identity is resolved only by a validation ────────────────────
+
+    @Test
+    fun anUnreachableVerdictForAnUnresolvedSessionNeverCountsForALaterUser() {
+        val run = Run(owner = "B")
+        run.send(acct(null, "x1", restored = true))
+        val t1 = run.startedValidation()
+        assertEquals(emptyList(), run.send(ValidationFinished(t1, SessionVerdict.Unreachable)))
+        // A later status of the same session now names a user; it must be validated, not accepted.
+        val again = run.send(acct("A", "x2", refreshedFrom = "x1"))
+        assertEquals(listOf(StartValidation(AuthTicket(t1.serial), "at-x2")), again)
+        assertNull((run.state.live as Account).userId)
+        assertEquals(0, run.wipes())
+        assertTrue(run.all.none { it is Publish && (it.state as? AuthState.Authenticated)?.isAnonymous == false })
+        // Only the server's answer resolves it.
+        run.send(ValidationFinished(AuthTicket(t1.serial), SessionVerdict.Valid, verifiedUserId = "A"))
+        assertEquals(AuthState.Authenticated("A", null, false), run.state.published)
+        assertEquals(1, run.wipes())
+    }
+
+    @Test
+    fun anUnresolvedSessionIsNotValidatedInALoopOffline() {
+        val run = Run(owner = "A")
+        run.send(acct(null, "x1", restored = true))
+        run.send(ValidationFinished(run.startedValidation(), SessionVerdict.Unreachable))
+        assertEquals(emptyList(), run.send(Snap.RefreshFailure))
+        assertEquals(emptyList(), run.send(WatchdogFired).filterIsInstance<StartValidation>())
+        assertTrue(run.all.count { it is StartValidation } == 1)
+    }
+
+    @Test
+    fun aValidVerdictWithoutAUserLeavesTheIdentityUnresolved() {
+        val run = Run(owner = "A")
+        run.send(acct(null, "x1", restored = true))
+        assertEquals(emptyList(), run.send(ValidationFinished(run.startedValidation(), SessionVerdict.Valid, verifiedUserId = null)))
+        assertEquals(AuthState.Loading, run.state.published)
+        assertNull(run.state.validatedSerial)
     }
 }

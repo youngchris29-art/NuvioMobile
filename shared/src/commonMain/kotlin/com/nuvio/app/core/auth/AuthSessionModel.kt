@@ -160,6 +160,12 @@ internal data class AuthModelState(
     val acceptedSerial: Long?,
     /** Serial whose pre-accept wipe failed: not retried until a new serial or a new boot. */
     val wipeFailedSerial: Long?,
+    /**
+     * Serial whose identity is still unresolved after a validation that returned no user (r2-3):
+     * not validated again until the library reports that session again, so an offline launch
+     * does not loop.
+     */
+    val validationDeferredSerial: Long? = null,
     val afterWipe: AfterWipe?,
     val watchdogFired: Boolean,
 ) {
@@ -225,7 +231,13 @@ private class StepBuilder(var state: AuthModelState) {
         (state.published as? AuthState.Authenticated)?.takeIf { !it.isAnonymous }?.userId
 
     private fun clearCaches() {
-        state = state.copy(validatedSerial = null, trustedSerial = null, validationInFlight = null, acceptedSerial = null)
+        state = state.copy(
+            validatedSerial = null,
+            trustedSerial = null,
+            validationInFlight = null,
+            acceptedSerial = null,
+            validationDeferredSerial = null,
+        )
     }
 
     /** A live value of a different kind gets a new serial; the same kind keeps it. */
@@ -425,6 +437,15 @@ private class StepBuilder(var state: AuthModelState) {
                     return
                 }
                 state = state.copy(validationInFlight = null)
+                // r2-3: an identity is resolved only by a Valid verdict that returns the user. Any
+                // other verdict taken while it is unresolved never counts for it later.
+                val unresolved = live.userId == null
+                if (unresolved && event.verdict != SessionVerdict.Invalid && (event.verdict != SessionVerdict.Valid || event.verifiedUserId == null)) {
+                    state = state.copy(validationDeferredSerial = live.serial)
+                    if (event.verdict == SessionVerdict.JwtExpired) emit(AuthOutput.KickSessionRefresh)
+                    emit(AuthOutput.Drop("identity still unresolved after ${event.verdict}; validating again on the next status"))
+                    return
+                }
                 when (event.verdict) {
                     SessionVerdict.Valid -> {
                         // r1-2: the server's user is the identity.
@@ -485,9 +506,13 @@ private class StepBuilder(var state: AuthModelState) {
             is AuthEvent.GuestChosen -> {
                 state = state.copy(live = Guest(mint(), event.guestId), noticePending = false)
                 clearCaches()
-                if (state.wipePending) {
-                    // r1-5: an earlier wipe never completed; retry it before anything is shown.
-                    startWipe(AfterWipe.GuestStart(event.guestId), "retry before guest ${event.guestId}")
+                // r1-5 and r2-2: a newly chosen guest never inherits data it does not own. Wipe first
+                // when an earlier wipe never completed, when no owner was ever recorded, or when a
+                // recorded account owns the local data. (A guest id already saved at boot keeps its
+                // data: see Boot.) An account session the library may still be restoring is ignored
+                // while the guest is live (limit 2) and cleared by the guest's sign-out.
+                if (state.wipePending || state.ownerUnknown || state.owner != null) {
+                    startWipe(AfterWipe.GuestStart(event.guestId), "before guest ${event.guestId}")
                 } else {
                     showGuest(event.guestId)
                 }
@@ -506,12 +531,14 @@ private class StepBuilder(var state: AuthModelState) {
         ) {
             // Lineage (rule 2): a re-emission or a rotation of the live session keeps its serial.
             state = state.copy(
+                // r2-3: the identity is never filled from a snapshot; only a validation resolves it.
+                // A new status for an unresolved session lets its validation run again.
                 live = live.copy(
-                    userId = live.userId ?: snap.userId,
-                    email = snap.email ?: live.email,
+                    email = if (live.userId != null) snap.email ?: live.email else live.email,
                     accessToken = snap.accessToken,
                     refreshToken = snap.refreshToken,
                 ),
+                validationDeferredSerial = if (live.userId == null) null else state.validationDeferredSerial,
             )
             return
         }
@@ -553,7 +580,7 @@ private class StepBuilder(var state: AuthModelState) {
             // r1-2: never publish, compare owners or wipe on an unresolved identity.
             val userId = live.userId ?: return
             accept(live, userId)
-        } else if (state.validationInFlight == null) {
+        } else if (state.validationInFlight == null && state.validationDeferredSerial != live.serial) {
             state = state.copy(validationInFlight = live.serial)
             emit(AuthOutput.StartValidation(AuthTicket(live.serial), live.accessToken))
         }
