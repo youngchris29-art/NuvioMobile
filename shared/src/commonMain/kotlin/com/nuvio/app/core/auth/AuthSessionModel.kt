@@ -195,8 +195,16 @@ internal data class AuthModelState(
     val validationInFlightToken: String? = null,
     /** Serial whose account is the one published. */
     val acceptedSerial: Long?,
-    /** Serial whose pre-accept wipe failed: not retried until a new serial or a new boot. */
-    val wipeFailedSerial: Long?,
+    /**
+     * Serial whose pre-accept wipe or owner write failed (rounds 3 and 5). It is not accepted again
+     * inside that failure's own follow-up chain; a later library status for the same session may
+     * re-arm one retry (round 6), up to [MAX_ACCEPT_ATTEMPTS] attempts per serial per run.
+     */
+    val acceptBlockedSerial: Long?,
+    /** Attempts made for [acceptBlockedSerial] so far. */
+    val acceptAttempts: Int = 0,
+    /** A later status for [acceptBlockedSerial] re-armed one retry (round 6). */
+    val acceptRetryArmed: Boolean = false,
     /**
      * Serial whose identity is still unresolved after a validation that returned no user (r2-3):
      * not validated again until the library reports that session again, so an offline launch
@@ -222,7 +230,7 @@ internal data class AuthModelState(
             trustedSerial = null,
             validationInFlight = null,
             acceptedSerial = null,
-            wipeFailedSerial = null,
+            acceptBlockedSerial = null,
             afterWipe = null,
             watchdogFired = false,
         )
@@ -243,6 +251,9 @@ internal fun reduce(state: AuthModelState, event: AuthEvent): AuthStep {
     b.settle()
     return AuthStep(b.state.copy(nextSerial = b.nextSerial), b.outputs.toList(), b.cleared)
 }
+
+/** Attempts per session serial per run to make an account's data its own (round 6). */
+internal const val MAX_ACCEPT_ATTEMPTS = 3
 
 private class StepBuilder(var state: AuthModelState) {
     val outputs = mutableListOf<AuthOutput>()
@@ -340,7 +351,7 @@ private class StepBuilder(var state: AuthModelState) {
             is AfterWipe.Accept -> {
                 val live = state.live
                 if (!ok) {
-                    state = state.copy(wipeFailedSerial = after.serial)
+                    acceptFailed(after.serial)
                     publishIfChanged(AuthState.Unauthenticated)
                 } else if (live is Account && live.serial == after.serial && live.userId != null) {
                     finishAccept(live, live.userId)
@@ -392,7 +403,7 @@ private class StepBuilder(var state: AuthModelState) {
             pending is PendingGate.Owner && output is AuthOutput.PersistOwner -> when (val then = pending.then) {
                 // The owner stays what is on disk; what it was for is never shown.
                 is OwnerThen.Accept -> {
-                    state = state.copy(wipeFailedSerial = then.serial)
+                    acceptFailed(then.serial)
                     publishIfChanged(AuthState.Unauthenticated)
                 }
                 OwnerThen.ResetDone, OwnerThen.LostDone -> publishIfChanged(AuthState.Unauthenticated)
@@ -437,12 +448,23 @@ private class StepBuilder(var state: AuthModelState) {
         }
     }
 
+    /** The pre-accept wipe or owner write for [serial] failed: block it (rounds 3, 5, 6). */
+    private fun acceptFailed(serial: Long) {
+        val attempts = if (state.acceptBlockedSerial == serial) state.acceptAttempts + 1 else 1
+        state = state.copy(acceptBlockedSerial = serial, acceptAttempts = attempts, acceptRetryArmed = false)
+        emit(AuthOutput.Drop("accept attempt $attempts of $MAX_ACCEPT_ATTEMPTS failed for serial $serial"))
+    }
+
     /** An account is about to be shown: wipe first when its data could be someone else's (AQ, r1-1, r1-5). */
     private fun accept(live: Account, userId: String) {
         // Round 5: a serial whose wipe or owner write failed is not accepted again in this run,
         // on any branch (wipe needed or not). Checked first, so a permanently failing write is
         // tried once per session and never re-emitted from the same reduction.
-        if (state.wipeFailedSerial == live.serial) return
+        if (state.acceptBlockedSerial == live.serial) {
+            if (!state.acceptRetryArmed) return
+            // Round 6: a retry re-armed by a later library status; consumed now.
+            state = state.copy(acceptRetryArmed = false)
+        }
         val needsWipe = state.wipePending ||
             (state.ownerUnknown && !live.restored) ||
             (state.owner != null && state.owner != userId)
@@ -477,7 +499,9 @@ private class StepBuilder(var state: AuthModelState) {
                     wipePending = event.wipePending,
                     noticePending = event.notice,
                     watchdogFired = false,
-                    wipeFailedSerial = null,
+                    acceptBlockedSerial = null,
+                    acceptAttempts = 0,
+                    acceptRetryArmed = false,
                     afterWipe = null,
                     pendingGate = null,
                 )
@@ -662,6 +686,10 @@ private class StepBuilder(var state: AuthModelState) {
                     refreshToken = snap.refreshToken,
                 ),
                 validationDeferredSerial = if (live.userId == null) null else state.validationDeferredSerial,
+                // Round 6: a later status for a session whose accept failed re-arms one retry,
+                // within the per-run bound. Never inside the failure's own chain (round 5).
+                acceptRetryArmed = state.acceptRetryArmed ||
+                    (state.acceptBlockedSerial == live.serial && state.acceptAttempts < MAX_ACCEPT_ATTEMPTS),
             )
             return
         }

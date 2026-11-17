@@ -1180,7 +1180,11 @@ class AuthSessionModelTest {
         noWipe.send(acct("B", "b1"))
         assertEquals(1, gateWrites(noWipe.send(ValidationFinished(noWipe.startedValidation(), SessionVerdict.Valid))))
         assertEquals(0, gateWrites(noWipe.send(Snap.RefreshFailure)))
-        assertEquals(0, gateWrites(noWipe.send(acct("B", "b2", refreshedFrom = "b1"))))
+        // Round 6: a later status of the same session retries, up to the bound, then never again.
+        assertEquals(1, gateWrites(noWipe.send(acct("B", "b2", refreshedFrom = "b1"))))
+        assertEquals(1, gateWrites(noWipe.send(acct("B", "b3", refreshedFrom = "b2"))))
+        assertEquals(0, gateWrites(noWipe.send(acct("B", "b4", refreshedFrom = "b3"))))
+        assertEquals(0, gateWrites(noWipe.send(Snap.RefreshFailure)))
         assertEquals(AuthState.Unauthenticated, noWipe.state.published)
         // Wipe needed (another owner): marker and owner each written once.
         val withWipe = Run(owner = "A")
@@ -1224,5 +1228,62 @@ class AuthSessionModelTest {
         val bootGuest = Run().apply { ownerWriteOk = false }
         assertEquals(1, gateWrites(bootGuest.send(Boot(guestId = "g1", owner = null, notice = false, ownerUnknown = true))))
         assertEquals(0, gateWrites(bootGuest.send(Snap.RefreshFailure)))
+    }
+
+    // ── Review round 6: the same session retries on a later library status ──────────────────────
+
+    @Test
+    fun aMarkerThatFailsOnceForAnAccountIsRetriedOnTheNextStatus() {
+        val run = Run(owner = "A")
+        run.markerWriteOk = false
+        run.send(acct("B", "b1"))
+        run.send(ValidationFinished(run.startedValidation(), SessionVerdict.Valid))
+        assertEquals(AuthState.Unauthenticated, run.state.published)
+        run.markerWriteOk = true
+        run.send(acct("B", "b2", refreshedFrom = "b1"))
+        assertEquals(account("B"), run.state.published)
+        assertEquals(1, run.wipes())
+        assertEquals("B", run.state.owner)
+    }
+
+    @Test
+    fun aWipeThatFailsOnceForAnAccountIsRetriedOnTheNextStatus() {
+        val run = Run(owner = "A")
+        run.wipeOk = false
+        run.send(acct("B", "b1"))
+        run.send(ValidationFinished(run.startedValidation(), SessionVerdict.Valid))
+        assertEquals(AuthState.Unauthenticated, run.state.published)
+        run.wipeOk = true
+        run.send(acct("B", "b2", refreshedFrom = "b1"))
+        assertEquals(account("B"), run.state.published)
+        assertEquals(2, run.wipes())
+    }
+
+    @Test
+    fun aRetryIsNeverArmedInsideTheFailuresOwnChain() {
+        // Only an external status re-arms: the failing reduction and its follow-ups make one
+        // attempt, and a status that is not this session's (a refresh failure) re-arms nothing.
+        val run = Run(owner = null)
+        run.ownerWriteOk = false
+        run.send(acct("B", "b1"))
+        assertEquals(1, gateWrites(run.send(ValidationFinished(run.startedValidation(), SessionVerdict.Valid))))
+        assertEquals(0, gateWrites(run.send(Snap.RefreshFailure)))
+        assertEquals(0, gateWrites(run.send(WatchdogFired)))
+        assertFalse(run.state.acceptRetryArmed)
+    }
+
+    @Test
+    fun aNewSessionStartsItsOwnAttemptsAfterTheBound() {
+        val run = Run(owner = null)
+        run.ownerWriteOk = false
+        run.send(acct("B", "b1"))
+        run.send(ValidationFinished(run.startedValidation(), SessionVerdict.Valid))
+        run.send(acct("B", "b2", refreshedFrom = "b1"))
+        run.send(acct("B", "b3", refreshedFrom = "b2"))
+        assertEquals(MAX_ACCEPT_ATTEMPTS, run.state.acceptAttempts)
+        run.ownerWriteOk = true
+        run.send(acct("B", "c1"))
+        run.send(ValidationFinished(run.startedValidation(), SessionVerdict.Valid))
+        assertEquals(account("B"), run.state.published)
     }
 }

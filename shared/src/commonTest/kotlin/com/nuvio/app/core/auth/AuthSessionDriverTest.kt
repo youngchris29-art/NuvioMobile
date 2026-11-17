@@ -667,4 +667,83 @@ class AuthSessionDriverTest {
         assertEquals("B", rig.effects.diskOwner)
         assertTrue(rig.effects.accountsShown.all { (user, disk) -> disk == user })
     }
+
+    // ── Review round 6: a transient owner-write failure recovers on the next library status ──────
+
+    /** Restored B as one session, the first owner write fails, then B's token refreshes. */
+    private fun TestScope.restoredBWithOneFailedOwnerWrite(): Rig {
+        val rig = Rig(this, owner = null)
+        var failuresLeft = 1
+        rig.effects.ownerWriteFails = { it == "B" && failuresLeft-- > 0 }
+        rig.flow.value = authenticated("B", "b1", SessionSource.Storage)
+        rig.settle()
+        assertEquals(AuthState.Unauthenticated, rig.effects.published)
+        assertEquals(null, rig.effects.diskOwner)
+        return rig
+    }
+
+    @Test
+    fun anOwnerWriteThatFailsOnceSucceedsOnTheSameSessionsNextRefresh() = runTest {
+        val rig = restoredBWithOneFailedOwnerWrite()
+        rig.flow.value = authenticated("B", "b2", SessionSource.Refresh(session("B", "b1")))
+        rig.settle()
+        assertEquals(account("B"), rig.effects.published)
+        assertEquals("B", rig.effects.diskOwner)
+        assertTrue(rig.effects.accountsShown.all { (user, disk) -> disk == user })
+    }
+
+    @Test
+    fun anOwnerWriteThatAlwaysFailsIsTriedThreeTimesThenNoMore() = runTest {
+        val rig = Rig(this, owner = null)
+        var attempts = 0
+        rig.effects.ownerWriteFails = { attempts++; true }
+        rig.flow.value = authenticated("B", "b1", SessionSource.Storage)
+        rig.settle()
+        var previous = "b1"
+        (2..6).forEach { n ->
+            rig.flow.value = authenticated("B", "b$n", SessionSource.Refresh(session("B", previous)))
+            previous = "b$n"
+            rig.settle()
+        }
+        assertEquals(3, attempts)
+        // What the user sees during the retries: Welcome, published once, no Loading flicker.
+        assertEquals(1, rig.effects.log.count { it == "publish:Unauthenticated" })
+        assertFalse("publish:Loading" in rig.effects.log.drop(1))
+        assertTrue(rig.effects.accountsShown.isEmpty())
+        // The lane is still usable.
+        rig.driver.chooseGuest("g1")
+        assertEquals(AuthState.Authenticated("g1", null, true), rig.effects.published)
+    }
+
+    @Test
+    fun aRetryNeverRacesASignOut() = runTest {
+        val rig = restoredBWithOneFailedOwnerWrite()
+        assertTrue(rig.driver.signOut().isSuccess)
+        rig.settle()
+        assertEquals(AuthState.Unauthenticated, rig.effects.published)
+        assertEquals(1, rig.effects.log.count { it == "owner:B" })
+        assertTrue(rig.effects.accountsShown.isEmpty())
+    }
+
+    @Test
+    fun aRetryNeverTakesOverAChosenGuest() = runTest {
+        val rig = restoredBWithOneFailedOwnerWrite()
+        rig.driver.chooseGuest("g1")
+        rig.settle()
+        // The library still holds B and refreshes it; the guest stays and B is not retried.
+        rig.flow.value = authenticated("B", "b2", SessionSource.Refresh(session("B", "b1")))
+        rig.settle()
+        assertEquals(AuthState.Authenticated("g1", null, true), rig.effects.published)
+        assertEquals(1, rig.effects.log.count { it == "owner:B" })
+    }
+
+    @Test
+    fun aRetryNeverResurrectsALostSession() = runTest {
+        val rig = restoredBWithOneFailedOwnerWrite()
+        rig.flow.value = SessionStatus.NotAuthenticated(true)
+        rig.settle()
+        assertEquals(AuthState.Unauthenticated, rig.effects.published)
+        assertEquals(1, rig.effects.log.count { it == "owner:B" })
+        assertTrue(rig.effects.accountsShown.isEmpty())
+    }
 }
