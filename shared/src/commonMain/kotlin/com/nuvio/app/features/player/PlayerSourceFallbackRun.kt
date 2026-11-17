@@ -7,8 +7,19 @@ import com.nuvio.app.features.streams.StreamAutoPlaySelector
 import com.nuvio.app.features.streams.StreamAutoPlaySource
 import com.nuvio.app.features.streams.StreamItem
 
-/** The sources auto source selection tried before the one that plays, and how many further ones. */
+/**
+ * The sources auto source selection tried before the one that plays, and how many further ones.
+ * [keys] are opaque: shared builds them ([including], the walk) and decides with them
+ * ([contains], [PlayerSourceFallback.isExcluded]); Swift only carries them back unchanged.
+ */
 data class PlayerSourceFallbackTried(val keys: Set<String>, val attempts: Int) {
+    /** This set with [stream] added as tried (attempts unchanged). */
+    fun including(stream: StreamItem): PlayerSourceFallbackTried =
+        stream.playerSourceFallbackKey()?.let { copy(keys = keys + it) } ?: this
+
+    /** Whether [stream] was tried (review r1: the one tried-test, see [PlayerSourceFallback.isTried]). */
+    fun contains(stream: StreamItem): Boolean = PlayerSourceFallback.isTried(stream, keys)
+
     companion object {
         /** A source auto selection picked first, with nothing tried before it. */
         val None = PlayerSourceFallbackTried(keys = emptySet(), attempts = 0)
@@ -64,12 +75,12 @@ class PlayerSourceFallbackWalk(
         get() = PlayerSourceFallbackTried(triedKeys.toSet(), attempts)
 
     fun resolved(): PlayerSourceFallbackTried {
-        candidate.playerSourceIdentityKey()?.let(triedKeys::add)
+        candidate.playerSourceFallbackKey()?.let(triedKeys::add)
         return tried
     }
 
     fun failed(nextCandidate: (failed: StreamItem, triedKeys: Set<String>) -> StreamItem?): StreamItem? {
-        candidate.playerSourceIdentityKey()?.let(triedKeys::add)
+        candidate.playerSourceFallbackKey()?.let(triedKeys::add)
         if (attempts >= maxSources) return null
         val next = nextCandidate(candidate, triedKeys.toSet()) ?: return null
         attempts++
@@ -186,6 +197,25 @@ object PlayerSourceFallback {
                 .coerceIn(SOURCE_STARTUP_TIMEOUT_SECONDS_RANGE)
         }
 
+    /** The key a tried set holds for [stream]; opaque to Swift (pass it back, never build one). */
+    fun triedKey(stream: StreamItem): String? = stream.playerSourceFallbackKey()
+
+    /**
+     * Whether [stream] is in [triedKeys]. Review r1: a torrent's key names its add-on, so the same
+     * torrent from another add-on is not "tried". Transitional: a key in the old add-on-blind
+     * identity form (`torrent:<hash>:<file>`, still built by callers that call
+     * `playerSourceIdentityKey()` themselves) also matches, so such a caller can never re-pick a
+     * source it tried; it keeps the old add-on-blind exclusion for that key until it uses
+     * [triedKey] / [PlayerSourceFallbackTried.including]. The walk itself never records one.
+     */
+    fun isTried(stream: StreamItem, triedKeys: Set<String>): Boolean {
+        if (triedKeys.isEmpty()) return false
+        val key = stream.playerSourceFallbackKey()
+        if (key != null && key in triedKeys) return true
+        val legacy = stream.playerSourceIdentityKey()
+        return legacy != null && legacy != key && legacy in triedKeys
+    }
+
     /**
      * Upstream's candidate filter: a source already tried, or another copy of the torrent that
      * failed from the same add-on, is never picked again in the same walk.
@@ -196,8 +226,7 @@ object PlayerSourceFallback {
         failedAddonId: String?,
         failedInfoHash: String?,
     ): Boolean {
-        val key = stream.playerSourceIdentityKey()
-        if (key != null && key in triedKeys) return true
+        if (isTried(stream, triedKeys)) return true
         return failedInfoHash != null &&
             stream.addonId == failedAddonId &&
             stream.p2pInfoHash.equals(failedInfoHash, ignoreCase = true)
@@ -254,6 +283,10 @@ object PlayerSourceFallback {
         return ranked
     }
 
+    /** [isExcluded] with the failed source itself (its add-on and torrent read here, not by the caller). */
+    fun isExcludedAfter(stream: StreamItem, tried: PlayerSourceFallbackTried, failed: StreamItem?): Boolean =
+        isExcluded(stream, tried.keys, failed?.addonId, failed?.p2pInfoHash)
+
     fun nextCandidate(
         streams: List<StreamItem>,
         scope: StreamAutoPickScope,
@@ -266,6 +299,22 @@ object PlayerSourceFallback {
     ): StreamItem? = rankedCandidates(
         streams, scope, triedKeys, failedAddonId, failedInfoHash, installedAddonNames, debridEnabled, activeResolverProviderId,
     ).firstOrNull()
+}
+
+/**
+ * W4 (review r1): the identity a fallback walk's tried set uses. The same as
+ * [playerSourceIdentityKey] except for torrents, where it also names the add-on: two add-ons
+ * serving the same torrent and file are two sources to the walk (a dead link or expired resolve
+ * from one must not rule out the other). Other copies of a failed torrent from the SAME add-on
+ * are still left out by [PlayerSourceFallback.isExcluded]'s own rule. The identity key itself is
+ * unchanged, because the phone's player marks the playing row with it.
+ */
+fun StreamItem.playerSourceFallbackKey(): String? {
+    p2pInfoHash?.trim()?.lowercase()?.takeIf { it.isNotBlank() }?.let { hash ->
+        // Its own prefix, so it can never be mistaken for an identity key (`torrent:`).
+        return "p2p:$hash:${p2pFileIdx ?: -1}@$addonId"
+    }
+    return playerSourceIdentityKey()
 }
 
 /**

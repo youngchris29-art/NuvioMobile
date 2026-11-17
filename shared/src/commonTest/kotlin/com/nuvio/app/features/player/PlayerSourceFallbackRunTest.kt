@@ -20,7 +20,7 @@ class PlayerSourceFallbackRunTest {
         val run = run(outcomes = mapOf(sources[0] to resolved(sources[0])))
         assertEquals("Source 1", run.resolved)
         assertEquals(0, run.tried.attempts)
-        assertEquals(setOfNotNull(sources[0].playerSourceIdentityKey()), run.tried.keys)
+        assertEquals(setOfNotNull(sources[0].playerSourceFallbackKey()), run.tried.keys)
     }
 
     @Test
@@ -29,7 +29,7 @@ class PlayerSourceFallbackRunTest {
         assertEquals("Source 2", run.resolved)
         assertNull(run.failure)
         assertEquals(1, run.tried.attempts)
-        assertEquals(sources.take(2).mapNotNull { it.playerSourceIdentityKey() }.toSet(), run.tried.keys)
+        assertEquals(sources.take(2).mapNotNull { it.playerSourceFallbackKey() }.toSet(), run.tried.keys)
     }
 
     @Test
@@ -59,7 +59,7 @@ class PlayerSourceFallbackRunTest {
             sources[1]
         }
         assertSame(sources[0], seenFailed)
-        assertTrue(sources[0].playerSourceIdentityKey()!! in seenKeys)
+        assertTrue(sources[0].playerSourceFallbackKey()!! in seenKeys)
         assertSame(sources[1], next)
         assertSame(sources[1], walk.candidate)
         assertEquals(1, walk.attempts)
@@ -71,7 +71,7 @@ class PlayerSourceFallbackRunTest {
         val next = walk.failed { _, _ -> null }
         assertNull(next)
         assertEquals(0, walk.attempts)
-        assertEquals(setOfNotNull(sources[0].playerSourceIdentityKey()), walk.tried.keys)
+        assertEquals(setOfNotNull(sources[0].playerSourceFallbackKey()), walk.tried.keys)
     }
 
     @Test
@@ -86,12 +86,12 @@ class PlayerSourceFallbackRunTest {
         assertNull(next)
         assertFalse(asked)
         assertEquals(1, walk.attempts)
-        assertEquals(sources.take(2).mapNotNull { it.playerSourceIdentityKey() }.toSet(), walk.tried.keys)
+        assertEquals(sources.take(2).mapNotNull { it.playerSourceFallbackKey() }.toSet(), walk.tried.keys)
     }
 
     @Test
     fun exclusionDropsTriedKeys() {
-        val key0 = sources[0].playerSourceIdentityKey()!!
+        val key0 = sources[0].playerSourceFallbackKey()!!
         assertTrue(PlayerSourceFallback.isExcluded(sources[0], setOf(key0), null, null))
         assertFalse(PlayerSourceFallback.isExcluded(sources[1], setOf(key0), null, null))
     }
@@ -101,7 +101,7 @@ class PlayerSourceFallbackRunTest {
         val first = StreamItem(infoHash = "ABC", fileIdx = 1, addonName = "A", addonId = "a")
         val sameAddonCopy = StreamItem(infoHash = "ABC", fileIdx = 2, addonName = "A", addonId = "a")
         val otherAddonCopy = StreamItem(infoHash = "ABC", fileIdx = 2, addonName = "B", addonId = "b")
-        val tried = setOfNotNull(first.playerSourceIdentityKey())
+        val tried = setOfNotNull(first.playerSourceFallbackKey())
         assertTrue(PlayerSourceFallback.isExcluded(sameAddonCopy, tried, failedAddonId = "a", failedInfoHash = "abc"))
         assertFalse(PlayerSourceFallback.isExcluded(otherAddonCopy, tried, failedAddonId = "a", failedInfoHash = "abc"))
         assertFalse(PlayerSourceFallback.isExcluded(sameAddonCopy, tried, failedAddonId = "a", failedInfoHash = null))
@@ -131,6 +131,6 @@ class PlayerSourceFallbackRunTest {
         first = sources[0],
         maxSources = maxSources,
         resolve = { stream -> outcomes[stream] ?: error("${stream.name} was not expected to be tried") },
-        nextCandidate = { _, triedKeys -> sources.firstOrNull { it.playerSourceIdentityKey() !in triedKeys } },
+        nextCandidate = { _, triedKeys -> sources.firstOrNull { it.playerSourceFallbackKey() !in triedKeys } },
     )
 }

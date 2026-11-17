@@ -80,7 +80,7 @@ class PlayerSourceFallbackPolicyTest {
         streams, scope, tried, failedAddonId, failedInfoHash, installed, true, "realdebrid",
     )
 
-    private fun keys(vararg streams: StreamItem) = streams.mapNotNull { it.playerSourceIdentityKey() }.toSet()
+    private fun keys(vararg streams: StreamItem) = streams.mapNotNull { it.playerSourceFallbackKey() }.toSet()
 
     // ----- isActive / furtherSources / startupLimitSeconds -----
 
@@ -294,7 +294,7 @@ class PlayerSourceFallbackPolicyTest {
         val c = stream("Source 3", addon = "Alpha")
         val d = stream("Source 4", addon = "Alpha")
         val all = listOf(a, b, c, d)
-        val pick = { _: StreamItem, tried: Set<String> -> all.firstOrNull { it.playerSourceIdentityKey() !in tried } }
+        val pick = { _: StreamItem, tried: Set<String> -> all.firstOrNull { it.playerSourceFallbackKey() !in tried } }
 
         // Up Next tried {a} and used 2 attempts; the player's first failure was b; budget 3.
         val walk = PlayerSourceFallbackWalk(b, 3, PlayerSourceFallbackTried(keys(a), attempts = 2))
@@ -312,7 +312,7 @@ class PlayerSourceFallbackPolicyTest {
         val b = stream("Source 2", addon = "Alpha")
         val walk = PlayerSourceFallbackWalk(a, 1)
         assertEquals(0, walk.attempts)
-        assertEquals(b, walk.failed { _, tried -> listOf(a, b).firstOrNull { it.playerSourceIdentityKey() !in tried } })
+        assertEquals(b, walk.failed { _, tried -> listOf(a, b).firstOrNull { it.playerSourceFallbackKey() !in tried } })
         assertNull(walk.failed { _, _ -> null })
     }
 }
