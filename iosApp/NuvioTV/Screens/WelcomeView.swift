@@ -56,6 +56,17 @@ struct WelcomeView: View {
                             .font(Theme.Font.caption)
                             .foregroundStyle(Theme.Palette.textSecondary)
                     }
+                    // Upstream daa966d36: "You have been signed out of Nuvio…" after a lost
+                    // session (also re-shown at launch until the next sign-in). Any action below
+                    // clears it through model.clearError(). Sign-in/sign-out errors are not
+                    // shown here (they stay on errorMessage, rendered by AuthView).
+                    if let notice = model.signedOutNotice {
+                        Label(notice, systemImage: "exclamationmark.circle")
+                            .font(Theme.Font.body)
+                            .foregroundStyle(Theme.Palette.textPrimary)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: 900)
+                    }
                 }
 
                 VStack(spacing: Theme.Spacing.xl) {

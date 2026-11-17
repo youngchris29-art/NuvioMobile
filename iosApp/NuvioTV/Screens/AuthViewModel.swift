@@ -23,11 +23,16 @@ final class AuthViewModel: ObservableObject {
     @Published private(set) var gate: Gate = .loading
     @Published private(set) var isBusy = false
     @Published private(set) var errorMessage: String?
+    /// Upstream daa966d36: "You have been signed out of Nuvio…" after a lost session. Mirrors
+    /// `AuthRepository.signedOutNotice` only, never sign-in/sign-out errors (those stay on
+    /// `errorMessage`). Cleared with `clearError()`.
+    @Published private(set) var signedOutNotice: String?
     @Published private(set) var accountEmail: String?
     @Published private(set) var isAnonymous = true
 
     private var stateWatcher: FlowWatcher?
     private var errorWatcher: FlowWatcher?
+    private var noticeWatcher: FlowWatcher?
 
     func start() {
         guard stateWatcher == nil else { return }
@@ -70,6 +75,10 @@ final class AuthViewModel: ObservableObject {
         errorWatcher = FlowWatcherKt.watch(AuthRepository.shared.error) { [weak self] emitted in
             self?.errorMessage = emitted as? String
         }
+
+        noticeWatcher = FlowWatcherKt.watch(AuthRepository.shared.signedOutNotice) { [weak self] emitted in
+            self?.signedOutNotice = emitted as? String
+        }
     }
 
     func stop() {
@@ -77,6 +86,8 @@ final class AuthViewModel: ObservableObject {
         stateWatcher = nil
         errorWatcher?.cancel()
         errorWatcher = nil
+        noticeWatcher?.cancel()
+        noticeWatcher = nil
     }
 
     // MARK: - Actions
@@ -118,11 +129,13 @@ final class AuthViewModel: ObservableObject {
 
     func clearError() {
         errorMessage = nil
+        signedOutNotice = nil
         AuthRepository.shared.clearError()
     }
 
     deinit {
         stateWatcher?.cancel()
         errorWatcher?.cancel()
+        noticeWatcher?.cancel()
     }
 }
