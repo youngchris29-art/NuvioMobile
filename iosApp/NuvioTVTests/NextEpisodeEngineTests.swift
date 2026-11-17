@@ -221,7 +221,8 @@ final class NextEpisodeEngineTests: XCTestCase {
                             network: @escaping () -> Bool = { true },
                             sourceListDeadline: (@MainActor () async -> Void)? = nil,
                             resolveDebrid: (@MainActor (StreamItem, KotlinInt?, KotlinInt?) async throws -> DirectDebridPlayableResult)? = nil,
-                            furtherSources: Int? = nil, waitPoll: TimeInterval? = nil) -> NextEpisodeEngine {
+                            furtherSources: Int? = nil, waitPoll: TimeInterval? = nil,
+                            clock: (() -> TimeInterval)? = nil) -> NextEpisodeEngine {
         var hooks = NextEpisodeEngine.Hooks(loadStreams: { type, videoId, season, episode in
             recorder.calls.append(LoadCall(type: type, videoId: videoId, season: season?.value, episode: episode?.value))
             recorder.log.append("load:\(videoId)")
@@ -238,6 +239,7 @@ final class NextEpisodeEngineTests: XCTestCase {
         if let resolveDebrid { hooks.resolveDebrid = resolveDebrid }
         if let furtherSources { hooks.furtherSources = { _ in furtherSources } }
         if let waitPoll { hooks.waitPollSeconds = waitPoll }
+        if let clock { hooks.now = clock }
         hooks.rememberFailedLink = { listed, title, _, _ in
             recorder.remembered.append("\(listed.playbackStreamKey)@\(title)")
         }
@@ -1864,7 +1866,11 @@ final class NextEpisodeEngineTests: XCTestCase {
         XCTAssertFalse(engine.pickWatchActiveForTesting, "the watch ends with the walk")
     }
 
-    func testALateEmissionForAnOlderRequestIsIgnored() async {
+    /// Stage B review finding 1 (replaces "a late emission for an older request is ignored", whose
+    /// premise was that the source list takes the shared flow under a pick watch and makes the
+    /// pick deaf). The list now waits for the pick watch, so the next episode's late answer is
+    /// still heard and offered to the walk.
+    func testTheSourceListNoLongerTakesTheFlowUnderAPickWatch() async {
         let recorder = Recorder()
         let probe = WalkProbe()
         let first = walkCandidate("aaaa")
@@ -1875,18 +1881,20 @@ final class NextEpisodeEngineTests: XCTestCase {
             return self.notCached
         })
         let search = pickEarly(engine, recorder, first)
-        engine.loadSources()                               // the source list takes the flow
+        let clears = recorder.clears
+        engine.loadSources()                               // held: the pick watch still listens
+        XCTAssertEqual(recorder.clears, clears, "the shared flow is not cleared")
         let accepted = engine.searchEmissionsAccepted
-        search(streamsState([[first], [late]]))           // queued for the superseded request
-        XCTAssertEqual(engine.searchEmissionsAccepted, accepted, "the old request's watcher is deaf")
+        search(streamsState([[first], [late]]))
+        XCTAssertEqual(engine.searchEmissionsAccepted, accepted + 1, "the pick's watcher still hears its request")
         engine.playForTesting(first, nextCandidate: { [self] _, tried, groups in
             seenGroups.append(groups)
             return self.firstUntried(groups, tried)
         })
         await engine.resolveTaskForTesting?.value
 
-        XCTAssertEqual(probe.resolved.count, 1, "the source from the older request was never offered")
-        XCTAssertEqual(seenGroups.first?.count, 1)
+        XCTAssertEqual(probe.resolved.count, 2, "the late source is offered")
+        XCTAssertEqual(seenGroups.first?.count, 2)
         XCTAssertTrue(recorder.played.isEmpty)
         XCTAssertEqual(engine.phase, .noStream)
     }
@@ -2363,5 +2371,119 @@ final class NextEpisodeEngineTests: XCTestCase {
         await engine.resolveTaskForTesting?.value
         XCTAssertEqual(probe.resolved.map(\.playbackStreamKey), [first.playbackStreamKey, late.playbackStreamKey])
         XCTAssertEqual(engine.phase, .noStream)
+    }
+
+    // MARK: - Stage B review finding 1: the Sources list waits while a pick watch listens
+
+    private func loads(_ recorder: Recorder) -> Int { recorder.log.filter { $0 == "load:tt1:1:1" }.count }
+
+    /// The column opens while the walk waits: its list is held (no clear of the shared flow), so
+    /// the late answer still reaches the walk and plays; the hand-off clears the hold, no reload.
+    func testTheSourcesPanelWaitsWhileThePickWatchIsActive() async {
+        let recorder = Recorder()
+        let probe = WalkProbe()
+        let first = walkCandidate("aaaa")
+        let late = walkCandidate("bbbb", addon: "Late")
+        let engine = makeEngine(trigger: trigger(), recorder: recorder, resolveDebrid: { [self] stream, _, _ in
+            probe.resolved.append(stream)
+            return probe.resolved.count == 1 ? self.notCached : self.success()
+        }, waitPoll: 0.02)
+        let search = pickWhileLoading(engine, recorder, first, deadline: 5)
+        engine.playForTesting(first, nextCandidate: { [self] _, tried, groups in self.firstUntried(groups, tried) })
+        await waitFor { probe.resolved.count == 1 }
+        let clearsBefore = recorder.clears
+        engine.sourceColumnAppeared()
+        engine.loadSources()
+        XCTAssertEqual(recorder.clears, clearsBefore, "the shared flow is not cleared under the pick watch")
+        XCTAssertEqual(loads(recorder), 0)
+        search(streamsState([[first], [late]]))
+        await engine.resolveTaskForTesting?.value
+        XCTAssertEqual(recorder.played.first?.listedStream?.playbackStreamKey, late.playbackStreamKey)
+        XCTAssertEqual(loads(recorder), 0, "the player is being replaced: no reload")
+    }
+
+    /// The walk ends on the card at the deadline with the column up: the held list loads then.
+    func testTheSourcesPanelReloadsWhenThePickWatchEnds() async {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder, resolveDebrid: { [self] _, _, _ in
+            self.notCached
+        }, waitPoll: 0.02)
+        let first = walkCandidate("aaaa")
+        _ = pickWhileLoading(engine, recorder, first, deadline: 0.3)
+        engine.sourceColumnAppeared()
+        engine.loadSources()
+        XCTAssertEqual(loads(recorder), 0, "held")
+        engine.playForTesting(first, nextCandidate: { [self] _, tried, groups in self.firstUntried(groups, tried) })
+        await engine.resolveTaskForTesting?.value
+        XCTAssertEqual(engine.phase, .noStream)
+        XCTAssertEqual(loads(recorder), 1, "the held list loads once the pick watch ended")
+    }
+
+    /// Menu on the card (cancel) during the hold: the list loads; it never stays busy.
+    func testCancellingUpNextReleasesTheHeldList() {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder)
+        _ = pickWhileLoading(engine, recorder, walkCandidate("aaaa"), deadline: 5)
+        engine.sourceColumnAppeared()
+        engine.loadSources()
+        XCTAssertEqual(loads(recorder), 0)
+        engine.cancel()
+        XCTAssertEqual(loads(recorder), 1)
+    }
+
+    /// The player's teardown during the hold: nothing loads (the column is gone), and the hold
+    /// does not survive: the column opening again loads the list.
+    func testTeardownReleasesTheHeldList() {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder)
+        _ = pickWhileLoading(engine, recorder, walkCandidate("aaaa"), deadline: 5)
+        engine.sourceColumnAppeared()
+        engine.loadSources()
+        engine.stop()
+        XCTAssertEqual(loads(recorder), 0, "no list for a player that is going away")
+        engine.sourceColumnAppeared()
+        engine.loadSources()
+        XCTAssertEqual(loads(recorder), 1, "not held any more")
+    }
+
+    /// The viewer's own pick while the walk resolves ends the pick watch and releases the list.
+    func testAViewerPickReleasesTheHeldList() async {
+        let recorder = Recorder()
+        let probe = WalkProbe()
+        let first = walkCandidate("aaaa")
+        let engine = makeEngine(trigger: trigger(), recorder: recorder, resolveDebrid: { [self] stream, _, _ in
+            probe.resolved.append(stream)
+            return self.notCached
+        }, waitPoll: 0.02)
+        _ = pickWhileLoading(engine, recorder, first, deadline: 5)
+        engine.playForTesting(first, nextCandidate: { [self] _, tried, groups in self.firstUntried(groups, tried) })
+        await waitFor { probe.resolved.count == 1 }
+        engine.sourceColumnAppeared()
+        engine.loadSources()
+        XCTAssertEqual(loads(recorder), 0)
+        _ = engine.playSource(stream(url: "https://cdn.example.com/s1e1-other.mkv"))
+        XCTAssertEqual(loads(recorder), 1)
+        await engine.resolveTaskForTesting?.value
+    }
+
+    // MARK: - Stage B review finding 2: the wait never outlives the deadline
+
+    /// The clock jumps past the deadline mid-wait (a late wake): the wait ends at once.
+    func testAWaitThatWakesLateStopsAtTheDeadline() async {
+        let recorder = Recorder()
+        var offset: TimeInterval = 0
+        let engine = makeEngine(trigger: trigger(), recorder: recorder, resolveDebrid: { [self] _, _, _ in
+            self.notCached
+        }, waitPoll: 0.05, clock: { ProcessInfo.processInfo.systemUptime + offset })
+        let first = walkCandidate("aaaa")
+        _ = pickWhileLoading(engine, recorder, first, deadline: 30)
+        engine.playForTesting(first, nextCandidate: { [self] _, tried, groups in self.firstUntried(groups, tried) })
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertNotEqual(engine.phase, .noStream, "waiting")
+        let jumped = Date()
+        offset = 60
+        await engine.resolveTaskForTesting?.value
+        XCTAssertEqual(engine.phase, .noStream)
+        XCTAssertLessThan(Date().timeIntervalSince(jumped), 1, "no nominal sleeps past the deadline")
     }
 }

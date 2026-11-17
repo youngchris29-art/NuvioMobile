@@ -96,6 +96,12 @@ final class NextEpisodeEngine: ObservableObject {
     /// Insights review r4 (P2): the native transport bar asked for the list while a next-episode
     /// preload was pending, so the list was held (busy line) instead of clearing the preload.
     private var sourcesHeldForPreload = false
+    /// W4 Stage B review (finding 1): the list for the playing episode was asked for while a pick
+    /// watch still listens to the next episode's request on the same shared flow. Loading it then
+    /// would clear that flow and blind the retry walk's wait, so it stays deferred on its busy
+    /// line until the pick watch ends (every exit: the walk's hand-off, its end on the card, the
+    /// viewer's pick, Menu / cancel, a jump, the player's teardown).
+    private var sourcesHeldForPick = false
     /// Review r5 (P3): the current list load's soft deadline (`Hooks.sourceListDeadline`).
     private var sourcesDeadlineTask: Task<Void, Never>?
     /// Matches the up-next search's soft timeout plus its grace window (3 s + 12 s).
@@ -359,19 +365,19 @@ final class NextEpisodeEngine: ObservableObject {
 
     /// Decision BC: returns when the pick watch sees a new emission (true), or after `atMostMillis`
     /// (false). The caller re-checks the walk's generation (any viewer action ends the wait).
+    /// Finding 2: the time left is measured against the monotonic clock after every wake, so a
+    /// late wake (a busy main actor, a suspended app) never sleeps past the end.
     private func waitForPickEmission(atMostMillis: Int64) async -> Bool {
         let start = pickEmissions
         let generation = resolveWalkGeneration
-        var waited: TimeInterval = 0
-        let limit = TimeInterval(atMostMillis) / 1000
-        while waited < limit {
-            let step = min(hooks.waitPollSeconds, limit - waited)
-            try? await Task.sleep(nanoseconds: UInt64(max(step, 0) * 1_000_000_000))
-            waited += step
+        let until = hooks.now() + TimeInterval(atMostMillis) / 1000
+        while true {
+            let left = until - hooks.now()
+            guard left > 0 else { return false }
+            try? await Task.sleep(nanoseconds: UInt64(min(hooks.waitPollSeconds, left) * 1_000_000_000))
             if Task.isCancelled || generation != resolveWalkGeneration || cancelled { return false }
             if pickEmissions != start { return true }
         }
-        return false
     }
     /// Latest emission from `episodeStreamsState` (the exported StateFlow has no sync `.value`).
     private var latestStreamsState: StreamsUiState?
@@ -672,10 +678,11 @@ final class NextEpisodeEngine: ObservableObject {
         // owns the flow, the list is deferred (the column shows a busy line). Keyed on a live
         // watcher OR `searchOwnsFlow` (the test seam's watcher is nil), not on the phase: the
         // phase is still `.searching` when a search ends by selecting a stream (r2 P3).
-        guard streamsWatcher == nil, !searchOwnsFlow else {
+        guard streamsWatcher == nil, !searchOwnsFlow, !pickWatchActive else {
             sourcesBlockedBySearch = true
             sourcesBlockedByJump = immediatePlay
             sourcesLoading = false
+            if pickWatchActive { sourcesHeldForPick = true }
             print("[UpNext] source list deferred: up-next search in flight")
             return
         }
@@ -782,6 +789,7 @@ final class NextEpisodeEngine: ObservableObject {
             cancelled = true
             immediatePlay = false
             phase = .hidden
+            releasePickHold(reload: true)
         }
         let generation = sourceSwitchGeneration
         let videoId = context.videoId
@@ -1312,6 +1320,14 @@ final class NextEpisodeEngine: ObservableObject {
     /// `listWiped`: the teardown's clear dropped a list that owned the flow; reload it the same way.
     private func searchEnded(listWiped: Bool = false) {
         let wasBlocked = sourcesBlockedBySearch || listWiped
+        if pickWatchActive, wasBlocked {
+            // Finding 1: the pick still listens to its request on this flow; the list waits.
+            sourcesHeldForPick = true
+            sourcesBlockedBySearch = true
+            print("[UpNext] source list held: the pick watch still listens to the next episode's request")
+            return
+        }
+        sourcesHeldForPick = false
         sourcesHeldForPreload = false
         sourcesBlockedBySearch = false
         sourcesBlockedByJump = false
@@ -1842,6 +1858,22 @@ final class NextEpisodeEngine: ObservableObject {
         pickStreamsState = nil
     }
 
+    /// Finding 1: the pick watch ended at an exit that is not followed by `searchEnded()` (the
+    /// walk's hand-off, the viewer moving on, the viewer's own source pick). `reload`: the player
+    /// stays, so a held list loads now if its column is still up; the hand-off only clears the
+    /// hold (the player is being replaced). Exits through `finishWithoutStream` and
+    /// `tearDownSearch` release it in their own `searchEnded()`.
+    private func releasePickHold(reload: Bool) {
+        guard sourcesHeldForPick else { return }
+        if reload {
+            searchEnded()
+        } else {
+            sourcesHeldForPick = false
+            sourcesBlockedBySearch = false
+            sourcesBlockedByJump = false
+        }
+    }
+
     private func didSelect(_ stream: StreamItem) {
         guard selectedStream == nil, !cancelled, let next = nextVideo else { return }
         print("[UpNext] selected — \(stream.addonName): \(stream.streamLabel)")
@@ -1995,12 +2027,14 @@ final class NextEpisodeEngine: ObservableObject {
                     self.endPickWatch()
                     self.selectedStream = nil
                     if !self.cancelled { self.phase = .hidden }
+                    self.releasePickHold(reload: true)
                     return
                 }
                 switch outcome {
                 case let .playable(resolved, url):
                     self.endResolveWalk()
                     self.endPickWatch()
+                    self.releasePickHold(reload: false)
                     print("[UpNext] resolved — playing next episode (\(walk.attempts) further source(s) tried)")
                     self.phase = .hidden
                     self.supersedeSourceSwitch()
@@ -2054,6 +2088,7 @@ final class NextEpisodeEngine: ObservableObject {
                             self.endPickWatch()
                             self.selectedStream = nil
                             if !self.cancelled { self.phase = .hidden }
+                            self.releasePickHold(reload: true)
                             return
                         }
                         print("[UpNext] wait for sources: \(landed ? "new results" : "no new results")")
