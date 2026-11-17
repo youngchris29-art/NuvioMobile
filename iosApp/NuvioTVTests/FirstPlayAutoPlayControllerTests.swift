@@ -969,4 +969,65 @@ final class FirstPlayAutoPlayControllerTests: XCTestCase {
         XCTAssertEqual(harness.played.last?.name, "A2")
         XCTAssertTrue(controller.fallbackTried.contains(stream: a1), "still tried: never picked again")
     }
+
+    // MARK: - Stage B review findings 4 and 5: slow is not failed, a later failure is recorded
+
+    /// The start-up limit's precheck keeps the slow torrent's other file from the same add-on
+    /// (the limit's own pick does too), so it does not answer "nothing left" wrongly.
+    func testTheStartupLimitPrecheckKeepsTheSlowTorrentsOtherFiles() async {
+        let hash = "fedcba9876543210fedcba9876543210fedcba98"
+        let harness = Harness()
+        let a0 = stream("A0", addon: "addon:a", direct: true, torrentHash: hash, fileIdx: 0)
+        let controller = harness.makeController()
+        controller.arm()
+        controller.ingest(feed(settled: [a0, stream("A1", addon: "addon:a", torrentHash: hash, fileIdx: 1)]))
+        XCTAssertEqual(harness.played.map { $0.name }, ["A0"])
+        XCTAssertTrue(controller.hasOpenCandidate(), "A1 is open: A0 is only slow")
+        XCTAssertTrue(controller.failover(afterFailureOf: a0.playbackStreamKey, addonId: a0.addonId, reason: .startupLimit))
+        await waitUntil { harness.played.count == 2 }
+        XCTAssertEqual(harness.played.last?.name, "A1")
+    }
+
+    /// A times out, B resolves, then A really fails: A's torrent is now failed for its add-on, so
+    /// when B fails too A's other file is skipped.
+    func testAFailureDuringALimitWalkMarksTheTorrentFailed() async {
+        let hash = "fedcba9876543210fedcba9876543210fedcba98"
+        let harness = Harness()
+        harness.plans = ["B": .hang]
+        let a0 = stream("A0", addon: "addon:a", direct: true, torrentHash: hash, fileIdx: 0)
+        let controller = harness.makeController(resolveDeadline: 0.1)
+        controller.arm()
+        controller.ingest(feed(settled: [a0, stream("B", addon: "addon:b"),
+                                         stream("A1", addon: "addon:a", torrentHash: hash, fileIdx: 1),
+                                         stream("Z", addon: "addon:z")]))
+        XCTAssertTrue(controller.failover(afterFailureOf: a0.playbackStreamKey, addonId: a0.addonId, reason: .startupLimit))
+        await waitUntil { harness.resolveCalls == ["B"] }
+        XCTAssertTrue(controller.failover(afterFailureOf: a0.playbackStreamKey, addonId: a0.addonId), "the duplicate is swallowed")
+        await waitUntil { harness.played.count == 2 }           // B's deadline passes, the walk moves on
+        XCTAssertEqual(harness.resolveCalls, ["B", "Z"], "A1 is skipped: A0's torrent failed")
+        XCTAssertEqual(harness.played.last?.name, "Z")
+        XCTAssertTrue(controller.fallbackTried.contains(stream: a0))
+    }
+
+    /// The same failure survives an interruption of B (the rolled-back tried set keeps it).
+    func testAFailureDuringALimitWalkSurvivesAnInterruption() async {
+        let hash = "fedcba9876543210fedcba9876543210fedcba98"
+        let harness = Harness()
+        harness.plans = ["B": .hang]
+        let a0 = stream("A0", addon: "addon:a", direct: true, torrentHash: hash, fileIdx: 0)
+        let controller = harness.makeController()
+        controller.arm()
+        controller.ingest(feed(settled: [a0, stream("B", addon: "addon:b"),
+                                         stream("A1", addon: "addon:a", torrentHash: hash, fileIdx: 1),
+                                         stream("Z", addon: "addon:z")]))
+        _ = controller.failover(afterFailureOf: a0.playbackStreamKey, addonId: a0.addonId, reason: .startupLimit)
+        await waitUntil { harness.resolveCalls == ["B"] }
+        _ = controller.failover(afterFailureOf: a0.playbackStreamKey, addonId: a0.addonId)
+        controller.abandonFailover()                             // a viewer choice interrupts B
+        harness.plans["B"] = .fail
+        XCTAssertTrue(controller.failover(afterFailureOf: a0.playbackStreamKey, addonId: a0.addonId))
+        await waitUntil { harness.played.count == 2 }
+        XCTAssertEqual(harness.resolveCalls, ["B", "B", "Z"], "B is retried (it never ran), A1 stays skipped")
+        harness.releaseHung()
+    }
 }

@@ -9,14 +9,16 @@ import SharedCore
 /// controller keeps no rule of its own; it walks this list.
 enum EpisodeFallbackCandidates {
     /// The live inputs: the episode's rejected links, the debrid connection, the settings.
+    /// `failed`: the playing source when it really failed (its torrent's other copies from its
+    /// add-on are left out); nil when the start-up limit asked (slow is not failed).
     static func ranked(streams: [StreamItem], context ctx: PlaybackContext, settings: PlayerSettingsUiState?,
-                       tried: PlayerSourceFallbackTried) -> [StreamItem] {
+                       tried: PlayerSourceFallbackTried, failed: StreamItem?) -> [StreamItem] {
         guard let settings else { return [] }
         let debrid = DebridSettingsRepository.shared.snapshot()
         return ranked(
             streams: streams,
             tried: tried,
-            failed: ctx.listedStream,
+            failed: failed,
             rejected: RejectedStreamLinks.rejected(for: ctx.videoId),
             cachedOnly: NextEpisodeEngine.cachedOnlyInEffect(mode: settings.streamAutoPlayMode,
                                                              cachedOnly: settings.streamAutoPlayCachedOnly),

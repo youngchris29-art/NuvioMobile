@@ -2077,11 +2077,18 @@ struct StreamPickerView: View {
     /// watchdog stays the backstop). Never for a source the viewer picked.
     private func handleStartupLimit(context ctx: PlaybackContext) {
         guard selected?.id == ctx.id else { return }
-        // W4 review r1: never once the viewer asked for something else.
-        guard ledger.allowsAutomaticStart else {
-            autoPlayLog("[AutoPlay] start-up limit passed while the viewer's own choice is pending — ignored")
+        // Stage B review finding 3: held while the viewer's own choice is pending, replayed if
+        // that choice is abandoned (the clock fires only once).
+        guard ledger.startupLimitReached(contextId: ctx.id) == .route else {
+            autoPlayLog("[AutoPlay] start-up limit passed while the viewer's own choice is pending — held")
             return
         }
+        routeStartupLimit(context: ctx)
+    }
+
+    /// The start-up limit's move to another source, by the normal rules (also a held limit,
+    /// replayed when the viewer's pending choice is abandoned).
+    private func routeStartupLimit(context ctx: PlaybackContext) {
         switch ctx.launchSource {
         case .manual:
             return
@@ -2102,6 +2109,7 @@ struct StreamPickerView: View {
     /// The first frame showed: a failover the start-up limit began is dropped (its late result too).
     private func handlePlaybackStarted(context ctx: PlaybackContext) {
         guard selected?.id == ctx.id else { return }
+        ledger.sourceStarted(contextId: ctx.id)
         switch ctx.launchSource {
         case .manual:
             return
@@ -2173,8 +2181,11 @@ struct StreamPickerView: View {
                 autoPlayLog("[AutoPlay] episode walk: candidates landed after the viewer moved on — dropped")
                 return
             }
+            // Stage B review finding 4: only a real failure excludes the playing torrent's other
+            // copies from its add-on; a start-up limit (slow, not failed) does not.
             let candidates = EpisodeFallbackCandidates.ranked(streams: streams, context: ctx,
-                                                              settings: livePlayerSettingsSnapshot(), tried: tried)
+                                                              settings: livePlayerSettingsSnapshot(), tried: tried,
+                                                              failed: load.failure == nil ? nil : ctx.listedStream)
             let walk = FirstPlayAutoPlayController(
                 titleKey: ctx.videoId,
                 dependencies: .live(type: ctx.contentType, videoId: ctx.videoId, season: ctx.season,
@@ -2272,10 +2283,16 @@ struct StreamPickerView: View {
     /// Review r2/r3: the player gave up on choice `id`. Pending ends; the held failure of the
     /// context still on screen is routed from scratch by the normal rules.
     private func viewerChoiceAbandoned(_ id: UUID) {
-        guard let held = ledger.choiceAbandoned(id) else { return }
-        guard let current = selected, current.id == held.contextId else { return }
-        print("[Failover] the viewer's choice was abandoned — routing the held failure of the playing source")
-        routeFailure(held.failure, context: current)
+        guard let replay = ledger.choiceAbandoned(id) else { return }
+        guard let current = selected, current.id == replay.contextId else { return }
+        switch replay {
+        case let .failure(open):
+            print("[Failover] the viewer's choice was abandoned — routing the held failure of the playing source")
+            routeFailure(open.failure, context: current)
+        case .startupLimit:
+            print("[Failover] the viewer's choice was abandoned — the playing source's start-up limit had passed")
+            routeStartupLimit(context: current)
+        }
     }
 
     /// Drops the walks' in-flight work without ending them: a first-play failover or episode walk

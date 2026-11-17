@@ -122,6 +122,25 @@ final class EpisodeFallbackCandidatesTests: XCTestCase {
             videoId: "tt1:1:2", season: 1, episode: 2, poster: nil, background: nil, providerName: nil,
             providerAddonId: nil, streamTitle: nil, streamSubtitle: nil, externalSubtitles: [])
         XCTAssertTrue(EpisodeFallbackCandidates.ranked(streams: [stream("a")], context: ctx, settings: nil,
-                                                       tried: PlayerSourceFallbackTried(keys: [], attempts: 0)).isEmpty)
+                                                       tried: PlayerSourceFallbackTried(keys: [], attempts: 0),
+                                                       failed: nil).isEmpty)
+    }
+
+    /// Stage B review finding 4: a snapshot the start-up limit asked for (no failed source) keeps
+    /// the slow torrent's other file from the same add-on; a real failure drops it.
+    func testALimitSnapshotKeepsTheSlowTorrentsOtherFiles() {
+        let hash = "89abcdef0123456789abcdef0123456789abcdef"
+        let x0 = stream("X0", addon: "addon:x", url: "https://x.example/0.mkv", hash: hash, fileIdx: 0)
+        let x1 = stream("X1", addon: "addon:x", url: "https://x.example/1.mkv", hash: hash, fileIdx: 1)
+        let tried = PlayerSourceFallbackTried.companion.None.including(stream: x0)
+        func names(_ failed: StreamItem?) -> [String] {
+            EpisodeFallbackCandidates.ranked(
+                streams: [x0, x1], tried: tried, failed: failed, rejected: [], cachedOnly: false,
+                scope: manualBingeScope, debridEnabled: false, activeResolverProviderId: nil,
+                resolvesThroughDebrid: { _ in false }
+            ).map { $0.name ?? "" }
+        }
+        XCTAssertEqual(names(nil), ["X1"], "slow is not failed")
+        XCTAssertEqual(names(x0), [], "a real failure leaves its torrent's other copy out")
     }
 }

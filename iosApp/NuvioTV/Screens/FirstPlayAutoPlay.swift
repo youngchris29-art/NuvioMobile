@@ -277,9 +277,20 @@ final class FirstPlayAutoPlayController: ObservableObject {
     func failover(afterFailureOf streamKey: String, addonId: String?, reason: FailoverReason = .playbackFailed,
                   refreshFirst: Candidate? = nil, failedURL: URL? = nil) -> Bool {
         if case .resolving = phase, isFailoverWalk {
-            if reason == .playbackFailed, limitWalk {
+            if reason == .playbackFailed {
                 // The slow source failed while its replacement resolves: running out now gives up.
                 limitWalk = false
+                // Stage B review finding 5: it really failed now (the limit had recorded it only as
+                // tried): its torrent is failed for its add-on for the rest of the walk. The
+                // in-flight pick keeps its attempt; an interruption gives it back without
+                // forgetting this failure.
+                if let slow = lastPlayed.flatMap({ $0.streamKey == streamKey ? $0 : nil })
+                    ?? candidates.first(where: { !streamKey.isEmpty && $0.streamKey == streamKey }) {
+                    tried = tried.includingFailed(stream: slow.stream)
+                    if let pick = inFlightPick {
+                        inFlightPick = (pick.index, pick.triedBefore.includingFailed(stream: slow.stream))
+                    }
+                }
             }
             autoPlayLog("[AutoPlay] \(reason == .startupLimit ? "start-up limit" : "playback failure") key=\(streamKey) while a failover resolves — nothing new started")
             return true
@@ -346,8 +357,11 @@ final class FirstPlayAutoPlayController: ObservableObject {
     /// on this device (a direct link, or one the debrid connection resolves).
     func hasOpenCandidate() -> Bool {
         guard phase == .done, attemptsUsed < attemptCap else { return false }
+        // Stage B review finding 4: the start-up limit asks this about a source that is slow, not
+        // failed, so no "failed" source is passed (its torrent's other copies stay candidates, as
+        // the limit's own pick treats them); real failures are already marked in `tried`.
         let open = Policy.openIndices(in: candidates, triedIndices: triedIndices,
-                                      rejected: deps.rejected(titleKey), tried: tried, failed: lastPlayed)
+                                      rejected: deps.rejected(titleKey), tried: tried, failed: nil)
         return open.contains { deps.directURL(candidates[$0].stream) != nil || deps.canResolve(candidates[$0].stream) }
     }
 

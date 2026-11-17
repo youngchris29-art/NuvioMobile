@@ -371,4 +371,59 @@ final class PlayerChoiceLedgerTests: XCTestCase {
         XCTAssertTrue(gate.admitsSwap(ticket: gate.ticket, replacing: nil, presented: "b"))
         XCTAssertFalse(gate.accepts(nil))
     }
+
+    // MARK: - Stage B review finding 3: a start-up limit during a pending choice
+
+    func testAStartupLimitDuringAPendingChoiceIsReplayedWhenTheChoiceIsAbandoned() {
+        var ledger = PlayerChoiceLedger()
+        let slow = context("slow", launch: .autoPlay)
+        XCTAssertEqual(ledger.startupLimitReached(contextId: slow.id), .route, "nothing pending: routed")
+        let pick = UUID()
+        ledger.choiceBegan(pick)
+        XCTAssertEqual(ledger.startupLimitReached(contextId: slow.id), .hold)
+        let replay = ledger.choiceAbandoned(pick)
+        guard case let .startupLimit(id)? = replay else { return XCTFail("the held limit comes back") }
+        XCTAssertEqual(id, slow.id)
+        XCTAssertNil(ledger.openFailure, "slow is not failed: no failure was opened")
+    }
+
+    func testAStartupLimitDuringAPendingChoiceIsDroppedWhenTheChoiceTakesOver() {
+        var ledger = PlayerChoiceLedger()
+        let slow = context("slow", launch: .autoPlay)
+        let pick = UUID()
+        ledger.choiceBegan(pick)
+        _ = ledger.startupLimitReached(contextId: slow.id)
+        ledger.contextPresented("ctx-picked")
+        XCTAssertNil(ledger.heldStartupLimit)
+        XCTAssertNil(ledger.choiceAbandoned(pick))
+    }
+
+    func testAFailureSupersedesAHeldStartupLimit() {
+        var ledger = PlayerChoiceLedger()
+        let slow = context("slow", launch: .autoPlay)
+        let pick = UUID()
+        ledger.choiceBegan(pick)
+        _ = ledger.startupLimitReached(contextId: slow.id)
+        XCTAssertEqual(ledger.failureArrived(context: slow, failure: failure(), rejectionDeferred: false), .hold)
+        guard case .failure? = ledger.choiceAbandoned(pick) else { return XCTFail("the failure is replayed, not the limit") }
+        XCTAssertNil(ledger.heldStartupLimit)
+    }
+
+    func testAHeldStartupLimitIsVoidOnceTheSourceStarts() {
+        var ledger = PlayerChoiceLedger()
+        let slow = context("slow", launch: .autoPlay)
+        let pick = UUID()
+        ledger.choiceBegan(pick)
+        _ = ledger.startupLimitReached(contextId: slow.id)
+        ledger.sourceStarted(contextId: slow.id)
+        XCTAssertNil(ledger.choiceAbandoned(pick), "a source that started has no limit to act on")
+    }
+
+    func testMenuDropsAHeldStartupLimit() {
+        var ledger = PlayerChoiceLedger()
+        ledger.choiceBegan(UUID())
+        _ = ledger.startupLimitReached(contextId: "slow")
+        ledger.viewerActed()
+        XCTAssertNil(ledger.heldStartupLimit)
+    }
 }

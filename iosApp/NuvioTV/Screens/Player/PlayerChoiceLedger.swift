@@ -36,6 +36,25 @@ struct PlayerChoiceLedger {
 
     enum Walk: Equatable { case autoFailover, episode }
 
+    /// What an abandoned choice hands back to be handled from scratch (Stage B review finding 3):
+    /// the held failure, or else a start-up limit that passed while the choice was pending.
+    enum Replay {
+        case failure(OpenFailure)
+        case startupLimit(contextId: String)
+
+        var contextId: String {
+            switch self {
+            case let .failure(open): open.contextId
+            case let .startupLimit(id): id
+            }
+        }
+        /// The held failure, nil for a start-up limit.
+        var failure: PlaybackFailure? {
+            if case let .failure(open) = self { return open.failure }
+            return nil
+        }
+    }
+
     enum FailureVerdict: Equatable {
         /// Route it now (alert, picker or a walk).
         case route
@@ -47,6 +66,10 @@ struct PlayerChoiceLedger {
     /// The in-player choice still on its way (nil: none pending).
     private(set) var pendingChoice: UUID?
     private(set) var openFailure: OpenFailure?
+    /// Finding 3: the context whose start-up limit passed while a choice was pending (the clock
+    /// fires once, so the limit is held here and replayed if the choice is abandoned). Slow is not
+    /// failed: it never opens a failure, and a real failure of the same context supersedes it.
+    private(set) var heldStartupLimit: String?
     private(set) var autoFailoverTicket: Int?
     private(set) var episodeWalkTicket: Int?
 
@@ -62,6 +85,7 @@ struct PlayerChoiceLedger {
         gate.viewerChose()
         gate.contextPresented()
         pendingChoice = nil
+        heldStartupLimit = nil
         clearTickets()
     }
 
@@ -81,6 +105,7 @@ struct PlayerChoiceLedger {
     mutating func contextPresented(_ presentedId: String?) -> OpenFailure? {
         gate.contextPresented()
         pendingChoice = nil
+        if heldStartupLimit != presentedId { heldStartupLimit = nil }
         guard let open = openFailure, open.contextId != presentedId else { return nil }
         openFailure = nil
         return open.rejectionDeferred ? open : nil
@@ -88,14 +113,26 @@ struct PlayerChoiceLedger {
 
     /// The player gave up on choice `id`. When it is the pending one, pending ends with the old
     /// context still on screen, and a held failure is returned to be routed from scratch.
-    mutating func choiceAbandoned(_ id: UUID) -> OpenFailure? {
+    mutating func choiceAbandoned(_ id: UUID) -> Replay? {
         guard pendingChoice == id else { return nil }
         pendingChoice = nil
         gate.contextPresented()
-        guard var open = openFailure, open.held else { return nil }
-        open.held = false
-        openFailure = open
-        return open
+        let limit = heldStartupLimit
+        heldStartupLimit = nil
+        if var open = openFailure, open.held {
+            open.held = false
+            openFailure = open
+            return .failure(open)
+        }
+        return limit.map { .startupLimit(contextId: $0) }
+    }
+
+    /// Finding 3: the start-up limit of `contextId` (on screen) passed. Held while a choice is
+    /// pending; otherwise the host asks the walk whether another source could start.
+    mutating func startupLimitReached(contextId: String) -> FailureVerdict {
+        guard choicePending else { return .route }
+        if openFailure?.contextId != contextId { heldStartupLimit = contextId }
+        return .hold
     }
 
     // MARK: The open failure
@@ -105,6 +142,7 @@ struct PlayerChoiceLedger {
     mutating func failureArrived(context: PlaybackContext, failure: PlaybackFailure,
                                  rejectionDeferred: Bool) -> FailureVerdict {
         let deferred = rejectionDeferred || (openFailure?.contextId == context.id && openFailure?.rejectionDeferred == true)
+        if heldStartupLimit == context.id { heldStartupLimit = nil }   // a real failure supersedes it
         openFailure = OpenFailure(context: context, failure: failure, rejectionDeferred: deferred,
                                   held: choicePending)
         return choicePending ? .hold : .route
@@ -129,7 +167,12 @@ struct PlayerChoiceLedger {
         return open.rejectionDeferred && !rejectionSettled ? open : nil
     }
 
-    /// May the start-up limit (or anything else automatic) start a walk now?
+    /// Finding 3: the source on screen showed its first frame: a held start-up limit is void.
+    mutating func sourceStarted(contextId: String) {
+        if heldStartupLimit == contextId { heldStartupLimit = nil }
+    }
+
+    /// May anything automatic start a walk now?
     var allowsAutomaticStart: Bool { !choicePending && gate.allowsAutomaticWalk }
 
     // MARK: Walk tickets
