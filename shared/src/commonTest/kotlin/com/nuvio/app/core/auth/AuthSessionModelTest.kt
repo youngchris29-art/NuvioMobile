@@ -832,4 +832,66 @@ class AuthSessionModelTest {
         assertTrue(outputs.any { it is StartValidation })
         assertEquals(AuthState.Unauthenticated, run.state.published)
     }
+
+    // ── Upgrading without an account (follow-up to r1-1) ────────────────────────────────────────
+
+    @Test
+    fun anUpgradingGuestKeepsTheirDataAndStaysAGuest() {
+        val run = Run(guestId = "g1", ownerUnknown = true)
+        assertEquals(listOf(PersistOwner(null), Publish(guest("g1"))), run.last)
+        assertFalse(run.state.ownerUnknown)
+        // The library has no session: init reports NotAuthenticated(isSignOut = false).
+        assertEquals(emptyList(), run.send(Snap.Initializing))
+        assertEquals(emptyList(), run.send(Snap.NotAuthenticated(cleared = false)))
+        assertEquals(emptyList(), run.send(WatchdogFired))
+        assertEquals(0, run.wipes())
+        assertEquals(0, run.notices())
+        assertEquals(guest("g1"), run.state.published)
+    }
+
+    @Test
+    fun anUpgradingGuestWithAStoredAccountSessionStaysAGuestAndNothingIsWiped() {
+        val run = Run(guestId = "g1", ownerUnknown = true)
+        assertEquals(emptyList(), run.send(acct("A", "a1", restored = true)))
+        assertEquals(emptyList(), run.send(Snap.NotAuthenticated(cleared = true)))
+        assertEquals(0, run.wipes())
+        assertEquals(guest("g1"), run.state.published)
+        assertNull(run.state.owner)
+    }
+
+    @Test
+    fun anUpgradingGuestWhoSignsOutGetsTheUsualSignOutWipeOnly() {
+        val run = Run(guestId = "g1", ownerUnknown = true)
+        run.signOut()
+        assertEquals(1, run.wipes())
+        assertEquals(0, run.notices())
+        assertEquals(AuthState.Unauthenticated, run.state.published)
+    }
+
+    @Test
+    fun anUpgradingQrScaffoldIsNeverWipedButTheNextAccountIs() {
+        val run = Run(ownerUnknown = true)
+        assertEquals(listOf(Publish(AuthState.Unauthenticated)), run.send(Snap.Scaffold))
+        assertEquals(0, run.wipes())
+        run.send(acct("B", "b1"))
+        run.send(ValidationFinished(run.startedValidation(), SessionVerdict.Valid))
+        // Leftovers of whoever used the box before are wiped before B's account is shown.
+        assertEquals(1, run.wipes())
+        assertTrue(run.all.indexOf(WipeAccountData) < run.all.indexOf(Publish(account("B"))))
+    }
+
+    @Test
+    fun anUpgradingAccountWhoseStoredSessionLoadsLateIsNeverWiped() {
+        // The stored session is still being read (or refreshed) when the collector starts: the
+        // library stays Initializing or retries, and never reports NotAuthenticated meanwhile.
+        val run = Run(ownerUnknown = true)
+        run.send(Snap.Initializing)
+        run.send(Snap.RefreshFailure)
+        run.send(WatchdogFired)
+        run.send(acct("A", "a1", restored = true))
+        run.send(ValidationFinished(run.startedValidation(), SessionVerdict.Valid))
+        assertEquals(account("A"), run.state.published)
+        assertEquals(0, run.wipes())
+        assertEquals("A", run.state.owner)
+    }
 }

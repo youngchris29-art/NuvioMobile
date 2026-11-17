@@ -356,6 +356,10 @@ private class StepBuilder(var state: AuthModelState) {
                     afterWipe = null,
                 )
                 clearCaches()
+                // A saved guest id means the local data is that guest's: with no owner ever
+                // recorded (an upgrading guest), record "no account owner" now, with no wipe. Only
+                // "unknown owner, no guest id, no usable stored session" clears leftovers.
+                if (guestId != null && state.ownerUnknown) recordOwner(null)
                 publish(
                     if (guestId != null) AuthState.Authenticated(userId = guestId, email = null, isAnonymous = true)
                     else AuthState.Loading,
