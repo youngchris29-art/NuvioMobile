@@ -1531,11 +1531,19 @@ final class NuvioTVUITests: XCTestCase {
         pause(1.5)
         XCTAssertTrue(openSettingsCategory(app, named: "Sources"), "Settings › Sources pane did not open")
         // Source Fallback section (before the Search section, so walked first, top to bottom):
-        // the switch is On by default, which shows the other two rows.
-        for row in ["Try Another Source on Failure", "Sources to Try", "Start-Up Limit"] {
-            try walkToRowByTreeIndex(app, targetLabelPrefix: row, sidebarMaxX: 0, category: "Sources")
-            XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", row)).firstMatch.exists,
-                          "\(row) row (Source Fallback section) missing from the Sources pane")
+        // the switch is On by default, which shows the other two rows. Only the switch is walked
+        // to: the two rows under it are `SettingsPickerRow`s (a `Menu`), whose Cell/Button carries
+        // no label, so `walkToRowByTreeIndex` can never find one (FixtureSetupTests'
+        // `walkFromSwatchesToSizeRow` doc) and each attempt overshot to the bottom of the pane,
+        // where the lazy List had culled "Recent Searches" too (W4 gate, 2026-11-16). Their title
+        // `StaticText` leaves are on screen right below the switch.
+        try walkToRowByTreeIndex(app, targetLabelPrefix: "Try Another Source on Failure", sidebarMaxX: 0, category: "Sources")
+        XCTAssertTrue(app.descendants(matching: .any).matching(
+            NSPredicate(format: "label BEGINSWITH %@", "Try Another Source on Failure")).firstMatch.exists,
+                      "Try Another Source on Failure row (Source Fallback section) missing from the Sources pane")
+        for row in ["Sources to Try", "Start-Up Limit"] {
+            XCTAssertTrue(app.staticTexts[row].waitForExistence(timeout: 4),
+                          "\(row) row missing under Try Another Source on Failure (the switch must default On)")
         }
         shot(app, "16d_source_fallback_section")
         try walkToRowByTreeIndex(app, targetLabelPrefix: "Recent Searches", sidebarMaxX: 0, category: "Sources")
@@ -9746,9 +9754,17 @@ final class NuvioTVUITests: XCTestCase {
         press(.down, times: 1)
         XCTAssertEqual(titleBecomes(["Upcoming Episodes"]), "Upcoming Episodes", "Classic: Down from Collection Header must move the explainer to Upcoming Episodes")
         shot(app, "82b2_home_upcoming")
+        // Home Watchlist (15b860a83, in the base before W4): the Watchlist toggle sits directly
+        // under Upcoming Episodes in both layouts (HomeScreenSettingsPane.swift's Home Rows).
+        press(.down, times: 1)
+        XCTAssertEqual(titleBecomes(["Watchlist"]), "Watchlist", "Classic: Down from Upcoming Episodes must move the explainer to Watchlist")
+        // Stage A (dbb160528): Continue Watching On Select sits under Watchlist in both layouts.
+        press(.down, times: 1)
+        XCTAssertEqual(titleBecomes(["Continue Watching On Select"]), "Continue Watching On Select",
+                       "Classic: Down from Watchlist must move the explainer to Continue Watching On Select")
         press(.down, times: 1)
         let next = titleBecomes(["Show Hero", "Refresh Add-ons"])
-        XCTAssertTrue(["Show Hero", "Refresh Add-ons"].contains(next), "Classic: Down from Upcoming Episodes must move the explainer to Show Hero (or Refresh Add-ons with no catalogs), got '\(next)'")
+        XCTAssertTrue(["Show Hero", "Refresh Add-ons"].contains(next), "Classic: Down from Continue Watching On Select must move the explainer to Show Hero (or Refresh Add-ons with no catalogs), got '\(next)'")
         shot(app, "82c_home_next_row")
 
         // Stage run: Home Layout, Collections Layout, Collection Header, then Ambient Background (Stage only).
