@@ -1,23 +1,28 @@
 import Foundation
 
-/// W5 (review r1, findings 2–4): what the Library filter bar offers and what it selects, as one pure
-/// function. `LibraryViewModel` feeds it the chosen list's titles (already de-duplicated and sorted
-/// by the shared projection, which is asked for the list only: no type, genre or year) and the
-/// viewer's requests; it applies the output and nothing else decides.
+/// W5 (review r1–r3): what the Library filter bar offers and what it selects, as pure functions.
+/// `LibraryViewModel` feeds `resolve` the chosen list's titles (already de-duplicated and sorted by
+/// the shared projection, which is asked for the list only: no type, genre or year) and the
+/// viewer's remembered picks; it applies the output, and `picksToDrop` says which picks to forget.
+/// Nothing else decides.
 ///
-/// Rules (faceted search over the Type, Genre, Year and Show menus):
-/// - Requests resolve in order type → genre → year, each against the titles that pass the Show
-///   choice and the facets resolved before it. A request with no title there is unavailable: it is
-///   not applied and it is reported in `clear`, so the view model forgets it (it never comes back
-///   on its own when the titles change again; the caller applies `clear` only when `mayForget`
-///   says the titles are authoritative). A genre matches case-insensitively and resolves to
-///   the spelling the menu shows, so a request survives a narrowing that changes the spelling.
+/// The rule (review r3): data never forgets a pick; only the viewer does.
+/// - A remembered pick with no title in the titles on screen is not applied: the output's
+///   selection (the effective value) is All for it, and the drawn titles match that effective
+///   value. The pick itself stays remembered and applies again when its titles return (a cached,
+///   partial, failed or optimistic provider snapshot can never cost the viewer a pick).
+/// - At a viewer action (a pick in any menu, Clear Filters) the session picks that have no title
+///   under the new selection (genre, year, Show) are dropped for good (`picksToDrop`), so they do
+///   not come back when the viewer switches back. The remembered list and type change only when the
+///   viewer picks a list or a type; they are never dropped by data or by another menu.
+/// - Picks resolve in order type → Show → genre → year, each against the titles that pass the
+///   picks resolved before it. A genre matches case-insensitively and resolves to the spelling the
+///   menu shows, so a pick survives a narrowing that changes the spelling.
 /// - Each menu's options and counts are computed over the titles that pass every OTHER active
 ///   filter, Show included (type counts: Show, genre, year; genres: Show, type, year; years: Show,
 ///   type, genre; Show choices: type, genre, year). An option with no title is never offered.
 /// - A menu shows when it can split its titles (two or more options, or one option that fewer than
 ///   all of them carry: the rest have no genre or no year), or when it has a selection to undo.
-/// - Nothing is cleared while the list has no titles (a provider list still loading).
 nonisolated enum LibraryBarResolver {
     typealias SmartFilter = LibraryGridPolicy.SmartFilter
     typealias FacetOption = LibraryGridPolicy.FacetOption
@@ -48,18 +53,38 @@ nonisolated enum LibraryBarResolver {
         var smartFilters: Set<SmartFilter> = []
     }
 
-    /// Requests to forget because they are unavailable in these titles.
-    struct Clear: OptionSet, Equatable, Sendable {
+    /// A set of picks: the ones with no title here (`Output.unavailable`), or the ones to drop.
+    struct Picks: OptionSet, Equatable, Sendable {
         let rawValue: Int
-        static let type = Clear(rawValue: 1)
-        static let genre = Clear(rawValue: 2)
-        static let year = Clear(rawValue: 4)
+        static let type = Picks(rawValue: 1)
+        static let genre = Picks(rawValue: 2)
+        static let year = Picks(rawValue: 4)
+        static let show = Picks(rawValue: 8)
+        /// The picks the viewer makes for the session (not remembered across launches, decision AO).
+        static let session: Picks = [.genre, .year, .show]
+    }
+
+    /// What the viewer just did. A library emission (any provider snapshot) is not an action.
+    enum ViewerAction: Equatable, Sendable {
+        case list, type, show, genre, year, clearFilters
+    }
+
+    /// The picks to forget after `action`, given the picks `resolve` found unavailable for the new
+    /// selection: the session picks with no title, and only at a viewer action. A snapshot (`nil`)
+    /// never drops anything, and the remembered list and type are never dropped here (they change
+    /// only through their own menus).
+    static func picksToDrop(after action: ViewerAction?, unavailable: Picks) -> Picks {
+        guard action != nil else { return [] }
+        return unavailable.intersection(.session)
     }
 
     struct Output: Equatable, Sendable {
+        /// The effective selections: what the menus show and the drawn titles follow. Nil (or empty
+        /// smart filters) where the remembered pick has no title here.
         var selectedType: String?
         var selectedGenre: String?
         var selectedYear: String?
+        var smartFilters: Set<SmartFilter>
         /// Type menu rows in the list's type order, with counts; "All" counts `allTypesCount`.
         var types: [FacetOption]
         var allTypesCount: Int
@@ -75,7 +100,8 @@ nonisolated enum LibraryBarResolver {
         var showsShow: Bool
         /// Indices into the input titles to draw, in input order.
         var shown: [Int]
-        var clear: Clear
+        /// Remembered picks with no title here (not applied this time).
+        var unavailable: Picks
     }
 
     /// The menu's type order (the shared projection's: movie, series, tv, show, anime, then the rest
@@ -83,44 +109,53 @@ nonisolated enum LibraryBarResolver {
     static let typeOrder = ["movie", "series", "tv", "show", "anime"]
 
     static func resolve(titles: [Title], request: Request, typeOrder order: [String]? = nil) -> Output {
-        let passShow: (Title) -> Bool = { LibraryGridPolicy.passes($0.state, filters: request.smartFilters) }
-        let canClear = !titles.isEmpty
-        var clear: Clear = []
+        var unavailable: Picks = []
 
         // Types the list has, in order.
         let listTypes = orderedTypes(titles.map(\.typeKey), order: order)
 
-        // 1. Type: the list must have it, and some title under Show.
+        // 1. Type (remembered): the list must have it.
         var type: String?
         if let wanted = request.type?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !wanted.isEmpty {
-            if titles.contains(where: { $0.typeKey == wanted && passShow($0) }) {
+            if titles.contains(where: { $0.typeKey == wanted }) {
                 type = wanted
-            } else if canClear {
-                clear.insert(.type)
+            } else {
+                unavailable.insert(.type)
             }
         }
         let passType: (Title) -> Bool = { type == nil || $0.typeKey == type }
 
-        // 2. Genre: some title under Show and type carries it (any spelling).
+        // 2. Show: some title of the type passes it.
+        var smart: Set<SmartFilter> = []
+        if !request.smartFilters.isEmpty {
+            if titles.contains(where: { passType($0) && LibraryGridPolicy.passes($0.state, filters: request.smartFilters) }) {
+                smart = request.smartFilters
+            } else {
+                unavailable.insert(.show)
+            }
+        }
+        let passShow: (Title) -> Bool = { LibraryGridPolicy.passes($0.state, filters: smart) }
+
+        // 3. Genre: some title under type and Show carries it (any spelling).
         var genre: String?
         if let wanted = normalized(request.genre) {
             let pool = titles.filter { passShow($0) && passType($0) }
             if let spelling = firstSpelling(of: wanted, in: pool) {
                 genre = spelling
-            } else if canClear {
-                clear.insert(.genre)
+            } else {
+                unavailable.insert(.genre)
             }
         }
         let genreKey = genre.map { $0.lowercased() }
         let passGenre: (Title) -> Bool = { t in genreKey == nil || t.genres.contains { $0.lowercased() == genreKey } }
 
-        // 3. Year: some title under Show, type and genre has it.
+        // 4. Year: some title under type, Show and genre has it.
         var year: String?
         if let wanted = request.year?.trimmingCharacters(in: .whitespacesAndNewlines), !wanted.isEmpty {
             if titles.contains(where: { passShow($0) && passType($0) && passGenre($0) && $0.year == wanted }) {
                 year = wanted
-            } else if canClear {
-                clear.insert(.year)
+            } else {
+                unavailable.insert(.year)
             }
         }
         let passYear: (Title) -> Bool = { year == nil || $0.year == year }
@@ -147,7 +182,7 @@ nonisolated enum LibraryBarResolver {
         let yearOptions = yearCounts.map { FacetOption(key: $0.key, count: $0.value) }.sorted { $0.key > $1.key }
 
         let showPool = titles.filter { passType($0) && passGenre($0) && passYear($0) }
-        let visibleSmart = LibraryGridPolicy.visibleSmartFilters(states: showPool.map(\.state), active: request.smartFilters)
+        let visibleSmart = LibraryGridPolicy.visibleSmartFilters(states: showPool.map(\.state), active: smart)
 
         let shown = titles.indices.filter { i in
             let t = titles[i]
@@ -158,6 +193,7 @@ nonisolated enum LibraryBarResolver {
             selectedType: type,
             selectedGenre: genre,
             selectedYear: year,
+            smartFilters: smart,
             types: typeOptions,
             allTypesCount: typePool.count,
             genres: genreOptions,
@@ -166,40 +202,10 @@ nonisolated enum LibraryBarResolver {
             showsType: shows(typeOptions, selected: type, eligible: typePool.count),
             showsGenre: shows(genreOptions, selected: genre, eligible: genrePool.count),
             showsYear: shows(yearOptions, selected: year, eligible: yearPool.count),
-            showsShow: !visibleSmart.isEmpty || !request.smartFilters.isEmpty,
+            showsShow: !visibleSmart.isEmpty || !smart.isEmpty,
             shown: shown,
-            clear: clear
+            unavailable: unavailable
         )
-    }
-
-    // MARK: - When a forget may be applied (review r2)
-
-    /// What the titles handed to `resolve` were cut from, for `mayForget`.
-    struct Source: Equatable, Sendable {
-        /// The library state has loaded once.
-        var isLoaded: Bool
-        /// A pull is in flight: a provider publishes partial snapshots meanwhile (Trakt: the
-        /// watchlist before the personal lists, a list with no items yet left out of the sections).
-        var isLoading: Bool
-        /// The last pull failed: the sections are whatever was published before the failure.
-        var hasError: Bool
-        /// The list the viewer picked (nil = none, the source's first list or the local library).
-        var requestedListKey: String?
-        /// The list the projection actually cut the titles from (nil = the local library).
-        var projectedListKey: String?
-        var titleCount: Int
-    }
-
-    /// Whether `resolve`'s `clear` may be applied, i.e. the requests forgotten (and the type's
-    /// remembered pick overwritten). Only when the titles are the requested list's own complete
-    /// titles: loaded, no pull in flight, no failed pull, the requested list is the one projected
-    /// (not a fallback while it is missing from a partial snapshot), and at least one title. Until
-    /// then a request that has no title here is simply not applied this time; it stays remembered and
-    /// applies again when its titles arrive.
-    static func mayForget(_ source: Source) -> Bool {
-        guard source.isLoaded, !source.isLoading, !source.hasError, source.titleCount > 0 else { return false }
-        if let requested = source.requestedListKey { return requested == source.projectedListKey }
-        return true
     }
 
     /// A menu is worth showing when it can split its titles or has a selection to undo. One option

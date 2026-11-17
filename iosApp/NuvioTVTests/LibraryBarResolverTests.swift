@@ -41,7 +41,7 @@ final class LibraryBarResolverTests: XCTestCase {
         XCTAssertEqual(out.years, [Facet(key: "2010", count: 1), Facet(key: "2005", count: 2), Facet(key: "2001", count: 1)])
         XCTAssertEqual(out.visibleSmartFilters, [.unwatched, .inProgress, .watched])
         XCTAssertTrue(out.showsType && out.showsGenre && out.showsYear && out.showsShow)
-        XCTAssertEqual(out.clear, [])
+        XCTAssertEqual(out.unavailable, [])
     }
 
     func testTheCallersTypeOrderWins() {
@@ -85,20 +85,20 @@ final class LibraryBarResolverTests: XCTestCase {
         XCTAssertEqual(out.visibleSmartFilters, [.unwatched, .watched])
     }
 
-    // MARK: - Unavailable requests are cleared (finding 2)
+    // MARK: - Unavailable picks are not applied (finding 2; review r3: only the viewer drops them)
 
     func testAGenreTheTypeLacksIsClearedNotKept() {
         let out = resolve(.init(type: "anime", genre: "Comedy"))
         XCTAssertNil(out.selectedGenre)
-        XCTAssertEqual(out.clear, [.genre])
+        XCTAssertEqual(out.unavailable, [.genre])
         XCTAssertEqual(out.shown, [4])
     }
 
     func testAYearOrTypeTheListLacksIsCleared() {
-        XCTAssertEqual(resolve(.init(year: "1980")).clear, [.year])
-        XCTAssertEqual(resolve(.init(type: "documentary")).clear, [.type])
+        XCTAssertEqual(resolve(.init(year: "1980")).unavailable, [.year])
+        XCTAssertEqual(resolve(.init(type: "documentary")).unavailable, [.type])
         let both = resolve(.init(type: "documentary", genre: "Western", year: "1980"))
-        XCTAssertEqual(both.clear, [.type, .genre, .year])
+        XCTAssertEqual(both.unavailable, [.type, .genre, .year])
         XCTAssertEqual(both.shown.count, 5)
     }
 
@@ -106,37 +106,42 @@ final class LibraryBarResolverTests: XCTestCase {
         let out = resolve(.init(genre: "Comedy", year: "2001"))
         XCTAssertEqual(out.selectedGenre, "Comedy")
         XCTAssertNil(out.selectedYear)
-        XCTAssertEqual(out.clear, [.year])
+        XCTAssertEqual(out.unavailable, [.year])
         XCTAssertEqual(out.shown, [2])
     }
 
     func testAGenreTheShowChoiceLeavesNoTitleForIsCleared() {
         let out = resolve(.init(genre: "Comedy", smartFilters: [.watched]))
         XCTAssertNil(out.selectedGenre)
-        XCTAssertEqual(out.clear, [.genre])
+        XCTAssertEqual(out.unavailable, [.genre])
         XCTAssertEqual(out.shown, [1, 3])
     }
 
-    /// The caller drops a cleared request; once dropped it never comes back on its own, even when
-    /// the titles that carried it return.
+    /// After a viewer action the caller drops an unavailable session pick; once dropped it never
+    /// comes back on its own, even when    /// the titles that carried it return.
     func testAClearedRequestStaysClearedWhenItBecomesAvailableAgain() {
         var request = R.Request(type: "anime", genre: "Comedy")
         let first = resolve(request)
-        if first.clear.contains(.genre) { request.genre = nil }
+        if R.picksToDrop(after: .type, unavailable: first.unavailable).contains(.genre) { request.genre = nil }
         request.type = nil
         let second = resolve(request)
         XCTAssertNil(second.selectedGenre)
         XCTAssertEqual(second.shown.count, 5)
-        XCTAssertEqual(second.clear, [])
+        XCTAssertEqual(second.unavailable, [])
     }
 
-    func testNothingIsClearedWhileTheListIsEmpty() {
-        let out = resolve(.init(type: "movie", genre: "Drama", year: "2001"), [])
-        XCTAssertEqual(out.clear, [])
+    /// An empty list applies nothing; whether anything is dropped is `picksToDrop`'s call (nothing
+    /// after a snapshot).
+    func testAnEmptyListAppliesNothing() {
+        let out = resolve(.init(type: "movie", genre: "Drama", year: "2001", smartFilters: [.watched]), [])
+        XCTAssertEqual(out.unavailable, [.type, .show, .genre, .year])
+        XCTAssertNil(out.selectedType)
         XCTAssertNil(out.selectedGenre)
+        XCTAssertEqual(out.smartFilters, [])
         XCTAssertEqual(out.shown, [])
         XCTAssertFalse(out.showsType || out.showsGenre || out.showsYear || out.showsShow)
         XCTAssertEqual(out.allTypesCount, 0)
+        XCTAssertEqual(R.picksToDrop(after: nil, unavailable: out.unavailable), [])
     }
 
     // MARK: - Spelling (finding 2's "keep the case-insensitive match")
@@ -155,7 +160,7 @@ final class LibraryBarResolverTests: XCTestCase {
         let series = resolve(.init(type: "series", genre: "DRAMA"), list)
         XCTAssertEqual(series.selectedGenre, "Drama")
         XCTAssertEqual(series.genres.first { $0.key.lowercased() == "drama" }?.key, "Drama")
-        XCTAssertEqual(series.clear, [])
+        XCTAssertEqual(series.unavailable, [])
         XCTAssertEqual(series.shown, [1])
     }
 
@@ -190,12 +195,12 @@ final class LibraryBarResolverTests: XCTestCase {
         XCTAssertTrue(R.shows([], selected: "a", eligible: 0))
     }
 
-    func testAnEmptyResultStillOffersWayBack() {
-        // Show = Watched with In Progress also on can never match; the active ones stay offered.
+    /// A Show choice no title passes is not applied: All Titles shows and every title is drawn.
+    func testAnUnsatisfiableShowChoiceShowsAllTitles() {
         let out = resolve(.init(smartFilters: [.watched, .inProgress]))
-        XCTAssertEqual(out.shown, [])
-        XCTAssertTrue(out.showsShow)
-        XCTAssertTrue(out.visibleSmartFilters.contains(.watched))
+        XCTAssertEqual(out.smartFilters, [])
+        XCTAssertEqual(out.unavailable, [.show])
+        XCTAssertEqual(out.shown, [0, 1, 2, 3, 4])
     }
 
     // MARK: - Parsing and cost
@@ -228,24 +233,43 @@ final class LibraryBarResolverTests: XCTestCase {
         XCTAssertLessThan(ms, 50)
     }
 
-    // MARK: - When a forget may be applied (review r2)
+    // MARK: - Data never forgets; only the viewer does (review r3)
 
-    private func source(loaded: Bool = true, loading: Bool = false, error: Bool = false,
-                        requested: String? = "personal", projected: String? = "personal", titles: Int = 3) -> R.Source {
-        R.Source(isLoaded: loaded, isLoading: loading, hasError: error,
-                 requestedListKey: requested, projectedListKey: projected, titleCount: titles)
+    func testOnlyAViewerActionDropsAndOnlySessionPicks() {
+        let all: R.Picks = [.type, .genre, .year, .show]
+        XCTAssertEqual(R.picksToDrop(after: nil, unavailable: all), [], "a snapshot never drops a pick")
+        for action: R.ViewerAction in [.list, .type, .show, .genre, .year, .clearFilters] {
+            XCTAssertEqual(R.picksToDrop(after: action, unavailable: all), [.genre, .year, .show], "\(action)")
+            XCTAssertEqual(R.picksToDrop(after: action, unavailable: [.type]), [], "the remembered type is never dropped by data")
+        }
     }
 
-    func testMayForgetOnlyAgainstTheRequestedListsCompleteTitles() {
-        XCTAssertTrue(R.mayForget(source()), "the list's own titles, settled")
-        XCTAssertFalse(R.mayForget(source(loading: true)), "a pull in flight (Trakt's partial snapshots)")
-        XCTAssertFalse(R.mayForget(source(projected: "watchlist")), "a fallback while the list is missing")
-        XCTAssertFalse(R.mayForget(source(loading: true, projected: "watchlist")), "Trakt: watchlist first")
-        XCTAssertFalse(R.mayForget(source(error: true)), "a failed pull leaves whatever was published")
-        XCTAssertFalse(R.mayForget(source(loaded: false)), "not loaded yet")
-        XCTAssertFalse(R.mayForget(source(titles: 0)), "an empty snapshot (signed out, refresh emptied it)")
-        XCTAssertFalse(R.mayForget(source(projected: nil, titles: 0)), "no sections at all")
-        XCTAssertTrue(R.mayForget(source(requested: nil, projected: "watchlist")), "no list picked: the first list is the viewer's")
-        XCTAssertTrue(R.mayForget(source(requested: nil, projected: nil)), "the local library (no lists)")
+    /// The invariant the bar keeps: the shown selection and the drawn titles always agree. Every
+    /// drawn title passes the effective selections, every title that passes is drawn, and each
+    /// effective selection is a row of its menu. Exhaustive over the fixture's picks.
+    func testTheShownSelectionAndTheDrawnTitlesAlwaysAgree() {
+        let types: [String?] = [nil, "movie", "series", "anime", "documentary"]
+        let genres: [String?] = [nil, "drama", "Comedy", "Crime", "Western"]
+        let years: [String?] = [nil, "2001", "2005", "2010", "1980"]
+        let shows: [Set<LibraryGridPolicy.SmartFilter>] = [[], [.unwatched], [.inProgress], [.watched], [.watched, .inProgress]]
+        let list = titles
+        for type in types { for genre in genres { for year in years { for show in shows {
+            let out = resolve(.init(type: type, genre: genre, year: year, smartFilters: show), list)
+            let expected = list.indices.filter { i in
+                let t = list[i]
+                return (out.selectedType == nil || t.typeKey == out.selectedType)
+                    && (out.selectedGenre == nil || t.genres.contains { $0.lowercased() == out.selectedGenre!.lowercased() })
+                    && (out.selectedYear == nil || t.year == out.selectedYear)
+                    && LibraryGridPolicy.passes(t.state, filters: out.smartFilters)
+            }
+            let tag = "\(String(describing: type)) \(String(describing: genre)) \(String(describing: year)) \(show)"
+            XCTAssertEqual(out.shown, expected, tag)
+            XCTAssertFalse(out.shown.isEmpty, "a non-empty list always draws something: \(tag)")
+            if let g = out.selectedGenre { XCTAssertTrue(out.genres.contains { $0.key == g }, tag) }
+            if let y = out.selectedYear { XCTAssertTrue(out.years.contains { $0.key == y }, tag) }
+            if let t = out.selectedType { XCTAssertTrue(out.types.contains { $0.key == t }, tag) }
+            XCTAssertEqual(out.unavailable.contains(.genre), genre != nil && out.selectedGenre == nil, tag)
+            XCTAssertEqual(out.unavailable.contains(.year), year != nil && out.selectedYear == nil, tag)
+        } } } }
     }
 }

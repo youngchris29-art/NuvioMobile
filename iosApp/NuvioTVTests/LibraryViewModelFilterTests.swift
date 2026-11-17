@@ -290,15 +290,93 @@ final class LibraryViewModelFilterTests: XCTestCase {
         XCTAssertEqual(names(m), ["Frieren"])
     }
 
-    /// A complete snapshot of the list itself does forget an unavailable pick (review r1 holds).
-    func testACompleteSnapshotOfTheListStillForgets() {
+    /// Review r3: even a complete snapshot of the list never forgets a pick: it shows All for it
+    /// while the list lacks its titles, and the pick applies again when they return.
+    func testASnapshotShowsAllForAMissingPickAndItReturns() {
         let m = model(.provider)
         m.replaceFixtureLibrary(snapshot(watchlist: movies, personal: shows, isLoading: false))
         m.selectSection("fx-personal")
         m.selectGenre("Fantasy")
         m.replaceFixtureLibrary(snapshot(watchlist: movies, personal: shows.filter { $0.name != "Frieren" }, isLoading: false))
-        XCTAssertNil(m.selectedGenre)
+        XCTAssertNil(m.selectedGenre, "the menu shows All genres")
+        XCTAssertEqual(m.entries.count, 5, "and the drawn titles match: all five")
         m.replaceFixtureLibrary(snapshot(watchlist: movies, personal: shows, isLoading: false))
-        XCTAssertNil(m.selectedGenre, "forgotten against the list's own complete titles: it stays forgotten")
+        XCTAssertEqual(m.selectedGenre, "Fantasy")
+        XCTAssertEqual(names(m), ["Frieren"])
+    }
+
+    // MARK: - Data never forgets a pick (review r3)
+
+    /// Finding 1: a cold start publishes the older cache first (the personal list with only movies)
+    /// before the refresh brings the series. The remembered Series pick survives, nothing is written.
+    func testACachedSnapshotNeverClearsTheRememberedType() {
+        let m = model(.provider)
+        m.replaceFixtureLibrary(snapshot(watchlist: movies, personal: shows, isLoading: false))
+        m.selectSection("fx-personal")
+        m.selectType("series")
+        let writes = m.persistedPickWrites
+        m.replaceFixtureLibrary(snapshot(watchlist: movies, personal: movies, isLoading: false))
+        XCTAssertNil(m.selectedType, "no series in the cache: the menu shows All types for now")
+        XCTAssertEqual(m.entries.count, movies.count, "the drawn titles match the shown selection")
+        XCTAssertEqual(m.persistedPickWrites, writes, "a snapshot must never write a pick")
+        m.replaceFixtureLibrary(snapshot(watchlist: movies, personal: shows, isLoading: false))
+        XCTAssertEqual(m.selectedType, "series", "the remembered pick applies again")
+        XCTAssertEqual(m.entries.count, 4)
+        XCTAssertEqual(m.persistedPickWrites, writes)
+    }
+
+    /// Finding 2: a failed partial refresh (watchlist only), then Trakt's optimistic rebuild publishes
+    /// the picked list with one movie, flagged loaded and idle. The Series pick survives.
+    func testAnOptimisticRebuildNeverClearsTheRememberedType() {
+        let m = model(.provider)
+        m.replaceFixtureLibrary(snapshot(watchlist: movies, personal: shows, isLoading: false))
+        m.selectSection("fx-personal")
+        m.selectType("series")
+        let writes = m.persistedPickWrites
+        m.replaceFixtureLibrary(snapshot(watchlist: movies, personal: nil, isLoading: false, errorMessage: "HTTP 502"))
+        m.replaceFixtureLibrary(snapshot(watchlist: movies, personal: [movies[0]], isLoading: false))
+        XCTAssertEqual(m.persistedPickWrites, writes, "a snapshot must never write a pick")
+        m.replaceFixtureLibrary(snapshot(watchlist: movies, personal: shows + [movies[0]], isLoading: false))
+        XCTAssertEqual(m.selectedType, "series")
+    }
+
+    /// Finding 3: the remembered list is missing (settled), the bar shows the watchlist. Horror, then
+    /// a type without Horror, then All types: Horror is gone for good (dropped at the type change).
+    func testAViewerActionDropsAnUnsatisfiablePickOnTheFallbackList() {
+        let m = model(.provider)
+        m.replaceFixtureLibrary(snapshot(watchlist: movies, personal: shows, isLoading: false))
+        m.selectSection("fx-personal")
+        m.replaceFixtureLibrary(snapshot(watchlist: fixtureItems, personal: nil, isLoading: false))
+        XCTAssertEqual(m.selectedSectionKey, "watchlist")
+        m.selectGenre("Horror")
+        XCTAssertEqual(names(m), ["Nope"])
+        m.selectType("series")
+        XCTAssertNil(m.selectedGenre)
+        m.selectType(nil)
+        XCTAssertNil(m.selectedGenre, "Horror must not come back")
+        XCTAssertEqual(m.entries.count, 14)
+    }
+
+    /// No snapshot of any kind writes a pick: cached, partial, failed, optimistic, empty, complete.
+    func testNoSnapshotWritesAPick() {
+        let m = model(.provider)
+        m.replaceFixtureLibrary(snapshot(watchlist: movies, personal: shows, isLoading: false))
+        m.selectSection("fx-personal")
+        m.selectType("anime")
+        m.selectGenre("Fantasy")
+        let writes = m.persistedPickWrites
+        for state in [
+            snapshot(watchlist: movies, personal: nil, isLoading: true),
+            snapshot(watchlist: movies, personal: nil, isLoading: false, errorMessage: "x"),
+            snapshot(watchlist: movies, personal: movies, isLoading: false),
+            snapshot(watchlist: [], personal: nil, isLoading: false),
+            snapshot(watchlist: movies, personal: shows, isLoading: false),
+        ] {
+            m.replaceFixtureLibrary(state)
+            XCTAssertEqual(m.persistedPickWrites, writes)
+        }
+        XCTAssertEqual(m.selectedType, "anime")
+        XCTAssertEqual(m.selectedGenre, "Fantasy")
+        XCTAssertEqual(names(m), ["Frieren"])
     }
 }

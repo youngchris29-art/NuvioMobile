@@ -47,6 +47,7 @@ final class LibraryViewModel: ObservableObject {
     @Published private(set) var allTypesCount = 0
     /// The smart filters the Show menu offers (`LibraryBarResolver`).
     @Published private(set) var visibleSmartFilters: [LibraryGridPolicy.SmartFilter] = []
+    /// The Show choice applied (effective); the remembered one is `requestedSmartFilters`.
     @Published private(set) var activeSmartFilters: Set<LibraryGridPolicy.SmartFilter> = []
     /// The Genre menu's rows (under the Show choice, type and year), alphabetical, with counts.
     /// Empty when the source carries none (Simkl).
@@ -113,6 +114,9 @@ final class LibraryViewModel: ObservableObject {
     private var rememberedSource: String?
     private var requestedGenre: String?
     private var requestedYear: String?
+    private var requestedSmartFilters: Set<LibraryGridPolicy.SmartFilter> = []
+    /// The viewer action the next derive follows (review r3: only a viewer action drops a pick).
+    private var pendingAction: LibraryBarResolver.ViewerAction?
     /// DEBUG fixture (mockups, UI leg, unit tests): a canned library, no repository reads or writes.
     let fixture: LibraryDebugFlags.Fixture
 
@@ -205,51 +209,70 @@ final class LibraryViewModel: ObservableObject {
     // MARK: - Viewer actions
 
     func selectSection(_ key: String) {
-        guard fixture == .off else {
+        persistedPickWrites += 1
+        if fixture == .off {
+            // Persisted per profile and source. Mirrored here at once so this derive (the action's)
+            // sees the new list; the display-settings watcher's echo then changes nothing.
+            guard let source = libraryState?.sourceMode else { return }
+            LibraryDisplaySettingsRepository.shared.setSelectedSection(sectionKey: key, sourceMode: source)
+            rememberedSectionKey = key
+            rememberedType = nil
+            rememberedSource = source.name
+        } else {
             requestedSectionKey = key
             requestedType = nil
-            republish()
-            return
         }
-        // Persisted per profile and source; the display-settings watcher republishes. A new list
-        // starts on All types.
-        guard let source = libraryState?.sourceMode else { return }
-        LibraryDisplaySettingsRepository.shared.setSelectedSection(sectionKey: key, sourceMode: source)
+        act(.list)
     }
 
     /// Nil = All.
     func selectType(_ type: String?) {
-        guard fixture == .off else {
+        persistedPickWrites += 1
+        if fixture == .off {
+            guard let source = libraryState?.sourceMode else { return }
+            LibraryDisplaySettingsRepository.shared.setSelectedType(type: type, sourceMode: source)
+            if rememberedSource != source.name { rememberedSectionKey = nil }
+            rememberedType = type
+            rememberedSource = source.name
+        } else {
             requestedType = type
-            republish()
-            return
         }
-        guard let source = libraryState?.sourceMode else { return }
-        LibraryDisplaySettingsRepository.shared.setSelectedType(type: type, sourceMode: source)
+        act(.type)
     }
 
     /// Nil = All.
     func selectGenre(_ genre: String?) {
         requestedGenre = genre
-        republish()
+        act(.genre)
     }
 
     /// Nil = All.
     func selectYear(_ year: String?) {
         requestedYear = year
-        republish()
+        act(.year)
     }
 
     func toggleSmartFilter(_ filter: LibraryGridPolicy.SmartFilter) {
-        activeSmartFilters = LibraryGridPolicy.toggling(filter, in: activeSmartFilters)
-        republish()
+        requestedSmartFilters = LibraryGridPolicy.toggling(filter, in: requestedSmartFilters)
+        act(.show)
     }
 
     /// The Show menu: one choice, mapped onto the same smart-filter set.
     func selectWatchChoice(_ choice: LibraryGridPolicy.WatchChoice) {
-        activeSmartFilters = LibraryGridPolicy.smartFilters(for: choice)
+        requestedSmartFilters = LibraryGridPolicy.smartFilters(for: choice)
+        act(.show)
+    }
+
+    /// Derives right away for a viewer action, so `LibraryBarResolver.picksToDrop` judges the picks
+    /// against the titles on screen under the new selection.
+    private func act(_ action: LibraryBarResolver.ViewerAction) {
+        pendingAction = action
         republish()
     }
+
+    /// Tests: how many times a remembered list or type pick was written (in fixture mode, the
+    /// local stand-in for the shared settings).
+    private(set) var persistedPickWrites = 0
 
     #if DEBUG
     /// Tests only (fixture mode): replace the canned library with `state`, e.g. a partial provider
@@ -264,10 +287,10 @@ final class LibraryViewModel: ObservableObject {
     /// Clear Filters (the bar's pill and the no-matches state): genre, year and smart filters.
     /// List, type and sort stay.
     func clearFilters() {
-        activeSmartFilters = []
+        requestedSmartFilters = []
         requestedGenre = nil
         requestedYear = nil
-        republish()
+        act(.clearFilters)
     }
 
     /// Persist a new sort (shared repo: profile-scoped NSUserDefaults). The watcher republishes.
@@ -393,7 +416,7 @@ final class LibraryViewModel: ObservableObject {
             if lastSourceModeName != nil {
                 requestedGenre = nil
                 requestedYear = nil
-                activeSmartFilters = []
+                requestedSmartFilters = []
             }
             lastSourceModeName = modeName
         }
@@ -475,30 +498,18 @@ final class LibraryViewModel: ObservableObject {
         }
         let bar = LibraryBarResolver.resolve(
             titles: titles,
-            request: .init(type: requestedType, genre: requestedGenre, year: requestedYear, smartFilters: activeSmartFilters),
+            request: .init(type: requestedType, genre: requestedGenre, year: requestedYear, smartFilters: requestedSmartFilters),
             typeOrder: projection.availableTypes
         )
-        // Forget what is unavailable here, so it never comes back on its own, but only against the
-        // requested list's own complete titles (review r2: a partial or failed provider snapshot, or
-        // a fallback list while the picked one is missing, must not cost the viewer a pick).
-        let authoritative = LibraryBarResolver.mayForget(.init(
-            isLoaded: state.isLoaded,
-            isLoading: state.isLoading,
-            hasError: !(state.errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true),
-            requestedListKey: requestedSectionKey,
-            projectedListKey: projection.selectedSectionKey,
-            titleCount: titles.count
-        ))
-        let clear = authoritative ? bar.clear : []
-        if clear.contains(.genre) { requestedGenre = nil }
-        if clear.contains(.year) { requestedYear = nil }
-        if clear.contains(.type) {
-            requestedType = nil
-            if fixture == .off {
-                rememberedType = nil
-                LibraryDisplaySettingsRepository.shared.setSelectedType(type: nil, sourceMode: state.sourceMode)
-            }
-        }
+        // Data never forgets a pick; only the viewer does (review r3). After a viewer action the
+        // session picks with no title under the new selection go for good; after a snapshot nothing
+        // goes (an unavailable pick just shows as All until its titles return). Nothing here writes
+        // the remembered list or type.
+        let drop = LibraryBarResolver.picksToDrop(after: pendingAction, unavailable: bar.unavailable)
+        pendingAction = nil
+        if drop.contains(.genre) { requestedGenre = nil }
+        if drop.contains(.year) { requestedYear = nil }
+        if drop.contains(.show) { requestedSmartFilters = [] }
         update(\.types, bar.types)
         update(\.selectedType, bar.selectedType)
         update(\.allTypesCount, bar.allTypesCount)
@@ -507,6 +518,7 @@ final class LibraryViewModel: ObservableObject {
         update(\.years, bar.years)
         update(\.selectedYear, bar.selectedYear)
         update(\.visibleSmartFilters, bar.visibleSmartFilters)
+        update(\.activeSmartFilters, bar.smartFilters)
         update(\.showsType, bar.showsType)
         update(\.showsGenre, bar.showsGenre)
         update(\.showsYear, bar.showsYear)
