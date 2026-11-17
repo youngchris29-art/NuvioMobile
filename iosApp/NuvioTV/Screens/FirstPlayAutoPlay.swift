@@ -292,7 +292,21 @@ final class FirstPlayAutoPlayController: ObservableObject {
                     ?? candidates.first(where: { !streamKey.isEmpty && $0.streamKey == streamKey }) {
                     tried = tried.includingFailed(stream: slow.stream)
                     if let pick = inFlightPick {
-                        inFlightPick = (pick.index, pick.triedBefore.includingFailed(stream: slow.stream))
+                        let updated = pick.triedBefore.includingFailed(stream: slow.stream)
+                        inFlightPick = (pick.index, updated)
+                        // Review r6 (finding 2): the pick in flight may be a copy of the torrent
+                        // that just failed (the limit allowed it while the source was only slow).
+                        // It never started: drop its resolve, give its attempt back, move on.
+                        if !Policy.inFlightStillEligible(candidates[pick.index], triedBefore: updated) {
+                            autoPlayLog("[AutoPlay] the resolving pick is a copy of the torrent that just failed — dropped, moving on")
+                            generation += 1
+                            resolveTimeout?.cancel()
+                            inFlightPick = nil
+                            attemptsUsed = max(attemptsUsed - 1, 0)
+                            phase = .done
+                            tryNext(preferAddonId: nil)
+                            return true
+                        }
                     }
                 }
             }
@@ -483,9 +497,16 @@ final class FirstPlayAutoPlayController: ObservableObject {
         guard attemptGeneration == generation, case .resolving = phase else { return }
         generation += 1
         resolveTimeout?.cancel()
+        let pick = inFlightPick
         inFlightPick = nil       // the resolve answered: the candidate was really tried
         switch outcome {
         case let .playable(resolved, url):
+            // Review r6 (finding 2): never accept a result the tried set rules out by now.
+            if let pick, !Policy.inFlightStillEligible(candidates[pick.index], triedBefore: pick.triedBefore) {
+                autoPlayLog("[AutoPlay] resolved key=\(candidate.streamKey) is a copy of a failed torrent — not played, moving on")
+                tryNext(preferAddonId: nil)
+                return
+            }
             if !candidate.streamKey.isEmpty { resolvedAt[candidate.streamKey] = deps.now() }
             succeed(candidate, resolved: resolved, url: url)
         case let .failed(reason, rejectsLink):
@@ -668,6 +689,13 @@ final class FirstPlayAutoPlayController: ObservableObject {
                 return same
             }
             return open.first
+        }
+
+        /// Review r6 (finding 2): a pick whose resolve is in flight may still be accepted: `triedBefore`
+        /// is the walk's tried set from before the pick (so the pick's own key is not in it), with
+        /// any failure recorded since; the shared rule decides.
+        static func inFlightStillEligible(_ candidate: Candidate, triedBefore: PlayerSourceFallbackTried) -> Bool {
+            !PlayerSourceFallback.shared.isExcludedAfter(stream: candidate.stream, tried: triedBefore, failed: nil)
         }
 
         /// Review r6: what a resolve that ran out its deadline means, for every auto walk (first

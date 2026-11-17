@@ -1030,4 +1030,44 @@ final class FirstPlayAutoPlayControllerTests: XCTestCase {
         XCTAssertEqual(harness.resolveCalls, ["B", "B", "Z"], "B is retried (it never ran), A1 stays skipped")
         harness.releaseHung()
     }
+
+    // MARK: - Stage B review r6 finding 2: an in-flight copy of a torrent that just failed
+
+    /// A0 is slow, the limit's walk resolves A1 (same torrent, same add-on: allowed while A0 was
+    /// only slow), then A0 really fails: A1's resolve is dropped, its attempt returned, and the
+    /// walk moves on; A1's late answer never plays.
+    func testAnInFlightCopyOfANewlyFailedTorrentIsDroppedAndTheWalkMovesOn() async {
+        let hash = "fedcba9876543210fedcba9876543210fedcba98"
+        let harness = Harness()
+        harness.plans = ["A1": .hang]
+        let a0 = stream("A0", addon: "addon:a", direct: true, torrentHash: hash, fileIdx: 0)
+        let controller = harness.makeController()
+        controller.arm()
+        controller.ingest(feed(settled: [a0, stream("A1", addon: "addon:a", torrentHash: hash, fileIdx: 1),
+                                         stream("Z", addon: "addon:z")]))
+        XCTAssertTrue(controller.failover(afterFailureOf: a0.playbackStreamKey, addonId: a0.addonId, reason: .startupLimit))
+        await waitUntil { harness.resolveCalls == ["A1"] }
+        XCTAssertTrue(controller.failover(afterFailureOf: a0.playbackStreamKey, addonId: a0.addonId))
+        await waitUntil { harness.played.count == 2 }
+        XCTAssertEqual(harness.resolveCalls, ["A1", "Z"])
+        XCTAssertEqual(harness.played.last?.name, "Z")
+        XCTAssertEqual(harness.played.last?.attempt, 2, "A1's attempt was given back")
+        harness.releaseHung()
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(harness.played.map { $0.name }, ["A0", "Z"], "A1's late answer never plays")
+    }
+
+    /// The pure check behind it (also applied to every resolve result before it is accepted).
+    func testInFlightStillEligibleFollowsTheFailedTorrentMarker() {
+        typealias Policy = FirstPlayAutoPlayController.Policy
+        let hash = "fedcba9876543210fedcba9876543210fedcba98"
+        let a0 = stream("A0", addon: "addon:a", torrentHash: hash, fileIdx: 0)
+        let a1 = FirstPlayAutoPlayController.Candidate(stream: stream("A1", addon: "addon:a", torrentHash: hash, fileIdx: 1))
+        let b1 = FirstPlayAutoPlayController.Candidate(stream: stream("B1", addon: "addon:b", torrentHash: hash, fileIdx: 1))
+        let slowOnly = PlayerSourceFallbackTried.companion.None.including(stream: a0)
+        let failed = PlayerSourceFallbackTried.companion.None.includingFailed(stream: a0)
+        XCTAssertTrue(Policy.inFlightStillEligible(a1, triedBefore: slowOnly), "slow is not failed")
+        XCTAssertFalse(Policy.inFlightStillEligible(a1, triedBefore: failed))
+        XCTAssertTrue(Policy.inFlightStillEligible(b1, triedBefore: failed), "another add-on's copy stays")
+    }
 }
