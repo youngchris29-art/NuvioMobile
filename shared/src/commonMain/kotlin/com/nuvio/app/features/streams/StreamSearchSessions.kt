@@ -37,7 +37,11 @@ internal data class StreamSearchKey(
     val sourceConfiguration: String,
     /** The debrid part of [sourceConfiguration] on its own (review r1: another account drops every search). */
     val debridConfiguration: String,
-)
+) {
+    /** Stage B review finding 6: the search runs at least one plugin scraper. */
+    val holdsPluginTargets: Boolean
+        get() = sourceConfiguration.split('|').any { it.startsWith("plugin:") }
+}
 
 /**
  * The debrid account a search cache-checks with, captured when the search is built (review r1):
@@ -289,6 +293,21 @@ internal class StreamSearchSessionStore(
     }
 
     /**
+     * Stage B review finding 6: drops and cancels every held search that runs a plugin scraper.
+     * A scraper refresh or a sync can change a scraper's code under the same id, which the key
+     * does not see; add-on-only searches are untouched.
+     */
+    fun dropPluginSessions() {
+        synchronized(lock) {
+            sessions.keys.filter { it.holdsPluginTargets }.forEach { key ->
+                val session = sessions[key]       // K/N: read the entry before removing it
+                sessions.remove(key)
+                session?.cancel()
+            }
+        }
+    }
+
+    /**
      * Whether a search for [key] is held and would be served to a new consumer right now (running,
      * or finished and not expired). The repositories skip a repeated load only on this answer
      * (review r1: one identity and expiry rule, this store's).
@@ -484,6 +503,11 @@ object StreamSearchSessions {
      */
     fun clear() {
         store.clear()
+    }
+
+    /** Stage B review finding 6: after plugin scrapers changed (a refresh, a sync); see the store. */
+    fun dropPluginSessions() {
+        store.dropPluginSessions()
     }
 
     /** Whether the search for [key] is still held and would be served (see [StreamSearchSessionStore.isHeld]). */

@@ -417,4 +417,43 @@ class StreamSearchSessionScenarioTest {
     private companion object {
         const val MINUTE = 60_000L
     }
+
+    // MARK: Stage B review finding 6: plugin changes
+
+    @Test
+    fun pluginRefreshDropsPluginSessions() = runTest {
+        val store = store()
+        val plugins = listOf(PluginProviderGroup("plugin:p", "P", listOf(SearchFixtures.scraper("s1"))))
+        consume(store, SearchFixtures.targets(plugins = plugins))
+        assertEquals(1, store.heldKeys().size)
+        store.dropPluginSessions()
+        assertTrue(store.heldKeys().isEmpty())
+        consume(store, SearchFixtures.targets(plugins = plugins))
+        assertEquals(2, store.startedCount, "the next ask runs the refreshed scraper")
+    }
+
+    @Test
+    fun addonOnlySessionsSurviveAPluginRefresh() = runTest {
+        val store = store()
+        consume(store, SearchFixtures.targets(videoId = "tt1:1:1"))
+        val plugins = listOf(PluginProviderGroup("plugin:p", "P", listOf(SearchFixtures.scraper("s1"))))
+        consume(store, SearchFixtures.targets(videoId = "tt2:1:1", plugins = plugins))
+        assertEquals(2, store.heldKeys().size)
+        store.dropPluginSessions()
+        assertEquals(listOf("tt1:1:1"), store.heldKeys().map { it.videoId })
+        consume(store, SearchFixtures.targets(videoId = "tt1:1:1"))
+        assertEquals(2, store.startedCount, "the add-on-only search is still reused")
+    }
+
+    @Test
+    fun aRunningPluginSearchIsCancelledByTheDrop() = runTest {
+        val store = store()
+        fetcher.hold("a")
+        val plugins = listOf(PluginProviderGroup("plugin:p", "P", listOf(SearchFixtures.scraper("s1"))))
+        val consumer = consume(store, SearchFixtures.targets(plugins = plugins))
+        assertTrue(!consumer.job.isCompleted)
+        store.dropPluginSessions()
+        runCurrent()
+        assertTrue(consumer.job.isCompleted, "its consumer completes")
+    }
 }

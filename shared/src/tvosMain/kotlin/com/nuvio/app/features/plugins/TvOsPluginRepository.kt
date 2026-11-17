@@ -7,6 +7,7 @@ import com.nuvio.app.features.addons.httpGetText
 import com.nuvio.app.features.profiles.ProfileRepository
 import com.nuvio.app.features.tmdb.TmdbService
 import com.nuvio.app.features.plugins.runtime.PluginRuntime
+import com.nuvio.app.features.streams.StreamSearchSessions
 import io.github.jan.supabase.postgrest.postgrest
 import io.github.jan.supabase.postgrest.query.Order
 import io.github.jan.supabase.postgrest.rpc
@@ -230,6 +231,7 @@ object PluginRepository {
         var refreshJob: Job? = null
         refreshJob = scope.launch {
             try {
+                val before = _uiState.value.scrapers.filter { it.repositoryUrl == manifestUrl }
                 val result = runCatching {
                     val previous = _uiState.value.scrapers.associateBy { it.id }
                     fetchRepositoryData(manifestUrl, previous)
@@ -263,6 +265,13 @@ object PluginRepository {
                     )
                 }
                 persist()
+                // Stage B review finding 6: a refresh (also the one a sync starts) can change a
+                // scraper's code or version under the same id, which the search key does not see:
+                // held searches that run plugin scrapers are dropped, add-on-only ones stay.
+                val after = result.getOrNull()?.second
+                if (after != null && after != before) {
+                    StreamSearchSessions.dropPluginSessions()
+                }
                 if (pushAfterRefresh) {
                     pushToServer()
                 }
