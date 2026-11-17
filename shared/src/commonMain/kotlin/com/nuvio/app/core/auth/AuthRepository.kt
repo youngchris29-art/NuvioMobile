@@ -198,9 +198,13 @@ object AuthRepository {
             if (notice != null) _error.compareAndSet(notice, null)
         }
 
-        override fun saveGuestId(guestId: String) = AuthStorage.saveAnonymousUserId(guestId)
+        override fun saveGuestId(guestId: String) {
+            check(AuthStorage.saveAnonymousUserIdDurably(guestId)) { "guest id was not durably written" }
+        }
 
-        override fun clearGuestId() = AuthStorage.clearAnonymousUserId()
+        override fun clearGuestId() {
+            check(AuthStorage.clearAnonymousUserIdDurably()) { "guest id clear was not durably written" }
+        }
 
         // Fork: through the AccountDataCleanerProvider seam (the one AccountDataStores registry).
         override fun wipeAccountData() = AccountDataCleanerProvider.cleaner.wipe()

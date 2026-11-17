@@ -166,7 +166,10 @@ internal class AuthSessionDriver(
             lane.withLock { statusFlow = flow }
             // Snapshot rule: the emission only wakes the collector; the status reduced is the one
             // live when the lane is held, so a superseded status is never acted on.
-            flow.collect { lane.withLock { feed(flow.value) } }
+            // Round 7: an emission is identified by its StateFlow value instance (StateFlow never
+            // re-emits an equal value). The collector and reconcile() share one rule, feed a value
+            // only if it is not the instance last fed, so one emission is reduced at most once.
+            flow.collect { lane.withLock { reconcile() } }
         }
     }
 
@@ -293,7 +296,7 @@ internal class AuthSessionDriver(
 
     // ── Steps ────────────────────────────────────────────────────────────────────────────────────
 
-    /** Feeds a status value to the reducer and remembers it as observed. */
+    /** Feeds a status value to the reducer and remembers it as observed. Only reconcile() calls it. */
     private suspend fun feed(status: SessionStatus): Sent {
         lastFed = status
         return step(snapshotOf(status))

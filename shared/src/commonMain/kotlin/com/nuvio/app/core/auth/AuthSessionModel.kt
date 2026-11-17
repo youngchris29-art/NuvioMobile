@@ -120,11 +120,14 @@ internal sealed interface Snap : AuthEvent {
 
 internal sealed interface AuthOutput {
     /**
-     * A durable write what follows depends on (r3-4): the wipe-pending marker before a wipe, and
-     * the owner before an account, a guest or a signed-out state is shown. It is always the last
-     * output of its step; the driver answers [AuthEvent.GatePassed] or [AuthEvent.GateFailed].
+     * A durable write whose outcome decides what the next launch does (r3-4, round 7): setting the
+     * wipe-pending marker before a wipe, clearing it after one, the owner before an account, a
+     * guest or a signed-out state is shown, and a new guest's id before the guest is shown. It is
+     * always the last output of its step; the driver answers [AuthEvent.GatePassed] or
+     * [AuthEvent.GateFailed], and nothing that depends on it is emitted or committed before that.
      */
-    val isGate: Boolean get() = (this is PersistWipePending && pending) || this is PersistOwner
+    val isGate: Boolean
+        get() = this is PersistWipePending || this is PersistOwner || this is SaveGuestId || this == ClearGuestId
 
     data class Publish(val state: AuthState) : AuthOutput
     /** null records "no owner" (the owner is then known to be nobody). */
@@ -161,7 +164,23 @@ internal sealed interface OwnerThen {
 internal sealed interface PendingGate {
     /** The wipe-pending marker; on success the wipe itself runs ([AuthModelState.afterWipe]). */
     data object Marker : PendingGate
+
+    /** Round 7: clearing the marker after a successful wipe; [after] waits for it. */
+    data class MarkerClear(val after: AfterWipe) : PendingGate
     data class Owner(val userId: String?, val then: OwnerThen) : PendingGate
+
+    /** Round 7: a newly chosen guest's id; the guest is shown only once it is on disk. */
+    data class GuestId(val guestId: String) : PendingGate
+
+    /** Round 7: clearing a saved guest id; [then] continues whatever the clear was part of. */
+    data class GuestIdClear(val then: GuestClearThen) : PendingGate
+}
+
+/** What follows a guest-id clear (round 7). */
+internal sealed interface GuestClearThen {
+    data object ResetNotice : GuestClearThen
+    data class LostWipe(val notice: Boolean, val reason: String) : GuestClearThen
+    data class Accept(val serial: Long) : GuestClearThen
 }
 
 /** What a wipe in progress continues with once its outcome is known. */
@@ -215,6 +234,11 @@ internal data class AuthModelState(
     val watchdogFired: Boolean,
     /** A gate output whose outcome is awaited; nothing else happens until it is known. */
     val pendingGate: PendingGate? = null,
+    /**
+     * Round 7: a saved guest id could not be cleared. Until a clear succeeds no account is shown:
+     * the next launch would boot as that guest over the account's data.
+     */
+    val guestIdClearPending: Boolean = false,
 ) {
     companion object {
         /** Before the first Boot. Serial 0 is never live after a Boot. */
@@ -317,8 +341,35 @@ private class StepBuilder(var state: AuthModelState) {
         clearCaches()
         emit(AuthOutput.Drop("lost session: $reason"))
         if (clearLibrary) emit(AuthOutput.ClearSupabaseSession)
+        clearGuestId(GuestClearThen.LostWipe(notice, reason))
+    }
+
+    /** The guest-id clear is a gate (round 7); [then] follows its outcome. */
+    private fun clearGuestId(then: GuestClearThen) {
+        state = state.copy(pendingGate = PendingGate.GuestIdClear(then))
         emit(AuthOutput.ClearGuestId)
-        startWipe(AfterWipe.Lost(notice), reason)
+    }
+
+    private fun guestIdCleared(then: GuestClearThen, ok: Boolean) {
+        state = state.copy(guestIdClearPending = !ok)
+        when (then) {
+            GuestClearThen.ResetNotice -> {
+                // Upstream for sign-out; decision R for a server switch.
+                emit(AuthOutput.PersistNotice(false))
+                emit(AuthOutput.HideNotice)
+            }
+            // The wipe runs either way; a stale guest id only blocks the next account (above).
+            is GuestClearThen.LostWipe -> startWipe(AfterWipe.Lost(then.notice), then.reason)
+            is GuestClearThen.Accept -> if (!ok) {
+                acceptFailed(then.serial)
+                publishIfChanged(AuthState.Unauthenticated)
+            } else if (state.acceptBlockedSerial == then.serial) {
+                // Same attempt, continued: settle() re-runs accept() for this session in this
+                // reduction, so the retry this attempt consumed is handed back to it.
+                state = state.copy(acceptRetryArmed = true)
+            }
+            // On success settle() re-runs accept() for the same session in this reduction.
+        }
     }
 
     private fun wipeFinished(ok: Boolean) {
@@ -329,11 +380,23 @@ private class StepBuilder(var state: AuthModelState) {
         }
         state = state.copy(afterWipe = null)
         if (ok) {
-            state = state.copy(wipePending = false)
+            // Round 7: clearing the marker is a gate. Until it is confirmed the marker stays
+            // pending (in memory too), and nothing that depends on the wipe is shown.
+            state = state.copy(pendingGate = PendingGate.MarkerClear(after))
             emit(AuthOutput.PersistWipePending(false))
-        } else {
-            emit(AuthOutput.Drop("wipe failed: the marker stays set and no account is published"))
+            return
         }
+        emit(AuthOutput.Drop("wipe failed: the marker stays set and no account is published"))
+        continueAfterWipe(after, completed = false)
+    }
+
+    /**
+     * What follows a wipe. [completed]: the wipe ran AND its marker is durably cleared. Otherwise
+     * the marker stays pending, nothing new is shown, and the next account or guest start wipes
+     * (and clears) again first; nothing can have been created in between, so that repeat wipe
+     * never destroys new data.
+     */
+    private fun continueAfterWipe(after: AfterWipe, completed: Boolean) {
         when (after) {
             is AfterWipe.Lost -> {
                 if (after.notice) {
@@ -343,14 +406,14 @@ private class StepBuilder(var state: AuthModelState) {
                 }
                 // I6: the owner is cleared only after a wipe succeeded (a gate; round 4: the
                 // publish waits for it).
-                if (ok) recordOwner(null, OwnerThen.LostDone) else ownerConfirmed(OwnerThen.LostDone)
+                if (completed) recordOwner(null, OwnerThen.LostDone) else ownerConfirmed(OwnerThen.LostDone)
             }
             AfterWipe.Reset -> {
-                if (ok) recordOwner(null, OwnerThen.ResetDone) else ownerConfirmed(OwnerThen.ResetDone)
+                if (completed) recordOwner(null, OwnerThen.ResetDone) else ownerConfirmed(OwnerThen.ResetDone)
             }
             is AfterWipe.Accept -> {
                 val live = state.live
-                if (!ok) {
+                if (!completed) {
                     acceptFailed(after.serial)
                     publishIfChanged(AuthState.Unauthenticated)
                 } else if (live is Account && live.serial == after.serial && live.userId != null) {
@@ -358,7 +421,7 @@ private class StepBuilder(var state: AuthModelState) {
                 }
             }
             is AfterWipe.GuestStart -> {
-                if (ok) recordOwner(null, OwnerThen.GuestShow(after.guestId)) else leaveFailedGuestStart()
+                if (completed) recordOwner(null, OwnerThen.GuestShow(after.guestId)) else leaveFailedGuestStart()
             }
         }
     }
@@ -376,9 +439,17 @@ private class StepBuilder(var state: AuthModelState) {
         val pending = state.pendingGate
         state = state.copy(pendingGate = null)
         when {
-            pending == PendingGate.Marker && output is AuthOutput.PersistWipePending ->
+            pending == PendingGate.Marker && output is AuthOutput.PersistWipePending && output.pending ->
                 // The marker is on disk: now the wipe may run (the step's last output again).
                 emit(AuthOutput.WipeAccountData)
+            pending is PendingGate.MarkerClear && output is AuthOutput.PersistWipePending && !output.pending -> {
+                state = state.copy(wipePending = false)
+                continueAfterWipe(pending.after, completed = true)
+            }
+            pending is PendingGate.GuestId && output is AuthOutput.SaveGuestId && output.guestId == pending.guestId ->
+                guestSaved(pending.guestId)
+            pending is PendingGate.GuestIdClear && output == AuthOutput.ClearGuestId ->
+                guestIdCleared(pending.then, ok = true)
             pending is PendingGate.Owner && output is AuthOutput.PersistOwner && output.userId == pending.userId -> {
                 // Only a confirmed write changes the owner (round-4 finding 1).
                 state = state.copy(owner = pending.userId, ownerUnknown = false)
@@ -393,13 +464,26 @@ private class StepBuilder(var state: AuthModelState) {
         state = state.copy(pendingGate = null)
         emit(AuthOutput.Drop("durable write failed: $output"))
         when {
-            pending == PendingGate.Marker && output is AuthOutput.PersistWipePending -> {
+            pending == PendingGate.Marker && output is AuthOutput.PersistWipePending && output.pending -> {
                 // The marker is not on disk, so the wipe never started; local data and the
                 // recorded owner are still consistent. Keep the marker in memory so the next
                 // account or guest retries, and carry on as a failed wipe.
                 state = state.copy(wipePending = true)
                 wipeFinished(ok = false)
             }
+            pending is PendingGate.MarkerClear && output is AuthOutput.PersistWipePending && !output.pending -> {
+                // Round 7: the wipe ran but the marker is still set on disk. Treat it as an
+                // incomplete wipe: the marker stays pending, nothing is shown, and the next
+                // account or guest start wipes and clears again (the retry policy for accounts).
+                state = state.copy(wipePending = true)
+                continueAfterWipe(pending.after, completed = false)
+            }
+            pending is PendingGate.GuestId && output is AuthOutput.SaveGuestId ->
+                // Round 7: a guest whose id is not on disk is not shown (the next launch would
+                // not know it, and its data would reach the next account unwiped).
+                leaveFailedGuestStart()
+            pending is PendingGate.GuestIdClear && output == AuthOutput.ClearGuestId ->
+                guestIdCleared(pending.then, ok = false)
             pending is PendingGate.Owner && output is AuthOutput.PersistOwner -> when (val then = pending.then) {
                 // The owner stays what is on disk; what it was for is never shown.
                 is OwnerThen.Accept -> {
@@ -465,6 +549,11 @@ private class StepBuilder(var state: AuthModelState) {
             // Round 6: a retry re-armed by a later library status; consumed now.
             state = state.copy(acceptRetryArmed = false)
         }
+        if (state.guestIdClearPending) {
+            // Round 7: a stale guest id on disk would boot over this account's data next launch.
+            clearGuestId(GuestClearThen.Accept(live.serial))
+            return
+        }
         val needsWipe = state.wipePending ||
             (state.ownerUnknown && !live.restored) ||
             (state.owner != null && state.owner != userId)
@@ -480,7 +569,13 @@ private class StepBuilder(var state: AuthModelState) {
     }
 
     private fun showGuest(guestId: String) {
+        state = state.copy(pendingGate = PendingGate.GuestId(guestId))
         emit(AuthOutput.SaveGuestId(guestId))
+    }
+
+    private fun guestSaved(guestId: String) {
+        // The new id replaced any stale one on disk.
+        state = state.copy(guestIdClearPending = false)
         // Decision R: choosing guest acknowledges the notice.
         emit(AuthOutput.PersistNotice(false))
         emit(AuthOutput.HideNotice)
@@ -504,6 +599,7 @@ private class StepBuilder(var state: AuthModelState) {
                     acceptRetryArmed = false,
                     afterWipe = null,
                     pendingGate = null,
+                    guestIdClearPending = false,
                 )
                 clearCaches()
                 // A saved guest id means the local data is that guest's: with no owner ever
@@ -635,10 +731,7 @@ private class StepBuilder(var state: AuthModelState) {
             is AuthEvent.ResetStarted -> {
                 state = state.copy(live = NoSession(mint()), noticePending = false)
                 clearCaches()
-                emit(AuthOutput.ClearGuestId)
-                // Upstream for sign-out; decision R for a server switch.
-                emit(AuthOutput.PersistNotice(false))
-                emit(AuthOutput.HideNotice)
+                clearGuestId(GuestClearThen.ResetNotice)
             }
 
             is AuthEvent.ResetFinished -> startWipe(AfterWipe.Reset, "deliberate reset ${event.kind}")

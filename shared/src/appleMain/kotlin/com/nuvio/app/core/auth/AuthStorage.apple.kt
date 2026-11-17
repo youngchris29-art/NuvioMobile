@@ -14,6 +14,16 @@ actual object AuthStorage {
         NSUserDefaults.standardUserDefaults.setObject(userId, forKey = KEY_ANONYMOUS_USER_ID)
     }
 
+    internal actual fun saveAnonymousUserIdDurably(userId: String): Boolean {
+        NSUserDefaults.standardUserDefaults.setObject(userId, forKey = KEY_ANONYMOUS_USER_ID)
+        return NSUserDefaults.standardUserDefaults.synchronize()
+    }
+
+    internal actual fun clearAnonymousUserIdDurably(): Boolean {
+        NSUserDefaults.standardUserDefaults.removeObjectForKey(KEY_ANONYMOUS_USER_ID)
+        return NSUserDefaults.standardUserDefaults.synchronize()
+    }
+
     actual fun clearAnonymousUserId() {
         NSUserDefaults.standardUserDefaults.removeObjectForKey(KEY_ANONYMOUS_USER_ID)
     }

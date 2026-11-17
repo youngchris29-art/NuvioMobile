@@ -51,16 +51,21 @@ class AuthSessionModelTest {
         /** What the driver reports after a wipe output (the fake cleaner succeeds unless told). */
         var wipeOk = true
 
-        /** Whether the durable gate writes succeed (r3-4). */
+        /** Whether the durable gate writes succeed (r3-4, round 7). */
         var markerWriteOk = true
+        var markerClearOk = true
         var ownerWriteOk = true
+        var guestSaveOk = true
+        var guestClearOk = true
 
         init {
             send(Boot(guestId = guestId, owner = owner, notice = notice, ownerUnknown = ownerUnknown, wipePending = wipePending))
         }
 
         private fun gateOk(output: AuthOutput): Boolean = when (output) {
-            is PersistWipePending -> markerWriteOk
+            is PersistWipePending -> if (output.pending) markerWriteOk else markerClearOk
+            is SaveGuestId -> guestSaveOk
+            ClearGuestId -> guestClearOk
             is PersistOwner -> ownerWriteOk
             else -> true
         }
@@ -1190,7 +1195,8 @@ class AuthSessionModelTest {
         val withWipe = Run(owner = "A")
         withWipe.ownerWriteOk = false
         withWipe.send(acct("B", "b1"))
-        assertEquals(2, gateWrites(withWipe.send(ValidationFinished(withWipe.startedValidation(), SessionVerdict.Valid))))
+        // Marker set, marker clear (a gate since round 7) and owner: each written once.
+        assertEquals(3, gateWrites(withWipe.send(ValidationFinished(withWipe.startedValidation(), SessionVerdict.Valid))))
         assertEquals(0, gateWrites(withWipe.send(Snap.RefreshFailure)))
         // Owner already confirmed as B: no write at all, so nothing to fail.
         val confirmed = Run(owner = "B")
@@ -1217,13 +1223,14 @@ class AuthSessionModelTest {
         // Owner after a reset, a lost session, a new guest and the boot guest.
         val ownerReset = Run().apply { signInPublished("A", "a1"); ownerWriteOk = false }
         ownerReset.send(ResetStarted(ResetKind.SignOut))
-        assertEquals(2, gateWrites(ownerReset.send(ResetFinished(ResetKind.SignOut))))
+        assertEquals(3, gateWrites(ownerReset.send(ResetFinished(ResetKind.SignOut))))
         assertEquals(0, gateWrites(ownerReset.send(Snap.NotAuthenticated())))
         val ownerLost = Run().apply { signInPublished("A", "a1"); ownerWriteOk = false }
-        assertEquals(2, gateWrites(ownerLost.send(Snap.NotAuthenticated())))
+        // Guest-id clear, marker set, marker clear, owner (round 7: four gates, each once).
+        assertEquals(4, gateWrites(ownerLost.send(Snap.NotAuthenticated())))
         assertEquals(0, gateWrites(ownerLost.send(Snap.RefreshFailure)))
         val ownerGuest = Run(owner = "A").apply { ownerWriteOk = false }
-        assertEquals(2, gateWrites(ownerGuest.send(GuestChosen("g1"))))
+        assertEquals(3, gateWrites(ownerGuest.send(GuestChosen("g1"))))
         assertEquals(0, gateWrites(ownerGuest.send(Snap.RefreshFailure)))
         val bootGuest = Run().apply { ownerWriteOk = false }
         assertEquals(1, gateWrites(bootGuest.send(Boot(guestId = "g1", owner = null, notice = false, ownerUnknown = true))))
@@ -1285,5 +1292,116 @@ class AuthSessionModelTest {
         run.send(acct("B", "c1"))
         run.send(ValidationFinished(run.startedValidation(), SessionVerdict.Valid))
         assertEquals(account("B"), run.state.published)
+    }
+
+    // ── Review round 7: every durable write that decides the next launch is a gate ──────────────
+
+    @Test
+    fun aMarkerClearThatFailsOnceIsRetriedOnTheNextStatusAndNothingIsShownMeanwhile() {
+        val run = Run(owner = "B", wipePending = true)
+        run.markerClearOk = false
+        run.send(acct("B", "b1", restored = true))
+        run.send(ValidationFinished(run.startedValidation(), SessionVerdict.Valid))
+        assertEquals(AuthState.Unauthenticated, run.state.published)
+        assertTrue(run.state.wipePending)
+        run.markerClearOk = true
+        run.send(acct("B", "b2", refreshedFrom = "b1"))
+        assertEquals(account("B"), run.state.published)
+        assertFalse(run.state.wipePending)
+        assertEquals(2, run.wipes())
+    }
+
+    @Test
+    fun aFailedMarkerClearAfterASignOutIsRetriedBeforeTheNextIdentity() {
+        val run = Run()
+        run.signInPublished("A", "a1")
+        run.markerClearOk = false
+        run.send(ResetStarted(ResetKind.SignOut))
+        run.send(ResetFinished(ResetKind.SignOut))
+        assertEquals(AuthState.Unauthenticated, run.state.published)
+        assertTrue(run.state.wipePending)
+        // Who retries: the next account or guest start, which wipes and clears again first.
+        run.markerClearOk = true
+        run.send(Snap.NotAuthenticated())
+        val chosen = run.send(GuestChosen("g1"))
+        assertTrue(chosen.indexOf(WipeAccountData) < chosen.indexOf(Publish(guest("g1"))), "$chosen")
+        assertFalse(run.state.wipePending)
+    }
+
+    @Test
+    fun aFailedMarkerClearAfterALostSessionKeepsTheMarkerAndShowsTheNoticeOnce() {
+        val run = Run()
+        run.signInPublished("A", "a1")
+        run.markerClearOk = false
+        run.send(Snap.NotAuthenticated())
+        assertEquals(AuthState.Unauthenticated, run.state.published)
+        assertEquals(1, run.notices())
+        assertTrue(run.state.wipePending)
+        assertEquals("A", run.state.owner)
+    }
+
+    @Test
+    fun aGuestIdThatIsNotSavedShowsNoGuestAndTheNextChoiceWorks() {
+        val run = Run()
+        run.send(Snap.NotAuthenticated(cleared = false))
+        run.guestSaveOk = false
+        run.send(GuestChosen("g1"))
+        assertEquals(AuthState.Unauthenticated, run.state.published)
+        assertIs<NoSession>(run.state.live)
+        run.guestSaveOk = true
+        run.send(GuestChosen("g2"))
+        assertEquals(guest("g2"), run.state.published)
+    }
+
+    @Test
+    fun aMixedFailureSequenceOnOneSessionRespectsTheBound() {
+        // Marker set fails, then the owner write fails, then the marker clear fails: three
+        // attempts for one session, then no more on later statuses.
+        val run = Run(owner = "A")
+        run.markerWriteOk = false
+        run.send(acct("B", "b1"))
+        run.send(ValidationFinished(run.startedValidation(), SessionVerdict.Valid))
+        run.markerWriteOk = true
+        run.ownerWriteOk = false
+        run.send(acct("B", "b2", refreshedFrom = "b1"))
+        run.ownerWriteOk = true
+        run.markerClearOk = false
+        run.send(acct("B", "b3", refreshedFrom = "b2"))
+        assertEquals(MAX_ACCEPT_ATTEMPTS, run.state.acceptAttempts)
+        run.markerClearOk = true
+        assertEquals(0, gateWrites(run.send(acct("B", "b4", refreshedFrom = "b3"))))
+        assertEquals(AuthState.Unauthenticated, run.state.published)
+        assertEquals(1, run.all.count { it == Publish(AuthState.Unauthenticated) })
+    }
+
+    @Test
+    fun aGuestIdClearThatFailsBlocksTheNextAccountUntilARetrySucceeds() {
+        val run = Run(guestId = "g1")
+        run.guestClearOk = false
+        run.send(ResetStarted(ResetKind.SignOut))
+        run.send(ResetFinished(ResetKind.SignOut))
+        assertTrue(run.state.guestIdClearPending)
+        assertEquals(AuthState.Unauthenticated, run.state.published)
+        // B's session: the clear is retried first, fails again, and B is not shown.
+        run.send(acct("B", "b1"))
+        val first = run.send(ValidationFinished(run.startedValidation(), SessionVerdict.Valid))
+        assertEquals(listOf(ClearGuestId), first)
+        assertEquals(AuthState.Unauthenticated, run.state.published)
+        // The next status of the same session retries; now the clear works and B is shown.
+        run.guestClearOk = true
+        run.send(acct("B", "b2", refreshedFrom = "b1"))
+        assertEquals(account("B"), run.state.published)
+        assertFalse(run.state.guestIdClearPending)
+    }
+
+    @Test
+    fun aGuestIdClearThatFailsDuringALostResetStillWipesAndPublishesSignedOut() {
+        val run = Run()
+        run.signInPublished("A", "a1")
+        run.guestClearOk = false
+        val lost = run.send(Snap.NotAuthenticated())
+        assertTrue(WipeAccountData in lost)
+        assertEquals(AuthState.Unauthenticated, run.state.published)
+        assertTrue(run.state.guestIdClearPending)
     }
 }

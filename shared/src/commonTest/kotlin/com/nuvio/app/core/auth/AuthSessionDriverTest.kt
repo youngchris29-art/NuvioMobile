@@ -62,10 +62,17 @@ class AuthSessionDriverTest {
         /** Every account shown, with the owner on disk at that moment. */
         val accountsShown = mutableListOf<Pair<String, String?>>()
 
+        /** Every account shown while the durable wipe marker was still set (round 7). */
+        val accountsShownWithMarkerSet = mutableListOf<String>()
+
         override fun publish(state: AuthState) {
             published = state
             log += "publish:${describe(state)}"
-            if (state is AuthState.Authenticated && !state.isAnonymous) accountsShown += state.userId to diskOwner
+            if (state is AuthState.Authenticated && !state.isAnonymous) {
+                accountsShown += state.userId to diskOwner
+                if (diskMarker) accountsShownWithMarkerSet += state.userId
+                if (diskGuestId != null) accountsShownWithGuestOnDisk += state.userId
+            }
         }
 
         override fun persistOwner(userId: String?) {
@@ -74,14 +81,33 @@ class AuthSessionDriverTest {
             diskOwner = userId
         }
         override fun persistNotice(pending: Boolean) { log += "persistNotice:$pending" }
+        /** What the marker store holds; a failed write leaves it unchanged (round 7). */
+        var diskMarker = false
+        var markerClearFails: () -> Boolean = { false }
+
         override fun persistWipePending(pending: Boolean) {
             log += "wipePending:$pending"
             if (pending) markerFailure?.let { throw it }
+            if (!pending && markerClearFails()) throw IllegalStateException("marker clear not durable")
+            diskMarker = pending
         }
         override fun showNotice() { log += "showNotice" }
         override fun hideNotice() { log += "hideNotice" }
-        override fun saveGuestId(guestId: String) { log += "saveGuest:$guestId" }
-        override fun clearGuestId() { log += "clearGuest" }
+        /** What the guest-id store holds; a failed clear leaves it (round 7). */
+        var diskGuestId: String? = null
+        var guestClearFails: () -> Boolean = { false }
+        val accountsShownWithGuestOnDisk = mutableListOf<String>()
+
+        override fun saveGuestId(guestId: String) {
+            log += "saveGuest:$guestId"
+            diskGuestId = guestId
+        }
+
+        override fun clearGuestId() {
+            log += "clearGuest"
+            if (guestClearFails()) throw IllegalStateException("guest id clear not durable")
+            diskGuestId = null
+        }
 
         override fun wipeAccountData() {
             log += "wipe"
@@ -129,7 +155,13 @@ class AuthSessionDriverTest {
         override suspend fun ensureTvLoginScaffold() { log += "scaffold" }
     }
 
-    private class Rig(val scope: TestScope, owner: String? = null, guestId: String? = null, longWatchdog: Boolean = true) {
+    private class Rig(
+        val scope: TestScope,
+        owner: String? = null,
+        guestId: String? = null,
+        longWatchdog: Boolean = true,
+        wipePending: Boolean = false,
+    ) {
         val flow = MutableStateFlow<SessionStatus>(SessionStatus.Initializing)
         val effects = FakeEffects(flow)
         val driver = if (longWatchdog) {
@@ -140,7 +172,9 @@ class AuthSessionDriverTest {
 
         init {
             effects.diskOwner = owner
-            driver.start(AuthEvent.Boot(guestId = guestId, owner = owner, notice = false), { flow })
+            effects.diskMarker = wipePending
+            effects.diskGuestId = guestId
+            driver.start(AuthEvent.Boot(guestId = guestId, owner = owner, notice = false, wipePending = wipePending), { flow })
             scope.runCurrent()
         }
 
@@ -745,5 +779,79 @@ class AuthSessionDriverTest {
         assertEquals(AuthState.Unauthenticated, rig.effects.published)
         assertEquals(1, rig.effects.log.count { it == "owner:B" })
         assertTrue(rig.effects.accountsShown.isEmpty())
+    }
+
+    // ── Review round 7 ───────────────────────────────────────────────────────────────────────────
+
+    @Test
+    fun aFailedMarkerClearNeverShowsTheAccountAndARestartKeepsItsData() = runTest {
+        // B owns the data; an earlier interrupted wipe left the marker set. B's accept wipes, and
+        // clearing the marker fails once.
+        val rig = Rig(this, owner = "B", wipePending = true)
+        var clearFailures = 1
+        rig.effects.markerClearFails = { clearFailures-- > 0 }
+        rig.flow.value = authenticated("B", "b1", SessionSource.Storage)
+        rig.settle()
+        assertTrue(rig.effects.accountsShownWithMarkerSet.isEmpty(), "${rig.effects.accountsShownWithMarkerSet}")
+        assertEquals(AuthState.Unauthenticated, rig.effects.published)
+        // The next library status for the same session retries; now the clear works.
+        rig.flow.value = authenticated("B", "b2", SessionSource.Refresh(session("B", "b1")))
+        rig.settle()
+        assertEquals(account("B"), rig.effects.published)
+        assertTrue(rig.effects.accountsShownWithMarkerSet.isEmpty())
+        assertFalse(rig.effects.diskMarker)
+        // B creates data; a restart from what is on disk must not wipe it.
+        val wipes = rig.effects.count("wipe")
+        val restored = MutableStateFlow<SessionStatus>(authenticated("B", "b2", SessionSource.Storage))
+        rig.driver.restart(AuthEvent.Boot(guestId = null, owner = rig.effects.diskOwner, notice = false, wipePending = rig.effects.diskMarker), { restored })
+        rig.settle()
+        assertEquals(wipes, rig.effects.count("wipe"))
+        assertEquals(account("B"), rig.effects.published)
+    }
+
+    @Test
+    fun aStatusAlreadyFedByReconciliationIsNotFedAgainByTheQueuedCollector() = runTest {
+        // B's first owner write fails. While a failed sign-in call holds the lane, B's session
+        // refreshes and the collector queues behind it.
+        val rig = Rig(this, owner = null)
+        var ownerAttempts = 0
+        rig.effects.ownerWriteFails = { ownerAttempts++; ownerAttempts <= 2 }
+        rig.flow.value = authenticated("B", "b1", SessionSource.Storage)
+        rig.settle()
+        assertEquals(1, ownerAttempts)
+        rig.effects.signIn = {
+            rig.flow.value = authenticated("B", "b2", SessionSource.Refresh(session("B", "b1")))
+            yield()
+            throw IllegalStateException("wrong password")
+        }
+        assertTrue(rig.driver.signInWithEmail("x", "pw").isFailure)
+        rig.settle()
+        // One later status, one retry: the same emission is not fed twice.
+        assertEquals(2, ownerAttempts)
+        assertEquals(AuthState.Unauthenticated, rig.effects.published)
+        // A genuinely later refresh still has its attempt, and this one succeeds.
+        rig.flow.value = authenticated("B", "b3", SessionSource.Refresh(session("B", "b2")))
+        rig.settle()
+        assertEquals(3, ownerAttempts)
+        assertEquals(account("B"), rig.effects.published)
+    }
+
+    @Test
+    fun aGuestIdThatCouldNotBeClearedNeverLetsAnAccountShowAndTheNextStatusRetries() = runTest {
+        // A guest signs out but its id cannot be cleared; then B signs in. Showing B now would
+        // let the next launch boot as that guest over B's data.
+        val rig = Rig(this, guestId = "g1")
+        var clearFailures = 1
+        rig.effects.guestClearFails = { clearFailures-- > 0 }
+        rig.driver.signOut()
+        rig.settle()
+        assertEquals(AuthState.Unauthenticated, rig.effects.published)
+        assertEquals("g1", rig.effects.diskGuestId)
+        rig.effects.signIn = { rig.flow.value = authenticated("B", "b1") }
+        rig.driver.signInWithEmail("B", "pw")
+        rig.settle()
+        assertTrue(rig.effects.accountsShownWithGuestOnDisk.isEmpty(), "${rig.effects.accountsShownWithGuestOnDisk}")
+        assertEquals(account("B"), rig.effects.published)
+        assertNull(rig.effects.diskGuestId)
     }
 }

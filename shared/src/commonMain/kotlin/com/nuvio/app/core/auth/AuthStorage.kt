@@ -4,6 +4,10 @@ expect object AuthStorage {
     fun loadAnonymousUserId(): String?
     fun saveAnonymousUserId(userId: String)
     fun clearAnonymousUserId()
+    /** Round 7: saves the guest id and reports whether it was durably written (a gate). */
+    internal fun saveAnonymousUserIdDurably(userId: String): Boolean
+    /** Round 7: clears the guest id and reports whether that was durably written (a gate). */
+    internal fun clearAnonymousUserIdDurably(): Boolean
     fun loadFlag(key: String): Boolean
     fun saveFlag(key: String, value: Boolean)
     /** User id of the account whose data is on this device; null when none or never recorded. */

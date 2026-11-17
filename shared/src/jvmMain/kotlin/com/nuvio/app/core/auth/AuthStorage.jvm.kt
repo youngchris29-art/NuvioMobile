@@ -26,6 +26,12 @@ actual object AuthStorage {
         preferences?.edit()?.putString(KEY_ANONYMOUS_USER_ID, userId)?.apply()
     }
 
+    internal actual fun saveAnonymousUserIdDurably(userId: String): Boolean =
+        preferences?.edit()?.putString(KEY_ANONYMOUS_USER_ID, userId)?.commit() == true
+
+    internal actual fun clearAnonymousUserIdDurably(): Boolean =
+        preferences?.edit()?.remove(KEY_ANONYMOUS_USER_ID)?.commit() == true
+
     actual fun clearAnonymousUserId() {
         preferences?.edit()?.remove(KEY_ANONYMOUS_USER_ID)?.apply()
     }
