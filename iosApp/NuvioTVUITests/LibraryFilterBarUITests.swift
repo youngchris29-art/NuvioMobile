@@ -497,6 +497,15 @@ final class LibraryFilterBarUITests: XCTestCase {
         try enterBar(app)
         note("widths-rest", probe(app))
 
+        // Re-picking the row a menu already shows: does the tvOS Picker call the setter (a pin)?
+        // Read from the probe's write count; recorded, not asserted (platform behaviour).
+        let writesBefore = Self.int(probe(app), "writes") ?? -1
+        XCTAssertTrue(moveBar(app, to: "type", .right, max: 4) || moveBar(app, to: "type", .left, max: 4), probe(app))
+        remote.press(.select)
+        XCTAssertTrue(pick(app, "All types", step: "type-repick"))
+        let writesAfter = Self.int(probe(app), "writes") ?? -1
+        note("type-repick", "writes before=\(writesBefore) after=\(writesAfter) setterCalled=\(writesAfter > writesBefore)\n\(probe(app))")
+
         // Genre menu rows: "Sci-Fi" and the Trakt slug "science-fiction" ("Science Fiction") stay two.
         XCTAssertTrue(moveBar(app, to: "genre", .right) || moveBar(app, to: "genre", .left), probe(app))
         remote.press(.select)

@@ -118,7 +118,7 @@ final class LibraryBarResolverTests: XCTestCase {
     }
 
     /// After a viewer action the caller drops an unavailable session pick; once dropped it never
-    /// comes back on its own, even when    /// the titles that carried it return.
+    /// comes back on its own, even when the titles that carried it return.
     func testAClearedRequestStaysClearedWhenItBecomesAvailableAgain() {
         var request = R.Request(type: "anime", genre: "Comedy")
         let first = resolve(request)
@@ -252,7 +252,17 @@ final class LibraryBarResolverTests: XCTestCase {
         let genres: [String?] = [nil, "drama", "Comedy", "Crime", "Western"]
         let years: [String?] = [nil, "2001", "2005", "2010", "1980"]
         let shows: [Set<LibraryGridPolicy.SmartFilter>] = [[], [.unwatched], [.inProgress], [.watched], [.watched, .inProgress]]
-        let list = titles
+        // Three lists: the fixture; one where most titles lack genres and years; one type only.
+        let sparse = [
+            T(typeKey: "movie", genres: ["Drama"], year: "2001", state: watched),
+            T(typeKey: "movie", genres: [], year: nil, state: fresh),
+            T(typeKey: "series", genres: [], year: nil, state: halfway),
+        ]
+        let oneType = [
+            T(typeKey: "movie", genres: ["Comedy"], year: "2005", state: fresh),
+            T(typeKey: "movie", genres: ["comedy", "Crime"], year: "2010", state: watched),
+        ]
+        for list in [titles, sparse, oneType] {
         for type in types { for genre in genres { for year in years { for show in shows {
             let out = resolve(.init(type: type, genre: genre, year: year, smartFilters: show), list)
             let expected = list.indices.filter { i in
@@ -270,6 +280,14 @@ final class LibraryBarResolverTests: XCTestCase {
             if let t = out.selectedType { XCTAssertTrue(out.types.contains { $0.key == t }, tag) }
             XCTAssertEqual(out.unavailable.contains(.genre), genre != nil && out.selectedGenre == nil, tag)
             XCTAssertEqual(out.unavailable.contains(.year), year != nil && out.selectedYear == nil, tag)
+            XCTAssertEqual(out.unavailable.contains(.type), type != nil && out.selectedType == nil, tag)
+            XCTAssertEqual(out.unavailable.contains(.show), !show.isEmpty && out.smartFilters.isEmpty, tag)
+            XCTAssertTrue(
+                LibraryGridPolicy.watchChoices(visible: out.visibleSmartFilters)
+                    .contains(LibraryGridPolicy.watchChoice(for: out.smartFilters)),
+                "the effective Show is one of the Show menu's choices: \(tag)"
+            )
         } } } }
+        }
     }
 }

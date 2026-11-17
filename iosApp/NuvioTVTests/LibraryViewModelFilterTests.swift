@@ -14,8 +14,21 @@ import class SharedCore.LibraryItem
 @MainActor
 final class LibraryViewModelFilterTests: XCTestCase {
 
+    /// Records every remembered list or type pick written, with its source.
+    private final class PickSpy {
+        var writes: [String] = []
+        var store: LibraryPickStore {
+            LibraryPickStore(
+                writeSection: { [unowned self] key, source in self.writes.append("list:\(key)@\(source.name)") },
+                writeType: { [unowned self] type, source in self.writes.append("type:\(type ?? "-")@\(source.name)") }
+            )
+        }
+    }
+
+    private let spy = PickSpy()
+
     private func model(_ fixture: LibraryDebugFlags.Fixture = .local) -> LibraryViewModel {
-        let model = LibraryViewModel(fixture: fixture)
+        let model = LibraryViewModel(fixture: fixture, pickStore: spy.store)
         model.start()
         return model
     }
@@ -314,15 +327,15 @@ final class LibraryViewModelFilterTests: XCTestCase {
         m.replaceFixtureLibrary(snapshot(watchlist: movies, personal: shows, isLoading: false))
         m.selectSection("fx-personal")
         m.selectType("series")
-        let writes = m.persistedPickWrites
+        let writes = spy.writes
         m.replaceFixtureLibrary(snapshot(watchlist: movies, personal: movies, isLoading: false))
         XCTAssertNil(m.selectedType, "no series in the cache: the menu shows All types for now")
         XCTAssertEqual(m.entries.count, movies.count, "the drawn titles match the shown selection")
-        XCTAssertEqual(m.persistedPickWrites, writes, "a snapshot must never write a pick")
+        XCTAssertEqual(spy.writes, writes, "a snapshot must never write a pick")
         m.replaceFixtureLibrary(snapshot(watchlist: movies, personal: shows, isLoading: false))
         XCTAssertEqual(m.selectedType, "series", "the remembered pick applies again")
         XCTAssertEqual(m.entries.count, 4)
-        XCTAssertEqual(m.persistedPickWrites, writes)
+        XCTAssertEqual(spy.writes, writes)
     }
 
     /// Finding 2: a failed partial refresh (watchlist only), then Trakt's optimistic rebuild publishes
@@ -332,10 +345,10 @@ final class LibraryViewModelFilterTests: XCTestCase {
         m.replaceFixtureLibrary(snapshot(watchlist: movies, personal: shows, isLoading: false))
         m.selectSection("fx-personal")
         m.selectType("series")
-        let writes = m.persistedPickWrites
+        let writes = spy.writes
         m.replaceFixtureLibrary(snapshot(watchlist: movies, personal: nil, isLoading: false, errorMessage: "HTTP 502"))
         m.replaceFixtureLibrary(snapshot(watchlist: movies, personal: [movies[0]], isLoading: false))
-        XCTAssertEqual(m.persistedPickWrites, writes, "a snapshot must never write a pick")
+        XCTAssertEqual(spy.writes, writes, "a snapshot must never write a pick")
         m.replaceFixtureLibrary(snapshot(watchlist: movies, personal: shows + [movies[0]], isLoading: false))
         XCTAssertEqual(m.selectedType, "series")
     }
@@ -364,7 +377,7 @@ final class LibraryViewModelFilterTests: XCTestCase {
         m.selectSection("fx-personal")
         m.selectType("anime")
         m.selectGenre("Fantasy")
-        let writes = m.persistedPickWrites
+        let writes = spy.writes
         for state in [
             snapshot(watchlist: movies, personal: nil, isLoading: true),
             snapshot(watchlist: movies, personal: nil, isLoading: false, errorMessage: "x"),
@@ -373,10 +386,63 @@ final class LibraryViewModelFilterTests: XCTestCase {
             snapshot(watchlist: movies, personal: shows, isLoading: false),
         ] {
             m.replaceFixtureLibrary(state)
-            XCTAssertEqual(m.persistedPickWrites, writes)
+            XCTAssertEqual(spy.writes, writes)
         }
         XCTAssertEqual(m.selectedType, "anime")
         XCTAssertEqual(m.selectedGenre, "Fantasy")
         XCTAssertEqual(names(m), ["Frieren"])
+    }
+
+    // MARK: - Narrow check
+
+    /// Item 1: an action while the library has not loaded is not carried into the first snapshot.
+    func testAnActionBeforeTheLibraryLoadsDropsNothingLater() {
+        let m = LibraryViewModel(fixture: .provider, pickStore: spy.store)
+        m.selectGenre("Fantasy")
+        m.selectYear("2023")
+        m.replaceFixtureLibrary(snapshot(watchlist: movies, personal: nil, isLoading: true))
+        XCTAssertNil(m.selectedGenre, "no Fantasy among the movies: All for now")
+        m.replaceFixtureLibrary(snapshot(watchlist: fixtureItems, personal: nil, isLoading: false))
+        XCTAssertEqual(m.selectedGenre, "Fantasy", "the first snapshot must not have dropped the pick")
+        XCTAssertEqual(m.selectedYear, "2023")
+        XCTAssertEqual(names(m), ["Frieren"])
+    }
+
+    /// Item 3: a Show choice dropped at a viewer action stays gone when its titles return.
+    func testAShowChoiceDroppedAtAnActionStaysGone() {
+        let m = model()
+        m.selectWatchChoice(.watched)
+        XCTAssertEqual(m.activeSmartFilters, [.watched])
+        m.selectType("anime")
+        XCTAssertTrue(m.activeSmartFilters.isEmpty, "no watched anime: the type pick drops Show")
+        XCTAssertEqual(m.entries.count, 2)
+        m.selectType(nil)
+        XCTAssertTrue(m.activeSmartFilters.isEmpty, "Watched must not come back")
+        XCTAssertEqual(m.entries.count, 14)
+    }
+
+    /// The remembered-pick wiring: one write per list or type pick, tagged with the source; a list
+    /// pick resets the type to All; picks apply only in their source.
+    func testListAndTypePicksWriteOnceToTheirSource() {
+        let m = model(.provider)
+        m.selectType("series")
+        XCTAssertEqual(spy.writes, ["type:series@TRAKT"])
+        m.selectSection("fx-list-weekend")
+        XCTAssertEqual(spy.writes, ["type:series@TRAKT", "list:fx-list-weekend@TRAKT"])
+        XCTAssertNil(m.selectedType, "a new list starts on All types")
+        XCTAssertEqual(m.selectedSectionKey, "fx-list-weekend")
+        m.selectType("movie")
+        XCTAssertEqual(spy.writes.last, "type:movie@TRAKT")
+        XCTAssertEqual(spy.writes.count, 3)
+
+        // Another source (the local library): Trakt's picks do not apply; back on Trakt they do.
+        let local = LibraryFilterFixture.shared.uiState(provider: false)
+        m.replaceFixtureLibrary(local)
+        XCTAssertNil(m.selectedType)
+        XCTAssertEqual(m.entries.count, 14)
+        m.replaceFixtureLibrary(LibraryFilterFixture.shared.uiState(provider: true))
+        XCTAssertEqual(m.selectedSectionKey, "fx-list-weekend")
+        XCTAssertEqual(m.selectedType, "movie")
+        XCTAssertEqual(spy.writes.count, 3, "snapshots and source switches write nothing")
     }
 }

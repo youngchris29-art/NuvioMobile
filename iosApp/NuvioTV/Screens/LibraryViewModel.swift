@@ -103,12 +103,13 @@ final class LibraryViewModel: ObservableObject {
     private var progressByContentId: [String: Double] = [:]
     /// What the viewer picked. List and type come from the shared display settings (remembered per
     /// profile, upstream 2da28d707, and per source: review r1, a pick is applied only while the
-    /// source it was made in is active); genre and year live here for the session, like the smart
-    /// filters. An unavailable pick is forgotten (`LibraryBarResolver.Clear`), never re-applied
-    /// later on its own.
+    /// source it was made in is active); genre, year and Show live here for the session. A pick with
+    /// no title in the current data is not applied (the bar shows All) but stays; only a viewer
+    /// action drops a session pick (`LibraryBarResolver.picksToDrop`, review r3).
     private var requestedSectionKey: String?
     private var requestedType: String?
-    /// The display settings' remembered picks and the source they belong to (provider mode).
+    /// The remembered list and type and the source they belong to: the display settings' values,
+    /// mirrored at once when the viewer picks (in fixture mode the mirror is all there is).
     private var rememberedSectionKey: String?
     private var rememberedType: String?
     private var rememberedSource: String?
@@ -119,9 +120,13 @@ final class LibraryViewModel: ObservableObject {
     private var pendingAction: LibraryBarResolver.ViewerAction?
     /// DEBUG fixture (mockups, UI leg, unit tests): a canned library, no repository reads or writes.
     let fixture: LibraryDebugFlags.Fixture
+    /// Where a viewer's list and type picks are written: the shared display settings, or (fixture
+    /// mode) nowhere. The only writer of remembered picks; tests pass a spy.
+    private let pickStore: LibraryPickStore
 
-    init(fixture: LibraryDebugFlags.Fixture = LibraryDebugFlags.fixture) {
+    init(fixture: LibraryDebugFlags.Fixture = LibraryDebugFlags.fixture, pickStore: LibraryPickStore? = nil) {
         self.fixture = fixture
+        self.pickStore = pickStore ?? (fixture == .off ? .sharedSettings : .discard)
     }
     private var lastSourceModeName: String?
     /// Watched flag per entry id. `WatchedRepository.isWatched` runs the tracker registry's
@@ -171,11 +176,14 @@ final class LibraryViewModel: ObservableObject {
         })
         watchers.append(FlowWatcherKt.watch(LibraryDisplaySettingsRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? LibraryDisplaySettingsUiState else { return }
+            // The echo of the viewer's own pick (already mirrored) changes nothing: no second derive.
+            let unchanged = self.sortOption == state.sortOption && self.rememberedSectionKey == state.selectedSectionKey
+                && self.rememberedType == state.selectedType && self.rememberedSource == state.selectionSourceMode
             self.sortOption = state.sortOption
             self.rememberedSectionKey = state.selectedSectionKey
             self.rememberedType = state.selectedType
             self.rememberedSource = state.selectionSourceMode
-            self.scheduleRepublish()
+            if !unchanged { self.scheduleRepublish() }
         })
         // Watched marks are read per title in `republish` through the repository's own
         // `isWatched` / `isFullyWatchedSeries` (the hold menu's test) and cached; these two only
@@ -209,34 +217,29 @@ final class LibraryViewModel: ObservableObject {
     // MARK: - Viewer actions
 
     func selectSection(_ key: String) {
-        persistedPickWrites += 1
-        if fixture == .off {
-            // Persisted per profile and source. Mirrored here at once so this derive (the action's)
-            // sees the new list; the display-settings watcher's echo then changes nothing.
-            guard let source = libraryState?.sourceMode else { return }
-            LibraryDisplaySettingsRepository.shared.setSelectedSection(sectionKey: key, sourceMode: source)
-            rememberedSectionKey = key
-            rememberedType = nil
-            rememberedSource = source.name
-        } else {
-            requestedSectionKey = key
-            requestedType = nil
-        }
+        // Persisted per profile and source, and mirrored here at once so this derive (the action's)
+        // sees the new list. A new list starts on All types.
+        guard let source = libraryState?.sourceMode else { return }
+        pickStore.writeSection(key, source)
+        #if DEBUG
+        debugPickWrites += 1
+        #endif
+        rememberedSectionKey = key
+        rememberedType = nil
+        rememberedSource = source.name
         act(.list)
     }
 
     /// Nil = All.
     func selectType(_ type: String?) {
-        persistedPickWrites += 1
-        if fixture == .off {
-            guard let source = libraryState?.sourceMode else { return }
-            LibraryDisplaySettingsRepository.shared.setSelectedType(type: type, sourceMode: source)
-            if rememberedSource != source.name { rememberedSectionKey = nil }
-            rememberedType = type
-            rememberedSource = source.name
-        } else {
-            requestedType = type
-        }
+        guard let source = libraryState?.sourceMode else { return }
+        pickStore.writeType(type, source)
+        #if DEBUG
+        debugPickWrites += 1
+        #endif
+        if rememberedSource != source.name { rememberedSectionKey = nil }
+        rememberedType = type
+        rememberedSource = source.name
         act(.type)
     }
 
@@ -268,13 +271,15 @@ final class LibraryViewModel: ObservableObject {
     private func act(_ action: LibraryBarResolver.ViewerAction) {
         pendingAction = action
         republish()
+        // Never carried into a later derive (a snapshot), whichever path `republish` took.
+        pendingAction = nil
     }
 
-    /// Tests: how many times a remembered list or type pick was written (in fixture mode, the
-    /// local stand-in for the shared settings).
-    private(set) var persistedPickWrites = 0
-
     #if DEBUG
+    /// The probe's count of list and type picks written (the UI leg's check that re-picking the row
+    /// a menu already shows reaches the setter).
+    @Published private(set) var debugPickWrites = 0
+
     /// Tests only (fixture mode): replace the canned library with `state`, e.g. a partial provider
     /// snapshot, and derive as a library emission would.
     func replaceFixtureLibrary(_ state: LibraryUiState) {
@@ -429,16 +434,14 @@ final class LibraryViewModel: ObservableObject {
         update(\.effectiveSortOption, effective)
 
         // The remembered list and type apply only in the source they were picked in (review r1).
-        if fixture == .off {
-            let picks = LibraryGridPolicy.rememberedPicks(
-                sectionKey: rememberedSectionKey,
-                type: rememberedType,
-                pickedIn: rememberedSource,
-                activeSource: modeName
-            )
-            requestedSectionKey = picks.sectionKey
-            requestedType = picks.type
-        }
+        let picks = LibraryGridPolicy.rememberedPicks(
+            sectionKey: rememberedSectionKey,
+            type: rememberedType,
+            pickedIn: rememberedSource,
+            activeSource: modeName
+        )
+        requestedSectionKey = picks.sectionKey
+        requestedType = picks.type
 
         // Provider orders (batch D review r1 P2, mobile's `rememberLibraryProviderOrders`): for a
         // provider library, the chosen list's order under the effective sort comes from the
@@ -663,4 +666,20 @@ nonisolated enum LibraryDebugFlags {
             progress: id.hasPrefix("fx-p-") ? 0.4 : nil
         )
     }
+}
+
+/// W5: the one writer of the Library's remembered list and type picks (per profile and source).
+/// Called only from the viewer's own list and type picks; no derive writes (review r3).
+struct LibraryPickStore {
+    let writeSection: (_ sectionKey: String, _ source: LibrarySourceMode) -> Void
+    let writeType: (_ type: String?, _ source: LibrarySourceMode) -> Void
+
+    /// The shared display settings (profile-scoped, tagged with the source).
+    static let sharedSettings = LibraryPickStore(
+        writeSection: { LibraryDisplaySettingsRepository.shared.setSelectedSection(sectionKey: $0, sourceMode: $1) },
+        writeType: { LibraryDisplaySettingsRepository.shared.setSelectedType(type: $0, sourceMode: $1) }
+    )
+
+    /// Fixture mode: the view model's own mirror is the whole memory; nothing is written.
+    static let discard = LibraryPickStore(writeSection: { _, _ in }, writeType: { _, _ in })
 }

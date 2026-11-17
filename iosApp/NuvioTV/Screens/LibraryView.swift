@@ -445,16 +445,18 @@ struct LibraryView: View {
 
     @ViewBuilder
     private var barProbe: some View {
+        #if DEBUG
         if LibraryDebugFlags.geometryProbe {
             let g = barGeometry
             let focused = barFocus.flatMap { g.frames[$0] }
             let widths = LibraryBarFocus.allCases.compactMap { c in g.frames[c].map { "\(c.rawValue):\($0.width)" } }
-            Text(verbatim: "debug_library_bar pane=\(g.pane) pill=\(g.pill) row1=\(g.row1) row2=0 row1w=\(g.row1w) bar=\(g.bar) count=\(model.entries.count) content=\(LibraryBarGeometry.contentToken(model.content)) list=\(model.selectedSectionKey ?? "-") type=\(model.selectedType ?? "-") genre=\(model.selectedGenre ?? "-") year=\(model.selectedYear ?? "-") show=\(LibraryGridPolicy.watchChoice(for: model.activeSmartFilters).rawValue) focus=\(barFocus?.rawValue ?? "-") fminx=\(focused.map { "\($0.minX)" } ?? "-") fmaxx=\(focused.map { "\($0.maxX)" } ?? "-") panegx=\(g.paneGlobalMinX) bary=\(g.barGlobalMinY)-\(g.barGlobalMaxY) cminx=\(g.countMinX) cmaxx=\(g.countMaxX) cideal=\(g.countIdeal) hdry=\(g.headerGlobalMidY) widths=\(widths.joined(separator: ","))")
+            Text(verbatim: "debug_library_bar pane=\(g.pane) pill=\(g.pill) row1=\(g.row1) row2=0 row1w=\(g.row1w) bar=\(g.bar) count=\(model.entries.count) content=\(LibraryBarGeometry.contentToken(model.content)) list=\(model.selectedSectionKey ?? "-") type=\(model.selectedType ?? "-") genre=\(model.selectedGenre ?? "-") year=\(model.selectedYear ?? "-") show=\(LibraryGridPolicy.watchChoice(for: model.activeSmartFilters).rawValue) focus=\(barFocus?.rawValue ?? "-") fminx=\(focused.map { "\($0.minX)" } ?? "-") fmaxx=\(focused.map { "\($0.maxX)" } ?? "-") panegx=\(g.paneGlobalMinX) bary=\(g.barGlobalMinY)-\(g.barGlobalMaxY) cminx=\(g.countMinX) cmaxx=\(g.countMaxX) cideal=\(g.countIdeal) hdry=\(g.headerGlobalMidY) writes=\(model.debugPickWrites) widths=\(widths.joined(separator: ","))")
                 .font(.system(size: 8))
                 .opacity(0.011)
                 .allowsHitTesting(false)
                 .accessibilityIdentifier("debug_library_bar")
         }
+        #endif
     }
 
     /// The provider's lists (Trakt watchlist and lists, Simkl statuses, MDBList lists) as a native
