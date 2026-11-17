@@ -2,34 +2,22 @@ package com.nuvio.app.features.streams
 
 import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import co.touchlab.kermit.Logger
-import com.nuvio.app.core.build.FeaturePolicyProvider
-import com.nuvio.app.features.addons.AddonRepository
-import com.nuvio.app.features.addons.buildAddonResourceUrl
-import com.nuvio.app.features.addons.enabledAddons
-import com.nuvio.app.features.addons.fetchAddonResponseText
 import com.nuvio.app.features.debrid.DirectDebridStreamPreparer
 import com.nuvio.app.features.debrid.DebridSettingsRepository
-import com.nuvio.app.features.debrid.DebridStreamPresentation
-import com.nuvio.app.features.debrid.LocalDebridAvailabilityService
 import com.nuvio.app.features.details.MetaDetailsRepository
 import com.nuvio.app.features.player.PlayerSettingsRepository
-import com.nuvio.app.features.plugins.PluginScraperHostProvider
-import com.nuvio.app.features.plugins.pluginContentId
-import com.nuvio.app.features.plugins.PluginsUiState
 import com.nuvio.app.features.tmdb.TmdbService
+import kotlin.concurrent.Volatile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
-import com.nuvio.app.core.i18n.StringKey
-import com.nuvio.app.core.i18n.resourceString
 import kotlinx.coroutines.launch
 
 object StreamsRepository {
@@ -40,6 +28,14 @@ object StreamsRepository {
 
     private var activeJob: Job? = null
     private var activeRequestKey: String? = null
+
+    /**
+     * W4: bumped whenever the state is handed to someone else (a new load, [cancelLoading],
+     * [clear]); a load writes only while it still holds the number it started with. Written
+     * before the replacing state, so a write already in flight retries its CAS and sees it.
+     */
+    @Volatile
+    private var loadGeneration = 0L
 
     fun requestToken(
         type: String,
@@ -80,12 +76,7 @@ object StreamsRepository {
      * addons are keyed on. Addons are then matched against whichever of the two they accept.
      */
     private fun load(type: String, videoId: String, parentMetaId: String?, season: Int?, episode: Int?, manualSelection: Boolean, forceRefresh: Boolean, imdbVideoId: String? = null, remapAttempted: Boolean = false) {
-        val pluginUiState = if (FeaturePolicyProvider.policy.pluginsEnabled) {
-            PluginScraperHostProvider.host.initialize()
-            PluginScraperHostProvider.host.uiState.value
-        } else {
-            PluginsUiState(pluginsEnabled = false)
-        }
+        val pluginUiState = StreamSearchRequests.pluginUiState()
         val requestToken = requestToken(
             type = type,
             videoId = videoId,
@@ -105,6 +96,8 @@ object StreamsRepository {
         }
 
         activeRequestKey = requestKey
+        loadGeneration += 1
+        val generation = loadGeneration
         activeJob?.cancel()
         // Stream picker A, P0.1: the per-add-on chip survives a refresh of the same title (tvOS
         // only, see StreamFilterRetention) and resets on a new one. Every fresh state built below
@@ -171,16 +164,8 @@ object StreamsRepository {
             return
         }
 
-        val installedAddons = AddonRepository.uiState.value.addons.enabledAddons()
-        val pluginScrapers = if (FeaturePolicyProvider.policy.pluginsEnabled) {
-            PluginScraperHostProvider.host.getEnabledScrapersForType(type)
-        } else {
-            emptyList()
-        }
-        val pluginProviderGroups = pluginScrapers.toPluginProviderGroups(
-            repositories = pluginUiState.repositories,
-            groupByRepository = pluginUiState.groupStreamsByRepository,
-        )
+        val installedAddons = StreamSearchEnvironment.installedAddons()
+        val pluginProviderGroups = StreamSearchRequests.pluginProviderGroups(type, pluginUiState)
 
         if (installedAddons.isEmpty() && pluginProviderGroups.isEmpty()) {
             _uiState.value = StreamsUiState(
@@ -209,12 +194,7 @@ object StreamsRepository {
         // the IMDb id and run the match again with BOTH ids available, so each addon can be asked
         // with the one it accepts. Gated on `remapAttempted`, not on the result, so a title with no
         // IMDb id on TMDB resolves once and then proceeds normally instead of looping.
-        val typeStreamIdPrefixes = installedAddons.mapNotNull { addon ->
-            addon.manifest?.resources
-                ?.filter { it.name == "stream" && it.types.contains(type) }
-                ?.flatMap { it.idPrefixes }
-                ?.takeIf { it.isNotEmpty() }
-        }
+        val typeStreamIdPrefixes = StreamSearchRequests.typeStreamIdPrefixes(installedAddons, type)
         val tmdbId = StreamVideoIdRemap.parseTmdbId(videoId)
         if (
             !remapAttempted &&
@@ -247,6 +227,9 @@ object StreamsRepository {
                 // the coroutine making the call. `videoId` stays the ORIGINAL — the second pass
                 // needs both ids. parentMetaId passes through untouched; it keys the binge-group
                 // cache, not an addon request.
+                // W4: and a lookup that returned after a newer load (or clear) took over must not
+                // re-enter over it; cancellation alone misses a lookup that ignores it.
+                if (loadGeneration != generation) return@launch
                 activeRequestKey = null
                 activeJob = null
                 load(
@@ -313,26 +296,30 @@ object StreamsRepository {
             showDirectAutoPlayOverlay = isDirectAutoPlayFlow,
         )
 
-        activeJob = scope.launch {
-            val completions = Channel<StreamLoadCompletion>(capacity = Channel.BUFFERED)
-            val pluginRemainingByAddonId = pluginProviderGroups
-                .associate { it.addonId to it.scrapers.size }
-                .toMutableMap()
-            val pluginFirstErrorByAddonId = mutableMapOf<String, String>()
-            // tvOS (StreamPresentationPlatform.filtersApplyToAllStreams): every plugin group's RAW,
-            // un-presented streams so far, in arrival order. The presented list is rebuilt from this
-            // on each scraper completion; feeding the group's already-presented streams back through
-            // DebridStreamPresentation would present the earlier scrapers' streams again for every
-            // later completion. Only touched from this receive loop, never from a state update lambda.
-            val rawPluginStreamsByAddonId = mutableMapOf<String, List<StreamItem>>()
-            val totalTasks = streamAddons.size +
-                pluginProviderGroups.sumOf { it.scrapers.size }
+        val searchTargets = StreamSearchTargets(
+            type = type,
+            videoId = videoId,
+            season = season,
+            episode = episode,
+            streamAddons = streamAddons,
+            pluginProviderGroups = pluginProviderGroups,
+            debridConfiguration = StreamSearchEnvironment.debridConfiguration(),
+        )
+        val searchProfileId = StreamSearchEnvironment.profileId()
 
+        activeJob = scope.launch {
             val installedAddonNames = installedAddonOrder.toSet()
             val installedAddonIds = streamAddons.map { it.addonId }.toSet()
-            val debridAvailabilityJobs = mutableListOf<Job>()
             var autoSelectTriggered = false
             var timeoutElapsed = false
+
+            // W4: every write of this load goes through here, so a superseded load (a newer load,
+            // clear, cancelLoading) cannot land a late write on the state that replaced it, even
+            // from a write already in flight on another thread when the job was cancelled.
+            fun updateIfCurrent(transform: (StreamsUiState) -> StreamsUiState) {
+                _uiState.update { current -> if (loadGeneration == generation) transform(current) else current }
+            }
+
             fun evaluateAutoPlay(bingeGroupOnly: Boolean = false): StreamAutoPlayEvaluation =
                 StreamAutoPlaySelector.evaluateAutoPlayStream(
                     streams = _uiState.value.groups.flatMap { it.streams },
@@ -355,7 +342,7 @@ object StreamsRepository {
             fun settleAutoPlay(evaluation: StreamAutoPlayEvaluation) {
                 if (autoSelectTriggered) return
                 autoSelectTriggered = true
-                _uiState.update { current ->
+                updateIfCurrent { current ->
                     if (evaluation.stream == null) {
                         current.copy(
                             autoPlayStream = null,
@@ -393,73 +380,6 @@ object StreamsRepository {
                 ) {
                     settleAutoPlay(evaluateAutoPlay())
                 }
-            }
-
-            fun publishCompletion(completion: StreamLoadCompletion) {
-                if (completions.trySend(completion).isFailure) {
-                    log.d { "Ignoring late stream load completion after channel close" }
-                }
-            }
-
-            fun presentStreamGroup(group: AddonStreamGroup): AddonStreamGroup {
-                val badgeGroup = StreamBadgePresentation.apply(
-                    groups = listOf(group),
-                    rules = streamBadgeRules,
-                ).firstOrNull() ?: group
-                return DebridStreamPresentation.apply(
-                    groups = listOf(badgeGroup),
-                    settings = debridSettings,
-                    allStreams = StreamPresentationPlatform.filtersApplyToAllStreams,
-                ).firstOrNull() ?: badgeGroup
-            }
-
-            fun publishAddonGroup(group: AddonStreamGroup) {
-                _uiState.update { current ->
-                    val updated = StreamAutoPlaySelector.orderAddonStreams(
-                        groups = current.groups.map { currentGroup ->
-                            if (currentGroup.addonId == group.addonId) group else currentGroup
-                        },
-                        installedOrder = installedAddonOrder,
-                    )
-                    val anyLoading = updated.any { it.isLoading }
-                    current.copy(
-                        groups = updated,
-                        isAnyLoading = anyLoading,
-                        emptyStateReason = updated.toEmptyStateReason(anyLoading),
-                    )
-                }
-                updateAutoPlayAfterStreamsChanged()
-            }
-
-            fun publishAddonGroupAfterCacheCheck(group: AddonStreamGroup) {
-                if (group.addonId !in installedAddonIds || group.streams.isEmpty()) {
-                    publishAddonGroup(presentStreamGroup(group))
-                    return
-                }
-
-                val eligibleGroupIds = setOf(group.addonId)
-                val shouldWaitForCacheCheck = LocalDebridAvailabilityService.hasPendingCacheCheck(
-                    groups = listOf(group),
-                    eligibleGroupIds = eligibleGroupIds,
-                )
-                if (!shouldWaitForCacheCheck) {
-                    publishAddonGroup(presentStreamGroup(group))
-                    return
-                }
-
-                val checkingGroup = LocalDebridAvailabilityService.markChecking(
-                    groups = listOf(group),
-                    eligibleGroupIds = eligibleGroupIds,
-                ).firstOrNull() ?: group
-
-                val availabilityJob = launch {
-                    val availabilityGroup = LocalDebridAvailabilityService.annotateCachedAvailability(
-                        groups = listOf(checkingGroup),
-                        eligibleGroupIds = eligibleGroupIds,
-                    ).firstOrNull() ?: checkingGroup
-                    publishAddonGroup(presentStreamGroup(availabilityGroup))
-                }
-                debridAvailabilityJobs += availabilityJob
             }
 
             updateAutoPlayAfterStreamsChanged()
@@ -505,172 +425,25 @@ object StreamsRepository {
                 null
             }
 
-            streamAddons.forEach { addon ->
-                launch {
-                    val url = buildAddonResourceUrl(
-                        manifestUrl = addon.manifest.transportUrl,
-                        resource = "stream",
-                        type = type,
-                        id = addon.videoId,
-                    )
-                    log.d { "Fetching streams from: $url" }
-                    StreamDiagnostics.log("fetch ${addon.addonName}: ${StreamDiagnostics.redactUrl(url)}")
-
-                    val displayName = addon.addonName
-                    val fetchResult = runCatchingUnlessCancelled {
-                        val payload = fetchAddonResponseText(
-                            url = url,
-                            forceRefresh = forceRefresh,
-                        )
-                        StreamParser.parse(
-                            payload = payload,
-                            addonName = displayName,
-                            addonId = addon.addonId,
-                            addonLogo = addon.manifest.logoUrl,
-                        )
-                    }.onSuccess { streams ->
-                        log.d { "Got ${streams.size} streams from ${displayName}" }
-                        StreamDiagnostics.log("got ${streams.size} from $displayName")
-                    }.onFailure { err ->
-                        log.w(err) { "Failed to fetch streams from ${displayName}" }
-                        StreamDiagnostics.log("FAILED $displayName: ${err.message ?: "unknown error"}")
-                    }
-                    // Stream picker A, P0.2: a failed add-on becomes an empty group whose `error`
-                    // is always readable (a null exception message no longer reads as "no streams").
-                    val group = addonStreamGroupFromFetch(
-                        addonName = displayName,
-                        addonId = addon.addonId,
-                        result = fetchResult,
-                    )
-                    publishCompletion(StreamLoadCompletion.Addon(group))
-                }
+            // W4 (upstream 8fba6c71e / 4c414a5f4): the fan-out and the debrid cache check run once
+            // in the shared search session, joined here; this load only presents what arrives.
+            val accumulator = StreamSearchAccumulator(
+                installedAddonOrder = installedAddonOrder,
+                pluginProviderGroups = pluginProviderGroups,
+                present = { group -> presentSearchGroup(group, streamBadgeRules, debridSettings) },
+                debridSettings = debridSettings,
+            )
+            StreamSearchSessions.search(
+                profileId = searchProfileId,
+                targets = searchTargets,
+                forceRefresh = forceRefresh,
+            ).collect { completion ->
+                updateIfCurrent(accumulator.record(completion))
+                updateAutoPlayAfterStreamsChanged()
             }
-
-            pluginProviderGroups.forEach { providerGroup ->
-                val includeScraperNameInSubtitle = false
-                providerGroup.scrapers.forEach { scraper ->
-                    launch {
-                        val completion = PluginScraperHostProvider.host.executeScraper(
-                            scraper = scraper,
-                            tmdbId = pluginContentId(
-                                videoId = videoId,
-                                season = season,
-                                episode = episode,
-                            ),
-                            mediaType = type,
-                            season = season,
-                            episode = episode,
-                        ).fold(
-                            onSuccess = { results ->
-                                StreamLoadCompletion.PluginScraper(
-                                    addonId = providerGroup.addonId,
-                                    streams = results.map { result ->
-                                        result.toStreamItem(
-                                            scraper = scraper,
-                                            addonName = providerGroup.addonName,
-                                            addonId = providerGroup.addonId,
-                                            includeScraperNameInSubtitle = includeScraperNameInSubtitle,
-                                        )
-                                    },
-                                    error = null,
-                                )
-                            },
-                            onFailure = { error ->
-                                StreamLoadCompletion.PluginScraper(
-                                    addonId = providerGroup.addonId,
-                                    streams = emptyList(),
-                                    error = error.message ?: resourceString(
-                                        "Failed to load ${scraper.name}",
-                                        StringKey.streams_failed_to_load_scraper,
-                                        scraper.name,
-                                    ),
-                                )
-                            },
-                        )
-                        publishCompletion(completion)
-                    }
-                }
-            }
-
-            repeat(totalTasks) {
-                when (val completion = completions.receive()) {
-                    is StreamLoadCompletion.Addon -> {
-                        val result = completion.group
-                        publishAddonGroupAfterCacheCheck(result)
-                    }
-
-                    is StreamLoadCompletion.PluginScraper -> {
-                        val remaining = (pluginRemainingByAddonId[completion.addonId] ?: 1) - 1
-                        pluginRemainingByAddonId[completion.addonId] = remaining.coerceAtLeast(0)
-                        if (!completion.error.isNullOrBlank() && pluginFirstErrorByAddonId[completion.addonId].isNullOrBlank()) {
-                            pluginFirstErrorByAddonId[completion.addonId] = completion.error
-                        }
-
-                        val rawPluginStreams: List<StreamItem>? =
-                            if (StreamPresentationPlatform.filtersApplyToAllStreams && completion.streams.isNotEmpty()) {
-                                ((rawPluginStreamsByAddonId[completion.addonId] ?: emptyList()) + completion.streams)
-                                    .also { rawPluginStreamsByAddonId[completion.addonId] = it }
-                            } else {
-                                null
-                            }
-
-                        _uiState.update { current ->
-                            val updated = StreamAutoPlaySelector.orderAddonStreams(
-                                groups = current.groups.map { group ->
-                                    if (group.addonId != completion.addonId) {
-                                        group
-                                    } else {
-                                        var cachedOnlyHidden = group.cachedOnlyHiddenCount
-                                        val mergedStreams = if (completion.streams.isEmpty()) {
-                                            group.streams
-                                        } else if (rawPluginStreams != null) {
-                                            // tvOS: plugin streams get the same sort / filter preferences as
-                                            // every add-on's. Present from the raw merged list of every scraper
-                                            // of this group so far, not from group.streams: those were already
-                                            // presented on the previous completion.
-                                            val merged = rawPluginStreams.sortedForGroupedDisplay()
-                                            val presented = DebridStreamPresentation.apply(
-                                                groups = listOf(group.copy(streams = merged)),
-                                                settings = debridSettings,
-                                                allStreams = true,
-                                            ).firstOrNull()
-                                            cachedOnlyHidden = presented?.cachedOnlyHiddenCount ?: 0
-                                            presented?.streams ?: merged
-                                        } else {
-                                            (group.streams + completion.streams).sortedForGroupedDisplay()
-                                        }
-                                        val stillLoading = remaining > 0
-                                        val finalError = if (mergedStreams.isEmpty() && !stillLoading) {
-                                            pluginFirstErrorByAddonId[completion.addonId]
-                                        } else {
-                                            null
-                                        }
-                                        group.copy(
-                                            streams = mergedStreams,
-                                            cachedOnlyHiddenCount = cachedOnlyHidden,
-                                            isLoading = stillLoading,
-                                            error = finalError,
-                                        )
-                                    }
-                                },
-                                installedOrder = installedAddonOrder,
-                            )
-                            val anyLoading = updated.any { it.isLoading }
-                            current.copy(
-                                groups = updated,
-                                isAnyLoading = anyLoading,
-                                emptyStateReason = updated.toEmptyStateReason(anyLoading),
-                            )
-                        }
-                        updateAutoPlayAfterStreamsChanged()
-                    }
-
-                }
-            }
-
-            for (availabilityJob in debridAvailabilityJobs) {
-                availabilityJob.join()
-            }
+            // A search dropped before it finished (a forced refresh elsewhere, eviction, a wipe)
+            // leaves its remaining sources without a result.
+            updateIfCurrent { it.withoutPendingGroups() }
 
             launch {
                 DirectDebridStreamPreparer.prepare(
@@ -682,7 +455,7 @@ object StreamsRepository {
                     playerSettings = playerSettings,
                     installedAddonNames = installedAddonNames,
                 ) { original, prepared ->
-                    _uiState.update { current ->
+                    updateIfCurrent { current ->
                         current.copy(
                             groups = DirectDebridStreamPreparer.replacePreparedStream(
                                 groups = current.groups,
@@ -740,6 +513,7 @@ object StreamsRepository {
     }
 
     fun cancelLoading() {
+        loadGeneration += 1
         activeJob?.cancel()
         activeJob = null
         _uiState.update { current ->
@@ -763,6 +537,7 @@ object StreamsRepository {
     }
 
     fun clear() {
+        loadGeneration += 1
         activeJob?.cancel()
         activeJob = null
         activeRequestKey = null

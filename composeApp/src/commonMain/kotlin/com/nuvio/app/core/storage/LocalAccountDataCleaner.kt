@@ -28,6 +28,7 @@ import com.nuvio.app.features.streams.StreamContextStore
 import com.nuvio.app.features.shuffle.EpisodeShuffleRepository
 import com.nuvio.app.features.streams.StreamBadgeSettingsRepository
 import com.nuvio.app.features.streams.StreamLaunchStore
+import com.nuvio.app.features.streams.StreamSearchSessions
 import com.nuvio.app.features.streams.StreamsRepository
 import com.nuvio.app.features.tracking.TrackingProviderRegistry
 import com.nuvio.app.features.trakt.TraktAuthRepository
@@ -91,6 +92,8 @@ internal object LocalAccountDataCleaner {
         P2pSettingsRepository.clearLocalState()
         CatalogRepository.clear()
         StreamsRepository.clear()
+        // W4: the shared source searches hold the old account's results (and debrid key hash).
+        StreamSearchSessions.clearAsync()
         MetaDetailsRepository.clear()
         SearchRepository.reset()
         SubtitleRepository.clear()

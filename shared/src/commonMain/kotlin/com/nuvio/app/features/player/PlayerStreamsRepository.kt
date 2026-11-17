@@ -2,55 +2,43 @@ package com.nuvio.app.features.player
 
 import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import co.touchlab.kermit.Logger
-import com.nuvio.app.core.build.FeaturePolicyProvider
-import com.nuvio.app.features.addons.AddonRepository
-import com.nuvio.app.features.addons.buildAddonResourceUrl
-import com.nuvio.app.features.addons.enabledAddons
-import com.nuvio.app.features.addons.fetchAddonResponseText
 import com.nuvio.app.features.debrid.DebridSettingsRepository
-import com.nuvio.app.features.debrid.DebridStreamPresentation
 import com.nuvio.app.features.debrid.DirectDebridStreamPreparer
-import com.nuvio.app.features.debrid.LocalDebridAvailabilityService
 import com.nuvio.app.features.details.MetaDetailsRepository
-import com.nuvio.app.features.plugins.PluginScraperHostProvider
-import com.nuvio.app.features.plugins.PluginsUiState
-import com.nuvio.app.features.plugins.pluginContentId
 import com.nuvio.app.features.streams.AddonStreamGroup
-import com.nuvio.app.features.streams.InstalledStreamAddonTarget
 import com.nuvio.app.features.streams.StreamAutoPlaySelector
 import com.nuvio.app.features.streams.StreamBadgePresentation
 import com.nuvio.app.features.streams.StreamBadgeSettingsRepository
-import com.nuvio.app.features.streams.StreamItem
-import com.nuvio.app.features.streams.StreamLoadCompletion
-import com.nuvio.app.features.streams.StreamParser
-import com.nuvio.app.features.streams.StreamPresentationPlatform
-import com.nuvio.app.features.streams.StreamsUiState
 import com.nuvio.app.features.streams.StreamDiagnostics
+import com.nuvio.app.features.streams.StreamSearchAccumulator
+import com.nuvio.app.features.streams.StreamSearchEnvironment
+import com.nuvio.app.features.streams.StreamSearchRequests
+import com.nuvio.app.features.streams.StreamSearchSessions
+import com.nuvio.app.features.streams.StreamSearchTargets
 import com.nuvio.app.features.streams.StreamVideoIdRemap
+import com.nuvio.app.features.streams.StreamsEmptyStateReason
+import com.nuvio.app.features.streams.StreamsUiState
+import com.nuvio.app.features.streams.presentSearchGroup
+import com.nuvio.app.features.streams.streamAddonTargets
+import com.nuvio.app.features.streams.withoutPendingGroups
 import com.nuvio.app.features.tmdb.TmdbService
-import com.nuvio.app.features.streams.runCatchingUnlessCancelled
-import com.nuvio.app.features.streams.sortedForGroupedDisplay
-import com.nuvio.app.features.streams.streamAddonInstanceId
-import com.nuvio.app.features.streams.toEmptyStateReason
-import com.nuvio.app.features.streams.toPluginProviderGroups
-import com.nuvio.app.features.streams.toStreamItem
+import kotlin.concurrent.Volatile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import com.nuvio.app.core.i18n.StringKey
-import com.nuvio.app.core.i18n.resourceString
 
 /**
  * Dedicated stream fetcher for use inside the player (sources & episodes panels).
- * Uses its own state so it doesn't interfere with the main [StreamsRepository].
+ * Uses its own state so it doesn't interfere with the main [StreamsRepository]. W4: the search
+ * itself is the shared session ([StreamSearchSessions]) the picker and Up Next join too, so the
+ * same episode is fetched once; this repository only presents what arrives.
  */
 object PlayerStreamsRepository {
     private val log = Logger.withTag("PlayerStreamsRepo")
@@ -67,6 +55,15 @@ object PlayerStreamsRepository {
     val episodeStreamsState: StateFlow<StreamsUiState> = _episodeStreamsState.asStateFlow()
     private var episodeStreamsJob: Job? = null
     private var episodeStreamsRequestKey: String? = null
+
+    // W4: one counter per state flow, bumped whenever that flow is handed to a new load or
+    // cleared; a load writes only while it still holds the number it started with (see
+    // StreamsRepository.loadGeneration).
+    @Volatile
+    private var sourceGeneration = 0L
+
+    @Volatile
+    private var episodeStreamsGeneration = 0L
 
     fun loadSources(
         type: String,
@@ -86,6 +83,8 @@ object PlayerStreamsRepository {
             setRequestKey = { sourceRequestKey = it },
             jobHolder = { sourceJob },
             setJob = { sourceJob = it },
+            generationHolder = { sourceGeneration },
+            nextGeneration = { sourceGeneration += 1; sourceGeneration },
         )
     }
 
@@ -107,6 +106,8 @@ object PlayerStreamsRepository {
             setRequestKey = { episodeStreamsRequestKey = it },
             jobHolder = { episodeStreamsJob },
             setJob = { episodeStreamsJob = it },
+            generationHolder = { episodeStreamsGeneration },
+            nextGeneration = { episodeStreamsGeneration += 1; episodeStreamsGeneration },
         )
     }
 
@@ -118,13 +119,16 @@ object PlayerStreamsRepository {
         _episodeStreamsState.update { it.copy(selectedFilter = addonId) }
     }
 
+    /** Stops this consumer only: the shared search goes on, and the next load of the episode replays it. */
     fun clearEpisodeStreams() {
+        episodeStreamsGeneration += 1
         episodeStreamsJob?.cancel()
         episodeStreamsRequestKey = null
         _episodeStreamsState.value = StreamsUiState()
     }
 
     fun clearAll() {
+        sourceGeneration += 1
         sourceJob?.cancel()
         sourceRequestKey = null
         _sourceState.value = StreamsUiState()
@@ -142,15 +146,12 @@ object PlayerStreamsRepository {
         setRequestKey: (String?) -> Unit,
         jobHolder: () -> Job?,
         setJob: (Job) -> Unit,
+        generationHolder: () -> Long,
+        nextGeneration: () -> Long,
         imdbVideoId: String? = null,
         remapAttempted: Boolean = false,
     ) {
-        val pluginUiState = if (FeaturePolicyProvider.policy.pluginsEnabled) {
-            PluginScraperHostProvider.host.initialize()
-            PluginScraperHostProvider.host.uiState.value
-        } else {
-            PluginsUiState(pluginsEnabled = false)
-        }
+        val pluginUiState = StreamSearchRequests.pluginUiState()
         val requestKey = "$type::$videoId::$season::$episode::pluginsGrouped=${pluginUiState.groupStreamsByRepository}"
         val current = stateFlow.value
         if (
@@ -162,6 +163,7 @@ object PlayerStreamsRepository {
         }
 
         setRequestKey(requestKey)
+        val generation = nextGeneration()
         jobHolder()?.cancel()
         stateFlow.value = StreamsUiState()
 
@@ -190,24 +192,16 @@ object PlayerStreamsRepository {
             return
         }
 
-        val installedAddons = AddonRepository.uiState.value.addons.enabledAddons()
+        val installedAddons = StreamSearchEnvironment.installedAddons()
         PlayerSettingsRepository.ensureLoaded()
         val playerSettings = PlayerSettingsRepository.uiState.value
         val debridSettings = DebridSettingsRepository.snapshot()
-        val pluginScrapers = if (FeaturePolicyProvider.policy.pluginsEnabled) {
-            PluginScraperHostProvider.host.getEnabledScrapersForType(type)
-        } else {
-            emptyList()
-        }
-        val pluginProviderGroups = pluginScrapers.toPluginProviderGroups(
-            repositories = pluginUiState.repositories,
-            groupByRepository = pluginUiState.groupStreamsByRepository,
-        )
+        val pluginProviderGroups = StreamSearchRequests.pluginProviderGroups(type, pluginUiState)
 
         if (installedAddons.isEmpty() && pluginProviderGroups.isEmpty()) {
             stateFlow.value = StreamsUiState(
                 isAnyLoading = false,
-                emptyStateReason = com.nuvio.app.features.streams.StreamsEmptyStateReason.NoAddonsInstalled,
+                emptyStateReason = StreamsEmptyStateReason.NoAddonsInstalled,
             )
             return
         }
@@ -215,34 +209,11 @@ object PlayerStreamsRepository {
         // BUG-74: each addon is asked with the id IT accepts — see StreamsRepository's copy and
         // [StreamVideoIdRemap]. This path matters most for next-episode autoplay, whose videoId
         // comes from persisted watch progress and so can be `tmdb:`-namespaced even when the detail
-        // screen handed the picker a clean one.
-        val streamAddons = installedAddons
-            .mapNotNull { addon ->
-                val manifest = addon.manifest ?: return@mapNotNull null
-                val streamResources = manifest.resources.filter { resource ->
-                    resource.name == "stream" && resource.types.contains(type)
-                }
-                val requestId = when {
-                    streamResources.any { StreamVideoIdRemap.accepts(it.idPrefixes, videoId) } -> videoId
-                    imdbVideoId != null &&
-                        streamResources.any { StreamVideoIdRemap.accepts(it.idPrefixes, imdbVideoId) } -> imdbVideoId
-                    else -> return@mapNotNull null
-                }
+        // screen handed the picker a clean one. W4: the same `streamAddonTargets` the picker uses,
+        // so both build the same search key for the same episode.
+        val streamAddons = streamAddonTargets(installedAddons, type, videoId, imdbVideoId)
 
-                InstalledStreamAddonTarget(
-                    addonName = addon.displayTitle.ifBlank { manifest.name },
-                    addonId = addon.streamAddonInstanceId(manifest.id),
-                    manifest = manifest,
-                    videoId = requestId,
-                )
-            }
-
-        val typeStreamIdPrefixes = installedAddons.mapNotNull { addon ->
-            addon.manifest?.resources
-                ?.filter { it.name == "stream" && it.types.contains(type) }
-                ?.flatMap { it.idPrefixes }
-                ?.takeIf { it.isNotEmpty() }
-        }
+        val typeStreamIdPrefixes = StreamSearchRequests.typeStreamIdPrefixes(installedAddons, type)
         val tmdbId = StreamVideoIdRemap.parseTmdbId(videoId)
         if (
             !remapAttempted &&
@@ -260,6 +231,9 @@ object PlayerStreamsRepository {
                     log.w { "No IMDb id for tmdb:$tmdbId ($type) — tt-only stream addons stay unreachable" }
                     StreamDiagnostics.log("player remap FAILED $videoId → no imdb id on tmdb")
                 }
+                // W4: a lookup that returned after a newer load or a clear took this flow over
+                // must not re-enter over it.
+                if (generationHolder() != generation) return@launch
                 // Re-enter either way, so a failed resolution never costs the user an addon that
                 // did accept the original id.
                 setRequestKey(null)
@@ -277,6 +251,8 @@ object PlayerStreamsRepository {
                     // StreamsRepository nulls `activeJob` before its own re-entry.
                     jobHolder = { null },
                     setJob = setJob,
+                    generationHolder = generationHolder,
+                    nextGeneration = nextGeneration,
                     imdbVideoId = remapped,
                     remapAttempted = true,
                 )
@@ -290,9 +266,9 @@ object PlayerStreamsRepository {
             stateFlow.value = StreamsUiState(
                 isAnyLoading = false,
                 emptyStateReason = if (tmdbId != null) {
-                    com.nuvio.app.features.streams.StreamsEmptyStateReason.IncompatibleContentId
+                    StreamsEmptyStateReason.IncompatibleContentId
                 } else {
-                    com.nuvio.app.features.streams.StreamsEmptyStateReason.NoCompatibleAddons
+                    StreamsEmptyStateReason.NoCompatibleAddons
                 },
             )
             return
@@ -322,247 +298,42 @@ object PlayerStreamsRepository {
             isAnyLoading = isInitiallyLoading,
         )
 
+        val searchTargets = StreamSearchTargets(
+            type = type,
+            videoId = videoId,
+            season = season,
+            episode = episode,
+            streamAddons = streamAddons,
+            pluginProviderGroups = pluginProviderGroups,
+            debridConfiguration = StreamSearchEnvironment.debridConfiguration(),
+        )
+        val searchProfileId = StreamSearchEnvironment.profileId()
+
         val job = scope.launch {
             val installedAddonIds = streamAddons.map { it.addonId }.toSet()
             val installedAddonNames = installedAddonOrder.toSet()
-            val pluginRemainingByAddonId = pluginProviderGroups
-                .associate { it.addonId to it.scrapers.size }
-                .toMutableMap()
-            val pluginFirstErrorByAddonId = mutableMapOf<String, String>()
-            // tvOS (StreamPresentationPlatform.filtersApplyToAllStreams): every plugin group's RAW,
-            // un-presented streams so far, in arrival order. The presented list is rebuilt from this
-            // on each scraper completion; feeding the group's already-presented streams back through
-            // DebridStreamPresentation would present the earlier scrapers' streams again for every
-            // later completion. Only touched from this receive loop, never from a state update lambda.
-            val rawPluginStreamsByAddonId = mutableMapOf<String, List<StreamItem>>()
-            val totalTasks = streamAddons.size + pluginProviderGroups.sumOf { it.scrapers.size }
-            val completions = Channel<StreamLoadCompletion>(capacity = Channel.BUFFERED)
-            val debridAvailabilityJobs = mutableListOf<Job>()
 
-            fun publishCompletion(completion: StreamLoadCompletion) {
-                if (completions.trySend(completion).isFailure) {
-                    log.d { "Ignoring late player stream load completion after channel close" }
-                }
+            fun updateIfCurrent(transform: (StreamsUiState) -> StreamsUiState) {
+                stateFlow.update { current -> if (generationHolder() == generation) transform(current) else current }
             }
 
-            fun presentStreamGroup(group: AddonStreamGroup): AddonStreamGroup {
-                val badgeGroup = StreamBadgePresentation.apply(
-                    groups = listOf(group),
-                    rules = streamBadgeRules,
-                ).firstOrNull() ?: group
-                return DebridStreamPresentation.apply(
-                    groups = listOf(badgeGroup),
-                    settings = debridSettings,
-                    allStreams = StreamPresentationPlatform.filtersApplyToAllStreams,
-                ).firstOrNull() ?: badgeGroup
-            }
+            // W4 (upstream 8fba6c71e / 4c414a5f4): the fan-out and the debrid cache check run once
+            // in the shared search session, joined here; this load only presents what arrives.
+            val accumulator = StreamSearchAccumulator(
+                installedAddonOrder = installedAddonOrder,
+                pluginProviderGroups = pluginProviderGroups,
+                present = { group -> presentSearchGroup(group, streamBadgeRules, debridSettings) },
+                debridSettings = debridSettings,
+            )
+            StreamSearchSessions.search(
+                profileId = searchProfileId,
+                targets = searchTargets,
+                forceRefresh = forceRefresh,
+            ).collect { completion -> updateIfCurrent(accumulator.record(completion)) }
+            // A search dropped before it finished (a forced refresh elsewhere, eviction, a wipe)
+            // leaves its remaining sources without a result.
+            updateIfCurrent { it.withoutPendingGroups() }
 
-            fun publishStreamGroup(group: AddonStreamGroup) {
-                stateFlow.update { current ->
-                    val updated = StreamAutoPlaySelector.orderAddonStreams(
-                        groups = current.groups.map { currentGroup ->
-                            if (currentGroup.addonId == group.addonId) group else currentGroup
-                        },
-                        installedOrder = installedAddonOrder,
-                    )
-                    val anyLoading = updated.any { it.isLoading }
-                    current.copy(
-                        groups = updated,
-                        isAnyLoading = anyLoading,
-                        emptyStateReason = updated.toEmptyStateReason(anyLoading),
-                    )
-                }
-            }
-
-            fun publishStreamGroupAfterCacheCheck(group: AddonStreamGroup) {
-                if (group.addonId !in installedAddonIds || group.streams.isEmpty()) {
-                    publishStreamGroup(presentStreamGroup(group))
-                    return
-                }
-
-                val eligibleGroupIds = setOf(group.addonId)
-                val shouldWaitForCacheCheck = LocalDebridAvailabilityService.hasPendingCacheCheck(
-                    groups = listOf(group),
-                    eligibleGroupIds = eligibleGroupIds,
-                )
-                if (!shouldWaitForCacheCheck) {
-                    publishStreamGroup(presentStreamGroup(group))
-                    return
-                }
-
-                val checkingGroup = LocalDebridAvailabilityService.markChecking(
-                    groups = listOf(group),
-                    eligibleGroupIds = eligibleGroupIds,
-                ).firstOrNull() ?: group
-
-                val availabilityJob = launch {
-                    val availabilityGroup = LocalDebridAvailabilityService.annotateCachedAvailability(
-                        groups = listOf(checkingGroup),
-                        eligibleGroupIds = eligibleGroupIds,
-                    ).firstOrNull() ?: checkingGroup
-                    publishStreamGroup(presentStreamGroup(availabilityGroup))
-                }
-                debridAvailabilityJobs += availabilityJob
-            }
-
-            streamAddons.forEach { addon ->
-                launch {
-                    val url = buildAddonResourceUrl(
-                        manifestUrl = addon.manifest.transportUrl,
-                        resource = "stream",
-                        type = type,
-                        id = addon.videoId,
-                    )
-
-                    val displayName = addon.addonName
-                    val group = runCatchingUnlessCancelled {
-                        val payload = fetchAddonResponseText(
-                            url = url,
-                            forceRefresh = forceRefresh,
-                        )
-                        StreamParser.parse(
-                            payload = payload,
-                            addonName = displayName,
-                            addonId = addon.addonId,
-                            addonLogo = addon.manifest.logoUrl,
-                        )
-                    }.fold(
-                        onSuccess = { streams ->
-                            AddonStreamGroup(displayName, addon.addonId, streams, isLoading = false)
-                        },
-                        onFailure = { err ->
-                            log.w(err) { "Failed: ${displayName}" }
-                            AddonStreamGroup(displayName, addon.addonId, emptyList(), isLoading = false, error = err.message)
-                        },
-                    )
-                    publishCompletion(StreamLoadCompletion.Addon(group))
-                }
-            }
-
-            pluginProviderGroups.forEach { providerGroup ->
-                val includeScraperNameInSubtitle = false
-                providerGroup.scrapers.forEach { scraper ->
-                    launch {
-                        val completion = PluginScraperHostProvider.host.executeScraper(
-                            scraper = scraper,
-                            tmdbId = pluginContentId(
-                                videoId = videoId,
-                                season = season,
-                                episode = episode,
-                            ),
-                            mediaType = type,
-                            season = season,
-                            episode = episode,
-                        ).fold(
-                            onSuccess = { results ->
-                                StreamLoadCompletion.PluginScraper(
-                                    addonId = providerGroup.addonId,
-                                    streams = results.map { result ->
-                                        result.toStreamItem(
-                                            scraper = scraper,
-                                            addonName = providerGroup.addonName,
-                                            addonId = providerGroup.addonId,
-                                            includeScraperNameInSubtitle = includeScraperNameInSubtitle,
-                                        )
-                                    },
-                                    error = null,
-                                )
-                            },
-                            onFailure = { error ->
-                                log.w(error) { "Plugin scraper failed: ${scraper.name}" }
-                                StreamLoadCompletion.PluginScraper(
-                                    addonId = providerGroup.addonId,
-                                    streams = emptyList(),
-                                    error = error.message ?: resourceString(
-                                        "Failed to load ${scraper.name}",
-                                        StringKey.streams_failed_to_load_scraper,
-                                        scraper.name,
-                                    ),
-                                )
-                            },
-                        )
-                        publishCompletion(completion)
-                    }
-                }
-            }
-
-            repeat(totalTasks) {
-                when (val completion = completions.receive()) {
-                    is StreamLoadCompletion.Addon -> {
-                        publishStreamGroupAfterCacheCheck(completion.group)
-                    }
-
-                    is StreamLoadCompletion.PluginScraper -> {
-                        val remaining = (pluginRemainingByAddonId[completion.addonId] ?: 1) - 1
-                        pluginRemainingByAddonId[completion.addonId] = remaining.coerceAtLeast(0)
-                        val completionError = completion.error
-                        if (!completionError.isNullOrBlank() && pluginFirstErrorByAddonId[completion.addonId].isNullOrBlank()) {
-                            pluginFirstErrorByAddonId[completion.addonId] = completionError
-                        }
-
-                        val rawPluginStreams: List<StreamItem>? =
-                            if (StreamPresentationPlatform.filtersApplyToAllStreams && completion.streams.isNotEmpty()) {
-                                ((rawPluginStreamsByAddonId[completion.addonId] ?: emptyList()) + completion.streams)
-                                    .also { rawPluginStreamsByAddonId[completion.addonId] = it }
-                            } else {
-                                null
-                            }
-
-                        stateFlow.update { current ->
-                            val updated = StreamAutoPlaySelector.orderAddonStreams(
-                                groups = current.groups.map { group ->
-                                    if (group.addonId != completion.addonId) {
-                                        group
-                                    } else {
-                                        var cachedOnlyHidden = group.cachedOnlyHiddenCount
-                                        val mergedStreams = if (completion.streams.isEmpty()) {
-                                            group.streams
-                                        } else if (rawPluginStreams != null) {
-                                            // tvOS: plugin streams get the same sort / filter preferences as
-                                            // every add-on's. Present from the raw merged list of every scraper
-                                            // of this group so far, not from group.streams: those were already
-                                            // presented on the previous completion.
-                                            val merged = rawPluginStreams.sortedForGroupedDisplay()
-                                            val presented = DebridStreamPresentation.apply(
-                                                groups = listOf(group.copy(streams = merged)),
-                                                settings = debridSettings,
-                                                allStreams = true,
-                                            ).firstOrNull()
-                                            cachedOnlyHidden = presented?.cachedOnlyHiddenCount ?: 0
-                                            presented?.streams ?: merged
-                                        } else {
-                                            (group.streams + completion.streams).sortedForGroupedDisplay()
-                                        }
-                                        val stillLoading = remaining > 0
-                                        val finalError = if (mergedStreams.isEmpty() && !stillLoading) {
-                                            pluginFirstErrorByAddonId[completion.addonId]
-                                        } else {
-                                            null
-                                        }
-                                        group.copy(
-                                            streams = mergedStreams,
-                                            cachedOnlyHiddenCount = cachedOnlyHidden,
-                                            isLoading = stillLoading,
-                                            error = finalError,
-                                        )
-                                    }
-                                },
-                                installedOrder = installedAddonOrder,
-                            )
-                            val anyLoading = updated.any { it.isLoading }
-                            current.copy(
-                                groups = updated,
-                                isAnyLoading = anyLoading,
-                                emptyStateReason = updated.toEmptyStateReason(anyLoading),
-                            )
-                        }
-                    }
-                }
-            }
-
-            for (availabilityJob in debridAvailabilityJobs) {
-                availabilityJob.join()
-            }
             launch {
                 DirectDebridStreamPreparer.prepare(
                     streams = stateFlow.value.groups
@@ -573,7 +344,7 @@ object PlayerStreamsRepository {
                     playerSettings = playerSettings,
                     installedAddonNames = installedAddonNames,
                 ) { original, prepared ->
-                    stateFlow.update { current ->
+                    updateIfCurrent { current ->
                         current.copy(
                             groups = DirectDebridStreamPreparer.replacePreparedStream(
                                 groups = current.groups,
@@ -585,16 +356,10 @@ object PlayerStreamsRepository {
                     }
                 }
             }
-            completions.close()
         }
         setJob(job)
     }
 }
-private data class PlayerInstalledStreamAddonTarget(
-    val addonName: String,
-    val addonId: String,
-    val manifest: com.nuvio.app.features.addons.AddonManifest,
-)
 
 private fun StreamsUiState.streamDiagnostics(): String {
     val streamCount = groups.sumOf { it.streams.size }
@@ -614,8 +379,3 @@ private fun StreamsUiState.streamDiagnostics(): String {
         "loadingGroups=$loadingCount errorGroups=$errorCount empty=${emptyStateReason ?: "none"} " +
         "sample=$sampleGroups$suffix"
 }
-
-private fun com.nuvio.app.features.addons.ManagedAddon.streamAddonInstanceId(manifestId: String): String =
-    "addon:$manifestId:$manifestUrl"
-
-
