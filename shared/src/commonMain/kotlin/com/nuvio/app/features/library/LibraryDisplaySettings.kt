@@ -24,9 +24,18 @@ enum class LibrarySortOption {
     TITLE_DESC,
 }
 
+enum class LibraryWatchedFilter {
+    ALL,
+    WATCHED,
+    UNWATCHED,
+}
+
 data class LibraryDisplaySettingsUiState(
     val layoutMode: LibraryLayoutMode = LibraryLayoutMode.HORIZONTAL,
     val sortOption: LibrarySortOption = LibrarySortOption.DEFAULT,
+    // Upstream 2da28d707: the last list and type picked, per profile (same blob as the sort).
+    val selectedSectionKey: String? = null,
+    val selectedType: String? = null,
 )
 
 object LibraryDisplaySettingsRepository {
@@ -63,6 +72,23 @@ object LibraryDisplaySettingsRepository {
         persist()
     }
 
+    /** A new list starts on All types (upstream 2da28d707). No-op when nothing would change. */
+    fun setSelectedSection(sectionKey: String) {
+        ensureLoaded()
+        val current = _uiState.value
+        if (current.selectedSectionKey == sectionKey && current.selectedType == null) return
+        _uiState.value = current.copy(selectedSectionKey = sectionKey, selectedType = null)
+        persist()
+    }
+
+    /** Nil = All. */
+    fun setSelectedType(type: String?) {
+        ensureLoaded()
+        if (_uiState.value.selectedType == type) return
+        _uiState.value = _uiState.value.copy(selectedType = type)
+        persist()
+    }
+
     private fun loadFromDisk() {
         hasLoaded = true
         _uiState.value = decodeLibraryDisplaySettings(LibraryDisplaySettingsStorage.loadPayload())
@@ -80,12 +106,24 @@ data class LibraryVerticalEntry(
 )
 
 // Fork: public (upstream: internal) — consumed cross-module (composeApp UI/tests, tvOS Swift).
+data class LibraryFilterOption(
+    val key: String,
+    val count: Int,
+)
+
+// Fork: public (upstream: internal) — consumed cross-module (composeApp UI/tests, tvOS Swift).
 data class LibraryVerticalProjection(
     val availableSections: List<LibrarySection>,
     val selectedSectionKey: String?,
     val availableTypes: List<String>,
     val selectedType: String?,
     val entries: List<LibraryVerticalEntry>,
+    val typeCounts: Map<String, Int> = emptyMap(),
+    val allTypesCount: Int = 0,
+    val availableGenres: List<LibraryFilterOption> = emptyList(),
+    val selectedGenre: String? = null,
+    val availableYears: List<LibraryFilterOption> = emptyList(),
+    val selectedYear: String? = null,
 )
 
 private val ReleaseSortOptions = setOf(LibrarySortOption.RELEASED_DESC, LibrarySortOption.RELEASED_ASC)
@@ -184,6 +222,10 @@ fun buildLibraryVerticalProjection(
     selectedType: String?,
     sortOption: LibrarySortOption,
     providerOrders: Map<String, Map<String, Int>> = emptyMap(),
+    selectedGenre: String? = null,
+    selectedYear: String? = null,
+    watchedFilter: LibraryWatchedFilter = LibraryWatchedFilter.ALL,
+    isWatched: (LibraryItem) -> Boolean = { false },
 ): LibraryVerticalProjection {
     val availableSections = if (sourceMode.isRemoteTrackingSource) sections else emptyList()
     val selectedSection = if (sourceMode.isRemoteTrackingSource) {
@@ -206,15 +248,61 @@ fun buildLibraryVerticalProjection(
         }
     }
     val availableTypes = deduplicatedEntries.values
-        .map { entry -> (entry.item.mediaCategory ?: entry.item.type).normalizedLibraryType() }
+        .map { entry -> entry.libraryTypeKey() }
         .filter { it.isNotBlank() }
         .distinct()
-        .sorted()
+        .sortedWith(
+            compareBy<String> { type -> LibraryTypeOrder.indexOf(type).takeIf { it >= 0 } ?: LibraryTypeOrder.size }
+                .thenBy { it },
+        )
     val effectiveType = selectedType
         ?.normalizedLibraryType()
         ?.takeIf { it in availableTypes }
-    val filteredEntries = deduplicatedEntries.values.filter { entry ->
-        effectiveType == null || (entry.item.mediaCategory ?: entry.item.type).normalizedLibraryType() == effectiveType
+    val typeFilteredEntries = deduplicatedEntries.values.filter { entry ->
+        effectiveType == null || entry.libraryTypeKey() == effectiveType
+    }
+    // Fork: genres group case-insensitively (MDBList mixes "crime" and "Drama"; one local library
+    // can hold "Comedy" and "comedy" from two add-ons). The option key is the first spelling met in
+    // list order, and a selection in any case resolves to that key.
+    val genreSpellings = LinkedHashMap<String, String>()
+    typeFilteredEntries.forEach { entry ->
+        entry.item.libraryGenres().forEach { genre -> genreSpellings.getOrPut(genre.lowercase()) { genre } }
+    }
+    val effectiveGenre = selectedGenre?.trim()?.lowercase()?.let { genreSpellings[it] }
+    val effectiveYear = selectedYear?.takeIf { year ->
+        typeFilteredEntries.any { entry -> libraryReleaseYear(entry.item)?.toString() == year }
+    }
+    val genreOptions = typeFilteredEntries
+        .filter { entry -> effectiveYear == null || libraryReleaseYear(entry.item)?.toString() == effectiveYear }
+        .flatMap { entry -> entry.item.libraryGenres().map(String::lowercase).distinct() }
+        .groupingBy { it }
+        .eachCount()
+        .entries
+        .map { (lower, count) -> LibraryFilterOption(key = genreSpellings.getValue(lower), count = count) }
+        .sortedBy { it.key.lowercase() }
+    val yearOptions = typeFilteredEntries
+        .filter { entry -> effectiveGenre == null || entry.item.hasLibraryGenre(effectiveGenre) }
+        .mapNotNull { entry -> libraryReleaseYear(entry.item)?.toString() }
+        .groupingBy { it }
+        .eachCount()
+        .entries
+        .sortedByDescending { it.key }
+        .map { (year, count) -> LibraryFilterOption(key = year, count = count) }
+    val entriesForTypeCounts = deduplicatedEntries.values.filter { entry ->
+        (effectiveGenre == null || entry.item.hasLibraryGenre(effectiveGenre)) &&
+            (effectiveYear == null || libraryReleaseYear(entry.item)?.toString() == effectiveYear)
+    }
+    val typeCounts = entriesForTypeCounts
+        .groupingBy { entry -> entry.libraryTypeKey() }
+        .eachCount()
+    val filteredEntries = typeFilteredEntries.filter { entry ->
+        (effectiveGenre == null || entry.item.hasLibraryGenre(effectiveGenre)) &&
+            (effectiveYear == null || libraryReleaseYear(entry.item)?.toString() == effectiveYear) &&
+            when (watchedFilter) {
+                LibraryWatchedFilter.ALL -> true
+                LibraryWatchedFilter.WATCHED -> isWatched(entry.item)
+                LibraryWatchedFilter.UNWATCHED -> !isWatched(entry.item)
+            }
     }
     val entryByKey = filteredEntries.associateBy { entry -> libraryDisplayItemKey(entry.item) }
     val sortedEntries = sortLibraryItems(
@@ -231,8 +319,51 @@ fun buildLibraryVerticalProjection(
         availableTypes = availableTypes,
         selectedType = effectiveType,
         entries = sortedEntries,
+        typeCounts = typeCounts,
+        allTypesCount = entriesForTypeCounts.size,
+        availableGenres = genreOptions,
+        selectedGenre = effectiveGenre,
+        availableYears = yearOptions,
+        selectedYear = effectiveYear,
     )
 }
+
+// Fork: the ObjC selector tvOS Swift calls (`LibraryViewModel.republish`). ObjC export has no
+// default arguments, and tvOS keeps its own watched filters (`LibraryGridPolicy.SmartFilter`), so
+// this overload leaves out `watchedFilter` / `isWatched` (no Kotlin lambda called into Swift per
+// title). No defaults here: a Kotlin call that names all eight picks this one, with the same result.
+fun buildLibraryVerticalProjection(
+    sections: List<LibrarySection>,
+    sourceMode: LibrarySourceMode,
+    selectedSectionKey: String?,
+    selectedType: String?,
+    sortOption: LibrarySortOption,
+    providerOrders: Map<String, Map<String, Int>>,
+    selectedGenre: String?,
+    selectedYear: String?,
+): LibraryVerticalProjection = buildLibraryVerticalProjection(
+    sections = sections,
+    sourceMode = sourceMode,
+    selectedSectionKey = selectedSectionKey,
+    selectedType = selectedType,
+    sortOption = sortOption,
+    providerOrders = providerOrders,
+    selectedGenre = selectedGenre,
+    selectedYear = selectedYear,
+    watchedFilter = LibraryWatchedFilter.ALL,
+    isWatched = { false },
+)
+
+private val LibraryTypeOrder = listOf("movie", "series", "tv", "show", "anime")
+
+private fun LibraryVerticalEntry.libraryTypeKey(): String =
+    (item.mediaCategory ?: item.type).normalizedLibraryType()
+
+private fun LibraryItem.libraryGenres(): List<String> =
+    genres.map(String::trim).filter(String::isNotBlank)
+
+private fun LibraryItem.hasLibraryGenre(genre: String): Boolean =
+    genres.any { it.trim().equals(genre, ignoreCase = true) }
 
 // Fork: public (upstream: internal) — consumed cross-module (composeApp UI/tests, tvOS Swift).
 fun encodeLibraryDisplaySettings(state: LibraryDisplaySettingsUiState): String =
@@ -240,6 +371,8 @@ fun encodeLibraryDisplaySettings(state: LibraryDisplaySettingsUiState): String =
         StoredLibraryDisplaySettings(
             layoutMode = state.layoutMode.name,
             sortOption = state.sortOption.name,
+            selectedSectionKey = state.selectedSectionKey,
+            selectedType = state.selectedType,
         ),
     )
 
@@ -259,6 +392,8 @@ fun decodeLibraryDisplaySettings(payload: String?): LibraryDisplaySettingsUiStat
         sortOption = stored?.sortOption
             ?.let { value -> LibrarySortOption.entries.firstOrNull { it.name == value } }
             ?: LibrarySortOption.DEFAULT,
+        selectedSectionKey = stored?.selectedSectionKey,
+        selectedType = stored?.selectedType,
     )
 }
 
@@ -301,6 +436,8 @@ internal val LibrarySourceMode.isRemoteTrackingSource: Boolean
 private data class StoredLibraryDisplaySettings(
     @SerialName("layout_mode") val layoutMode: String = LibraryLayoutMode.HORIZONTAL.name,
     @SerialName("sort_option") val sortOption: String = LibrarySortOption.DEFAULT.name,
+    @SerialName("selected_section_key") val selectedSectionKey: String? = null,
+    @SerialName("selected_type") val selectedType: String? = null,
 )
 
 private fun libraryProviderOrderComparator(ranks: Map<String, Int>): Comparator<LibraryItem> =

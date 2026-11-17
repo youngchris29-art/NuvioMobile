@@ -25,7 +25,7 @@ class LibraryAnimeCategoryTest {
             selectedType = null,
             sortOption = LibrarySortOption.TITLE_ASC,
         )
-        assertEquals(listOf("anime", "movie", "series"), all.availableTypes)
+        assertEquals(listOf("movie", "series", "anime"), all.availableTypes)
 
         val anime = buildLibraryVerticalProjection(
             sections = listOf(watchlist),
