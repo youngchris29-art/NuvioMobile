@@ -1061,6 +1061,7 @@
     <string name="auth_account_deletion_failed">Kontolöschung fehlgeschlagen</string>
     <string name="auth_sign_in_failed">Anmeldung fehlgeschlagen</string>
     <string name="auth_sign_out_failed">Abmeldung fehlgeschlagen</string>
+    <string name="auth_notice_signed_out">Du wurdest von Nuvio abgemeldet. Bitte melde dich erneut an.</string>
     <string name="auth_sign_up_failed">Registrierung fehlgeschlagen</string>
     <string name="catalog_load_failed">Katalogeinträge können nicht geladen werden.</string>
     <string name="continue_watching_up_next">Als Nächstes</string>

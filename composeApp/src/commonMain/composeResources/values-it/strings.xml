@@ -962,6 +962,7 @@
   <string name="auth_account_deletion_failed">Eliminazione account fallita</string>
   <string name="auth_sign_in_failed">Accesso fallito</string>
   <string name="auth_sign_out_failed">Disconnessione fallita</string>
+  <string name="auth_notice_signed_out">Sei stato disconnesso da Nuvio. Accedi di nuovo.</string>
   <string name="auth_sign_up_failed">Registrazione fallita</string>
   <string name="catalog_load_failed">Impossibile caricare gli elementi del catalogo.</string>
   <string name="continue_watching_up_next">Prossimo contenuto</string>

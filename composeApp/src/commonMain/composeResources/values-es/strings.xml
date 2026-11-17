@@ -1366,6 +1366,7 @@
     <string name="auth_account_deletion_failed">No se pudo eliminar la cuenta</string>
     <string name="auth_sign_in_failed">Error al iniciar sesión</string>
     <string name="auth_sign_out_failed">Error al cerrar sesión</string>
+    <string name="auth_notice_signed_out">Se ha cerrado tu sesión en Nuvio. Vuelve a iniciar sesión.</string>
     <string name="auth_sign_up_failed">Error al registrarse</string>
     <string name="catalog_load_failed">No se pudieron cargar los elementos del catálogo.</string>
     <string name="continue_watching_up_next">A continuación</string>

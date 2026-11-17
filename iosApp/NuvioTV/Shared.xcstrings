@@ -414,16 +414,34 @@
     "auth_notice_signed_out": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Du wurdest von Nuvio abgemeldet. Bitte melde dich erneut an."
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "You have been signed out of Nuvio. Please sign in again."
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Se ha cerrado tu sesión en Nuvio. Vuelve a iniciar sesión."
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
             "value": "Vous avez été déconnecté de Nuvio. Veuillez vous reconnecter."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sei stato disconnesso da Nuvio. Accedi di nuovo."
           }
         },
         "vi": {
