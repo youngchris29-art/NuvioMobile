@@ -201,4 +201,87 @@ final class LibraryGridPolicyTests: XCTestCase {
             XCTAssertFalse(Policy.offersRemove(listKey: key, canRemoveFromList: canRemove), key)
         }
     }
+
+    // MARK: - Genre and year (W5)
+
+    private typealias Facet = LibraryGridPolicy.FacetOption
+
+    func testFacetShowsWithTwoOptionsOrASelection() {
+        let one = [Facet(key: "Drama", count: 3)]
+        let two = one + [Facet(key: "Comedy", count: 1)]
+        XCTAssertFalse(Policy.showsFacet([], selected: nil))
+        XCTAssertFalse(Policy.showsFacet(one, selected: nil))
+        XCTAssertTrue(Policy.showsFacet(two, selected: nil))
+        XCTAssertTrue(Policy.showsFacet(one, selected: "Drama"))
+        XCTAssertTrue(Policy.showsFacet([], selected: "Drama"))
+    }
+
+    func testGenreLabelUsesDiscoverNamesThenSlugWords() {
+        XCTAssertEqual(Policy.genreLabel("drama"), "Drama")
+        XCTAssertEqual(Policy.genreLabel("science-fiction"), "Science Fiction")
+        XCTAssertEqual(Policy.genreLabel("Kdrama"), "Kdrama")
+        XCTAssertEqual(Policy.genreLabel("sci-fi"), "Sci-Fi")
+    }
+
+    func testGenreLabelsDeduplicateRepeatedLabels() {
+        let labels = Policy.genreLabels(["Action", "action"])
+        XCTAssertEqual(labels["Action"], "Action")
+        XCTAssertEqual(labels["action"], "action")
+        // The fixture's pair stays two distinct rows.
+        let scifi = Policy.genreLabels(["Sci-Fi", "science-fiction"])
+        XCTAssertEqual(scifi["Sci-Fi"], "Sci-Fi")
+        XCTAssertEqual(scifi["science-fiction"], "Science Fiction")
+    }
+
+    func testFacetOptionLabelsAndVoiceOverText() {
+        XCTAssertEqual(Policy.facetOptionLabel("Drama", count: 12), "Drama (12)")
+        XCTAssertEqual(Policy.facetOptionAccessibilityLabel("Drama", count: 12), "Drama, 12 titles")
+        XCTAssertEqual(Policy.facetOptionAccessibilityLabel("Drama", count: 1), "Drama, 1 title")
+        XCTAssertEqual(Policy.typeOptionLabel(nil, count: 14), "All types (14)")
+        XCTAssertEqual(Policy.typeOptionLabel("movie", count: 8), "Movies (8)")
+    }
+
+    func testPillTitlesAndValuesFallBackToAll() {
+        XCTAssertEqual(Policy.genrePillTitle(selectedLabel: nil), "Genre")
+        XCTAssertEqual(Policy.genrePillTitle(selectedLabel: "Drama"), "Drama")
+        XCTAssertEqual(Policy.yearPillTitle(selected: nil), "Year")
+        XCTAssertEqual(Policy.yearPillTitle(selected: "2020"), "2020")
+        XCTAssertEqual(Policy.genreAccessibilityValue(selectedLabel: nil), "All genres")
+        XCTAssertEqual(Policy.genreAccessibilityValue(selectedLabel: "Drama"), "Drama")
+        XCTAssertEqual(Policy.yearAccessibilityValue(selected: nil), "All years")
+        XCTAssertEqual(Policy.yearAccessibilityValue(selected: "2020"), "2020")
+    }
+
+    // MARK: - The Show menu (W5)
+
+    /// Every set `toggling` can reach maps to one choice, and back to a set that passes and fails
+    /// the same titles.
+    func testWatchChoiceRoundTripsEverySmartFilterSet() {
+        var reachable: Set<Set<Policy.SmartFilter>> = [[]]
+        var frontier: [Set<Policy.SmartFilter>] = [[]]
+        while let set = frontier.popLast() {
+            for filter in Policy.SmartFilter.allCases {
+                let next = Policy.toggling(filter, in: set)
+                if reachable.insert(next).inserted { frontier.append(next) }
+            }
+        }
+        let samples = [watched, halfway, fresh, State(isWatched: true, progress: 0.4)]
+        for set in reachable {
+            let back = Policy.smartFilters(for: Policy.watchChoice(for: set))
+            for state in samples {
+                XCTAssertEqual(Policy.passes(state, filters: set), Policy.passes(state, filters: back), "\(set) vs \(back)")
+            }
+        }
+        for choice in Policy.WatchChoice.allCases {
+            XCTAssertEqual(Policy.watchChoice(for: Policy.smartFilters(for: choice)), choice)
+        }
+    }
+
+    func testWatchChoicesListOnlyVisibleChips() {
+        XCTAssertEqual(Policy.watchChoices(visible: []), [.all])
+        XCTAssertEqual(Policy.watchChoices(visible: [.watched]), [.all, .watched])
+        XCTAssertEqual(Policy.watchChoices(visible: [.unwatched, .watched]), [.all, .unwatched, .watched])
+        XCTAssertEqual(Policy.watchChoices(visible: Policy.SmartFilter.allCases), [.all, .unwatched, .inProgress, .watched])
+        XCTAssertEqual(Policy.WatchChoice.all.title, "All Titles")
+    }
 }

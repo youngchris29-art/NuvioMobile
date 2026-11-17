@@ -156,12 +156,7 @@ nonisolated enum LibraryGridPolicy {
         selected ?? String(localized: "All years")
     }
 
-    /// Option A: the second row draws only when it has a control.
-    static func showsFilterRow(showsGenre: Bool, showsYear: Bool, smartFilters: [SmartFilter]) -> Bool {
-        showsGenre || showsYear || !smartFilters.isEmpty
-    }
-
-    // MARK: - Option B's single watch choice
+    // MARK: - The Show menu's single watch choice
 
     /// The four outcomes the smart chips can reach (Unwatched + In Progress = In Progress).
     nonisolated enum WatchChoice: String, CaseIterable, Hashable, Sendable {
@@ -198,14 +193,6 @@ nonisolated enum LibraryGridPolicy {
         [.all] + WatchChoice.allCases.filter { choice in
             choice != .all && visible.contains(where: { smartFilters(for: choice).contains($0) })
         }
-    }
-
-    // MARK: - Bar layout (mockups; the loser is deleted after decision G)
-
-    nonisolated enum BarLayout: String, Sendable { case twoRows = "A", oneRow = "B" }
-
-    static func barLayout(flag: String?) -> BarLayout {
-        BarLayout(rawValue: (flag ?? "").uppercased()) ?? .twoRows
     }
 
     // MARK: - Header
@@ -263,7 +250,7 @@ nonisolated enum LibraryGridPolicy {
         }
     }
 
-    /// Option B's type menu: "All types (14)", "Movies (8)".
+    /// The type menu's rows: "All types (14)", "Movies (8)".
     static func typeOptionLabel(_ kind: String?, count: Int) -> String {
         facetOptionLabel(kind.map(typeLabel) ?? String(localized: "All types"), count: count)
     }

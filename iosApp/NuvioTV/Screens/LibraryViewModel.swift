@@ -54,7 +54,7 @@ final class LibraryViewModel: ObservableObject {
     /// The list's release years (faceted against the chosen genre), newest first, with counts.
     @Published private(set) var years: [LibraryGridPolicy.FacetOption] = []
     @Published private(set) var selectedYear: String?
-    /// Titles per type key and in all, under the chosen genre and year (Option B's type menu).
+    /// Titles per type key and in all, under the chosen genre and year (the type menu's counts).
     @Published private(set) var typeCounts: [String: Int] = [:]
     @Published private(set) var allTypesCount = 0
 
@@ -232,7 +232,7 @@ final class LibraryViewModel: ObservableObject {
         republish()
     }
 
-    /// Option B's Show menu: one choice, mapped onto the same smart-filter set.
+    /// The Show menu: one choice, mapped onto the same smart-filter set.
     func selectWatchChoice(_ choice: LibraryGridPolicy.WatchChoice) {
         activeSmartFilters = LibraryGridPolicy.smartFilters(for: choice)
         republish()
@@ -541,7 +541,7 @@ final class LibraryViewModel: ObservableObject {
 }
 
 /// W5: DEBUG-only launch arguments for the Library bar mockups, its UI leg and the VM tests.
-/// Release builds always read `.off` / `.twoRows` / false.
+/// Release builds always read `.off` / false.
 nonisolated enum LibraryDebugFlags {
     enum Fixture: String, Sendable { case off, local, provider }
 
@@ -551,15 +551,6 @@ nonisolated enum LibraryDebugFlags {
         Fixture(rawValue: UserDefaults.standard.string(forKey: "debug.libraryFixture") ?? "") ?? .off
         #else
         .off
-        #endif
-    }
-
-    /// `-debug.libraryBarLayout A|B` (removed with the losing layout after decision G).
-    static var barLayout: LibraryGridPolicy.BarLayout {
-        #if DEBUG
-        LibraryGridPolicy.barLayout(flag: UserDefaults.standard.string(forKey: "debug.libraryBarLayout"))
-        #else
-        .twoRows
         #endif
     }
 

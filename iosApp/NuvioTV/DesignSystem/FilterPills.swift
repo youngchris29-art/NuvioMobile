@@ -106,19 +106,6 @@ private struct PillAccessibility: ViewModifier {
     }
 }
 
-/// Sets an accessibility identifier only when one is given, so chips without one are untouched.
-private struct OptionalAccessibilityIdentifier: ViewModifier {
-    let id: String?
-
-    func body(content: Content) -> some View {
-        if let id {
-            content.accessibilityIdentifier(id)
-        } else {
-            content
-        }
-    }
-}
-
 /// A shared action pill: the `PillLabel` shape without the chevron, on the system button platter
 /// (the same platter a stock `Menu` label gets), so it sits beside `PillMenu` without a seam.
 struct PillButton: View {
@@ -142,9 +129,6 @@ struct FilterChip: View {
     let title: String
     var systemImage: String? = nil
     let isActive: Bool
-    /// Accessibility identifier (Library's bar, W5); nil leaves the chip without one, as before.
-    /// Declared after `isActive` so call sites read `FilterChip(title:isActive:id:)`.
-    var id: String? = nil
     let action: () -> Void
 
     var body: some View {
@@ -165,7 +149,6 @@ struct FilterChip: View {
         }
         .buttonStyle(.chip(selected: isActive))
         .accessibilityAddTraits(isActive ? .isSelected : [])
-        .modifier(OptionalAccessibilityIdentifier(id: id))
     }
 }
 
