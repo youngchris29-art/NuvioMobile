@@ -1,0 +1,240 @@
+name: Kotlin Gate
+
+# The JVM third of the Kotlin test gate, run off-Mac:
+#   ./gradlew :shared:jvmTest
+# The other two gate tasks, :shared:tvosSimulatorArm64Test and
+# :composeApp:iosSimulatorArm64Test, are NOT run here. They need a macOS runner, and this
+# account has none (GitHub never hands the repo one), so they run on the Mac gate
+# (scripts/build/gate.sh in the outer repo). A green run here means jvmTest only.
+#
+# Runs on:
+#   - a push to tvos-shared-extraction or a claude/** branch that touches Kotlin or build
+#     files (the pushed commit must carry this file),
+#   - a pull request into tvos-shared-extraction that touches the same paths,
+#   - `gh workflow run kotlin-gate.yml -f sha=<commit>` once this file is on the default
+#     branch: the checkout step takes the sha, so ANY pushed commit can be tested, with or
+#     without this file in its tree.
+# Nothing is scheduled. One standard GitHub-hosted Linux runner, no secrets.
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Commit to test (any commit pushed to this repo). Empty = the dispatched ref."
+        required: false
+        default: ""
+        type: string
+  push:
+    branches:
+      - "tvos-shared-extraction"
+      - "claude/**"
+    paths:
+      - "shared/**"
+      - "composeApp/**"
+      - "gradle/**"
+      - "build.gradle.kts"
+      - "settings.gradle.kts"
+      - "gradle.properties"
+      - "gradlew"
+      # Both :shared and :composeApp read the version out of this file at configuration time.
+      - "iosApp/Configuration/Version.xcconfig"
+      - ".github/workflows/kotlin-gate.yml"
+  pull_request:
+    branches:
+      - "tvos-shared-extraction"
+    # Same list as the push trigger above; keep the two in step.
+    paths:
+      - "shared/**"
+      - "composeApp/**"
+      - "gradle/**"
+      - "build.gradle.kts"
+      - "settings.gradle.kts"
+      - "gradle.properties"
+      - "gradlew"
+      - "iosApp/Configuration/Version.xcconfig"
+      - ".github/workflows/kotlin-gate.yml"
+
+permissions:
+  contents: read
+
+# A newer run on the same ref cancels the one in flight. A dispatch always runs on the
+# default branch's ref, so it keys on the sha instead: two dispatches for different commits
+# must not cancel each other. A pull request's ref (refs/pull/<n>/merge) differs from its
+# branch's, so a claude/** branch with an open pull request runs once for each.
+concurrency:
+  group: kotlin-gate-${{ inputs.sha || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Placeholder, not a key. Two TmdbPersonSearchServiceTest cases stub HTTP and only need the
+  # bundled TMDB key to be non-blank (locally it comes from local.properties); no request
+  # reaches TMDB. Every other build-config value stays blank here.
+  TMDB_API_KEY: ci-not-a-real-key
+
+jobs:
+  # :shared:jvmTest resolves only the jvm configurations: no Kotlin/Native toolchain, no
+  # simulator and no quickjs-kt (that artifact is a tvosMain dependency).
+  jvm:
+    name: jvm
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha || github.sha }}
+
+      - name: Commit under test
+        run: |
+          {
+            echo "### Kotlin gate: jvm"
+            echo
+            echo "Commit \`$(git rev-parse HEAD)\` — $(git log -1 --format=%s)"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # JDK 21 = the Mac's (Temurin 21), which is where the local gate numbers come from.
+      # Nothing in the build pins a toolchain (no jvmToolchain; jvmTarget is 11), and
+      # Gradle 9.4 + AGP 9.2 need 17 or newer to run, so 17 would also build; 21 keeps
+      # :shared:jvmTest on the same JVM as the local reference.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      # GRADLE_OPTS only sizes the launcher JVM; the build runs in a daemon sized by
+      # org.gradle.jvmargs, and the user-home gradle.properties wins over the repo's
+      # (12 GB + 8 GB, the Mac's). The runner has 16 GB.
+      - name: Size Gradle for the runner
+        run: |
+          mkdir -p "$HOME/.gradle"
+          {
+            echo "org.gradle.jvmargs=-Xmx6g -Dfile.encoding=UTF-8 -XX:MaxMetaspaceSize=1g"
+            echo "kotlin.daemon.jvmargs=-Xmx4g"
+          } > "$HOME/.gradle/gradle.properties"
+
+      # Dependencies and the Gradle distribution. The local build cache is left out (and
+      # switched off below): every run compiles and runs the tests for real, so a rerun
+      # never reports a cached result. Restore only: the save is an explicit step at the
+      # end, because actions/cache saves on success alone and a gate with a failing test
+      # would otherwise leave the next run cold.
+      - uses: actions/cache/restore@v4
+        id: gradle-cache
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.konan
+            !~/.gradle/caches/build-cache-*
+          key: kotlin-gate-jvm-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: kotlin-gate-jvm-${{ runner.os }}-
+
+      - name: Toolchain versions
+        run: |
+          java -version
+          df -h "$HOME" | tail -1
+          echo "cpus: $(nproc), memory: $(awk '/MemTotal/ {printf "%d", $2 / 1048576}' /proc/meminfo) GB"
+
+      # --- the gate ---
+
+      - name: ":shared:jvmTest"
+        run: ./gradlew :shared:jvmTest --no-build-cache --stacktrace
+
+      # --- results ---
+
+      # Counts come from the JUnit XML, not from Gradle's console. A task that left no XML
+      # fails this step: a gate that ran nothing must not read as green.
+      - name: Test summary
+        id: summary
+        if: ${{ !cancelled() }}
+        env:
+          GATE_TASKS: ":shared:jvmTest=shared/build/test-results/jvmTest"
+          GATE_JOB: jvm
+        run: |
+          python3 - <<'PY'
+          import glob, json, os, subprocess, sys
+          import xml.etree.ElementTree as ET
+
+          rows, failed_cases, skipped_cases, missing = [], [], [], []
+          for spec in os.environ["GATE_TASKS"].split():
+              task, directory = spec.split("=", 1)
+              files = sorted(glob.glob(os.path.join(directory, "*.xml")))
+              run = failures = errors = skipped = 0
+              seconds = 0.0
+              for path in files:
+                  root = ET.parse(path).getroot()
+                  suites = [root] if root.tag == "testsuite" else root.iter("testsuite")
+                  for suite in suites:
+                      run += int(suite.get("tests", 0))
+                      failures += int(suite.get("failures", 0))
+                      errors += int(suite.get("errors", 0))
+                      skipped += int(suite.get("skipped", 0))
+                      seconds += float(suite.get("time", 0) or 0)
+                      for case in suite.iter("testcase"):
+                          name = f'{case.get("classname")}.{case.get("name")}'
+                          if case.find("failure") is not None or case.find("error") is not None:
+                              failed_cases.append((task, name))
+                          elif case.find("skipped") is not None:
+                              skipped_cases.append((task, name))
+              if not files or run == 0:
+                  missing.append(task)
+              rows.append({
+                  "task": task, "run": run, "failed": failures + errors,
+                  "skipped": skipped, "passed": run - failures - errors - skipped,
+                  "seconds": round(seconds, 1), "xml_files": len(files),
+              })
+
+          out = ["| Task | Run | Failed | Skipped | Passed | Test time |", "|---|---:|---:|---:|---:|---:|"]
+          for r in rows:
+              out.append(f'| `{r["task"]}` | {r["run"]} | {r["failed"]} | {r["skipped"]} | {r["passed"]} | {r["seconds"]} s |')
+          for title, cases in (("Failed", failed_cases), ("Skipped", skipped_cases)):
+              if cases:
+                  out += ["", f"<details><summary>{title} ({len(cases)})</summary>", ""]
+                  out += [f"- `{task}` {name}" for task, name in cases[:200]]
+                  if len(cases) > 200:
+                      out.append(f"- … and {len(cases) - 200} more (see the XML artifact)")
+                  out += ["", "</details>"]
+          if missing:
+              out += ["", "**No JUnit XML (or zero tests) for: " + ", ".join(f"`{t}`" for t in missing) + "**"]
+          out += ["", "Not run here: `:shared:tvosSimulatorArm64Test`, `:composeApp:iosSimulatorArm64Test` (Mac gate)."]
+          text = "\n".join(out) + "\n"
+          print(text)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as fh:
+              fh.write(text)
+
+          sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          with open(f'kotlin-gate-{os.environ["GATE_JOB"]}.json', "w") as fh:
+              json.dump({
+                  "sha": sha, "job": os.environ["GATE_JOB"], "tasks": rows,
+                  "failed": [{"task": t, "test": n} for t, n in failed_cases],
+                  "skipped": [{"task": t, "test": n} for t, n in skipped_cases],
+              }, fh, indent=2)
+          sys.exit(1 if missing else 0)
+          PY
+
+      - name: Upload JUnit XML
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: kotlin-gate-jvm
+          path: |
+            kotlin-gate-jvm.json
+            shared/build/test-results/**/*.xml
+          if-no-files-found: warn
+          retention-days: 14
+
+      # The cache save below archives ~/.gradle; a live daemon would still be writing there.
+      - name: Stop Gradle daemons
+        if: always()
+        run: ./gradlew --stop || true
+
+      # Saved whenever the task got as far as producing results (pass or fail), so a red
+      # gate still warms the next run; a job that died earlier saves nothing partial.
+      - name: Save Gradle and Konan cache
+        if: ${{ !cancelled() && steps.summary.outcome == 'success' && steps.gradle-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.konan
+            !~/.gradle/caches/build-cache-*
+          key: ${{ steps.gradle-cache.outputs.cache-primary-key }}
