@@ -168,90 +168,86 @@ final class LibraryBarKeepTests: XCTestCase {
     /// The full table: every reachable state against every event.
     func testTheEventTable() {
         let states = reachable()
-        XCTAssertGreaterThan(states.count, 20, "the closure must cover kept, awaiting and every focus")
+        XCTAssertEqual(states.count, 5 * 9, "every kept menu (or none) with every focus")
         for s in states {
-            XCTAssertTrue(!s.awaitingReturn || s.menu != nil, "awaiting with nothing kept: \(s)")
             for e in Self.events {
                 let n = s.applying(e)
                 let tag = "\(s) + \(e) = \(n)"
                 switch e {
                 case .picked(let m):
                     XCTAssertEqual(n.menu, m, tag)
-                    XCTAssertEqual(n.awaitingReturn, s.focus != Keep.control(for: m), tag)
                     XCTAssertEqual(n.focus, s.focus, tag)
                 case .focus(let f?):
                     XCTAssertEqual(n.focus, f, tag)
-                    XCTAssertFalse(n.awaitingReturn, tag)
                     if let m = s.menu, Keep.control(for: m) == f {
-                        XCTAssertEqual(n.menu, m, "focus back on the kept menu keeps it: \(tag)")
+                        XCTAssertEqual(n.menu, m, "focus on the kept menu keeps it: \(tag)")
                     } else {
-                        XCTAssertNil(n.menu, "focus on another control releases the keep: \(tag)")
+                        XCTAssertNil(n.menu, "focus on another bar control releases the keep: \(tag)")
                     }
                 case .focus(.none):
                     XCTAssertNil(n.focus, tag)
-                    if s.awaitingReturn {
-                        XCTAssertEqual(n.menu, s.menu, "the open picker holds focus: keep: \(tag)")
-                        XCTAssertTrue(n.awaitingReturn, tag)
-                    } else {
-                        XCTAssertNil(n.menu, "focus left the bar: release: \(tag)")
-                        XCTAssertFalse(n.awaitingReturn, tag)
-                    }
+                    XCTAssertEqual(n.menu, s.menu, "focus outside the bar never releases: \(tag)")
                 case .clearFilters, .contextChanged:
                     XCTAssertNil(n.menu, tag)
-                    XCTAssertFalse(n.awaitingReturn, tag)
                     XCTAssertEqual(n.focus, s.focus, tag)
                 }
             }
         }
     }
 
-    /// The invariant: from any state, a pick in menu M keeps M through whatever the closing picker
-    /// reports (focus outside the bar, any number of times) until focus is back on M, and after.
-    func testAPickKeepsItsMenuUntilFocusMovesToAnotherControl() {
+    /// No sequence of `focus(nil)` and `focus(M)` events ever releases M: every such sequence up to
+    /// length 6 (pickers opening and closing, Down into the grid and back), from every state.
+    func testOutsideAndOwnFocusNeverReleaseTheKeptMenu() {
         for s in reachable() {
             for m in Menu.allCases {
-                for outsideReports in 0...2 {
-                    var k = s.applying(.picked(m))
-                    // The picker reports focus outside the bar only when focus was not on M at the pick
-                    // (focus already on M means the picker never took it away).
-                    let reports = k.awaitingReturn ? outsideReports : 0
-                    for _ in 0..<reports { k.apply(.focus(nil)); XCTAssertEqual(k.menu, m, "\(s) pick \(m)") }
-                    k.apply(.focus(Keep.control(for: m)))
-                    XCTAssertEqual(k.menu, m, "focus back on \(m): \(s)")
-                    XCTAssertFalse(k.awaitingReturn)
-                    // Then any move away releases it.
-                    for f in Self.foci where f != Keep.control(for: m) {
-                        XCTAssertNil(k.applying(.focus(f)).menu, "\(m) → \(String(describing: f))")
+                let own: [Keep.Event] = [.focus(nil), .focus(Keep.control(for: m))]
+                for length in 0...6 {
+                    for code in 0..<(1 << length) {
+                        var k = s.applying(.picked(m))
+                        for i in 0..<length { k.apply(own[(code >> i) & 1]) }
+                        if k.menu != m { XCTFail("\(s) pick \(m), sequence \(code)/\(length) released it"); return }
                     }
+                }
+                // Then a move to any other bar control releases it.
+                for f in LibraryBarFocus.allCases where f != Keep.control(for: m) {
+                    XCTAssertNil(s.applying(.picked(m)).applying(.focus(nil)).applying(.focus(f)).menu, "\(m) → \(f)")
                 }
             }
         }
     }
 
-    /// The device sequence, both ways the platform may report focus while the picker is up.
+    /// The device sequences, in both orders the platform may report focus while a picker is up
+    /// (outside the bar, as the sim does, or still on the menu).
     func testTheDeviceSequence() {
-        // Focus leaves the bar while the picker is open, then returns to the menu.
-        var k = Keep()
-        k.apply(.focus(.type))
-        k.apply(.focus(nil))
-        k.apply(.picked(.type))
-        XCTAssertEqual(k.menu, .type)
-        XCTAssertTrue(k.awaitingReturn)
-        k.apply(.focus(nil))
-        XCTAssertEqual(k.menu, .type, "still closing")
-        k.apply(.focus(.type))
-        XCTAssertEqual(k.menu, .type)
-        XCTAssertFalse(k.awaitingReturn)
-        k.apply(.focus(.genre))
-        XCTAssertNil(k.menu, "Right to Genre releases Type")
-        // Focus stays reported on the menu while the picker is up.
-        var j = Keep()
-        j.apply(.focus(.year))
-        j.apply(.picked(.year))
-        XCTAssertEqual(j.menu, .year)
-        XCTAssertFalse(j.awaitingReturn)
-        j.apply(.focus(nil))
-        XCTAssertNil(j.menu, "Down into the grid releases Year")
+        for pickerTakesFocus in [true, false] {
+            let open: [Keep.Event] = pickerTakesFocus ? [.focus(nil)] : []
+            let close: [Keep.Event] = pickerTakesFocus ? [.focus(.type)] : []
+            var k = Keep()
+            func run(_ events: [Keep.Event], _ what: String) {
+                for e in events { k.apply(e) }
+                XCTAssertEqual(k.menu, .type, "\(what) (picker takes focus: \(pickerTakesFocus))")
+            }
+            k.apply(.focus(.type))
+            run(open + [.picked(.type)] + close, "All types")
+            // Reopen the kept menu, dismiss with Menu.
+            run(open + close, "reopen, Menu")
+            // Reopen, pick Series, then reopen and pick All types again.
+            run(open + [.picked(.type)] + close, "reopen, Series")
+            run(open + [.picked(.type)] + close, "reopen, All types again")
+            // Down into the grid and Up back onto the kept menu.
+            run([.focus(nil), .focus(.type)], "grid and back")
+            k.apply(.focus(.genre))
+            XCTAssertNil(k.menu, "Right to Genre releases Type")
+            // Down from the kept Year menu: still kept; back to the bar on another control releases it.
+            var j = Keep()
+            j.apply(.focus(.year))
+            j.apply(.picked(.year))
+            for e in open + (pickerTakesFocus ? [Keep.Event.focus(.year)] : []) { j.apply(e) }
+            j.apply(.focus(nil))
+            XCTAssertEqual(j.menu, .year, "Down into the grid keeps Year")
+            j.apply(.focus(.watch))
+            XCTAssertNil(j.menu, "back on Show releases Year")
+        }
     }
 
     // MARK: - Clear Filters focus

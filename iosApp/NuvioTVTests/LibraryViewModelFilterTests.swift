@@ -484,7 +484,27 @@ final class LibraryViewModelFilterTests: XCTestCase {
         XCTAssertTrue(m.showsYear)
         XCTAssertEqual(m.years.map(\.key), ["2016"])
         m.barFocusChanged(nil)          // Down into the grid
+        XCTAssertTrue(m.showsYear, "focus outside the bar never releases the kept menu")
+        m.barFocusChanged(.genre)       // back to the bar on another control
         XCTAssertFalse(m.showsYear)
+    }
+
+    /// The screen stopping releases the keep; the restart derive draws by the rule alone.
+    func testStopReleasesTheKeptMenu() {
+        let m = model()
+        m.selectType("anime")
+        m.selectYear("2016")
+        m.selectGenre("Comedy")
+        m.barFocusChanged(.year)
+        m.selectYear(nil)
+        XCTAssertEqual(m.barKeep.menu, .year)
+        XCTAssertTrue(m.showsYear)
+        m.stop()
+        XCTAssertNil(m.barKeep.menu)
+        m.start()
+        XCTAssertFalse(m.showsYear, "no stale kept menu after a restart")
+        XCTAssertEqual(m.selectedGenre, "Comedy", "the session picks stay")
+        XCTAssertEqual(names(m), ["Mob Psycho 100"])
     }
 
     /// Clear Filters on a list where every menu has one value: focus goes to Sort.

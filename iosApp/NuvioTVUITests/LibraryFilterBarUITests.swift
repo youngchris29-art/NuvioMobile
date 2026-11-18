@@ -638,8 +638,9 @@ final class LibraryFilterBarUITests: XCTestCase {
 
     /// The device case: Type Series, Genre Drama, Show In Progress leaves one series; "All types"
     /// in the Type menu keeps the menu and focus on it; Right moves to Genre, the Type menu then
-    /// hides and focus stays on Genre. Then the same for Year (Anime, 2016, Comedy, "All years" in Year),
-    /// and Down from the kept Year menu releases it.
+    /// hides and focus stays on Genre. Reopening the kept menu (Menu to dismiss, or another pick)
+    /// keeps it. Then the same for Year (Anime, 2016, Comedy, "All years" in Year): Down into the
+    /// grid keeps it, and coming back to the bar on another control releases it.
     func testAPickNeverRemovesTheMenuUnderFocus() throws {
         let app = launch(Self.arguments(fixture: "provider"))
         defer { app.terminate() }
@@ -672,6 +673,37 @@ final class LibraryFilterBarUITests: XCTestCase {
         XCTAssertTrue(control(app, "library.typePicker").exists, "the Type menu must still be drawn")
         XCTAssertFalse(tabBarFocused(app), "focus must not leave for the tab bar — \(focusedSummary(app))")
         XCTAssertEqual(Self.int(afterAll, "count"), 1, afterAll)
+
+        // Reopen the kept menu: it stays while its picker is up; Menu returns focus to it.
+        press(app, .select)
+        let allRow = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label BEGINSWITH %@ AND NOT identifier BEGINSWITH 'library.'", "All types")).firstMatch
+        XCTAssertTrue(allRow.waitForExistence(timeout: 6), "the Type picker must open again")
+        let reopened = settle(app)
+        log.append("reopened: \(reopened) | \(focusedSummary(app))")
+        XCTAssertTrue(control(app, "library.typePicker").exists, "the Type menu must stay while its picker is up")
+        XCTAssertEqual(Self.token(reopened, "keep"), "type", reopened)
+        remote.press(.menu)
+        XCTAssertTrue(poll(8) { barFocus(app) == "type" }, "Menu must return focus to Type — \(probe(app)) | \(focusedSummary(app))")
+        let dismissed = settle(app)
+        log.append("dismissed: \(dismissed)")
+        XCTAssertEqual(Self.token(dismissed, "focus"), "type", dismissed)
+        XCTAssertEqual(Self.token(dismissed, "keep"), "type", dismissed)
+        XCTAssertEqual(Self.token(dismissed, "type"), "-", dismissed)
+        XCTAssertTrue(control(app, "library.typePicker").exists)
+
+        // Reopen and pick Series, then reopen and pick All types again: focus stays on Type.
+        XCTAssertTrue(pickRow(app, rowStarting("Series"), step: "keep-reseries"))
+        XCTAssertTrue(poll(8) { value(app, "type") == "series" }, probe(app))
+        XCTAssertTrue(poll(8) { barFocus(app) == "type" }, probe(app))
+        XCTAssertEqual(barFocus(app), "type", "focus on Type after Series — \(settle(app))")
+        XCTAssertTrue(pickRow(app, rowStarting("All types"), step: "keep-alltypes-again"))
+        XCTAssertTrue(poll(8) { value(app, "type") == "-" }, probe(app))
+        let again = settle(app)
+        log.append("all types again: \(again)")
+        XCTAssertEqual(Self.token(again, "focus"), "type", again)
+        XCTAssertEqual(Self.token(again, "keep"), "type", again)
+        XCTAssertTrue(control(app, "library.typePicker").exists)
 
         // Right: Genre takes focus, the Type menu (left of it) hides, focus stays on Genre.
         press(app, .right)
@@ -711,13 +743,30 @@ final class LibraryFilterBarUITests: XCTestCase {
         XCTAssertEqual(Self.token(allYears, "keep"), "year", allYears)
         XCTAssertTrue(control(app, "library.yearPicker").exists, "the Year menu must still be drawn")
 
-        // Down into the grid releases it.
+        // Down into the grid: Year stays drawn (focus outside the bar never releases it).
         press(app, .down)
         XCTAssertTrue(poll(8) { barFocus(app) == "-" }, probe(app))
         let down = settle(app)
         log.append("down: \(down) | \(focusedSummary(app))")
-        XCTAssertEqual(Self.token(down, "keep"), "-", down)
-        XCTAssertFalse(control(app, "library.yearPicker").exists, "the Year menu hides once focus has left the bar")
+        XCTAssertEqual(Self.token(down, "keep"), "year", down)
+        XCTAssertTrue(control(app, "library.yearPicker").exists, "Year stays drawn while the viewer is in the grid")
+        // Up back to the bar, then to another control: Year is released and focus stays put.
+        press(app, .up)
+        XCTAssertTrue(poll(8) { barFocus(app) != "-" }, probe(app))
+        var landed = Self.token(settle(app), "focus") ?? "?"
+        log.append("up: \(probe(app))")
+        if landed == "year" {
+            press(app, .right)
+            XCTAssertTrue(poll(8) { barFocus(app) != "year" }, probe(app))
+            landed = Self.token(settle(app), "focus") ?? "?"
+        }
+        let released = settle(app)
+        log.append("moved on: \(released)")
+        XCTAssertNotEqual(landed, "-", released)
+        XCTAssertEqual(Self.token(released, "focus"), landed, "focus must stay on the control the viewer moved to — \(released)")
+        XCTAssertEqual(Self.token(released, "keep"), "-", released)
+        XCTAssertFalse(control(app, "library.yearPicker").exists, "Year hides once the viewer is on another control")
+        XCTAssertTrue(focusedControlVisible(app), released)
         note("keep-log", log.joined(separator: "\n"))
     }
 

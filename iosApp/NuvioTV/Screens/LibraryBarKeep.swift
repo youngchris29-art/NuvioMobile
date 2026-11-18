@@ -7,26 +7,22 @@ import Foundation
 /// The invariant: a pick made in the bar never removes the control the viewer is on, and Clear
 /// Filters always leaves focus on a control that exists.
 ///
-/// Events and rules:
-/// - `picked(M)` (any row of menu M, All included): keep M. The pick lands while the system picker
-///   is still up or closing, before focus is back on M's button, so the keep is applied before the
-///   derive the pick causes, and it waits for focus to return: `awaitingReturn` is set unless focus
-///   is already reported on M.
-/// - `focus(M)` (focus reported on the kept menu): keep M; the picker has closed (`awaitingReturn`
-///   off).
-/// - `focus(another bar control)`: keep nothing. The menu the viewer left may hide now; focus is
-///   identity-based, so a control leaving to the left of the focused one moves it but does not
-///   change which control holds focus.
-/// - `focus(nil)` (focus outside the bar): keep nothing, unless `awaitingReturn` (the open picker
-///   holds focus outside the bar and hands it back to M when it closes).
-/// - `clearFilters` and `contextChanged` (a list or library source change): keep nothing.
+/// Events and rules (review of ae4ff1047: one release rule, nothing to latch or race):
+/// - `picked(M)` (any row of menu M, All included): keep M. The model applies it before the derive
+///   the pick causes, so M's button still exists when the closing picker hands focus back to it.
+/// - `focus(control)`: a bar control other than the kept menu releases it (the viewer moved on; the
+///   menu may hide now, and focus is identity-based, so a control leaving to the left of the focused
+///   one moves it but does not change which control holds focus). Focus on the kept menu keeps it.
+/// - `focus(nil)` (focus outside the bar) never releases: a picker opening, a picker closing and
+///   Down into the grid all report it and cannot be told apart. A kept menu stays drawn while the
+///   viewer is in the grid or the header, until they come back to the bar on another control.
+/// - `clearFilters` and `contextChanged` release it (a list or library source change, and the
+///   screen stopping: `LibraryViewModel.stop()` sends it).
 nonisolated struct LibraryBarKeep: Equatable, Sendable {
     typealias Menu = LibraryBarResolver.Menu
 
     /// The menu kept drawn (`Request.keepVisible`); nil = none.
     private(set) var menu: Menu?
-    /// A pick landed and focus has not been reported back on `menu` yet.
-    private(set) var awaitingReturn = false
     /// The last focus reported (nil = outside the bar).
     private(set) var focus: LibraryBarFocus?
 
@@ -62,22 +58,11 @@ nonisolated struct LibraryBarKeep: Equatable, Sendable {
         switch event {
         case .picked(let m):
             menu = m
-            awaitingReturn = focus != Self.control(for: m)
         case .focus(let f):
             focus = f
-            if let f {
-                if let m = menu, Self.control(for: m) == f {
-                    awaitingReturn = false
-                } else {
-                    menu = nil
-                    awaitingReturn = false
-                }
-            } else if !awaitingReturn {
-                menu = nil
-            }
+            if let f, let m = menu, Self.control(for: m) != f { menu = nil }
         case .clearFilters, .contextChanged:
             menu = nil
-            awaitingReturn = false
         }
     }
 

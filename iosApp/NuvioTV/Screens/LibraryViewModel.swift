@@ -160,8 +160,9 @@ final class LibraryViewModel: ObservableObject {
 
     func start() {
         if fixture != .off {
-            // No flows: the fixture is the whole library. `libraryState` set once keeps this idempotent.
-            guard libraryState == nil else { return }
+            // No flows: the fixture is the whole library. `libraryState` set once keeps this idempotent;
+            // a restart derives again (nothing changes but a kept menu `stop()` released).
+            guard libraryState == nil else { republish(); return }
             libraryState = LibraryDebugFlags.withOneTitleList(LibraryFilterFixture.shared.uiState(provider: fixture == .provider))
             republish()
             return
@@ -207,6 +208,9 @@ final class LibraryViewModel: ObservableObject {
     }
 
     func stop() {
+        // The screen is gone: no menu is under the viewer any more. The next derive (the flows'
+        // first emissions after `start()`, or the fixture's restart derive) draws by the rule alone.
+        keep(.contextChanged)
         watchers.forEach { $0.cancel() }
         watchers.removeAll()
         providerOrderWatcher?.cancel()
