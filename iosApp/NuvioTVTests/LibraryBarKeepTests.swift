@@ -1,0 +1,275 @@
+import XCTest
+@testable import NuvioTV
+
+/// Device pass (attempt 3): a pick made in the Library filter bar never removes the control the
+/// viewer is on, and Clear Filters always leaves focus on a control that exists. Three pure parts:
+/// the resolver's `keepVisible`, the `LibraryBarKeep` reducer that sets and clears it, and the
+/// Clear Filters focus fallback. Exhaustive where the domain is small.
+final class LibraryBarKeepTests: XCTestCase {
+    private typealias R = LibraryBarResolver
+    private typealias T = LibraryBarResolver.Title
+    private typealias State = LibraryGridPolicy.WatchState
+    private typealias Keep = LibraryBarKeep
+    private typealias Menu = LibraryBarResolver.Menu
+
+    private let fresh = State(isWatched: false, progress: nil)
+    private let watched = State(isWatched: true, progress: nil)
+    private let halfway = State(isWatched: false, progress: 0.5)
+
+    /// LibraryBarResolverTests' five titles.
+    private var titles: [T] {
+        [
+            T(typeKey: "movie", genres: ["Drama", "Crime"], year: "2001", state: fresh),
+            T(typeKey: "movie", genres: ["drama"], year: "2005", state: watched),
+            T(typeKey: "series", genres: ["Comedy"], year: "2005", state: halfway),
+            T(typeKey: "Series ", genres: [" Drama ", ""], year: nil, state: watched),
+            T(typeKey: "anime", genres: [], year: "2010", state: fresh),
+        ]
+    }
+
+    private func shows(_ out: R.Output, _ menu: Menu) -> Bool {
+        switch menu {
+        case .type: return out.showsType
+        case .genre: return out.showsGenre
+        case .year: return out.showsYear
+        case .show: return out.showsShow
+        }
+    }
+
+    private func setShows(_ out: inout R.Output, _ menu: Menu, _ value: Bool) {
+        switch menu {
+        case .type: out.showsType = value
+        case .genre: out.showsGenre = value
+        case .year: out.showsYear = value
+        case .show: out.showsShow = value
+        }
+    }
+
+    // MARK: - Resolver: keepVisible
+
+    /// The device case: Type Series, Genre Drama, Show In Progress leaves one series; "All types"
+    /// would hide the Type menu, and keeping it draws it with its All row and the one type.
+    func testTheDeviceCaseKeepsTheTypeMenu() {
+        let picked = R.Request(type: nil, genre: "Drama", year: nil, smartFilters: [.inProgress])
+        let fixtureLike = titles + [T(typeKey: "series", genres: ["Drama"], year: "2022", state: halfway)]
+        let normal = R.resolve(titles: fixtureLike, request: picked)
+        XCTAssertFalse(normal.showsType, "one type left: the rule hides the Type menu")
+        var keep = picked
+        keep.keepVisible = .type
+        let kept = R.resolve(titles: fixtureLike, request: keep)
+        XCTAssertTrue(kept.showsType)
+        XCTAssertNil(kept.selectedType, "All types")
+        XCTAssertEqual(kept.types.map(\.key), ["series"])
+        XCTAssertEqual(kept.allTypesCount, 1)
+    }
+
+    /// One case per menu where the rule hides it and the keep draws it.
+    func testEachMenuIsKeptWhereItWouldHide() {
+        let one = [T(typeKey: "movie", genres: ["Drama"], year: "2001", state: fresh),
+                   T(typeKey: "movie", genres: ["Drama"], year: "2001", state: fresh)]
+        let normal = R.resolve(titles: one, request: .init())
+        for menu in Menu.allCases {
+            XCTAssertFalse(shows(normal, menu), "\(menu): one value only, the rule hides it")
+            let kept = R.resolve(titles: one, request: .init(keepVisible: menu))
+            XCTAssertTrue(shows(kept, menu), "\(menu) must stay drawn while kept")
+            for other in Menu.allCases where other != menu {
+                XCTAssertFalse(shows(kept, other), "\(menu) kept: \(other) still follows the rule")
+            }
+        }
+        // The kept Show menu offers the one choice every title passes (it narrows nothing).
+        XCTAssertEqual(R.resolve(titles: one, request: .init(keepVisible: .show)).visibleSmartFilters, [.unwatched])
+        XCTAssertEqual(normal.visibleSmartFilters, [])
+    }
+
+    /// A kept menu with no option at all is not drawn.
+    func testAKeepIsIgnoredWhenTheMenuHasNoOption() {
+        let bare = [T(typeKey: "movie", genres: [], year: nil, state: fresh)]
+        XCTAssertFalse(R.resolve(titles: bare, request: .init(keepVisible: .genre)).showsGenre, "no genres")
+        XCTAssertFalse(R.resolve(titles: bare, request: .init(keepVisible: .year)).showsYear, "no years")
+        for menu in Menu.allCases {
+            XCTAssertFalse(shows(R.resolve(titles: [], request: .init(keepVisible: menu)), menu), "\(menu): empty list")
+        }
+    }
+
+    /// Exhaustive: every subset of the five titles, every request over their values (and values the
+    /// list lacks), every kept menu. The kept menu draws exactly when the rule draws it or it has an
+    /// option; every other field of the output is the rule's, the kept Show menu's choices aside
+    /// (the rule's when it has any, else every choice some title passes).
+    func testAKeepChangesOnlyTheKeptMenu() {
+        let types: [String?] = [nil, "movie", "series", "anime", "documentary"]
+        let genres: [String?] = [nil, "drama", "Comedy", "Crime", "Western"]
+        let years: [String?] = [nil, "2001", "2005", "2010", "1980"]
+        let showSets: [Set<LibraryGridPolicy.SmartFilter>] = [[], [.unwatched], [.inProgress], [.watched]]
+        let base = titles
+        var bites: [Menu: Int] = [:], ignored: [Menu: Int] = [:]
+        for mask in 0..<(1 << base.count) {
+            let list = base.indices.filter { mask & (1 << $0) != 0 }.map { base[$0] }
+            for type in types { for genre in genres { for year in years { for smart in showSets {
+                let request = R.Request(type: type, genre: genre, year: year, smartFilters: smart)
+                let normal = R.resolve(titles: list, request: request)
+                // The titles the Show menu counts: every effective selection but Show's.
+                let showPool = list.filter { t in
+                    (normal.selectedType == nil || t.typeKey == normal.selectedType)
+                        && (normal.selectedGenre == nil || t.genres.contains { $0.lowercased() == normal.selectedGenre!.lowercased() })
+                        && (normal.selectedYear == nil || t.year == normal.selectedYear)
+                }
+                for menu in Menu.allCases {
+                    var keepRequest = request
+                    keepRequest.keepVisible = menu
+                    let kept = R.resolve(titles: list, request: keepRequest)
+                    let hasOption: Bool
+                    switch menu {
+                    case .type: hasOption = !normal.types.isEmpty
+                    case .genre: hasOption = !normal.genres.isEmpty
+                    case .year: hasOption = !normal.years.isEmpty
+                    case .show: hasOption = !showPool.isEmpty || !normal.smartFilters.isEmpty
+                    }
+                    let tag = "mask=\(mask) \(request) keep=\(menu)"
+                    XCTAssertEqual(shows(kept, menu), shows(normal, menu) || hasOption, tag)
+                    if !shows(normal, menu) { if shows(kept, menu) { bites[menu, default: 0] += 1 } else { ignored[menu, default: 0] += 1 } }
+                    var rest = kept
+                    setShows(&rest, menu, shows(normal, menu))
+                    if menu == .show {
+                        let expected = normal.visibleSmartFilters.isEmpty
+                            ? LibraryGridPolicy.SmartFilter.allCases.filter { f in showPool.contains { LibraryGridPolicy.passes($0.state, filters: [f]) } }
+                            : normal.visibleSmartFilters
+                        XCTAssertEqual(kept.visibleSmartFilters, expected, tag)
+                        rest.visibleSmartFilters = normal.visibleSmartFilters
+                    }
+                    if rest != normal { XCTFail("the keep changed more than \(menu): \(tag)"); return }
+                }
+            } } } }
+        }
+        for menu in Menu.allCases {
+            XCTAssertGreaterThan(bites[menu] ?? 0, 0, "\(menu): no case where the keep draws a menu the rule hides")
+            XCTAssertGreaterThan(ignored[menu] ?? 0, 0, "\(menu): no case where the keep has nothing to draw")
+        }
+    }
+
+    // MARK: - LibraryBarKeep: the event table
+
+    private static let foci: [LibraryBarFocus?] = [nil] + LibraryBarFocus.allCases.map { $0 }
+    private static let events: [Keep.Event] =
+        Menu.allCases.map { .picked($0) } + foci.map { .focus($0) } + [.clearFilters, .contextChanged]
+
+    /// Every state the reducer can reach from a fresh bar (closed under every event).
+    private func reachable() -> [Keep] {
+        var seen: [Keep] = [Keep()]
+        var queue = seen
+        while let s = queue.popLast() {
+            for e in Self.events {
+                let next = s.applying(e)
+                if !seen.contains(next) { seen.append(next); queue.append(next) }
+            }
+        }
+        return seen
+    }
+
+    /// The full table: every reachable state against every event.
+    func testTheEventTable() {
+        let states = reachable()
+        XCTAssertGreaterThan(states.count, 20, "the closure must cover kept, awaiting and every focus")
+        for s in states {
+            XCTAssertTrue(!s.awaitingReturn || s.menu != nil, "awaiting with nothing kept: \(s)")
+            for e in Self.events {
+                let n = s.applying(e)
+                let tag = "\(s) + \(e) = \(n)"
+                switch e {
+                case .picked(let m):
+                    XCTAssertEqual(n.menu, m, tag)
+                    XCTAssertEqual(n.awaitingReturn, s.focus != Keep.control(for: m), tag)
+                    XCTAssertEqual(n.focus, s.focus, tag)
+                case .focus(let f?):
+                    XCTAssertEqual(n.focus, f, tag)
+                    XCTAssertFalse(n.awaitingReturn, tag)
+                    if let m = s.menu, Keep.control(for: m) == f {
+                        XCTAssertEqual(n.menu, m, "focus back on the kept menu keeps it: \(tag)")
+                    } else {
+                        XCTAssertNil(n.menu, "focus on another control releases the keep: \(tag)")
+                    }
+                case .focus(.none):
+                    XCTAssertNil(n.focus, tag)
+                    if s.awaitingReturn {
+                        XCTAssertEqual(n.menu, s.menu, "the open picker holds focus: keep: \(tag)")
+                        XCTAssertTrue(n.awaitingReturn, tag)
+                    } else {
+                        XCTAssertNil(n.menu, "focus left the bar: release: \(tag)")
+                        XCTAssertFalse(n.awaitingReturn, tag)
+                    }
+                case .clearFilters, .contextChanged:
+                    XCTAssertNil(n.menu, tag)
+                    XCTAssertFalse(n.awaitingReturn, tag)
+                    XCTAssertEqual(n.focus, s.focus, tag)
+                }
+            }
+        }
+    }
+
+    /// The invariant: from any state, a pick in menu M keeps M through whatever the closing picker
+    /// reports (focus outside the bar, any number of times) until focus is back on M, and after.
+    func testAPickKeepsItsMenuUntilFocusMovesToAnotherControl() {
+        for s in reachable() {
+            for m in Menu.allCases {
+                for outsideReports in 0...2 {
+                    var k = s.applying(.picked(m))
+                    // The picker reports focus outside the bar only when focus was not on M at the pick
+                    // (focus already on M means the picker never took it away).
+                    let reports = k.awaitingReturn ? outsideReports : 0
+                    for _ in 0..<reports { k.apply(.focus(nil)); XCTAssertEqual(k.menu, m, "\(s) pick \(m)") }
+                    k.apply(.focus(Keep.control(for: m)))
+                    XCTAssertEqual(k.menu, m, "focus back on \(m): \(s)")
+                    XCTAssertFalse(k.awaitingReturn)
+                    // Then any move away releases it.
+                    for f in Self.foci where f != Keep.control(for: m) {
+                        XCTAssertNil(k.applying(.focus(f)).menu, "\(m) → \(String(describing: f))")
+                    }
+                }
+            }
+        }
+    }
+
+    /// The device sequence, both ways the platform may report focus while the picker is up.
+    func testTheDeviceSequence() {
+        // Focus leaves the bar while the picker is open, then returns to the menu.
+        var k = Keep()
+        k.apply(.focus(.type))
+        k.apply(.focus(nil))
+        k.apply(.picked(.type))
+        XCTAssertEqual(k.menu, .type)
+        XCTAssertTrue(k.awaitingReturn)
+        k.apply(.focus(nil))
+        XCTAssertEqual(k.menu, .type, "still closing")
+        k.apply(.focus(.type))
+        XCTAssertEqual(k.menu, .type)
+        XCTAssertFalse(k.awaitingReturn)
+        k.apply(.focus(.genre))
+        XCTAssertNil(k.menu, "Right to Genre releases Type")
+        // Focus stays reported on the menu while the picker is up.
+        var j = Keep()
+        j.apply(.focus(.year))
+        j.apply(.picked(.year))
+        XCTAssertEqual(j.menu, .year)
+        XCTAssertFalse(j.awaitingReturn)
+        j.apply(.focus(nil))
+        XCTAssertNil(j.menu, "Down into the grid releases Year")
+    }
+
+    // MARK: - Clear Filters focus
+
+    /// Every combination of what draws after Clear Filters: Genre, Year, Show, Type, Sort in that
+    /// order, never a control that is not drawn, nil only when none draws.
+    func testClearFiltersFallback() {
+        for mask in 0..<32 {
+            let shown = Keep.Shown(type: mask & 1 != 0, genre: mask & 2 != 0, year: mask & 4 != 0, show: mask & 8 != 0, sort: mask & 16 != 0)
+            let order: [(Bool, LibraryBarFocus)] = [(shown.genre, .genre), (shown.year, .year), (shown.show, .watch), (shown.type, .type), (shown.sort, .sort)]
+            XCTAssertEqual(Keep.focusAfterClear(shown), order.first { $0.0 }?.1, "\(shown)")
+        }
+        XCTAssertEqual(Keep.focusAfterClear(.init(type: true, genre: false, year: false, show: false, sort: true)), .type)
+        XCTAssertEqual(Keep.focusAfterClear(.init(type: false, genre: false, year: false, show: false, sort: true)), .sort)
+    }
+
+    func testControlsAndMenusMapBothWays() {
+        for m in Menu.allCases { XCTAssertEqual(Keep.menu(for: Keep.control(for: m)), m) }
+        XCTAssertEqual(LibraryBarFocus.allCases.compactMap(Keep.menu(for:)).count, 4)
+    }
+}

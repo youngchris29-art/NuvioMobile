@@ -445,4 +445,59 @@ final class LibraryViewModelFilterTests: XCTestCase {
         XCTAssertEqual(m.selectedType, "movie")
         XCTAssertEqual(spy.writes.count, 3, "snapshots and source switches write nothing")
     }
+
+    // MARK: - The menu the viewer is on (device pass attempt 3)
+
+    /// Series + Drama + In Progress leaves Severance; "All types" picked in the Type menu keeps the
+    /// menu drawn while focus is on it (or in its closing picker), and it hides once focus moves on.
+    func testAllTypesKeepsTheTypeMenuUntilFocusMovesOn() {
+        let m = model()
+        m.selectType("series")
+        m.selectGenre("Drama")
+        m.selectWatchChoice(.inProgress)
+        XCTAssertEqual(names(m), ["Severance"])
+        m.barFocusChanged(.type)
+        m.barFocusChanged(nil)          // the picker is open
+        m.selectType(nil)
+        XCTAssertNil(m.selectedType)
+        XCTAssertTrue(m.showsType, "the menu the viewer is on must stay")
+        XCTAssertEqual(m.types.map(\.key), ["series"])
+        m.barFocusChanged(nil)          // still closing
+        XCTAssertTrue(m.showsType)
+        m.barFocusChanged(.type)        // focus back on the menu
+        XCTAssertTrue(m.showsType)
+        m.barFocusChanged(.genre)       // Right
+        XCTAssertFalse(m.showsType, "the menu the viewer left hides, as it always did")
+        XCTAssertEqual(names(m), ["Severance"])
+        XCTAssertEqual(m.selectedGenre, "Drama", "a focus move drops nothing")
+        XCTAssertEqual(m.activeSmartFilters, [.inProgress])
+    }
+
+    /// Anime + 2016 + Comedy leaves Mob Psycho 100; "All" in Year keeps the Year menu.
+    func testAllYearsKeepsTheYearMenu() {
+        let m = model()
+        m.selectType("anime")
+        m.selectYear("2016")
+        m.selectGenre("Comedy")
+        m.barFocusChanged(.year)
+        m.selectYear(nil)
+        XCTAssertTrue(m.showsYear)
+        XCTAssertEqual(m.years.map(\.key), ["2016"])
+        m.barFocusChanged(nil)          // Down into the grid
+        XCTAssertFalse(m.showsYear)
+    }
+
+    /// Clear Filters on a list where every menu has one value: focus goes to Sort.
+    func testClearFiltersFallsBackToSort() {
+        let m = model(.provider)
+        m.selectGenre("Horror")
+        let nope = fixtureItems.filter { $0.id == "fx-7" }
+        m.replaceFixtureLibrary(snapshot(watchlist: nope, personal: nil, isLoading: false))
+        XCTAssertEqual(m.selectedGenre, "Horror")
+        m.clearFilters()
+        XCTAssertFalse(m.showsGenre || m.showsYear || m.showsShow || m.showsType, "one title: nothing to split")
+        XCTAssertFalse(m.filtersActive, "Clear Filters itself goes")
+        XCTAssertEqual(m.focusAfterClear, .sort)
+        XCTAssertNil(m.barKeep.menu)
+    }
 }

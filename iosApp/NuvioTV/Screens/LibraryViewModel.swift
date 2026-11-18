@@ -62,6 +62,9 @@ final class LibraryViewModel: ObservableObject {
     @Published private(set) var showsGenre = false
     @Published private(set) var showsYear = false
     @Published private(set) var showsShow = false
+    /// The menu kept drawn because the viewer is on it, and the focus the bar last reported
+    /// (`LibraryBarKeep`; device pass attempt 3). Published for the DEBUG probe.
+    @Published private(set) var barKeep = LibraryBarKeep()
 
     /// Any filter that narrows the grid below the list and type: genre, year or a smart filter.
     var filtersActive: Bool { !activeSmartFilters.isEmpty || selectedGenre != nil || selectedYear != nil }
@@ -159,7 +162,7 @@ final class LibraryViewModel: ObservableObject {
         if fixture != .off {
             // No flows: the fixture is the whole library. `libraryState` set once keeps this idempotent.
             guard libraryState == nil else { return }
-            libraryState = LibraryFilterFixture.shared.uiState(provider: fixture == .provider)
+            libraryState = LibraryDebugFlags.withOneTitleList(LibraryFilterFixture.shared.uiState(provider: fixture == .provider))
             republish()
             return
         }
@@ -227,6 +230,7 @@ final class LibraryViewModel: ObservableObject {
         rememberedSectionKey = key
         rememberedType = nil
         rememberedSource = source.name
+        keep(.contextChanged)
         act(.list)
     }
 
@@ -240,29 +244,34 @@ final class LibraryViewModel: ObservableObject {
         if rememberedSource != source.name { rememberedSectionKey = nil }
         rememberedType = type
         rememberedSource = source.name
+        keep(.picked(.type))
         act(.type)
     }
 
     /// Nil = All.
     func selectGenre(_ genre: String?) {
         requestedGenre = genre
+        keep(.picked(.genre))
         act(.genre)
     }
 
     /// Nil = All.
     func selectYear(_ year: String?) {
         requestedYear = year
+        keep(.picked(.year))
         act(.year)
     }
 
     func toggleSmartFilter(_ filter: LibraryGridPolicy.SmartFilter) {
         requestedSmartFilters = LibraryGridPolicy.toggling(filter, in: requestedSmartFilters)
+        keep(.picked(.show))
         act(.show)
     }
 
     /// The Show menu: one choice, mapped onto the same smart-filter set.
     func selectWatchChoice(_ choice: LibraryGridPolicy.WatchChoice) {
         requestedSmartFilters = LibraryGridPolicy.smartFilters(for: choice)
+        keep(.picked(.show))
         act(.show)
     }
 
@@ -295,7 +304,30 @@ final class LibraryViewModel: ObservableObject {
         requestedSmartFilters = []
         requestedGenre = nil
         requestedYear = nil
+        keep(.clearFilters)
         act(.clearFilters)
+    }
+
+    /// The bar's focus moved (`LibraryView`'s `@FocusState`, nil = outside the bar). When that
+    /// releases the kept menu, derive again so a menu the viewer has left hides (not an action:
+    /// nothing is dropped).
+    func barFocusChanged(_ focus: LibraryBarFocus?) {
+        let before = barKeep.menu
+        keep(.focus(focus))
+        if barKeep.menu != before { republish() }
+    }
+
+    /// Where Clear Filters puts focus, from what the bar draws now (call after `clearFilters`).
+    var focusAfterClear: LibraryBarFocus? {
+        LibraryBarKeep.focusAfterClear(.init(
+            type: showsType, genre: showsGenre, year: showsYear, show: showsShow,
+            sort: !availableSortOptions.isEmpty
+        ))
+    }
+
+    private func keep(_ event: LibraryBarKeep.Event) {
+        let next = barKeep.applying(event)
+        if next != barKeep { barKeep = next }
     }
 
     /// Persist a new sort (shared repo: profile-scoped NSUserDefaults). The watcher republishes.
@@ -422,6 +454,7 @@ final class LibraryViewModel: ObservableObject {
                 requestedGenre = nil
                 requestedYear = nil
                 requestedSmartFilters = []
+                keep(.contextChanged)
             }
             lastSourceModeName = modeName
         }
@@ -501,7 +534,8 @@ final class LibraryViewModel: ObservableObject {
         }
         let bar = LibraryBarResolver.resolve(
             titles: titles,
-            request: .init(type: requestedType, genre: requestedGenre, year: requestedYear, smartFilters: requestedSmartFilters),
+            request: .init(type: requestedType, genre: requestedGenre, year: requestedYear, smartFilters: requestedSmartFilters,
+                           keepVisible: barKeep.menu),
             typeOrder: projection.availableTypes
         )
         // Data never forgets a pick; only the viewer does (review r3). After a viewer action the
@@ -647,6 +681,26 @@ nonisolated enum LibraryDebugFlags {
         UserDefaults.standard.string(forKey: "debug.libraryCountLine").flatMap { $0.isEmpty ? nil : $0 }
         #else
         nil
+        #endif
+    }
+
+    /// `-debug.libraryOneTitleList YES` (provider fixture): a third list holding only Nope (one
+    /// movie, one genre, one year, unwatched), where every filter menu has one value, so Clear
+    /// Filters there leaves only List and Sort (the UI leg's Clear-focus fallback).
+    static func withOneTitleList(_ state: LibraryUiState) -> LibraryUiState {
+        #if DEBUG
+        guard UserDefaults.standard.bool(forKey: "debug.libraryOneTitleList"), state.sections.count > 1 else { return state }
+        let nope = state.items.filter { $0.id == "fx-7" }
+        return state.doCopy(
+            sourceMode: state.sourceMode,
+            items: state.items,
+            sections: state.sections + [LibrarySection(type: "fx-list-one", displayTitle: "One Title", items: nope)],
+            isLoaded: state.isLoaded,
+            isLoading: state.isLoading,
+            errorMessage: state.errorMessage
+        )
+        #else
+        state
         #endif
     }
 

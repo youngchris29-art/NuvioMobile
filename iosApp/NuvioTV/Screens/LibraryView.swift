@@ -335,6 +335,9 @@ struct LibraryView: View {
             barGeometry.bar = Int($0.rounded())
         }
         .overlay(alignment: .topLeading) { barProbe }
+        // Device pass (attempt 3): the menu the viewer is on stays drawn until focus leaves it
+        // (`LibraryBarKeep`, fed here and by the model's picks).
+        .onChange(of: barFocus, initial: true) { _, focus in model.barFocusChanged(focus) }
     }
 
     private var genreMenu: some View {
@@ -425,17 +428,11 @@ struct LibraryView: View {
     private var clearPill: some View {
         PillButton(title: String(localized: "Clear Filters"), systemImage: "xmark.circle", id: "library.clearFilters") {
             model.clearFilters()
-            // The pill goes with the filters; hand focus to a control that stays.
-            barFocus = focusAfterClear()
+            // The pill goes with the filters; hand focus to a control that stays (Genre, Year,
+            // Show, Type, else Sort: `LibraryBarKeep.focusAfterClear`).
+            barFocus = model.focusAfterClear
         }
         .modifier(barControl(.clear))
-    }
-
-    private func focusAfterClear() -> LibraryBarFocus? {
-        if showsGenre { return .genre }
-        if showsYear { return .year }
-        if showsWatch { return .watch }
-        return nil
     }
 
     /// A bar control's focus binding, plus (probe on) its laid-out frame in the pane's space.
@@ -450,7 +447,7 @@ struct LibraryView: View {
             let g = barGeometry
             let focused = barFocus.flatMap { g.frames[$0] }
             let widths = LibraryBarFocus.allCases.compactMap { c in g.frames[c].map { "\(c.rawValue):\($0.width)" } }
-            Text(verbatim: "debug_library_bar pane=\(g.pane) pill=\(g.pill) row1=\(g.row1) row2=0 row1w=\(g.row1w) bar=\(g.bar) count=\(model.entries.count) content=\(LibraryBarGeometry.contentToken(model.content)) list=\(model.selectedSectionKey ?? "-") type=\(model.selectedType ?? "-") genre=\(model.selectedGenre ?? "-") year=\(model.selectedYear ?? "-") show=\(LibraryGridPolicy.watchChoice(for: model.activeSmartFilters).rawValue) focus=\(barFocus?.rawValue ?? "-") fminx=\(focused.map { "\($0.minX)" } ?? "-") fmaxx=\(focused.map { "\($0.maxX)" } ?? "-") panegx=\(g.paneGlobalMinX) bary=\(g.barGlobalMinY)-\(g.barGlobalMaxY) cminx=\(g.countMinX) cmaxx=\(g.countMaxX) cideal=\(g.countIdeal) hdry=\(g.headerGlobalMidY) writes=\(model.debugPickWrites) widths=\(widths.joined(separator: ","))")
+            Text(verbatim: "debug_library_bar pane=\(g.pane) pill=\(g.pill) row1=\(g.row1) row2=0 row1w=\(g.row1w) bar=\(g.bar) count=\(model.entries.count) content=\(LibraryBarGeometry.contentToken(model.content)) list=\(model.selectedSectionKey ?? "-") type=\(model.selectedType ?? "-") genre=\(model.selectedGenre ?? "-") year=\(model.selectedYear ?? "-") show=\(LibraryGridPolicy.watchChoice(for: model.activeSmartFilters).rawValue) focus=\(barFocus?.rawValue ?? "-") fminx=\(focused.map { "\($0.minX)" } ?? "-") fmaxx=\(focused.map { "\($0.maxX)" } ?? "-") panegx=\(g.paneGlobalMinX) bary=\(g.barGlobalMinY)-\(g.barGlobalMaxY) cminx=\(g.countMinX) cmaxx=\(g.countMaxX) cideal=\(g.countIdeal) hdry=\(g.headerGlobalMidY) writes=\(model.debugPickWrites) keep=\(model.barKeep.menu?.rawValue ?? "-") await=\(model.barKeep.awaitingReturn ? 1 : 0) widths=\(widths.joined(separator: ","))")
                 .font(.system(size: 8))
                 .opacity(0.011)
                 .allowsHitTesting(false)
@@ -549,6 +546,8 @@ struct LibraryView: View {
                 .foregroundStyle(Theme.Palette.textPrimary)
             Button {
                 model.clearFilters()
+                // This button goes with the no-matches state; focus lands on a bar control that stays.
+                barFocus = model.focusAfterClear
             } label: {
                 Label("Clear Filters", systemImage: "xmark.circle")
                     .font(Theme.Font.meta)
@@ -646,7 +645,7 @@ struct LibraryView: View {
 
 /// W5: the Library filter bar's controls, for focus (Clear Filters hands focus to one that stays)
 /// and the DEBUG probe's `focus=` token and widths.
-enum LibraryBarFocus: String, Hashable, CaseIterable {
+nonisolated enum LibraryBarFocus: String, Hashable, CaseIterable, Sendable {
     case list, type, genre, year, watch, sort, refresh, clear
 }
 

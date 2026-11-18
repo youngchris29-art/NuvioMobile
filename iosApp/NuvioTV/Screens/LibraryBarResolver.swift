@@ -23,6 +23,10 @@ import Foundation
 ///   type, genre; Show choices: type, genre, year). An option with no title is never offered.
 /// - A menu shows when it can split its titles (two or more options, or one option that fewer than
 ///   all of them carry: the rest have no genre or no year), or when it has a selection to undo.
+/// - Device pass (attempt 3): the menu the viewer is on (`Request.keepVisible`, decided by
+///   `LibraryBarKeep`) shows whenever it has an option at all, so a pick never removes the control
+///   under the viewer. Nothing else changes for it: its rows and counts are the same, except that a
+///   kept Show menu with no splitting choice offers the choices some title passes.
 nonisolated enum LibraryBarResolver {
     typealias SmartFilter = LibraryGridPolicy.SmartFilter
     typealias FacetOption = LibraryGridPolicy.FacetOption
@@ -51,6 +55,14 @@ nonisolated enum LibraryBarResolver {
         var genre: String?
         var year: String?
         var smartFilters: Set<SmartFilter> = []
+        /// The menu the viewer is on (`LibraryBarKeep.menu`): drawn while it has any option, even
+        /// when it could not split its titles. Nil = every menu follows the rule above.
+        var keepVisible: Menu? = nil
+    }
+
+    /// The bar's four filter menus (List and Sort always draw when they have rows).
+    enum Menu: String, CaseIterable, Equatable, Sendable {
+        case type, genre, year, show
     }
 
     /// A set of picks: the ones with no title here (`Output.unavailable`), or the ones to drop.
@@ -182,7 +194,13 @@ nonisolated enum LibraryBarResolver {
         let yearOptions = yearCounts.map { FacetOption(key: $0.key, count: $0.value) }.sorted { $0.key > $1.key }
 
         let showPool = titles.filter { passType($0) && passGenre($0) && passYear($0) }
-        let visibleSmart = LibraryGridPolicy.visibleSmartFilters(states: showPool.map(\.state), active: smart)
+        var visibleSmart = LibraryGridPolicy.visibleSmartFilters(states: showPool.map(\.state), active: smart)
+        // A kept Show menu with no splitting choice offers the choices some title passes (each
+        // narrows nothing, as the one row of a kept Genre or Year menu does).
+        if request.keepVisible == .show, visibleSmart.isEmpty {
+            visibleSmart = SmartFilter.allCases.filter { f in showPool.contains { LibraryGridPolicy.passes($0.state, filters: [f]) } }
+        }
+        let keep = request.keepVisible
 
         let shown = titles.indices.filter { i in
             let t = titles[i]
@@ -199,9 +217,9 @@ nonisolated enum LibraryBarResolver {
             genres: genreOptions,
             years: yearOptions,
             visibleSmartFilters: visibleSmart,
-            showsType: shows(typeOptions, selected: type, eligible: typePool.count),
-            showsGenre: shows(genreOptions, selected: genre, eligible: genrePool.count),
-            showsYear: shows(yearOptions, selected: year, eligible: yearPool.count),
+            showsType: shows(typeOptions, selected: type, eligible: typePool.count) || (keep == .type && !typeOptions.isEmpty),
+            showsGenre: shows(genreOptions, selected: genre, eligible: genrePool.count) || (keep == .genre && !genreOptions.isEmpty),
+            showsYear: shows(yearOptions, selected: year, eligible: yearPool.count) || (keep == .year && !yearOptions.isEmpty),
             showsShow: !visibleSmart.isEmpty || !smart.isEmpty,
             shown: shown,
             unavailable: unavailable

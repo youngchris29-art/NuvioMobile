@@ -59,8 +59,10 @@ final class LibraryFilterBarUITests: XCTestCase {
 
     // MARK: - Launch
 
-    private static func arguments(fixture: String = "provider", navigation: String = "tabs", countLine: String? = nil) -> [String] {
+    private static func arguments(fixture: String = "provider", navigation: String = "tabs", countLine: String? = nil,
+                                  oneTitleList: Bool = false) -> [String] {
         (countLine.map { ["-debug.libraryCountLine", $0] } ?? []) +
+        (oneTitleList ? ["-debug.libraryOneTitleList", "YES"] : []) +
         ["-debug.libraryFixture", fixture, "-debug.libraryBarGeometry", "YES",
          "-sidebar_style", navigation, "-rail_visibility", "always", "-discover_placement", "off",
          "-home_upcoming_row_enabled", "NO", "-inline_trailers_enabled", "NO",
@@ -559,5 +561,196 @@ final class LibraryFilterBarUITests: XCTestCase {
         XCTAssertEqual(value(app, "type"), "-", "a new list starts on All types: \(probe(app))")
         XCTAssertEqual(number(app, "count"), 8, probe(app))
         shot("list-reset")
+    }
+
+    // MARK: - The menu the viewer is on (device pass attempt 3)
+
+    /// Waits until the probe reads the same for `quiet` seconds (the bar has settled); returns it.
+    @discardableResult
+    private func settle(_ app: XCUIApplication, quiet: TimeInterval = 1.0, timeout: TimeInterval = 10) -> String {
+        var last = probe(app)
+        var since = Date()
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            pause(0.2)
+            let now = probe(app)
+            if now != last {
+                last = now
+                since = Date()
+            } else if Date().timeIntervalSince(since) >= quiet {
+                return now
+            }
+        }
+        return last
+    }
+
+    /// Settle, then press.
+    private func press(_ app: XCUIApplication, _ button: XCUIRemote.Button) {
+        settle(app)
+        remote.press(button)
+    }
+
+    /// Moves bar focus to `token` one settled press at a time.
+    @discardableResult
+    private func moveSettled(_ app: XCUIApplication, to token: String, _ direction: XCUIRemote.Button, max: Int = 10) -> Bool {
+        for _ in 0..<max {
+            settle(app)
+            if barFocus(app) == token { return true }
+            remote.press(direction)
+        }
+        settle(app)
+        return barFocus(app) == token
+    }
+
+    /// Opens the focused menu and picks the row matching `predicate` (rows: label, never a pill),
+    /// one settled press at a time. Records the probe while the picker is up (`openNote`).
+    private func pickRow(_ app: XCUIApplication, _ predicate: NSPredicate, step: String, openNote: String? = nil) -> Bool {
+        press(app, .select)
+        let row = app.descendants(matching: .any)
+            .matching(NSCompoundPredicate(andPredicateWithSubpredicates: [predicate, NSPredicate(format: "NOT identifier BEGINSWITH 'library.'")]))
+            .firstMatch
+        guard row.waitForExistence(timeout: 6) else {
+            shot("\(step)-no-row")
+            remote.press(.menu)
+            return false
+        }
+        if let openNote { note(openNote, "picker open: \(settle(app)) | focused: \(focusedSummary(app))") }
+        for direction in [XCUIRemote.Button.down, .up] {
+            for _ in 0..<14 where !hasFocusByFrame(app, row) {
+                settle(app, quiet: 0.6)
+                remote.press(direction)
+            }
+        }
+        settle(app, quiet: 0.6)
+        guard hasFocusByFrame(app, row) else {
+            shot("\(step)-unfocused")
+            remote.press(.menu)
+            return false
+        }
+        remote.press(.select)
+        return true
+    }
+
+    private func rowStarting(_ prefix: String) -> NSPredicate { NSPredicate(format: "label BEGINSWITH %@", prefix) }
+    private func control(_ app: XCUIApplication, _ identifier: String) -> XCUIElement {
+        app.descendants(matching: .any)[identifier].firstMatch
+    }
+
+    /// The device case: Type Series, Genre Drama, Show In Progress leaves one series; "All types"
+    /// in the Type menu keeps the menu and focus on it; Right moves to Genre, the Type menu then
+    /// hides and focus stays on Genre. Then the same for Year (Anime, 2016, Comedy, "All years" in Year),
+    /// and Down from the kept Year menu releases it.
+    func testAPickNeverRemovesTheMenuUnderFocus() throws {
+        let app = launch(Self.arguments(fixture: "provider"))
+        defer { app.terminate() }
+        try openLibrary(app, rail: false)
+        try enterBar(app)
+        var log: [String] = ["start: \(settle(app))"]
+
+        // Narrow: Series, Drama, In Progress (Severance).
+        XCTAssertTrue(moveSettled(app, to: "type", .right) || moveSettled(app, to: "type", .left), probe(app))
+        XCTAssertTrue(pickRow(app, rowStarting("Series"), step: "keep-series"))
+        XCTAssertTrue(poll(8) { value(app, "type") == "series" }, probe(app))
+        XCTAssertTrue(moveSettled(app, to: "genre", .right), probe(app))
+        XCTAssertTrue(pickRow(app, rowStarting("Drama"), step: "keep-drama"))
+        XCTAssertTrue(poll(8) { value(app, "genre") == "Drama" }, probe(app))
+        XCTAssertTrue(moveSettled(app, to: "watch", .right), probe(app))
+        XCTAssertTrue(pickRow(app, rowStarting("In Progress"), step: "keep-inprogress"))
+        XCTAssertTrue(poll(8) { value(app, "show") == "inProgress" }, probe(app))
+        log.append("narrowed: \(settle(app))")
+        XCTAssertEqual(number(app, "count"), 1, probe(app))
+
+        // "All types" in the Type menu: the menu stays and keeps focus.
+        XCTAssertTrue(moveSettled(app, to: "type", .left), probe(app))
+        XCTAssertTrue(pickRow(app, rowStarting("All types"), step: "keep-alltypes", openNote: "type-picker-open"))
+        XCTAssertTrue(poll(8) { value(app, "type") == "-" }, probe(app))
+        let afterAll = settle(app)
+        log.append("all types: \(afterAll) | \(focusedSummary(app))")
+        shot("keep-1-all-types")
+        XCTAssertEqual(Self.token(afterAll, "focus"), "type", "focus must stay on the Type menu — \(afterAll) | \(focusedSummary(app))")
+        XCTAssertEqual(Self.token(afterAll, "keep"), "type", afterAll)
+        XCTAssertTrue(control(app, "library.typePicker").exists, "the Type menu must still be drawn")
+        XCTAssertFalse(tabBarFocused(app), "focus must not leave for the tab bar — \(focusedSummary(app))")
+        XCTAssertEqual(Self.int(afterAll, "count"), 1, afterAll)
+
+        // Right: Genre takes focus, the Type menu (left of it) hides, focus stays on Genre.
+        press(app, .right)
+        XCTAssertTrue(poll(8) { barFocus(app) == "genre" }, probe(app))
+        let moved = settle(app)
+        log.append("right: \(moved)")
+        XCTAssertEqual(Self.token(moved, "focus"), "genre", moved)
+        XCTAssertEqual(Self.token(moved, "keep"), "-", moved)
+        XCTAssertFalse(control(app, "library.typePicker").exists, "the Type menu hides once the viewer has left it")
+        XCTAssertTrue(focusedControlVisible(app), moved)
+
+        // Clear Filters: Genre, Year and Show are all drawn again; focus lands on Genre.
+        XCTAssertTrue(moveSettled(app, to: "clear", .right, max: 8), probe(app))
+        press(app, .select)
+        XCTAssertTrue(poll(8) { value(app, "genre") == "-" && value(app, "show") == "all" }, probe(app))
+        let cleared = settle(app)
+        log.append("cleared: \(cleared)")
+        XCTAssertEqual(Self.token(cleared, "focus"), "genre", cleared)
+
+        // Year: Anime, 2016, Comedy (Mob Psycho 100), then "All" in Year.
+        XCTAssertTrue(moveSettled(app, to: "type", .left), probe(app))
+        XCTAssertTrue(pickRow(app, rowStarting("Anime"), step: "keep-anime"))
+        XCTAssertTrue(poll(8) { value(app, "type") == "anime" }, probe(app))
+        XCTAssertTrue(moveSettled(app, to: "year", .right), probe(app))
+        XCTAssertTrue(pickRow(app, rowStarting("2016"), step: "keep-2016"))
+        XCTAssertTrue(poll(8) { value(app, "year") == "2016" }, probe(app))
+        XCTAssertTrue(moveSettled(app, to: "genre", .left), probe(app))
+        XCTAssertTrue(pickRow(app, rowStarting("Comedy"), step: "keep-comedy"))
+        XCTAssertTrue(poll(8) { value(app, "genre") == "Comedy" }, probe(app))
+        XCTAssertTrue(moveSettled(app, to: "year", .right), probe(app))
+        XCTAssertTrue(pickRow(app, rowStarting("All years"), step: "keep-allyears", openNote: "year-picker-open"))
+        XCTAssertTrue(poll(8) { value(app, "year") == "-" }, probe(app))
+        let allYears = settle(app)
+        log.append("all years: \(allYears) | \(focusedSummary(app))")
+        shot("keep-2-all-years")
+        XCTAssertEqual(Self.token(allYears, "focus"), "year", "focus must stay on the Year menu — \(allYears)")
+        XCTAssertEqual(Self.token(allYears, "keep"), "year", allYears)
+        XCTAssertTrue(control(app, "library.yearPicker").exists, "the Year menu must still be drawn")
+
+        // Down into the grid releases it.
+        press(app, .down)
+        XCTAssertTrue(poll(8) { barFocus(app) == "-" }, probe(app))
+        let down = settle(app)
+        log.append("down: \(down) | \(focusedSummary(app))")
+        XCTAssertEqual(Self.token(down, "keep"), "-", down)
+        XCTAssertFalse(control(app, "library.yearPicker").exists, "the Year menu hides once focus has left the bar")
+        note("keep-log", log.joined(separator: "\n"))
+    }
+
+    /// Clear Filters on a list where every menu has one value (`-debug.libraryOneTitleList`: only
+    /// Nope): Genre, Year, Show and Type all hide and Clear Filters goes, so focus lands on Sort.
+    func testClearFiltersLandsOnAControlThatStays() throws {
+        let app = launch(Self.arguments(fixture: "provider", oneTitleList: true))
+        defer { app.terminate() }
+        try openLibrary(app, rail: false)
+        try enterBar(app)
+        var log: [String] = ["start: \(settle(app))"]
+        XCTAssertTrue(moveSettled(app, to: "genre", .right) || moveSettled(app, to: "genre", .left), probe(app))
+        XCTAssertTrue(pickRow(app, rowStarting("Horror"), step: "clear-horror"))
+        XCTAssertTrue(poll(8) { value(app, "genre") == "Horror" }, probe(app))
+        XCTAssertTrue(moveSettled(app, to: "list", .left), probe(app))
+        XCTAssertTrue(pickRow(app, rowStarting("One Title"), step: "clear-list"))
+        XCTAssertTrue(poll(8) { value(app, "list") == "fx-list-one" }, probe(app))
+        let before = settle(app)
+        log.append("one title + Horror: \(before)")
+        XCTAssertEqual(Self.int(before, "count"), 1, before)
+        XCTAssertEqual(Self.token(before, "genre"), "Horror", before)
+        XCTAssertTrue(moveSettled(app, to: "clear", .right, max: 8), probe(app))
+        press(app, .select)
+        XCTAssertTrue(poll(8) { value(app, "genre") == "-" }, probe(app))
+        let after = settle(app)
+        log.append("cleared: \(after) | \(focusedSummary(app))")
+        shot("clear-fallback-sort")
+        XCTAssertEqual(Self.token(after, "focus"), "sort", "Clear Filters must hand focus to Sort — \(after) | \(focusedSummary(app))")
+        XCTAssertFalse(control(app, "library.clearFilters").exists, "nothing left to clear")
+        for id in ["library.typePicker", "library.genrePicker", "library.yearPicker", "library.watchPicker"] {
+            XCTAssertFalse(control(app, id).exists, "\(id) has one value here and must hide")
+        }
+        XCTAssertTrue(focusedControlVisible(app), after)
+        note("clear-fallback-log", log.joined(separator: "\n"))
     }
 }
