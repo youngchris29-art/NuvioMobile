@@ -319,34 +319,67 @@ final class StageDiscoverUITests: XCTestCase {
         }
     }
 
-    /// Down until a strip row holds focus on row 0 (Tabs: tab bar → band → row 0), then waits
-    /// until row 0 has held for about a second.
+    /// Gets focus to strip row 0 and proves it settled there, never pressing while the page moves.
     ///
-    /// 2026-11-17 (final gate, D02): the pushed page often lands focus on row 0 by itself, and the
-    /// old early return for that case skipped the settle, so the caller's next Down went out
-    /// ~0.04 s after the read while the page was still landing focus or gliding (the strip's
-    /// glide clamp is 1.0 s); under load that press was swallowed. Every path now ends on the
-    /// same state-tied settle: `strip=1 row=0` read continuously for 1.0 s (bounded at 6 s).
+    /// 2026-11-17 (final gate): two failures in this helper, so it is one decision now instead of
+    /// a patch per failure. D02: the pushed page landed focus on row 0 by itself, the early return
+    /// skipped the settle, and the caller's Down went out ~0.04 s later while the page was still
+    /// landing or gliding (the strip's glide clamp is 1.0 s), so it was swallowed. D04: the loop's
+    /// first Down went out 0.6 s after the push, while the page was still landing focus on row 0,
+    /// and carried focus past it to row 4.
+    ///
+    /// So: wait for the page to land (`strip`, `row` and the focused labels unchanged for 1.0 s),
+    /// then decide from that settled state, one press at a time, re-settling after each:
+    /// `strip=1 row=0` is done; outside the strip (tab bar or pill band) Down; `strip=1 row>0` Up,
+    /// which corrects an overshoot instead of adding to it (D03: Up from row 1 is row 0; Up is never
+    /// pressed at row 0, where it would leave the strip for the band). Eight presses at most: a
+    /// Down from the band can re-enter at the remembered row (`row` keeps its value while the band
+    /// holds focus), and walking back from row 4 is five presses. It ends on the same hold proof.
     private func requireRow0(_ app: XCUIApplication) throws {
+        func signature() -> String {
+            let line = discover(app)
+            return "strip=\(Self.token(line, "strip") ?? "-") row=\(Self.token(line, "row") ?? "-") focused=\(focusedNodes(app).map(\.label))"
+        }
+        /// The one stability poll: the signature read unchanged for 1.0 s, within `bound`.
+        func settle(_ bound: TimeInterval) -> (held: Bool, signature: String, after: TimeInterval) {
+            let started = Date()
+            var last = signature()
+            var since = Date()
+            while Date().timeIntervalSince(started) < bound {
+                pause(0.2)
+                let now = signature()
+                if now != last {
+                    last = now
+                    since = Date()
+                } else if Date().timeIntervalSince(since) >= 1.0 {
+                    return (true, now, Date().timeIntervalSince(started))
+                }
+            }
+            return (false, last, Date().timeIntervalSince(started))
+        }
         func onRow0() -> Bool { stripFocused(app) && row(app) == 0 }
-        for _ in 0..<4 {
-            if onRow0() { break }
-            remote.press(.down)
-            _ = poll(2.5, onRow0)
+        func describe(_ state: (held: Bool, signature: String, after: TimeInterval)) -> String {
+            String(format: "%@ after %.1fs: %@", state.held ? "settled" : "NOT settled (bound hit)", state.after, state.signature)
         }
+
+        var state = settle(4)
+        note("row0_land", describe(state))
+        var presses = 0
+        while !onRow0() {
+            guard presses < 8 else {
+                throw HarnessAbort("focus never reached strip row 0 in 8 presses: '\(discover(app))' focused=\(focusedNodes(app).map(\.label))")
+            }
+            let button: XCUIRemote.Button = stripFocused(app) && (row(app) ?? 0) > 0 ? .up : .down
+            presses += 1
+            note("row0_press", "\(presses): \(button == .up ? "Up" : "Down") from \(describe(state))")
+            remote.press(button)
+            state = settle(4)
+        }
+        state = settle(6)
         guard onRow0() else {
-            throw HarnessAbort("focus never reached strip row 0: '\(discover(app))' focused=\(focusedNodes(app).map(\.label))")
-        }
-        let started = Date()
-        var heldSince = Date()
-        let held = poll(6, step: 0.2) {
-            guard onRow0() else { heldSince = Date(); return false }
-            return Date().timeIntervalSince(heldSince) >= 1.0
-        }
-        guard held || onRow0() else {
             throw HarnessAbort("strip row 0 did not hold focus: '\(discover(app))' focused=\(focusedNodes(app).map(\.label))")
         }
-        note("row0_settle", String(format: "held=%@ after %.1fs: %@", held ? "1.0s" : "no (bound hit, still on row 0)", Date().timeIntervalSince(started), discover(app)))
+        note("row0_settle", "presses=\(presses) held=\(state.held ? "1.0s" : "no (bound hit, still on row 0)") \(describe(state)) | \(discover(app))")
     }
 
     /// From strip row 0, Up to the pill band (`strip=0`, a pill holding focus).
