@@ -88,10 +88,72 @@ final class StageDiscoverUITests: XCTestCase {
         XCTAssertTrue(chris.waitForExistence(timeout: 90), "profile picker never appeared — is the FA87 fixture set up?")
         if chris.exists {
             // ui-legs: the shared verified step (Select only once "Chris" reads focused).
-            DetailEntryRoute.selectChrisTile(self, app, timeout: 5)
+            let selectedLabel = chris.label
+            if DetailEntryRoute.selectChrisTile(self, app, timeout: 5) == true {
+                awaitShell(app, chris: chris, selectedLabel: selectedLabel)
+            }
         }
         pause(settle)
         return app
+    }
+
+    /// 2026-11-17 (final gate, D07): on a slow launch the profile Select was followed by a blind
+    /// settle and then 40 Ups, and no tab button ever existed; the log could not say whether the
+    /// Select was dropped (picker still up), the profile load stalled, or Home was up without its
+    /// tab bar. This waits for the shell itself (a tab button, or `rail_state` in Rail mode) after
+    /// the Select, presses Select ONCE more only when the picker is still up with the same tile
+    /// focused, and otherwise fails naming the state it saw, with a screenshot. It is this file's
+    /// own step: the shared `DetailEntryRoute.selectChrisTile` is used by every UI class and keeps
+    /// its behaviour.
+    private func awaitShell(_ app: XCUIApplication, chris: XCUIElement, selectedLabel: String) {
+        let started = Date()
+        let addProfile = app.buttons["Add Profile"]
+        func shellPresent() -> Bool {
+            Self.tabTitles.contains { app.buttons[$0].exists } || !railState(app).isEmpty
+        }
+        func pickerShowing() -> Bool { chris.exists || addProfile.exists }
+        func elapsed() -> String { String(format: "%.1fs", Date().timeIntervalSince(started)) }
+
+        // A loaded Mac took 13 s from launch to the picker check in the failing run; 45 s per
+        // wait leaves room for a profile load that slow without hiding a real stall.
+        var retried = false
+        var leftPicker = poll(45, step: 0.5) { shellPresent() || !pickerShowing() }
+        if !leftPicker {
+            let focused = focusedNodes(app).map(\.label)
+            guard focused.contains(selectedLabel) else {
+                failShell(app, "the profile picker is still showing \(elapsed()) after Select, and the selected tile '\(selectedLabel)' no longer reads focused (focused: \(focused)) — not pressing Select again")
+                return
+            }
+            note("profile_select_retry", "picker still showing \(elapsed()) after Select with '\(selectedLabel)' focused — pressing Select once more")
+            retried = true
+            remote.press(.select)
+            leftPicker = poll(45, step: 0.5) { shellPresent() || !pickerShowing() }
+            if !leftPicker {
+                failShell(app, "the profile picker is still showing \(elapsed()) after Select and one retry (focused: \(focusedNodes(app).map(\.label)))")
+                return
+            }
+        }
+        let pickerGone = elapsed()
+        guard poll(45, step: 0.5, shellPresent) else {
+            if pickerShowing() {
+                failShell(app, "the profile picker came back \(elapsed()) after Select (focused: \(focusedNodes(app).map(\.label)))")
+            } else if !label(app, "debug_stage").isEmpty {
+                failShell(app, "Home is up (debug_stage: '\(label(app, "debug_stage"))') but no tab bar or rail exists \(elapsed()) after Select")
+            } else {
+                failShell(app, "neither the profile picker nor the shell is showing \(elapsed()) after Select (the profile load never finished)")
+            }
+            return
+        }
+        note("shell_ready", "picker left at \(pickerGone), shell at \(elapsed()) after Select, retry=\(retried)")
+    }
+
+    /// Records the shell state with a screenshot and stops the test (nothing after the profile
+    /// pick may press on a screen whose state is unknown).
+    private func failShell(_ app: XCUIApplication, _ message: String) {
+        shot("shell_not_ready")
+        note("shell_not_ready", message)
+        continueAfterFailure = false
+        XCTFail(message)
     }
 
     // MARK: - Readouts
@@ -257,17 +319,34 @@ final class StageDiscoverUITests: XCTestCase {
         }
     }
 
-    /// Down until a strip row holds focus on row 0 (Tabs: tab bar → band → row 0).
+    /// Down until a strip row holds focus on row 0 (Tabs: tab bar → band → row 0), then waits
+    /// until row 0 has held for about a second.
+    ///
+    /// 2026-11-17 (final gate, D02): the pushed page often lands focus on row 0 by itself, and the
+    /// old early return for that case skipped the settle, so the caller's next Down went out
+    /// ~0.04 s after the read while the page was still landing focus or gliding (the strip's
+    /// glide clamp is 1.0 s); under load that press was swallowed. Every path now ends on the
+    /// same state-tied settle: `strip=1 row=0` read continuously for 1.0 s (bounded at 6 s).
     private func requireRow0(_ app: XCUIApplication) throws {
+        func onRow0() -> Bool { stripFocused(app) && row(app) == 0 }
         for _ in 0..<4 {
-            if stripFocused(app), row(app) == 0 { return }
+            if onRow0() { break }
             remote.press(.down)
-            _ = poll(2.5) { stripFocused(app) && row(app) == 0 }
+            _ = poll(2.5, onRow0)
         }
-        guard stripFocused(app), row(app) == 0 else {
+        guard onRow0() else {
             throw HarnessAbort("focus never reached strip row 0: '\(discover(app))' focused=\(focusedNodes(app).map(\.label))")
         }
-        pause(1.0)
+        let started = Date()
+        var heldSince = Date()
+        let held = poll(6, step: 0.2) {
+            guard onRow0() else { heldSince = Date(); return false }
+            return Date().timeIntervalSince(heldSince) >= 1.0
+        }
+        guard held || onRow0() else {
+            throw HarnessAbort("strip row 0 did not hold focus: '\(discover(app))' focused=\(focusedNodes(app).map(\.label))")
+        }
+        note("row0_settle", String(format: "held=%@ after %.1fs: %@", held ? "1.0s" : "no (bound hit, still on row 0)", Date().timeIntervalSince(started), discover(app)))
     }
 
     /// From strip row 0, Up to the pill band (`strip=0`, a pill holding focus).
