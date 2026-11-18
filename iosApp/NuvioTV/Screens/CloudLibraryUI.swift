@@ -21,7 +21,25 @@ final class CloudLibraryViewModel: ObservableObject {
 
     private var watcher: FlowWatcher?
 
+    #if DEBUG
+    /// Pre-cut follow-ups GC: `-debug.libraryCloudFixture YES` gives the Library one synthetic
+    /// connected provider with two items, so the source chips draw on the simulator (no debrid key
+    /// there). In fixture mode nothing reaches `CloudLibraryRepository`: no subscription, no
+    /// `ensureLoaded`, and Refresh and play are no-ops.
+    let isFixture: Bool
+
+    init(isFixture: Bool = CloudLibraryDebugFixture.isOn) {
+        self.isFixture = isFixture
+    }
+    #endif
+
     func start() {
+        #if DEBUG
+        if isFixture {
+            if state == nil { state = CloudLibraryDebugFixture.state() }
+            return
+        }
+        #endif
         guard watcher == nil else { return }
         watcher = FlowWatcherKt.watch(CloudLibraryRepository.shared.uiState) { [weak self] emitted in
             guard let self, let value = emitted as? CloudLibraryUiState else { return }
@@ -36,6 +54,9 @@ final class CloudLibraryViewModel: ObservableObject {
     }
 
     func refresh() {
+        #if DEBUG
+        if isFixture { return }
+        #endif
         CloudLibraryRepository.shared.refresh()
     }
 
@@ -46,6 +67,9 @@ final class CloudLibraryViewModel: ObservableObject {
     var isRefreshing: Bool { state?.isRefreshing ?? false }
 
     func play(item: CloudLibraryItem, file: CloudLibraryFile) {
+        #if DEBUG
+        if isFixture { return }
+        #endif
         guard resolvingFileKey == nil else { return }
         resolvingFileKey = file.stableKey
         errorMessage = nil
@@ -98,6 +122,46 @@ final class CloudLibraryViewModel: ObservableObject {
         )
     }
 }
+
+#if DEBUG
+/// Pre-cut follow-ups GC: the Library's DEBUG cloud fixture (one provider, two items), for the
+/// filter bar's chip UI leg. Synthetic data only; never in a Release build.
+enum CloudLibraryDebugFixture {
+    /// `-debug.libraryCloudFixture YES`.
+    static var isOn: Bool { UserDefaults.standard.bool(forKey: "debug.libraryCloudFixture") }
+
+    static func state() -> CloudLibraryUiState {
+        let provider = DebridProvider(
+            id: "fixture-cloud",
+            displayName: "Fixture Cloud",
+            shortName: "FX",
+            visibleInUi: true,
+            authMethod: .apikey,
+            capabilities: []
+        )
+        let items = (1...2).map { n in
+            CloudLibraryItem(
+                providerId: provider.id,
+                providerName: provider.displayName,
+                id: "fx-cloud-\(n)",
+                type: .file,
+                name: "Fixture Cloud File \(n)",
+                status: nil,
+                sizeBytes: nil,
+                progressFraction: nil,
+                files: [CloudLibraryFile(id: "fx-cloud-\(n)-file", name: "Fixture Cloud File \(n).mkv", sizeBytes: nil,
+                                         mimeType: nil, playable: true, playbackUrl: nil)]
+            )
+        }
+        return CloudLibraryUiState(
+            isLoaded: true,
+            isEnabled: true,
+            isRefreshing: false,
+            providers: [CloudLibraryProviderState(provider: provider, isLoading: false, errorMessage: nil, items: items)]
+        )
+    }
+}
+#endif
 
 /// Identifiable wrapper so a multi-file item can drive a `.fullScreenCover(item:)` file picker.
 struct CloudFilePickerRoute: Identifiable {

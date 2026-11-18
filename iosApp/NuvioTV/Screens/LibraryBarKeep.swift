@@ -10,7 +10,8 @@ import Foundation
 /// Events and rules (review of ae4ff1047: one release rule, nothing to latch or race):
 /// - `picked(M)` (any row of menu M, All included): keep M. The model applies it before the derive
 ///   the pick causes, so M's button still exists when the closing picker hands focus back to it.
-/// - `focus(control)`: a bar control other than the kept menu releases it (the viewer moved on; the
+/// - `focus(control)`: a bar control other than the kept menu (the Saved and Debrid Cloud chips
+///   included, pre-cut follow-ups 2.2) releases it (the viewer moved on; the
 ///   menu may hide now, and focus is identity-based, so a control leaving to the left of the focused
 ///   one moves it but does not change which control holds focus). Focus on the kept menu keeps it.
 /// - `focus(nil)` (focus outside the bar) never releases: a picker opening, a picker closing and
@@ -40,7 +41,7 @@ nonisolated struct LibraryBarKeep: Equatable, Sendable {
         case .genre: return .genre
         case .year: return .year
         case .watch: return .show
-        case .list, .sort, .refresh, .clear: return nil
+        case .list, .sort, .refresh, .clear, .savedChip, .cloudChip: return nil
         }
     }
 

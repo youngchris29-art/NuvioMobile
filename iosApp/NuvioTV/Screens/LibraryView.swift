@@ -66,6 +66,14 @@ struct LibraryView: View {
                             savedContent
                         }
                     }
+                    // Pre-cut follow-ups 2.2: the one bar-focus observer, on the always-mounted pane,
+                    // so focus on the source chips is reported on the Cloud tab and in Saved's
+                    // non-grid states too (the filter row is absent there). It only reports; nothing
+                    // writes `barFocus` in response.
+                    .onChange(of: barFocus, initial: true) { _, focus in model.barFocusChanged(focus) }
+                    // The DEBUG probe moved here with the observer (every field kept). The bar's own
+                    // geometry readers stay on the row; without the row its fields keep their last values.
+                    .overlay(alignment: .topLeading) { barProbe }
                     // W5 probe: the pane's laid-out width inside the screen padding (writes only on change).
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
                         barGeometry.pane = Int($0.width.rounded())
@@ -334,10 +342,6 @@ struct LibraryView: View {
             barGeometry.row1 = Int($0.rounded())
             barGeometry.bar = Int($0.rounded())
         }
-        .overlay(alignment: .topLeading) { barProbe }
-        // Device pass (attempt 3): the menu the viewer is on stays drawn until focus leaves it
-        // (`LibraryBarKeep`, fed here and by the model's picks).
-        .onChange(of: barFocus, initial: true) { _, focus in model.barFocusChanged(focus) }
     }
 
     private var genreMenu: some View {
@@ -586,13 +590,19 @@ struct LibraryView: View {
 
     private var sourceChips: some View {
         HStack(spacing: Theme.Spacing.md) {
+            // Pre-cut follow-ups 2.2: the chips are bar controls, so focus on one releases a kept menu.
             FilterChip(title: String(localized: "Saved"), isActive: !showingCloud) { showingCloud = false }
+                .modifier(barControl(.savedChip))
             FilterChip(title: String(localized: "Debrid Cloud"), isActive: showingCloud) { showingCloud = true }
+                .modifier(barControl(.cloudChip))
         }
         // One focus section as wide as the screen: the focus engine only searches straight up, so
         // without it Up from the Sort pill (or anything right of these two chips) found nothing.
         .frame(maxWidth: .infinity, alignment: .leading)
         .focusSection()
+        // 2.3 (best-effort): entering the row lands on the active chip where tvOS honours this.
+        // Nothing corrects focus if it does not (decision GB(b)).
+        .defaultFocus($barFocus, showingCloud ? .cloudChip : .savedChip, priority: .userInitiated)
     }
 
     // MARK: - Debrid cloud content
@@ -647,6 +657,9 @@ struct LibraryView: View {
 /// and the DEBUG probe's `focus=` token and widths.
 nonisolated enum LibraryBarFocus: String, Hashable, CaseIterable, Sendable {
     case list, type, genre, year, watch, sort, refresh, clear
+    /// Pre-cut follow-ups 2.2: the Saved / Debrid Cloud source chips (no menu; focus on one
+    /// releases a kept menu).
+    case savedChip, cloudChip
 }
 
 /// W5: the filter bar's laid-out sizes for the DEBUG probe, whole points.

@@ -168,7 +168,9 @@ final class LibraryBarKeepTests: XCTestCase {
     /// The full table: every reachable state against every event.
     func testTheEventTable() {
         let states = reachable()
-        XCTAssertEqual(states.count, 5 * 9, "every kept menu (or none) with every focus")
+        // Derived (pre-cut follow-ups, r4 finding 5): every kept menu or none, with every focus or nil.
+        XCTAssertEqual(states.count, (Menu.allCases.count + 1) * (LibraryBarFocus.allCases.count + 1),
+                       "every kept menu (or none) with every focus")
         for s in states {
             for e in Self.events {
                 let n = s.applying(e)
@@ -250,6 +252,24 @@ final class LibraryBarKeepTests: XCTestCase {
         }
     }
 
+    /// Pre-cut follow-ups 2.2: either source chip releases any kept menu, from every reachable
+    /// state, and is no menu itself.
+    func testEitherChipReleasesAnyKeptMenu() {
+        for chip in [LibraryBarFocus.savedChip, .cloudChip] {
+            XCTAssertNil(Keep.menu(for: chip), "\(chip) is no menu")
+            for s in reachable() {
+                for m in Menu.allCases {
+                    let kept = s.applying(.picked(m))
+                    XCTAssertEqual(kept.menu, m)
+                    let moved = kept.applying(.focus(chip))
+                    XCTAssertNil(moved.menu, "\(s) pick \(m), focus \(chip)")
+                    XCTAssertEqual(moved.focus, chip)
+                }
+                XCTAssertNil(s.applying(.focus(chip)).menu, "\(s), focus \(chip)")
+            }
+        }
+    }
+
     // MARK: - Clear Filters focus
 
     /// Every combination of what draws after Clear Filters: Genre, Year, Show, Type, Sort in that
@@ -259,6 +279,8 @@ final class LibraryBarKeepTests: XCTestCase {
             let shown = Keep.Shown(type: mask & 1 != 0, genre: mask & 2 != 0, year: mask & 4 != 0, show: mask & 8 != 0, sort: mask & 16 != 0)
             let order: [(Bool, LibraryBarFocus)] = [(shown.genre, .genre), (shown.year, .year), (shown.show, .watch), (shown.type, .type), (shown.sort, .sort)]
             XCTAssertEqual(Keep.focusAfterClear(shown), order.first { $0.0 }?.1, "\(shown)")
+            XCTAssertFalse([LibraryBarFocus.savedChip, .cloudChip].contains { $0 == Keep.focusAfterClear(shown) },
+                           "Clear Filters never hands focus to a source chip: \(shown)")
         }
         XCTAssertEqual(Keep.focusAfterClear(.init(type: true, genre: false, year: false, show: false, sort: true)), .type)
         XCTAssertEqual(Keep.focusAfterClear(.init(type: false, genre: false, year: false, show: false, sort: true)), .sort)
@@ -267,5 +289,6 @@ final class LibraryBarKeepTests: XCTestCase {
     func testControlsAndMenusMapBothWays() {
         for m in Menu.allCases { XCTAssertEqual(Keep.menu(for: Keep.control(for: m)), m) }
         XCTAssertEqual(LibraryBarFocus.allCases.compactMap(Keep.menu(for:)).count, 4)
+        XCTAssertEqual(Menu.allCases.count, 4, "the menu count stays 4")
     }
 }

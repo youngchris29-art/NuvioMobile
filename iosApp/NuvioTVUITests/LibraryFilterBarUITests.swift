@@ -60,9 +60,10 @@ final class LibraryFilterBarUITests: XCTestCase {
     // MARK: - Launch
 
     private static func arguments(fixture: String = "provider", navigation: String = "tabs", countLine: String? = nil,
-                                  oneTitleList: Bool = false) -> [String] {
+                                  oneTitleList: Bool = false, cloudFixture: Bool = false) -> [String] {
         (countLine.map { ["-debug.libraryCountLine", $0] } ?? []) +
         (oneTitleList ? ["-debug.libraryOneTitleList", "YES"] : []) +
+        (cloudFixture ? ["-debug.libraryCloudFixture", "YES"] : []) +
         ["-debug.libraryFixture", fixture, "-debug.libraryBarGeometry", "YES",
          "-sidebar_style", navigation, "-rail_visibility", "always", "-discover_placement", "off",
          "-home_upcoming_row_enabled", "NO", "-inline_trailers_enabled", "NO",
@@ -801,5 +802,172 @@ final class LibraryFilterBarUITests: XCTestCase {
         }
         XCTAssertTrue(focusedControlVisible(app), after)
         note("clear-fallback-log", log.joined(separator: "\n"))
+    }
+
+    // MARK: - The source chips (pre-cut follow-ups 2.2 / 2.3)
+
+    // The DEBUG cloud fixture (`-debug.libraryCloudFixture YES`: one provider, two files) draws the
+    // Saved / Debrid Cloud chips. Landing on the active chip is best-effort (2.3, `.defaultFocus`):
+    // Up may land on either chip, and which one is recorded, never failed. The chips being bar
+    // controls that release a kept menu, and nothing rewriting focus, are invariant (2.2).
+    // Saved's empty, loading and failed states (cases e and g) are box rows: the Library fixture
+    // cannot launch in them.
+
+    private static let rowTokens: Set<String> = ["list", "type", "genre", "year", "watch", "sort", "clear"]
+    private static let chipTokens: Set<String> = ["savedChip", "cloudChip"]
+
+    private func cloudShown(_ app: XCUIApplication) -> Bool { app.staticTexts["Fixture Cloud"].exists }
+
+    /// Down (one settled press at a time) until focus is on the filter row.
+    private func enterFilterRow(_ app: XCUIApplication) throws {
+        for _ in 0..<8 where !Self.rowTokens.contains(barFocus(app)) {
+            press(app, .down)
+        }
+        settle(app)
+        guard Self.rowTokens.contains(barFocus(app)) else {
+            throw HarnessAbort("focus never reached the filter row — \(probe(app)) | \(focusedSummary(app))")
+        }
+    }
+
+    /// Picks Series in the Type menu, which keeps the Type menu; returns the probe with the keep verified.
+    private func keepType(_ app: XCUIApplication, step: String) -> String {
+        XCTAssertTrue(moveSettled(app, to: "type", .right) || moveSettled(app, to: "type", .left), probe(app))
+        XCTAssertTrue(pickRow(app, rowStarting("Series"), step: step))
+        XCTAssertTrue(poll(8) { value(app, "type") == "series" && value(app, "keep") == "type" }, "\(step): no keep — \(probe(app))")
+        let kept = settle(app)
+        XCTAssertEqual(Self.token(kept, "keep"), "type", "\(step): the keep must be verified before it is released — \(kept)")
+        return kept
+    }
+
+    /// Up (settled) onto the chip row; returns the chip focus landed on ("?" if none).
+    private func upToChips(_ app: XCUIApplication, tag: String) -> String {
+        press(app, .up)
+        let reached = poll(8) { Self.chipTokens.contains(barFocus(app)) }
+        let landed = settle(app)
+        note("\(tag)-landing", "Up landed on \(Self.token(landed, "focus") ?? "?") — \(landed) | \(focusedSummary(app))")
+        XCTAssertTrue(reached, "\(tag): Up must reach a chip — \(landed) | \(focusedSummary(app))")
+        return Self.token(landed, "focus") ?? "?"
+    }
+
+    /// (a) Saved tab: keep Type, then Up: a chip, and Type is released. (d) Up then Right ends on
+    /// Debrid Cloud (Left to Saved first when Up landed on Debrid Cloud).
+    func testUpFromTheRowLandsOnAChipAndReleasesTheKeep() throws {
+        let app = launch(Self.arguments(fixture: "provider", cloudFixture: true))
+        defer { app.terminate() }
+        try openLibrary(app, rail: false)
+        try enterFilterRow(app)
+        var log: [String] = ["row: \(settle(app))"]
+
+        // (a)
+        log.append("kept: \(keepType(app, step: "chips-a-keep"))")
+        let landedA = upToChips(app, tag: "chips-a")
+        let afterUp = settle(app)
+        log.append("a up (\(landedA)): \(afterUp)")
+        XCTAssertTrue(Self.chipTokens.contains(landedA), "(a) the probe must read a chip — \(afterUp)")
+        XCTAssertEqual(Self.token(afterUp, "keep"), "-", "(a) focus on a chip releases the kept Type menu — \(afterUp)")
+        if landedA != "savedChip" { log.append("(a) best-effort miss: Up landed on \(landedA), not the active chip") }
+        XCTAssertFalse(cloudShown(app), "moving focus selects nothing")
+
+        // (d)
+        try enterFilterRow(app)
+        let landedD = upToChips(app, tag: "chips-d")
+        log.append("d up: \(landedD)")
+        if landedD == "cloudChip" {
+            press(app, .left)
+            XCTAssertTrue(poll(8) { barFocus(app) == "savedChip" }, "(d) Left from Debrid Cloud reaches Saved — \(probe(app))")
+        }
+        press(app, .right)
+        XCTAssertTrue(poll(8) { barFocus(app) == "cloudChip" }, "(d) Right from Saved reaches Debrid Cloud — \(probe(app))")
+        let endD = settle(app)
+        log.append("d right: \(endD)")
+        XCTAssertEqual(Self.token(endD, "focus"), "cloudChip", "(d) Up then Right ends on Debrid Cloud — \(endD)")
+        shot("chips-d")
+        note("chips-ad-log", log.joined(separator: "\n"))
+    }
+
+    /// (b) A menu kept, then the move to Debrid Cloud and Select: the Cloud tab shows; back to Saved,
+    /// nothing is kept. The keep is this test's own, verified in the probe first.
+    func testMovingToCloudReleasesAKeptMenu() throws {
+        let app = launch(Self.arguments(fixture: "provider", cloudFixture: true))
+        defer { app.terminate() }
+        try openLibrary(app, rail: false)
+        try enterFilterRow(app)
+        var log: [String] = ["row: \(settle(app))"]
+        log.append("kept: \(keepType(app, step: "chips-b-keep"))")
+        let landed = upToChips(app, tag: "chips-b")
+        log.append("b up: \(landed)")
+        if landed != "cloudChip" {
+            press(app, .right)
+            XCTAssertTrue(poll(8) { barFocus(app) == "cloudChip" }, "(b) Right reaches Debrid Cloud — \(probe(app))")
+        }
+        let onCloud = settle(app)
+        log.append("b on cloud: \(onCloud)")
+        XCTAssertEqual(Self.token(onCloud, "keep"), "-", "(b) focus on Debrid Cloud releases the kept menu — \(onCloud)")
+        press(app, .select)
+        XCTAssertTrue(poll(8) { cloudShown(app) }, "(b) the Cloud tab must show — \(probe(app))")
+        shot("chips-b-cloud")
+        let cloud = settle(app)
+        log.append("b cloud tab: \(cloud)")
+        XCTAssertEqual(Self.token(cloud, "keep"), "-", cloud)
+        XCTAssertEqual(Self.token(cloud, "focus"), "cloudChip", "(b) nothing rewrites focus after Select — \(cloud)")
+
+        // Back to Saved: nothing is kept.
+        press(app, .left)
+        XCTAssertTrue(poll(8) { barFocus(app) == "savedChip" }, "(b) Left reaches Saved — \(probe(app))")
+        press(app, .select)
+        XCTAssertTrue(poll(8) { !cloudShown(app) }, "(b) the Saved tab must show — \(probe(app))")
+        let saved = settle(app)
+        log.append("b back to saved: \(saved)")
+        XCTAssertEqual(Self.token(saved, "keep"), "-", "(b) nothing is kept back on Saved — \(saved)")
+        XCTAssertEqual(Self.token(saved, "type"), "series", "a focus move drops no pick — \(saved)")
+        shot("chips-b-saved")
+        note("chips-b-log", log.joined(separator: "\n"))
+    }
+
+    /// (c) Cloud tab: Up from Refresh lands on a chip (best-effort: Debrid Cloud). (f) From Refresh,
+    /// onto Saved: the probe reads Saved and still does after a settle (no hop to Debrid Cloud).
+    func testCloudTabUpFromRefreshReadsAChipAndStays() throws {
+        let app = launch(Self.arguments(fixture: "provider", cloudFixture: true))
+        defer { app.terminate() }
+        try openLibrary(app, rail: false)
+        try enterFilterRow(app)
+        var log: [String] = ["row: \(settle(app))"]
+        let first = upToChips(app, tag: "chips-c-enter")
+        if first != "cloudChip" {
+            press(app, .right)
+            XCTAssertTrue(poll(8) { barFocus(app) == "cloudChip" }, probe(app))
+        }
+        press(app, .select)
+        XCTAssertTrue(poll(8) { cloudShown(app) }, "the Cloud tab must show — \(probe(app))")
+
+        // Down to the Cloud tab's Refresh (outside the bar: focus=-).
+        press(app, .down)
+        XCTAssertTrue(poll(8) { barFocus(app) == "-" }, "Down from the chips reaches the Cloud tab's Refresh — \(probe(app))")
+        log.append("c on refresh: \(settle(app)) | \(focusedSummary(app))")
+
+        // (c)
+        let landedC = upToChips(app, tag: "chips-c")
+        log.append("c up: \(landedC)")
+        XCTAssertTrue(Self.chipTokens.contains(landedC), "(c) the probe must read a chip — \(probe(app))")
+        if landedC != "cloudChip" { log.append("(c) best-effort miss: Up landed on \(landedC), not the active chip") }
+        XCTAssertTrue(cloudShown(app), "moving focus selects nothing")
+
+        // (f)
+        press(app, .down)
+        XCTAssertTrue(poll(8) { barFocus(app) == "-" }, "(f) back on Refresh — \(probe(app))")
+        let landedF = upToChips(app, tag: "chips-f")
+        log.append("f up: \(landedF)")
+        if landedF == "cloudChip" {
+            press(app, .left)
+        }
+        XCTAssertTrue(poll(8) { barFocus(app) == "savedChip" }, "(f) focus reaches Saved — \(probe(app))")
+        let onSaved = settle(app, quiet: 1.5)
+        let later = settle(app, quiet: 1.5)
+        log.append("f on saved: \(onSaved) | later: \(later)")
+        XCTAssertEqual(Self.token(onSaved, "focus"), "savedChip", onSaved)
+        XCTAssertEqual(Self.token(later, "focus"), "savedChip", "(f) nothing rewrites focus to Debrid Cloud — \(later)")
+        XCTAssertTrue(cloudShown(app), "(f) moving onto Saved selects nothing")
+        shot("chips-f")
+        note("chips-cf-log", log.joined(separator: "\n"))
     }
 }
