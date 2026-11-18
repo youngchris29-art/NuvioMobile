@@ -157,6 +157,9 @@ final class LibraryViewModel: ObservableObject {
     /// provider's sorter re-emits.
     private var providerOrderRanksKey: ProviderOrderKey?
     private var providerOrderFailed = false
+    /// Pre-cut follow-ups 2.1: the last derive's keep-dependent values as the rule alone gives
+    /// them (`LibraryBarResolver.Output.rule`), for `stop()` to publish when it releases the keep.
+    private var lastRuleBar: LibraryBarResolver.Rule?
 
     func start() {
         if fixture != .off {
@@ -211,6 +214,19 @@ final class LibraryViewModel: ObservableObject {
         // The screen is gone: no menu is under the viewer any more. The next derive (the flows'
         // first emissions after `start()`, or the fixture's restart derive) draws by the rule alone.
         keep(.contextChanged)
+        // Pre-cut follow-ups 2.1: the five values the keep reaches go back to the rule now, so a
+        // menu drawn only because it was kept is not drawn for a frame on re-entry (the next derive
+        // is normally the first watcher emission after `start()`). They come from the same last
+        // derive as the rest of the published bar. A main-actor republish scheduled before this
+        // call can still run after it; the keep is already released, so it is a no-keep derive and
+        // publishes its own no-keep rule values (not necessarily the ones published here).
+        if let rule = lastRuleBar {
+            update(\.showsType, rule.showsType)
+            update(\.showsGenre, rule.showsGenre)
+            update(\.showsYear, rule.showsYear)
+            update(\.showsShow, rule.showsShow)
+            update(\.visibleSmartFilters, rule.visibleSmartFilters)
+        }
         watchers.forEach { $0.cancel() }
         watchers.removeAll()
         providerOrderWatcher?.cancel()
@@ -564,6 +580,7 @@ final class LibraryViewModel: ObservableObject {
         update(\.showsGenre, bar.showsGenre)
         update(\.showsYear, bar.showsYear)
         update(\.showsShow, bar.showsShow)
+        lastRuleBar = bar.rule
 
         let shown = bar.shown.map { all[$0] }
         update(\.entries, shown)

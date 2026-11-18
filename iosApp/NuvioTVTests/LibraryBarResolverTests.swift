@@ -187,6 +187,41 @@ final class LibraryBarResolverTests: XCTestCase {
         XCTAssertTrue(picked.showsGenre)
     }
 
+    /// Pre-cut follow-ups 2.1: `rule` is the five keep-dependent outputs of the same resolve with
+    /// no kept menu, for every kept menu and none, over lists where a keep changes them.
+    func testTheRuleValuesAreTheNoKeepDerive() {
+        let one = [T(typeKey: "movie", genres: ["Horror"], year: "2022", state: fresh)]
+        let sameState = [
+            T(typeKey: "movie", genres: ["Drama"], year: "2001", state: watched),
+            T(typeKey: "movie", genres: ["Drama"], year: "2001", state: watched),
+        ]
+        let lists: [[T]] = [titles, one, sameState, []]
+        let requests: [R.Request] = [.init(), .init(type: "movie"), .init(smartFilters: [.watched]), .init(genre: "Drama", year: "2001")]
+        var keptDiffered = false
+        for list in lists {
+            for base in requests {
+                let plain = resolve(base, list)
+                let expected = R.Rule(
+                    showsType: plain.showsType,
+                    showsGenre: plain.showsGenre,
+                    showsYear: plain.showsYear,
+                    showsShow: plain.showsShow,
+                    visibleSmartFilters: plain.visibleSmartFilters
+                )
+                for kept in [nil] + R.Menu.allCases.map(Optional.some) {
+                    var request = base
+                    request.keepVisible = kept
+                    let out = resolve(request, list)
+                    XCTAssertEqual(out.rule, expected, "kept=\(kept.map(\.rawValue) ?? "-") request=\(base)")
+                    let published = R.Rule(showsType: out.showsType, showsGenre: out.showsGenre, showsYear: out.showsYear,
+                                           showsShow: out.showsShow, visibleSmartFilters: out.visibleSmartFilters)
+                    if published != out.rule { keptDiffered = true }
+                }
+            }
+        }
+        XCTAssertTrue(keptDiffered, "some keep changes the published values, so the rule is not trivially equal")
+    }
+
     func testShowsRule() {
         XCTAssertFalse(R.shows([], selected: nil, eligible: 0))
         XCTAssertFalse(R.shows([Facet(key: "a", count: 3)], selected: nil, eligible: 3))

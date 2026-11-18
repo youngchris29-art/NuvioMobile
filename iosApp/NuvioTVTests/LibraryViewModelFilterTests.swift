@@ -507,6 +507,74 @@ final class LibraryViewModelFilterTests: XCTestCase {
         XCTAssertEqual(names(m), ["Mob Psycho 100"])
     }
 
+    // MARK: - Pre-cut follow-ups 2.1: `stop()` publishes the rule's values
+
+    /// Nope alone (fx-7: Horror, one year, unwatched): no menu can split it, so each is drawn only
+    /// while kept.
+    private func oneTitleModel() -> LibraryViewModel {
+        let m = model(.provider)
+        m.replaceFixtureLibrary(snapshot(watchlist: fixtureItems.filter { $0.id == "fx-7" }, personal: nil, isLoading: false))
+        XCTAssertFalse(m.showsType || m.showsGenre || m.showsYear || m.showsShow, "one title: nothing to split")
+        return m
+    }
+
+    /// A library of a single type: All types keeps the Type menu; `stop()` hides it at once.
+    func testAKeptOnlyTypeMenuHidesAtStop() {
+        let m = model(.provider)
+        m.replaceFixtureLibrary(snapshot(watchlist: movies, personal: nil, isLoading: false))
+        XCTAssertFalse(m.showsType, "one type: the Type menu cannot split")
+        m.selectType(nil)
+        XCTAssertEqual(m.barKeep.menu, .type)
+        XCTAssertTrue(m.showsType, "drawn only because it is kept")
+        m.stop()
+        XCTAssertFalse(m.showsType, "the kept-only Type menu is not drawn after stop()")
+    }
+
+    func testAKeptOnlyGenreMenuHidesAtStop() {
+        let m = oneTitleModel()
+        m.selectGenre(nil)
+        XCTAssertEqual(m.barKeep.menu, .genre)
+        XCTAssertTrue(m.showsGenre)
+        m.stop()
+        XCTAssertFalse(m.showsGenre)
+    }
+
+    func testAKeptOnlyYearMenuHidesAtStop() {
+        let m = oneTitleModel()
+        m.selectYear(nil)
+        XCTAssertEqual(m.barKeep.menu, .year)
+        XCTAssertTrue(m.showsYear)
+        m.stop()
+        XCTAssertFalse(m.showsYear)
+    }
+
+    /// Every title shares one watch state, so Show has no splitting choice; kept through a choice
+    /// and then All, it is drawn only by the widened list.
+    func testAKeptOnlyShowMenuHidesAtStop() {
+        let m = oneTitleModel()
+        m.selectWatchChoice(.unwatched)
+        m.selectWatchChoice(.all)
+        XCTAssertEqual(m.barKeep.menu, .show)
+        XCTAssertTrue(m.showsShow)
+        XCTAssertFalse(m.visibleSmartFilters.isEmpty, "widened for the kept menu")
+        m.stop()
+        XCTAssertFalse(m.showsShow)
+        XCTAssertEqual(m.visibleSmartFilters, [], "the rule's list")
+    }
+
+    /// After `stop()`, a restart with no new library leaves the five values where `stop()` put them.
+    func testStartAfterStopChangesNothingMore() {
+        let m = oneTitleModel()
+        m.selectWatchChoice(.unwatched)
+        m.selectWatchChoice(.all)
+        m.stop()
+        let stopped = [m.showsType, m.showsGenre, m.showsYear, m.showsShow]
+        let stoppedSmart = m.visibleSmartFilters
+        m.start()
+        XCTAssertEqual([m.showsType, m.showsGenre, m.showsYear, m.showsShow], stopped)
+        XCTAssertEqual(m.visibleSmartFilters, stoppedSmart)
+    }
+
     /// Clear Filters on a list where every menu has one value: focus goes to Sort.
     func testClearFiltersFallsBackToSort() {
         let m = model(.provider)

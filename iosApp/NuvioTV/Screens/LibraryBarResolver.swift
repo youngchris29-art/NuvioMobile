@@ -114,6 +114,20 @@ nonisolated enum LibraryBarResolver {
         var shown: [Int]
         /// Remembered picks with no title here (not applied this time).
         var unavailable: Picks
+        /// Pre-cut follow-ups 2.1: the five keep-dependent values as the rule alone gives them
+        /// (`keepVisible` treated as nil: no OR, no widening), from this same call.
+        /// `LibraryViewModel.stop()` publishes them when it releases the kept menu.
+        var rule: Rule
+    }
+
+    /// The keep-dependent outputs without the keep: `showsType`, `showsGenre`, `showsYear`,
+    /// `showsShow` and `visibleSmartFilters`, as a `resolve` with `keepVisible: nil` gives them.
+    struct Rule: Equatable, Sendable {
+        var showsType: Bool
+        var showsGenre: Bool
+        var showsYear: Bool
+        var showsShow: Bool
+        var visibleSmartFilters: [SmartFilter]
     }
 
     /// The menu's type order (the shared projection's: movie, series, tv, show, anime, then the rest
@@ -195,12 +209,21 @@ nonisolated enum LibraryBarResolver {
 
         let showPool = titles.filter { passType($0) && passGenre($0) && passYear($0) }
         var visibleSmart = LibraryGridPolicy.visibleSmartFilters(states: showPool.map(\.state), active: smart)
+        // The rule's own list, before any widening for a kept Show menu (2.1).
+        let ruleSmart = visibleSmart
         // A kept Show menu with no splitting choice offers the choices some title passes (each
         // narrows nothing, as the one row of a kept Genre or Year menu does).
         if request.keepVisible == .show, visibleSmart.isEmpty {
             visibleSmart = SmartFilter.allCases.filter { f in showPool.contains { LibraryGridPolicy.passes($0.state, filters: [f]) } }
         }
         let keep = request.keepVisible
+        let rule = Rule(
+            showsType: shows(typeOptions, selected: type, eligible: typePool.count),
+            showsGenre: shows(genreOptions, selected: genre, eligible: genrePool.count),
+            showsYear: shows(yearOptions, selected: year, eligible: yearPool.count),
+            showsShow: !ruleSmart.isEmpty || !smart.isEmpty,
+            visibleSmartFilters: ruleSmart
+        )
 
         let shown = titles.indices.filter { i in
             let t = titles[i]
@@ -217,12 +240,13 @@ nonisolated enum LibraryBarResolver {
             genres: genreOptions,
             years: yearOptions,
             visibleSmartFilters: visibleSmart,
-            showsType: shows(typeOptions, selected: type, eligible: typePool.count) || (keep == .type && !typeOptions.isEmpty),
-            showsGenre: shows(genreOptions, selected: genre, eligible: genrePool.count) || (keep == .genre && !genreOptions.isEmpty),
-            showsYear: shows(yearOptions, selected: year, eligible: yearPool.count) || (keep == .year && !yearOptions.isEmpty),
+            showsType: rule.showsType || (keep == .type && !typeOptions.isEmpty),
+            showsGenre: rule.showsGenre || (keep == .genre && !genreOptions.isEmpty),
+            showsYear: rule.showsYear || (keep == .year && !yearOptions.isEmpty),
             showsShow: !visibleSmart.isEmpty || !smart.isEmpty,
             shown: shown,
-            unavailable: unavailable
+            unavailable: unavailable,
+            rule: rule
         )
     }
 
