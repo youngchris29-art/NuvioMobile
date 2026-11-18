@@ -139,10 +139,16 @@ class StreamSearchWorldTest {
         withContext(Dispatchers.Default) { withTimeout(10_000) { flow.first(settledAfterTheLastRefusal) } }
 
     @Test
+    fun theRetryLimitIsThree() {
+        // The limit is an owner-visible rule: a change must be deliberate, so this pins the literal.
+        assertEquals(3, STREAM_SEARCH_MAX_WORLD_RETRIES)
+    }
+
+    @Test
     fun thePickerRebuildsALoadAtMostThreeTimes() = runTest {
         StreamsRepository.load(type = "series", videoId = EPISODE, season = 1, episode = 1)
         val terminal = awaitTerminal(StreamsRepository.uiState)
-        assertEquals(STREAM_SEARCH_MAX_WORLD_RETRIES + 1, attempts(), "one attempt and three rebuilds, no fifth")
+        assertEquals(4, attempts(), "one attempt and three rebuilds, no fifth")
         assertNothingRan(terminal)
     }
 
@@ -150,7 +156,7 @@ class StreamSearchWorldTest {
     fun theInPlayerListRebuildsALoadAtMostThreeTimes() = runTest {
         PlayerStreamsRepository.loadEpisodeStreams(type = "series", videoId = EPISODE, season = 1, episode = 1)
         val terminal = awaitTerminal(PlayerStreamsRepository.episodeStreamsState)
-        assertEquals(STREAM_SEARCH_MAX_WORLD_RETRIES + 1, attempts(), "one attempt and three rebuilds, no fifth")
+        assertEquals(4, attempts(), "one attempt and three rebuilds, no fifth")
         assertNothingRan(terminal)
     }
 
@@ -160,7 +166,7 @@ class StreamSearchWorldTest {
         val candidates = withContext(Dispatchers.Default) {
             PlayerSourceFallbackCandidates.load("series", EPISODE, 1, 1, timeoutMs = 10_000)
         }
-        assertEquals(STREAM_SEARCH_MAX_WORLD_RETRIES + 1, attempts(), "one attempt and three rebuilds, no fifth")
+        assertEquals(4, attempts(), "one attempt and three rebuilds, no fifth")
         assertTrue(candidates.isEmpty(), "a refused request answers nothing")
         assertEquals(emptyList(), fetcher.addonFetches, "nothing is fetched for a refused request")
         assertEquals(0, store.startedCount, "no search ever started")
