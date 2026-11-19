@@ -193,37 +193,126 @@ nonisolated struct ClickPreviewLatch: Equatable, Sendable {
     var nextDeadline: Double? { active?.deadline }
 }
 
-// MARK: - Click landing target
+// MARK: - Click landing
 
-/// Where a Left/Right click lands, for its card (review r2 P2 #1). The cached position is stale
-/// while another seek is in flight: a relative click then lands relative to that seek's target, and
-/// when that target is unknown (mpv's percentage resume before the duration is known) so is the
-/// landing. The click then shows no card; the seek itself is still issued. A chapter jump is
-/// absolute, so its landing is known whatever the base.
-enum ClickLandingTarget {
-    enum Base: Equatable, Sendable {
-        case known(Double)
-        case unknown
+/// How an engine turns a Left/Right click into a landing point (review r3 P2 #1). The two engines
+/// differ at the end of the file, so the landing decision takes this as an input.
+nonisolated enum SeekLandingSemantics: Equatable, Sendable {
+    /// mpv: the click goes to mpv as `seek <delta> relative`, and mpv adds the delta to its own
+    /// playback time. While an earlier seek is still in flight that time is the earlier seek's
+    /// target clamped to [0, duration] (`mp_seek` stores the target in `last_seek_pts`;
+    /// `get_playback_time` clamps it, and never returns less than 0). A seek before 0 lands on the
+    /// start; a seek past the end runs into the end of the file (keep-open: the last frame), so
+    /// the upper bound is the duration itself.
+    case mpvRelative
+    /// Aether: the transport sends an absolute target and the engine clamps it to
+    /// [0, duration - 0.5] (`AetherSeekPlan.clamp`: a seek onto the last frame would end the file).
+    case aetherAbsolute
+
+    /// How far before the end the engine stops a click.
+    var endMarginSec: Double {
+        switch self {
+        case .mpvRelative: return 0
+        case .aetherAbsolute: return 0.5
+        }
+    }
+}
+
+/// The one decision for where a Left/Right click lands (review r2 P2 #1, r3 P2 #1). It returns,
+/// from one clamped value, both what the engine records as the click's in-flight target (the base
+/// the next click starts from) and where the card goes, so the two can never disagree and the
+/// recorded target never leaves the file. Nil for both when the landing cannot be known: a
+/// relative click while a seek with an unknown target is in flight (mpv's percentage resume), or
+/// a forward click with no known duration (the file may end first). The seek itself is still
+/// issued then, and the engine resolves it on its own.
+enum ClickLanding {
+    /// The seek the skip planner holds in flight when the click is pressed.
+    enum InFlight: Equatable, Sendable {
+        case none
+        case target(Double)
+        case unknownTarget
+
+        init(hasSeekInFlight: Bool, targetSec: Double?) {
+            if !hasSeekInFlight {
+                self = .none
+            } else if let targetSec, targetSec.isFinite {
+                self = .target(targetSec)
+            } else {
+                self = .unknownTarget
+            }
+        }
     }
 
-    /// The position a relative click starts from: the in-flight seek's target while one is in
-    /// flight (`.unknown` when that target is), else the cached position.
-    static func base(seekInFlight: Bool, inFlightTargetSec: Double?, positionSec: Double) -> Base {
-        guard seekInFlight else { return .known(positionSec) }
-        guard let target = inFlightTargetSec else { return .unknown }
-        return .known(target)
+    struct Outcome: Equatable, Sendable {
+        /// The in-flight target the engine records for this click's seek; nil = unknown.
+        let recordedTargetSec: Double?
+        /// Where the card goes; nil = no card. Always equal to `recordedTargetSec`.
+        let cardTargetSec: Double?
+        /// The position the click starts from (the planner's `fromSec`); nil = unknown.
+        let fromSec: Double?
+
+        fileprivate init(landingSec: Double?, fromSec: Double?) {
+            recordedTargetSec = landingSec
+            cardTargetSec = landingSec
+            self.fromSec = fromSec
+        }
     }
 
-    /// The card's target for `action` from `base`, clamped like the seek itself (`TransportPreview.clamp`
-    /// for a relative click, `PlayerChapters.clampedSeek` for a chapter jump); nil = no card.
-    static func cardTargetSec(_ action: EdgeClickAction, base: Base, durationSec: Double) -> Double? {
+    /// Where the engine stands for the next seek: the cached position when nothing is in flight,
+    /// else the in-flight target clamped the way mpv clamps its playback time during a seek
+    /// ([0, duration], or >= 0 with no known duration); nil when that target is unknown or the
+    /// numbers are not finite.
+    static func base(positionSec: Double, inFlight: InFlight, durationSec: Double) -> Double? {
+        switch inFlight {
+        case .none:
+            return positionSec.isFinite ? positionSec : nil
+        case .unknownTarget:
+            return nil
+        case .target(let t):
+            guard t.isFinite else { return nil }
+            return durationKnown(durationSec) ? min(max(t, 0), durationSec) : max(t, 0)
+        }
+    }
+
+    /// The starting point for gestures that need a number even when the base is unknown: a hold
+    /// or scrub origin and the chapter choice (their seeks are absolute, so an unknown base only
+    /// moves where the preview starts), a chapter seek's `fromSec`. The base, else the cached
+    /// position.
+    static func originSec(positionSec: Double, inFlight: InFlight, durationSec: Double) -> Double {
+        base(positionSec: positionSec, inFlight: inFlight, durationSec: durationSec)
+            ?? (positionSec.isFinite ? max(positionSec, 0) : 0)
+    }
+
+    /// The landing of `action` pressed now. A relative click lands at base + delta; a chapter jump
+    /// at the chapter start (`PlayerChapters.clampedSeek`, known whatever the base: it is a point
+    /// in the file). Then the engine's own clamp, once, here.
+    static func decide(_ action: EdgeClickAction, positionSec: Double, inFlight: InFlight,
+                       durationSec: Double, semantics: SeekLandingSemantics) -> Outcome {
+        let from = base(positionSec: positionSec, inFlight: inFlight, durationSec: durationSec)
+        let raw: Double
         switch action {
         case .absolute(let sec):
-            return PlayerChapters.clampedSeek(sec, durationSec: durationSec)
+            guard sec.isFinite else { return Outcome(landingSec: nil, fromSec: from) }
+            raw = PlayerChapters.clampedSeek(sec, durationSec: durationSec)
         case .relative(let delta):
-            guard case .known(let from) = base else { return nil }
-            return TransportPreview.clamp(from + delta, durationSec: durationSec)
+            guard let from, delta.isFinite else { return Outcome(landingSec: nil, fromSec: from) }
+            // A forward click with no known end may run past it: where it stops is unknown.
+            if delta > 0, !durationKnown(durationSec) { return Outcome(landingSec: nil, fromSec: from) }
+            raw = from + delta
         }
+        return Outcome(landingSec: clamp(raw, durationSec: durationSec, semantics: semantics), fromSec: from)
+    }
+
+    /// [0, duration - the engine's end margin] once the duration is known, else >= 0. A file
+    /// shorter than the margin pins to 0: `AetherSeekPlan.clamp` would not bound it at all, and
+    /// re-clamping this value there leaves it as it is, so the engine still sends it.
+    static func clamp(_ sec: Double, durationSec: Double, semantics: SeekLandingSemantics) -> Double {
+        guard durationKnown(durationSec) else { return max(sec, 0) }
+        return min(max(sec, 0), max(durationSec - semantics.endMarginSec, 0))
+    }
+
+    private static func durationKnown(_ durationSec: Double) -> Bool {
+        durationSec.isFinite && durationSec > 0
     }
 }
 

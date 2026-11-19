@@ -3891,6 +3891,8 @@ extension MPVTVPlayerViewController: PlayerTransportEngine {
 
     var hasSeekInFlight: Bool { skipPlanner.seekInFlight != nil }
     var seekInFlightTargetSec: Double? { skipPlanner.seekInFlight?.targetSec }
+    /// A click goes to mpv as a relative seek (`issueSeek` above).
+    var seekLandingSemantics: SeekLandingSemantics { .mpvRelative }
 
     func noteTransportInput(now: TimeInterval) -> Bool {
         skipPlanner.noteInput(now: now)

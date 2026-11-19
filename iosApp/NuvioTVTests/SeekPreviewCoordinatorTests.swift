@@ -463,15 +463,15 @@ final class SeekPreviewCoordinatorTests: XCTestCase {
     /// instead of `clickIssued`: no card at the stale position, and an earlier click's card goes.
     func testClickDuringAnUnknownTargetResumeShowsNoCard() async {
         coordinator.setSource(capability: Self.both, generation: 0)
-        let idleBase = ClickLandingTarget.base(seekInFlight: false, inFlightTargetSec: nil, positionSec: 100)
-        let first = ClickLandingTarget.cardTargetSec(.relative(10), base: idleBase, durationSec: 0)
+        let first = ClickLanding.decide(.relative(10), positionSec: 100, inFlight: .none, durationSec: 1000,
+                                        semantics: .mpvRelative).cardTargetSec
         XCTAssertEqual(first, 110)
         coordinator.clickIssued(targetSec: first!, generation: 5)
         XCTAssertEqual(render.kind, .landing)
 
         // The resume (generation 6, unknown target) is now in flight; the cached position is stale.
-        let resumeBase = ClickLandingTarget.base(seekInFlight: true, inFlightTargetSec: nil, positionSec: 10)
-        XCTAssertNil(ClickLandingTarget.cardTargetSec(.relative(10), base: resumeBase, durationSec: 0))
+        XCTAssertNil(ClickLanding.decide(.relative(10), positionSec: 10, inFlight: .unknownTarget, durationSec: 0,
+                                         semantics: .mpvRelative).cardTargetSec)
         coordinator.dismissClick()                     // what edgeClick does for a nil card target
         XCTAssertEqual(render.kind, .none)
         XCTAssertEqual(render.content, .none)

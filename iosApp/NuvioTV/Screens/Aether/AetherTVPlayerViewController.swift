@@ -859,7 +859,9 @@ final class AetherTVPlayerViewController: UIViewController {
                                                  durationSec: transportDurationSec)
         else { return seekGeneration }
         let now = ProcessInfo.processInfo.systemUptime
-        if planner { skipPlanner.beginSeek(kind: kind, targetSec: targetSec ?? target, fromSec: fromSec, now: now) }
+        // The planner records the target actually sent (clamped into the file), never the raw
+        // request: the next click starts from it (review r3 P2 #1).
+        if planner { skipPlanner.beginSeek(kind: kind, targetSec: target, fromSec: fromSec, now: now) }
         seekGeneration += 1
         let generation = seekGeneration
         let exact = AetherSeekPlan.isExact(mode)
@@ -1283,6 +1285,8 @@ extension AetherTVPlayerViewController: PlayerTransportEngine {
 
     var hasSeekInFlight: Bool { skipPlanner.seekInFlight != nil }
     var seekInFlightTargetSec: Double? { skipPlanner.seekInFlight?.targetSec }
+    /// The transport sends absolute targets, clamped by `AetherSeekPlan.clamp`.
+    var seekLandingSemantics: SeekLandingSemantics { .aetherAbsolute }
 
     func noteTransportInput(now: TimeInterval) -> Bool {
         skipPlanner.noteInput(now: now)

@@ -21,9 +21,13 @@ enum AetherSeekPlan {
         }
     }
 
-    /// The absolute target for a transport seek. A relative click starts where a seek in flight was
-    /// going (the transport's own base rule), else at the playhead; an absolute mode uses `targetSec`.
-    /// Clamped to the file (`clamp`). nil when nothing finite can be computed.
+    /// The absolute target for a transport seek. A relative click normally arrives with the landing
+    /// `ClickLanding.decide` worked out as `targetSec`, which this only re-clamps (a no-op: the
+    /// decision already used `SeekLandingSemantics.aetherAbsolute`'s margin). Only when the transport
+    /// could not know the landing (a forward click with no known duration) does the engine resolve
+    /// it here, from where the seek in flight was going, else the playhead, like mpv resolves a
+    /// relative seek against its own position. An absolute mode uses `targetSec`. Clamped to the
+    /// file (`clamp`). nil when nothing finite can be computed.
     static func target(mode: TransportSeekMode, targetSec: Double?, positionSec: Double,
                        inFlightTargetSec: Double?, durationSec: Double) -> Double? {
         let raw: Double?

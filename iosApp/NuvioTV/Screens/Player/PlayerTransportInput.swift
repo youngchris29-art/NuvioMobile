@@ -44,6 +44,8 @@ protocol PlayerTransportEngine: AnyObject {
     var hasSeekInFlight: Bool { get }
     /// That seek's target, nil when none is in flight or its target is unknown.
     var seekInFlightTargetSec: Double? { get }
+    /// How this engine lands a Left/Right click (`ClickLanding.decide`).
+    var seekLandingSemantics: SeekLandingSemantics { get }
     /// `SkipSegmentPlanner.noteInput`: true when the press revealed an auto-hidden chip.
     func noteTransportInput(now: TimeInterval) -> Bool
     /// Re-evaluates the skip chip from the cached position (a press revealed it).
@@ -760,7 +762,7 @@ final class PlayerTransportInput: NSObject, UIGestureRecognizerDelegate {
         // Once per hold (idle → hold), never per tick or per direction change.
         if dir < 0, case .idle = transport.mode { state.upNextCancel?() }
         guard let engine else { return }
-        let base = engine.seekInFlightTargetSec ?? engine.transportPositionSec   // seekBy's rule
+        let base = clickOrigin(engine)
         holdStartUptime = ProcessInfo.processInfo.systemUptime
         transport.paused = engine.transportIsPaused        // a paused hold steps, never scans
         // Chapter mode (C8): the click acts on release, so a hold steps from the origin, no jump first.
@@ -907,7 +909,7 @@ final class PlayerTransportInput: NSObject, UIGestureRecognizerDelegate {
             state.transport.focusedPill = nil
             state.transport.focusedInfoPill = nil
             guard let engine else { return }
-            let base = engine.seekInFlightTargetSec ?? engine.transportPositionSec   // beginHold's rule
+            let base = clickOrigin(engine)
             #if DEBUG
             NSLog("[Scrub] begin base=%.2f thr=%.0f curve=%@", base,
                   ScrubGestureArbiter.horizontalThreshold(scrubContext()), scrubCurve.rawValue)
@@ -1172,20 +1174,29 @@ final class PlayerTransportInput: NSObject, UIGestureRecognizerDelegate {
         flashControls()
     }
 
-    /// A relative arrow seek from `base` (`ClickLandingTarget.base`; `.unknown` lets mpv's relative
-    /// seek start from wherever the in-flight seek lands). Returns the generation it issued; nil
-    /// when nothing was issued.
-    private func seekBy(_ seconds: Double, base: ClickLandingTarget.Base) -> Int? {
+    /// What the skip planner holds in flight, for `ClickLanding`.
+    private func clickInFlight(_ engine: PlayerTransportEngine) -> ClickLanding.InFlight {
+        ClickLanding.InFlight(hasSeekInFlight: engine.hasSeekInFlight, targetSec: engine.seekInFlightTargetSec)
+    }
+
+    /// Where a hold, a scrub or the chapter choice starts (`ClickLanding.originSec`).
+    private func clickOrigin(_ engine: PlayerTransportEngine) -> Double {
+        ClickLanding.originSec(positionSec: engine.transportPositionSec, inFlight: clickInFlight(engine),
+                               durationSec: engine.transportDurationSec)
+    }
+
+    /// A relative arrow seek whose landing `ClickLanding.decide` already worked out. Returns the
+    /// generation it issued; nil when nothing was issued.
+    private func seekBy(_ seconds: Double, landing: ClickLanding.Outcome) -> Int? {
         guard let engine, engine.canTransport else { return nil }
         // Arrow seeks are deliberate: a segment they start or land in is never auto-skipped. The
-        // cached position is stale while another seek is in flight — mpv's relative seek then
-        // starts from that seek's target, so the estimate does too (nil = unknown). The planner
-        // marks the position mpv actually lands on, reported by `drainEvents`.
-        let from: Double?
-        if case .known(let sec) = base { from = sec } else { from = nil }
+        // planner records the decided landing (clamped into the file, review r3 P2 #1) as this
+        // seek's target, so the next click starts where mpv will really be; nil = unknown, and the
+        // engine resolves the relative seek itself. The planner marks the position the engine
+        // actually lands on, reported by `drainEvents`.
         let before = engine.seekGeneration
         let expected = before + 1                      // issueSeek's generation for this seek
-        let generation = engine.issueSeek(kind: .user, targetSec: from.map { $0 + seconds }, fromSec: from,
+        let generation = engine.issueSeek(kind: .user, targetSec: landing.recordedTargetSec, fromSec: landing.fromSec,
                                           mode: .relative(deltaSec: seconds), planner: true,
                                           onRejected: { [weak self] in self?.preview.seekRejected(generation: expected) })
         return generation == before ? nil : generation
@@ -1193,28 +1204,28 @@ final class PlayerTransportInput: NSObject, UIGestureRecognizerDelegate {
 
     /// One Left/Right click (P1's `.immediateSeek`): ±10 s, or in chapter mode a chapter jump. The
     /// card shows where the seek lands (GitHub #33): from press-down in Step mode, from the release
-    /// for a chapter or scan-armed click. When that landing is unknown (a relative click while a
-    /// seek with an unknown target is in flight, review r2 P2 #1) the seek still goes but no card
-    /// shows, and an earlier click's card goes: it no longer describes where playback goes.
+    /// for a chapter or scan-armed click. When that landing is unknown (`ClickLanding.decide`
+    /// returns no card) the seek still goes but no card shows, and an earlier click's card goes:
+    /// it no longer describes where playback goes.
     private func edgeClick(_ d: Double) {
         guard let engine else { return }
-        let base = ClickLandingTarget.base(seekInFlight: engine.hasSeekInFlight,
-                                           inFlightTargetSec: engine.seekInFlightTargetSec,
-                                           positionSec: engine.transportPositionSec)
-        // The chapter choice needs a number: with an unknown base it uses the cached position, as
-        // before; only the card depends on the base being known.
-        let chapterBase: Double
-        if case .known(let sec) = base { chapterBase = sec } else { chapterBase = engine.transportPositionSec }
-        let action = PlayerChapters.edgeClick(mode: edgeClickMode, direction: d < 0 ? -1 : 1, baseSec: chapterBase,
+        let inFlight = clickInFlight(engine)
+        let action = PlayerChapters.edgeClick(mode: edgeClickMode, direction: d < 0 ? -1 : 1,
+                                              baseSec: clickOrigin(engine),
                                               chapters: state.transport.chapters, skipSec: abs(d))
-        let generation: Int?
+        let issued: (generation: Int, cardTargetSec: Double?)?
         switch action {
-        case .relative(let r): generation = seekBy(r, base: base)
-        case .absolute(let t): generation = chapterSeek(t)?.generation
+        case .relative(let r):
+            let landing = ClickLanding.decide(action, positionSec: engine.transportPositionSec, inFlight: inFlight,
+                                              durationSec: engine.transportDurationSec,
+                                              semantics: engine.seekLandingSemantics)
+            issued = seekBy(r, landing: landing).map { ($0, landing.cardTargetSec) }
+        case .absolute(let t):
+            issued = chapterSeek(t).map { ($0.generation, $0.targetSec) }
         }
-        guard let generation else { return }
-        if let target = ClickLandingTarget.cardTargetSec(action, base: base, durationSec: engine.transportDurationSec) {
-            preview.clickIssued(targetSec: target, generation: generation)
+        guard let issued else { return }
+        if let target = issued.cardTargetSec {
+            preview.clickIssued(targetSec: target, generation: issued.generation)
         } else {
             preview.dismissClick()
         }
@@ -1232,9 +1243,13 @@ final class PlayerTransportInput: NSObject, UIGestureRecognizerDelegate {
     @discardableResult
     private func chapterSeek(_ chapterSec: Double) -> (targetSec: Double, generation: Int)? {
         guard let engine, engine.canTransport else { return nil }
-        // Backstop for a list read before the duration was known (review r1 P2 #2).
-        let sec = PlayerChapters.clampedSeek(chapterSec, durationSec: engine.transportDurationSec)
-        let base = engine.seekInFlightTargetSec ?? engine.transportPositionSec
+        // Backstop for a list read before the duration was known (review r1 P2 #2): the target is
+        // `ClickLanding`'s, the same value a chapter click's card shows.
+        let landing = ClickLanding.decide(.absolute(chapterSec), positionSec: engine.transportPositionSec,
+                                          inFlight: clickInFlight(engine), durationSec: engine.transportDurationSec,
+                                          semantics: engine.seekLandingSemantics)
+        guard let sec = landing.recordedTargetSec else { return nil }
+        let base = clickOrigin(engine)
         if sec < base { state.upNextCancel?() }
         // A chapter seek supersedes a held commit (review r1 P3 #7): its pending exact stage must
         // not pull the playhead back to the old target, and its preview hands back now, not when
