@@ -207,8 +207,15 @@ final class MPVTVPlayerViewController: UIViewController {
     /// Where the scrub card's frames come from (the seek-preview store); nil = time only.
     var seekPreviewSource: SeekPreviewSource?
     // Seek preview harvest (P2-B): frames from the playing decode, one per ~10 s of playback.
-    /// Held strongly here; created in `viewDidLoad`, released in `destroyPlayer`.
+    /// Held strongly here; created in `viewDidLoad`, replaced on a live reconnect (review r2-3),
+    /// released in `destroyPlayer`.
     private var previewStore: SeekPreviewStore?
+    /// The store's stream key, kept for a reconnect's fresh store.
+    private var previewStoreKey = ""
+    /// GitHub #33: what the store can fill for this playback (one decision for the harvest, the
+    /// decoder and the card), and the source generation the transport's coordinator fences on.
+    private var previewCapability: SeekPreviewCapability = .none
+    private var previewSourceGeneration = 0
     /// Main only. Interval from `debug.harvestIntervalSec`, read in `viewDidLoad`.
     private var harvest = HarvestScheduler(intervalSec: 10)
     /// `eventQueue` only: nil = untried; false = this mpv rejected the format argument, call
@@ -539,12 +546,12 @@ final class MPVTVPlayerViewController: UIViewController {
                                      url: context.url.absoluteString, label: context.title)
             : context.streamKey
         seekPreviewMode = SeekPreviewMode.current()
-        let caps = SeekPreviewStore.caps(for: seekPreviewMode)
-        let store = SeekPreviewStore(streamKey: previewKey, maxEntries: caps.maxEntries, maxBytes: caps.maxBytes)
+        previewStoreKey = previewKey
+        let store = makePreviewStore()
         previewStore = store
         seekPreviewSource = store
-        harvest = HarvestScheduler(intervalSec: HarvestScheduler.interval(
-            fromSetting: UserDefaults.standard.integer(forKey: "debug.harvestIntervalSec")))
+        let harvestSetting = HarvestScheduler.interval(
+            fromSetting: UserDefaults.standard.integer(forKey: "debug.harvestIntervalSec"))
         harvestScreenshotSW = HarvestScreenshotPath.softwareEnabled()
         #if DEBUG
         harvestSynthetic = UserDefaults.standard.bool(forKey: "debug.harvestSynthetic")
@@ -559,8 +566,8 @@ final class MPVTVPlayerViewController: UIViewController {
         if harvestSentinel.checkAtLaunch() {
             print("[Harvest] disabled: previous capture did not return")
         }
-        if harvestSentinel.isDisabled, !harvestSynthetic {
-            harvest = HarvestScheduler(intervalSec: 0)
+        let sentinelDisabled = harvestSentinel.isDisabled
+        if sentinelDisabled, !harvestSynthetic {
             harvestCrashOff = true
             state.previewStoreSummary = String(localized: "Off after a crash in an earlier playback")
         }
@@ -568,19 +575,26 @@ final class MPVTVPlayerViewController: UIViewController {
         // `screenshot-raw` aborts the app on the simulator: libplacebo's texture download asks
         // MoltenVK for a host-imported buffer and MTLSimDriver traps in `xpc_shmem_create`
         // (EXC_BREAKPOINT, `_xpc_api_misuse`). Harvest only with the synthetic DEBUG source here.
+        let isSimulator = true
+        #if DEBUG
         if !harvestSynthetic {
-            harvest = HarvestScheduler(intervalSec: 0)
-            #if DEBUG
             NSLog("[Harvest] off on the simulator (screenshot-raw traps in MTLSimDriver); -debug.harvestSynthetic YES to test the plumbing")
-            #endif
         }
         #endif
-        // Seek Preview Frames (P3). Off beats everything above, the DEBUG synthetic harvest
-        // included (critique C22). Decode adds the keyframe thumbnailer beside the harvest.
-        if !seekPreviewMode.allowsHarvest { harvest = HarvestScheduler(intervalSec: 0) }
-        thumbs = ThumbScheduler(enabled: seekPreviewMode.allowsDecode)
-        // BUG-181: a placeholder card only when something can fill the store.
-        state.transport.previewCardEnabled = harvest.intervalSec > 0 || seekPreviewMode.allowsDecode
+        #else
+        let isSimulator = false
+        #endif
+        // GitHub #33: the interval is resolved once (the synthetic source bypasses the crash guard
+        // and the simulator), then the mode decides the capability: Off beats everything, the
+        // DEBUG synthetic harvest included (critique C22), and Decode still fills unwatched ground
+        // when the real harvest is off. The harvest, the decoder and the card all follow it.
+        let harvestInterval = SeekPreviewHarvestResolution.effectiveIntervalSec(
+            setting: harvestSetting, sentinelDisabled: sentinelDisabled, synthetic: harvestSynthetic,
+            isSimulator: isSimulator)
+        previewCapability = .mpv(mode: seekPreviewMode, effectiveHarvestIntervalSec: harvestInterval)
+        harvest = HarvestScheduler(intervalSec: previewCapability.fillsWatched ? harvestInterval : 0)
+        thumbs = ThumbScheduler(enabled: previewCapability.fillsUnwatched)
+        transportInput.setPreviewSource(capability: previewCapability, generation: previewSourceGeneration)
         #if DEBUG
         rebuildPreviewSummary()   // the DEBUG row exists from the start (Off mode has no store events)
         #endif
@@ -2499,13 +2513,13 @@ final class MPVTVPlayerViewController: UIViewController {
     /// Main. Grabs the current decoded frame on `eventQueue` (`screenshot-raw`, the heaviest mpv
     /// call in this file), then scales, encodes and stores it on a utility queue.
     private func startHarvest() {
-        guard previewStore != nil else { return }
+        guard let store = previewStore else { return }
         harvest.noteStarted()
         eventQueue.async { [weak self] in
             guard let self else { return }
             guard self.mpv != nil else {
                 // Strong hop to main (critique C13): this block's release is never the last one.
-                DispatchQueue.main.async { self.harvestCaptured(nil, at: .nan, tookMs: 0) }
+                DispatchQueue.main.async { self.harvestCaptured(nil, at: .nan, tookMs: 0, into: store) }
                 return
             }
             let t0 = DispatchTime.now().uptimeNanoseconds
@@ -2522,7 +2536,7 @@ final class MPVTVPlayerViewController: UIViewController {
             #endif
             // Strong hop to main (critique C13, the `refreshBufferedAsync` shape): `deinit` can
             // never run on `eventQueue`.
-            DispatchQueue.main.async { self.harvestCaptured(capture, at: sec, tookMs: tookMs) }
+            DispatchQueue.main.async { self.harvestCaptured(capture, at: sec, tookMs: tookMs, into: store) }
         }
     }
 
@@ -2616,21 +2630,28 @@ final class MPVTVPlayerViewController: UIViewController {
 
     /// Main. The mpv side is done: free the scheduler, then scale + encode + insert on a utility
     /// queue that carries only the frame bytes, the store and the (main-actor) state object.
-    private func harvestCaptured(_ capture: MPVHarvestCapture?, at sec: Double, tookMs: Double) {
+    /// `store`: the one the capture started with; a live reconnect may have replaced it since, and
+    /// then the insert lands in the discarded store and reaches nothing (review r2-3).
+    private func harvestCaptured(_ capture: MPVHarvestCapture?, at sec: Double, tookMs: Double,
+                                 into store: SeekPreviewStore) {
         if harvest.noteFinished(tookMs: capture == nil ? nil : tookMs) {
             #if DEBUG
             NSLog("%@", String(format: "[Harvest] slow (%.1fms > %.0fms): interval now %.0fs for this file",
                                tookMs, HarvestScheduler.slowHarvestMs, harvest.intervalSec))
             #endif
         }
-        guard let capture, sec.isFinite, let store = previewStore else { return }
+        guard let capture, sec.isFinite, previewStore === store else { return }
         // Built on main (the controller is alive here); the utility work holds this closure.
         let publish: @MainActor @Sendable (SeekPreviewInsertResult) -> Void = { [weak self] result in
-            guard let self else { return }
+            guard let self, self.previewStore === store else { return }
             self.applyStoreSnapshot(result.snapshot)
             #if DEBUG
             NSLog("%@", "[Harvest] stored n=\(result.snapshot.count) bytes=\(result.snapshot.bytes) outcome=\(result.outcome.rawValue) rss=\(ProcessMemory.footprintMB())")
             #endif
+            // GitHub #33 (best-effort): a stationary card near this frame turns into a picture.
+            if result.outcome == .stored || result.outcome == .replaced {
+                self.transportInput.previewSourceContentChanged(atSec: sec, toleranceSec: result.snapshot.tolerance)
+            }
         }
         guard let thumb = capture.thumb else {
             #if DEBUG
@@ -2734,7 +2755,7 @@ final class MPVTVPlayerViewController: UIViewController {
         if thumbs.stopped != nil, thumbnailer != nil {
             closeThumbnailer()
         } else if let t = thumbnailer, thumbOpened, thumbReleaseWork == nil,
-                  thumbs.idleCloseWanted(now: inputs.now, scrubbing: transportInput.isScrubbing,
+                  thumbs.idleCloseWanted(now: inputs.now, previewActive: transportInput.previewActive,
                                          requestLeftOpen: t.lastRequestLeftOpen) {
             // Review r1 P1, r2 P2 #1: the pre-warm stopped and nothing is pending: drop the
             // connection now if the host may still be sending, else after a minute with no scrub.
@@ -2768,14 +2789,15 @@ final class MPVTVPlayerViewController: UIViewController {
             cacheWait: snap.cacheWait, cacheSec: cacheHealthSec, cacheTrendSec: cacheTrend.trendSec(now: now),
             cacheReachesEnd: cacheHealthEofCached
                 || ThumbScheduler.cacheReachesEnd(positionSec: position, cacheSec: cacheHealthSec, durationSec: snap.duration),
-            cacheFill: cacheHealthFill, seekInFlight: skipPlanner.seekInFlight != nil, scrubbing: transportInput.isScrubbing,
+            cacheFill: cacheHealthFill, seekInFlight: skipPlanner.seekInFlight != nil,
+            previewActive: transportInput.previewActive,
             recentInput: now - transportInput.lastClickUptime < HarvestScheduler.recentInputSec, harvestInFlight: harvest.inFlight,
             store: storeMirror, bytesRead: thumbBytesCharged, byteBudget: thumbByteBudget,
             scrubCeiling: ThumbScheduler.scrubCeiling(budget: thumbByteBudget), opened: thumbOpened,
             overlayUp: playerOverlayUp)
     }
 
-    /// A scrub lookup missed (or landed more than 5 s off): ask for the keyframe at `target`
+    /// A preview lookup missed (or landed more than 5 s off): ask for the keyframe at `target`
     /// after the 50 ms debounce, and start the open now if this is the first ask.
     private func noteThumbScrubMiss(target: Double) {
         guard seekPreviewMode.allowsDecode else { return }
@@ -2859,17 +2881,20 @@ final class MPVTVPlayerViewController: UIViewController {
             case .frame(let image, let kf, let took, let dec, let tm, let bytes):
                 let inserted = await store.insert(image, at: kf, origin: .decode)
                 guard self.thumbnailer === t else { return }
-                self.applyStoreSnapshot(inserted.snapshot)
+                // A live reconnect replaced the store meanwhile: this frame belongs to the old
+                // timeline and reaches nothing (review r2-3).
+                let current = self.previewStore === store
+                if current { self.applyStoreSnapshot(inserted.snapshot) }
                 outcome = ThumbScheduler.Outcome(insert: inserted.outcome, keyframeSec: kf)
                 self.thumbLastDecodeMs = took
                 #if DEBUG
                 NSLog("%@", String(format: "[Thumbs] decode at=%.1f kf=%.1f took=%.0fms dec=%.0fms tm=%.1fms charged=%lldKB job=%@ outcome=%@",
                                    job.sec, kf, took, dec, tm, bytes / 1024, job.name, inserted.outcome.rawValue))
                 #endif
-                // The viewer is still scrubbing near this keyframe: refresh the card.
-                if job.isScrub, case .scrubbing(let target) = self.transportInput.mode,
-                   abs(target - kf) <= inserted.snapshot.tolerance {
-                    self.transportInput.requestPreviewFrame()
+                // GitHub #33: a card whose target is near this keyframe asks again, a stationary hold,
+                // scrub or click card included, and a pre-warm keyframe as much as a scrub's own job.
+                if current {
+                    self.transportInput.previewSourceContentChanged(atSec: kf, toleranceSec: inserted.snapshot.tolerance)
                 }
             case .failed(let reason):
                 if let reason { self.thumbs.stop(reason) }
@@ -3190,6 +3215,7 @@ final class MPVTVPlayerViewController: UIViewController {
         case .reconnect(let attempt):
             print("[Live] end of stream on a live channel, reconnect \(attempt)/\(LiveReconnectPolicy.limit)")
             liveReconnectLoading = true
+            replacePreviewStoreForReconnect()
             // Off the main thread: this runs inside the 0.5 s `refreshState` tick, and the mpv core
             // is never called from there (BUG-2/BUG-3). The request headers are a property of the
             // handle and still hold from the first load.
@@ -3205,6 +3231,35 @@ final class MPVTVPlayerViewController: UIViewController {
             armStartWatchdog()
             return true
         }
+    }
+
+    /// Review r2-3: a live reconnect may restart the timeline, so frames stamped on the old one must
+    /// never reach the card: a fresh store (same key and caps) and a new source generation. Harvest
+    /// and decode completions hold the store they started with, so a late insert lands in the
+    /// discarded one.
+    private func replacePreviewStoreForReconnect() {
+        guard previewStore != nil else { return }
+        let store = makePreviewStore()
+        previewStore = store
+        seekPreviewSource = store
+        storeMirror = .empty
+        state.transport.previewFrames = 0
+        if let facts = thumbFacts {
+            let gap = ThumbScheduler.medianGap(facts.keyframeIndex)
+            Task { @MainActor [weak self] in
+                let snapshot = await store.setKeyframeSpacing(gap)
+                guard let self, self.previewStore === store else { return }
+                self.applyStoreSnapshot(snapshot)
+            }
+        }
+        previewSourceGeneration += 1
+        transportInput.setPreviewSource(capability: previewCapability, generation: previewSourceGeneration)
+        rebuildPreviewSummary()
+    }
+
+    private func makePreviewStore() -> SeekPreviewStore {
+        let caps = SeekPreviewStore.caps(for: seekPreviewMode)
+        return SeekPreviewStore(streamKey: previewStoreKey, maxEntries: caps.maxEntries, maxBytes: caps.maxBytes)
     }
 
     /// The FILE_LOADED of a live reconnect: `loadfile replace` dropped every side-loaded subtitle
@@ -3873,14 +3928,14 @@ extension MPVTVPlayerViewController: PlayerTransportEngine {
         }
     }
 
-    func scrubPreviewEnded(now: TimeInterval) {
+    func previewRequestsEnded(now: TimeInterval) {
         thumbScrubWork?.cancel(); thumbScrubWork = nil
         thumbs.noteScrubEnded(now: now)
     }
 
     /// P3: no frame, or one more than 5 s off: ask the thumbnailer for the keyframe there. Reads
     /// the tolerance-bounded match (BUG-181 leaves the refine rule as it was).
-    func scrubPreviewMissed(targetSec: Double, matchSec: Double?) {
+    func previewLookupMissed(targetSec: Double, matchSec: Double?) {
         if thumbs.lookupWantsRefine(target: targetSec, matchSec: matchSec) {
             noteThumbScrubMiss(target: targetSec)
         }

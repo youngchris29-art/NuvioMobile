@@ -4,7 +4,7 @@ import SwiftUI
 import CoreGraphics
 
 /// The read side of the seek-preview thumbnail store (P2): a frame within about one GOP of `sec`,
-/// or nil. The controller holds one as `seekPreviewSource`; nil means the scrub card shows time only.
+/// or nil. The controller holds one as `seekPreviewSource`; nil means the card shows time only.
 protocol SeekPreviewSource: AnyObject, Sendable {
     func thumbnail(near sec: Double) async -> CGImage?
     /// P3: the frame plus its stamp and origin, so the scrub path can tell a near hit from a far one.
@@ -59,20 +59,16 @@ enum PillKind: String, CaseIterable { case subtitles, audio, speed, aspect, sour
     @Published var openInfoPill: PlayerInfoPill? = nil
     /// The tool disc whose popover is open above it; nil = none. Aspect never opens one.
     @Published var openPopover: PillKind? = nil
-    /// The scrub card's frame for the current preview target (nil = no frame yet).
-    @Published var previewFrame: CGImage? = nil
-    /// BUG-181 (Steven rc7): seek previews are on for this file (a harvest or the decoder can fill
-    /// the store), so a scrub with no frame yet draws a placeholder card instead of an empty slot.
-    /// False (Seek Preview Frames Off, harvest off after a crash) keeps the time-only card.
-    @Published var previewCardEnabled = false
+    /// GitHub #33: the seek preview card (clicks, holds, swipe scrub) exactly as the bar draws it:
+    /// target, content (frame / placeholder / time only / none), the frame. Written only by
+    /// `SeekPreviewCoordinator`, in the same main-thread turn as `mode` and `previewSec`.
+    @Published var previewRender: SeekPreviewRender = .none
     /// The swipe scrub rate curve, for the probe: "o" Orivio, "b" bobsupra.
     @Published var scrubCurveCode = "o"
     /// Frames in the seek-preview store (P2-B), for the probe's `thumbs=` field.
     @Published var previewFrames: Int = 0
     /// Frames the keyframe thumbnailer stored (P3), for the probe's `decoded=` field.
     @Published var decodedFrames: Int = 0
-    /// The stamp of the frame on the scrub card (P3), for the probe's `fsec=` field.
-    @Published var previewFrameSec: Double? = nil
     /// The picture fit the Aspect pill cycles (P2).
     @Published var aspectMode: PlayerAspectMode = .fit
     /// The aspect label shown for 2 s after a cycle; nil = no flash.
@@ -84,6 +80,38 @@ enum PillKind: String, CaseIterable { case subtitles, audio, speed, aspect, sour
     /// the probe's `stored=` / `aw=` fields (review r1 P2 #1).
     @Published var debugAspectStored: PlayerAspectMode = .fit
     @Published var debugAspectWrites = 0
+
+    /// One laid-out preview card, as the bar's `onGeometryChange` saw it (GitHub #33 probe).
+    nonisolated struct CardLayoutSample: Equatable, Sendable {
+        var width: CGFloat
+        var kind: SeekPreviewRender.Kind
+        var episode: Int
+        /// The card body (a frame or the placeholder), not a time-only card's label.
+        var body: Bool
+        var frame: Bool
+    }
+    /// The last laid-out card body's width (probe `cardw=`); sticky, so a leg can read it after
+    /// `XCUIRemote.press(_:forDuration:)` returns.
+    @Published var debugCardWidth: CGFloat = 0
+    /// Holds that had a frame card laid out at a real width (probe `hcard=`), per launch.
+    @Published var debugHoldCards = 0
+    /// Clicks that had any card laid out (probe `ccard=`), per launch.
+    @Published var debugClickCards = 0
+    private var countedHoldEpisode = -1
+    private var countedClickEpisode = -1
+
+    func noteCardLaidOut(_ s: CardLayoutSample) {
+        guard s.width > 0 else { return }
+        if s.body, debugCardWidth != s.width { debugCardWidth = s.width }
+        if s.kind == .hold, s.frame, s.episode != countedHoldEpisode {
+            countedHoldEpisode = s.episode
+            debugHoldCards += 1
+        }
+        if s.kind == .landing, s.episode != countedClickEpisode {
+            countedClickEpisode = s.episode
+            debugClickCards += 1
+        }
+    }
     #endif
     var pillsEngaged: Bool { focusedPill != nil }
     /// A popover or a content shelf is on screen.

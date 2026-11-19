@@ -97,8 +97,17 @@ final class AetherTVPlayerViewController: UIViewController {
     private(set) var recorder: PlaybackProgressRecorder
     var bag = Set<AnyCancellable>()
     private var loadTask: Task<Void, Never>?
-    /// Scrub stills over `session.scrubFrame` (time-only when the session cannot serve them).
+    /// Scrub stills over `session.scrubFrame` (time-only when the session cannot serve them); never
+    /// made in Off mode.
     private(set) var previewSource: AetherScrubPreviewSource?
+    /// `SeekPreviewMode`, read once per playback (GitHub #33: Off is honoured here too).
+    private var seekPreviewMode: SeekPreviewMode = .harvest
+    /// A load returned and no newer one started: the session can be asked for stills.
+    private var stillsLoadReady = false
+    /// The preview source generation the transport fences on: bumped by every load and every new
+    /// `scrubStillsSourceGeneration` the session reports.
+    private var stillsGeneration = 0
+    private var stillsSessionGeneration: UUID?
 
     // MARK: Main-thread mirrors (the transport reads these; never a synchronous engine query)
 
@@ -230,8 +239,10 @@ final class AetherTVPlayerViewController: UIViewController {
             view.addSubview(host.view)
             host.didMove(toParent: self)
             surfaceHost = host
-            let source = AetherScrubPreviewSource(session: session)
-            previewSource = source
+            seekPreviewMode = SeekPreviewMode.current()
+            if seekPreviewMode != .off {
+                previewSource = AetherScrubPreviewSource(session: session)
+            }
         }
 
         state.replay = { [weak self] in self?.replay() }
@@ -248,8 +259,12 @@ final class AetherTVPlayerViewController: UIViewController {
         // The overlay closures (Menu, close, focus, Play/Pause), the hold / scrub tuning, the
         // chapter seek and the Left/Right Click mode (`PlayerTransportInput.init`).
         transportInput = PlayerTransportInput(state: state, engine: self, host: self)
-        // No preview card until the session says it can serve stills (`loadReturned`).
-        state.transport.previewCardEnabled = false
+        // No picture card until a load returns and the session says it can serve stills. Support can
+        // change with no event (`supportsScrubStills` is computed in the engine package), so the
+        // transport reads this synchronously before every preview decision (review r2-1; no timer).
+        transportInput.setPreviewLiveSource { [weak self] in
+            self?.liveStillSource() ?? (capability: .none, generation: 0)
+        }
         state.transport.aspectMode = .fit
         state.isBuffering = true
         transportInput.installGestures(on: view)
@@ -458,6 +473,10 @@ final class AetherTVPlayerViewController: UIViewController {
     /// One `load` (start, the DV rebuild, Replay). A failure arrives through `onFailure` (the façade
     /// reports the throw and the published failure once); a cancellation is never a failure.
     private func runLoad(_ session: AetherPlaybackSession, _ request: AetherLoadRequest) {
+        // A rebuild or a replay is a new still source: nothing from the last load reaches the card.
+        stillsLoadReady = false
+        stillsGeneration += 1
+        transportInput.previewSourceMayHaveChanged()
         loadTask?.cancel()
         loadTask = Task { @MainActor [weak self] in
             do {
@@ -493,7 +512,8 @@ final class AetherTVPlayerViewController: UIViewController {
         // Auto flows: a stub clip is a failed source, not an episode (no resume, no trackers).
         if firstReturn, rejectPlaceholderClip(durationSec: duration) { return }
         if !(state.startupStage == .started) { publishStartupStage(.buffering(percent: nil)) }
-        state.transport.previewCardEnabled = session.supportsScrubStills
+        stillsLoadReady = true
+        transportInput.previewSourceMayHaveChanged()
         if firstReturn {
             if let pct = pendingResumePercent, duration > 0 {
                 pendingResumePercent = nil
@@ -1147,6 +1167,8 @@ final class AetherTVPlayerViewController: UIViewController {
         }
         handedOff = true
         failoverClosed = true
+        // The session stops without a `loadReturned`: no more stills.
+        transportInput.previewSourceMayHaveChanged()
         startWatchdog.noteCancelled()
         stopStartWatchdogTimer()
         stopScanTimer()
@@ -1294,8 +1316,24 @@ extension AetherTVPlayerViewController: PlayerTransportEngine {
     func cycleAspect() {}
 
     var seekPreviewSource: SeekPreviewSource? { previewSource }
-    func scrubPreviewEnded(now: TimeInterval) {}
-    func scrubPreviewMissed(targetSec: Double, matchSec: Double?) {}
+    func previewRequestsEnded(now: TimeInterval) {}
+    func previewLookupMissed(targetSec: Double, matchSec: Double?) {}
+
+    /// The still source as it stands now: `.none` in Off mode, while no load has returned (start, a
+    /// rebuild, a replay), after a handoff and after teardown; else what the session supports. A
+    /// new load or a new `scrubStillsSourceGeneration` is a new generation. Two synchronous
+    /// main-actor reads, as `loadReturned` always did.
+    func liveStillSource() -> (capability: SeekPreviewCapability, generation: Int) {
+        guard let session, previewSource != nil, stillsLoadReady, !handedOff, !teardownDone else {
+            return (.none, stillsGeneration)
+        }
+        let current = session.scrubStillsSourceGeneration
+        if current != stillsSessionGeneration {
+            stillsSessionGeneration = current
+            stillsGeneration += 1
+        }
+        return (.aether(mode: seekPreviewMode, supportsStills: session.supportsScrubStills), stillsGeneration)
+    }
 }
 
 extension AetherTVPlayerViewController: PlayerTransportHost {

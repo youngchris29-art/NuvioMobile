@@ -94,10 +94,10 @@ final class PlayerOverlayCostTests: XCTestCase {
 
     // MARK: BUG-180: decode pre-warm waits, a scrub does not
 
-    private func inputs(now: TimeInterval, overlayUp: Bool, scrubbing: Bool = false) -> ThumbScheduler.Inputs {
+    private func inputs(now: TimeInterval, overlayUp: Bool, previewActive: Bool = false) -> ThumbScheduler.Inputs {
         ThumbScheduler.Inputs(now: now, positionSec: 100, durationSec: 600, paused: false,
                               cacheWait: false, cacheSec: 30, cacheTrendSec: 0, cacheReachesEnd: false, cacheFill: 0.2,
-                              seekInFlight: false, scrubbing: scrubbing, recentInput: false, harvestInFlight: false,
+                              seekInFlight: false, previewActive: previewActive, recentInput: false, harvestInFlight: false,
                               store: .empty, bytesRead: 0, byteBudget: 40 * ThumbScheduler.mib,
                               scrubCeiling: ThumbScheduler.scrubCeiling(budget: 40 * ThumbScheduler.mib), opened: true,
                               overlayUp: overlayUp)
@@ -114,7 +114,7 @@ final class PlayerOverlayCostTests: XCTestCase {
     func testScrubJobRunsWithTheBarUp() {
         var t = ThumbScheduler(enabled: true)
         t.noteScrubMiss(target: 300, now: 0)
-        XCTAssertEqual(t.next(inputs(now: 1, overlayUp: true, scrubbing: true)), .scrub(300))
+        XCTAssertEqual(t.next(inputs(now: 1, overlayUp: true, previewActive: true)), .scrub(300))
     }
 
     // MARK: BUG-180: Stream Info rates are rounded before the equality gate

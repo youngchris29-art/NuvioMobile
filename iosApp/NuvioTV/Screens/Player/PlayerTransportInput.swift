@@ -60,10 +60,11 @@ protocol PlayerTransportEngine: AnyObject {
     func cycleAspect()
 
     var seekPreviewSource: SeekPreviewSource? { get }
-    /// A scrub ended: the engine's own preview work for it stops (mpv: the keyframe thumbnailer).
-    func scrubPreviewEnded(now: TimeInterval)
-    /// A scrub lookup found no frame near `targetSec` (or one too far off).
-    func scrubPreviewMissed(targetSec: Double, matchSec: Double?)
+    /// The preview requests ended (a click's card went, a hold or scrub let go, the source changed):
+    /// the engine's own preview work for them stops (mpv: the keyframe thumbnailer's pending miss).
+    func previewRequestsEnded(now: TimeInterval)
+    /// A preview lookup for the current target found no frame near `targetSec` (or one too far off).
+    func previewLookupMissed(targetSec: Double, matchSec: Double?)
 }
 
 /// The UIKit side the transport needs from the controller that owns it.
@@ -113,9 +114,9 @@ final class PlayerTransportInput: NSObject, UIGestureRecognizerDelegate {
     private var scrubIdleWork: DispatchWorkItem?        // playing: cancel a scrub after 8 s without input
     private var scrubPublishWork: DispatchWorkItem?     // trailing publish of the 30 Hz scrub throttle
     private var lastScrubPublishUptime: TimeInterval = 0
-    private var previewFrameThrottle = PreviewFrameThrottle()
-    private var previewFrameWork: DispatchWorkItem?     // the throttle's `.wait` timer
-    private var previewFrameToken = 0                   // bumped when a scrub ends: late frames are dropped
+    /// GitHub #33: the one owner of the seek preview card (gesture, still source, click latch,
+    /// lookups, the render the bar draws). Created in `init`.
+    private var preview: SeekPreviewCoordinator!
     private var lastPublishedScrubbing = false
     /// One Left/Right click: ±10 s or a chapter jump (`player.edgeClickMode`, read in viewDidLoad).
     private var edgeClickMode: EdgeClickMode = .skip10
@@ -164,6 +165,7 @@ final class PlayerTransportInput: NSObject, UIGestureRecognizerDelegate {
         let scrubScale = UserDefaults.standard.double(forKey: "debug.scrubRateScale")
         self.scrubRateScale = scrubScale > 0 ? scrubScale : 1
         super.init()
+        preview = SeekPreviewCoordinator(sink: self, source: { [weak self] in self?.engine?.seekPreviewSource })
 
         state.overlayMenu = { [weak self] in self?.handleOverlayMenu() }
         // Every `state.closeOverlay` caller closes because of a pick inside the overlay (or its
@@ -221,7 +223,7 @@ final class PlayerTransportInput: NSObject, UIGestureRecognizerDelegate {
 
     /// A seek landed (mpv: its PLAYBACK_RESTART, before the newest-seek guard). The preview
     /// playhead hands back to the real position on a commit's first landing, whether or not the
-    /// planner guard after this passes.
+    /// planner guard after this passes; a click's card ends after its dwell (`ClickPreviewLatch`).
     func seekLandedForCommit(generation: Int) {
         if generation == commitGeneration {
             commitGeneration = nil
@@ -229,7 +231,37 @@ final class PlayerTransportInput: NSObject, UIGestureRecognizerDelegate {
             transport.noteCommitLanded()
             state.transport.previewSec = transport.previewSec
         }
+        preview.seekLanded(generation: generation)
     }
+
+    // MARK: - Seek preview source (GitHub #33)
+
+    /// The engine's still source for this playback: what it can fill and its generation (mpv: once
+    /// at load, and a new generation with the new store of a live reconnect).
+    func setPreviewSource(capability: SeekPreviewCapability, generation: Int) {
+        preview.setSource(capability: capability, generation: generation)
+    }
+
+    /// An engine whose still support can change with no event (Aether): the coordinator reads this
+    /// synchronously before every preview decision (review r2-1; no polling timer).
+    func setPreviewLiveSource(_ live: @escaping SeekPreviewCoordinator.LiveSource) {
+        preview.liveSource = live
+        preview.sourceMayHaveChanged()
+    }
+
+    /// The live source may report something new (a load started or returned, a handoff).
+    func previewSourceMayHaveChanged() {
+        preview.sourceMayHaveChanged()
+    }
+
+    /// The source gained a frame at `atSec` (an mpv decode or harvest insert): a card whose target
+    /// is that close asks again, so a stationary hold, scrub or click card turns into a picture.
+    func previewSourceContentChanged(atSec: Double, toleranceSec: Double) {
+        preview.sourceContentChanged(atSec: atSec, toleranceSec: toleranceSec)
+    }
+
+    /// Preview lookups are running (mpv: the thumbnailer's `previewActive` input).
+    var previewActive: Bool { preview.previewActive }
 
     /// The newest seek landed (after the skip planner heard it): keyframes landed, so that picture
     /// shows first, then the exact stage runs.
@@ -244,6 +276,7 @@ final class PlayerTransportInput: NSObject, UIGestureRecognizerDelegate {
         stopHoldTimer()
         cancelExactStage()
         apply(transport.cancel())
+        preview.dismissClick()
     }
 
     /// The controller's `deinit` and `destroyPlayer`: every timer and work item this input armed.
@@ -266,8 +299,8 @@ final class PlayerTransportInput: NSObject, UIGestureRecognizerDelegate {
         hideWork?.cancel()
         scrubIdleWork?.cancel()
         scrubPublishWork?.cancel()
-        previewFrameWork?.cancel()
-        previewFrameToken += 1
+        // Every request, frame, latch and timer of the preview; a lookup still running is dropped.
+        preview.teardown()
     }
 
     private func performMenuAction(_ action: MenuPrecedence.Action) {
@@ -465,6 +498,13 @@ final class PlayerTransportInput: NSObject, UIGestureRecognizerDelegate {
             switch press.type {
             case .playPause, .select, .leftArrow, .rightArrow, .upArrow, .downArrow, .menu:
                 cancelExactStage()
+            default:
+                break
+            }
+            // A click's landing card goes on any other button; the press then does its usual action.
+            switch press.type {
+            case .playPause, .select, .upArrow, .downArrow, .menu:
+                preview.dismissClick()
             default:
                 break
             }
@@ -779,29 +819,24 @@ final class PlayerTransportInput: NSObject, UIGestureRecognizerDelegate {
         let scrubbing = isScrubbing
         if scrubbing != lastPublishedScrubbing {
             lastPublishedScrubbing = scrubbing
-            if scrubbing {
-                state.scrubCardUp = true
-            } else {
-                // Every way out of a scrub (commit, cancel, Menu, idle timeout, panel) cleans up here.
+            if !scrubbing {
+                // The scrub-gesture lifecycle: every way out of a scrub (commit, cancel, Menu, idle
+                // timeout, panel) cleans up here, whatever the preview capability. The preview
+                // requests have their own lifecycle in the coordinator.
                 scrubIdleWork?.cancel(); scrubIdleWork = nil
                 scrubPublishWork?.cancel(); scrubPublishWork = nil
-                previewFrameWork?.cancel(); previewFrameWork = nil
-                previewFrameThrottle.reset()
-                previewFrameToken += 1
-                state.transport.previewFrame = nil
-                state.transport.previewFrameSec = nil
-                engine?.scrubPreviewEnded(now: ProcessInfo.processInfo.systemUptime)
                 scrubArbiter.abandon()
                 #if DEBUG
                 state.transport.debugArbiter = scrubArbiter.probeCode
                 #endif
-                state.scrubCardUp = false
             }
         }
         #if DEBUG
         updateSeekProbe()
         #endif
         if wasActive && !active { flashControls() }
+        // Last, so the card's render lands in the same main-thread turn as `mode` and `previewSec`.
+        preview.gestureChanged(transport.previewGesture)
     }
 
     // MARK: - Swipe scrub (P2)
@@ -879,7 +914,6 @@ final class PlayerTransportInput: NSObject, UIGestureRecognizerDelegate {
             apply(transport.scrubBegan(positionSec: base))
             flashControls()
             restartScrubIdle()
-            requestPreviewFrame()
         case .scrubDelta(let points):
             performScrubOutput(transport.scrubMoved(deltaPoints: points))
         case .openPanel:
@@ -917,14 +951,12 @@ final class PlayerTransportInput: NSObject, UIGestureRecognizerDelegate {
             scrubPublishWork = work
             DispatchQueue.main.asyncAfter(deadline: .now() + (interval - since), execute: work)
         }
-        requestPreviewFrame()
         restartScrubIdle()
     }
 
     private func nudgeScrub(_ direction: Int) {
         restartScrubIdle()
         apply(transport.scrubNudge(direction: direction))
-        requestPreviewFrame()
         flashControls()
     }
 
@@ -958,61 +990,6 @@ final class PlayerTransportInput: NSObject, UIGestureRecognizerDelegate {
         let work = DispatchWorkItem { [weak self] in self?.cancelScrub(why: "idle") }
         scrubIdleWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + TransportPreview.scrubIdleCancelSec, execute: work)
-    }
-
-    /// Ask for a frame near the scrub target, throttled (critique C17): at most one lookup in
-    /// flight, a new one at most every 66 ms, and always a trailing one after the last sample.
-    func requestPreviewFrame() {
-        handlePreviewFrameDecision(previewFrameThrottle.sample(now: ProcessInfo.processInfo.systemUptime))
-    }
-
-    private func handlePreviewFrameDecision(_ decision: PreviewFrameThrottle.Decision) {
-        switch decision {
-        case .none:
-            break
-        case .wait(let seconds):
-            guard previewFrameWork == nil else { return }
-            let work = DispatchWorkItem { [weak self] in
-                guard let self else { return }
-                self.previewFrameWork = nil
-                self.handlePreviewFrameDecision(
-                    self.previewFrameThrottle.timerFired(now: ProcessInfo.processInfo.systemUptime))
-            }
-            previewFrameWork = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
-        case .start:
-            guard case .scrubbing(let target) = transport.mode else {
-                previewFrameThrottle.reset()
-                return
-            }
-            guard let source = engine?.seekPreviewSource else {
-                // No store: the card shows time only. Nothing runs, so the lookup is done at once.
-                state.transport.previewFrame = nil
-                _ = previewFrameThrottle.finished(now: ProcessInfo.processInfo.systemUptime)
-                return
-            }
-            let token = previewFrameToken
-            Task { @MainActor [weak self] in
-                let match = await source.match(near: target)
-                // BUG-181 (Steven rc7): a miss shows the nearest stored frame within two minutes
-                // (DV P5 never decodes, so its store holds only harvested frames). The previous
-                // frame stays only while a lookup runs; a finished lookup with nothing near clears
-                // it, so the dark placeholder card shows (device pass 2026-10-18: scrubbing far
-                // ahead kept showing the last real thumbnail).
-                let shown: SeekPreviewMatch?
-                if let match { shown = match } else { shown = await source.nearest(to: target) }
-                // A scrub that ended (or a newer one) bumped the token: drop the late frame, and
-                // do not touch the reset throttle.
-                guard let self, self.previewFrameToken == token else { return }
-                self.state.transport.previewFrame = shown?.image
-                self.state.transport.previewFrameSec = shown?.sec
-                // P3: no frame, or one more than 5 s off: ask the thumbnailer for the keyframe there.
-                // Reads the tolerance-bounded match (BUG-181 leaves the refine rule as it was).
-                self.engine?.scrubPreviewMissed(targetSec: target, matchSec: match?.sec)
-                self.handlePreviewFrameDecision(
-                    self.previewFrameThrottle.finished(now: ProcessInfo.processInfo.systemUptime))
-            }
-        }
     }
 
     #if DEBUG
@@ -1194,8 +1171,11 @@ final class PlayerTransportInput: NSObject, UIGestureRecognizerDelegate {
         flashControls()
     }
 
-    private func seekBy(_ seconds: Double) {
-        guard let engine, engine.canTransport else { return }
+    /// A relative arrow seek. Returns where its card goes (the same base rule, clamped like a hold)
+    /// and the generation it issued; nil when nothing was issued.
+    @discardableResult
+    private func seekBy(_ seconds: Double) -> (targetSec: Double, generation: Int)? {
+        guard let engine, engine.canTransport else { return nil }
         // Arrow seeks are deliberate: a segment they start or land in is never auto-skipped. The
         // cached position is stale while another seek is in flight — mpv's relative seek then
         // starts from that seek's target, so the estimate does too (nil = unknown). The planner
@@ -1206,25 +1186,43 @@ final class PlayerTransportInput: NSObject, UIGestureRecognizerDelegate {
         } else {
             base = engine.transportPositionSec
         }
-        engine.issueSeek(kind: .user, targetSec: base.map { $0 + seconds }, fromSec: base,
-                         mode: .relative(deltaSec: seconds), planner: true, onRejected: nil)
+        let cardBase = engine.seekInFlightTargetSec ?? engine.transportPositionSec   // edgeClick's rule
+        let target = TransportPreview.clamp(cardBase + seconds, durationSec: engine.transportDurationSec)
+        let before = engine.seekGeneration
+        let expected = before + 1                      // issueSeek's generation for this seek
+        let generation = engine.issueSeek(kind: .user, targetSec: base.map { $0 + seconds }, fromSec: base,
+                                          mode: .relative(deltaSec: seconds), planner: true,
+                                          onRejected: { [weak self] in self?.preview.seekRejected(generation: expected) })
+        return generation == before ? nil : (target, generation)
     }
 
-    /// One Left/Right click (P1's `.immediateSeek`): ±10 s, or in chapter mode a chapter jump.
+    /// One Left/Right click (P1's `.immediateSeek`): ±10 s, or in chapter mode a chapter jump. The
+    /// card shows where the seek lands (GitHub #33): from press-down in Step mode, from the release
+    /// for a chapter or scan-armed click.
     private func edgeClick(_ d: Double) {
         guard let engine else { return }
         let base = engine.seekInFlightTargetSec ?? engine.transportPositionSec   // seekBy's rule
+        let issued: (targetSec: Double, generation: Int)?
         switch PlayerChapters.edgeClick(mode: edgeClickMode, direction: d < 0 ? -1 : 1, baseSec: base,
                                         chapters: state.transport.chapters, skipSec: abs(d)) {
-        case .relative(let r): seekBy(r)
-        case .absolute(let t): seekToChapter(t)
+        case .relative(let r): issued = seekBy(r)
+        case .absolute(let t): issued = chapterSeek(t)
         }
+        if let issued { preview.clickIssued(targetSec: issued.targetSec, generation: issued.generation) }
+    }
+
+    /// The Chapters tab's seek: no landing card for this path, and an earlier click's card goes as
+    /// soon as the seek is issued (review r2-4: it no longer describes where playback goes).
+    func seekToChapter(_ chapterSec: Double) {
+        if chapterSeek(chapterSec) != nil { preview.dismissClick() }
     }
 
     /// Absolute seek to a chapter start (the Chapters tab, a chapter-mode click). A backward jump
-    /// cancels the up-next countdown, like any backward seek.
-    func seekToChapter(_ chapterSec: Double) {
-        guard let engine, engine.canTransport else { return }
+    /// cancels the up-next countdown, like any backward seek. Returns the clamped target and the
+    /// generation issued; nil when nothing was issued.
+    @discardableResult
+    private func chapterSeek(_ chapterSec: Double) -> (targetSec: Double, generation: Int)? {
+        guard let engine, engine.canTransport else { return nil }
         // Backstop for a list read before the duration was known (review r1 P2 #2).
         let sec = PlayerChapters.clampedSeek(chapterSec, durationSec: engine.transportDurationSec)
         let base = engine.seekInFlightTargetSec ?? engine.transportPositionSec
@@ -1238,11 +1236,15 @@ final class PlayerTransportInput: NSObject, UIGestureRecognizerDelegate {
         commitGeneration = nil
         transport.noteCommitLanded()
         state.transport.previewSec = transport.previewSec
-        engine.issueSeek(kind: .user, targetSec: sec, fromSec: base, mode: .absolute, planner: true, onRejected: nil)
+        let before = engine.seekGeneration
+        let expected = before + 1                      // issueSeek's generation for this seek
+        let generation = engine.issueSeek(kind: .user, targetSec: sec, fromSec: base, mode: .absolute, planner: true,
+                                          onRejected: { [weak self] in self?.preview.seekRejected(generation: expected) })
         #if DEBUG
         state.seekProbe.note(commit: sec, stages: "ch")
         #endif
         flashControls()
+        return generation == before ? nil : (sec, generation)
     }
 
     /// Raise the bar (or keep it up) and re-arm its hide timer: every input comes through here.
@@ -1453,6 +1455,26 @@ final class PlayerTransportInput: NSObject, UIGestureRecognizerDelegate {
                            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
         let mine: [UIGestureRecognizer?] = [scrubPan, swipeDownRecognizer, lightTapRecognizer]
         return mine.contains { $0 === gestureRecognizer } && mine.contains { $0 === other }
+    }
+}
+
+// MARK: - Seek preview sink (GitHub #33)
+
+extension PlayerTransportInput: SeekPreviewSink {
+    /// The coordinator's render, drawn as-is by the bar. The skip chips lift over any card on the
+    /// bar (a landing or a time-only one included), never only a scrub's.
+    func publish(_ render: SeekPreviewRender) {
+        state.transport.previewRender = render
+        let up = render.cardTargetSec != nil
+        if state.scrubCardUp != up { state.scrubCardUp = up }
+    }
+
+    func refine(targetSec: Double, matchSec: Double?) {
+        engine?.previewLookupMissed(targetSec: targetSec, matchSec: matchSec)
+    }
+
+    func endDecoderActivity() {
+        engine?.previewRequestsEnded(now: ProcessInfo.processInfo.systemUptime)
     }
 }
 

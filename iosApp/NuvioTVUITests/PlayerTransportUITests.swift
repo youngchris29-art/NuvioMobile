@@ -98,16 +98,24 @@ final class PlayerTransportUITests: XCTestCase {
         let app = try launch(extra: ["-player.holdMode", "scan"])
         remote.press(.right, forDuration: 1.0)
         XCTAssertTrue(waitFor(app) { $0["speed"] == "2.0" && $0["mode"] == "scanning" }, probeText(app))
+        // GitHub #33: a scan shows no preview card at any rate (the video is the preview).
+        XCTAssertEqual(bar(app)["card"], "n", barProbeText(app))
         Thread.sleep(forTimeInterval: 1.0)
         var p = probe(app)
         XCTAssertEqual(p["speed"], "2.0", "scan must latch after release: \(probeText(app))")
         XCTAssertEqual(p["mode"], "scanning", probeText(app))
         remote.press(.right)
         XCTAssertTrue(waitFor(app) { $0["speed"] == "3.0" }, probeText(app))
+        XCTAssertEqual(bar(app)["card"], "n", barProbeText(app))
         remote.press(.right)
         XCTAssertTrue(waitFor(app) { $0["speed"] == "4.0" }, probeText(app))
+        XCTAssertEqual(bar(app)["card"], "n", barProbeText(app))
         remote.press(.select)
         XCTAssertTrue(waitFor(app) { $0["speed"] == "1.0" && $0["mode"] == "idle" && $0["paused"] == "0" }, probeText(app))
+        let b = bar(app)
+        XCTAssertEqual(b["card"], "n", barProbeText(app))
+        XCTAssertEqual(b["hcard"], "0", "no hold card during a scan: \(barProbeText(app))")
+        XCTAssertEqual(b["ccard"], "0", "a scan-armed hold is not a click: \(barProbeText(app))")
     }
 
     /// Menu during a scan cancels back to where the scan started and keeps the player open. On the
@@ -571,6 +579,83 @@ final class PlayerTransportUITests: XCTestCase {
         print("[DecodeLeg] off end: \(barProbeText(app))")
         XCTAssertEqual(p["thumbs"], "0", barProbeText(app))
         XCTAssertEqual(p["decoded"], "0", barProbeText(app))
+        XCTAssertEqual(p["cap"], "0", barProbeText(app))
+        // GitHub #33: Off draws no picture card for a hold, and a click's card is the time only.
+        remote.press(.right, forDuration: 2.0)
+        remote.press(.right)
+        let c = bar(app)
+        print("[PreviewLeg] off hold + click: \(barProbeText(app))")
+        XCTAssertEqual(c["hcard"], "0", "a hold drew a picture card in Off mode: \(barProbeText(app))")
+        // Two clicks: the hold's own press-down is a Step click (its card until the first tick),
+        // then the click.
+        XCTAssertEqual(c["ccard"], "2", "the clicks' time-only cards were never laid out: \(barProbeText(app))")
+        XCTAssertNotEqual(c["card"], "p", "a placeholder in Off mode: \(barProbeText(app))")
+        XCTAssertNotEqual(c["card"], "f", "a picture in Off mode: \(barProbeText(app))")
+        XCTAssertTrue(waitBar(app, timeout: 4.5) { $0["card"] == "n" }, "the click card never left: \(barProbeText(app))")
+        XCTAssertEqual(bar(app)["cardw"], "0", "no card body was ever laid out in Off mode: \(barProbeText(app))")
+    }
+
+    // MARK: Seek preview on skips (GitHub #33): the probe's card= / cardw= / hcard= / ccard=
+
+    /// The card's laid-out width (`TransportBarLayout.cardSize.width`).
+    private static let cardWidth = 400.0
+
+    /// Whole Video: a 2 s Right hold draws a picture card at its real size (the keyframe decoder
+    /// fills the unwatched ground ahead), and the card goes with the release.
+    func testHoldSkipShowsPreviewCard() throws {
+        let app = try launch(extra: ["-debug.seekPreviewMode", "decode"])
+        XCTAssertTrue(waitBar(app, timeout: 20) { (Double($0["pos"] ?? "") ?? 0) >= 10 }, "playback stalled: \(barProbeText(app))")
+        XCTAssertEqual(bar(app)["cap"], "1", barProbeText(app))
+        remote.press(.right, forDuration: 2.0)
+        let p = bar(app)
+        print("[PreviewLeg] hold skip: \(barProbeText(app))")
+        XCTAssertGreaterThanOrEqual(Int(p["hcard"] ?? "") ?? 0, 1, "no picture card during the hold: \(barProbeText(app))")
+        XCTAssertEqual(Double(p["cardw"] ?? "") ?? 0, Self.cardWidth, accuracy: 1, barProbeText(app))
+        XCTAssertTrue(waitBar(app, timeout: 3) { $0["card"] == "n" }, "the card outlived the release: \(barProbeText(app))")
+    }
+
+    /// Watched Parts with the DEBUG synthetic harvest: a Left hold back over played ground shows a
+    /// harvested picture.
+    func testHoldBackShowsHarvestedCard() throws {
+        let app = try launch(extra: ["-debug.harvestSynthetic", "YES"])
+        XCTAssertTrue(waitBar(app, timeout: 45) { (Int($0["thumbs"] ?? "") ?? 0) >= 3 },
+                      "store never reached 3 frames: \(barProbeText(app))")
+        remote.press(.left, forDuration: 1.5)
+        let p = bar(app)
+        print("[PreviewLeg] hold back: \(barProbeText(app))")
+        XCTAssertGreaterThanOrEqual(Int(p["hcard"] ?? "") ?? 0, 1, "no harvested picture during the hold: \(barProbeText(app))")
+        XCTAssertEqual(Double(p["cardw"] ?? "") ?? 0, Self.cardWidth, accuracy: 1, barProbeText(app))
+        XCTAssertTrue(waitBar(app, timeout: 3) { $0["card"] == "n" }, barProbeText(app))
+    }
+
+    /// One Right click shows a card at the landing point (a placeholder until a picture is ready),
+    /// and the card goes after its dwell (at most the 4 s fallback).
+    func testClickShowsLandingCard() throws {
+        let app = try launch(extra: ["-debug.seekPreviewMode", "decode"])
+        XCTAssertEqual(bar(app)["ccard"], "0", barProbeText(app))
+        remote.press(.right)
+        let p = bar(app)
+        print("[PreviewLeg] click: \(barProbeText(app))")
+        XCTAssertEqual(p["ccard"], "1", "the click drew no card: \(barProbeText(app))")
+        XCTAssertEqual(Double(p["cardw"] ?? "") ?? 0, Self.cardWidth, accuracy: 1, barProbeText(app))
+        XCTAssertEqual(p["hcard"], "0", "a click is not a hold: \(barProbeText(app))")
+        XCTAssertTrue(waitBar(app, timeout: 4.5) { $0["card"] == "n" }, "the click card never left: \(barProbeText(app))")
+    }
+
+    /// Three clicks 0.3 s apart: each one replaces the card (three counted), and one card leaves at the end.
+    func testRepeatedClicksKeepOneCard() throws {
+        let app = try launch(extra: ["-debug.seekPreviewMode", "decode"])
+        let c0 = Int(probe(app)["commits"] ?? "") ?? -1
+        for _ in 0..<3 {
+            remote.press(.right)
+            Thread.sleep(forTimeInterval: 0.3)
+        }
+        let p = bar(app)
+        print("[PreviewLeg] repeated clicks: \(barProbeText(app))")
+        XCTAssertEqual(p["ccard"], "3", "each click should have replaced the card: \(barProbeText(app))")
+        XCTAssertEqual(p["hcard"], "0", barProbeText(app))
+        XCTAssertEqual(Int(probe(app)["commits"] ?? ""), c0, "clicks are relative seeks, never commits: \(probeText(app))")
+        XCTAssertTrue(waitBar(app, timeout: 4.5) { $0["card"] == "n" }, "the card never left: \(barProbeText(app))")
     }
 
     // MARK: Chapters and aspect (P2-C)

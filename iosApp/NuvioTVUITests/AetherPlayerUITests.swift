@@ -187,6 +187,39 @@ final class AetherPlayerUITests: XCTestCase {
         XCTAssertTrue(app.otherElements["player.aether"].exists, "no longer the Aether controller after the scan")
     }
 
+    // MARK: Seek preview on skips (GitHub #33): the bar probe's cap= / card= / cardw= / hcard=
+
+    /// A 2 s Right hold shows a still card from video Aether already loaded. Skips when the session
+    /// reports no still support on this runtime (probe `cap=0`).
+    func testHoldSkipShowsStillCardOnAether() throws {
+        let app = try launchAether()
+        let capable = waitBar(app, timeout: 10) { $0["cap"] == "1" }
+        try XCTSkipUnless(capable, "the Aether session serves no scrub stills here (cap=0): \(barText(app))")
+        XCTAssertTrue(waitSeek(app, timeout: 20) { (Double($0["pos"] ?? "") ?? 0) >= 8 }, "playback stalled: \(seekText(app))")
+        // Back over loaded ground: the press-down click lands 10 s back, the ticks keep going.
+        remote.press(.left, forDuration: 2.0)
+        let p = probe(app, "debug_transportProbe")
+        print("[AetherLeg] hold still card: \(barText(app))")
+        XCTAssertGreaterThanOrEqual(Int(p["hcard"] ?? "") ?? 0, 1, "no still card during the hold: \(barText(app))")
+        XCTAssertEqual(Double(p["cardw"] ?? "") ?? 0, 400, accuracy: 1, barText(app))
+        XCTAssertTrue(waitBar(app, timeout: 3) { $0["card"] == "n" }, "the card outlived the release: \(barText(app))")
+    }
+
+    /// `-debug.seekPreviewMode off`: Aether creates no still source, reports no capability, and a hold
+    /// draws no card.
+    func testSeekPreviewOffHonouredOnAether() throws {
+        let app = try launchAether(extra: ["-debug.seekPreviewMode", "off"])
+        XCTAssertTrue(waitSeek(app, timeout: 20) { (Double($0["pos"] ?? "") ?? 0) >= 5 }, "playback stalled: \(seekText(app))")
+        XCTAssertEqual(probe(app, "debug_transportProbe")["cap"], "0", "Off still reports a still source: \(barText(app))")
+        remote.press(.right, forDuration: 2.0)
+        let p = probe(app, "debug_transportProbe")
+        print("[AetherLeg] off: \(barText(app))")
+        XCTAssertEqual(p["hcard"], "0", "a hold drew a picture card in Off mode: \(barText(app))")
+        XCTAssertEqual(p["cap"], "0", barText(app))
+        XCTAssertEqual(p["cardw"], "0", "a card body was laid out in Off mode: \(barText(app))")
+        XCTAssertTrue(waitBar(app, timeout: 3) { $0["card"] == "n" }, barText(app))
+    }
+
     /// `debug.mpvSmokeAetherBreak`: Aether opens a missing file, the policy answers fall back, and mpv plays the
     /// real URL (`player.mpv` replaces `player.aether`).
     func testStartFailureFallsBackToMpv() throws {

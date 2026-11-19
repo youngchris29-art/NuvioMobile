@@ -314,7 +314,7 @@ struct PlayerTransportBar: View {
                 .position(x: layout.infoPillRowFrame.midX, y: layout.infoPillRowFrame.midY)
                 .opacity(active ? 0 : 1)
                 .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: active)
-            scrubCard(layout)
+            previewCard(layout)
         }
         .foregroundStyle(.white)
     }
@@ -377,23 +377,26 @@ struct PlayerTransportBar: View {
         .position(x: container.midX, y: container.midY)
     }
 
-    // MARK: Scrub card (P2)
+    // MARK: Preview card (P2; GitHub #33: clicks, holds and swipe scrub)
 
-    private var scrubTarget: Double? {
-        if case .scrubbing(let t) = model.mode { return t }
-        return nil
+    /// The bar's own scrub rule (the times row): not a preview decision.
+    private var scrubbing: Bool {
+        if case .scrubbing = model.mode { return true }
+        return false
     }
 
     /// The frame you will land on (letterboxed on a black body, never cropped), with the chapter
     /// title above it. No frame yet with previews on: a solid dark placeholder card of the same
     /// size (BUG-181), never an empty slot. Previews off: no card body, the title keeps its position.
+    /// Drawn from `model.previewRender` alone: the coordinator already decided target and content.
     @ViewBuilder
-    private func scrubCard(_ layout: TransportBarLayout) -> some View {
+    private func previewCard(_ layout: TransportBarLayout) -> some View {
+        let render = model.previewRender
         let fade: Animation? = reduceMotion ? nil : .easeInOut(duration: 0.15)
         ZStack(alignment: .topLeading) {
-            if let target = scrubTarget {
+            if let target = render.cardTargetSec {
                 let cx = layout.x(forSec: target, durationSec: model.durationSec)
-                if let frame = model.previewFrame {
+                if render.content == .frame, let frame = render.image {
                     let f = layout.previewCardFrame(centreX: cx)
                     let shape = RoundedRectangle(cornerRadius: TransportBarLayout.cardCornerRadius, style: .continuous)
                     ZStack {
@@ -405,11 +408,12 @@ struct PlayerTransportBar: View {
                     .frame(width: f.width, height: f.height)
                     .clipShape(shape)
                     .overlay(shape.strokeBorder(.white.opacity(0.4), lineWidth: 2))
+                    .cardProbe(model, render, body: true, frame: true)
                     .position(x: f.midX, y: f.midY)
                     .transition(.opacity)
                     .accessibilityIdentifier("player.bar.previewCard")
                     .accessibilityHidden(true)
-                } else if model.previewCardEnabled {
+                } else if render.content == .placeholder {
                     // BUG-181 (Steven rc7): Dolby Vision had an empty box here until a harvested
                     // frame existed. Same frame, corners and stroke as the real card.
                     let f = layout.previewCardFrame(centreX: cx)
@@ -417,6 +421,7 @@ struct PlayerTransportBar: View {
                     shape.fill(Color(white: 0.08).opacity(0.92))
                         .overlay(shape.strokeBorder(.white.opacity(0.4), lineWidth: 2))
                         .frame(width: f.width, height: f.height)
+                        .cardProbe(model, render, body: true, frame: false)
                         .position(x: f.midX, y: f.midY)
                         .transition(.opacity)
                         .accessibilityIdentifier("player.bar.previewPlaceholder")
@@ -424,7 +429,7 @@ struct PlayerTransportBar: View {
                 }
                 if let title = model.chapterTitle(at: target) {
                     let w = min(chapterWidth, TransportBarLayout.cardSize.width)
-                    let f = layout.chapterLabelFrame(centreX: cx, width: w, cardShown: model.previewFrame != nil)
+                    let f = layout.chapterLabelFrame(centreX: cx, width: w, cardShown: render.cardShown)
                     Text(verbatim: title)
                         .font(PlayerTransportMetrics.meta)
                         .lineLimit(1).truncationMode(.tail)
@@ -441,8 +446,8 @@ struct PlayerTransportBar: View {
                 }
             }
         }
-        .animation(fade, value: model.previewFrame != nil)
-        .animation(fade, value: scrubTarget != nil)
+        .animation(fade, value: render.content == .frame)
+        .animation(fade, value: render.cardTargetSec != nil)
     }
 
     private func rightLabel() -> String {
@@ -456,7 +461,11 @@ struct PlayerTransportBar: View {
 
     private func timesRow(_ layout: TransportBarLayout) -> some View {
         let row = layout.timesRowFrame
-        let preview = model.previewSec
+        let render = model.previewRender
+        // A click's card keeps the landing time under it once the press is up (`previewSec` is
+        // only set while a key is down or a commit lands).
+        let landingSec = render.kind == .landing ? render.cardTargetSec : nil
+        let preview = model.previewSec ?? landingSec
         var showElapsed = true, showRemaining = true
         var targetFrame: CGRect = .zero
         if let p = preview {
@@ -468,7 +477,7 @@ struct PlayerTransportBar: View {
             showElapsed = vis.elapsed; showRemaining = vis.remaining
         }
         // While scrubbing, the target label is the only time on the row.
-        let scrubbing = scrubTarget != nil
+        let scrubbing = self.scrubbing
         if scrubbing { showElapsed = false; showRemaining = false }
         let labelFade: Animation? = reduceMotion ? nil : .easeInOut(duration: 0.15)
         let elapsedText = TransportTimeFormat.elapsed(model.positionSec)
@@ -503,6 +512,9 @@ struct PlayerTransportBar: View {
                 Text(verbatim: text)
                     .font(PlayerTransportMetrics.time)
                     .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { targetWidth = $0 }
+                    // A time-only click card is this label (and the chapter title): it counts as laid out.
+                    .cardProbe(model, render, body: false, frame: false,
+                               enabled: render.kind == .landing && render.content == .timeOnly)
                     .accessibilityIdentifier("player.bar.time.target")
                     .accessibilityValue(text)
                     .position(x: targetFrame.midX, y: targetFrame.midY)
@@ -519,16 +531,19 @@ struct PlayerTransportBar: View {
         else if let p = model.focusedPill { focus = "pill:\(p.rawValue)" }
         else { focus = "track" }
         let prev = model.previewSec.map { String(format: "%.1f", $0) } ?? "nil"
+        let render = model.previewRender
         let scrub: String
         if case .scrubbing(let t) = model.mode { scrub = String(format: "%.1f", t) } else { scrub = "nil" }
         let text = "mode=\(model.mode.probeName) pos=\(String(format: "%.1f", model.positionSec)) prev=\(prev) "
             + "buf=\(model.bufferedRanges.count) focus=\(focus) y=\(String(format: "%.0f", canvasHeight - trackGlobal.midY)) "
             + "x0=\(String(format: "%.0f", trackGlobal.minX)) x1=\(String(format: "%.0f", trackGlobal.maxX)) "
             + "vis=\(visible ? 1 : 0) ends=\(model.showsEndTime ? 1 : 0) pills=\(model.pills.count)"
-            + " scrub=\(scrub) curve=\(model.scrubCurveCode) frame=\(model.previewFrame != nil ? 1 : 0) arb=\(model.debugArbiter)"
+            + " scrub=\(scrub) curve=\(model.scrubCurveCode) frame=\(render.content == .frame ? 1 : 0) arb=\(model.debugArbiter)"
             + " chapters=\(model.chapters.count) ct=\(model.showsChapterTitle ? 1 : 0) spans=\(model.skipSpans.count) aspect=\(model.aspectMode.rawValue)"
             + " thumbs=\(model.previewFrames) stored=\(model.debugAspectStored.rawValue) aw=\(model.debugAspectWrites)"
-            + " decoded=\(model.decodedFrames) fsec=\(model.previewFrameSec.map { String(format: "%.1f", $0) } ?? "nil")"
+            + " decoded=\(model.decodedFrames) fsec=\(render.frameSec.map { String(format: "%.1f", $0) } ?? "nil")"
+            + " card=\(render.content.probeCode) cardw=\(Int(model.debugCardWidth.rounded())) hcard=\(model.debugHoldCards)"
+            + " ccard=\(model.debugClickCards) cap=\(render.capabilityAny ? 1 : 0)"
         return Text(verbatim: text)
             .font(.system(size: 8))
             .opacity(0.011)
@@ -536,6 +551,28 @@ struct PlayerTransportBar: View {
             .accessibilityIdentifier("debug_transportProbe")
     }
     #endif
+}
+
+private extension View {
+    /// DEBUG: reports the laid-out card (its real width, never an accessibility frame) to the probe
+    /// counters (`TransportBarModel.noteCardLaidOut`). The sample carries the render's episode, so a
+    /// second click on an unchanged card still reports. Release builds: the view unchanged.
+    @ViewBuilder
+    func cardProbe(_ model: TransportBarModel, _ render: SeekPreviewRender, body: Bool, frame: Bool,
+                   enabled: Bool = true) -> some View {
+        #if DEBUG
+        if enabled {
+            onGeometryChange(for: TransportBarModel.CardLayoutSample.self) { proxy in
+                TransportBarModel.CardLayoutSample(width: proxy.size.width, kind: render.kind,
+                                                   episode: render.episode, body: body, frame: frame)
+            } action: { model.noteCardLaidOut($0) }
+        } else {
+            self
+        }
+        #else
+        self
+        #endif
+    }
 }
 
 /// The optional wall clock (Settings → player.showClock), top-trailing; the screen stacks it above

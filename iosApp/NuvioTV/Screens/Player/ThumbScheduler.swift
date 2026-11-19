@@ -79,8 +79,9 @@ nonisolated struct ThumbScheduler {
         /// Forward cache bytes / `demuxer-max-bytes` (C2; `ThumbScheduler.cacheFill(...)`).
         var cacheFill: Double
         var seekInFlight: Bool
-        /// The transport is scrubbing (`transport.mode` is `.scrubbing`).
-        var scrubbing: Bool
+        /// Seek preview lookups are running (GitHub #33: a hold, a scrub or a click's card with a
+        /// request target, `SeekPreviewCoordinator.previewActive`).
+        var previewActive: Bool
         /// A press in the last `HarvestScheduler.recentInputSec`.
         var recentInput: Bool
         /// A harvest capture is in flight (P2 `harvest.inFlight`).
@@ -230,14 +231,14 @@ nonisolated struct ThumbScheduler {
     }
 
     /// Review r1 P1, r2 P2 #1: nothing more will run until the viewer scrubs (the pre-warm
-    /// stopped, no job, no pending scrub, not scrubbing), and one of:
+    /// stopped, no job, no pending scrub, no preview lookups running), and one of:
     /// - no scrub since the thumbnailer opened (the close that follows the pre-warm stop);
     /// - the last request is still open at the host (`requestLeftOpen`: 4K ranges, an open range);
     /// - `idleCloseAfterScrubSec` passed since the last scrub activity.
     /// So a viewer who scrubs, plays and scrubs again within a minute keeps the open thumbnailer.
     /// The controller then closes it and calls `noteIdleClosed`.
-    func idleCloseWanted(now: TimeInterval, scrubbing: Bool, requestLeftOpen: Bool) -> Bool {
-        guard enabled, stopped == nil, prewarmStopped != nil, inFlight == nil, pendingScrub == nil, !scrubbing else {
+    func idleCloseWanted(now: TimeInterval, previewActive: Bool, requestLeftOpen: Bool) -> Bool {
+        guard enabled, stopped == nil, prewarmStopped != nil, inFlight == nil, pendingScrub == nil, !previewActive else {
             return false
         }
         guard let last = lastScrubActivity else { return true }
@@ -384,7 +385,7 @@ nonisolated struct ThumbScheduler {
         if i.bytesRead >= i.byteBudget { stopPrewarm(.byteBudget); return nil }
         if decoded >= config.frameCap { stopPrewarm(.frameCap); return nil }
         if !i.store.acceptsDecode { stopPrewarm(.storeFull); return nil }
-        let quiet = !i.scrubbing && !i.recentInput && !i.overlayUp && pendingScrub == nil
+        let quiet = !i.previewActive && !i.recentInput && !i.overlayUp && pendingScrub == nil
             && i.now >= lastScrubEnd + config.quietAfterScrubSec
             && i.now >= lastSeekLanded + config.quietAfterSeekSec
         guard quiet, cacheHealthy(i) else { endPass(); return nil }

@@ -9,7 +9,7 @@ final class ThumbSchedulerTests: XCTestCase {
                         _ edit: (inout T.Inputs) -> Void = { _ in }) -> T.Inputs {
         var i = T.Inputs(now: now, positionSec: position, durationSec: duration, paused: false,
                          cacheWait: false, cacheSec: 30, cacheTrendSec: 0, cacheReachesEnd: false, cacheFill: 0.2,
-                         seekInFlight: false, scrubbing: false, recentInput: false, harvestInFlight: false,
+                         seekInFlight: false, previewActive: false, recentInput: false, harvestInFlight: false,
                          store: .empty, bytesRead: 0, byteBudget: 40 * T.mib,
                          scrubCeiling: T.scrubCeiling(budget: 40 * T.mib), opened: true)
         edit(&i)
@@ -35,10 +35,10 @@ final class ThumbSchedulerTests: XCTestCase {
     func testScrubMissDebouncesFiftyMillisecondsAndLastWins() {
         var t = T(enabled: true)
         t.noteScrubMiss(target: 300, now: 100)
-        XCTAssertNil(t.next(inputs(now: 100.04) { $0.scrubbing = true }))
+        XCTAssertNil(t.next(inputs(now: 100.04) { $0.previewActive = true }))
         t.noteScrubMiss(target: 420, now: 100.04)          // newer miss replaces
-        XCTAssertNil(t.next(inputs(now: 100.06) { $0.scrubbing = true }))
-        XCTAssertEqual(t.next(inputs(now: 100.1) { $0.scrubbing = true }), .scrub(420))
+        XCTAssertNil(t.next(inputs(now: 100.06) { $0.previewActive = true }))
+        XCTAssertEqual(t.next(inputs(now: 100.1) { $0.previewActive = true }), .scrub(420))
     }
 
     // 3
@@ -46,12 +46,12 @@ final class ThumbSchedulerTests: XCTestCase {
         var t = T(enabled: true)
         t.setKeyframeIndex(stride(from: 0.0, through: 598, by: 2).map { $0 })
         t.noteScrubMiss(target: 401.3, now: 0)
-        XCTAssertEqual(t.next(inputs(now: 1) { $0.scrubbing = true }), .scrub(400))
+        XCTAssertEqual(t.next(inputs(now: 1) { $0.previewActive = true }), .scrub(400))
         // Sparse index (median gap 100 > 3 × 10): the target itself.
         var s = T(enabled: true)
         s.setKeyframeIndex([0, 100, 200, 300, 400, 500])
         s.noteScrubMiss(target: 401.3, now: 0)
-        XCTAssertEqual(s.next(inputs(now: 1) { $0.scrubbing = true }), .scrub(401.3))
+        XCTAssertEqual(s.next(inputs(now: 1) { $0.previewActive = true }), .scrub(401.3))
     }
 
     // 4: a scrub waits for the in-flight pre-warm, then pre-empts the rest of the pass.
@@ -61,12 +61,12 @@ final class ThumbSchedulerTests: XCTestCase {
         guard case .prewarm = first else { return XCTFail("expected a pre-warm, got \(String(describing: first))") }
         t.noteStarted(first!, now: 100)
         t.noteScrubMiss(target: 500, now: 100.1)
-        XCTAssertNil(t.next(inputs(now: 100.2) { $0.scrubbing = true }), "one in flight")
+        XCTAssertNil(t.next(inputs(now: 100.2) { $0.previewActive = true }), "one in flight")
         t.noteFinished(first!, result: .stored(keyframeSec: first!.sec), now: 100.3)
-        let scrub = t.next(inputs(now: 100.3) { $0.scrubbing = true })
+        let scrub = t.next(inputs(now: 100.3) { $0.previewActive = true })
         XCTAssertEqual(scrub, .scrub(500))
         finish(&t, scrub!, at: 100.6)
-        XCTAssertNil(t.next(inputs(now: 101) { $0.scrubbing = true }), "no pre-warm while scrubbing")
+        XCTAssertNil(t.next(inputs(now: 101) { $0.previewActive = true }), "no pre-warm while scrubbing")
         t.noteScrubEnded(now: 102)
         XCTAssertNil(t.next(inputs(now: 103.9)), "2 s quiet after the scrub, and the next 10 s tick")
         XCTAssertNotNil(t.next(inputs(now: 110.1)))
@@ -179,14 +179,14 @@ final class ThumbSchedulerTests: XCTestCase {
     func testIdleCloseAfterPrewarmStopAndScrubReopens() {
         var t = T(enabled: true)
         let budget = 40 * T.mib
-        func idle(_ now: TimeInterval, scrubbing: Bool = false, leftOpen: Bool = false) -> Bool {
-            t.idleCloseWanted(now: now, scrubbing: scrubbing, requestLeftOpen: leftOpen)
+        func idle(_ now: TimeInterval, previewActive: Bool = false, leftOpen: Bool = false) -> Bool {
+            t.idleCloseWanted(now: now, previewActive: previewActive, requestLeftOpen: leftOpen)
         }
         XCTAssertFalse(idle(100), "pre-warm still running")
         XCTAssertNil(t.next(inputs { $0.bytesRead = budget }))
         XCTAssertEqual(t.prewarmStopped, .byteBudget)
         XCTAssertTrue(idle(100), "no scrub since the open: the close follows the pre-warm stop")
-        XCTAssertFalse(idle(100, scrubbing: true), "not while the viewer scrubs")
+        XCTAssertFalse(idle(100, previewActive: true), "not while preview lookups run")
         t.noteIdleClosed()
         // Long healthy play: no reopen.
         for k in 0..<60 {
@@ -219,7 +219,7 @@ final class ThumbSchedulerTests: XCTestCase {
         var t = T(enabled: true)
         let budget = 40 * T.mib
         func idle(_ now: TimeInterval, leftOpen: Bool = false) -> Bool {
-            t.idleCloseWanted(now: now, scrubbing: false, requestLeftOpen: leftOpen)
+            t.idleCloseWanted(now: now, previewActive: false, requestLeftOpen: leftOpen)
         }
         XCTAssertNil(t.next(inputs { $0.bytesRead = budget }))
         XCTAssertTrue(idle(100))
@@ -348,7 +348,7 @@ final class ThumbSchedulerTests: XCTestCase {
         var mirror = SeekPreviewSnapshot.empty
         mirror.stamps = [299.5]
         t.noteScrubMiss(target: 300, now: 100)
-        XCTAssertNil(t.next(inputs(now: 100.1) { $0.store = mirror; $0.scrubbing = true }))
+        XCTAssertNil(t.next(inputs(now: 100.1) { $0.store = mirror; $0.previewActive = true }))
         XCTAssertNil(t.pendingScrubDueAt, "dropped, not retried")
     }
 
