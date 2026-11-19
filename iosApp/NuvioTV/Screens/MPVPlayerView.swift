@@ -212,15 +212,13 @@ final class MPVTVPlayerViewController: UIViewController {
     private var previewStore: SeekPreviewStore?
     /// The store's stream key, kept for a reconnect's fresh store.
     private var previewStoreKey = ""
-    /// GitHub #33: what the store can fill for this playback (one decision for the harvest, the
-    /// decoder and the card), and the source generation the transport's coordinator fences on.
-    private var previewCapability: SeekPreviewCapability = .none
     /// Main only. Everything that belongs to one preview timeline (review r3 P2 #2): the source
-    /// generation, the harvest scheduler (interval from `debug.harvestIntervalSec`, read in
-    /// `viewDidLoad`), the decode scheduler (disabled unless the mode is `decode`), what the
-    /// thumbnailer's open learned, and the playback's byte accounting. Reset only by
-    /// `beginPreviewTimeline`.
-    private var previewTimeline = SeekPreviewTimeline(thumbs: ThumbScheduler(enabled: false),
+    /// generation, what the store can fill (GitHub #33: one decision for the harvest, the decoder
+    /// and the card; harvest-only after a live reconnect, review r4 #1), the harvest scheduler
+    /// (interval from `debug.harvestIntervalSec`, read in `viewDidLoad`), the decode scheduler
+    /// (disabled unless the mode is `decode`), what the thumbnailer's open learned, and the
+    /// playback's byte accounting. Moved to a new timeline only by `beginPreviewTimeline`.
+    private var previewTimeline = SeekPreviewTimeline(capability: .none, thumbs: ThumbScheduler(enabled: false),
                                                       harvest: HarvestScheduler(intervalSec: 10))
     /// `eventQueue` only: nil = untried; false = this mpv rejected the format argument, call
     /// `screenshot-raw video` without it from now on.
@@ -587,10 +585,10 @@ final class MPVTVPlayerViewController: UIViewController {
         let harvestInterval = SeekPreviewHarvestResolution.effectiveIntervalSec(
             setting: harvestSetting, sentinelDisabled: sentinelDisabled, synthetic: harvestSynthetic,
             isSimulator: isSimulator)
-        previewCapability = .mpv(mode: seekPreviewMode, effectiveHarvestIntervalSec: harvestInterval)
+        let capability = SeekPreviewCapability.mpv(mode: seekPreviewMode, effectiveHarvestIntervalSec: harvestInterval)
         previewTimeline = SeekPreviewTimeline(
-            thumbs: ThumbScheduler(enabled: previewCapability.fillsUnwatched),
-            harvest: HarvestScheduler(intervalSec: previewCapability.fillsWatched ? harvestInterval : 0))
+            capability: capability, thumbs: ThumbScheduler(enabled: capability.fillsUnwatched),
+            harvest: HarvestScheduler(intervalSec: capability.fillsWatched ? harvestInterval : 0))
         // The first timeline: the store (in memory, for the life of this controller), the source
         // for the coordinator, and the Info row (the DEBUG row exists from the start: Off mode has
         // no store events). The same path a live reconnect takes.
@@ -2742,7 +2740,7 @@ final class MPVTVPlayerViewController: UIViewController {
         case .storeFull, .frameCap: return String(localized: "store full")
         case .dvProfile5: return String(localized: "Dolby Vision profile 5")
         case .container, .openFailed, .stalled: return String(localized: "not supported for this file")
-        case .modeOff: return nil
+        case .modeOff, .reconnected: return nil
         }
     }
 
@@ -2750,9 +2748,8 @@ final class MPVTVPlayerViewController: UIViewController {
     /// decoder when a pre-warm pass ends. Called every UI tick, after each finished job (passes run
     /// back to back), after the open, and 50 ms after a scrub miss.
     private func driveThumbs() {
-        // Not while a live reconnect reopens the stream: an open now would race the reopen, and
-        // a refused one stops decoding for the file.
-        guard seekPreviewMode.allowsDecode, mpv != nil, fileLoaded, !liveReconnectLoading, previewStore != nil else { return }
+        // A live reconnect stops decoding for good (`ThumbStopReason.reconnected`): no open races it.
+        guard seekPreviewMode.allowsDecode, mpv != nil, fileLoaded, previewStore != nil else { return }
         let inputs = thumbInputs()
         if previewTimeline.thumbs.shouldOpen(inputs) { openThumbnailer() }
         if let job = previewTimeline.thumbs.next(inputs) {
@@ -3230,8 +3227,8 @@ final class MPVTVPlayerViewController: UIViewController {
         case .reconnect(let attempt):
             print("[Live] end of stream on a live channel, reconnect \(attempt)/\(LiveReconnectPolicy.limit)")
             liveReconnectLoading = true
-            // Review r2-3, r3 P2 #2: the reopen may restart the timeline. After teardown (no
-            // store) there is nothing to replace.
+            // Review r2-3, r3 P2 #2, r4 #1: the reopen may restart the timeline. After teardown
+            // (no store) there is nothing to replace.
             if previewStore != nil { beginPreviewTimeline() }
             // Off the main thread: this runs inside the 0.5 s `refreshState` tick, and the mpv core
             // is never called from there (BUG-2/BUG-3). The request headers are a property of the
@@ -3252,22 +3249,29 @@ final class MPVTVPlayerViewController: UIViewController {
 
     /// The one owner of a preview timeline's start (review r2-3, r3 P2 #2): the first load and a
     /// live reconnect, which may restart the stream's timeline so that an old timestamp names a
-    /// different picture. In one main-thread turn: the old thumbnailer closes (its bytes stay
-    /// charged), both schedulers drop everything keyed by an old time and the facts go
-    /// (`SeekPreviewTimeline.beginNewTimeline`), a fresh store (same key and caps) is installed,
-    /// and the coordinator gets the new source generation. The byte budget is kept. A late harvest
-    /// lands in the store it started with; a late decode fails `decodeBelongs`. The next open
-    /// (`ThumbScheduler.shouldOpen`, after the reconnect's FILE_LOADED) learns the new timeline's
-    /// index and spacing. On the first load the schedulers are fresh and no store exists yet: the
-    /// reset and the generation move are skipped, so the coordinator sees generation 0 as before.
+    /// different picture. On a reconnect, in one main-thread turn: the thumbnailer closes for the
+    /// rest of the playback (its bytes stay charged; review r4 #1, owner's call: Whole Video stops
+    /// reading unwatched parts, `SeekPreviewTimeline.liveReconnected`), a fresh store (same key and
+    /// caps) is installed for the harvest, and the coordinator gets the harvest-only capability
+    /// under the new generation. A late harvest lands in the store it started with; a late decode
+    /// fails `decodeBelongs`. On the first load no store exists yet: the coordinator sees the
+    /// mode's capability at generation 0.
     private func beginPreviewTimeline() {
-        let replacing = previewStore != nil
         thumbScrubWork?.cancel(); thumbScrubWork = nil
-        closeThumbnailer()
-        if replacing { previewTimeline.beginNewTimeline() }
+        if previewStore != nil {
+            closeThumbnailer()
+            previewTimeline.liveReconnected()
+            #if DEBUG
+            if seekPreviewMode.allowsDecode, previewTimeline.thumbs.stopped == .reconnected {
+                NSLog("%@", String(format: "[Thumbs] stop reason=%@ decoded=%ld charged=%.1fMB",
+                                   ThumbStopReason.reconnected.rawValue, previewTimeline.thumbs.decoded,
+                                   Double(thumbBytesCharged) / 1_048_576))
+            }
+            #endif
+        }
         installPreviewStore(makePreviewStore())
         state.transport.previewFrames = 0
-        transportInput.setPreviewSource(capability: previewCapability, generation: previewTimeline.generation)
+        transportInput.setPreviewSource(capability: previewTimeline.capability, generation: previewTimeline.generation)
         rebuildPreviewSummary()
     }
 

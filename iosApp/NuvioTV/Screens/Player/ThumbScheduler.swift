@@ -2,9 +2,11 @@ import Foundation
 
 /// Why the keyframe thumbnailer stopped for a file (P3). `stop(_:)` with a file-level reason ends
 /// everything; the budget, cap and store reasons end the pre-warm only (`prewarmStopped`), and the
-/// scrub ceiling ends scrub jobs too.
+/// scrub ceiling ends scrub jobs too. `reconnected` (review r4 #1, owner's call): a live reconnect
+/// ended Whole Video's reads of unwatched parts for the rest of the playback
+/// (`SeekPreviewTimeline.liveReconnected`).
 nonisolated enum ThumbStopReason: String, Sendable {
-    case frameCap, storeFull, byteBudget, httpRefused, openFailed, noIndex, container, dvProfile5, stalled, modeOff
+    case frameCap, storeFull, byteBudget, httpRefused, openFailed, noIndex, container, dvProfile5, stalled, modeOff, reconnected
 }
 
 /// When the mpv keyframe thumbnailer decodes, and which keyframe (P3, spec §3 with critique C1,
@@ -214,7 +216,7 @@ nonisolated struct ThumbScheduler {
         lastSeekLanded = now
     }
 
-    /// File-level stop (open refused, HTTP refusal, stall). Pre-warm-only reasons go through
+    /// File-level stop (open refused, HTTP refusal, stall, live reconnect). Pre-warm-only reasons go through
     /// `noteFinished` and the gates.
     mutating func stop(_ reason: ThumbStopReason) {
         if stopped == nil { stopped = reason }
@@ -250,29 +252,6 @@ nonisolated struct ThumbScheduler {
     mutating func noteIdleClosed() {
         openRequested = false
         lastScrubActivity = nil
-    }
-
-    /// Review r3 P2 #2: a live reconnect restarted the timeline and the thumbnailer was closed
-    /// (`SeekPreviewTimeline.beginNewTimeline`). Drops everything keyed by a time on the old
-    /// timeline (the job in flight, the pending scrub, the tried set, the keyframe index, the
-    /// pass order) and the open state of the closed thumbnailer (open request, healthy-play clock,
-    /// scrub activity); a store-full pre-warm stop goes with the old store. Keeps the file-level
-    /// stop, the budget and frame-cap stops, the decode count and the wall-clock quiet periods.
-    /// The job in flight is forgotten, never finished: its result is dropped by
-    /// `SeekPreviewTimeline.decodeBelongs` and is not counted as tried.
-    mutating func resetForNewTimeline() {
-        inFlight = nil
-        pendingScrub = nil
-        tried = []
-        keyframeIndex = []
-        passActive = false
-        passIssued = 0
-        passOrder = []
-        passEndedUnreported = false
-        openRequested = false
-        healthyPlaySec = 0
-        lastScrubActivity = nil
-        if prewarmStopped == .storeFull { prewarmStopped = nil }
     }
 
     /// True once per pass that issued at least one job, after it ended (release the decoder).
