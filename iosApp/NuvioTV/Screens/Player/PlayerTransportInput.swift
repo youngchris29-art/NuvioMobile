@@ -1172,44 +1172,52 @@ final class PlayerTransportInput: NSObject, UIGestureRecognizerDelegate {
         flashControls()
     }
 
-    /// A relative arrow seek. Returns where its card goes (the same base rule, clamped like a hold)
-    /// and the generation it issued; nil when nothing was issued.
-    @discardableResult
-    private func seekBy(_ seconds: Double) -> (targetSec: Double, generation: Int)? {
+    /// A relative arrow seek from `base` (`ClickLandingTarget.base`; `.unknown` lets mpv's relative
+    /// seek start from wherever the in-flight seek lands). Returns the generation it issued; nil
+    /// when nothing was issued.
+    private func seekBy(_ seconds: Double, base: ClickLandingTarget.Base) -> Int? {
         guard let engine, engine.canTransport else { return nil }
         // Arrow seeks are deliberate: a segment they start or land in is never auto-skipped. The
         // cached position is stale while another seek is in flight — mpv's relative seek then
         // starts from that seek's target, so the estimate does too (nil = unknown). The planner
         // marks the position mpv actually lands on, reported by `drainEvents`.
-        let base: Double?
-        if engine.hasSeekInFlight {
-            base = engine.seekInFlightTargetSec
-        } else {
-            base = engine.transportPositionSec
-        }
-        let cardBase = engine.seekInFlightTargetSec ?? engine.transportPositionSec   // edgeClick's rule
-        let target = TransportPreview.clamp(cardBase + seconds, durationSec: engine.transportDurationSec)
+        let from: Double?
+        if case .known(let sec) = base { from = sec } else { from = nil }
         let before = engine.seekGeneration
         let expected = before + 1                      // issueSeek's generation for this seek
-        let generation = engine.issueSeek(kind: .user, targetSec: base.map { $0 + seconds }, fromSec: base,
+        let generation = engine.issueSeek(kind: .user, targetSec: from.map { $0 + seconds }, fromSec: from,
                                           mode: .relative(deltaSec: seconds), planner: true,
                                           onRejected: { [weak self] in self?.preview.seekRejected(generation: expected) })
-        return generation == before ? nil : (target, generation)
+        return generation == before ? nil : generation
     }
 
     /// One Left/Right click (P1's `.immediateSeek`): ±10 s, or in chapter mode a chapter jump. The
     /// card shows where the seek lands (GitHub #33): from press-down in Step mode, from the release
-    /// for a chapter or scan-armed click.
+    /// for a chapter or scan-armed click. When that landing is unknown (a relative click while a
+    /// seek with an unknown target is in flight, review r2 P2 #1) the seek still goes but no card
+    /// shows, and an earlier click's card goes: it no longer describes where playback goes.
     private func edgeClick(_ d: Double) {
         guard let engine else { return }
-        let base = engine.seekInFlightTargetSec ?? engine.transportPositionSec   // seekBy's rule
-        let issued: (targetSec: Double, generation: Int)?
-        switch PlayerChapters.edgeClick(mode: edgeClickMode, direction: d < 0 ? -1 : 1, baseSec: base,
-                                        chapters: state.transport.chapters, skipSec: abs(d)) {
-        case .relative(let r): issued = seekBy(r)
-        case .absolute(let t): issued = chapterSeek(t)
+        let base = ClickLandingTarget.base(seekInFlight: engine.hasSeekInFlight,
+                                           inFlightTargetSec: engine.seekInFlightTargetSec,
+                                           positionSec: engine.transportPositionSec)
+        // The chapter choice needs a number: with an unknown base it uses the cached position, as
+        // before; only the card depends on the base being known.
+        let chapterBase: Double
+        if case .known(let sec) = base { chapterBase = sec } else { chapterBase = engine.transportPositionSec }
+        let action = PlayerChapters.edgeClick(mode: edgeClickMode, direction: d < 0 ? -1 : 1, baseSec: chapterBase,
+                                              chapters: state.transport.chapters, skipSec: abs(d))
+        let generation: Int?
+        switch action {
+        case .relative(let r): generation = seekBy(r, base: base)
+        case .absolute(let t): generation = chapterSeek(t)?.generation
         }
-        if let issued { preview.clickIssued(targetSec: issued.targetSec, generation: issued.generation) }
+        guard let generation else { return }
+        if let target = ClickLandingTarget.cardTargetSec(action, base: base, durationSec: engine.transportDurationSec) {
+            preview.clickIssued(targetSec: target, generation: generation)
+        } else {
+            preview.dismissClick()
+        }
     }
 
     /// The Chapters tab's seek: no landing card for this path, and an earlier click's card goes as

@@ -458,6 +458,31 @@ final class SeekPreviewCoordinatorTests: XCTestCase {
         XCTAssertTrue(clock.items.isEmpty)
     }
 
+    /// Review r2 P2 #1: a Right click while mpv's percentage resume is still in flight (target
+    /// unknown) has no known landing. `edgeClick` then issues the seek and calls `dismissClick`
+    /// instead of `clickIssued`: no card at the stale position, and an earlier click's card goes.
+    func testClickDuringAnUnknownTargetResumeShowsNoCard() async {
+        coordinator.setSource(capability: Self.both, generation: 0)
+        let idleBase = ClickLandingTarget.base(seekInFlight: false, inFlightTargetSec: nil, positionSec: 100)
+        let first = ClickLandingTarget.cardTargetSec(.relative(10), base: idleBase, durationSec: 0)
+        XCTAssertEqual(first, 110)
+        coordinator.clickIssued(targetSec: first!, generation: 5)
+        XCTAssertEqual(render.kind, .landing)
+
+        // The resume (generation 6, unknown target) is now in flight; the cached position is stale.
+        let resumeBase = ClickLandingTarget.base(seekInFlight: true, inFlightTargetSec: nil, positionSec: 10)
+        XCTAssertNil(ClickLandingTarget.cardTargetSec(.relative(10), base: resumeBase, durationSec: 0))
+        coordinator.dismissClick()                     // what edgeClick does for a nil card target
+        XCTAssertEqual(render.kind, .none)
+        XCTAssertEqual(render.content, .none)
+        XCTAssertNil(render.cardTargetSec, "no card at the stale position (0:20)")
+        coordinator.seekLanded(generation: 5)
+        coordinator.seekLanded(generation: 7)          // the click's own seek lands
+        clock.advance(by: 2)
+        XCTAssertEqual(render.kind, .none)
+        XCTAssertTrue(clock.items.isEmpty)
+    }
+
     // MARK: Teardown and Off
 
     func testTeardownWithTwoLookupsInFlight() async {

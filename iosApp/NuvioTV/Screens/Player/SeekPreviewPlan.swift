@@ -193,6 +193,40 @@ nonisolated struct ClickPreviewLatch: Equatable, Sendable {
     var nextDeadline: Double? { active?.deadline }
 }
 
+// MARK: - Click landing target
+
+/// Where a Left/Right click lands, for its card (review r2 P2 #1). The cached position is stale
+/// while another seek is in flight: a relative click then lands relative to that seek's target, and
+/// when that target is unknown (mpv's percentage resume before the duration is known) so is the
+/// landing. The click then shows no card; the seek itself is still issued. A chapter jump is
+/// absolute, so its landing is known whatever the base.
+enum ClickLandingTarget {
+    enum Base: Equatable, Sendable {
+        case known(Double)
+        case unknown
+    }
+
+    /// The position a relative click starts from: the in-flight seek's target while one is in
+    /// flight (`.unknown` when that target is), else the cached position.
+    static func base(seekInFlight: Bool, inFlightTargetSec: Double?, positionSec: Double) -> Base {
+        guard seekInFlight else { return .known(positionSec) }
+        guard let target = inFlightTargetSec else { return .unknown }
+        return .known(target)
+    }
+
+    /// The card's target for `action` from `base`, clamped like the seek itself (`TransportPreview.clamp`
+    /// for a relative click, `PlayerChapters.clampedSeek` for a chapter jump); nil = no card.
+    static func cardTargetSec(_ action: EdgeClickAction, base: Base, durationSec: Double) -> Double? {
+        switch action {
+        case .absolute(let sec):
+            return PlayerChapters.clampedSeek(sec, durationSec: durationSec)
+        case .relative(let delta):
+            guard case .known(let from) = base else { return nil }
+            return TransportPreview.clamp(from + delta, durationSec: durationSec)
+        }
+    }
+}
+
 // MARK: - Preview-request lifecycle
 
 /// Finding 4 / R2-2: the preview-request side (request generation, throttle, accepted frame,

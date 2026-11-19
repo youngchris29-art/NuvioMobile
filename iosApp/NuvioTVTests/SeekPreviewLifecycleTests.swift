@@ -218,3 +218,59 @@ final class SeekPreviewLifecycleTests: XCTestCase {
         XCTAssertEqual(d, C.Decision(frame: .keep, finishThrottle: true, refineTargetSec: nil))
     }
 }
+
+/// Review r2 P2 #1: where a Left/Right click's card goes (`ClickLandingTarget`).
+@MainActor
+final class ClickLandingTargetTests: XCTestCase {
+    typealias T = ClickLandingTarget
+
+    func testIdleBaseIsTheCachedPosition() {
+        XCTAssertEqual(T.base(seekInFlight: false, inFlightTargetSec: nil, positionSec: 100), .known(100))
+    }
+
+    func testInFlightKnownTargetIsTheBase() {
+        XCTAssertEqual(T.base(seekInFlight: true, inFlightTargetSec: 300, positionSec: 100), .known(300))
+    }
+
+    func testInFlightUnknownTargetIsUnknown() {
+        XCTAssertEqual(T.base(seekInFlight: true, inFlightTargetSec: nil, positionSec: 100), .unknown,
+                       "never the stale cached position")
+    }
+
+    func testKnownBaseRelativeClick() {
+        XCTAssertEqual(T.cardTargetSec(.relative(10), base: .known(100), durationSec: 1000), 110)
+        XCTAssertEqual(T.cardTargetSec(.relative(-10), base: .known(100), durationSec: 1000), 90)
+    }
+
+    func testInFlightKnownTargetRelativeClick() {
+        let base = T.base(seekInFlight: true, inFlightTargetSec: 300, positionSec: 100)
+        XCTAssertEqual(T.cardTargetSec(.relative(10), base: base, durationSec: 1000), 310)
+    }
+
+    func testInFlightUnknownTargetHasNoCard() {
+        let base = T.base(seekInFlight: true, inFlightTargetSec: nil, positionSec: 10)
+        XCTAssertNil(T.cardTargetSec(.relative(10), base: base, durationSec: 0))
+        XCTAssertNil(T.cardTargetSec(.relative(-10), base: base, durationSec: 1000))
+    }
+
+    func testChapterJumpKnownEvenWithAnUnknownBase() {
+        XCTAssertEqual(T.cardTargetSec(.absolute(240), base: .unknown, durationSec: 1000), 240)
+        XCTAssertEqual(T.cardTargetSec(.absolute(240), base: .known(100), durationSec: 1000), 240)
+    }
+
+    func testClampsAtZero() {
+        XCTAssertEqual(T.cardTargetSec(.relative(-10), base: .known(4), durationSec: 1000), 0)
+        XCTAssertEqual(T.cardTargetSec(.absolute(-3), base: .unknown, durationSec: 1000), 0)
+    }
+
+    func testClampsHalfASecondBeforeTheEnd() {
+        XCTAssertEqual(T.cardTargetSec(.relative(10), base: .known(995), durationSec: 1000), 999.5)
+        XCTAssertEqual(T.cardTargetSec(.absolute(1200), base: .known(995), durationSec: 1000), 999.5)
+    }
+
+    func testUnknownDurationOnlyClampsAtZero() {
+        XCTAssertEqual(T.cardTargetSec(.relative(10), base: .known(5000), durationSec: 0), 5010)
+        XCTAssertEqual(T.cardTargetSec(.relative(-10), base: .known(5), durationSec: 0), 0)
+        XCTAssertEqual(T.cardTargetSec(.absolute(5000), base: .unknown, durationSec: 0), 5000)
+    }
+}
