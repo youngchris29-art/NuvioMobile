@@ -105,9 +105,9 @@ final class PlayerTransportBarLayoutTests: XCTestCase {
     }
 
     func testHideBlockedByPillOrActiveMode() {
-        XCTAssertTrue(TransportHideRule.mayHide(pillFocused: false, modeActive: false))
-        XCTAssertFalse(TransportHideRule.mayHide(pillFocused: true, modeActive: false))
-        XCTAssertFalse(TransportHideRule.mayHide(pillFocused: false, modeActive: true))
+        XCTAssertTrue(TransportHideRule.mayHide(pillFocused: false, chromeCompact: false))
+        XCTAssertFalse(TransportHideRule.mayHide(pillFocused: true, chromeCompact: false))
+        XCTAssertFalse(TransportHideRule.mayHide(pillFocused: false, chromeCompact: true))
     }
 
     func testPillVisibilityAndTabs() {
@@ -149,5 +149,134 @@ final class PlayerTransportBarLayoutTests: XCTestCase {
         XCTAssertEqual(withCard, CGRect(x: 860, y: 621, width: 200, height: 34))
         XCTAssertEqual(l.chapterLabelFrame(centreX: 90, width: 300, cardShown: true).minX, 86)
         XCTAssertEqual(l.chapterLabelFrame(centreX: 1830, width: 300, cardShown: true).maxX, 1834)
+    }
+
+    // MARK: Compact chrome (GitHub #33 review r6)
+
+    private static let image: CGImage = {
+        let ctx = CGContext(data: nil, width: 2, height: 2, bitsPerComponent: 8, bytesPerRow: 0,
+                            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        return ctx.makeImage()!
+    }()
+
+    private static let modes: [TransportPreview.Mode] = [
+        .idle, .stepping(direction: 1, accumulatedSec: 0, ticks: 0),
+        .stepping(direction: -1, accumulatedSec: 20, ticks: 3), .scanning(rate: 2), .scrubbing(targetSec: 300),
+    ]
+    private enum Body: CaseIterable { case frame, frameNoImage, placeholder, timeOnly, none }
+    private static let kinds: [SeekPreviewRender.Kind] = [.none, .hold, .scrub, .landing]
+
+    private func render(_ kind: SeekPreviewRender.Kind, _ body: Body, target: Double? = 300) -> SeekPreviewRender {
+        let content: SeekPreviewPlan.Content
+        switch body {
+        case .frame, .frameNoImage: content = .frame
+        case .placeholder: content = .placeholder
+        case .timeOnly: content = .timeOnly
+        case .none: content = .none
+        }
+        return SeekPreviewRender(cardTargetSec: target, content: content, image: body == .frame ? Self.image : nil,
+                                 frameSec: body == .frame ? target : nil, capabilityAny: true, kind: kind, episode: 1)
+    }
+
+    /// The card slot holds a body only for a drawn picture or the placeholder, at a target.
+    func testCardOccupiesSlotOnlyForAPictureOrPlaceholder() {
+        for kind in Self.kinds {
+            XCTAssertTrue(TransportChromeRule.cardOccupiesSlot(render(kind, .frame)), "\(kind)")
+            XCTAssertTrue(TransportChromeRule.cardOccupiesSlot(render(kind, .placeholder)), "\(kind)")
+            XCTAssertFalse(TransportChromeRule.cardOccupiesSlot(render(kind, .frameNoImage)), "\(kind): nothing drawn")
+            XCTAssertFalse(TransportChromeRule.cardOccupiesSlot(render(kind, .timeOnly)), "\(kind): label only")
+            XCTAssertFalse(TransportChromeRule.cardOccupiesSlot(render(kind, .none)), "\(kind)")
+            for body in Body.allCases {
+                XCTAssertFalse(TransportChromeRule.cardOccupiesSlot(render(kind, body, target: nil)), "\(kind) \(body): no target")
+            }
+        }
+        XCTAssertFalse(TransportChromeRule.cardOccupiesSlot(.none))
+    }
+
+    /// Mode × render kind × card content: any active mode is compact (today's hold / scan / scrub
+    /// rule); idle is compact exactly while a card body is in the slot, so a click's picture or
+    /// placeholder card after the release hides the lockup and pills, and a time-only click card
+    /// (previews Off, no capability) leaves the chrome as it is.
+    func testCompactChromeOverModeKindAndContent() {
+        for mode in Self.modes {
+            for kind in Self.kinds {
+                for body in Body.allCases {
+                    for target: Double? in [300, nil] {
+                        let r = render(kind, body, target: target)
+                        let expected = mode != .idle || (target != nil && (body == .frame || body == .placeholder))
+                        XCTAssertEqual(TransportChromeRule.compact(mode: mode, render: r), expected,
+                                       "mode=\(mode) kind=\(kind) body=\(body) target=\(String(describing: target))")
+                    }
+                }
+            }
+            XCTAssertEqual(TransportChromeRule.compact(mode: mode, render: .none), mode != .idle, "\(mode)")
+        }
+        // The click dwell itself: idle with the landing card up.
+        XCTAssertTrue(TransportChromeRule.compact(mode: .idle, render: render(.landing, .placeholder)))
+        XCTAssertTrue(TransportChromeRule.compact(mode: .idle, render: render(.landing, .frame)))
+        XCTAssertFalse(TransportChromeRule.compact(mode: .idle, render: render(.landing, .timeOnly)))
+    }
+
+    /// The model's value is the rule over its own `mode` and `previewRender`.
+    @MainActor
+    func testModelChromeCompactDerivesFromModeAndRender() {
+        let m = TransportBarModel()
+        XCTAssertFalse(m.chromeCompact)
+        m.previewRender = render(.landing, .placeholder)
+        XCTAssertTrue(m.chromeCompact, "a click's placeholder card after the release")
+        m.previewRender = render(.landing, .timeOnly)
+        XCTAssertFalse(m.chromeCompact, "a time-only click card keeps the chrome")
+        m.mode = .stepping(direction: 1, accumulatedSec: 0, ticks: 0)
+        XCTAssertTrue(m.chromeCompact, "the press itself")
+        m.mode = .idle
+        m.previewRender = .none
+        XCTAssertFalse(m.chromeCompact)
+    }
+
+    /// The hide timer is held for the whole dwell and free again once the card goes.
+    func testHideHeldWhileTheClickCardIsUp() {
+        let up = TransportChromeRule.compact(mode: .idle, render: render(.landing, .frame))
+        XCTAssertFalse(TransportHideRule.mayHide(pillFocused: false, chromeCompact: up))
+        let gone = TransportChromeRule.compact(mode: .idle, render: .none)
+        XCTAssertTrue(TransportHideRule.mayHide(pillFocused: false, chromeCompact: gone))
+    }
+
+    /// Geometry (1080p canvas): in every state where the card body and the lockup or disc row are
+    /// both laid out visibly, their rects never meet. The card does cover them when they show (the
+    /// rule is load-bearing), and a time-only card's chapter title above the slot clears them.
+    func testCardNeverOverlapsTheLockupOrPillsWhileTheyShow() {
+        var coveredSomewhere = false
+        for pills in [0, 4, 6, 7] {
+            let l = layout(pills)
+            let duration = 1380.0
+            for mode in Self.modes {
+                for kind in Self.kinds {
+                    for body in Body.allCases {
+                        for target in stride(from: 0.0, through: duration, by: 23) {
+                            let r = render(kind, body, target: target)
+                            let compact = TransportChromeRule.compact(mode: mode, render: r)
+                            let card = l.previewCardFrame(centreX: l.x(forSec: target, durationSec: duration))
+                            let hitsChrome = card.intersects(l.lockupFrame) || (pills > 0 && card.intersects(l.pillRowFrame))
+                            if hitsChrome { coveredSomewhere = true }
+                            if TransportChromeRule.cardOccupiesSlot(r) {
+                                XCTAssertFalse(!compact && hitsChrome,
+                                               "card \(card) over the chrome: pills=\(pills) mode=\(mode) kind=\(kind) body=\(body)")
+                            } else if !compact {
+                                // No body: only the chapter title sits above the slot.
+                                let title = l.chapterLabelFrame(centreX: l.x(forSec: target, durationSec: duration),
+                                                                width: TransportBarLayout.cardSize.width, cardShown: false)
+                                XCTAssertFalse(title.intersects(l.lockupFrame), "pills=\(pills) t=\(target)")
+                                XCTAssertFalse(pills > 0 && title.intersects(l.pillRowFrame), "pills=\(pills) t=\(target)")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        XCTAssertTrue(coveredSomewhere, "the card slot overlaps the lockup or pills at some target")
+        // Near the start of a file the click card sits over the title; near the end over the pills.
+        let l = layout(6)
+        XCTAssertTrue(l.previewCardFrame(centreX: l.x(forSec: 12, durationSec: 1380)).intersects(l.lockupFrame))
+        XCTAssertTrue(l.previewCardFrame(centreX: l.x(forSec: 1370, durationSec: 1380)).intersects(l.pillRowFrame))
     }
 }

@@ -591,6 +591,18 @@ final class PlayerTransportUITests: XCTestCase {
         XCTAssertEqual(c["ccard"], "2", "the clicks' time-only cards were never laid out: \(barProbeText(app))")
         XCTAssertNotEqual(c["card"], "p", "a placeholder in Off mode: \(barProbeText(app))")
         XCTAssertNotEqual(c["card"], "f", "a picture in Off mode: \(barProbeText(app))")
+        // Review r6: a time-only click card leaves the chrome as it is (lockup and pills shown).
+        if c["card"] == "t", c["mode"] == "idle" {
+            XCTAssertEqual(c["cc"], "0", "an Off-mode click compacted the chrome: \(barProbeText(app))")
+        }
+        remote.press(.right)
+        XCTAssertTrue(waitBar(app, timeout: 2) { $0["mode"] == "idle" }, barProbeText(app))
+        let t = bar(app)
+        print("[PreviewLeg] off click chrome: \(barProbeText(app))")
+        XCTAssertNotEqual(t["card"], "p", barProbeText(app))
+        XCTAssertNotEqual(t["card"], "f", barProbeText(app))
+        XCTAssertEqual(t["cc"], "0", "an Off-mode click compacted the chrome: \(barProbeText(app))")
+        XCTAssertEqual(t["ccd"], "0", "an Off-mode click had a compact dwell: \(barProbeText(app))")
         XCTAssertTrue(waitBar(app, timeout: 4.5) { $0["card"] == "n" }, "the click card never left: \(barProbeText(app))")
         XCTAssertEqual(bar(app)["cardw"], "0", "no card body was ever laid out in Off mode: \(barProbeText(app))")
     }
@@ -630,16 +642,49 @@ final class PlayerTransportUITests: XCTestCase {
 
     /// One Right click shows a card at the landing point (a placeholder until a picture is ready),
     /// and the card goes after its dwell (at most the 4 s fallback).
+    ///
+    /// Review r6: while that card body is up after the release (mode idle again) the bar draws the
+    /// compact chrome (probe `cc=`, written by the laid-out bar): no title lockup or pill row under
+    /// the card. Once it goes the chrome is back and the bar's hide timer runs again.
+    /// `PLAYER_DWELL_SCREENSHOT=<path>` (optional) saves one screenshot mid-dwell.
     func testClickShowsLandingCard() throws {
         let app = try launch(extra: ["-debug.seekPreviewMode", "decode"])
         XCTAssertEqual(bar(app)["ccard"], "0", barProbeText(app))
         remote.press(.right)
+        // Every sample of the dwell (card body up, press released) has compact chrome.
+        var dwellSamples = 0
+        var shot = false
+        let end = Date().addingTimeInterval(4.5)
+        while Date() < end {
+            let s = bar(app)
+            guard s["card"] == "p" || s["card"] == "f" else { break }
+            if s["mode"] == "idle" {
+                dwellSamples += 1
+                XCTAssertEqual(s["cc"], "1", "the lockup and pills came back under the click card: \(s)")
+                if !shot, let path = ProcessInfo.processInfo.environment["PLAYER_DWELL_SCREENSHOT"] {
+                    shot = true
+                    let png = XCUIScreen.main.screenshot().pngRepresentation
+                    XCTAssertNoThrow(try png.write(to: URL(fileURLWithPath: path)))
+                    print("[PreviewLeg] dwell screenshot \(path): \(barProbeText(app))")
+                }
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
         let p = bar(app)
-        print("[PreviewLeg] click: \(barProbeText(app))")
+        print("[PreviewLeg] click: \(barProbeText(app)) dwellSamples=\(dwellSamples)")
+        // The sticky counters cover a dwell shorter than one probe read: the bar drew this click's
+        // dwell compact, and never drew a dwell with the full chrome.
+        XCTAssertEqual(p["ccd"], "1", "the click's dwell was never drawn with compact chrome: \(barProbeText(app))")
+        XCTAssertEqual(p["ccx"], "0", "a dwell was drawn with the lockup and pills: \(barProbeText(app))")
         XCTAssertEqual(p["ccard"], "1", "the click drew no card: \(barProbeText(app))")
         XCTAssertEqual(Double(p["cardw"] ?? "") ?? 0, Self.cardWidth, accuracy: 1, barProbeText(app))
         XCTAssertEqual(p["hcard"], "0", "a click is not a hold: \(barProbeText(app))")
         XCTAssertTrue(waitBar(app, timeout: 4.5) { $0["card"] == "n" }, "the click card never left: \(barProbeText(app))")
+        let after = bar(app)
+        XCTAssertEqual(after["cc"], "0", "the chrome stayed compact after the card: \(barProbeText(app))")
+        // The hide timer held by the dwell runs again: the bar hides on its own (4 s while playing;
+        // probe reads are too slow to assert the bar is still up the instant the card goes).
+        XCTAssertTrue(waitBar(app, timeout: 7) { $0["vis"] == "0" }, "the bar never hid after the dwell: \(barProbeText(app))")
     }
 
     /// Three clicks 0.3 s apart: each one replaces the card (three counted), and one card leaves at the end.
@@ -653,6 +698,9 @@ final class PlayerTransportUITests: XCTestCase {
         let p = bar(app)
         print("[PreviewLeg] repeated clicks: \(barProbeText(app))")
         XCTAssertEqual(p["ccard"], "3", "each click should have replaced the card: \(barProbeText(app))")
+        // Review r6: the chrome stays compact across the clicks (no lockup flash between them).
+        XCTAssertGreaterThanOrEqual(Int(p["ccd"] ?? "") ?? 0, 1, barProbeText(app))
+        XCTAssertEqual(p["ccx"], "0", "a dwell was drawn with the lockup and pills: \(barProbeText(app))")
         XCTAssertEqual(p["hcard"], "0", barProbeText(app))
         XCTAssertEqual(Int(probe(app)["commits"] ?? ""), c0, "clicks are relative seeks, never commits: \(probeText(app))")
         XCTAssertTrue(waitBar(app, timeout: 4.5) { $0["card"] == "n" }, "the card never left: \(barProbeText(app))")

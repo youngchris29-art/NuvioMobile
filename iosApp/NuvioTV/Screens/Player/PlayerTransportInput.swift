@@ -104,6 +104,8 @@ final class PlayerTransportInput: NSObject, UIGestureRecognizerDelegate {
     private var commitGeneration: Int?                  // generation of the last commit's first stage
     private var scanRestoreSpeed: Double?               // main: the user's speed when the scan started
     private var lastPublishedModeActive = false
+    /// `TransportBarModel.chromeCompact` as last seen, so its end re-arms the hide timer.
+    private var lastChromeCompact = false
     private let holdTickSec: TimeInterval               // `debug.holdTickSec` (0 = Auto 0.25)
     private let commitExactDelaySec: TimeInterval       // `debug.commitExactDelayMs`; < 0 = never run the exact stage
     // Swipe scrub (P2-A1): a horizontal stroke on the touch surface moves a preview, Select commits.
@@ -439,6 +441,9 @@ final class PlayerTransportInput: NSObject, UIGestureRecognizerDelegate {
         stopHoldTimer()
         cancelScrub(why: "pills")
         apply(transport.cancel())
+        // Like a Down press (review r6): a click's card goes first, so the text pill row it hid is
+        // back before it takes the focus.
+        preview.dismissClick()
         focusInfoPills()
     }
 
@@ -840,6 +845,17 @@ final class PlayerTransportInput: NSObject, UIGestureRecognizerDelegate {
         if wasActive && !active { flashControls() }
         // Last, so the card's render lands in the same main-thread turn as `mode` and `previewSec`.
         preview.gestureChanged(transport.previewGesture)
+        chromeCompactMayHaveChanged()
+    }
+
+    /// The compact chrome (`TransportChromeRule`) ended: a hide timer that fired while it held the
+    /// bar did nothing, so the timer is armed again now (review r6: a click's card dwell ends
+    /// without any input). Called after every `mode` publish and every preview render.
+    private func chromeCompactMayHaveChanged() {
+        let compact = state.transport.chromeCompact
+        guard compact != lastChromeCompact else { return }
+        lastChromeCompact = compact
+        if !compact, state.controlsVisible { scheduleHide() }
     }
 
     // MARK: - Swipe scrub (P2)
@@ -1278,8 +1294,9 @@ final class PlayerTransportInput: NSObject, UIGestureRecognizerDelegate {
     }
 
     /// Hide rule: 4 s after the last input while playing; paused, 5 s when the pause card is on and
-    /// never when it is off. A timer that fires with a pill focused or a seek mode active does
-    /// nothing (the next input re-arms it).
+    /// never when it is off. A timer that fires with a pill focused or the chrome compact (a seek
+    /// mode, or a click's card in the slot) does nothing (the next input, or the compact chrome
+    /// ending, re-arms it).
     func scheduleHide() {
         hideWork?.cancel()
         hideWork = nil
@@ -1303,11 +1320,13 @@ final class PlayerTransportInput: NSObject, UIGestureRecognizerDelegate {
             // A focused disc or text pill, or an open popover or shelf, holds the bar (Insights
             // device pass 2026-11-01: a text pill that let the bar hide under it left the next
             // Menu to exit the player). Menu lets go of the pill, then hides the bar.
+            // The compact chrome (a seek mode, or a click's card in the slot) holds it too; its end
+            // re-arms this timer (`chromeCompactMayHaveChanged`).
             guard TransportHideRule.mayHide(
                 pillFocused: TransportHideRule.holdsBar(discFocused: t.focusedPill != nil,
                                                         infoPillFocused: t.focusedInfoPill != nil,
                                                         overlayOpen: t.overlayOpen),
-                modeActive: self.transport.mode.isActive) else { return }
+                chromeCompact: t.chromeCompact) else { return }
             guard let due = self.currentHideDelay() else { return }
             if due > elapsed {
                 self.armHide(after: due - elapsed, elapsed: due)
@@ -1491,6 +1510,7 @@ extension PlayerTransportInput: SeekPreviewSink {
         state.transport.previewRender = render
         let up = render.cardTargetSec != nil
         if state.scrubCardUp != up { state.scrubCardUp = up }
+        chromeCompactMayHaveChanged()
     }
 
     func refine(targetSec: Double, matchSec: Double?) {

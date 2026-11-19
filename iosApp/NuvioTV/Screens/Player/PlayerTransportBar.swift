@@ -209,14 +209,38 @@ enum TransportHideRule {
     }
 
     /// A hide timer that fires while a pill is focused (disc or text pill), a shelf or popover is
-    /// open, or a seek mode is active does nothing; the next input re-arms it.
-    static func mayHide(pillFocused: Bool, modeActive: Bool) -> Bool { !pillFocused && !modeActive }
+    /// open, or the chrome is compact (`TransportChromeRule`: a seek mode, or a click's card in the
+    /// slot) does nothing; the next input, or the compact chrome ending, re-arms it.
+    static func mayHide(pillFocused: Bool, chromeCompact: Bool) -> Bool { !pillFocused && !chromeCompact }
 
     /// What counts as "a pill focused" for `mayHide` on the mpv route: a disc, a text pill (Insights
     /// device pass 2026-11-01: the bar must not hide under a focused text pill), or an open popover
     /// or shelf.
     static func holdsBar(discFocused: Bool, infoPillFocused: Bool, overlayOpen: Bool) -> Bool {
         discFocused || infoPillFocused || overlayOpen
+    }
+}
+
+/// The bar's one "chrome is compact" decision (GitHub #33 review r6): the lockup, the disc row and
+/// the text pill row step aside and the track takes its active height. Compact while a seek mode is
+/// active (hold, scan, scrub, a press before its first tick) and while a preview card body sits in
+/// the card slot, which a click's landing card does after the press is up (`model.mode` is idle
+/// again then). A landing with no card body (previews off, no capability: the time label only)
+/// leaves the chrome as it is. Every chrome, pill-focus and hide decision reads this value.
+enum TransportChromeRule {
+    /// The card slot above the track holds a body: a picture or the placeholder, exactly as the bar
+    /// draws them (`PlayerTransportBar.previewCard`; a `.frame` render without an image draws none).
+    static func cardOccupiesSlot(_ render: SeekPreviewRender) -> Bool {
+        guard render.cardTargetSec != nil else { return false }
+        switch render.content {
+        case .frame: return render.image != nil
+        case .placeholder: return true
+        case .timeOnly, .none: return false
+        }
+    }
+
+    static func compact(mode: TransportPreview.Mode, render: SeekPreviewRender) -> Bool {
+        mode.isActive || cardOccupiesSlot(render)
     }
 }
 
@@ -291,32 +315,40 @@ struct PlayerTransportBar: View {
     // MARK: Chrome
 
     private func chrome(_ layout: TransportBarLayout) -> some View {
-        let active = model.mode.isActive
+        // One value for the whole layout (review r6): a seek mode, or a click's card in the slot
+        // after the press is up. Repeated clicks keep it true throughout (the latch replaces the
+        // card), so the lockup does not flash between them.
+        let compact = model.chromeCompact
         return ZStack(alignment: .topLeading) {
             LinearGradient(colors: [.black.opacity(0), .black.opacity(0.55)], startPoint: .top, endPoint: .bottom)
                 .frame(width: layout.scrimFrame.width, height: layout.scrimFrame.height)
                 .position(x: layout.scrimFrame.midX, y: layout.scrimFrame.midY)
 
             lockup(layout)
-                .opacity(active ? 0 : 1)
-                .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: active)
+                .opacity(compact ? 0 : 1)
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: compact)
             PlayerPillRow(model: model)
                 .frame(width: layout.pillRowFrame.width, height: layout.pillRowFrame.height)
                 .position(x: layout.pillRowFrame.midX, y: layout.pillRowFrame.midY)
-                .opacity(active ? 0 : 1)
-                .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: active)
+                .opacity(compact ? 0 : 1)
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: compact)
 
-            track(layout, active: active)
+            track(layout, active: compact)
             timesRow(layout)
             PlayerInfoPillRow(model: model)
                 .frame(width: layout.infoPillRowFrame.width, height: layout.infoPillRowFrame.height,
                        alignment: .leading)
                 .position(x: layout.infoPillRowFrame.midX, y: layout.infoPillRowFrame.midY)
-                .opacity(active ? 0 : 1)
-                .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: active)
+                .opacity(compact ? 0 : 1)
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: compact)
             previewCard(layout)
         }
         .foregroundStyle(.white)
+        #if DEBUG
+        .onChange(of: ChromeDrawn(model: model, compact: compact), initial: true) { _, drawn in
+            model.noteChromeDrawn(compact: drawn.compact, dwell: drawn.dwell, episode: drawn.episode)
+        }
+        #endif
     }
 
     private func lockup(_ layout: TransportBarLayout) -> some View {
@@ -544,11 +576,25 @@ struct PlayerTransportBar: View {
             + " decoded=\(model.decodedFrames) fsec=\(render.frameSec.map { String(format: "%.1f", $0) } ?? "nil")"
             + " card=\(render.content.probeCode) cardw=\(Int(model.debugCardWidth.rounded())) hcard=\(model.debugHoldCards)"
             + " ccard=\(model.debugClickCards) cap=\(render.capabilityAny ? 1 : 0)"
+            + " cc=\(model.debugChromeCompactDrawn ? 1 : 0) ccd=\(model.debugDwellCompact) ccx=\(model.debugDwellFull)"
         return Text(verbatim: text)
             .font(.system(size: 8))
             .opacity(0.011)
             .allowsHitTesting(false)
             .accessibilityIdentifier("debug_transportProbe")
+    }
+    /// DEBUG: what the chrome was drawn with, keyed for `onChange`: compact or not, and whether a
+    /// click's card body is up after the release (the dwell) and for which click.
+    private struct ChromeDrawn: Equatable {
+        let compact: Bool
+        let dwell: Bool
+        let episode: Int
+        @MainActor init(model: TransportBarModel, compact: Bool) {
+            let render = model.previewRender
+            self.compact = compact
+            dwell = render.kind == .landing && TransportChromeRule.cardOccupiesSlot(render) && !model.mode.isActive
+            episode = render.episode
+        }
     }
     #endif
 }

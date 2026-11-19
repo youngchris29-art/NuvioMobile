@@ -144,7 +144,7 @@ final class PlayerInsightsMPVChromeTests: XCTestCase {
 
     func testHideBlockedWhileOverlayOpen() {
         // The controller passes `holdsBar(...)` as `pillFocused`.
-        XCTAssertFalse(TransportHideRule.mayHide(pillFocused: true, modeActive: false))
+        XCTAssertFalse(TransportHideRule.mayHide(pillFocused: true, chromeCompact: false))
     }
 
     func testAFocusedTextPillHoldsTheBar() {
@@ -316,11 +316,11 @@ final class PlayerInsightsMPVChromeTests: XCTestCase {
         let afterPick = OverlayCloseFocus.pillKeepsFocus(.selection)
         XCTAssertTrue(TransportHideRule.mayHide(
             pillFocused: TransportHideRule.holdsBar(discFocused: false, infoPillFocused: afterPick, overlayOpen: false),
-            modeActive: false), "after a chapter pick the bar hides on its timer")
+            chromeCompact: false), "after a chapter pick the bar hides on its timer")
         let afterBack = OverlayCloseFocus.pillKeepsFocus(.back)
         XCTAssertFalse(TransportHideRule.mayHide(
             pillFocused: TransportHideRule.holdsBar(discFocused: false, infoPillFocused: afterBack, overlayOpen: false),
-            modeActive: false), "Menu out of a shelf leaves the pill focused and the bar up")
+            chromeCompact: false), "Menu out of a shelf leaves the pill focused and the bar up")
     }
 
     /// B4: the first focus entry into the Chapters list lands on the current chapter.

@@ -97,6 +97,27 @@ enum PillKind: String, CaseIterable { case subtitles, audio, speed, aspect, sour
     @Published var debugHoldCards = 0
     /// Clicks that had any card laid out (probe `ccard=`), per launch.
     @Published var debugClickCards = 0
+    /// The compact chrome as the laid-out bar last drew it (probe `cc=`): written by the chrome's own
+    /// `onChange`, so a leg sees what was rendered, not the model's opinion.
+    @Published var debugChromeCompactDrawn = false
+    /// Click dwells (a landing card body up, mode idle) the bar drew with compact chrome (probe
+    /// `ccd=`) and draws of such a dwell with the full chrome (probe `ccx=`, must stay 0). Sticky,
+    /// so a leg can read them after a dwell shorter than one probe read.
+    @Published var debugDwellCompact = 0
+    @Published var debugDwellFull = 0
+    private var countedDwellEpisode = -1
+
+    /// The chrome's drawn state, from the bar's `onChange` (never an accessibility frame).
+    func noteChromeDrawn(compact: Bool, dwell: Bool, episode: Int) {
+        if debugChromeCompactDrawn != compact { debugChromeCompactDrawn = compact }
+        guard dwell else { return }
+        if !compact {
+            debugDwellFull += 1
+        } else if episode != countedDwellEpisode {
+            countedDwellEpisode = episode
+            debugDwellCompact += 1
+        }
+    }
     private var countedHoldEpisode = -1
     private var countedClickEpisode = -1
 
@@ -113,6 +134,9 @@ enum PillKind: String, CaseIterable { case subtitles, audio, speed, aspect, sour
         }
     }
     #endif
+    /// The bar's compact chrome (lockup and pill rows hidden), from `mode` and `previewRender` alone
+    /// (`TransportChromeRule.compact`): the bar's fades, the pill focus and the hide timer all read it.
+    var chromeCompact: Bool { TransportChromeRule.compact(mode: mode, render: previewRender) }
     var pillsEngaged: Bool { focusedPill != nil }
     /// A popover or a content shelf is on screen.
     var overlayOpen: Bool { openPopover != nil || openInfoPill != nil }
