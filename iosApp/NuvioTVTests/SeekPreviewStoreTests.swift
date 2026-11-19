@@ -457,6 +457,59 @@ final class SeekPreviewStoreTests: XCTestCase {
         XCTAssertFalse(newer.supersedes(newer))
     }
 
+    // Review r2 P3: the open path's `setKeyframeSpacing` completion crosses a live reconnect. The
+    // old store's snapshot (a higher version than anything the new store has handed out) must not
+    // become the new store's mirror, or the new store's snapshots would be dropped until their
+    // versions caught up.
+    func testMirrorDropsALateSnapshotFromAReplacedStore() async {
+        let old = store()
+        var mirror = SeekPreviewStoreMirror()
+        mirror.install(ObjectIdentifier(old))
+        for sec in [0.0, 10, 20, 30] { _ = await old.insert(img(4), at: sec, origin: .harvest) }
+        let lateSpacing = await old.setKeyframeSpacing(4)          // in flight across the reconnect
+        XCTAssertGreaterThan(lateSpacing.version, 1)
+
+        let new = store()                                            // the reconnect installs a new store
+        mirror.install(ObjectIdentifier(new))
+        XCTAssertEqual(mirror.snapshot, .empty)
+        XCTAssertFalse(mirror.apply(lateSpacing, from: ObjectIdentifier(old)), "the old store's late snapshot")
+        XCTAssertEqual(mirror.snapshot, .empty)
+
+        let first = await new.insert(img(4), at: 5, origin: .harvest).snapshot
+        XCTAssertLessThan(first.version, lateSpacing.version)
+        XCTAssertTrue(mirror.apply(first, from: ObjectIdentifier(new)), "the new store's first snapshot lands")
+        XCTAssertEqual(mirror.snapshot.stamps, [5])
+        let oldInsert = await old.insert(img(4), at: 40, origin: .decode).snapshot
+        XCTAssertFalse(mirror.apply(oldInsert, from: ObjectIdentifier(old)))
+        XCTAssertEqual(mirror.snapshot, first)
+    }
+
+    func testMirrorKeepsTheNewestSnapshotOfItsStore() async {
+        let s = store()
+        var mirror = SeekPreviewStoreMirror()
+        mirror.install(ObjectIdentifier(s))
+        let older = await s.insert(img(4), at: 7, origin: .decode).snapshot
+        let newer = await s.setKeyframeSpacing(4)
+        XCTAssertTrue(mirror.apply(newer, from: ObjectIdentifier(s)))
+        XCTAssertFalse(mirror.apply(older, from: ObjectIdentifier(s)), "out of order")
+        XCTAssertFalse(mirror.apply(newer, from: ObjectIdentifier(s)), "the same snapshot twice")
+        XCTAssertEqual(mirror.snapshot, newer)
+    }
+
+    func testMirrorAcceptsNothingWithNoStoreInstalled() async {
+        let s = store()
+        var mirror = SeekPreviewStoreMirror()
+        let snap = await s.insert(img(4), at: 7, origin: .decode).snapshot
+        XCTAssertFalse(mirror.apply(snap, from: ObjectIdentifier(s)), "before the first install")
+        mirror.install(ObjectIdentifier(s))
+        XCTAssertTrue(mirror.apply(snap, from: ObjectIdentifier(s)))
+        mirror.install(nil)                                           // teardown
+        XCTAssertEqual(mirror.snapshot, .empty)
+        let late = await s.setKeyframeSpacing(4)
+        XCTAssertFalse(mirror.apply(late, from: ObjectIdentifier(s)), "after teardown")
+        XCTAssertNil(mirror.storeID)
+    }
+
     // P3-12
     func testDecodeCapsAndModeCaps() async {
         XCTAssertEqual(SeekPreviewStore.caps(for: .decode).maxEntries, 800)

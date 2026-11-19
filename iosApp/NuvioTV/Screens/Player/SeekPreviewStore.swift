@@ -74,6 +74,33 @@ nonisolated struct SeekPreviewSnapshot: Equatable, Sendable {
                                            acceptsDecode: true, tolerance: 10)
 }
 
+/// The controller's mirror of the store it has installed now (review r2 P3): the one place a
+/// snapshot becomes the mirror. A snapshot is applied only when it came from the installed store
+/// and is newer than the mirror (`supersedes`), so a late snapshot from a store a live reconnect
+/// replaced (or from any store after teardown) never lands, whatever task it arrives on.
+/// `ObjectIdentifier`s are taken from live references at both ends (the installed store is held by
+/// the controller, the originating one by the completion that applies it), so they never alias.
+nonisolated struct SeekPreviewStoreMirror: Equatable, Sendable {
+    private(set) var storeID: ObjectIdentifier?
+    private(set) var snapshot: SeekPreviewSnapshot = .empty
+
+    /// A store was installed (first load, live reconnect) or removed (`nil`, teardown): the
+    /// mirror starts over from `empty`.
+    mutating func install(_ id: ObjectIdentifier?) {
+        storeID = id
+        snapshot = .empty
+    }
+
+    /// Applies `snapshot` from the store `origin`; false (mirror unchanged) when `origin` is not
+    /// the installed store or the snapshot is not newer than the mirror.
+    @discardableResult
+    mutating func apply(_ snapshot: SeekPreviewSnapshot, from origin: ObjectIdentifier) -> Bool {
+        guard let storeID, origin == storeID, snapshot.supersedes(self.snapshot) else { return false }
+        self.snapshot = snapshot
+        return true
+    }
+}
+
 /// `insert`'s return value: the outcome plus the snapshot after it (C1).
 nonisolated struct SeekPreviewInsertResult: Equatable, Sendable {
     let outcome: SeekPreviewInsertOutcome

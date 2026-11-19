@@ -259,8 +259,10 @@ final class MPVTVPlayerViewController: UIViewController {
     /// Bytes charged by thumbnailers already closed (idle closes); the budget counts across reopens.
     private var thumbBytesClosed: Int64 = 0
     private var thumbByteBudget: Int64 = ThumbScheduler.byteBudget(fileSize: nil)
-    /// The last store snapshot (critique C1): what the scheduler reads, never the actor itself.
-    private var storeMirror = SeekPreviewSnapshot.empty
+    /// The last snapshot of the installed store (critique C1): what the scheduler reads, never the
+    /// actor itself. Written only through `installPreviewStore` and `applyStoreSnapshot(_:from:)`
+    /// (review r2 P3: a snapshot from any other store is dropped).
+    private var storeMirror = SeekPreviewStoreMirror()
     private var thumbLastDecodeMs: Double?
     /// Cache health for the pre-warm (critique C2), from the 2 s `eventQueue` read; main only.
     private var cacheHealthSec: Double = 0
@@ -547,9 +549,7 @@ final class MPVTVPlayerViewController: UIViewController {
             : context.streamKey
         seekPreviewMode = SeekPreviewMode.current()
         previewStoreKey = previewKey
-        let store = makePreviewStore()
-        previewStore = store
-        seekPreviewSource = store
+        installPreviewStore(makePreviewStore())
         let harvestSetting = HarvestScheduler.interval(
             fromSetting: UserDefaults.standard.integer(forKey: "debug.harvestIntervalSec"))
         harvestScreenshotSW = HarvestScreenshotPath.softwareEnabled()
@@ -2387,7 +2387,7 @@ final class MPVTVPlayerViewController: UIViewController {
         // The first line comes from the `< 0` arm (first tick, ~+5 s), then one every 60 s.
         if lastMemLogElapsed < 0 || elapsed - lastMemLogElapsed >= 60 {
             lastMemLogElapsed = elapsed
-            let snap = storeMirror
+            let snap = storeMirror.snapshot
             print(String(format: "[Mem] +%.0fs rss=%ld MB mode=%@ store=%ld harvest=%ld decode=%ld",
                          elapsed, ProcessMemory.footprintMB(), seekPreviewMode.rawValue,
                          snap.count, snap.harvest, snap.decode))
@@ -2644,7 +2644,7 @@ final class MPVTVPlayerViewController: UIViewController {
         // Built on main (the controller is alive here); the utility work holds this closure.
         let publish: @MainActor @Sendable (SeekPreviewInsertResult) -> Void = { [weak self] result in
             guard let self, self.previewStore === store else { return }
-            self.applyStoreSnapshot(result.snapshot)
+            self.applyStoreSnapshot(result.snapshot, from: store)
             #if DEBUG
             NSLog("%@", "[Harvest] stored n=\(result.snapshot.count) bytes=\(result.snapshot.bytes) outcome=\(result.outcome.rawValue) rss=\(ProcessMemory.footprintMB())")
             #endif
@@ -2680,19 +2680,28 @@ final class MPVTVPlayerViewController: UIViewController {
     // MARK: - Seek preview decode (P3)
 
     /// Main. The one place store state reaches the controller (critique C1): the scheduler's
-    /// mirror, the probe's `thumbs=`, and the Info row, for harvest and decode inserts alike.
-    private func applyStoreSnapshot(_ snapshot: SeekPreviewSnapshot) {
-        // Review r1 P2 #4: an older snapshot landing after a newer one would drop a stamp from the
-        // mirror (the scheduler would re-decode that slot); keep the newest only.
-        guard snapshot.supersedes(storeMirror) else { return }
-        storeMirror = snapshot
+    /// mirror, the probe's `thumbs=`, and the Info row, for harvest and decode inserts and
+    /// `setKeyframeSpacing` alike. `origin` is the store that produced `snapshot`: one a live
+    /// reconnect replaced (or any after teardown) is dropped here (review r2 P3), and an older
+    /// snapshot landing after a newer one is too (review r1 P2 #4: it would drop a stamp from the
+    /// mirror and the scheduler would re-decode that slot).
+    private func applyStoreSnapshot(_ snapshot: SeekPreviewSnapshot, from origin: SeekPreviewStore) {
+        guard storeMirror.apply(snapshot, from: ObjectIdentifier(origin)) else { return }
         state.transport.previewFrames = snapshot.count
         rebuildPreviewSummary()
     }
 
+    /// Main. Installs `store` (first load, live reconnect) or none (teardown) as the preview store
+    /// and the card's source; the mirror starts empty and accepts only that store's snapshots.
+    private func installPreviewStore(_ store: SeekPreviewStore?) {
+        previewStore = store
+        seekPreviewSource = store
+        storeMirror.install(store.map { ObjectIdentifier($0) })
+    }
+
     /// The Info tab's "Seek Previews" row (one builder, critique C26).
     private func rebuildPreviewSummary() {
-        let snap = storeMirror
+        let snap = storeMirror.snapshot
         var parts: [String] = []
         if snap.count == 0, harvestCrashOff {
             parts.append(String(localized: "Off after a crash in an earlier playback"))
@@ -2792,7 +2801,7 @@ final class MPVTVPlayerViewController: UIViewController {
             cacheFill: cacheHealthFill, seekInFlight: skipPlanner.seekInFlight != nil,
             previewActive: transportInput.previewActive,
             recentInput: now - transportInput.lastClickUptime < HarvestScheduler.recentInputSec, harvestInFlight: harvest.inFlight,
-            store: storeMirror, bytesRead: thumbBytesCharged, byteBudget: thumbByteBudget,
+            store: storeMirror.snapshot, bytesRead: thumbBytesCharged, byteBudget: thumbByteBudget,
             scrubCeiling: ThumbScheduler.scrubCeiling(budget: thumbByteBudget), opened: thumbOpened,
             overlayUp: playerOverlayUp)
     }
@@ -2848,7 +2857,7 @@ final class MPVTVPlayerViewController: UIViewController {
                     let gap = ThumbScheduler.medianGap(facts.keyframeIndex)
                     Task { @MainActor [weak self] in
                         let snapshot = await store.setKeyframeSpacing(gap)
-                        self?.applyStoreSnapshot(snapshot)
+                        self?.applyStoreSnapshot(snapshot, from: store)   // dropped if a reconnect replaced it
                     }
                 }
                 self.rebuildPreviewSummary()
@@ -2884,7 +2893,7 @@ final class MPVTVPlayerViewController: UIViewController {
                 // A live reconnect replaced the store meanwhile: this frame belongs to the old
                 // timeline and reaches nothing (review r2-3).
                 let current = self.previewStore === store
-                if current { self.applyStoreSnapshot(inserted.snapshot) }
+                if current { self.applyStoreSnapshot(inserted.snapshot, from: store) }
                 outcome = ThumbScheduler.Outcome(insert: inserted.outcome, keyframeSec: kf)
                 self.thumbLastDecodeMs = took
                 #if DEBUG
@@ -3240,16 +3249,13 @@ final class MPVTVPlayerViewController: UIViewController {
     private func replacePreviewStoreForReconnect() {
         guard previewStore != nil else { return }
         let store = makePreviewStore()
-        previewStore = store
-        seekPreviewSource = store
-        storeMirror = .empty
+        installPreviewStore(store)
         state.transport.previewFrames = 0
         if let facts = thumbFacts {
             let gap = ThumbScheduler.medianGap(facts.keyframeIndex)
             Task { @MainActor [weak self] in
                 let snapshot = await store.setKeyframeSpacing(gap)
-                guard let self, self.previewStore === store else { return }
-                self.applyStoreSnapshot(snapshot)
+                self?.applyStoreSnapshot(snapshot, from: store)   // dropped if a later reconnect replaced it
             }
         }
         previewSourceGeneration += 1
@@ -3492,9 +3498,9 @@ final class MPVTVPlayerViewController: UIViewController {
             NSLog("[MPV] terminate_destroy took=%dms", Int((ProcessInfo.processInfo.systemUptime - started) * 1000))
             DispatchQueue.main.async { layerRef.release() }
         }
-        // Plain property writes (no weak reference formed): the store goes with the controller.
-        seekPreviewSource = nil
-        previewStore = nil
+        // Plain property writes (no weak reference formed): the store goes with the controller. The
+        // mirror then accepts no store's snapshot.
+        installPreviewStore(nil)
     }
 
     // MARK: - Event loop
