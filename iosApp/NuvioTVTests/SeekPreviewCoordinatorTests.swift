@@ -335,6 +335,128 @@ final class SeekPreviewCoordinatorTests: XCTestCase {
         XCTAssertNil(render.frameSec)
     }
 
+    // MARK: Live source on unchanged inputs (review r4)
+
+    /// A hold pinned at the end publishes the same target every tick: Aether gaining stills during
+    /// it starts a lookup on the next identical tick, and the card gets the frame.
+    func testIdenticalHoldTicksPickUpACapabilityGain() async {
+        var live = (capability: SeekPreviewCapability.none, generation: 0)
+        coordinator.liveSource = { live }
+        coordinator.gestureChanged(.hold(targetSec: 1000))
+        XCTAssertEqual(render.content, .none, "a hold with no capability draws nothing")
+        await settle()
+        XCTAssertTrue(source.calls.isEmpty)
+        live.capability = Self.both
+        coordinator.gestureChanged(.hold(targetSec: 1000))
+        XCTAssertTrue(render.capabilityAny)
+        XCTAssertEqual(render.content, .placeholder)
+        await settle()
+        XCTAssertEqual(source.pending.map(\.sec), [1000], "the identical tick started a request")
+        await answer(frame(1000))
+        XCTAssertEqual(render.content, .frame)
+        XCTAssertEqual(render.frameSec, 1000)
+        XCTAssertNotNil(render.image)
+        coordinator.gestureChanged(.hold(targetSec: 1000))
+        await settle()
+        XCTAssertTrue(source.pending.isEmpty, "an unchanged tick with an unchanged source does nothing")
+    }
+
+    /// The same pinned hold losing stills: requests are invalidated, the frame goes and the card
+    /// follows the plan (a hold with no capability draws nothing).
+    func testIdenticalHoldTicksApplyACapabilityLoss() async {
+        var live = (capability: Self.both, generation: 0)
+        coordinator.liveSource = { live }
+        coordinator.gestureChanged(.hold(targetSec: 1000))
+        await answer(frame(990))
+        XCTAssertEqual(render.content, .frame)
+        clock.advance(by: 0.1)
+        coordinator.sourceContentChanged(atSec: 1000)     // a refresh lookup in flight
+        await settle()
+        XCTAssertEqual(source.pending.count, 1)
+        let generation = coordinator.requestGeneration
+        let ends = sink.decoderEnds
+        live.capability = .none
+        coordinator.gestureChanged(.hold(targetSec: 1000))
+        XCTAssertGreaterThan(coordinator.requestGeneration, generation, "requests invalidated")
+        XCTAssertEqual(sink.decoderEnds, ends + 1)
+        XCTAssertFalse(coordinator.previewActive)
+        XCTAssertNil(render.frameSec)
+        XCTAssertNil(render.image)
+        XCTAssertFalse(render.capabilityAny)
+        XCTAssertEqual(render.content, .none)
+        await answer(frame(1000))
+        XCTAssertNil(render.frameSec, "the late result is dropped")
+        XCTAssertTrue(source.pending.isEmpty)
+    }
+
+    /// A source generation bump (an Aether reload) under the pinned hold: the old frame goes and
+    /// a fresh lookup runs against the new generation.
+    func testIdenticalHoldTicksApplyAGenerationBump() async {
+        var live = (capability: Self.both, generation: 1)
+        coordinator.liveSource = { live }
+        coordinator.gestureChanged(.hold(targetSec: 1000))
+        await answer(frame(1000))
+        XCTAssertEqual(render.frameSec, 1000)
+        clock.advance(by: 0.1)
+        live.generation = 2
+        coordinator.gestureChanged(.hold(targetSec: 1000))
+        XCTAssertNil(render.frameSec, "the old generation's frame is cleared")
+        XCTAssertEqual(render.content, .placeholder)
+        await settle()
+        XCTAssertEqual(source.pending.map(\.sec), [1000], "a fresh lookup for the new generation")
+        await answer(frame(999))
+        XCTAssertEqual(render.frameSec, 999)
+    }
+
+    /// A click's landing card during its dwell: the transport keeps publishing `.none` (unchanged),
+    /// and a stale landing report arrives; both re-read the live source.
+    func testLandingDwellPicksUpLiveSourceChangesOnUnchangedInputs() async {
+        var live = (capability: Self.both, generation: 0)
+        coordinator.liveSource = { live }
+        coordinator.clickIssued(targetSec: 110, generation: 5)
+        await answer(frame(110))
+        clock.advance(by: 0.2)
+        coordinator.seekLanded(generation: 5)
+        XCTAssertEqual(render.content, .frame)
+        // Loss during the dwell, seen on an unchanged transport publish.
+        live.capability = .none
+        coordinator.gestureChanged(.none)
+        XCTAssertEqual(render.kind, .landing)
+        XCTAssertNil(render.frameSec)
+        XCTAssertEqual(render.content, .timeOnly, "a click's card keeps the time")
+        // Gain back, seen on an older seek's landing report (the latch ignores it).
+        live.capability = Self.both
+        coordinator.seekLanded(generation: 4)
+        XCTAssertEqual(render.content, .placeholder)
+        await settle()
+        XCTAssertEqual(source.pending.map(\.sec), [110])
+        await answer(frame(110))
+        XCTAssertEqual(render.content, .frame)
+        // Generation bump, seen on a rejection for another seek.
+        clock.advance(by: 0.1)
+        live.generation = 1
+        coordinator.seekRejected(generation: 3)
+        XCTAssertNil(render.frameSec)
+        await settle()
+        XCTAssertEqual(source.pending.map(\.sec), [110])
+        // The dwell still ends on its timer.
+        clock.advance(by: 1.5)
+        XCTAssertEqual(render.kind, .none)
+    }
+
+    /// The early-return guards of the latch inputs (no click active) still re-read the source.
+    func testLatchInputsWithNoClickStillReadTheLiveSource() async {
+        var live = (capability: SeekPreviewCapability.none, generation: 0)
+        coordinator.liveSource = { live }
+        coordinator.gestureChanged(.scrub(targetSec: 200))
+        XCTAssertEqual(render.content, .timeOnly)
+        live.capability = Self.both
+        coordinator.dismissClick()
+        XCTAssertEqual(render.content, .placeholder)
+        await settle()
+        XCTAssertEqual(source.pending.map(\.sec), [200])
+    }
+
     /// Review r2-3: a live reconnect replaces the mpv store; a frame the old store holds at an
     /// overlapping time is never shown, and its late insert reaches nothing.
     func testMpvReconnectReplacesTheStore() async {

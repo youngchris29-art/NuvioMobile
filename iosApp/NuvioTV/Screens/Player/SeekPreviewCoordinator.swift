@@ -79,40 +79,43 @@ final class SeekPreviewCoordinator {
     var previewActive: Bool { plan.requestTargetSec != nil }
 
     // MARK: Inputs
+    //
+    // Review r4: every entry point below (the public inputs, the lookup return and both timers)
+    // goes through `input(_:_:)` first. Its "nothing changed" skip also asks the live source, so
+    // no early return can skip the re-read: a hold pinned at the start or end (the same target
+    // every tick) still notices Aether gaining or losing stills.
 
     /// Every transport publish, last in its main-thread turn.
     func gestureChanged(_ g: SeekPreviewGesture) {
-        guard g != gesture else { return }
-        update { gesture = g }
+        input(g != gesture) { gesture = g }
     }
 
     /// A Left/Right click issued seek `generation` that lands at `targetSec` (resolved and clamped).
     func clickIssued(targetSec: Double, generation: Int) {
-        update { latch.clicked(targetSec: targetSec, generation: generation, now: now()) }
+        input(true) { latch.clicked(targetSec: targetSec, generation: generation, now: now()) }
     }
 
     /// Seek `generation` landed (newest or not).
     func seekLanded(generation: Int) {
-        guard latch.active != nil else { return }
-        update { latch.landed(generation: generation, now: now()) }
+        let active = latch.active != nil
+        input(active) { if active { latch.landed(generation: generation, now: now()) } }
     }
 
     func seekRejected(generation: Int) {
-        guard latch.active != nil else { return }
-        update { latch.rejected(generation: generation) }
+        let active = latch.active != nil
+        input(active) { if active { latch.rejected(generation: generation) } }
     }
 
     /// Menu / Up / Down / Select / Play on a landing card, a chapter-tab seek (review r2-4), the
     /// player going off screen: the click's card goes without a new one.
     func dismissClick() {
-        guard latch.active != nil else { return }
-        update { latch.clear() }
+        let active = latch.active != nil
+        input(active) { if active { latch.clear() } }
     }
 
     /// The engine's still source changed (mpv: once at load, and on a live reconnect's new store).
     func setSource(capability c: SeekPreviewCapability, generation: Int) {
-        guard c != capability || generation != sourceGeneration else { return }
-        update {
+        input(c != capability || generation != sourceGeneration) {
             capability = c
             sourceGeneration = generation
         }
@@ -121,15 +124,14 @@ final class SeekPreviewCoordinator {
     /// The engine may have changed what `liveSource` reports (a load started or returned, a
     /// handoff): re-read it now instead of at the next input.
     func sourceMayHaveChanged() {
-        guard liveSourceDiffers else { return }
-        update {}
+        input(false)
     }
 
     /// The source gained a frame at `atSec` (an mpv decode or harvest insert): the current target
     /// asks again if the card would accept that frame and it beats the accepted one
     /// (`SeekPreviewPlan.wantsRefresh`), through the same throttle and generation checks.
     func sourceContentChanged(atSec: Double) {
-        if liveSourceDiffers { update {} }
+        input(false)
         guard alive, plan.wantsRefresh(atSec: atSec, shownSec: frame?.sec) else { return }
         handle(throttle.sample(now: now()))
         publish()
@@ -139,7 +141,7 @@ final class SeekPreviewCoordinator {
     /// and the latch go; nothing runs after this.
     func teardown() {
         guard alive else { return }
-        update { alive = false }
+        input(true) { alive = false }
         cancelLatchTimer?()
         cancelLatchTimer = nil
         latchTimerDeadline = nil
@@ -155,6 +157,16 @@ final class SeekPreviewCoordinator {
     private var liveSourceDiffers: Bool {
         guard alive, let live = liveSource?() else { return false }
         return live.capability != capability || live.generation != sourceGeneration
+    }
+
+    /// The funnel every entry point passes through first (review r4, spec r2-1). `changed` is the
+    /// caller's own "my input changed something" test; the work is skipped only when that is
+    /// false AND the live source matches the stored one. Otherwise one `update` runs: it applies
+    /// `change`, re-reads the live source and runs `SeekPreviewLifecycle` once over the composed
+    /// edge (r2-2), so a source transition with no input change still gets its effects.
+    private func input(_ changed: Bool, _ change: () -> Void = {}) {
+        guard changed || liveSourceDiffers else { return }
+        update(change)
     }
 
     /// One input: mutate, read the live source, fold the latch in, derive the plan, run the
@@ -234,7 +246,7 @@ final class SeekPreviewCoordinator {
             self.cancelLatchTimer = nil
             self.latchTimerDeadline = nil
             // A timer may run a hair before the clock reads its deadline: tick at the deadline.
-            self.update { self.latch.tick(now: max(self.now(), deadline)) }
+            self.input(true) { self.latch.tick(now: max(self.now(), deadline)) }
         }
     }
 
@@ -251,6 +263,9 @@ final class SeekPreviewCoordinator {
             cancelThrottleWait = schedule(seconds) { [weak self] in
                 guard let self else { return }
                 self.cancelThrottleWait = nil
+                // A transition applied here resets the throttle (and may start the lookup
+                // itself), after which `timerFired` has nothing pending and returns `.none`.
+                self.input(false)
                 self.handle(self.throttle.timerFired(now: self.now()))
                 self.publish()
             }
@@ -284,7 +299,7 @@ final class SeekPreviewCoordinator {
                                 shown: SeekPreviewMatch?) {
         // Review r2-1 (b): a source that changed under the await is applied first, so its
         // invalidation drops this result.
-        if liveSourceDiffers { update {} }
+        input(false)
         let d = SeekPreviewCompletion.decide(requestGeneration: generation, currentGeneration: requestGeneration,
                                              requestTargetSec: targetSec, currentPlan: plan,
                                              shownSec: shown?.sec)
