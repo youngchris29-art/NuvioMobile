@@ -141,15 +141,26 @@ nonisolated struct SeekPreviewPlan: Equatable, Sendable {
 
 // MARK: - Click latch
 
-/// A click's card (finding 1): from the click until `max(landing, shown + minDwell)`, or the
-/// fallback with no landing. Keyed to the seek generation the click issued, so an older landing
-/// never ends a newer click's card and a newer seek's landing supersedes it. No clock: the caller
-/// passes `now` and arms one timer for `nextDeadline`.
+/// A click's card (finding 1): from the click until its own landing ends it at
+/// `max(shown + minDwell, landed + postLandingDwell)`, or the fallback (`shown + fallback`) with no
+/// landing. The post-landing dwell (review r7) gives a slow seek (Aether into an uncached segment,
+/// mpv whose thumbnail jobs wait for the seek in flight) time for the landing retry
+/// (`SeekPreviewLifecycle.landingEffects`) to find and publish the now-resident picture before the
+/// card goes. Bound: a landing is only accepted before the fallback, so a card lives at most
+/// `fallbackSec + postLandingDwellSec` (4.8 s) after it was shown, and exactly `fallbackSec` when
+/// its seek never lands. Only the first own landing moves the deadline; a repeated report never
+/// extends it. Keyed to the seek generation the click issued, so an older landing never ends a
+/// newer click's card and a newer seek's landing supersedes it. A newer click, a rejection and
+/// `clear` (hold, scrub, scan, key dismissals) end it at once. No clock: the caller passes `now`
+/// and arms one timer for `nextDeadline`.
 nonisolated struct ClickPreviewLatch: Equatable, Sendable {
     /// Long enough for a decode (0.4-0.8 s on the box) to still land on the card.
     static let minDwellSec: Double = 1.2
     /// The longest commit hand-back (`PlayerTransportInput.exactDeadlineFired`'s 4 s).
     static let fallbackSec: Double = 4.0
+    /// After the click's own landing: room for the landing retry's lookup (the throttle's 66 ms
+    /// floor plus a store read, or a decode of 0.4-0.8 s on the box) to land on the card.
+    static let postLandingDwellSec: Double = 0.8
 
     struct Active: Equatable, Sendable {
         let targetSec: Double
@@ -157,6 +168,8 @@ nonisolated struct ClickPreviewLatch: Equatable, Sendable {
         let shownAt: Double
         /// When the card goes: the fallback until the landing is seen, then the dwell rule.
         var deadline: Double
+        /// When the click's own seek landed; nil until then.
+        var landedAt: Double?
     }
 
     private(set) var active: Active?
@@ -164,7 +177,7 @@ nonisolated struct ClickPreviewLatch: Equatable, Sendable {
     /// A click was issued: replaces any active latch.
     mutating func clicked(targetSec: Double, generation: Int, now: Double) {
         active = Active(targetSec: targetSec, generation: generation, shownAt: now,
-                        deadline: now + Self.fallbackSec)
+                        deadline: now + Self.fallbackSec, landedAt: nil)
     }
 
     /// What a landing report did to the latch (review r5: the coordinator asks for the click's
@@ -172,19 +185,25 @@ nonisolated struct ClickPreviewLatch: Equatable, Sendable {
     enum Landing: Equatable, Sendable {
         /// No click, or an older seek's landing: nothing changed.
         case ignored
-        /// The click's own seek landed: the deadline moved to the dwell rule.
+        /// The click's own seek landed: the deadline moved to the dwell rule (first report only).
         case own
         /// A newer seek landed: the click's card went.
         case superseded
     }
 
-    /// Seek `generation` landed: this click's landing ends the card once the dwell is over; a newer
-    /// seek's landing supersedes the click at once; an older one is ignored.
+    /// Seek `generation` landed: this click's landing ends the card at
+    /// `max(shown + minDwell, landed + postLandingDwell)`; a newer seek's landing supersedes the
+    /// click at once; an older one is ignored. A card already past its deadline (the fallback ran
+    /// out before the report) goes, and the report is ignored.
     @discardableResult
     mutating func landed(generation: Int, now: Double) -> Landing {
+        tick(now: now)
         guard let a = active else { return .ignored }
         if generation == a.generation {
-            active?.deadline = min(a.deadline, max(now, a.shownAt + Self.minDwellSec))
+            if a.landedAt == nil {
+                active?.landedAt = now
+                active?.deadline = max(a.shownAt + Self.minDwellSec, now + Self.postLandingDwellSec)
+            }
             return .own
         } else if generation > a.generation {
             active = nil
@@ -387,7 +406,8 @@ nonisolated enum SeekPreviewLifecycle {
     /// source returned as its tolerance-bounded match for this target is accepted
     /// (`matchedTargetSec`: the target the accepted frame matched, nil for none or for the
     /// `nearest` fallback). Evaluated on the state after the landing, so a landing that ends the
-    /// dwell (no request target left) asks nothing. The latch and its deadline are not touched.
+    /// dwell (no request target left) asks nothing. The latch and its deadline are not touched:
+    /// the landing already gave the card `ClickPreviewLatch.postLandingDwellSec` for this lookup.
     static func landingEffects(_ landing: ClickPreviewLatch.Landing, plan: SeekPreviewPlan,
                                matchedTargetSec: Double?) -> Effects {
         guard landing == .own, let t = plan.requestTargetSec, matchedTargetSec != t else { return [] }

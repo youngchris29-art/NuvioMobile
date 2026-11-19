@@ -526,6 +526,37 @@ final class SeekPreviewCoordinatorTests: XCTestCase {
         XCTAssertEqual(source.calls.count, 3)
     }
 
+    /// Review r7: a seek that lands after the minimum dwell (Aether into an uncached segment) keeps
+    /// the card for the post-landing dwell, so the landing retry still shows the picture.
+    func testSlowLandingKeepsTheCardForTheRetrysPicture() async {
+        coordinator.setSource(capability: Self.both, generation: 0)
+        coordinator.clickIssued(targetSec: 110, generation: 5)
+        await answerMiss()
+        XCTAssertEqual(render.content, .placeholder, "the target is not resident yet")
+        clock.advance(by: 2.0)
+        XCTAssertEqual(render.kind, .landing, "the fallback still holds the card")
+        coordinator.seekLanded(generation: 5)
+        let landedAt = 102.0
+        let end = landedAt + ClickPreviewLatch.postLandingDwellSec
+        XCTAssertEqual(coordinator.latch.nextDeadline!, end, accuracy: 1e-9)
+        XCTAssertEqual(render.kind, .landing, "the landing does not end the card")
+        await settle()
+        XCTAssertEqual(source.calls.count, 3, "the landing retry ran")
+        XCTAssertEqual(source.pending.map(\.sec), [110])
+        await answer(frame(110.04))
+        XCTAssertEqual(render.kind, .landing)
+        XCTAssertEqual(render.content, .frame, "the retry's picture is shown")
+        XCTAssertEqual(render.frameSec, 110.04)
+        XCTAssertEqual(clock.items.map(\.at).max()!, end, accuracy: 1e-9, "one timer, at the post-landing deadline")
+        clock.advance(to: end - 0.01)
+        XCTAssertEqual(render.content, .frame)
+        clock.advance(to: end + 0.01)
+        XCTAssertEqual(render.kind, .none)
+        XCTAssertEqual(render.content, .none)
+        XCTAssertTrue(clock.items.isEmpty)
+        XCTAssertEqual(source.calls.count, 3)
+    }
+
     func testOlderOrNewerLandingDoesNotRetry() async {
         coordinator.setSource(capability: Self.both, generation: 0)
         coordinator.clickIssued(targetSec: 110, generation: 5)

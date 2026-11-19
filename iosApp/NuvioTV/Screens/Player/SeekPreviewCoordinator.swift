@@ -25,7 +25,8 @@ final class SeekPreviewCoordinator {
     /// before a content-change refresh; a difference is applied as a source transition first.
     /// Accepted limitation: the engine has no change event, so a frame already on screen can stay
     /// until the next input or completion when it loses still support on its own. The card exists
-    /// only during a gesture or a click's dwell (at most the 4 s fallback), which bounds that window.
+    /// only during a gesture or a click's dwell (at most the 4 s fallback plus the 0.8 s
+    /// post-landing dwell, `ClickPreviewLatch`), which bounds that window.
     typealias LiveSource = () -> (capability: SeekPreviewCapability, generation: Int)
     /// Runs `body` on main after `delay` seconds; the returned closure cancels it.
     typealias Scheduler = @MainActor (_ delay: TimeInterval, _ body: @escaping @MainActor () -> Void) -> () -> Void
@@ -250,6 +251,8 @@ final class SeekPreviewCoordinator {
         if effects.contains(.requestNow) { handle(throttle.sample(now: now())) }
     }
 
+    /// One timer for the latch's current deadline, re-armed whenever it moves: the fallback after a
+    /// click, then (review r7) the landing's dwell rule, which may lie before or after the fallback.
     private func armLatchTimer() {
         let deadline = alive ? latch.nextDeadline : nil
         guard deadline != latchTimerDeadline else { return }

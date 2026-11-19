@@ -22,15 +22,83 @@ final class SeekPreviewLifecycleTests: XCTestCase {
         XCTAssertNil(l.nextDeadline)
     }
 
-    func testDelayedLandingEndsAtTheLanding() {
+    // Review r7: a slow landing keeps the card for the post-landing dwell, so the landing retry
+    // can still show the picture.
+
+    func testLandingBeforeTheMinimumDwellEndsAtTheMinimumDwell() {
+        var l = Latch()
+        l.clicked(targetSec: 110, generation: 3, now: 10)
+        l.landed(generation: 3, now: 10.3)      // 10.3 + 0.8 = 11.1 < 11.2
+        XCTAssertEqual(l.nextDeadline!, 10 + Latch.minDwellSec, accuracy: 1e-9)
+        XCTAssertEqual(l.active?.landedAt, 10.3)
+    }
+
+    func testDelayedLandingEndsAfterThePostLandingDwell() {
         var l = Latch()
         l.clicked(targetSec: 110, generation: 3, now: 10)
         l.tick(now: 12)
         XCTAssertNotNil(l.active)
         l.landed(generation: 3, now: 12.5)
-        XCTAssertEqual(l.nextDeadline, 12.5)
-        l.tick(now: 12.5)
+        XCTAssertEqual(l.nextDeadline!, 12.5 + Latch.postLandingDwellSec, accuracy: 1e-9)
+        l.tick(now: 13.2)
+        XCTAssertNotNil(l.active, "the card outlives the landing")
+        l.tick(now: 13.31)
         XCTAssertNil(l.active)
+    }
+
+    func testLandingJustBeforeTheFallbackStaysWithinTheBound() {
+        var l = Latch()
+        l.clicked(targetSec: 110, generation: 3, now: 10)
+        l.landed(generation: 3, now: 13.99)
+        let deadline = l.nextDeadline!
+        XCTAssertEqual(deadline, 13.99 + Latch.postLandingDwellSec, accuracy: 1e-9)
+        XCTAssertLessThanOrEqual(deadline, 10 + Latch.fallbackSec + Latch.postLandingDwellSec)
+        l.tick(now: 14.5)
+        XCTAssertNotNil(l.active, "past the fallback, inside the post-landing dwell")
+        l.tick(now: deadline)
+        XCTAssertNil(l.active)
+    }
+
+    func testLandingAfterTheFallbackRanOutIsIgnored() {
+        var l = Latch()
+        l.clicked(targetSec: 110, generation: 3, now: 10)
+        XCTAssertEqual(l.landed(generation: 3, now: 14.2), .ignored, "the fallback already ended the card")
+        XCTAssertNil(l.active)
+    }
+
+    func testARepeatedOwnLandingDoesNotExtend() {
+        var l = Latch()
+        l.clicked(targetSec: 110, generation: 3, now: 10)
+        l.landed(generation: 3, now: 12)
+        XCTAssertEqual(l.landed(generation: 3, now: 12.6), .own)
+        XCTAssertEqual(l.nextDeadline!, 12 + Latch.postLandingDwellSec, accuracy: 1e-9)
+        XCTAssertEqual(l.active?.landedAt, 12)
+    }
+
+    func testOlderOrNewerLandingAfterTheOwnLanding() {
+        var l = Latch()
+        l.clicked(targetSec: 110, generation: 3, now: 10)
+        l.landed(generation: 3, now: 12)
+        XCTAssertEqual(l.landed(generation: 2, now: 12.3), .ignored)
+        XCTAssertEqual(l.nextDeadline!, 12.8, accuracy: 1e-9, "an older landing changes nothing")
+        XCTAssertEqual(l.landed(generation: 4, now: 12.4), .superseded)
+        XCTAssertNil(l.active, "a newer seek still ends the card at once")
+    }
+
+    func testClearAndRejectionStillEndAPostLandingCard() {
+        var l = Latch()
+        l.clicked(targetSec: 110, generation: 3, now: 10)
+        l.landed(generation: 3, now: 12)
+        l.rejected(generation: 3)
+        XCTAssertNil(l.active)
+        l.clicked(targetSec: 110, generation: 4, now: 20)
+        l.landed(generation: 4, now: 22)
+        l.clear()
+        XCTAssertNil(l.active)
+        l.clicked(targetSec: 110, generation: 5, now: 30)
+        l.landed(generation: 5, now: 32)
+        l.clicked(targetSec: 120, generation: 6, now: 32.1)
+        XCTAssertEqual(l.active, Latch.Active(targetSec: 120, generation: 6, shownAt: 32.1, deadline: 36.1))
     }
 
     func testNoLandingEndsAtTheFallback() {
@@ -89,11 +157,14 @@ final class SeekPreviewLifecycleTests: XCTestCase {
         XCTAssertNil(l.nextDeadline, "idle")
         l.clicked(targetSec: 1, generation: 1, now: 0)
         XCTAssertEqual(l.nextDeadline, 4, "waiting for the landing")
-        l.landed(generation: 1, now: 0.5)
-        XCTAssertEqual(l.nextDeadline!, 1.2, accuracy: 1e-9, "landed inside the dwell")
+        l.landed(generation: 1, now: 0.3)
+        XCTAssertEqual(l.nextDeadline!, 1.2, accuracy: 1e-9, "landed early inside the dwell")
         l.clicked(targetSec: 1, generation: 2, now: 5)
-        l.landed(generation: 2, now: 7)
-        XCTAssertEqual(l.nextDeadline, 7, "landed after the dwell")
+        l.landed(generation: 2, now: 5.6)
+        XCTAssertEqual(l.nextDeadline!, 6.4, accuracy: 1e-9, "landed late inside the dwell: the post-landing dwell")
+        l.clicked(targetSec: 1, generation: 3, now: 10)
+        l.landed(generation: 3, now: 12)
+        XCTAssertEqual(l.nextDeadline!, 12.8, accuracy: 1e-9, "landed after the dwell")
     }
 
     func testLandedReportsWhatItDid() {
