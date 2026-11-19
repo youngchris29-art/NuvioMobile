@@ -57,6 +57,15 @@ nonisolated struct HarvestScheduler {
         seekHarvestDue = now + Self.seekDebounceSec
     }
 
+    /// Review r3 P2 #2: a live reconnect restarted the timeline. The seek harvest a landing on
+    /// the old timeline scheduled goes. Kept: the interval and its backoff (a cost of the device
+    /// and the stream, not the timeline), the playback time since the last harvest, the clock,
+    /// and `inFlight` (a capture still running finishes and frees it; its frame lands in the
+    /// store it started with, which is no longer installed).
+    mutating func resetForNewTimeline() {
+        seekHarvestDue = nil
+    }
+
     mutating func noteStarted() {
         inFlight = true
         playedSinceLast = 0

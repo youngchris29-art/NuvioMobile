@@ -252,6 +252,29 @@ nonisolated struct ThumbScheduler {
         lastScrubActivity = nil
     }
 
+    /// Review r3 P2 #2: a live reconnect restarted the timeline and the thumbnailer was closed
+    /// (`SeekPreviewTimeline.beginNewTimeline`). Drops everything keyed by a time on the old
+    /// timeline (the job in flight, the pending scrub, the tried set, the keyframe index, the
+    /// pass order) and the open state of the closed thumbnailer (open request, healthy-play clock,
+    /// scrub activity); a store-full pre-warm stop goes with the old store. Keeps the file-level
+    /// stop, the budget and frame-cap stops, the decode count and the wall-clock quiet periods.
+    /// The job in flight is forgotten, never finished: its result is dropped by
+    /// `SeekPreviewTimeline.decodeBelongs` and is not counted as tried.
+    mutating func resetForNewTimeline() {
+        inFlight = nil
+        pendingScrub = nil
+        tried = []
+        keyframeIndex = []
+        passActive = false
+        passIssued = 0
+        passOrder = []
+        passEndedUnreported = false
+        openRequested = false
+        healthyPlaySec = 0
+        lastScrubActivity = nil
+        if prewarmStopped == .storeFull { prewarmStopped = nil }
+    }
+
     /// True once per pass that issued at least one job, after it ended (release the decoder).
     mutating func takePassEnded() -> Bool {
         defer { passEndedUnreported = false }

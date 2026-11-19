@@ -215,9 +215,13 @@ final class MPVTVPlayerViewController: UIViewController {
     /// GitHub #33: what the store can fill for this playback (one decision for the harvest, the
     /// decoder and the card), and the source generation the transport's coordinator fences on.
     private var previewCapability: SeekPreviewCapability = .none
-    private var previewSourceGeneration = 0
-    /// Main only. Interval from `debug.harvestIntervalSec`, read in `viewDidLoad`.
-    private var harvest = HarvestScheduler(intervalSec: 10)
+    /// Main only. Everything that belongs to one preview timeline (review r3 P2 #2): the source
+    /// generation, the harvest scheduler (interval from `debug.harvestIntervalSec`, read in
+    /// `viewDidLoad`), the decode scheduler (disabled unless the mode is `decode`), what the
+    /// thumbnailer's open learned, and the playback's byte accounting. Reset only by
+    /// `beginPreviewTimeline`.
+    private var previewTimeline = SeekPreviewTimeline(thumbs: ThumbScheduler(enabled: false),
+                                                      harvest: HarvestScheduler(intervalSec: 10))
     /// `eventQueue` only: nil = untried; false = this mpv rejected the format argument, call
     /// `screenshot-raw video` without it from now on.
     private var harvestFormatArgWorks: Bool?
@@ -249,16 +253,9 @@ final class MPVTVPlayerViewController: UIViewController {
     // Seek preview decode (P3): the keyframe thumbnailer fills unwatched ground (mode `decode`).
     /// Settings › Player › Seek Preview Pictures, read once in `viewDidLoad`.
     private var seekPreviewMode: SeekPreviewMode = .harvest
-    /// Main only. Disabled unless the mode is `decode`.
-    private var thumbs = ThumbScheduler(enabled: false)
     /// Main only; created lazily (`shouldOpen`), closed in `destroyPlayer` or when it stops.
     private var thumbnailer: KeyframeThumbnailer?
     private var thumbOpened = false
-    /// What the first open learned; a reopen after an idle close reuses it (review r1 P1).
-    private var thumbFacts: ThumbFileFacts?
-    /// Bytes charged by thumbnailers already closed (idle closes); the budget counts across reopens.
-    private var thumbBytesClosed: Int64 = 0
-    private var thumbByteBudget: Int64 = ThumbScheduler.byteBudget(fileSize: nil)
     /// The last snapshot of the installed store (critique C1): what the scheduler reads, never the
     /// actor itself. Written only through `installPreviewStore` and `applyStoreSnapshot(_:from:)`
     /// (review r2 P3: a snapshot from any other store is dropped).
@@ -549,7 +546,6 @@ final class MPVTVPlayerViewController: UIViewController {
             : context.streamKey
         seekPreviewMode = SeekPreviewMode.current()
         previewStoreKey = previewKey
-        installPreviewStore(makePreviewStore())
         let harvestSetting = HarvestScheduler.interval(
             fromSetting: UserDefaults.standard.integer(forKey: "debug.harvestIntervalSec"))
         harvestScreenshotSW = HarvestScreenshotPath.softwareEnabled()
@@ -592,12 +588,13 @@ final class MPVTVPlayerViewController: UIViewController {
             setting: harvestSetting, sentinelDisabled: sentinelDisabled, synthetic: harvestSynthetic,
             isSimulator: isSimulator)
         previewCapability = .mpv(mode: seekPreviewMode, effectiveHarvestIntervalSec: harvestInterval)
-        harvest = HarvestScheduler(intervalSec: previewCapability.fillsWatched ? harvestInterval : 0)
-        thumbs = ThumbScheduler(enabled: previewCapability.fillsUnwatched)
-        transportInput.setPreviewSource(capability: previewCapability, generation: previewSourceGeneration)
-        #if DEBUG
-        rebuildPreviewSummary()   // the DEBUG row exists from the start (Off mode has no store events)
-        #endif
+        previewTimeline = SeekPreviewTimeline(
+            thumbs: ThumbScheduler(enabled: previewCapability.fillsUnwatched),
+            harvest: HarvestScheduler(intervalSec: previewCapability.fillsWatched ? harvestInterval : 0))
+        // The first timeline: the store (in memory, for the life of this controller), the source
+        // for the coordinator, and the Info row (the DEBUG row exists from the start: Off mode has
+        // no store events). The same path a live reconnect takes.
+        beginPreviewTimeline()
         let bufferMB = UserDefaults.standard.integer(forKey: PlayerTuning.bufferMBKey)
         if bufferMB > 0 { demuxerMaxBytes = Int64(bufferMB) * 1024 * 1024 }
 
@@ -744,8 +741,8 @@ final class MPVTVPlayerViewController: UIViewController {
             closeFailover()
             // r1 P3 #6: no job runs out its pass and no connection stays open under the next screen.
             thumbScrubWork?.cancel(); thumbScrubWork = nil
-            thumbs.cancel()
-            thumbs.stop(.modeOff)
+            previewTimeline.thumbs.cancel()
+            previewTimeline.thumbs.stop(.modeOff)
             closeThumbnailer()
         }
         pollTimer?.invalidate()
@@ -2304,13 +2301,13 @@ final class MPVTVPlayerViewController: UIViewController {
 
         // Seek preview harvest (P2-B): playback time only, never while the transport moves.
         let harvestNow = ProcessInfo.processInfo.systemUptime
-        if harvest.tick(now: harvestNow,
+        if previewTimeline.harvest.tick(now: harvestNow,
                         playing: fileLoaded && !snap.paused && !snap.cacheWait && !snap.coreIdle && !snap.eof && snap.videoW > 0,
                         transportIdle: !transportInput.mode.isActive,
                         seekInFlight: skipPlanner.seekInFlight != nil,
                         recentInput: harvestNow - transportInput.lastClickUptime < HarvestScheduler.recentInputSec,
                         overlayUp: playerOverlayUp),
-           thumbs.inFlight == nil {
+           previewTimeline.thumbs.inFlight == nil {
             // One heavy thing at a time: the tick stays due until a decode is not in flight.
             startHarvest()
         }
@@ -2514,7 +2511,7 @@ final class MPVTVPlayerViewController: UIViewController {
     /// call in this file), then scales, encodes and stores it on a utility queue.
     private func startHarvest() {
         guard let store = previewStore else { return }
-        harvest.noteStarted()
+        previewTimeline.harvest.noteStarted()
         eventQueue.async { [weak self] in
             guard let self else { return }
             guard self.mpv != nil else {
@@ -2634,10 +2631,10 @@ final class MPVTVPlayerViewController: UIViewController {
     /// then the insert lands in the discarded store and reaches nothing (review r2-3).
     private func harvestCaptured(_ capture: MPVHarvestCapture?, at sec: Double, tookMs: Double,
                                  into store: SeekPreviewStore) {
-        if harvest.noteFinished(tookMs: capture == nil ? nil : tookMs) {
+        if previewTimeline.harvest.noteFinished(tookMs: capture == nil ? nil : tookMs) {
             #if DEBUG
             NSLog("%@", String(format: "[Harvest] slow (%.1fms > %.0fms): interval now %.0fs for this file",
-                               tookMs, HarvestScheduler.slowHarvestMs, harvest.intervalSec))
+                               tookMs, HarvestScheduler.slowHarvestMs, previewTimeline.harvest.intervalSec))
             #endif
         }
         guard let capture, sec.isFinite, previewStore === store else { return }
@@ -2717,7 +2714,7 @@ final class MPVTVPlayerViewController: UIViewController {
                 parts.append(String(format: String(localized: "%@ MB used"),
                                     String(format: "%.1f", Double(thumbBytesCharged) / 1_048_576)))
             }
-            if let reason = thumbs.stopped ?? thumbs.prewarmStopped, let words = Self.thumbStopWords(reason) {
+            if let reason = previewTimeline.thumbs.stopped ?? previewTimeline.thumbs.prewarmStopped, let words = Self.thumbStopWords(reason) {
                 parts.append(String(format: String(localized: "decode off: %@"), words))
             }
         }
@@ -2753,28 +2750,30 @@ final class MPVTVPlayerViewController: UIViewController {
     /// decoder when a pre-warm pass ends. Called every UI tick, after each finished job (passes run
     /// back to back), after the open, and 50 ms after a scrub miss.
     private func driveThumbs() {
-        guard seekPreviewMode.allowsDecode, mpv != nil, fileLoaded, previewStore != nil else { return }
+        // Not while a live reconnect reopens the stream: an open now would race the reopen, and
+        // a refused one stops decoding for the file.
+        guard seekPreviewMode.allowsDecode, mpv != nil, fileLoaded, !liveReconnectLoading, previewStore != nil else { return }
         let inputs = thumbInputs()
-        if thumbs.shouldOpen(inputs) { openThumbnailer() }
-        if let job = thumbs.next(inputs) {
+        if previewTimeline.thumbs.shouldOpen(inputs) { openThumbnailer() }
+        if let job = previewTimeline.thumbs.next(inputs) {
             startThumbJob(job)
-        } else if thumbs.inFlight == nil, thumbs.takePassEnded() {       // r1 P3 #5: in flight first
+        } else if previewTimeline.thumbs.inFlight == nil, previewTimeline.thumbs.takePassEnded() {       // r1 P3 #5: in flight first
             thumbnailer?.releaseDecoder()
         }
-        if thumbs.stopped != nil, thumbnailer != nil {
+        if previewTimeline.thumbs.stopped != nil, thumbnailer != nil {
             closeThumbnailer()
         } else if let t = thumbnailer, thumbOpened, thumbReleaseWork == nil,
-                  thumbs.idleCloseWanted(now: inputs.now, previewActive: transportInput.previewActive,
+                  previewTimeline.thumbs.idleCloseWanted(now: inputs.now, previewActive: transportInput.previewActive,
                                          requestLeftOpen: t.lastRequestLeftOpen) {
             // Review r1 P1, r2 P2 #1: the pre-warm stopped and nothing is pending: drop the
             // connection now if the host may still be sending, else after a minute with no scrub.
             #if DEBUG
             NSLog("%@", String(format: "[Thumbs] idle close reason=%@ leftOpen=%ld charged=%.1fMB",
-                               thumbs.prewarmStopped?.rawValue ?? "-", t.lastRequestLeftOpen ? 1 : 0,
+                               previewTimeline.thumbs.prewarmStopped?.rawValue ?? "-", t.lastRequestLeftOpen ? 1 : 0,
                                Double(thumbBytesCharged) / 1_048_576))
             #endif
             closeThumbnailer()
-            thumbs.noteIdleClosed()
+            previewTimeline.thumbs.noteIdleClosed()
         }
     }
 
@@ -2787,7 +2786,7 @@ final class MPVTVPlayerViewController: UIViewController {
     }
 
     /// What the byte budget has charged across every thumbnailer of this file (review r1 P1).
-    private var thumbBytesCharged: Int64 { thumbBytesClosed + (thumbnailer?.bytesCharged ?? 0) }
+    private var thumbBytesCharged: Int64 { previewTimeline.bytesCharged(openThumbnailer: thumbnailer?.bytesCharged) }
 
     private func thumbInputs() -> ThumbScheduler.Inputs {
         let snap = cachedProps()
@@ -2800,9 +2799,9 @@ final class MPVTVPlayerViewController: UIViewController {
                 || ThumbScheduler.cacheReachesEnd(positionSec: position, cacheSec: cacheHealthSec, durationSec: snap.duration),
             cacheFill: cacheHealthFill, seekInFlight: skipPlanner.seekInFlight != nil,
             previewActive: transportInput.previewActive,
-            recentInput: now - transportInput.lastClickUptime < HarvestScheduler.recentInputSec, harvestInFlight: harvest.inFlight,
-            store: storeMirror.snapshot, bytesRead: thumbBytesCharged, byteBudget: thumbByteBudget,
-            scrubCeiling: ThumbScheduler.scrubCeiling(budget: thumbByteBudget), opened: thumbOpened,
+            recentInput: now - transportInput.lastClickUptime < HarvestScheduler.recentInputSec, harvestInFlight: previewTimeline.harvest.inFlight,
+            store: storeMirror.snapshot, bytesRead: thumbBytesCharged, byteBudget: previewTimeline.byteBudget,
+            scrubCeiling: ThumbScheduler.scrubCeiling(budget: previewTimeline.byteBudget), opened: thumbOpened,
             overlayUp: playerOverlayUp)
     }
 
@@ -2810,7 +2809,7 @@ final class MPVTVPlayerViewController: UIViewController {
     /// after the 50 ms debounce, and start the open now if this is the first ask.
     private func noteThumbScrubMiss(target: Double) {
         guard seekPreviewMode.allowsDecode else { return }
-        thumbs.noteScrubMiss(target: target, now: ProcessInfo.processInfo.systemUptime)
+        previewTimeline.thumbs.noteScrubMiss(target: target, now: ProcessInfo.processInfo.systemUptime)
         driveThumbs()
         thumbScrubWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
@@ -2830,11 +2829,11 @@ final class MPVTVPlayerViewController: UIViewController {
         // segment; anything else still goes through the open's container check.
         let ext = context.url.pathExtension.lowercased()
         guard ["http", "https", "file"].contains(scheme), !["m3u8", "m3u", "mpd"].contains(ext) else {
-            thumbs.stop(.container)
+            previewTimeline.thumbs.stop(.container)
             rebuildPreviewSummary()
             return
         }
-        let t = KeyframeThumbnailer(url: context.url, headers: context.requestHeaders, knownFacts: thumbFacts)
+        let t = KeyframeThumbnailer(url: context.url, headers: context.requestHeaders, knownFacts: previewTimeline.facts)
         thumbnailer = t
         Task { @MainActor [weak self] in
             let result = await t.open()
@@ -2842,17 +2841,17 @@ final class MPVTVPlayerViewController: UIViewController {
             switch result {
             case .ready(let facts):
                 self.thumbOpened = true
-                guard self.thumbFacts == nil else {             // a reopen: budget and index are set
+                var budget = ThumbScheduler.byteBudget(fileSize: facts.sizeBytes)
+                #if DEBUG
+                let overrideMB = UserDefaults.standard.integer(forKey: "debug.thumbBudgetMB")
+                if overrideMB > 0 { budget = Int64(overrideMB) * ThumbScheduler.mib }
+                #endif
+                // The first open of the playback fixes the budget; the first of a timeline learns
+                // its index (an idle reopen on the same timeline already has both).
+                guard self.previewTimeline.opened(facts, budget: budget) else {
                     self.driveThumbs()
                     return
                 }
-                self.thumbFacts = facts
-                self.thumbByteBudget = ThumbScheduler.byteBudget(fileSize: facts.sizeBytes)
-                #if DEBUG
-                let overrideMB = UserDefaults.standard.integer(forKey: "debug.thumbBudgetMB")
-                if overrideMB > 0 { self.thumbByteBudget = Int64(overrideMB) * ThumbScheduler.mib }
-                #endif
-                self.thumbs.setKeyframeIndex(facts.keyframeIndex)
                 if let store = self.previewStore {
                     let gap = ThumbScheduler.medianGap(facts.keyframeIndex)
                     Task { @MainActor [weak self] in
@@ -2863,7 +2862,7 @@ final class MPVTVPlayerViewController: UIViewController {
                 self.rebuildPreviewSummary()
                 self.driveThumbs()          // a pending scrub runs now, not at the next tick (C14)
             case .refused(let reason):
-                self.thumbs.stop(reason)
+                self.previewTimeline.thumbs.stop(reason)
                 self.closeThumbnailer()
                 self.rebuildPreviewSummary()
             }
@@ -2872,7 +2871,7 @@ final class MPVTVPlayerViewController: UIViewController {
 
     private func closeThumbnailer() {
         thumbReleaseWork?.cancel(); thumbReleaseWork = nil
-        if let t = thumbnailer { thumbBytesClosed += t.bytesCharged }
+        if let t = thumbnailer { previewTimeline.noteThumbnailerClosed(charged: t.bytesCharged) }
         thumbnailer?.close()
         thumbnailer = nil
         thumbOpened = false
@@ -2880,20 +2879,22 @@ final class MPVTVPlayerViewController: UIViewController {
 
     private func startThumbJob(_ job: ThumbScheduler.Job) {
         guard let t = thumbnailer, let store = previewStore else { return }
-        thumbs.noteStarted(job, now: ProcessInfo.processInfo.systemUptime)
+        previewTimeline.thumbs.noteStarted(job, now: ProcessInfo.processInfo.systemUptime)
         if job.isScrub { thumbReleaseWork?.cancel(); thumbReleaseWork = nil }
+        let generation = previewTimeline.generation
         Task { @MainActor [weak self] in
             let result = await t.frame(at: job.sec, urgent: job.isScrub)
-            guard let self, self.thumbnailer === t else { return }    // a closed thumbnailer's late result
+            // Review r3 P2 #2: a job from a closed thumbnailer or from before a reconnect neither
+            // inserts nor counts (the reconnect forgot it: nothing waits for its finish).
+            guard let self, self.decodeBelongs(generation: generation, thumbnailer: t) else { return }
             var outcome = ThumbScheduler.Outcome.failed
             switch result {
             case .frame(let image, let kf, let took, let dec, let tm, let bytes):
                 let inserted = await store.insert(image, at: kf, origin: .decode)
-                guard self.thumbnailer === t else { return }
-                // A live reconnect replaced the store meanwhile: this frame belongs to the old
-                // timeline and reaches nothing (review r2-3).
-                let current = self.previewStore === store
-                if current { self.applyStoreSnapshot(inserted.snapshot, from: store) }
+                // The same test after the insert: a reconnect meanwhile leaves this frame in the
+                // store it replaced, where nothing reads it, and the scheduler never hears of it.
+                guard self.decodeBelongs(generation: generation, thumbnailer: t) else { return }
+                self.applyStoreSnapshot(inserted.snapshot, from: store)
                 outcome = ThumbScheduler.Outcome(insert: inserted.outcome, keyframeSec: kf)
                 self.thumbLastDecodeMs = took
                 #if DEBUG
@@ -2902,24 +2903,22 @@ final class MPVTVPlayerViewController: UIViewController {
                 #endif
                 // GitHub #33: a card whose target is near this keyframe asks again, a stationary hold,
                 // scrub or click card included, and a pre-warm keyframe as much as a scrub's own job.
-                if current {
-                    self.transportInput.previewSourceContentChanged(atSec: kf)
-                }
+                self.transportInput.previewSourceContentChanged(atSec: kf)
             case .failed(let reason):
-                if let reason { self.thumbs.stop(reason) }
+                if let reason { self.previewTimeline.thumbs.stop(reason) }
                 #if DEBUG
                 NSLog("%@", "[Thumbs] decode at=\(String(format: "%.1f", job.sec)) failed job=\(job.name) stop=\(reason?.rawValue ?? "-")")
                 #endif
             case .aborted:
                 outcome = .aborted
             }
-            self.thumbs.noteFinished(job, result: outcome, now: ProcessInfo.processInfo.systemUptime)
-            self.state.transport.decodedFrames = self.thumbs.decoded
+            self.previewTimeline.thumbs.noteFinished(job, result: outcome, now: ProcessInfo.processInfo.systemUptime)
+            self.state.transport.decodedFrames = self.previewTimeline.thumbs.decoded
             #if DEBUG
-            if let reason = self.thumbs.stopped ?? self.thumbs.prewarmStopped, !self.loggedThumbStop {
+            if let reason = self.previewTimeline.thumbs.stopped ?? self.previewTimeline.thumbs.prewarmStopped, !self.loggedThumbStop {
                 self.loggedThumbStop = true
                 NSLog("%@", String(format: "[Thumbs] stop reason=%@ decoded=%ld read=%.1fMB charged=%.1fMB", reason.rawValue,
-                                   self.thumbs.decoded, Double(t.bytesRead) / 1_048_576,
+                                   self.previewTimeline.thumbs.decoded, Double(t.bytesRead) / 1_048_576,
                                    Double(self.thumbBytesCharged) / 1_048_576))
             }
             #endif
@@ -2929,6 +2928,13 @@ final class MPVTVPlayerViewController: UIViewController {
         }
     }
 
+    /// `SeekPreviewTimeline.decodeBelongs` for a job started on `generation` by `thumbnailer`.
+    private func decodeBelongs(generation: Int, thumbnailer job: KeyframeThumbnailer) -> Bool {
+        SeekPreviewTimeline.decodeBelongs(jobGeneration: generation, jobThumbnailer: ObjectIdentifier(job),
+                                          currentGeneration: previewTimeline.generation,
+                                          currentThumbnailer: thumbnailer.map { ObjectIdentifier($0) })
+    }
+
     /// Frees a 4K decoder's frame pools 2 s after the last scrub job (pre-warm passes release
     /// theirs when they end, `driveThumbs`).
     private func scheduleThumbRelease() {
@@ -2936,7 +2942,7 @@ final class MPVTVPlayerViewController: UIViewController {
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.thumbReleaseWork = nil
-            if self.thumbs.inFlight == nil { self.thumbnailer?.releaseDecoder() }
+            if self.previewTimeline.thumbs.inFlight == nil { self.thumbnailer?.releaseDecoder() }
             self.driveThumbs()                  // r1 P1: an idle close waits for this release
         }
         thumbReleaseWork = work
@@ -3224,7 +3230,9 @@ final class MPVTVPlayerViewController: UIViewController {
         case .reconnect(let attempt):
             print("[Live] end of stream on a live channel, reconnect \(attempt)/\(LiveReconnectPolicy.limit)")
             liveReconnectLoading = true
-            replacePreviewStoreForReconnect()
+            // Review r2-3, r3 P2 #2: the reopen may restart the timeline. After teardown (no
+            // store) there is nothing to replace.
+            if previewStore != nil { beginPreviewTimeline() }
             // Off the main thread: this runs inside the 0.5 s `refreshState` tick, and the mpv core
             // is never called from there (BUG-2/BUG-3). The request headers are a property of the
             // handle and still hold from the first load.
@@ -3242,24 +3250,24 @@ final class MPVTVPlayerViewController: UIViewController {
         }
     }
 
-    /// Review r2-3: a live reconnect may restart the timeline, so frames stamped on the old one must
-    /// never reach the card: a fresh store (same key and caps) and a new source generation. Harvest
-    /// and decode completions hold the store they started with, so a late insert lands in the
-    /// discarded one.
-    private func replacePreviewStoreForReconnect() {
-        guard previewStore != nil else { return }
-        let store = makePreviewStore()
-        installPreviewStore(store)
+    /// The one owner of a preview timeline's start (review r2-3, r3 P2 #2): the first load and a
+    /// live reconnect, which may restart the stream's timeline so that an old timestamp names a
+    /// different picture. In one main-thread turn: the old thumbnailer closes (its bytes stay
+    /// charged), both schedulers drop everything keyed by an old time and the facts go
+    /// (`SeekPreviewTimeline.beginNewTimeline`), a fresh store (same key and caps) is installed,
+    /// and the coordinator gets the new source generation. The byte budget is kept. A late harvest
+    /// lands in the store it started with; a late decode fails `decodeBelongs`. The next open
+    /// (`ThumbScheduler.shouldOpen`, after the reconnect's FILE_LOADED) learns the new timeline's
+    /// index and spacing. On the first load the schedulers are fresh and no store exists yet: the
+    /// reset and the generation move are skipped, so the coordinator sees generation 0 as before.
+    private func beginPreviewTimeline() {
+        let replacing = previewStore != nil
+        thumbScrubWork?.cancel(); thumbScrubWork = nil
+        closeThumbnailer()
+        if replacing { previewTimeline.beginNewTimeline() }
+        installPreviewStore(makePreviewStore())
         state.transport.previewFrames = 0
-        if let facts = thumbFacts {
-            let gap = ThumbScheduler.medianGap(facts.keyframeIndex)
-            Task { @MainActor [weak self] in
-                let snapshot = await store.setKeyframeSpacing(gap)
-                self?.applyStoreSnapshot(snapshot, from: store)   // dropped if a later reconnect replaced it
-            }
-        }
-        previewSourceGeneration += 1
-        transportInput.setPreviewSource(capability: previewCapability, generation: previewSourceGeneration)
+        transportInput.setPreviewSource(capability: previewCapability, generation: previewTimeline.generation)
         rebuildPreviewSummary()
     }
 
@@ -3473,7 +3481,7 @@ final class MPVTVPlayerViewController: UIViewController {
         // down. Plain property writes (no weak reference formed in deinit).
         thumbScrubWork?.cancel()
         thumbReleaseWork?.cancel()
-        thumbs.cancel()
+        previewTimeline.thumbs.cancel()
         thumbnailer?.close()
         thumbnailer = nil
         guard let ctx = mpv else { return }
@@ -3575,8 +3583,8 @@ final class MPVTVPlayerViewController: UIViewController {
                     self.transportInput.seekLandedForCommit(generation: generation)
                     // A newer seek was issued meanwhile: this is not its completion.
                     guard generation == self.seekGeneration else { return }
-                    self.harvest.noteSeekLanded(now: ProcessInfo.processInfo.systemUptime)
-                    self.thumbs.noteSeekLanded(now: ProcessInfo.processInfo.systemUptime)
+                    self.previewTimeline.harvest.noteSeekLanded(now: ProcessInfo.processInfo.systemUptime)
+                    self.previewTimeline.thumbs.noteSeekLanded(now: ProcessInfo.processInfo.systemUptime)
                     self.skipPlanner.seekCompleted(atSec: landed, now: ProcessInfo.processInfo.systemUptime)
                     // Keyframes landed: show that picture first, then run the exact stage.
                     self.transportInput.seekLandedForExact(generation: generation)
@@ -3938,13 +3946,13 @@ extension MPVTVPlayerViewController: PlayerTransportEngine {
 
     func previewRequestsEnded(now: TimeInterval) {
         thumbScrubWork?.cancel(); thumbScrubWork = nil
-        thumbs.noteScrubEnded(now: now)
+        previewTimeline.thumbs.noteScrubEnded(now: now)
     }
 
     /// P3: no frame, or one more than 5 s off: ask the thumbnailer for the keyframe there. Reads
     /// the tolerance-bounded match (BUG-181 leaves the refine rule as it was).
     func previewLookupMissed(targetSec: Double, matchSec: Double?) {
-        if thumbs.lookupWantsRefine(target: targetSec, matchSec: matchSec) {
+        if previewTimeline.thumbs.lookupWantsRefine(target: targetSec, matchSec: matchSec) {
             noteThumbScrubMiss(target: targetSec)
         }
     }
