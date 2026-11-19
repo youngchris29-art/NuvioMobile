@@ -42496,25 +42496,25 @@
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Bilder der Suchvorschau"
+            "value": "Vorschaubilder beim Spulen"
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Imágenes de vista previa de búsqueda"
+            "value": "Imágenes de vista previa al avanzar"
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Images d’aperçu de recherche"
+            "value": "Images d’aperçu pendant l’avance"
           }
         },
         "it": {
           "stringUnit": {
             "state": "translated",
-            "value": "Immagini anteprima di ricerca"
+            "value": "Immagini di anteprima durante l’avanzamento"
           }
         },
         "vi": {
@@ -44626,7 +44626,7 @@
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Zeigt den Kapitelnamen über der Vorschau, während du springst oder suchst"
+            "value": "Zeigt den Kapitelnamen über der Vorschau, während du springst oder spulst"
           }
         },
         "es": {
@@ -45040,7 +45040,7 @@
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Zeigt beim Springen oder Suchen mit der Fernbedienung ein Bild der Stelle, an der du landest. Gesehene Teile nutzt Bilder, die aus bereits Abgespieltem gespeichert wurden, und lädt nichts zusätzlich. Ganzes Video liest auch Bilder aus noch nicht gesehenen Teilen. Das lädt etwa 2 % der Datei herunter, bei den meisten Titeln zwischen 16 und 150 MB, plus bis zu 50 MB mehr, während du hin und her springst. Die Aether-Engine nimmt Bilder aus Video, das sie bereits geladen hat, daher verhalten sich dort beide Optionen gleich. Aus schaltet die Vorschaubilder aus; die Zeit siehst du weiterhin. Der Apple-TV-Player für Dolby Vision und HDR zeigt diese Bildkarte nicht; seine Bilder zum Vor- und Zurückspulen haben eine eigene Einstellung, und Aus schaltet auch diese aus. Gilt nur für dieses Apple TV. Standard: Gesehene Teile."
+            "value": "Zeigt beim Springen oder Spulen mit der Fernbedienung ein Bild der Stelle, an der du landest. Gesehene Teile nutzt Bilder, die aus bereits Abgespieltem gespeichert wurden, und lädt nichts zusätzlich. Ganzes Video liest auch Bilder aus noch nicht gesehenen Teilen. Das lädt etwa 2 % der Datei herunter, bei den meisten Titeln zwischen 16 und 150 MB, plus bis zu 50 MB mehr, während du hin und her springst. Die Aether-Engine nimmt Bilder aus Video, das sie bereits geladen hat, daher verhalten sich dort beide Optionen gleich. Aus schaltet die Vorschaubilder aus; die Zeit siehst du weiterhin. Der Apple-TV-Player für Dolby Vision und HDR zeigt diese Bildkarte nicht; seine Bilder zum Vor- und Zurückspulen haben eine eigene Einstellung, und Aus schaltet auch diese aus. Gilt nur für dieses Apple TV. Standard: Gesehene Teile."
           }
         },
         "es": {
