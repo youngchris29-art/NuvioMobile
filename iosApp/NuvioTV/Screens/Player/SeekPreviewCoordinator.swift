@@ -126,10 +126,11 @@ final class SeekPreviewCoordinator {
     }
 
     /// The source gained a frame at `atSec` (an mpv decode or harvest insert): the current target
-    /// asks again if it is that close, through the same throttle and generation checks.
-    func sourceContentChanged(atSec: Double, toleranceSec: Double) {
+    /// asks again if the card would accept that frame and it beats the accepted one
+    /// (`SeekPreviewPlan.wantsRefresh`), through the same throttle and generation checks.
+    func sourceContentChanged(atSec: Double) {
         if liveSourceDiffers { update {} }
-        guard alive, plan.wantsRefresh(atSec: atSec, toleranceSec: toleranceSec) else { return }
+        guard alive, plan.wantsRefresh(atSec: atSec, shownSec: frame?.sec) else { return }
         handle(throttle.sample(now: now()))
         publish()
     }

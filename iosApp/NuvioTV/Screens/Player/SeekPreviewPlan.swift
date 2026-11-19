@@ -124,11 +124,18 @@ nonisolated struct SeekPreviewPlan: Equatable, Sendable {
     }
 
     /// The source gained a frame at `atSec` (a decode or a harvest insert): the current target
-    /// wants a fresh lookup when it is that close. A stationary hold, scrub or landing card turns
-    /// from placeholder to picture this way.
-    func wantsRefresh(atSec: Double, toleranceSec: Double) -> Bool {
+    /// wants a fresh lookup when that frame is one the card would accept (within `acceptReachSec`,
+    /// not just the store's lookup tolerance, review r1-1) and it improves what is shown: no
+    /// accepted frame within reach yet (`shownSec` nil, not finite or out of reach), or the new frame
+    /// is strictly closer to the target than the accepted one. A stationary hold, scrub or landing
+    /// card turns from placeholder to picture this way; a pre-warm insert far off, or no closer than
+    /// the current frame, causes no lookup.
+    func wantsRefresh(atSec: Double, shownSec: Double?) -> Bool {
         guard let t = requestTargetSec, atSec.isFinite else { return false }
-        return abs(atSec - t) <= toleranceSec
+        let distance = abs(atSec - t)
+        guard distance <= Self.acceptReachSec else { return false }
+        guard let s = shownSec, s.isFinite, abs(s - t) <= Self.acceptReachSec else { return true }
+        return distance < abs(s - t)
     }
 }
 

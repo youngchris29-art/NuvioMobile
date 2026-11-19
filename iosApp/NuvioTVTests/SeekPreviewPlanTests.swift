@@ -96,19 +96,56 @@ final class SeekPreviewPlanTests: XCTestCase {
 
     // MARK: wantsRefresh
 
-    func testWantsRefresh() {
-        let p = Plan(requestTargetSec: 600, cardTargetSec: 600, placeholderAllowed: true)
-        XCTAssertTrue(p.wantsRefresh(atSec: 600, toleranceSec: 5))
-        XCTAssertTrue(p.wantsRefresh(atSec: 595, toleranceSec: 5))
-        XCTAssertTrue(p.wantsRefresh(atSec: 605, toleranceSec: 5))
-        XCTAssertFalse(p.wantsRefresh(atSec: 605.01, toleranceSec: 5))
-        XCTAssertFalse(p.wantsRefresh(atSec: 500, toleranceSec: 5))
-        XCTAssertFalse(p.wantsRefresh(atSec: .nan, toleranceSec: 5))
+    private let stationary = Plan(requestTargetSec: 600, cardTargetSec: 600, placeholderAllowed: true)
+
+    func testWantsRefreshWithNoAcceptedFrame() {
+        let p = stationary
+        XCTAssertTrue(p.wantsRefresh(atSec: 600, shownSec: nil))
+        XCTAssertTrue(p.wantsRefresh(atSec: 595, shownSec: nil))
+        XCTAssertTrue(p.wantsRefresh(atSec: 605, shownSec: nil))
+        XCTAssertFalse(p.wantsRefresh(atSec: .nan, shownSec: nil))
+        XCTAssertFalse(p.wantsRefresh(atSec: .infinity, shownSec: nil))
+    }
+
+    /// Review r1-1: a frame beyond the store's lookup tolerance (capped at 30 s) that the card still
+    /// accepts (within 120 s) refreshes a placeholder card.
+    func testRefreshOutsideLookupToleranceButInsideReach() {
+        XCTAssertTrue(stationary.wantsRefresh(atSec: 555, shownSec: nil), "45 s back")
+        XCTAssertTrue(stationary.wantsRefresh(atSec: 690, shownSec: nil), "90 s ahead")
+        XCTAssertTrue(stationary.wantsRefresh(atSec: 480, shownSec: nil), "exactly at the reach")
+        XCTAssertTrue(stationary.wantsRefresh(atSec: 720, shownSec: nil), "exactly at the reach")
+    }
+
+    func testNoRefreshOutsideReach() {
+        XCTAssertFalse(stationary.wantsRefresh(atSec: 479.999, shownSec: nil))
+        XCTAssertFalse(stationary.wantsRefresh(atSec: 720.001, shownSec: nil))
+        XCTAssertFalse(stationary.wantsRefresh(atSec: 900, shownSec: nil))
+    }
+
+    func testNoRefreshForAFrameNoCloserThanTheAcceptedOne() {
+        XCTAssertFalse(stationary.wantsRefresh(atSec: 640, shownSec: 620), "farther than the accepted frame")
+        XCTAssertFalse(stationary.wantsRefresh(atSec: 560, shownSec: 620), "farther, other side")
+        XCTAssertFalse(stationary.wantsRefresh(atSec: 580, shownSec: 620), "as close, other side")
+        XCTAssertFalse(stationary.wantsRefresh(atSec: 600, shownSec: 600), "the same frame again")
+    }
+
+    func testRefreshForAFrameCloserThanTheAcceptedOne() {
+        XCTAssertTrue(stationary.wantsRefresh(atSec: 610, shownSec: 620))
+        XCTAssertTrue(stationary.wantsRefresh(atSec: 590.5, shownSec: 610))
+        XCTAssertTrue(stationary.wantsRefresh(atSec: 600, shownSec: 555))
+    }
+
+    /// An accepted frame the card would hide (out of reach of the current target, or not finite)
+    /// counts as none.
+    func testAnOutOfReachAcceptedFrameCountsAsNone() {
+        XCTAssertTrue(stationary.wantsRefresh(atSec: 700, shownSec: 300))
+        XCTAssertTrue(stationary.wantsRefresh(atSec: 700, shownSec: .nan))
+        XCTAssertFalse(stationary.wantsRefresh(atSec: 800, shownSec: 300), "the new frame is out of reach too")
     }
 
     func testNoRefreshWithoutARequestTarget() {
-        XCTAssertFalse(timeOnly.wantsRefresh(atSec: 1000, toleranceSec: 10))
-        XCTAssertFalse(Plan.none.wantsRefresh(atSec: 0, toleranceSec: 10))
+        XCTAssertFalse(timeOnly.wantsRefresh(atSec: 1000, shownSec: nil))
+        XCTAssertFalse(Plan.none.wantsRefresh(atSec: 0, shownSec: nil))
     }
 
     // MARK: Render

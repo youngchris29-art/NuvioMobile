@@ -254,10 +254,11 @@ final class PlayerTransportInput: NSObject, UIGestureRecognizerDelegate {
         preview.sourceMayHaveChanged()
     }
 
-    /// The source gained a frame at `atSec` (an mpv decode or harvest insert): a card whose target
-    /// is that close asks again, so a stationary hold, scrub or click card turns into a picture.
-    func previewSourceContentChanged(atSec: Double, toleranceSec: Double) {
-        preview.sourceContentChanged(atSec: atSec, toleranceSec: toleranceSec)
+    /// The source gained a frame at `atSec` (an mpv decode or harvest insert): a card that would
+    /// accept it and show it in place of a farther (or no) frame asks again, so a stationary hold,
+    /// scrub or click card turns into a picture.
+    func previewSourceContentChanged(atSec: Double) {
+        preview.sourceContentChanged(atSec: atSec)
     }
 
     /// Preview lookups are running (mpv: the thumbnailer's `previewActive` input).

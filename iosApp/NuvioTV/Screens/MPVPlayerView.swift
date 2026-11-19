@@ -2650,7 +2650,7 @@ final class MPVTVPlayerViewController: UIViewController {
             #endif
             // GitHub #33 (best-effort): a stationary card near this frame turns into a picture.
             if result.outcome == .stored || result.outcome == .replaced {
-                self.transportInput.previewSourceContentChanged(atSec: sec, toleranceSec: result.snapshot.tolerance)
+                self.transportInput.previewSourceContentChanged(atSec: sec)
             }
         }
         guard let thumb = capture.thumb else {
@@ -2894,7 +2894,7 @@ final class MPVTVPlayerViewController: UIViewController {
                 // GitHub #33: a card whose target is near this keyframe asks again, a stationary hold,
                 // scrub or click card included, and a pre-warm keyframe as much as a scrub's own job.
                 if current {
-                    self.transportInput.previewSourceContentChanged(atSec: kf, toleranceSec: inserted.snapshot.tolerance)
+                    self.transportInput.previewSourceContentChanged(atSec: kf)
                 }
             case .failed(let reason):
                 if let reason { self.thumbs.stop(reason) }

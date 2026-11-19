@@ -146,7 +146,7 @@ final class SeekPreviewCoordinatorTests: XCTestCase {
         XCTAssertEqual(render.content, .placeholder)
         clock.advance(by: 0.5)
         // The keyframe the miss asked for arrives: the stationary hold asks again.
-        coordinator.sourceContentChanged(atSec: 302, toleranceSec: 5)
+        coordinator.sourceContentChanged(atSec: 302)
         await settle()
         XCTAssertEqual(source.pending.count, 1, "a refresh lookup started")
         await answer(frame(302))
@@ -155,17 +155,48 @@ final class SeekPreviewCoordinatorTests: XCTestCase {
         XCTAssertNotNil(render.image)
     }
 
+    /// Review r1-1: a seek to 105 s whose keyframe is at 60 s. The store's lookup tolerance never
+    /// matches it, but the card accepts it (within 120 s), so the decoded keyframe still turns the
+    /// stationary placeholder into a picture; a later insert no closer causes no lookup, a closer one does.
+    func testStationaryHoldRefreshesForAKeyframe45SecondsAway() async {
+        coordinator.setSource(capability: Self.both, generation: 0)
+        coordinator.gestureChanged(.hold(targetSec: 105))
+        await answerMiss()
+        XCTAssertEqual(sink.refines.map(\.targetSec), [105])
+        XCTAssertEqual(render.content, .placeholder)
+        clock.advance(by: 0.5)
+        coordinator.sourceContentChanged(atSec: 60)
+        await settle()
+        XCTAssertEqual(source.pending.map(\.sec), [105], "a refresh lookup started")
+        await answer(nil)                  // match: 45 s is beyond the lookup tolerance
+        await answer(frame(60))            // nearest: within the card's reach
+        XCTAssertEqual(render.content, .frame)
+        XCTAssertEqual(render.frameSec, 60)
+        XCTAssertTrue(source.pending.isEmpty)
+        XCTAssertEqual(sink.refines.map(\.targetSec), [105, 105], "the decoder may still fetch nearer")
+        clock.advance(by: 0.5)
+        coordinator.sourceContentChanged(atSec: 20)     // farther than the shown frame
+        await settle()
+        XCTAssertTrue(source.pending.isEmpty, "a farther insert causes no lookup")
+        coordinator.sourceContentChanged(atSec: 150)    // as far, other side
+        await settle()
+        XCTAssertTrue(source.pending.isEmpty, "an insert no closer causes no lookup")
+        coordinator.sourceContentChanged(atSec: 100)    // closer
+        await settle()
+        XCTAssertEqual(source.pending.map(\.sec), [105])
+    }
+
     func testContentChangedFarFromTheTargetDoesNothing() async {
         coordinator.setSource(capability: Self.both, generation: 0)
         coordinator.gestureChanged(.hold(targetSec: 300))
         await answerMiss()
         clock.advance(by: 0.5)
-        coordinator.sourceContentChanged(atSec: 400, toleranceSec: 5)
+        coordinator.sourceContentChanged(atSec: 450)
         await settle()
         XCTAssertTrue(source.pending.isEmpty)
         // After release the plan has no target: nothing runs.
         coordinator.gestureChanged(.none)
-        coordinator.sourceContentChanged(atSec: 300, toleranceSec: 5)
+        coordinator.sourceContentChanged(atSec: 300)
         await settle()
         XCTAssertTrue(source.pending.isEmpty)
     }
@@ -208,7 +239,7 @@ final class SeekPreviewCoordinatorTests: XCTestCase {
         coordinator.setSource(capability: Self.both, generation: 0)
         coordinator.gestureChanged(.hold(targetSec: 300))
         await settle()
-        coordinator.sourceContentChanged(atSec: 300, toleranceSec: 5)     // trailing, same target
+        coordinator.sourceContentChanged(atSec: 300)     // trailing, same target
         clock.advance(by: 0.1)
         await answerMiss()
         XCTAssertEqual(log.events, ["match 300", "nearest 300", "refine 300", "match 300"])
@@ -299,7 +330,7 @@ final class SeekPreviewCoordinatorTests: XCTestCase {
         await answer(frame(300))
         XCTAssertEqual(render.content, .frame)
         live.capability = .none
-        coordinator.sourceContentChanged(atSec: 300, toleranceSec: 5)
+        coordinator.sourceContentChanged(atSec: 300)
         XCTAssertEqual(render.content, .none, "a hold with no capability draws nothing")
         XCTAssertNil(render.frameSec)
     }
@@ -450,7 +481,7 @@ final class SeekPreviewCoordinatorTests: XCTestCase {
         XCTAssertEqual(sink.decoderEnds, ends)
         coordinator.gestureChanged(.hold(targetSec: 700))
         coordinator.clickIssued(targetSec: 710, generation: 10)
-        coordinator.sourceContentChanged(atSec: 700, toleranceSec: 5)
+        coordinator.sourceContentChanged(atSec: 700)
         await settle()
         XCTAssertTrue(source.pending.isEmpty)
         XCTAssertTrue(clock.items.isEmpty)
