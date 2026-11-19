@@ -167,15 +167,30 @@ nonisolated struct ClickPreviewLatch: Equatable, Sendable {
                         deadline: now + Self.fallbackSec)
     }
 
+    /// What a landing report did to the latch (review r5: the coordinator asks for the click's
+    /// picture again on its own landing, `SeekPreviewLifecycle.landingEffects`).
+    enum Landing: Equatable, Sendable {
+        /// No click, or an older seek's landing: nothing changed.
+        case ignored
+        /// The click's own seek landed: the deadline moved to the dwell rule.
+        case own
+        /// A newer seek landed: the click's card went.
+        case superseded
+    }
+
     /// Seek `generation` landed: this click's landing ends the card once the dwell is over; a newer
     /// seek's landing supersedes the click at once; an older one is ignored.
-    mutating func landed(generation: Int, now: Double) {
-        guard let a = active else { return }
+    @discardableResult
+    mutating func landed(generation: Int, now: Double) -> Landing {
+        guard let a = active else { return .ignored }
         if generation == a.generation {
             active?.deadline = min(a.deadline, max(now, a.shownAt + Self.minDwellSec))
+            return .own
         } else if generation > a.generation {
             active = nil
+            return .superseded
         }
+        return .ignored
     }
 
     /// Seek `generation` was refused: this click's card goes; another generation's refusal is ignored.
@@ -362,6 +377,21 @@ nonisolated enum SeekPreviewLifecycle {
             out.insert(.requestNow)
         }
         return out
+    }
+
+    /// Review r5: a click's own seek landed. Aether's still cache fills only once the seek's
+    /// segments are resident, and it has no content-change event, so a lookup that missed when the
+    /// seek was issued would never be asked again. On the latch's own landing (never an older or a
+    /// newer seek's) the current target asks once more through the throttle, under the same rule
+    /// as a content-change refresh: only when it could improve the card, that is when no frame the
+    /// source returned as its tolerance-bounded match for this target is accepted
+    /// (`matchedTargetSec`: the target the accepted frame matched, nil for none or for the
+    /// `nearest` fallback). Evaluated on the state after the landing, so a landing that ends the
+    /// dwell (no request target left) asks nothing. The latch and its deadline are not touched.
+    static func landingEffects(_ landing: ClickPreviewLatch.Landing, plan: SeekPreviewPlan,
+                               matchedTargetSec: Double?) -> Effects {
+        guard landing == .own, let t = plan.requestTargetSec, matchedTargetSec != t else { return [] }
+        return .requestNow
     }
 }
 

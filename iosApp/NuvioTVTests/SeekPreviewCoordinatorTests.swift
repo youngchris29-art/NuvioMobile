@@ -499,6 +499,77 @@ final class SeekPreviewCoordinatorTests: XCTestCase {
         XCTAssertTrue(clock.items.isEmpty)
     }
 
+    // Review r5: Aether fills its still cache only once the seek's segments are resident, with no
+    // content-change event; the click's own landing asks again.
+
+    func testOwnLandingRetriesAMissedPictureWithinTheSameDwell() async {
+        coordinator.setSource(capability: Self.both, generation: 0)
+        coordinator.clickIssued(targetSec: 110, generation: 5)
+        await answerMiss()
+        XCTAssertEqual(render.content, .placeholder, "the target is not resident yet")
+        XCTAssertEqual(coordinator.latch.nextDeadline, 100 + ClickPreviewLatch.fallbackSec)
+        clock.advance(by: 0.3)
+        coordinator.seekLanded(generation: 5)       // the seek landed: the target is resident now
+        let dwellEnd = 100 + ClickPreviewLatch.minDwellSec
+        XCTAssertEqual(coordinator.latch.nextDeadline!, dwellEnd, accuracy: 1e-9)
+        await settle()
+        XCTAssertEqual(source.calls.count, 3, "exactly one more lookup")
+        XCTAssertEqual(source.pending.map(\.sec), [110])
+        await answer(frame(110.04))
+        XCTAssertEqual(render.kind, .landing)
+        XCTAssertEqual(render.content, .frame)
+        XCTAssertEqual(render.frameSec, 110.04)
+        XCTAssertEqual(coordinator.latch.nextDeadline!, dwellEnd, accuracy: 1e-9, "the retry never extends the dwell")
+        XCTAssertEqual(clock.items.map(\.at).max()!, dwellEnd, accuracy: 1e-9)
+        clock.advance(to: dwellEnd + 0.01)
+        XCTAssertEqual(render.kind, .none)
+        XCTAssertEqual(source.calls.count, 3)
+    }
+
+    func testOlderOrNewerLandingDoesNotRetry() async {
+        coordinator.setSource(capability: Self.both, generation: 0)
+        coordinator.clickIssued(targetSec: 110, generation: 5)
+        await answerMiss()
+        clock.advance(by: 0.3)
+        coordinator.seekLanded(generation: 4)       // an older seek
+        await settle()
+        XCTAssertTrue(source.pending.isEmpty)
+        XCTAssertEqual(coordinator.latch.nextDeadline, 100 + ClickPreviewLatch.fallbackSec, "the latch is untouched")
+        coordinator.seekLanded(generation: 6)       // a newer seek supersedes the card
+        await settle()
+        XCTAssertTrue(source.pending.isEmpty)
+        XCTAssertEqual(source.calls.count, 2)
+        XCTAssertEqual(render.kind, .none)
+    }
+
+    func testOwnLandingWithTheTargetsFrameShownAsksNothing() async {
+        coordinator.setSource(capability: Self.both, generation: 0)
+        coordinator.clickIssued(targetSec: 110, generation: 5)
+        await answer(frame(110))
+        clock.advance(by: 0.3)
+        let before = sink.renders.count
+        coordinator.seekLanded(generation: 5)
+        await settle()
+        XCTAssertTrue(source.pending.isEmpty)
+        XCTAssertEqual(source.calls.count, 1)
+        XCTAssertEqual(render.frameSec, 110)
+        XCTAssertEqual(sink.renders.count, before, "nothing to publish")
+    }
+
+    func testOwnLandingRetriesWhenOnlyTheNearestFallbackIsShown() async {
+        coordinator.setSource(capability: Self.both, generation: 0)
+        coordinator.clickIssued(targetSec: 110, generation: 5)
+        await answer(nil)                            // match misses
+        await answer(frame(80))                      // nearest: a frame 30 s off, within reach
+        XCTAssertEqual(render.frameSec, 80)
+        clock.advance(by: 0.3)
+        coordinator.seekLanded(generation: 5)
+        await settle()
+        XCTAssertEqual(source.pending.map(\.sec), [110], "the fallback is not the target's match")
+        await answer(frame(110))
+        XCTAssertEqual(render.frameSec, 110)
+    }
+
     func testClickWithALookupPendingAtTheFallback() async {
         coordinator.setSource(capability: Self.both, generation: 0)
         coordinator.clickIssued(targetSec: 110, generation: 5)

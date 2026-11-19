@@ -52,6 +52,9 @@ final class SeekPreviewCoordinator {
     private var throttle = PreviewFrameThrottle()
     private var cancelThrottleWait: (() -> Void)?
     private var frame: SeekPreviewMatch?
+    /// The request target `frame` was the source's tolerance-bounded `match` for; nil when there is
+    /// no frame or it came from the `nearest` fallback (review r5).
+    private var frameMatchedTargetSec: Double?
     private var cancelLatchTimer: (() -> Void)?
     private var latchTimerDeadline: Double?
     private var kind: SeekPreviewRender.Kind = .none
@@ -95,10 +98,16 @@ final class SeekPreviewCoordinator {
         input(true) { latch.clicked(targetSec: targetSec, generation: generation, now: now()) }
     }
 
-    /// Seek `generation` landed (newest or not).
+    /// Seek `generation` landed (newest or not). The click's own landing also retries its picture
+    /// when the accepted frame is not the target's match (review r5, `landingEffects`).
     func seekLanded(generation: Int) {
         let active = latch.active != nil
-        input(active) { if active { latch.landed(generation: generation, now: now()) } }
+        var landing = ClickPreviewLatch.Landing.ignored
+        input(active, extra: { [self] in
+            SeekPreviewLifecycle.landingEffects(landing, plan: plan, matchedTargetSec: frameMatchedTargetSec)
+        }) {
+            if active { landing = latch.landed(generation: generation, now: now()) }
+        }
     }
 
     func seekRejected(generation: Int) {
@@ -165,13 +174,19 @@ final class SeekPreviewCoordinator {
     /// `change`, re-reads the live source and runs `SeekPreviewLifecycle` once over the composed
     /// edge (r2-2), so a source transition with no input change still gets its effects.
     private func input(_ changed: Bool, _ change: () -> Void = {}) {
+        input(changed, extra: { [] }, change)
+    }
+
+    /// `extra` adds effects decided on the state after the change (a click's own landing); they
+    /// run in the same `apply` as the lifecycle's.
+    private func input(_ changed: Bool, extra: () -> SeekPreviewLifecycle.Effects, _ change: () -> Void) {
         guard changed || liveSourceDiffers else { return }
-        update(change)
+        update(change, extra: extra)
     }
 
     /// One input: mutate, read the live source, fold the latch in, derive the plan, run the
     /// lifecycle's effects from the old state to the new one, re-arm the latch timer, publish.
-    private func update(_ change: () -> Void) {
+    private func update(_ change: () -> Void, extra: () -> SeekPreviewLifecycle.Effects) {
         let old = lifecycleKey
         change()
         if alive, let live = liveSource?() {
@@ -180,7 +195,8 @@ final class SeekPreviewCoordinator {
         }
         latch.tick(now: now())
         recompute()
-        apply(SeekPreviewLifecycle.effects(from: old, to: lifecycleKey))
+        let effects = SeekPreviewLifecycle.effects(from: old, to: lifecycleKey)
+        apply(alive ? effects.union(extra()) : effects)
         armLatchTimer()
         publish()
     }
@@ -228,7 +244,7 @@ final class SeekPreviewCoordinator {
             cancelThrottleWait?()
             cancelThrottleWait = nil
         }
-        if effects.contains(.clearFrame) { frame = nil }
+        if effects.contains(.clearFrame) { setFrame(nil) }
         if effects.contains(.clearLatch) { latch.clear() }
         if effects.contains(.endDecoderActivity) { sink?.endDecoderActivity() }
         if effects.contains(.requestNow) { handle(throttle.sample(now: now())) }
@@ -277,7 +293,7 @@ final class SeekPreviewCoordinator {
             guard let source = sourceProvider() else {
                 // No store: nothing runs, so the lookup is done at once (the card shows the
                 // placeholder or the time).
-                frame = nil
+                setFrame(nil)
                 handle(throttle.finished(now: now()))
                 return
             }
@@ -305,8 +321,8 @@ final class SeekPreviewCoordinator {
                                              shownSec: shown?.sec)
         guard d.finishThrottle else { return }
         switch d.frame {
-        case .publish: frame = shown
-        case .clear: frame = nil
+        case .publish: setFrame(shown, matchedTargetSec: match != nil ? targetSec : nil)
+        case .clear: setFrame(nil)
         case .keep: break
         }
         publish()
@@ -315,6 +331,11 @@ final class SeekPreviewCoordinator {
         if let refine = d.refineTargetSec { sink?.refine(targetSec: refine, matchSec: match?.sec) }
         handle(throttle.finished(now: now()))
         publish()
+    }
+
+    private func setFrame(_ f: SeekPreviewMatch?, matchedTargetSec: Double? = nil) {
+        frame = f
+        frameMatchedTargetSec = f == nil ? nil : matchedTargetSec
     }
 
     // MARK: Render

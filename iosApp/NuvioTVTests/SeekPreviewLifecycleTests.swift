@@ -96,6 +96,16 @@ final class SeekPreviewLifecycleTests: XCTestCase {
         XCTAssertEqual(l.nextDeadline, 7, "landed after the dwell")
     }
 
+    func testLandedReportsWhatItDid() {
+        var l = Latch()
+        XCTAssertEqual(l.landed(generation: 3, now: 1), .ignored, "no click")
+        l.clicked(targetSec: 110, generation: 3, now: 10)
+        XCTAssertEqual(l.landed(generation: 2, now: 10.1), .ignored, "an older seek")
+        XCTAssertEqual(l.landed(generation: 3, now: 10.2), .own)
+        XCTAssertEqual(l.landed(generation: 4, now: 10.3), .superseded)
+        XCTAssertNil(l.active)
+    }
+
     // MARK: SeekPreviewLifecycle
 
     typealias LC = SeekPreviewLifecycle
@@ -163,6 +173,19 @@ final class SeekPreviewLifecycleTests: XCTestCase {
 
     func testCapabilityLossPlusTargetMove() {
         XCTAssertEqual(LC.effects(from: key(10), to: key(20, Self.watched)), E.cleanup.union(.requestNow))
+    }
+
+    // Review r5: a click's own landing retries a picture that is not the target's match.
+
+    func testLandingEffects() {
+        let p = SeekPreviewPlan(requestTargetSec: 110, cardTargetSec: 110, placeholderAllowed: true)
+        XCTAssertEqual(LC.landingEffects(.own, plan: p, matchedTargetSec: nil), [.requestNow], "no match shown")
+        XCTAssertEqual(LC.landingEffects(.own, plan: p, matchedTargetSec: 100), [.requestNow],
+                       "the accepted frame matched another target")
+        XCTAssertEqual(LC.landingEffects(.own, plan: p, matchedTargetSec: 110), [], "the target's match is shown")
+        XCTAssertEqual(LC.landingEffects(.ignored, plan: p, matchedTargetSec: nil), [], "an older seek")
+        XCTAssertEqual(LC.landingEffects(.superseded, plan: p, matchedTargetSec: nil), [], "a newer seek")
+        XCTAssertEqual(LC.landingEffects(.own, plan: .none, matchedTargetSec: nil), [], "the dwell is over")
     }
 
     // MARK: SeekPreviewCompletion
