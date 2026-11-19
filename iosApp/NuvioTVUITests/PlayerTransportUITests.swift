@@ -523,7 +523,7 @@ final class PlayerTransportUITests: XCTestCase {
 
     // MARK: Seek preview decode (P3), reads the bar probe's `decoded=` / `fsec=`
 
-    /// Harvest + Decode: on the simulator the harvest is off, so every stored frame here came from
+    /// Whole Video (`-debug.seekPreviewMode decode`): on the simulator the harvest is off, so every stored frame here came from
     /// the keyframe thumbnailer's pre-warm (it opens after 20 s of healthy play, then passes of up
     /// to 8 frames every 10 s). Ten frames within 60 s of playback.
     func testDecodePrewarmGrows() throws {

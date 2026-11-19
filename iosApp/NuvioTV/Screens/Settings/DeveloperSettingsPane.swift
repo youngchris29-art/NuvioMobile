@@ -128,8 +128,6 @@ struct DeveloperSettingsPane: View {
     @AppStorage("debug.harvestIntervalSec") private var harvestIntervalSec = 0
     /// Set by the harvest's crash guard (review r1 P2 #3); picking any value clears it.
     @AppStorage(HarvestCrashSentinel.disabledKey) private var harvestDisabledByCrash = false
-    /// Player P3: where the seek preview gets its pictures, both engines (`SeekPreviewMode`).
-    @AppStorage(SeekPreviewMode.defaultsKey) private var seekPreviewMode = SeekPreviewMode.defaultMode.rawValue
     /// BUG-168 native half: the native engine's I-frame rendition, off by default
     /// (`SeekPreviewMode.allowsNativeIFrames(scanEnabled:)`).
     @AppStorage(SeekPreviewMode.nativeIFrameScanKey) private var nativeIFrameScan = SeekPreviewMode.nativeIFrameScanDefault
@@ -270,14 +268,6 @@ struct DeveloperSettingsPane: View {
             options: [false, true],
             descriptionID: .devHarvestScreenshotPath,
             label: { $0 ? String(localized: "Software for SDR") : String(localized: "Video Renderer (default)") }
-        )
-
-        SettingsPickerRow(
-            title: String(localized: "Seek Preview Frames (A/B)"),
-            selection: $seekPreviewMode,
-            options: SeekPreviewMode.allCases.map(\.rawValue),
-            descriptionID: .devSeekPreviewMode,
-            label: { raw in SeekPreviewMode.parse(raw).displayName }
         )
 
         // BUG-168 (Steven, rc5 verdict 2026-10-17: "a transparent box" on the native player): Off

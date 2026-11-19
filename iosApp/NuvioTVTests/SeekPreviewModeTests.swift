@@ -1,7 +1,7 @@
 import XCTest
 @testable import NuvioTV
 
-/// Player P3: the seek-preview mode switch (Developer › Seek Preview Frames).
+/// Player P3: the seek-preview mode switch (Settings › Player › Seek Preview Pictures).
 final class SeekPreviewModeTests: XCTestCase {
     func testParseDefaultsToHarvest() {
         XCTAssertEqual(SeekPreviewMode.defaultMode, .harvest)
@@ -47,8 +47,8 @@ final class SeekPreviewModeTests: XCTestCase {
     func testDisplayNamesAreDistinct() {
         let names = SeekPreviewMode.allCases.map(\.displayName)
         XCTAssertEqual(Set(names).count, names.count)
-        XCTAssertEqual(SeekPreviewMode.harvest.displayName, "Harvest Only")
-        XCTAssertEqual(SeekPreviewMode.decode.displayName, "Harvest + Decode")
+        XCTAssertEqual(SeekPreviewMode.harvest.displayName, "Watched Parts")
+        XCTAssertEqual(SeekPreviewMode.decode.displayName, "Whole Video")
         XCTAssertEqual(SeekPreviewMode.off.displayName, "Off")
     }
     // MARK: BUG-168 native half (Native I-frame Scan, off by default)

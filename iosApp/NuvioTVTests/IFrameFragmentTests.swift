@@ -153,7 +153,7 @@ final class IFrameFragmentTests: XCTestCase {
     }
 
     /// BUG-168 native half: the master the native engine gets in both states of Developer › Native
-    /// I-frame Scan, with Seek Preview Frames at its default (Harvest Only).
+    /// I-frame Scan, with Seek Preview Pictures at its default (Watched Parts).
     func testNativeMasterFollowsTheScanRow() throws {
         let map = try fiveSegmentMap()
         let mode = SeekPreviewMode.defaultMode

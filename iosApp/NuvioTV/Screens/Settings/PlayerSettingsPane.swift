@@ -85,9 +85,19 @@ struct PlayerSettingsPane: View {
             // chapter UI is the system's). Shared and synced; On by default.
             SettingsToggleRow(
                 title: String(localized: "Show Chapter Titles"),
-                subtitle: String(localized: "Show the chapter's name above the preview while you scrub"),
+                subtitle: String(localized: "Show the chapter's name above the preview while you skip or scrub"),
                 isOn: Binding(get: { model.chapterTitleEnabled }, set: { model.setChapterTitleEnabled($0) }),
                 descriptionID: .playerChapterTitle
+            )
+            // GitHub #33: where the seek preview card gets its pictures. Device-wide, both engines;
+            // always shown (Aether honours Off, the native player's fast-forward pictures follow it).
+            SettingsPickerRow(
+                title: String(localized: "Seek Preview Pictures"),
+                subtitle: String(localized: "Whole Video can download up to 200 MB more per title"),
+                selection: Binding(get: { model.seekPreviewMode }, set: { model.setSeekPreviewMode($0) }),
+                options: [SeekPreviewMode.off, .harvest, .decode],
+                descriptionID: .playerSeekPreview,
+                label: { $0.displayName }
             )
             SettingsToggleRow(
                 title: String(localized: "Show Clock"),

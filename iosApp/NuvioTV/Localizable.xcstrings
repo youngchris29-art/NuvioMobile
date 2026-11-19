@@ -7218,40 +7218,6 @@
         }
       }
     },
-    "An A/B switch for where the player's seek preview gets its pictures. Harvest Only saves them from the video as it plays. Harvest + Decode also reads pictures from parts you have not watched yet, which can download about 200 MB more per title. Off shows times only and turns off the picture track the Apple TV player uses to fast forward and rewind.": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ein A/B-Schalter dafür, woher die Suchvorschau ihre Bilder bekommt. Nur Sammeln speichert sie während der Wiedergabe aus dem Video. Sammeln + Dekodieren liest auch Bilder aus noch nicht gesehenen Teilen, was pro Titel etwa 200 MB mehr laden kann. Aus zeigt nur Zeiten und schaltet die Bildspur aus, die der Apple-TV-Player zum Vor- und Zurückspulen nutzt."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Un interruptor A/B para de dónde saca sus imágenes la vista previa de búsqueda. Solo captura las guarda del vídeo mientras se reproduce. Captura + decodificación también lee imágenes de partes que aún no has visto, lo que puede descargar unos 200 MB más por título. Desactivado solo muestra tiempos y desactiva la pista de imágenes que usa el reproductor de Apple TV para avanzar y retroceder rápido."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Un interrupteur A/B pour la provenance des images de l’aperçu de recherche. Collecte uniquement les enregistre depuis la vidéo pendant la lecture. Collecte + décodage lit aussi des images des parties pas encore regardées, ce qui peut télécharger environ 200 Mo de plus par titre. Désactivé n’affiche que les durées et désactive la piste d’images que le lecteur Apple TV utilise pour l’avance et le retour rapides."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Un interruttore A/B per da dove l’anteprima di ricerca prende le immagini. Solo raccolta le salva dal video durante la riproduzione. Raccolta + decodifica legge anche immagini dalle parti non ancora viste, il che può scaricare circa 200 MB in più per titolo. Off mostra solo i tempi e disattiva la traccia di immagini che il lettore di Apple TV usa per avanzare e riavvolgere velocemente."
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Công tắc A/B cho nguồn ảnh của bản xem trước khi tua. Chỉ thu thập lưu ảnh từ video khi đang phát. Thu thập + giải mã còn đọc ảnh từ các đoạn bạn chưa xem, có thể tải thêm khoảng 200 MB mỗi nội dung. Tắt chỉ hiện thời gian và tắt dải ảnh mà trình phát Apple TV dùng để tua nhanh và tua lại."
-          }
-        }
-      }
-    },
     "An A/B switch that changes how Home's top edge scrolls, to test a tab bar that reappears clipped. Try it only if asked.": {
       "localizations": {
         "de": {
@@ -22727,74 +22693,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Giải mã phần cứng"
-          }
-        }
-      }
-    },
-    "Harvest + Decode": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Sammeln + Dekodieren"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Captura + decodificación"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Collecte + décodage"
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Raccolta + decodifica"
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Thu thập + giải mã"
-          }
-        }
-      }
-    },
-    "Harvest Only": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Nur Sammeln"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Solo captura"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Collecte uniquement"
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Solo raccolta"
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Chỉ thu thập"
           }
         }
       }
@@ -42593,40 +42491,7 @@
         }
       }
     },
-    "Seek Preview Frames (A/B)": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Bilder der Suchvorschau (A/B)"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Imágenes de vista previa de búsqueda (A/B)"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Images d’aperçu de recherche (A/B)"
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Immagini anteprima di ricerca (A/B)"
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ảnh xem trước khi tua (A/B)"
-          }
-        }
-      }
-    },
+    "Seek Preview Pictures": {},
     "Seek Previews": {
       "localizations": {
         "de": {
@@ -44723,40 +44588,7 @@
         }
       }
     },
-    "Show the chapter's name above the preview while you scrub": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Zeigt den Kapitelnamen über der Vorschau, während du suchst"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Muestra el nombre del capítulo sobre la vista previa mientras te desplazas"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Affiche le nom du chapitre au-dessus de l’aperçu pendant le défilement"
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Mostra il nome del capitolo sopra l’anteprima mentre scorri"
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Hiện tên chương phía trên ảnh xem trước khi bạn tua"
-          }
-        }
-      }
-    },
+    "Show the chapter's name above the preview while you skip or scrub": {},
     "Show the poster and what is happening while a video starts": {
       "localizations": {
         "de": {
@@ -45137,6 +44969,7 @@
         }
       }
     },
+    "Shows a picture of where you will land while you skip or scrub with the remote. Watched Parts uses pictures saved from what you have already played and downloads nothing extra. Whole Video also reads pictures from parts you have not watched yet: up to 2% of the file (at most 150 MB), plus up to 50 MB more while you skip around. The Aether engine takes pictures from video it has already loaded, so both choices work the same there. Off turns preview pictures off; you still see the time. The Apple TV player used for Dolby Vision and HDR does not show this picture card; its fast-forward pictures have their own setting, and Off turns those off too. This Apple TV only. Default: Watched Parts.": {},
     "Shows a short code to enter at simkl.com/pin on your phone or computer.": {
       "localizations": {
         "de": {
@@ -57852,6 +57685,7 @@
         }
       }
     },
+    "Watched Parts": {},
     "Watchlist": {
       "extractionState": "manual",
       "localizations": {
@@ -58468,6 +58302,8 @@
         }
       }
     },
+    "Whole Video": {},
+    "Whole Video can download up to 200 MB more per title": {},
     "Whole number, for example 100.": {
       "localizations": {
         "de": {

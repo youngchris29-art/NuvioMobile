@@ -149,6 +149,7 @@ enum SettingsDescriptionID: String, CaseIterable {
     case playerShowClock = "player.showClock"
     case playerShowCast = "player.showCastInPlayer"
     case playerChapterTitle = "player.chapterTitle"
+    case playerSeekPreview = "player.seekPreview"
     case playerMatchFrameRate = "player.matchFrameRate"
     case playerEnhancedRenderer = "player.enhancedRenderer"
     case playerNativeDolbyVision = "player.nativeDolbyVision"
@@ -243,7 +244,6 @@ enum SettingsDescriptionID: String, CaseIterable {
     case devScrubCurve = "dev.scrubCurve"
     case devScrubSpeed = "dev.scrubSpeed"
     case devHarvestInterval = "dev.harvestInterval"
-    case devSeekPreviewMode = "dev.seekPreviewMode"
     case devNativeIFrameScan = "dev.nativeIFrameScan"
     case devHarvestScreenshotPath = "dev.harvestScreenshotPath"
     case devCollectionProbe = "dev.collectionProbe"
@@ -472,6 +472,7 @@ enum SettingsDescriptions {
         case .playerEdgeClick: return LocalizedStringResource("Choose what one click on Left or Right does in the mpv player. Skip 10 s jumps ten seconds. Previous/Next Chapter jumps to the next chapter, or back to the start of this one, when the video has chapters, and skips 10 seconds when it does not. Default: Skip 10 s.")
         case .playerShowCast: return LocalizedStringResource("Adds a Cast pill under the timeline in the player. It lists the cast, guest stars and key crew for the title or episode, and opens a short biography with their best-known titles. Works whether or not TMDB Enrichment is on. Default: On.")
         case .playerChapterTitle: return LocalizedStringResource("Shows the name of the chapter you are scrubbing to, above the preview frame. The chapter marks on the timeline, the Chapters pill and Previous/Next Chapter stay either way. The Apple TV player shows its own chapter list and is not affected. Synced with your phone. On by default.")
+        case .playerSeekPreview: return LocalizedStringResource("Shows a picture of where you will land while you skip or scrub with the remote. Watched Parts uses pictures saved from what you have already played and downloads nothing extra. Whole Video also reads pictures from parts you have not watched yet: up to 2% of the file (at most 150 MB), plus up to 50 MB more while you skip around. The Aether engine takes pictures from video it has already loaded, so both choices work the same there. Off turns preview pictures off; you still see the time. The Apple TV player used for Dolby Vision and HDR does not show this picture card; its fast-forward pictures have their own setting, and Off turns those off too. This Apple TV only. Default: Watched Parts.")
         case .playerShowClock: return LocalizedStringResource("Shows the time of day in the corner while the player controls are up. Off by default.")
         case .devHoldTick: return LocalizedStringResource("An A/B switch for how often a held Left or Right adds a step. Auto is 0.25 seconds.")
         case .devHoldRamp: return LocalizedStringResource("An A/B switch for how quickly a held Left or Right moves up to bigger steps. Auto reaches 60-second steps after 2 seconds; Faster after 1 second; Slower after 4 seconds.")
@@ -480,7 +481,6 @@ enum SettingsDescriptions {
         case .devScrubSpeed: return LocalizedStringResource("An A/B switch for how far a swipe moves the position. Slower halves it; Faster doubles it.")
         case .devHarvestInterval: return LocalizedStringResource("An A/B switch for how often the mpv player saves a small picture of the video for the seek preview. Auto saves one every 10 seconds of playback. Off saves none. If the app closes while saving one, saving stops on this Apple TV until you pick a value here.")
         case .devHarvestScreenshotPath: return LocalizedStringResource("An A/B switch for how the mpv player copies a frame for the seek preview. Video Renderer is the default. Software for SDR copies the frame without the video renderer, which can use less memory over a long playback; when it returns no frame, that playback falls back to the renderer. Applies to the next playback.")
-        case .devSeekPreviewMode: return LocalizedStringResource("An A/B switch for where the player's seek preview gets its pictures. Harvest Only saves them from the video as it plays. Harvest + Decode also reads pictures from parts you have not watched yet, which can download about 200 MB more per title. Off shows times only and turns off the picture track the Apple TV player uses to fast forward and rewind.")
         case .devNativeIFrameScan: return LocalizedStringResource("An A/B switch for the picture track the Apple TV player uses to fast forward and rewind. Off, the default, shows the time only while you scrub, with no empty preview box. On shows pictures while you fast forward or rewind, but the box over the scrubber stays empty: tvOS does not fill it.")
         case .devTrailerBuffer: return LocalizedStringResource("An A/B switch that sets how many seconds of trailer are buffered before playing. Auto is the normal behavior.")
         case .devTrailerLetterbox: return LocalizedStringResource("An A/B switch that skips the check for black bars around trailers. Leave it off unless asked.")
@@ -507,8 +507,8 @@ enum SettingsDescriptions {
         case .playerMatchFrameRate: return LocalizedStringResource("Also set in tvOS Settings › Video and Audio › Match Content.")
         case .playerStreamingBuffer: return LocalizedStringResource("Applies to the next playback.")
         case .playerNetworkReadahead: return LocalizedStringResource("Applies to the next playback.")
-        case .playerHoldMode, .playerEdgeClick, .devHoldTick, .devHoldRamp, .devCommitExactDelay, .devScrubCurve, .devScrubSpeed, .devHarvestInterval, .devSeekPreviewMode,
-             .devHarvestScreenshotPath, .devNativeIFrameScan:
+        case .playerHoldMode, .playerEdgeClick, .devHoldTick, .devHoldRamp, .devCommitExactDelay, .devScrubCurve, .devScrubSpeed, .devHarvestInterval,
+             .devHarvestScreenshotPath, .devNativeIFrameScan, .playerSeekPreview:
             return LocalizedStringResource("Applies to the next playback.")
         case .servicesDebridPrepare: return LocalizedStringResource("Debrid services limit how many links you can make in a period. Preparing links ahead can use that allowance even if you never press Play, so use a lower number when you can.")
         case .devTrailerMaxFps: return LocalizedStringResource("Takes effect on next launch.")

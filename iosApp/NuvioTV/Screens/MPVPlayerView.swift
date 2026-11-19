@@ -247,7 +247,7 @@ final class MPVTVPlayerViewController: UIViewController {
     /// The crash guard turned the harvest off for this playback (the Info row says so).
     private var harvestCrashOff = false
     // Seek preview decode (P3): the keyframe thumbnailer fills unwatched ground (mode `decode`).
-    /// Developer › Seek Preview Frames, read once in `viewDidLoad`.
+    /// Settings › Player › Seek Preview Pictures, read once in `viewDidLoad`.
     private var seekPreviewMode: SeekPreviewMode = .harvest
     /// Main only. Disabled unless the mode is `decode`.
     private var thumbs = ThumbScheduler(enabled: false)

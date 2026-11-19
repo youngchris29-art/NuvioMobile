@@ -1019,7 +1019,7 @@ final class NativePlaybackCoordinator: ObservableObject {
                                     // applies to the addon-VTT conversions this server performs.
                                     stripSdh: playerSettings?.subtitleStyle.stripSdh ?? false,
                                     // Player P3: the I-frame rendition (FF/RW scan) follows Developer ›
-                                    // Seek Preview Frames; Off = the pre-P3 master. Read per playback.
+                                    // Seek Preview Pictures; Off = the pre-P3 master. Read per playback.
                                     // BUG-168: and only with Developer › Native I-frame Scan (A/B) on
                                     // (off by default), because AVKit's scrub preview never asks for
                                     // an I-frame on tvOS 27 and shows an empty box instead.

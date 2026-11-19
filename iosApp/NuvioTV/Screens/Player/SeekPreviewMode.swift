@@ -1,7 +1,8 @@
 import Foundation
 
-/// Player P3: where the seek preview gets its pictures, one switch for both engines (Developer ›
-/// "Seek Preview Frames (A/B)"). Read once per playback, so a change applies to the next one.
+/// Player P3: where the seek preview gets its pictures, one switch for both engines (Settings ›
+/// Player › "Seek Preview Pictures"; device-wide, same `debug.seekPreviewMode` key as before).
+/// Read once per playback, so a change applies to the next one.
 ///
 /// - `off`: no pictures at all. The mpv harvest and decoder stay off, and the native engine's
 ///   loopback master carries no `EXT-X-I-FRAME-STREAM-INF` (byte for byte the pre-P3 master).
@@ -59,12 +60,12 @@ nonisolated enum SeekPreviewMode: String, CaseIterable, Sendable {
     /// The mpv engine runs the keyframe thumbnailer for unwatched ground.
     var allowsDecode: Bool { self == .decode }
 
-    /// Picker label (Developer row).
+    /// Picker label (Settings › Player › Seek Preview Pictures).
     var displayName: String {
         switch self {
         case .off: return String(localized: "Off")
-        case .harvest: return String(localized: "Harvest Only")
-        case .decode: return String(localized: "Harvest + Decode")
+        case .harvest: return String(localized: "Watched Parts")
+        case .decode: return String(localized: "Whole Video")
         }
     }
 }

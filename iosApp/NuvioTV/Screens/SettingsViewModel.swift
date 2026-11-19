@@ -567,6 +567,9 @@ final class SettingsViewModel: ObservableObject {
     @Published var matchFrameRate: Bool = UserDefaults.standard.bool(forKey: PlayerTuning.matchFrameRateKey)
     /// What holding Left/Right does in the mpv player: "step" or "scan". Device-local.
     @Published var holdMode: String = UserDefaults.standard.string(forKey: PlayerTuning.holdModeKey) ?? "step"
+    /// Where the seek preview gets its pictures (`SeekPreviewMode`). Device-wide: not profile-scoped,
+    /// not synced. Applies to the next playback.
+    @Published var seekPreviewMode: SeekPreviewMode = SeekPreviewMode.current()
     /// What one click on Left/Right does in the mpv player: "skip10" or "chapter". Device-local.
     @Published var edgeClickMode: String = UserDefaults.standard.string(forKey: PlayerTuning.edgeClickModeKey) ?? "skip10"
     /// Show the time of day while the mpv player controls are up. Device-local.
@@ -613,6 +616,11 @@ final class SettingsViewModel: ObservableObject {
     func setHoldMode(_ value: String) {
         holdMode = value
         UserDefaults.standard.set(value, forKey: PlayerTuning.holdModeKey)
+    }
+
+    func setSeekPreviewMode(_ value: SeekPreviewMode) {
+        seekPreviewMode = value
+        UserDefaults.standard.set(value.rawValue, forKey: SeekPreviewMode.defaultsKey)
     }
 
     func setEdgeClickMode(_ value: String) {
