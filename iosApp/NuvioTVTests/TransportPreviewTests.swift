@@ -443,4 +443,103 @@ final class TransportPreviewTests: XCTestCase {
         // Off again: the first press is the P1 immediate seek.
         XCTAssertEqual(t.pressBegan(direction: 1, positionSec: 140), .immediateSeek(deltaSec: 10))
     }
+
+    // MARK: Seek preview gesture (GitHub #33)
+
+    func testPreviewGestureStepClick() {
+        var t = make()
+        XCTAssertEqual(t.previewGesture, .none)
+        XCTAssertEqual(t.pressBegan(direction: 1, positionSec: 100), .immediateSeek(deltaSec: 10))
+        XCTAssertEqual(t.previewGesture, .pending, "a Step press before its first tick is a click so far")
+        XCTAssertEqual(t.pressEnded(direction: 1), .none)
+        XCTAssertEqual(t.previewGesture, .none)
+    }
+
+    func testPreviewGestureHoldAfterTheFirstTick() {
+        var t = make()
+        _ = t.pressBegan(direction: 1, positionSec: 100)
+        _ = t.holdTick(heldSec: held(1))
+        XCTAssertEqual(t.previewGesture, .hold(targetSec: 120))
+        _ = t.holdTick(heldSec: held(2))
+        XCTAssertEqual(t.previewGesture, .hold(targetSec: 140))
+        _ = t.pressBegan(direction: -1, positionSec: 0)        // the other key mid-hold
+        XCTAssertEqual(t.previewGesture, .hold(targetSec: 130))
+        _ = t.pressEnded(direction: -1)
+        XCTAssertEqual(t.previewGesture, .none, "a commit waiting to land has no gesture")
+        XCTAssertNotNil(t.previewSec)
+    }
+
+    func testPreviewGestureLeftHold() {
+        var t = make()
+        _ = t.pressBegan(direction: -1, positionSec: 100)
+        _ = t.holdTick(heldSec: held(1))
+        XCTAssertEqual(t.previewGesture, .hold(targetSec: 80))
+    }
+
+    func testPreviewGestureSecondPressIsAHold() {
+        var t = make()
+        _ = t.pressBegan(direction: 1, positionSec: 100)
+        XCTAssertEqual(t.pressBegan(direction: 1, positionSec: 0), .none)
+        XCTAssertEqual(t.previewGesture, .hold(targetSec: 120), "a second press stays a hold at +10 s")
+    }
+
+    func testPreviewGestureScanArmed() {
+        var t = make(mode: .scan)
+        XCTAssertEqual(t.pressBegan(direction: 1, positionSec: 100), .none)
+        XCTAssertEqual(t.previewGesture, .pending, "scan-armed press: a scan or a release click")
+        XCTAssertEqual(t.holdTick(heldSec: held(1)), .startScan(rate: 2))
+        XCTAssertEqual(t.previewGesture, .scan)
+        XCTAssertEqual(t.endScanInPlace(), .endScan(fromSec: 100, returnToSec: nil))
+        XCTAssertEqual(t.previewGesture, .none)
+        // Released before the first tick: a +10 s click on release.
+        _ = t.pressBegan(direction: 1, positionSec: 200)
+        XCTAssertEqual(t.previewGesture, .pending)
+        XCTAssertEqual(t.pressEnded(direction: 1), .immediateSeek(deltaSec: 10))
+        XCTAssertEqual(t.previewGesture, .none)
+    }
+
+    func testPreviewGesturePausedScanModeHoldSteps() {
+        var t = make(mode: .scan)
+        t.paused = true
+        XCTAssertEqual(t.pressBegan(direction: 1, positionSec: 100), .immediateSeek(deltaSec: 10))
+        XCTAssertEqual(t.previewGesture, .pending)
+        _ = t.holdTick(heldSec: held(1))
+        XCTAssertEqual(t.previewGesture, .hold(targetSec: 120))
+    }
+
+    func testPreviewGestureChapterPress() {
+        var t = make()
+        t.clickOnRelease = true
+        XCTAssertEqual(t.pressBegan(direction: 1, positionSec: 100), .none)
+        XCTAssertEqual(t.previewGesture, .pending)
+        _ = t.holdTick(heldSec: held(1))
+        XCTAssertEqual(t.previewGesture, .hold(targetSec: 120))
+    }
+
+    func testPreviewGestureScrub() {
+        var t = make()
+        _ = t.scrubBegan(positionSec: 100)
+        XCTAssertEqual(t.previewGesture, .scrub(targetSec: 100))
+        _ = t.scrubNudge(direction: 1)
+        XCTAssertEqual(t.previewGesture, .scrub(targetSec: 110))
+        _ = t.scrubCommit()
+        XCTAssertEqual(t.previewGesture, .none, "a scrub commit waiting to land has no gesture")
+        _ = t.scrubBegan(positionSec: 100)
+        _ = t.scrubCancel()
+        XCTAssertEqual(t.previewGesture, .none)
+    }
+
+    func testPreviewGestureHoldTargetIsClamped() {
+        var t = make(duration: 105)
+        _ = t.pressBegan(direction: 1, positionSec: 100)
+        _ = t.holdTick(heldSec: held(1))
+        XCTAssertEqual(t.previewGesture, .hold(targetSec: 104.5))
+    }
+
+    func testStaticClamp() {
+        XCTAssertEqual(TP.clamp(-5, durationSec: 100), 0)
+        XCTAssertEqual(TP.clamp(50, durationSec: 100), 50)
+        XCTAssertEqual(TP.clamp(120, durationSec: 100), 99.5)
+        XCTAssertEqual(TP.clamp(120, durationSec: 0), 120, "unknown duration: only the floor")
+    }
 }

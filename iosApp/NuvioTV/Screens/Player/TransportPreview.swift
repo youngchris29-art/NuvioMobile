@@ -107,8 +107,30 @@ struct TransportPreview {
         heldSec < 0.6 * rampScale ? 10 : heldSec < 1.2 * rampScale ? 20 : heldSec < 2.0 * rampScale ? 30 : 60
     }
 
-    private func clamp(_ x: Double) -> Double {
+    private func clamp(_ x: Double) -> Double { Self.clamp(x, durationSec: durationSec) }
+
+    /// Inside the file: at most half a second before the end when the duration is known, never
+    /// negative. Static so a click's card can be placed where its relative seek lands.
+    static func clamp(_ x: Double, durationSec: Double) -> Double {
         max(0, durationSec > 0 ? min(x, durationSec - 0.5) : x)
+    }
+
+    /// The seek-preview gesture this state stands for (GitHub #33, `SeekPreviewPlan`). A press
+    /// before its first tick (a Step click, a scan-armed or chapter-click press) is `.pending`: it
+    /// becomes a click (the coordinator's latch) or a hold. A second press or a tick is a hold at
+    /// the preview target.
+    var previewGesture: SeekPreviewGesture {
+        switch mode {
+        case .idle:
+            return .none
+        case .stepping(_, let acc, let ticks):
+            if ticks == 0 && !moved { return .pending }
+            return .hold(targetSec: previewSec ?? originSec + acc)
+        case .scrubbing(let t):
+            return .scrub(targetSec: t)
+        case .scanning:
+            return .scan
+        }
     }
 
     mutating func pressBegan(direction: Int, positionSec: Double) -> Output {
