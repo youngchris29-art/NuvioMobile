@@ -48,7 +48,8 @@ struct SettingsPaneScaffold<Content: View>: View {
                 HStack(spacing: Theme.Spacing.xl) {
                     if settingsStyle != "minimal" {
                         SettingsPaneExplainer(model: explainer, category: category)
-                            .frame(width: max(400, geo.size.width / 3))
+                            .frame(width: SettingsExplainerLayout.columnWidth(forPaneWidth: geo.size.width))
+                            .environment(\.settingsExplainerColumnHeight, geo.size.height)
                             .padding(.leading, Theme.Spacing.screen)
                     }
 
@@ -125,7 +126,47 @@ struct SettingsExplainerColumn: View {
     static let tileSide: CGFloat = 240
     static let symbolSide: CGFloat = 112
 
+    #if DEBUG
+    /// Truncation probe inputs, all read from laid-out views (never accessibility frames): the
+    /// stack's own height (its texts are `fixedSize` vertically, so this is the full ideal height
+    /// even when it runs past the column), the column's laid-out width, and the height of the
+    /// GeometryReader the column sits in (`settingsExplainerColumnHeight`). The column's own frame
+    /// is no bound: a `maxHeight: .infinity` frame grows to an oversized child (seen on the
+    /// simulator 2026-11-20: avail 815 = content 815 in a 766 pt pane), so the overflow runs off
+    /// the bottom of the screen instead of being clipped.
+    @State private var probeContentHeight: CGFloat = 0
+    @State private var probeGivenSize: CGSize = .zero
+    @Environment(\.settingsExplainerColumnHeight) private var columnHeight
+    #endif
+
     var body: some View {
+        content
+            #if DEBUG
+            .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { probeContentHeight = $0 }
+            #endif
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            #if DEBUG
+            .onGeometryChange(for: CGSize.self, of: { $0.size }) { probeGivenSize = $0 }
+            .overlay(alignment: .topLeading) {
+                // Harness-readable, invisible (same hidden single-Text pattern as
+                // `debug_detail_hero`). `desc_truncated=1` means the explainer runs past the
+                // bottom of its column, i.e. the last lines are cut off on screen.
+                Text(verbatim: SettingsExplainerLayout.probeLabel(
+                    width: probeGivenSize.width,
+                    available: columnHeight ?? probeGivenSize.height,
+                    content: probeContentHeight
+                ))
+                .font(.system(size: 4))
+                .opacity(0.011)
+                .accessibilityIdentifier("debug_settings_explainer")
+            }
+            #endif
+    }
+
+    /// Tile, title, description and footnote: the part of the column that has to fit. Measured
+    /// on its own by `SettingsExplainerFitTests` (the same view, so the test cannot drift from
+    /// what the pane draws).
+    var content: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
             if let qrPayload, let code = SettingsQRCode.image(for: qrPayload) {
                 qrTile(code, label: qrPayload)
@@ -154,10 +195,7 @@ struct SettingsExplainerColumn: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("settings_explainer_footnote")
             }
-
-            Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     /// Dark modules on a white card on every theme: phone cameras read that most reliably. The
@@ -206,6 +244,46 @@ struct SettingsExplainerColumn: View {
                     .frame(width: Self.symbolSide, height: Self.symbolSide)
                     .foregroundStyle(Theme.Palette.accentText)
             )
+    }
+}
+
+/// Layout facts of the explainer column, shared by the root, every pane, the DEBUG truncation
+/// probe and `SettingsExplainerFitTests`.
+nonisolated enum SettingsExplainerLayout {
+    /// The column never gets narrower than this, whatever the pane width.
+    static let minimumColumnWidth: CGFloat = 400
+
+    /// The column takes a third of the width beside it (the GeometryReader's width), never less
+    /// than `minimumColumnWidth`.
+    static func columnWidth(forPaneWidth paneWidth: CGFloat) -> CGFloat {
+        max(minimumColumnWidth, paneWidth / 3)
+    }
+
+    /// Whether a stack of `content` height runs past a column `available` high. Half a point of
+    /// slack absorbs layout rounding.
+    static func isTruncated(content: CGFloat, available: CGFloat) -> Bool {
+        content > available + 0.5
+    }
+
+    /// The DEBUG probe's text; the UI harness parses it by key (`desc_truncated=0|1`).
+    static func probeLabel(width: CGFloat, available: CGFloat, content: CGFloat) -> String {
+        let truncated = available > 0 && isTruncated(content: content, available: available)
+        return "debug_settings_explainer w=\(Int(width.rounded())) avail=\(Int(available.rounded())) "
+            + "content=\(Int(content.rounded())) desc_truncated=\(truncated ? 1 : 0)"
+    }
+}
+
+private struct SettingsExplainerColumnHeightKey: EnvironmentKey {
+    static let defaultValue: CGFloat? = nil
+}
+
+extension EnvironmentValues {
+    /// The height of the GeometryReader the explainer column sits in (Settings root and every
+    /// pane): the space the explainer has before the bottom of the screen. Read only by the
+    /// column's DEBUG truncation probe.
+    var settingsExplainerColumnHeight: CGFloat? {
+        get { self[SettingsExplainerColumnHeightKey.self] }
+        set { self[SettingsExplainerColumnHeightKey.self] = newValue }
     }
 }
 

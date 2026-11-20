@@ -87,7 +87,8 @@ struct SettingsRootView: View {
                 HStack(spacing: Theme.Spacing.xl) {
                     if settingsStyle != "minimal" {
                         SettingsRootExplainer(model: focusModel)
-                            .frame(width: max(400, geo.size.width / 3))
+                            .frame(width: SettingsExplainerLayout.columnWidth(forPaneWidth: geo.size.width))
+                            .environment(\.settingsExplainerColumnHeight, geo.size.height)
                             .padding(.leading, Theme.Spacing.screen)
                     }
 

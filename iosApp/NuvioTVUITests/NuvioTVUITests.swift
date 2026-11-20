@@ -9703,6 +9703,12 @@ final class NuvioTVUITests: XCTestCase {
     /// FEAT-50 explainer follows focus (P2 §I new test 2): at the root the explainer title tracks the
     /// focused category; inside Home Screen it describes the focused row, not the category summary;
     /// and the Minimal settings style has no explainer at all.
+    ///
+    /// GitHub #33 device pass (2026-11-20): Player › Seek Preview Pictures' explainer ran past the
+    /// bottom of the screen. The DEBUG probe `debug_settings_explainer` compares the laid-out
+    /// stack's height with the height its column was given; the row must read `desc_truncated=0`
+    /// in English with the system tab bar AND in German with the navigation rail (the narrowest
+    /// column, the box's layout). Other rows' truncation is recorded in an attachment only.
     func test82SettingsExplainerFollowsFocus() throws {
         let app = launchToHome(forceFreshLaunch: true)
         XCTAssertTrue(enterSettingsRoot(app), "the Settings root never appeared")
@@ -9767,6 +9773,37 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertTrue(["Show Hero", "Refresh Add-ons"].contains(next), "Classic: Down from Continue Watching On Select must move the explainer to Show Hero (or Refresh Add-ons with no catalogs), got '\(next)'")
         shot(app, "82c_home_next_row")
 
+        // GitHub #33: Player › Seek Preview Pictures, English, system tab bar.
+        XCTAssertTrue(openSettingsCategory(app, named: "Player"), "Settings › Player pane did not open")
+        let english = walkToExplainerRow(app, title: "Seek Preview Pictures")
+        shot(app, "82e_seek_preview_explainer_en")
+        recordExplainerProbes(english, name: "82e_player_explainer_probes_en")
+        XCTAssertTrue(english.reached, "never reached Seek Preview Pictures walking the Player pane — rows seen: \(english.rows.map(\.title))")
+        XCTAssertTrue(english.probe.contains("desc_truncated=0"),
+                      "the Seek Preview Pictures explainer must fit its column (English, tab bar), got: '\(english.probe)'")
+        // SettingsExplainerFitTests measures every language against these laid-out numbers; a
+        // mismatch means its `layouts` table is stale, not that this row broke.
+        XCTAssertEqual(Self.probeValue(english.probe, key: "avail"), 766,
+                       "explainer column height (tab bar) moved — update SettingsExplainerFitTests.layouts: '\(english.probe)'")
+        XCTAssertEqual(Self.probeValue(english.probe, key: "w"), 587,
+                       "explainer column width (tab bar) moved — update SettingsExplainerFitTests.layouts: '\(english.probe)'")
+
+        // GitHub #33: the same row in German with the navigation rail (the narrowest column).
+        let german = launchToHome(extraArguments: ["-AppleLanguages", "(de)", "-AppleLocale", "de_DE",
+                                                   "-sidebar_style", "rail", "-rail_visibility", "always"],
+                                  forceFreshLaunch: true)
+        XCTAssertTrue(openSettingsCategory(german, named: "Player"), "Settings › Player pane did not open (German, rail)")
+        let germanWalk = walkToExplainerRow(german, title: "Vorschaubilder beim Spulen")
+        shot(german, "82f_seek_preview_explainer_de_rail")
+        recordExplainerProbes(germanWalk, name: "82f_player_explainer_probes_de_rail")
+        XCTAssertTrue(germanWalk.reached, "never reached Vorschaubilder beim Spulen walking the Player pane — rows seen: \(germanWalk.rows.map(\.title))")
+        XCTAssertTrue(germanWalk.probe.contains("desc_truncated=0"),
+                      "the Seek Preview Pictures explainer must fit its column (German, rail), got: '\(germanWalk.probe)'")
+        XCTAssertEqual(Self.probeValue(germanWalk.probe, key: "avail"), 766,
+                       "explainer column height (rail) moved — update SettingsExplainerFitTests.layouts: '\(germanWalk.probe)'")
+        XCTAssertEqual(Self.probeValue(germanWalk.probe, key: "w"), 575,
+                       "explainer column width (rail) moved — update SettingsExplainerFitTests.layouts: '\(germanWalk.probe)'")
+
         // Stage run: Home Layout, Collections Layout, Collection Header, then Ambient Background (Stage only).
         let stage = launchToHome(forceFreshLaunch: true, homeLayout: "stage")
         XCTAssertTrue(openSettingsCategory(stage, named: "Home Screen"), "Settings › Home Screen pane did not open (Stage)")
@@ -9797,6 +9834,49 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertFalse(minimal.staticTexts["settings_explainer_title"].exists, "Minimal settings style must not show the explainer")
         // Leave the next test a default-style app (the style was only a launch argument).
         _ = launchToHome(forceFreshLaunch: true)
+    }
+
+    /// The explainer's DEBUG fit probe (`SettingsExplainerColumn`, `debug_settings_explainer`).
+    private func explainerFitProbe(_ app: XCUIApplication) -> String {
+        let probe = app.staticTexts["debug_settings_explainer"]
+        if probe.exists { return probe.label }
+        return probeBlobLabel(app, identifier: "debug_settings_explainer") ?? ""
+    }
+
+    /// From a pushed pane's current row, presses Down until the explainer names `title` (at most
+    /// `maxPresses`), reading the explainer title and the fit probe on every row passed. Never Select.
+    private func walkToExplainerRow(_ app: XCUIApplication, title: String, maxPresses: Int = 45)
+        -> (reached: Bool, probe: String, rows: [(title: String, probe: String)]) {
+        let explainerTitle = app.staticTexts["settings_explainer_title"]
+        var rows: [(title: String, probe: String)] = []
+        func read() -> (String, String) {
+            pause(0.4) // one layout pass for the probe after the explainer swaps rows
+            return (explainerTitle.exists ? explainerTitle.label : "", explainerFitProbe(app))
+        }
+        var current = read()
+        rows.append((current.0, current.1))
+        var presses = 0
+        while current.0 != title && presses < maxPresses {
+            remote.press(.down)
+            presses += 1
+            pause(0.5)
+            current = read()
+            if rows.last?.title != current.0 { rows.append((current.0, current.1)) }
+        }
+        return (current.0 == title, current.1, rows)
+    }
+
+    /// Attaches every row's probe from a walk, and lists the rows that read `desc_truncated=1`.
+    private func recordExplainerProbes(_ walk: (reached: Bool, probe: String, rows: [(title: String, probe: String)]),
+                                       name: String) {
+        let lines = walk.rows.map { "\($0.title): \($0.probe)" }
+        let truncated = walk.rows.filter { $0.probe.contains("desc_truncated=1") }.map(\.title)
+        let attachment = XCTAttachment(string: (lines + ["truncated rows: \(truncated)"]).joined(separator: "\n"))
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        print("[ExplainerFit] \(name) truncated=\(truncated)")
+        for line in lines { print("[ExplainerFit] \(name) \(line)") }
     }
 
     /// FEAT-50 Developer readouts (P2 §I new test 3): with the release-safe `-debug.*` probes on,
