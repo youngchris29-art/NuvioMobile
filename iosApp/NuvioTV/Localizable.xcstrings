@@ -45035,36 +45035,36 @@
         }
       }
     },
-    "Shows a picture of where you will land when you skip or scrub. Watched Parts uses pictures saved from what you have played. Whole Video also reads unwatched parts: about 2% of the file, between 16 and 150 MB for most titles, plus up to 50 MB more while you skip around. On Aether both choices work the same. The Apple TV player used for Dolby Vision shows no picture card. This Apple TV only. Default: Watched Parts.": {
+    "Shows a picture of where you will land when you skip or scrub. Watched Parts uses pictures saved from what you have played. Whole Video also reads unwatched parts: about 2% of the file, between 16 and 150 MB for most titles, plus up to 50 MB more while you skip around. On Aether both choices work the same. The Apple TV player (Dolby Vision, HDR10) shows no picture card. This Apple TV only. Default: Watched Parts.": {
       "localizations": {
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Zeigt beim Springen oder Spulen ein Bild der Zielstelle. Gesehene Teile nutzt Abgespieltes. Ganzes Video liest auch den Rest: etwa 2 % der Datei (meist 16–150 MB), plus bis zu 50 MB beim Springen. Mit Aether sind beide gleich. Der Apple-TV-Player für Dolby Vision zeigt keine Bildkarte. Gilt nur für dieses Apple TV. Standard: Gesehene Teile."
+            "value": "Zeigt beim Springen oder Spulen ein Bild der Zielstelle. Gesehene Teile nutzt Abgespieltes. Ganzes Video liest auch den Rest: etwa 2 % der Datei (meist 16–150 MB), plus bis zu 50 MB beim Springen. Mit Aether sind beide gleich. Apple-TV-Player (Dolby Vision, HDR10): keine Bildkarte. Nur dieses Apple TV. Standard: Gesehene Teile."
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Muestra una imagen de dónde llegarás al saltar o desplazarte. Partes vistas usa lo ya reproducido. Vídeo completo lee también el resto: un 2 % del archivo (casi siempre 16-150 MB), más hasta 50 MB al saltar. Con Aether son iguales. El reproductor de Apple TV para Dolby Vision no la muestra. Solo este Apple TV. Por defecto: Partes vistas."
+            "value": "Muestra una imagen de dónde llegarás al saltar o desplazarte. Partes vistas usa lo ya reproducido. Vídeo completo lee también el resto: un 2 % del archivo (casi siempre 16-150 MB), más hasta 50 MB al saltar. Con Aether son iguales. El reproductor de Apple TV (Dolby Vision, HDR10) no la muestra. Solo este Apple TV. Por defecto: Partes vistas."
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Affiche l’image d’arrivée quand vous sautez ou faites défiler. Parties regardées utilise ce que vous avez lu. Vidéo entière lit aussi le reste : environ 2 % du fichier (souvent 16 à 150 Mo), plus 50 Mo max. en sautant. Pareil avec Aether. Pas d’image dans le lecteur Apple TV pour Dolby Vision. Cette Apple TV uniquement. Par défaut : Parties regardées."
+            "value": "Affiche l’image d’arrivée quand vous sautez ou faites défiler. Parties regardées utilise ce que vous avez lu. Vidéo entière lit aussi le reste : environ 2 % du fichier (souvent 16 à 150 Mo), plus 50 Mo max. en sautant. Pareil avec Aether. Lecteur Apple TV (Dolby Vision, HDR10) : pas d’aperçu. Cette Apple TV uniquement. Par défaut : Parties regardées."
           }
         },
         "it": {
           "stringUnit": {
             "state": "translated",
-            "value": "Mostra l’immagine del punto d’arrivo quando salti o scorri. Parti viste usa ciò che hai riprodotto. Video intero legge anche il resto: circa il 2% del file (di solito 16-150 MB), più fino a 50 MB mentre salti. Con Aether sono uguali. Il lettore di Apple TV per Dolby Vision non mostra l’immagine. Vale solo per questa Apple TV. Predefinito: Parti viste."
+            "value": "Mostra l’immagine del punto d’arrivo quando salti o scorri. Parti viste usa ciò che hai riprodotto. Video intero legge anche il resto: circa il 2% del file (di solito 16-150 MB), più fino a 50 MB mentre salti. Con Aether sono uguali. Il lettore di Apple TV (Dolby Vision, HDR10) non mostra l’immagine. Vale solo per questa Apple TV. Predefinito: Parti viste."
           }
         },
         "vi": {
           "stringUnit": {
             "state": "translated",
-            "value": "Hiện ảnh của vị trí bạn sẽ đến khi bạn nhảy hoặc tua. Đoạn đã xem dùng ảnh lưu từ phần bạn đã phát. Toàn bộ video còn đọc cả các đoạn chưa xem: khoảng 2% tệp, từ 16 đến 150 MB với hầu hết các phim, cộng thêm tối đa 50 MB khi bạn nhảy qua lại. Với Aether, hai lựa chọn hoạt động như nhau. Trình phát Apple TV dùng cho Dolby Vision không hiện thẻ ảnh. Chỉ áp dụng cho Apple TV này. Mặc định: Đoạn đã xem."
+            "value": "Hiện ảnh của vị trí bạn sẽ đến khi bạn nhảy hoặc tua. Đoạn đã xem dùng ảnh lưu từ phần bạn đã phát. Toàn bộ video còn đọc cả các đoạn chưa xem: khoảng 2% tệp, từ 16 đến 150 MB với hầu hết các phim, cộng thêm tối đa 50 MB khi bạn nhảy qua lại. Với Aether, hai lựa chọn hoạt động như nhau. Trình phát Apple TV (Dolby Vision, HDR10) không hiện thẻ ảnh. Chỉ áp dụng cho Apple TV này. Mặc định: Đoạn đã xem."
           }
         }
       }

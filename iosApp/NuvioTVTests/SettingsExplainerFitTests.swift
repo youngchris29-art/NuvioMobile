@@ -80,7 +80,7 @@ final class SettingsExplainerFitTests: XCTestCase {
         XCTAssertEqual(String(localized: SettingsDescriptions.text(for: id)), SettingsDescriptions.text(for: id).key)
         XCTAssertEqual(
             SettingsDescriptions.text(for: id).key,
-            "Shows a picture of where you will land when you skip or scrub. Watched Parts uses pictures saved from what you have played. Whole Video also reads unwatched parts: about 2% of the file, between 16 and 150 MB for most titles, plus up to 50 MB more while you skip around. On Aether both choices work the same. The Apple TV player used for Dolby Vision shows no picture card. This Apple TV only. Default: Watched Parts."
+            "Shows a picture of where you will land when you skip or scrub. Watched Parts uses pictures saved from what you have played. Whole Video also reads unwatched parts: about 2% of the file, between 16 and 150 MB for most titles, plus up to 50 MB more while you skip around. On Aether both choices work the same. The Apple TV player (Dolby Vision, HDR10) shows no picture card. This Apple TV only. Default: Watched Parts."
         )
         XCTAssertEqual(SettingsDescriptions.footnote(for: id)?.key, "Applies to the next playback.")
     }
