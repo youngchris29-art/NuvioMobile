@@ -31,6 +31,9 @@ final class LiveEngine: EngineDriving {
     private var latestCues: [AetherCue] = []
     private var lastSentCues: (track: Int?, cues: [AetherCue])?
     private var firstFrame = false
+    /// The cache probe's snapshot, and the peak since the last `load` (`sessionCache`).
+    private(set) var sessionCache: AetherSessionCacheSnapshot?
+    private var cachePeakBytes = 0
 
     init() throws {
         // First, before the engine exists and can create `tmp/aether-segments`: the first engine of the
@@ -87,6 +90,8 @@ final class LiveEngine: EngineDriving {
 
     func load(_ r: AetherLoadRequest) async throws -> AetherProbeSummary? {
         engine.logTag = r.logTag
+        sessionCache = nil
+        cachePeakBytes = 0
         do {
             let probe = try await engine.load(url: r.url, startPosition: r.startSec, options: Self.options(for: r),
                                               audioSourceStreamIndex: r.audioStreamIndex.map { Int32($0) })
@@ -234,6 +239,13 @@ final class LiveEngine: EngineDriving {
         sink(engine.$mediaChapters.removeDuplicates()) { me, v in
             me.send(.chapters(v.map { AetherChapter(id: $0.id, title: $0.name, startSec: $0.startSeconds,
                                                      durationSec: $0.durationSeconds) }))
+        }
+
+        // The cache probe's snapshot: every report (about 1 Hz while playing), kept, never published.
+        sink(engine.diagnostics.$sessionCacheStatus) { me, s in
+            guard let snap = Self.cacheSnapshot(s, peak: me.cachePeakBytes) else { me.sessionCache = nil; return }
+            me.cachePeakBytes = snap.peakDiskBytes
+            me.sessionCache = snap
         }
 
         // Session cache telemetry (log only): one line per 30 s while the loopback route owns the cache.
@@ -468,6 +480,15 @@ final class LiveEngine: EngineDriving {
             }
         }
         return o
+    }
+
+    /// The probe snapshot for one engine report; nil unless the loopback route owns an active cache.
+    static func cacheSnapshot(_ s: SessionCacheStatus, peak: Int) -> AetherSessionCacheSnapshot? {
+        guard s.route == .loopbackFMP4, s.capability == .active else { return nil }
+        return AetherSessionCacheSnapshot(diskBytes: s.currentDiskBytes, peakDiskBytes: max(peak, s.currentDiskBytes),
+                                          hardLimitBytes: s.hardLimitBytes, evictions: s.evictionCount,
+                                          rejectedWrites: s.rejectedDiskWrites,
+                                          admissionWaiting: s.diskAdmissionWaiting)
     }
 
     /// One `[AetherCache]` line for a cache snapshot, only while the loopback route owns the cache.

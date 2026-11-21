@@ -19,6 +19,9 @@ enum AetherLoadRequestFlow {
         var r = base
         r.diskCache = AetherDiskCachePlan.resolve(inputs.choice, aetherOn: inputs.aetherOn,
                                                   freeBytes: inputs.freeBytes).cache
+        #if DEBUG
+        r.diskCache = AetherDiskCachePlan.applyingDebugHardLimit(r.diskCache, inputs.debugHardLimitBytes)
+        #endif
         return r
     }
 

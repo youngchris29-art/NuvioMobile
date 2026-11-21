@@ -86,12 +86,26 @@ nonisolated struct AetherDiskCacheInputs: Equatable, Sendable {
     let choice: AetherDiskCacheChoice
     let aetherOn: Bool
     let freeBytes: Int64?
+    #if DEBUG
+    /// Harness only (code review r4, finding 3): `debug.diskCacheHardLimitBytes` <bytes> lowers the hard
+    /// limit of a load that is already On, so the integration leg can fill the cache with a small fixture.
+    /// DEBUG only: a Release build has no such field, key or code path.
+    var debugHardLimitBytes: Int? = nil
+    #endif
 
-    /// The stored choice, the Aether toggle and the tmp volume's free space, read now.
+    /// The stored choice, the Aether toggle and the tmp volume's free space, read now. The one place a
+    /// fresh load's cache inputs are read.
     static func live() -> AetherDiskCacheInputs {
-        AetherDiskCacheInputs(choice: AetherTuning.diskCacheChoice(),
-                              aetherOn: AetherTuning.isEngineEnabled(),
-                              freeBytes: TemporaryVolumeSpace.availableBytes())
+        #if DEBUG
+        return AetherDiskCacheInputs(choice: AetherTuning.diskCacheChoice(),
+                                     aetherOn: AetherTuning.isEngineEnabled(),
+                                     freeBytes: TemporaryVolumeSpace.availableBytes(),
+                                     debugHardLimitBytes: AetherDiskCachePlan.debugHardLimit(defaults: .standard))
+        #else
+        return AetherDiskCacheInputs(choice: AetherTuning.diskCacheChoice(),
+                                     aetherOn: AetherTuning.isEngineEnabled(),
+                                     freeBytes: TemporaryVolumeSpace.availableBytes())
+        #endif
     }
 }
 
@@ -163,6 +177,29 @@ nonisolated enum AetherDiskCachePlan {
         return AetherDiskCacheResolution(shownGB: g, cache: cache, label: label)
     }
 
+    #if DEBUG
+    /// Harness only (code review r4, finding 3), read by `AetherDiskCacheInputs.live()`.
+    static let debugHardLimitKey = "debug.diskCacheHardLimitBytes"
+
+    /// The key as a positive byte count; nil when absent or not positive. `integer(forKey:)` coerces a
+    /// launch argument's string.
+    static func debugHardLimit(defaults: UserDefaults) -> Int? {
+        guard defaults.object(forKey: debugHardLimitKey) != nil else { return nil }
+        let bytes = defaults.integer(forKey: debugHardLimitKey)
+        return bytes > 0 ? bytes : nil
+    }
+
+    /// The override applied to a resolved cache: only ever lowers an On load's hard limit (never turns a
+    /// load On, never raises it), with the budget and window derived as `resolve` derives them.
+    static func applyingDebugHardLimit(_ cache: AetherDiskCache?, _ override: Int?) -> AetherDiskCache? {
+        guard let cache, let override, override > 0 else { return cache }
+        let hard = min(override, cache.hardLimitBytes ?? override)
+        let n = Int64(hard)
+        return AetherDiskCache(budgetBytes: Int(n - headroom(for: n)), hardLimitBytes: hard,
+                               forwardSegments: cache.forwardSegments)
+    }
+    #endif
+
     /// Menu items: Off, each fixed size whose bytes fit in ⌊¼ free⌋ (all of them while free is
     /// unknown), Maximum. The stored choice always stays, so the picker's selection is valid.
     static func options(stored: AetherDiskCacheChoice, freeBytes: Int64?) -> [AetherDiskCacheChoice] {
@@ -208,3 +245,24 @@ nonisolated enum TemporaryVolumeSpace {
         return Int64(capacity)
     }
 }
+
+#if DEBUG
+/// The cache fields of `debug_seekProbe` on Aether (code review r4, finding 3): the engine's own ledger
+/// as `LiveEngine` last received it, and the resident span the transport shows. Harness only.
+///   `creq=<bytes|-> croute=<route> cdisk=<bytes> cpeak=<bytes> chard=<bytes|-> cevict=<n> crej=<n> cwait=<0|1> bfrom=<s> bto=<s> branges=<n>`
+/// `creq` is the hard limit the load requested and `croute` the engine's route; the ledger fields read
+/// `cdisk=-` while the loopback route owns no cache.
+nonisolated enum AetherCacheProbe {
+    static func text(_ s: AetherSessionCacheSnapshot?, resident: [ClosedRange<Double>],
+                     requestedHard: Int?, route: String) -> String {
+        let head = "creq=\(requestedHard.map(String.init) ?? "-") croute=\(route) "
+        guard let s else { return head + "cdisk=-" }
+        let from = resident.map(\.lowerBound).min()
+        let to = resident.map(\.upperBound).max()
+        func sec(_ v: Double?) -> String { v.map { String(format: "%.0f", $0) } ?? "-" }
+        return head + "cdisk=\(s.diskBytes) cpeak=\(s.peakDiskBytes) chard=\(s.hardLimitBytes.map(String.init) ?? "-") "
+            + "cevict=\(s.evictions) crej=\(s.rejectedWrites) cwait=\(s.admissionWaiting ? 1 : 0) "
+            + "bfrom=\(sec(from)) bto=\(sec(to)) branges=\(resident.count)"
+    }
+}
+#endif

@@ -228,6 +228,86 @@ final class AetherLoadRequestFlowTests: XCTestCase {
         haystack.components(separatedBy: needle).count - 1
     }
 
+    // MARK: - DEBUG hard-limit override (code review r4, finding 3)
+
+    /// The override only lowers the hard limit of a load that is already On; Off, Aether off, unknown
+    /// free space and below 1 GB stay Off, and a larger value never raises the resolved limit.
+    func testDebugHardLimitOnlyLowersAnOnLoad() {
+        func fresh(_ i: AetherDiskCacheInputs) -> AetherDiskCache? { AetherLoadRequestFlow.fresh(base: base(), inputs: i).diskCache }
+        func with(_ i: AetherDiskCacheInputs, _ bytes: Int?) -> AetherDiskCacheInputs {
+            var o = i
+            o.debugHardLimitBytes = bytes
+            return o
+        }
+        XCTAssertEqual(fresh(with(inputs(.gigabytes(5)), 3_000_000)),
+                       AetherDiskCache(budgetBytes: 2_250_000, hardLimitBytes: 3_000_000, forwardSegments: 2700))
+        XCTAssertEqual(fresh(with(inputs(.gigabytes(10)), 20_000_000_000)), tenGB, "never raised")
+        XCTAssertEqual(fresh(with(inputs(.gigabytes(10)), nil)), tenGB)
+        XCTAssertEqual(fresh(with(inputs(.gigabytes(10)), 0)), tenGB)
+        XCTAssertEqual(fresh(with(inputs(.gigabytes(10)), -1)), tenGB)
+        for off in [inputs(.off), inputs(.maximum, aetherOn: false), inputs(.maximum, free: nil), inputs(.maximum, free: 3_900_000_000)] {
+            XCTAssertNil(fresh(with(off, 3_000_000)), "\(off)")
+        }
+        XCTAssertEqual(AetherLoadRequestFlow.cacheLogField(AetherLoadRequestFlow.fresh(base: base(), inputs: with(inputs(.gigabytes(5)), 3_000_000)),
+                                                           inputs: nil),
+                       "shown:0GB,budget:2,hard:3,window:2700")
+    }
+
+    func testDebugHardLimitKeyParsing() throws {
+        let suite = "AetherLoadRequestFlowTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertNil(AetherDiskCachePlan.debugHardLimit(defaults: defaults))
+        defaults.set("3000000", forKey: AetherDiskCachePlan.debugHardLimitKey)   // as a launch argument arrives
+        XCTAssertEqual(AetherDiskCachePlan.debugHardLimit(defaults: defaults), 3_000_000)
+        defaults.set(0, forKey: AetherDiskCachePlan.debugHardLimitKey)
+        XCTAssertNil(AetherDiskCachePlan.debugHardLimit(defaults: defaults))
+        defaults.set(-5, forKey: AetherDiskCachePlan.debugHardLimitKey)
+        XCTAssertNil(AetherDiskCachePlan.debugHardLimit(defaults: defaults))
+        XCTAssertEqual(AetherDiskCachePlan.debugHardLimitKey, "debug.diskCacheHardLimitBytes")
+    }
+
+    /// Release cannot reach the override: every app line that names it sits inside an `#if DEBUG`
+    /// region, the key appears in one file, and only `AetherDiskCacheInputs.live()` reads it. (The
+    /// Release build itself is checked by the gate's string scan of the binary.)
+    func testDebugHardLimitExistsOnlyInDebugBlocks() throws {
+        let tokens = ["debugHardLimit", "debug.diskCacheHardLimitBytes", "applyingDebugHardLimit"]
+        var keyFiles: Set<String> = []
+        var readers: [String] = []
+        for (name, source) in try appSources() {
+            // One frame per open `#if`: whether its condition is exactly DEBUG, and whether we are past its `#else`.
+            var stack: [(debug: Bool, inElse: Bool)] = []
+            for (n, raw) in source.components(separatedBy: "\n").enumerated() {
+                let line = raw.trimmingCharacters(in: .whitespaces)
+                if line.hasPrefix("#if ") { stack.append((line == "#if DEBUG", false)); continue }
+                if line.hasPrefix("#else") || line.hasPrefix("#elseif"), let top = stack.popLast() {
+                    stack.append((top.debug, true))
+                    continue
+                }
+                if line.hasPrefix("#endif") { _ = stack.popLast(); continue }
+                let inDebug = stack.contains { $0.debug && !$0.inElse }
+                guard tokens.contains(where: line.contains) else { continue }
+                XCTAssertTrue(inDebug, "\(name):\(n + 1) names the DEBUG override outside #if DEBUG: \(line)")
+                if line.contains("\"debug.diskCacheHardLimitBytes\"") { keyFiles.insert(name) }
+                if line.contains("debugHardLimit(defaults:"), !line.contains("static func") { readers.append(name) }
+            }
+        }
+        XCTAssertEqual(keyFiles, ["AetherDiskCachePlan.swift"])
+        XCTAssertEqual(readers, ["AetherDiskCachePlan.swift"], "read anywhere but AetherDiskCacheInputs.live()")
+    }
+
+    func testCacheProbeText() {
+        XCTAssertEqual(AetherCacheProbe.text(nil, resident: [], requestedHard: nil, route: "none"), "creq=- croute=none cdisk=-")
+        let s = AetherSessionCacheSnapshot(diskBytes: 2_900_000, peakDiskBytes: 3_000_000, hardLimitBytes: 3_000_000,
+                                           evictions: 12, rejectedWrites: 0, admissionWaiting: true)
+        XCTAssertEqual(AetherCacheProbe.text(s, resident: [10...40.4, 52...90.6], requestedHard: 3_000_000, route: "loopback"),
+                       "creq=3000000 croute=loopback cdisk=2900000 cpeak=3000000 chard=3000000 cevict=12 crej=0 cwait=1 bfrom=10 bto=91 branges=2")
+        var noHard = s
+        noHard.hardLimitBytes = nil
+        XCTAssertTrue(AetherCacheProbe.text(noHard, resident: [], requestedHard: nil, route: "loopback").contains("chard=- "))
+        XCTAssertTrue(AetherCacheProbe.text(noHard, resident: [], requestedHard: nil, route: "loopback").hasSuffix("bfrom=- bto=- branges=0"))
+    }
+
     /// Every Swift file under `NuvioTV/`, resolved from this file's path (simulator tests run on the host).
     private func appSources() throws -> [(name: String, source: String)] {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()

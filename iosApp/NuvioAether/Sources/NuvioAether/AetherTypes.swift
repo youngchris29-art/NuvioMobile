@@ -165,6 +165,31 @@ public struct AetherDiskCache: Sendable, Equatable {
     }
 }
 
+/// The engine's session-cache ledger as it last reported it (`EngineDiagnostics.sessionCacheStatus`,
+/// sampled about once a second), for the DEBUG cache probe and its integration test. nil while the
+/// loopback route owns no cache (Off still has the engine's built-in window there).
+public struct AetherSessionCacheSnapshot: Sendable, Equatable {
+    /// `currentDiskBytes`: resident segments plus admitted staging, the engine's own count.
+    public var diskBytes: Int
+    /// The highest `diskBytes` reported since this load began.
+    public var peakDiskBytes: Int
+    public var hardLimitBytes: Int?
+    public var evictions: Int
+    public var rejectedWrites: Int
+    /// The producer is waiting for disk admission (the hard limit is full).
+    public var admissionWaiting: Bool
+
+    public init(diskBytes: Int, peakDiskBytes: Int, hardLimitBytes: Int?, evictions: Int,
+                rejectedWrites: Int, admissionWaiting: Bool) {
+        self.diskBytes = diskBytes
+        self.peakDiskBytes = peakDiskBytes
+        self.hardLimitBytes = hardLimitBytes
+        self.evictions = evictions
+        self.rejectedWrites = rejectedWrites
+        self.admissionWaiting = admissionWaiting
+    }
+}
+
 public struct AetherLoadRequest: Sendable, Equatable {
     public var url: URL
     /// `load(url:startPosition:)`. nil starts at the head.

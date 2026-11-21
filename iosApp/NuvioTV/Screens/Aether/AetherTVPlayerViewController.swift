@@ -722,6 +722,7 @@ final class AetherTVPlayerViewController: UIViewController {
         if state.transport.playbackSpeed != state.playbackSpeed { state.transport.playbackSpeed = state.playbackSpeed }
         #if DEBUG
         transportInput.updateSeekProbe(paused: pausedMirror)
+        updateCacheProbe()
         #endif
         // Info rows only while someone can see them (BUG-180's rule), at most every 2 s.
         if state.showStreamInfo || state.transport.openInfoPill == .info,
@@ -742,6 +743,16 @@ final class AetherTVPlayerViewController: UIViewController {
     }
 
     #if DEBUG
+    /// Harness only (code review r4, finding 3): the engine's cache ledger and the resident span on
+    /// `debug_seekProbe`, once a housekeeping tick. Pulled from the session; nothing is published for it.
+    private func updateCacheProbe() {
+        let resident = state.transport.bufferedRanges.map { $0.start...max($0.start, $0.end) }
+        let text = AetherCacheProbe.text(session?.sessionCache, resident: resident,
+                                         requestedHard: session?.currentRequest?.diskCache?.hardLimitBytes,
+                                         route: session.map { "\($0.diagnostics.route)" } ?? "-")
+        if state.seekProbe.cache != text { state.seekProbe.cache = text }
+    }
+
     // Harness only (W3-C): `debug.mpvSmokeAetherFailAtSec` <sec> raises a `softwarePipelineFailed`
     // failure once playback passes that position (`debug.mpvSmokeAetherFailCount` times, default 1, at
     // least 3 s apart), so the policy, the rebuild-once rule and the handoff position run mid-play.

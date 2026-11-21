@@ -219,6 +219,9 @@ public final class AetherPlaybackSession: ObservableObject {
     /// 2.0 for video, 3.0 audio-only (the engine's cap; `setRate` clamps).
     public var maxRate: Float { engine.maxRate }
 
+    /// The engine's last reported session-cache ledger (the DEBUG cache probe reads it each tick).
+    public var sessionCache: AetherSessionCacheSnapshot? { stopped ? nil : engine.sessionCache }
+
     public func play() {
         guard !stopped, !phase.isTerminal else { return }
         engine.play()

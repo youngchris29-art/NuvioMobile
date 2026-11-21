@@ -44,6 +44,13 @@ protocol EngineDriving: AnyObject {
     var audioShaping: AetherAudioShaping { get }
     /// The current clock values (for failure timestamps between ticks).
     var clockSample: AetherClockSample { get }
+    /// The last session-cache ledger the engine reported (DEBUG cache probe). Pulled, never published,
+    /// so production playback does no extra work for it.
+    var sessionCache: AetherSessionCacheSnapshot? { get }
+}
+
+extension EngineDriving {
+    var sessionCache: AetherSessionCacheSnapshot? { nil }
 }
 
 /// One engine fact. Failures are separate from phases: the session's ledger owns the `.failed` phase.
