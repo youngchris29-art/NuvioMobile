@@ -137,9 +137,21 @@ struct NativePlayerScreen: View {
                         isSeries: context.season != nil,
                         rememberSpeedShowId: (context.season != nil || context.episode != nil) ? context.parentMetaId : nil,
                         onBarVisibility: { visible in barVisibilityChanged(visible) },
-                        onAnyPress: { hidePauseCard(reason: "press") }
+                        onAnyPress: { hidePauseCard(reason: "press") },
+                        onReadyForDisplay: { [weak coordinator] ready, shown in
+                            coordinator?.noteReadyForDisplay(ready, player: shown)
+                        }
                     )
                     .ignoresSafeArea()
+                }
+                // Return from background (spec 5.2.7): the existing spinner over the player while the
+                // pipeline restarts or the return hands off; never focusable, never hit-tested.
+                if coordinator.returnUI != .normal {
+                    ProgressView()
+                        .scaleEffect(1.6)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .allowsHitTesting(false)
+                        .focusable(false)
                 }
             case .failed(let reason):
                 // Hand back to the dispatcher, which re-presents the mpv player for this context.
@@ -231,7 +243,7 @@ struct NativePlayerScreen: View {
         .fullScreenCover(
             isPresented: Binding(
                 get: { coordinator.didPlayToEnd && upNext.phase == .hidden },
-                set: { if !$0 { coordinator.clearEnded() } }
+                set: { if !$0 { coordinator.clearEnded(); coordinator.noteReappeared() } }
             )
         ) {
             PostPlayView(
@@ -258,6 +270,8 @@ struct NativePlayerScreen: View {
             pauseChanged(paused)
         }
         .onChange(of: coordinator.isRebuildingItem) { _, _ in evaluatePauseCard() }
+        .onChange(of: coordinator.isRestoringPipeline) { _, _ in evaluatePauseCard() }
+        .onChange(of: coordinator.returnUI) { _, _ in evaluatePauseCard() }
         // An offline Up Next card drops to `.hidden` at the end, so the post-play cover below
         // (gated on `.hidden`) can come up even when no tick landed inside the end-of-file slack.
         .onChange(of: coordinator.didPlayToEnd) { _, ended in
@@ -293,6 +307,17 @@ struct NativePlayerScreen: View {
                 skipPlanner.seekCompleted(atSec: landed, now: ProcessInfo.processInfo.systemUptime)
             }
             coordinator.onPlaybackHealthy = onPlaybackHealthy
+            // Return from background (spec 5.2.4, 5.2.7): what only the screen knows.
+            coordinator.returnPresenceProvider = { [weak coordinator, weak upNext] in
+                guard let coordinator else { return .leaving }
+                return coordinator.didPlayToEnd && upNext?.phase == .hidden ? .covered : .front
+            }
+            coordinator.returnContextSwapProvider = { [weak upNext] in upNext?.phase == .searching }
+            coordinator.returnPostPlayProvider = { [weak coordinator, weak upNext] in
+                guard let coordinator else { return false }
+                return coordinator.didPlayToEnd && upNext?.phase == .hidden
+            }
+            coordinator.onReturnExit = { dismiss() }
             coordinator.start()
             // Only orchestrate up-next when a presenter can swap contexts (series autoplay).
             if onPlayNext != nil { upNext.startNative() }
@@ -307,8 +332,10 @@ struct NativePlayerScreen: View {
 
     // MARK: - Pause info card (P4 B16)
 
-    /// A B17 item rebuild's transient pause is not a viewer pause.
-    private var isRebuildingItem: Bool { coordinator.isRebuildingItem }
+    /// A B17 item rebuild's transient pause is not a viewer pause, nor is a return's restart (spec 5.2.7).
+    private var isRebuildingItem: Bool {
+        coordinator.isRebuildingItem || coordinator.isRestoringPipeline || coordinator.returnUI != .normal
+    }
 
     private func pauseChanged(_ paused: Bool) {
         pauseCardTask?.cancel()
@@ -456,6 +483,10 @@ struct NativePlayerScreen: View {
     /// completion reports where the seek really landed. Zero tolerance: land exactly on the target.
     private func skipSeek(to target: Double, kind: SkipSegmentPlanner.SeekKind) {
         guard let player = coordinator.player else { return }
+        guard !coordinator.returnRefusesTransport else {
+            print("[Return] transport dropped: skip seek during a return")
+            return
+        }
         let startedAt = ProcessInfo.processInfo.systemUptime
         skipPlanner.beginSeek(kind: kind, targetSec: target, fromSec: coordinator.lastPositionSec, now: startedAt)
         coordinator.noteUserSeek(to: target)   // r1 P3: wins over a B17 rebuild's corrective seek
@@ -523,7 +554,7 @@ private struct NativeProbeLabel: View {
             + " stage=\(coordinator.loadingStage.logToken) chapters=\(coordinator.chapters.count)"
             + " subs=\(coordinator.subtitleRenditionsByName.count) late=\(coordinator.lateState)"
             + " panel=\(panel ? 1 : 0) barHidden=\(barHidden ? 1 : 0) since=\(pausedSince == nil ? 0 : 1)"
-            + " rebuilding=\(coordinator.isRebuildingItem ? 1 : 0)"
+            + " rebuilding=\(coordinator.isRebuildingItem ? 1 : 0) \(coordinator.returnProbeText)"
     }
 }
 #endif
@@ -584,6 +615,9 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
     let onBarVisibility: (Bool) -> Void
     /// Any remote press (P4 B16: hides the pause card).
     let onAnyPress: () -> Void
+    /// `AVPlayerViewController.isReadyForDisplay` changed, with the player it is for (return from
+    /// background, spec 4.9: a restart settles only with a displayed frame).
+    let onReadyForDisplay: (Bool, AVPlayer?) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -681,6 +715,11 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
         print("[NativePlayer] avpvc speeds=\(speedList) menu=\(menuTitles.isEmpty ? "-" : menuTitles) delegate=\(host.playerVC.delegate === host ? 1 : 0)")
         // Set once: the closure captures the screen's stable `@StateObject`.
         host.onMenuPress = onDismissUpNext
+        let readyChanged = onReadyForDisplay
+        coordinator.readyObserver = host.playerVC.observe(\.isReadyForDisplay, options: [.initial, .new]) { vc, _ in
+            let ready = vc.isReadyForDisplay
+            Task { @MainActor [weak vc] in readyChanged(ready, vc?.player) }
+        }
         return host
     }
 
@@ -700,13 +739,19 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
             coordinator.tools?.onSyncLine = {}
             coordinator.pills = nil
             coordinator.tools = nil
+            coordinator.readyObserver?.invalidate()
+            coordinator.readyObserver = nil
             host.onPanelClosed = nil
         }
     }
 
     func updateUIViewController(_ host: NativePlayerHostController, context: Context) {
         let controller = host.playerVC
-        if controller.player !== player { controller.player = player }
+        if controller.player !== player {
+            controller.player = player
+            // A return restart swapped the player: report the new one's readiness (it starts false).
+            onReadyForDisplay(controller.isReadyForDisplay, player)
+        }
         // The tool buttons follow their own publishers; this only catches anything they miss.
         context.coordinator.tools?.refresh()
         // Only assign on change — it's a panel-content property, not part of the transport-bar
@@ -755,5 +800,7 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
         var pills: NativeInfoPillsInstaller?
         var pillsOpen = false
         var sheetOpen = false
+        /// KVO on `playerVC.isReadyForDisplay`, alive as long as the container.
+        var readyObserver: NSKeyValueObservation?
     }
 }

@@ -312,16 +312,61 @@ final class NativePlaybackCoordinator: ObservableObject {
         let startedUptime: TimeInterval
     }
 
+    // MARK: Return from background (spec 5.2, W3)
+
+    /// Who this playback belongs to, taken when the coordinator is made (playback start). The recorder
+    /// refuses every write once the account or profile changed (spec 7); the return rule abandons.
+    private let owner: PlaybackIdentity
+    /// The rule, the restart machine and their effects (`NativeReturnEffectRunner`).
+    private var returnRunner: NativeReturnEffectRunner?
+    private var lifecycleObservers: [NSObjectProtocol] = []
+    /// A return restart is rebuilding the pipeline (remux, server, player, item): the screen draws its
+    /// spinner and hides the pause card; failures feed the restart machine.
+    @Published private(set) var isRestoringPipeline = false
+    /// What the return wants on screen (`PlayerReturnUI`).
+    @Published private(set) var returnUI: PlayerReturnUI = .normal
+    /// The return's authoritative position while one is held (spec 4.7): ticks neither record nor move
+    /// `lastPositionSec` while it is set, and `stop()`/the handoff read it through `lastPositionSec`.
+    private var heldPositionSec: Double?
+    /// The rule refuses transport: the screen's skip and chapter seeks are dropped.
+    private(set) var returnRefusesTransport = false
+    /// The restart machine's token while it runs (every pipeline step feeds the machine then).
+    private var restartToken: Int?
+    private var restartKind: NativeRestartKind?
+    private var restartTarget: NativeRestartTarget?
+    /// KVO on the current player's rate: presses on this route are AVKit's, observed here (I1, I5).
+    private var rateObserver: NSKeyValueObservation?
+    /// `AVPlayerViewController.isReadyForDisplay`, as the screen reports it, and for which player.
+    private var displayReadyPlayer: ObjectIdentifier?
+    private var displayReady = false
+    /// Screen inputs: the presence (`.covered` under the post-play cover, `.leaving` once it dismisses),
+    /// an Up Next swap underway, the post-play cover, and the exit for an identity change.
+    var returnPresenceProvider: (() -> PlayerPresence)?
+    var returnContextSwapProvider: (() -> Bool)?
+    var returnPostPlayProvider: (() -> Bool)?
+    var onReturnExit: (() -> Void)?
+    private var stopped = false
+    #if DEBUG
+    private var debugBackgroundCycle = DebugBackgroundCycle()
+    private lazy var debugBackgroundFault = DebugNativeBackgroundFault.current()
+    private var debugFailRestartUsed = false
+    private var debugStartDelayUsed = false
+    #endif
+
     init(context: PlaybackContext) {
         self.context = context
-        self.recorder = PlaybackProgressRecorder(context: context)
+        let owner = PlaybackIdentity.current()
+        self.owner = owner
+        self.recorder = PlaybackProgressRecorder(context: context, owner: owner)
     }
 
     // MARK: - Lifecycle
 
     func start() {
-        guard remux == nil else { return }
+        guard remux == nil, !stopped else { return }
         logLoadingStage(loadingStage)
+        if returnRunner == nil { returnRunner = NativeReturnEffectRunner(owner: owner, host: self) }
+        installLifecycleObservers()
         // Addon-subtitle results. The completion signal is polled from `completedRequest` in
         // pollForFirstSegment — no watcher races; this watcher only mirrors the list (its
         // StateFlow replay also delivers results prefetched before this coordinator existed).
@@ -507,8 +552,9 @@ final class NativePlaybackCoordinator: ObservableObject {
         return nil
     }
 
-    /// Spin up the remux session and the first-segment poll.
-    private func launchRemux() {
+    /// Spin up the remux session and the first-segment poll. `audioStream`: a mid-play restart starts the
+    /// worker on the track the viewer was hearing (the master marks it DEFAULT; the name restore agrees).
+    private func launchRemux(audioStream: Int? = nil) {
         // Initial track: let the worker start on the first playable track in a preferred language
         // (Settings → Playback → Preferred Audio Language). Only the active track's rendition is
         // produced, so starting on the right one avoids an immediate switch (the master marks it
@@ -521,37 +567,65 @@ final class NativePlaybackCoordinator: ObservableObject {
         // write, addon files at VTT conversion), so a mid-playback toggle flip deliberately applies
         // from the next playback session — no invalidation machinery.
         config.stripSdh = playerSettings?.subtitleStyle.stripSdh ?? false
-        if !audioTargets.isEmpty {
+        if let audioStream {
+            config.audioStreamIndex = audioStream
+        } else if !audioTargets.isEmpty {
             config.preferredAudioPicker = { tracks in Self.preferredAudioStream(in: tracks, targets: audioTargets) }
         }
         let remux = RemuxSession(config: config)
         self.remux = remux
-        remux.start { state in
+        let remuxID = ObjectIdentifier(remux)
+        remux.start { [weak self] state in
             guard case .failed(let stage) = state else { return }
-            Task { @MainActor [weak self] in self?.failIfPreplayback(stage) }
+            Task { @MainActor [weak self] in
+                // A retired session's late report (a restart replaced it) is not this pipeline's.
+                guard let self, let current = self.remux, ObjectIdentifier(current) == remuxID else { return }
+                self.failIfPreplayback(stage)
+            }
         }
         pollForFirstSegment(remux: remux)
     }
 
+    /// Ends the watch: the return is cancelled, the final record and the Trakt/tracker stops go out
+    /// (from `lastPositionSec`, which a return holds at the authoritative position), then the pipeline is
+    /// torn down. Behaviour unchanged by the split (spec 5.2.1).
     func stop() {
-        pollTask?.cancel(); pollTask = nil
-        lateDebounce?.cancel(); lateDebounce = nil
+        stopped = true
+        returnRunner?.cancelled()
+        removeLifecycleObservers()
+        restartToken = nil
         artworkTask?.cancel(); artworkTask = nil
-        observeTask?.cancel(); observeTask = nil
-        subtitleDelayApplyTask?.cancel(); subtitleDelayApplyTask = nil
-        subtitleRefetchRestoreTask?.cancel(); subtitleRefetchRestoreTask = nil
-        if let o = mediaSelectionObserver { NotificationCenter.default.removeObserver(o); mediaSelectionObserver = nil }
-        removeEndObserver()
-        timeControlObserver?.invalidate(); timeControlObserver = nil
         addonSubsWatcher?.cancel(); addonSubsWatcher = nil
+        if let held = heldPositionSec { lastPositionSec = held }
         if lastDurationSec > 0 {
             recorder.record(positionSec: lastPositionSec, durationSec: lastDurationSec, isPaused: true, speed: 1,
                             flush: true, isLive: holdsLiveProgress)
         }
         recorder.stopTrakt(positionSec: lastPositionSec, durationSec: lastDurationSec, isLive: holdsLiveProgress)
         recorder.stopTrackers(positionSec: lastPositionSec, durationSec: lastDurationSec, isLive: holdsLiveProgress)
+        teardownPipeline(keepPlayer: false)
+    }
+
+    /// The pipeline half of `stop()` (spec 5.2.1): tasks, observers, the player's item, the loopback
+    /// server and the remux. `keepPlayer`: a mid-play restart keeps the item-less `AVPlayer` so the
+    /// AVPlayerViewController stays mounted until the new player replaces it. Watch state (position,
+    /// duration, play clock, readiness, Trakt latch, recorder, add-on subtitles, delay, chapters) is kept.
+    private func teardownPipeline(keepPlayer: Bool) {
+        pollTask?.cancel(); pollTask = nil
+        lateDebounce?.cancel(); lateDebounce = nil
+        observeTask?.cancel(); observeTask = nil
+        subtitleDelayApplyTask?.cancel(); subtitleDelayApplyTask = nil
+        subtitleRefetchRestoreTask?.cancel(); subtitleRefetchRestoreTask = nil
+        isRefetchingSubtitles = false
+        if let o = mediaSelectionObserver { NotificationCenter.default.removeObserver(o); mediaSelectionObserver = nil }
+        removeEndObserver()
+        timeControlObserver?.invalidate(); timeControlObserver = nil
+        // A B17 rebuild in flight is superseded by the restart (spec 5.2.4).
+        if isRebuildingItem { abandonRebuild("pipeline teardown") }
         player?.pause()
+        if keepPlayer { player?.replaceCurrentItem(with: nil) }
         server?.stop(); server = nil
+        servedURL = nil
         remux?.stop()
         // debug.keepRemuxOutput=1 preserves the emitted files so they can be pulled off the device
         // (devicectl copy from the app container) and inspected with ffprobe on a Mac. Cleanup is
@@ -565,8 +639,13 @@ final class NativePlaybackCoordinator: ObservableObject {
             }
         }
         remux = nil
-        player = nil
+        if !keepPlayer {
+            rateObserver?.invalidate(); rateObserver = nil
+            player = nil
+        }
         playerItem = nil
+        legibleGroup = nil
+        audibleGroup = nil
     }
 
     // MARK: - Progressive startup
@@ -592,8 +671,29 @@ final class NativePlaybackCoordinator: ObservableObject {
             }
             #endif
             var readyAt: Date?
+            #if DEBUG
+            // `-debug.nativeStartDelaySec <n>` (T-UI-N5): the first start's poll waits n seconds before it
+            // looks, so a background can land while nothing is ready (`readyUptime == nil`). The DEBUG
+            // background cycle ticks through the wait. A restart never waits.
+            if let self, !self.debugStartDelayUsed, self.restartToken == nil {
+                self.debugStartDelayUsed = true
+                let delay = UserDefaults.standard.double(forKey: "debug.nativeStartDelaySec")
+                if delay > 0 {
+                    print("[Return] DEBUG holding the native start \(delay) s")
+                    let until = Date().addingTimeInterval(delay)
+                    while Date() < until {
+                        if Task.isCancelled { return }
+                        self.debugBackgroundCycle.noteTick(positionSec: 0)
+                        try? await Task.sleep(nanoseconds: 250_000_000)
+                    }
+                }
+            }
+            #endif
             for _ in 0..<240 {                          // ~60s ceiling
                 if Task.isCancelled { return }
+                #if DEBUG
+                self?.debugBackgroundCycle.noteTick(positionSec: 0)
+                #endif
                 if case .failed(let stage) = remux.state { self?.failIfPreplayback(stage); return }
                 // The worker publishes the video signaling when it inspects the streams, before the
                 // segment map exists; a Dolby Vision file flips the caption once, in the first few
@@ -618,7 +718,12 @@ final class NativePlaybackCoordinator: ObservableObject {
                     if let self, !self.subsFetchDone {
                         print("[NativePlayer] subs gate lapsed after \(String(format: "%.1f", Date().timeIntervalSince(pollStart)))s gate=\(String(format: "%.1f", gate))s — starting without addon subtitles (late path armed)")
                     }
-                    self?.beginPlayback(remux: remux)
+                    // A restart's poll reports to the machine, which asks for the server (spec 5.2.2).
+                    if let self, let token = self.restartToken {
+                        self.returnRunner?.machine(.firstSegmentReady, token: token)
+                    } else {
+                        self?.beginPlayback(remux: remux)
+                    }
                     return
                 }
                 try? await Task.sleep(nanoseconds: 250_000_000)
@@ -698,8 +803,8 @@ final class NativePlaybackCoordinator: ObservableObject {
         // lands after the late rebuild is NOT shown in the native player: a published row could
         // not be selected (`rebuildItem` is one-shot) and, with Up Next prefetching the next
         // episode into the same repository, a later emission is not necessarily this episode's.
-        guard server != nil, phase == .playing, playIssued, !isRebuildingItem, lateRebuildsUsed == 0,
-              !pendingLateFiles.isEmpty else { return }
+        guard server != nil, phase == .playing, playIssued, !isRebuildingItem, !isRestoringPipeline,
+              lateRebuildsUsed == 0, !pendingLateFiles.isEmpty else { return }
         lateDebounce?.cancel()
         lateDebounce = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 1_000_000_000)
@@ -710,7 +815,8 @@ final class NativePlaybackCoordinator: ObservableObject {
     }
 
     private func applyLateSubtitles() {
-        guard let server, phase == .playing, playIssued, !isRebuildingItem, lateRebuildsUsed == 0 else { return }
+        guard let server, phase == .playing, playIssued, !isRebuildingItem, !isRestoringPipeline,
+              lateRebuildsUsed == 0 else { return }
         let files = pendingLateFiles
         guard !files.isEmpty else { return }
         files.forEach { servedAddonURLs.insert($0.url) }
@@ -776,7 +882,8 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// B17: the first mid-play item swap. At most once per session; restores position, play state,
     /// audio and subtitles once the new item is ready (`finishRebuild`).
     private func rebuildItem(reason: String) {
-        guard lateRebuildsUsed == 0, phase == .playing, !isRebuildingItem,
+        // A return restart owns the pipeline until it settles (spec 5.2.2).
+        guard lateRebuildsUsed == 0, phase == .playing, !isRebuildingItem, !isRestoringPipeline,
               let player, let server, let servedURL else { return }
         let pos = CMTimeGetSeconds(player.currentTime())
         guard pos.isFinite else { return }
@@ -901,6 +1008,10 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// skip planner reads the next tick's jump as a user scrub, so it is never auto-skipped back.
     func seek(toChapter sec: Double) {
         guard let player else { return }
+        guard !returnRefusesTransport else {
+            print("[Return] transport dropped: chapter seek during a return")
+            return
+        }
         let target = PlayerChapters.clampedSeek(sec, durationSec: lastDurationSec > 0 ? lastDurationSec : durationSec)
         print("[Chapters] native seek → \(String(format: "%.1f", target))s")
         noteUserSeek(to: target)
@@ -938,7 +1049,10 @@ final class NativePlaybackCoordinator: ObservableObject {
     }
 
     private func beginPlayback(remux: RemuxSession) {
-        guard phase == .preparing, player == nil else { return }
+        // A return restart's server step (`restartMakeServer`) runs this with its own token; the
+        // `.preparing, player == nil` guard is bypassed only for it (spec 5.2.2 step 4).
+        let startToken = restartToken
+        guard startToken != nil || (phase == .preparing && player == nil) else { return }
         guard let map = remux.segmentMap else { failIfPreplayback("no segment map"); return }
         // Chapters (A6-native): libavformat's list, already on the playlist timeline; sorted,
         // deduped and clamped like mpv's, then trimmed at the duration.
@@ -1036,8 +1150,25 @@ final class NativePlaybackCoordinator: ObservableObject {
             server.setSubtitleSlots(Self.subtitleDelaySlots)
         }
         if subtitleDelayMs != 0 { server.setSubtitleDelay(ms: subtitleDelayMs) }
+        // A mid-play restart loads at the playhead (C-1's start tag), then the corrective seek lands it.
+        if startToken != nil, restartKind == .midPlay, let target = restartTarget {
+            server.setStartOffset(target.positionSec)
+        }
+        lateSubtitleRows = []
         server.start(masterName: remux.masterPlaylistName) { [weak self] url in
-            guard let self else { return }
+            guard let self else { server.stop(); return }
+            // Tokened bind (spec 5.2.2): a completion whose server is no longer this coordinator's, or
+            // whose restart was superseded, stops its server and touches nothing.
+            guard self.server === server, startToken == self.restartToken else {
+                print("[NativePlayer] stale loopback bind dropped (server replaced or restart superseded)")
+                server.stop()
+                return
+            }
+            if let token = startToken {
+                if let url { self.servedURL = url; print("[NativePlayer] serving \(url.absoluteString) (restart)") }
+                self.returnRunner?.bindCompleted(token: token, url: url, stopStale: { server.stop() })
+                return
+            }
             guard let url else { self.failIfPreplayback("server bind failed"); return }
             print("[NativePlayer] serving \(url.absoluteString)")
             self.servedURL = url
@@ -1052,19 +1183,7 @@ final class NativePlaybackCoordinator: ObservableObject {
             // `isPaused` means a pause DURING playback: the pre-playback `.paused` state a fresh
             // player reports before it ever plays is ignored (it would masquerade as a user pause).
             self.hasStartedPlaying = false
-            self.timeControlObserver = player.observe(\.timeControlStatus, options: [.new]) { [weak self] player, _ in
-                let status = player.timeControlStatus
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    if status == .playing { self.hasStartedPlaying = true }
-                    if status == .playing || (status == .paused && self.playIssued) {
-                        self.advanceLoadingStage(.started)
-                    }
-                    guard self.hasStartedPlaying else { return }
-                    let paused = status == .paused
-                    if self.isPaused != paused { self.isPaused = paused }
-                }
-            }
+            self.observeTransport(of: player)
             self.observeMediaSelection(item: item, player: player)
             self.phase = .playing
             self.advanceLoadingStage(.buffering(percent: nil))
@@ -1072,6 +1191,35 @@ final class NativePlaybackCoordinator: ObservableObject {
             #if DEBUG
             self.startSubtitleDelaySpike()
             #endif
+        }
+    }
+
+    /// The time-control and rate observers of a player this coordinator shows. `isPaused` follows
+    /// `timeControlStatus` once playback started; the rate feeds the return runner (presses, I1/I5).
+    private func observeTransport(of player: AVPlayer) {
+        timeControlObserver?.invalidate()
+        timeControlObserver = player.observe(\.timeControlStatus, options: [.new]) { [weak self] player, _ in
+            let status = player.timeControlStatus
+            Task { @MainActor [weak self] in
+                guard let self, self.player === player else { return }
+                if status == .playing { self.hasStartedPlaying = true }
+                if status == .playing || (status == .paused && self.playIssued) {
+                    self.advanceLoadingStage(.started)
+                }
+                guard self.hasStartedPlaying else { return }
+                let paused = status == .paused
+                if self.isPaused != paused { self.isPaused = paused }
+            }
+        }
+        rateObserver?.invalidate()
+        rateObserver = player.observe(\.rate, options: [.old, .new]) { [weak self] player, change in
+            let was = (change.oldValue ?? 0) > 0
+            let now = (change.newValue ?? 0) > 0
+            guard was != now else { return }
+            Task { @MainActor [weak self] in
+                guard let self, self.player === player else { return }
+                self.returnRunner?.observedRate(playing: now)
+            }
         }
     }
 
@@ -1183,7 +1331,8 @@ final class NativePlaybackCoordinator: ObservableObject {
 
     // MARK: - AVPlayer observation (resume + progress + Trakt)
 
-    private func observePlayback(player: AVPlayer, item: AVPlayerItem, rebuild: RebuildTarget? = nil) {
+    private func observePlayback(player: AVPlayer, item: AVPlayerItem, rebuild: RebuildTarget? = nil,
+                                 restart: Int? = nil) {
         installEndObserver(for: item)
         observeTask = Task { @MainActor [weak self] in
             var readied = false
@@ -1194,7 +1343,16 @@ final class NativePlaybackCoordinator: ObservableObject {
             while !Task.isCancelled {
                 guard let self, self.player === player else { return }
 
-                if !readied, item.status == .readyToPlay, let rebuild {
+                if !readied, item.status == .readyToPlay, let restart {
+                    // A return restart's item (spec 5.2.2): the machine takes it from here (the corrective
+                    // seek mid-play; the resume read and seek from scratch). Ticks wait until it settles.
+                    readied = true
+                    print("[NativePlayer] item readyToPlay (restart)")
+                    if self.readyUptime == nil { self.readyUptime = ProcessInfo.processInfo.systemUptime }
+                    let duration = CMTimeGetSeconds(item.duration)
+                    if duration.isFinite, duration > 0, self.durationSec != duration { self.durationSec = duration }
+                    self.returnRunner?.machine(.itemReady, token: restart)
+                } else if !readied, item.status == .readyToPlay, let rebuild {
                     readied = true
                     await self.finishRebuild(rebuild, player: player, item: item)
                     guard !Task.isCancelled, self.player === player else { return }
@@ -1247,6 +1405,14 @@ final class NativePlaybackCoordinator: ObservableObject {
                 } else if item.status == .failed {
                     print("[NativePlayer] item FAILED — \(item.error?.localizedDescription ?? "unknown")")
                     Self.dumpItemLogs(item)
+                    // While a return is in progress its runner owns every failure (spec 5.2.2): the
+                    // machine while it runs (with the one signaling retry inside the attempt), otherwise
+                    // the return absorbs it (decision C restarts the whole pipeline).
+                    let returnFailure: NativeReturnFailure = readied
+                        ? .itemAfterReady("item failed")
+                        : .itemPreReady(retryAllowed: Self.signalingRetryAllowed(
+                            attempt: 0, supplementalCodecs: self.remux?.videoSignaling?.supplementalCodecs))
+                    if self.returnRunner?.failureArrived(returnFailure) == true { return }
                     // THIS item never became ready → retry with minimal signaling, then hand to mpv.
                     // (Keyed on the item, not lifetime state: after an audio-switch rebuild the
                     // coordinator has a duration from the previous item, but a pre-ready failure of
@@ -1271,6 +1437,7 @@ final class NativePlaybackCoordinator: ObservableObject {
                     // rejection) with no state change to observe. Surface why every ~10s.
                     notReadyTicks += 1
                     if rebuild != nil, notReadyTicks >= 60 {   // 12 s without ready: the picture is frozen
+                        if self.returnRunner?.failureArrived(.itemAfterReady("late rebuild not ready")) == true { return }
                         self.classifyFailure(.init(.local))
                         self.fallbackMidPlay("late subtitle rebuild failed")
                         return
@@ -1279,6 +1446,12 @@ final class NativePlaybackCoordinator: ObservableObject {
                         print("[NativePlayer] item still not ready after ~\(notReadyTicks / 5)s (status=\(item.status.rawValue))")
                         Self.dumpItemLogs(item)
                     }
+                }
+
+                // A restart's item: no tick until the machine settled (no record from a pre-seek 0, I6).
+                if readied, let restart, self.restartToken == restart {
+                    try? await Task.sleep(nanoseconds: 200_000_000)
+                    continue
                 }
 
                 if readied {
@@ -1326,7 +1499,12 @@ final class NativePlaybackCoordinator: ObservableObject {
                             }
                         }
                     }
-                    if pos.isFinite, dur.isFinite, dur > 0 {
+                    #if DEBUG
+                    if pos.isFinite { self.debugBackgroundCycle.noteTick(positionSec: pos) }
+                    #endif
+                    // While a return holds the position, nothing is recorded and `lastPositionSec` keeps
+                    // the authoritative value (spec 4.7, I6).
+                    if self.heldPositionSec == nil, pos.isFinite, dur.isFinite, dur > 0 {
                         let paused = player.timeControlStatus != .playing
                         self.lastPositionSec = pos
                         self.lastDurationSec = dur
@@ -1370,6 +1548,7 @@ final class NativePlaybackCoordinator: ObservableObject {
                         // Sustained stall (~30s at 3s/tick) with NO remux progress: dead/stalled
                         // source. Hand to mpv at the current position rather than spin forever.
                         if waitingTicks >= 10 {
+                            if self.returnRunner?.failureArrived(.itemAfterReady("stalled")) == true { return }
                             self.classifyFailure(.init(.network))
                             self.fallbackMidPlay("stalled ~30s with no remux progress")
                             return
@@ -1377,6 +1556,8 @@ final class NativePlaybackCoordinator: ObservableObject {
                     } else {
                         waitingTicks = 0
                     }
+                    // The frozen-clock backstop (G) samples on this tick while the return rule is idle.
+                    self.returnRunner?.tick()
                 }
                 try? await Task.sleep(nanoseconds: readied ? 3_000_000_000 : 200_000_000)
             }
@@ -1899,6 +2080,8 @@ final class NativePlaybackCoordinator: ObservableObject {
     }
 
     private func failIfPreplayback(_ stage: String) {
+        // While a return is in progress its runner owns the failure (spec 5.2.2).
+        if returnRunner?.failureArrived(.remux(stage)) == true { return }
         guard phase != .playing else {
             // Mid-play remux failure (e.g. a truncated debrid source): the remaining segments will
             // never appear, so JIT requests would block until playback stalls. Hand to mpv now rather
@@ -1935,5 +2118,456 @@ final class NativePlaybackCoordinator: ObservableObject {
         observeTask?.cancel()
         print("[NativePlayer] mid-play fallback to mpv at \(String(format: "%.1f", lastPositionSec))s — \(reason)")
         phase = .failed(reason)
+    }
+}
+
+// MARK: - Return from background (spec 5.2, W3): lifecycle, facts and the runner's effects
+
+extension NativePlaybackCoordinator: NativeReturnHost {
+    /// Main queue; each handler hops once (spec 6.1). Observed with `object: nil`, so the DEBUG
+    /// background cycle drives the same path a Home press does.
+    fileprivate func installLifecycleObservers() {
+        guard lifecycleObservers.isEmpty else { return }
+        let center = NotificationCenter.default
+        lifecycleObservers.append(center.addObserver(forName: UIApplication.didEnterBackgroundNotification,
+                                                     object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                await Task.yield()
+                guard let self, !self.stopped else { return }
+                self.returnRunner?.enteredBackground()
+            }
+        })
+        lifecycleObservers.append(center.addObserver(forName: UIApplication.didBecomeActiveNotification,
+                                                     object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                await Task.yield()
+                guard let self, !self.stopped else { return }
+                self.returnRunner?.becameActive()
+            }
+        })
+    }
+
+    fileprivate func removeLifecycleObservers() {
+        lifecycleObservers.forEach { NotificationCenter.default.removeObserver($0) }
+        lifecycleObservers.removeAll()
+    }
+
+    // MARK: Screen inputs
+
+    /// The screen's `AVPlayerViewController.isReadyForDisplay`, with the player it was read for.
+    func noteReadyForDisplay(_ ready: Bool, player shown: AVPlayer?) {
+        let id = shown.map(ObjectIdentifier.init)
+        guard id != displayReadyPlayer || ready != displayReady else { return }
+        displayReadyPlayer = id
+        displayReady = ready
+        returnRunner?.pictureChanged()
+    }
+
+    /// The post-play cover (or another cover) went away: a return deferred on it decides now.
+    func noteReappeared() {
+        returnRunner?.reappeared()
+    }
+
+    #if DEBUG
+    /// The native probe's return fields (W4's legs read them): `ret=<mode>/<last outcome>
+    /// restoring=<0|1> picture=<0|1> nudged=<0|1> health=<last health>`.
+    var returnProbeText: String {
+        guard let runner = returnRunner else { return "ret=- restoring=0 picture=0 nudged=0 health=-" }
+        return "ret=\(runner.probeMode)/\(runner.lastOutcome) restoring=\(isRestoringPipeline ? 1 : 0)"
+            + " picture=\(returnPictureReady ? 1 : 0) nudged=\(runner.nudged ? 1 : 0) health=\(runner.lastHealth)"
+    }
+    #endif
+
+    /// The one fallback of a return (spec 5.2.2): `.local`, at the authoritative position, from
+    /// `.playing` or `.preparing`. The screen turns `.failed` into `onFallback(lastPositionSec, …)`.
+    private func restoreHandOff(atSec: Double, reason: String) {
+        if atSec.isFinite, atSec >= 0 { lastPositionSec = atSec }
+        heldPositionSec = nil
+        restartToken = nil
+        isRestoringPipeline = false
+        observeTask?.cancel()
+        failureKind = .local
+        failureHTTPStatus = nil
+        print("[Failover] native failure kind=local http=- (\(reason))")
+        print("[NativePlayer] return handoff to mpv at \(String(format: "%.1f", lastPositionSec))s — \(reason)")
+        phase = .failed(reason)
+    }
+
+    private var isPhaseFailed: Bool {
+        if case .failed = phase { return true }
+        return false
+    }
+
+    /// The live player clock, only for an item that is ready and not mid-swap.
+    private var readyClockSec: Double? {
+        guard let player, playerItem?.status == .readyToPlay, !isRebuildingItem else { return nil }
+        let t = CMTimeGetSeconds(player.currentTime())
+        return t.isFinite && t >= 0 ? t : nil
+    }
+
+    // MARK: Facts
+
+    func returnSnapshot(enteredAtUptime: TimeInterval) -> PlayerBackgroundSnapshot {
+        let returnPhase: PlayerReturnPhase
+        if failureKind != nil || isPhaseFailed {
+            returnPhase = .failed
+        } else if returnPostPlayProvider?() == true {
+            returnPhase = .postPlay
+        } else if didPlayToEnd {
+            returnPhase = .ended
+        } else if readyUptime == nil {
+            returnPhase = .starting
+        } else if isRebuildingItem || isRestoringPipeline {
+            returnPhase = .operation
+        } else if isPaused || player?.timeControlStatus == .paused {
+            returnPhase = .paused
+        } else {
+            returnPhase = .playing
+        }
+        let position = NativeReturnMath.snapshotPositionSec(playerTimeSec: readyClockSec, lastPositionSec: lastPositionSec)
+        let snapshot = PlayerBackgroundSnapshot(
+            route: .native, phase: returnPhase, positionSec: position, pendingSeekTargetSec: rebuildUserSeekSec,
+            enteredAtUptime: enteredAtUptime, audioTrackID: nil, subtitleTrackID: nil, subtitleDecided: true,
+            audioName: currentAudioOption.map(Self.renditionName(of:)),
+            subtitleName: pendingLateSelection ?? currentLegibleName)
+        print("[Return] snapshot route=native phase=\(returnPhase) pos=\(String(format: "%.1f", position))"
+              + " audio=\(snapshot.audioName ?? "-") sub=\(snapshot.subtitleName ?? "off")")
+        return snapshot
+    }
+
+    func returnFacts(enteredBackground: Bool, awaySec: Double, health: PlayerNativeHealth) -> PlayerReturnFacts {
+        let facts = PlayerReturnFacts(
+            identity: returnIdentity, enteredBackground: enteredBackground, awaySec: awaySec,
+            presence: returnPresence, contextSwapPending: returnContextSwapProvider?() ?? false,
+            operationInFlight: false, aetherNeedsRestore: nil, aetherSessionFailed: false,
+            clockSec: returnClockSec, nativeHealth: health)
+        print("[Return] facts entered=\(enteredBackground ? 1 : 0) away=\(Int(awaySec)) presence=\(facts.presence)"
+              + " ctx=\(facts.contextSwapPending ? 1 : 0) clock=\(facts.clockSec.map { String(format: "%.1f", $0) } ?? "-")"
+              + " health=\(health)")
+        return facts
+    }
+
+    func returnBackstopSample(now: TimeInterval) -> PlayerBackstopSample {
+        let status = player?.timeControlStatus
+        return PlayerBackstopSample(now: now, clockSec: readyClockSec, userPaused: status == .paused,
+                                    reportsPlaying: status == .playing,
+                                    reportsBuffering: status == .waitingToPlayAtSpecifiedRate)
+    }
+
+    var returnIdentity: PlaybackIdentity { PlaybackIdentity.current() }
+
+    var returnPresence: PlayerPresence {
+        if stopped || isPhaseFailed { return .leaving }
+        return returnPresenceProvider?() ?? .front
+    }
+
+    var returnClockSec: Double? { readyClockSec }
+
+    var returnPictureReady: Bool {
+        guard let player, displayReadyPlayer == ObjectIdentifier(player) else { return false }
+        return displayReady
+    }
+
+    var returnRestoreBudgetSec: Double { MPVStartWatchdog.defaultLimitSeconds }
+
+    func returnProbeHealth(_ done: @escaping @MainActor (PlayerNativeHealth) -> Void) {
+        var remuxFailed = false
+        if case .failed? = remux?.state { remuxFailed = true }
+        guard let server else {
+            let health = NativeReturnMath.health(pingAnswered: nil, listenerFailedAfterReady: false, remuxFailed: remuxFailed)
+            print("[Return] health=\(health) ping=- listenerFailedAfterReady=0 remux=\(remuxFailed ? "failed" : "ok")")
+            Task { @MainActor in done(health) }
+            return
+        }
+        server.health { ping, listenerFailed in
+            Task { @MainActor in
+                let health = NativeReturnMath.health(pingAnswered: ping, listenerFailedAfterReady: listenerFailed,
+                                                     remuxFailed: remuxFailed)
+                print("[Return] health=\(health) ping=\(ping.map { $0 ? "1" : "0" } ?? "-")"
+                      + " listenerFailedAfterReady=\(listenerFailed ? 1 : 0) remux=\(remuxFailed ? "failed" : "ok")")
+                done(health)
+            }
+        }
+    }
+
+    func returnActivateAudioSession() async {
+        await Task.detached(priority: .userInitiated) {
+            do {
+                try AVAudioSession.sharedInstance().setActive(true)
+            } catch {
+                print("[Return] audio session activation failed: \(error.localizedDescription) (the restart continues)")
+            }
+        }.value
+    }
+
+    // MARK: Rule effects
+
+    func returnBackgrounded() {
+        // tvOS pauses the player on a real background; the DEBUG cycle keeps the app active, so the pause
+        // is explicit (the restart replaces this player anyway).
+        player?.pause()
+        server?.noteBackground()
+        #if DEBUG
+        switch debugBackgroundFault {
+        case .killListener: server?.debugKillListener()
+        case .failRemuxInput: remux?.debugFailInput()
+        case .failRestart, nil: break
+        }
+        #endif
+    }
+
+    func returnPlay() {
+        guard !stopped else { return }
+        player?.play()
+    }
+
+    func returnPause() {
+        player?.pause()
+    }
+
+    func returnHandOff(atSec: Double, reason: String) {
+        guard !stopped, !isPhaseFailed else {
+            print("[Return] handoff dropped (\(reason)): the player already left or failed over")
+            return
+        }
+        restoreHandOff(atSec: atSec, reason: reason)
+    }
+
+    func returnExit() {
+        print("[Return] exit: identity changed")
+        onReturnExit?()
+    }
+
+    func returnSetUI(_ ui: PlayerReturnUI) {
+        if returnUI != ui { returnUI = ui }
+    }
+
+    func returnSetHeldPosition(_ sec: Double?) {
+        heldPositionSec = sec
+        if let sec { lastPositionSec = sec }
+    }
+
+    func returnSetTransportRefused(_ refused: Bool) {
+        returnRefusesTransport = refused
+    }
+
+    func returnNudgePicture(atSec: Double) {
+        guard let player, playerItem?.status == .readyToPlay else {
+            print("[Return] picture nudge skipped: no ready item")
+            return
+        }
+        Task { @MainActor [weak self] in
+            let finished = await player.seek(to: CMTime(seconds: atSec, preferredTimescale: 600),
+                                             toleranceBefore: .zero, toleranceAfter: .zero)
+            print("[Return] picture nudge to \(String(format: "%.1f", atSec))s finished=\(finished ? 1 : 0)")
+            self?.returnRunner?.pictureChanged()
+        }
+    }
+
+    // MARK: Restart effects (NativeRestartMachine)
+
+    func restartWillBegin(token: Int, kind: NativeRestartKind, target: NativeRestartTarget) {
+        restartToken = token
+        restartKind = kind
+        restartTarget = target
+        isRestoringPipeline = true
+        signalingAttempt = 0
+        print("[Return] native restart begin kind=\(kind) at \(String(format: "%.1f", target.positionSec))s"
+              + " audio=\(target.audioName ?? "-") sub=\(target.subtitleName ?? "off")")
+        if kind == .fromScratch {
+            // Nothing played: back to the start path, the loading overlay stays up.
+            playIssued = false
+            phase = .preparing
+        }
+    }
+
+    func restartSetPosition(_ sec: Double) {
+        lastPositionSec = sec
+    }
+
+    func restartTeardown(keepPlayer: Bool) {
+        teardownPipeline(keepPlayer: keepPlayer)
+    }
+
+    func restartLaunchRemux(token: Int) {
+        guard restartToken == token else { return }
+        launchRemux(audioStream: restartKind == .midPlay ? selectedAudioBox.value : nil)
+    }
+
+    func restartMakeServer(token: Int) {
+        guard restartToken == token else { return }
+        #if DEBUG
+        if debugBackgroundFault == .failRestart, !debugFailRestartUsed {
+            debugFailRestartUsed = true
+            print("[Return] DEBUG fault: the restart's server step fails")
+            returnRunner?.machine(.bindFailed, token: token)
+            return
+        }
+        #endif
+        guard let remux else {
+            returnRunner?.machine(.remuxFailed(stage: "no remux"), token: token)
+            return
+        }
+        beginPlayback(remux: remux)
+    }
+
+    func restartMakeItem(token: Int, signalingAttempt attempt: Int) {
+        guard restartToken == token, let servedURL else {
+            if restartToken == token { returnRunner?.machine(.itemFailedPreReady(signalingRetryAllowed: false), token: token) }
+            return
+        }
+        if attempt == 0 {
+            let item = AVPlayerItem(url: servedURL)
+            decorate(item)
+            let newPlayer = AVPlayer(playerItem: item)
+            if restartKind == .fromScratch {
+                applyLanguagePlan(to: newPlayer)
+            } else {
+                // C-2: the restored names win over the criteria (criteria apply once per item).
+                newPlayer.setMediaSelectionCriteria(nil, forMediaCharacteristic: .audible)
+                newPlayer.setMediaSelectionCriteria(nil, forMediaCharacteristic: .legible)
+            }
+            playerItem = item
+            player = newPlayer
+            audibleGroup = nil
+            legibleGroup = nil
+            // Mid-play: a pause is a pause from the first status (A comes back paused).
+            hasStartedPlaying = restartKind == .midPlay
+            observeTransport(of: newPlayer)
+            observeMediaSelection(item: item, player: newPlayer)
+            if restartKind == .fromScratch {
+                phase = .playing
+                advanceLoadingStage(.buffering(percent: nil))
+            }
+            // `player` is not published: the screen swaps the AVPlayerViewController's player on this.
+            objectWillChange.send()
+            observePlayback(player: newPlayer, item: item, restart: token)
+        } else {
+            guard let player else { return }
+            // The one signaling retry, inside the attempt (the machine decided it).
+            signalingAttempt = 1
+            var reduced = remux?.videoSignaling ?? VideoSignaling(codecs: "hvc1")
+            reduced.supplementalCodecs = nil
+            server?.setSignaling(reduced)
+            servedSignaling = reduced
+            print("[NativePlayer] restart retrying without SUPPLEMENTAL-CODECS")
+            observeTask?.cancel()
+            let retryURL = URL(string: servedURL.absoluteString + "?r=1") ?? servedURL
+            let item = AVPlayerItem(url: retryURL)
+            decorate(item)
+            playerItem = item
+            legibleGroup = nil
+            audibleGroup = nil
+            player.replaceCurrentItem(with: item)
+            observeMediaSelection(item: item, player: player)
+            observePlayback(player: player, item: item, restart: token)
+        }
+    }
+
+    func restartSeek(token: Int, toSec sec: Double) {
+        guard restartToken == token, let player, let item = playerItem else { return }
+        let kind = restartKind
+        if kind == .fromScratch {
+            // The resume seek (user-initiated for skip logic), as on a normal start.
+            didResumeSeek = true
+            onResumeSeekBegin?(sec)
+        }
+        Task { @MainActor [weak self] in
+            let time = CMTime(seconds: sec, preferredTimescale: 600)
+            if kind == .midPlay {
+                await player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
+            } else {
+                await player.seek(to: time)
+            }
+            guard let self, self.restartToken == token, self.player === player, self.playerItem === item else {
+                print("[Return] restart seek overtaken (stopped, cancelled or replaced)")
+                return
+            }
+            // Spec 5.2.2: identity again after the seek await, before any tracker start.
+            guard PlaybackWriteGuard.allows(owner: self.owner, current: PlaybackIdentity.current()) else {
+                self.returnRunner?.machine(.identityChanged, token: token)
+                return
+            }
+            let landed = CMTimeGetSeconds(player.currentTime())
+            if kind == .fromScratch {
+                self.lastPositionSec = sec
+                self.onResumeSeekCompleted?(landed.isFinite ? landed : sec)
+            }
+            self.returnRunner?.machine(.seekLanded(clockSec: landed.isFinite ? landed : nil,
+                                                   pictureReady: self.returnPictureReady), token: token)
+        }
+    }
+
+    func restartRestoreTracks(token: Int, audio: String?, subtitle: String?) {
+        guard restartToken == token, let item = playerItem else { return }
+        Task { @MainActor [weak self] in
+            let audible = (try? await item.asset.loadMediaSelectionGroup(for: .audible)) ?? nil
+            let legible = (try? await item.asset.loadMediaSelectionGroup(for: .legible)) ?? nil
+            guard let self, self.playerItem === item else { return }
+            if let audible, let audio,
+               let option = audible.options.first(where: { Self.renditionName(of: $0) == audio }) {
+                item.select(option, in: audible)
+            }
+            self.audibleGroup = audible
+            if let legible {
+                let option = subtitle.flatMap { name in
+                    legible.options.first {
+                        let n = Self.renditionName(of: $0)
+                        return Self.subtitleSlot(ofName: n) == 0 && Self.canonicalSubtitleName(n) == name
+                    }
+                }
+                item.select(option, in: legible)
+            }
+            self.legibleGroup = legible
+            self.legibleSnapshot = .some(self.currentLegibleName)
+            self.selectionVersion &+= 1
+            print("[Return] restart tracks audio=\(self.currentAudioOption.map(Self.renditionName(of:)) ?? "-")"
+                  + " sub=\(self.currentLegibleName ?? "off") (wanted \(audio ?? "-") / \(subtitle ?? "off"))")
+        }
+    }
+
+    func restartStartTrackersOnce() {
+        guard !traktStarted else { return }
+        traktStarted = true
+        let duration = playerItem.map { CMTimeGetSeconds($0.duration) } ?? 0
+        let d = duration.isFinite ? duration : 0
+        recorder.startTrakt(positionSec: lastPositionSec, durationSec: d)
+        recorder.startTrackers(positionSec: lastPositionSec, durationSec: d)
+    }
+
+    func restartChooseResume(token: Int) {
+        guard restartToken == token, let item = playerItem else { return }
+        // Spec 5.2.2: identity before the resume read, so no other profile's row is ever read.
+        guard PlaybackWriteGuard.allows(owner: owner, current: PlaybackIdentity.current()) else {
+            returnRunner?.machine(.identityChanged, token: token)
+            return
+        }
+        let duration = CMTimeGetSeconds(item.duration)
+        let retryResume = context.resumeAtSec.flatMap { $0 > 10 ? $0 : nil }
+        let startOver = retryResume == nil && context.startFromBeginning
+        let resume: Double? = startOver
+            ? nil
+            : (retryResume ?? recorder.resumePositionSec(actualDurationSec: duration.isFinite ? duration : 0))
+        print("[Return] restart from scratch resume=\(resume.map { String(format: "%.1f", $0) } ?? "start")")
+        returnRunner?.machine(.resumeChosen(sec: resume), token: token)
+    }
+
+    func restartEnded(token: Int, settled: Bool) {
+        guard restartToken == token else { return }
+        restartToken = nil
+        isRestoringPipeline = false
+        server?.setStartOffset(nil)
+        guard settled else {
+            print("[Return] native restart ended without settling")
+            return
+        }
+        // A: the restart lands paused; a ready, paused picture ends startup (no `play()` was issued).
+        playIssued = true
+        hasStartedPlaying = true
+        if let player { isPaused = player.timeControlStatus != .playing }
+        advanceLoadingStage(.started)
+        if restartKind == .fromScratch, let item = playerItem { loadLegibleSelection(item: item) }
+        print("[Return] native restart settled kind=\(restartKind.map { "\($0)" } ?? "-")"
+              + " at \(String(format: "%.1f", readyClockSec ?? lastPositionSec))s picture=\(returnPictureReady ? 1 : 0)")
     }
 }
