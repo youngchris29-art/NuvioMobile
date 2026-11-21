@@ -55,6 +55,9 @@ final class AetherEngineGate: @unchecked Sendable {
 /// deletion of every `aether-segments.trash-*` sibling runs later on a serial utility queue, outside
 /// the gate. Deleting trash is always safe: only this cleanup makes those names, and only from a tree
 /// whose markers were all free at rename time.
+///
+/// A fresh load awaits `pendingDeletionFinished()` (bounded) before it reads free space, so the disk
+/// cache is never sized against space the leftovers still hold (code review r5).
 public enum AetherLeftoverCache {
     /// The engine's segment base directory under `NSTemporaryDirectory()`. Duplicated from AetherEngine
     /// 7.71.2 `Video/SegmentCache.swift:218` and `Native/SoftwarePlaybackHost.swift:502` (the live DVR
@@ -208,6 +211,58 @@ public enum AetherLeftoverCache {
         trashQueue.async {
             let trash = removeTrash(tmp: tmpURL)
             log(sweep, trash)
+        }
+    }
+
+    /// How long a fresh load waits for `pendingDeletionFinished` at most (code review r5). The worst
+    /// realistic queue is one crashed session's segments: a few thousand 4-second files (a 20 GB cache
+    /// at ~10 MB a segment is ~2,000; 1024 children is the sweep's own cap). An APFS unlink on the
+    /// box's flash costs well under a millisecond each, so that queue clears in about 1–2 s; 3 s covers
+    /// it with margin and stays far inside the 15 s (shortened) start watchdog. With no leftovers the
+    /// wait is one empty hop through the serial queue.
+    public static let pendingDeletionWaitSeconds: Double = 3
+
+    /// Resolves once every trash deletion queued before this call has finished (code review r5), so a
+    /// free-space reading taken after it sees the space the leftovers held. If nothing has attempted the
+    /// inspect-and-rename yet, this call attempts it first on the same serial queue, under the same gate
+    /// rules as the launch call (it counts as `.launch`: it builds no engine), then deletes its trash.
+    /// Never blocks the caller's thread. Returns false if `timeout` passed first; the deletion then
+    /// carries on in the background.
+    public static func pendingDeletionFinished(timeout: Double = pendingDeletionWaitSeconds) async -> Bool {
+        await pendingDeletionFinished(tmp: tmpURL, gate: .shared, queue: trashQueue, timeout: timeout)
+    }
+
+    /// `pendingDeletionFinished` with the tmp, gate and queue injected (tests).
+    static func pendingDeletionFinished(tmp: URL, gate: AetherEngineGate, queue: DispatchQueue,
+                                        timeout: Double) async -> Bool {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            let once = ResumeOnce(continuation)
+            queue.async {
+                let sweep = self.sweep(tmp: tmp, gate: gate, caller: .launch)
+                if sweep.decision != .skip(.alreadyRan) {
+                    log(sweep, removeTrash(tmp: tmp))
+                }
+                once.resume(true)
+            }
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + max(0, timeout)) {
+                once.resume(false)
+            }
+        }
+    }
+
+    /// Resumes a continuation at most once, from whichever of the queue block and the timer is first.
+    private final class ResumeOnce: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<Bool, Never>?
+
+        init(_ continuation: CheckedContinuation<Bool, Never>) { self.continuation = continuation }
+
+        func resume(_ value: Bool) {
+            lock.lock()
+            let c = continuation
+            continuation = nil
+            lock.unlock()
+            c?.resume(returning: value)
         }
     }
 

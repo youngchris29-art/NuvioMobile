@@ -82,6 +82,9 @@ final class AetherTVPlayerViewController: UIViewController {
     /// GitHub #29: the Disk Cache inputs (setting, Aether toggle, tmp free space), read once by the
     /// fresh load through `AetherLoadRequestFlow`. Tests replace it.
     var diskCacheInputs: () -> AetherDiskCacheInputs = AetherDiskCacheInputs.live
+    /// Code review r5: what the fresh load awaits before reading `diskCacheInputs` (the façade's bounded
+    /// wait for pending leftover deletion; true = finished, false = the bound passed). Tests replace it.
+    var cleanupAwaiter: () async -> Bool = { await AetherLeftoverCache.pendingDeletionFinished() }
     /// The fresh load's inputs, kept for the visit: its rebuild and Replay log the same `diskCache=`.
     private var loadDiskCacheInputs: AetherDiskCacheInputs?
 
@@ -403,13 +406,26 @@ final class AetherTVPlayerViewController: UIViewController {
             skipPlanner.beginSeek(kind: .resume, targetSec: resume, fromSec: nil, now: ProcessInfo.processInfo.systemUptime)
             plannerStartSeekPending = true
         }
-        let fresh = AetherLoadRequestFlow.fresh(base: makeLoadRequest(startSec: resume), readInputs: diskCacheInputs)
-        loadDiskCacheInputs = fresh.inputs
-        let request = fresh.request
-        logRequest(request)
+        let base = makeLoadRequest(startSec: resume)
         publishStartupStage(.connecting)
         armStartWatchdog()
-        runLoad(session, request)
+        // Code review r5: the free-space reading waits (suspended, bounded) for leftover deletion that
+        // is still running. The task is `loadTask`, so teardown and the handoff cancel it during the wait.
+        let awaitCleanup = cleanupAwaiter
+        let readInputs = diskCacheInputs
+        loadTask?.cancel()
+        loadTask = Task { @MainActor [weak self] in
+            let fresh = await AetherLoadRequestFlow.fresh(base: base, awaitCleanup: awaitCleanup, readInputs: readInputs)
+            guard let self, !Task.isCancelled, !self.handedOff, !self.teardownDone else { return }
+            if !fresh.cleanupFinished {
+                print("[AetherCache] leftover deletion still running after "
+                      + "\(Int(AetherLeftoverCache.pendingDeletionWaitSeconds)) s; free space read as is")
+            }
+            self.loadDiskCacheInputs = fresh.inputs
+            let request = fresh.request
+            self.logRequest(request)
+            self.runLoad(session, request)
+        }
     }
 
     /// The load request (W2-A "Request" notes): the fork's settings, the stream's headers and sidecars,

@@ -67,43 +67,88 @@ final class AetherLoadRequestFlowTests: XCTestCase {
         XCTAssertNil(replay(first).diskCache)
     }
 
-    func testOnToOffMidSessionAppliesOnlyToTheNextFreshLoad() {
+    /// The fresh load through the controller's call: no cleanup to wait for, inputs from `read`.
+    private func freshLoad(_ base: AetherLoadRequest, read: () -> AetherDiskCacheInputs) async -> AetherLoadRequestFlow.Fresh {
+        await AetherLoadRequestFlow.fresh(base: base, awaitCleanup: { true }, readInputs: read)
+    }
+
+    func testOnToOffMidSessionAppliesOnlyToTheNextFreshLoad() async {
         var current = inputs(.gigabytes(10))
-        let first = AetherLoadRequestFlow.fresh(base: base(), readInputs: { current }).request
+        let first = await freshLoad(base(), read: { current }).request
         current = inputs(.off)   // switched Off in Settings during the session
         XCTAssertEqual(rebuild(first).diskCache, tenGB)
         XCTAssertEqual(replay(first).diskCache, tenGB)
-        let next = AetherLoadRequestFlow.fresh(base: base(startSec: nil), readInputs: { current }).request
+        let next = await freshLoad(base(startSec: nil), read: { current }).request
         XCTAssertNil(next.diskCache, "the next title starts with the new value")
     }
 
-    func testOffToOnMidSessionAppliesOnlyToTheNextFreshLoad() {
+    func testOffToOnMidSessionAppliesOnlyToTheNextFreshLoad() async {
         var current = inputs(.off)
-        let first = AetherLoadRequestFlow.fresh(base: base(), readInputs: { current }).request
+        let first = await freshLoad(base(), read: { current }).request
         current = inputs(.gigabytes(20))
         XCTAssertNil(rebuild(first).diskCache)
         XCTAssertNil(replay(first).diskCache)
-        let next = AetherLoadRequestFlow.fresh(base: base(startSec: nil), readInputs: { current }).request
+        let next = await freshLoad(base(startSec: nil), read: { current }).request
         XCTAssertEqual(next.diskCache, twentyGB)
     }
 
-    func testFreshReadsInputsOnce() {
+    func testFreshReadsInputsOnce() async {
         var reads = 0
-        let result = AetherLoadRequestFlow.fresh(base: base(), readInputs: { reads += 1; return self.inputs(.maximum) })
+        let result = await freshLoad(base(), read: { reads += 1; return self.inputs(.maximum) })
         XCTAssertEqual(reads, 1)
         XCTAssertEqual(result.inputs, inputs(.maximum))
         XCTAssertEqual(result.request.diskCache?.hardLimitBytes, 24_000_000_000)
     }
 
-    func testReloadNeverReadsInputs() {
+    func testReloadNeverReadsInputs() async {
         // `reload` takes no inputs at all; a counting stub on the controller's property would see none.
         var reads = 0
         let stub: () -> AetherDiskCacheInputs = { reads += 1; return self.inputs(.off) }
-        let first = AetherLoadRequestFlow.fresh(base: base(), readInputs: stub).request
+        let first = await freshLoad(base(), read: stub).request
         reads = 0
         _ = rebuild(first)
         _ = replay(first)
         XCTAssertEqual(reads, 0)
+    }
+
+    // MARK: - Leftover cleanup before the free-space reading (code review r5)
+
+    /// A fresh load awaits the cleanup exactly once, and reads the inputs only after it returned, so the
+    /// free space it sizes the cache from is the space after the leftovers' deletion.
+    func testFreshAwaitsCleanupOnceBeforeTheRead() async {
+        var events: [String] = []
+        var free: Int64 = 3_000_000_000   // leftovers still on disk: below the 4 GB Maximum needs
+        let result = await AetherLoadRequestFlow.fresh(
+            base: base(),
+            awaitCleanup: { events.append("cleanup"); free = 98_000_000_000; return true },
+            readInputs: { events.append("read"); return self.inputs(.maximum, free: free) })
+        XCTAssertEqual(events, ["cleanup", "read"])
+        XCTAssertTrue(result.cleanupFinished)
+        XCTAssertEqual(result.request.diskCache?.hardLimitBytes, 24_000_000_000, "sized after the deletion")
+    }
+
+    /// The wait hit its bound: the load still goes ahead, with the reading as it is, and says so.
+    func testFreshProceedsWhenTheCleanupWaitTimesOut() async {
+        var events: [String] = []
+        let result = await AetherLoadRequestFlow.fresh(
+            base: base(),
+            awaitCleanup: { events.append("cleanup"); return false },
+            readInputs: { events.append("read"); return self.inputs(.gigabytes(10)) })
+        XCTAssertEqual(events, ["cleanup", "read"])
+        XCTAssertFalse(result.cleanupFinished)
+        XCTAssertEqual(result.request.diskCache, tenGB)
+    }
+
+    /// Rebuild and Replay reuse the snapshot: `reload` has no cleanup step and no reading, so neither
+    /// waits (a counting awaiter used for the fresh load sees no further calls).
+    func testReloadsNeverAwaitCleanup() async {
+        var awaits = 0
+        let first = await AetherLoadRequestFlow.fresh(base: base(), awaitCleanup: { awaits += 1; return true },
+                                                      readInputs: { self.inputs(.gigabytes(10)) }).request
+        XCTAssertEqual(awaits, 1)
+        _ = rebuild(first)
+        _ = replay(first)
+        XCTAssertEqual(awaits, 1)
     }
 
     func testFreshReplacesAnyCacheOnTheBase() {
@@ -212,6 +257,9 @@ final class AetherLoadRequestFlowTests: XCTestCase {
         XCTAssertEqual(occurrences(of: ".diskCache =", in: joined), 0, "the cache is set only by the flow")
         XCTAssertEqual(occurrences(of: "AetherReloadRequestPlan.request(", in: joined), 0, "reloads go through the flow")
         XCTAssertEqual(occurrences(of: "AetherLoadRequestFlow.fresh(", in: joined), 1)
+        // Code review r5: the fresh load hands the flow the controller's cleanup awaiter, and only it.
+        XCTAssertEqual(occurrences(of: "awaitCleanup: awaitCleanup", in: joined), 1)
+        XCTAssertEqual(occurrences(of: "pendingDeletionFinished(", in: joined), 1, "only the awaiter's default")
         XCTAssertEqual(occurrences(of: "AetherLoadRequestFlow.reload(", in: joined), 1)
         // Both reload paths build through `reloadRequest`.
         XCTAssertEqual(occurrences(of: "runLoad(session, reloadRequest(", in: joined), 2)

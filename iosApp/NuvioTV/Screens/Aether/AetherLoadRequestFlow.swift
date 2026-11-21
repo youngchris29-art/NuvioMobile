@@ -5,7 +5,8 @@ import NuvioAether
 /// UIKit, no UserDefaults, no engine. The controller calls it on every path and hands its output to
 /// `runLoad` unchanged, the only caller of `session.load`.
 ///
-/// - A fresh load (`startPlayback`) resolves the disk cache from inputs read once for the visit.
+/// - A fresh load (`startPlayback`) resolves the disk cache from inputs read once for the visit, after
+///   awaiting the leftover cleanup's pending deletion (bounded; code review r5).
 /// - The DV-interruption rebuild and Replay start from the session's `currentRequest`, so they keep
 ///   that load's cache snapshot and never read the setting again. A change in Settings applies at the
 ///   next fresh load (the next title or episode).
@@ -25,12 +26,25 @@ enum AetherLoadRequestFlow {
         return r
     }
 
-    /// `fresh` with the inputs read through `readInputs` exactly once; returns what was read too, so
-    /// the controller keeps it as the visit's snapshot for the log field.
+    /// What a fresh load built: the request, the inputs it read (the visit's snapshot for the log
+    /// field), and whether the leftover cleanup finished before the read (false = the wait hit its bound).
+    struct Fresh {
+        let request: AetherLoadRequest
+        let inputs: AetherDiskCacheInputs
+        let cleanupFinished: Bool
+    }
+
+    /// The fresh load (code review r5): awaits `awaitCleanup` exactly once (the façade's bounded
+    /// `AetherLeftoverCache.pendingDeletionFinished`, which suspends, never blocks), then reads the
+    /// inputs through `readInputs` exactly once, so the free-space reading never counts leftovers still
+    /// being deleted. A timed-out wait (false) proceeds with the reading as it is. Reloads never come
+    /// here and never wait.
     static func fresh(base: AetherLoadRequest,
-                      readInputs: () -> AetherDiskCacheInputs) -> (request: AetherLoadRequest, inputs: AetherDiskCacheInputs) {
+                      awaitCleanup: () async -> Bool,
+                      readInputs: () -> AetherDiskCacheInputs) async -> Fresh {
+        let finished = await awaitCleanup()
         let inputs = readInputs()
-        return (fresh(base: base, inputs: inputs), inputs)
+        return Fresh(request: fresh(base: base, inputs: inputs), inputs: inputs, cleanupFinished: finished)
     }
 
     /// The DV-interruption rebuild and Replay: `AetherReloadRequestPlan.request(from: current, …)`.

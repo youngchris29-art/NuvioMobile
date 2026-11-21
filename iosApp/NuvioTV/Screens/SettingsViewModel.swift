@@ -1,4 +1,5 @@
 import Combine
+import NuvioAether
 import SharedCore
 
 /// Backs the Settings screen. All settings persist locally (profile-scoped) via the shared
@@ -610,6 +611,8 @@ final class SettingsViewModel: ObservableObject {
     }
 
     /// Reads the tmp volume's free space off the main thread; publishes only if no newer refresh started.
+    /// Code review r5: then waits (bounded, suspended) for any leftover deletion still running and reads
+    /// once more, so a label shown while leftovers were being deleted catches up when they are gone.
     func refreshDiskCacheSpace() {
         diskCacheProbeGeneration += 1
         let generation = diskCacheProbeGeneration
@@ -617,6 +620,10 @@ final class SettingsViewModel: ObservableObject {
             let free = await Task.detached(priority: .utility) { TemporaryVolumeSpace.availableBytes() }.value
             guard let self, generation == self.diskCacheProbeGeneration else { return }
             self.diskCacheFreeBytes = free
+            _ = await AetherLeftoverCache.pendingDeletionFinished()
+            let after = await Task.detached(priority: .utility) { TemporaryVolumeSpace.availableBytes() }.value
+            guard generation == self.diskCacheProbeGeneration, after != self.diskCacheFreeBytes else { return }
+            self.diskCacheFreeBytes = after
         }
     }
 

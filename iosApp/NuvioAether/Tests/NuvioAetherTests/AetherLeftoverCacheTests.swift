@@ -403,6 +403,64 @@ final class AetherLeftoverCacheTests: XCTestCase {
         return nil
     }
 
+    // MARK: Pending deletion (code review r5)
+
+    /// The await resolves only after a deletion queued before it has finished.
+    func testPendingDeletionWaitsForDeletionQueuedBeforeIt() async throws {
+        try session("x", in: tmp.appendingPathComponent("aether-segments.trash-OLD"))
+        let gate = AetherEngineGate()
+        XCTAssertEqual(C.sweep(tmp: tmp, gate: gate, caller: .engine).outcome, "nothing to rename")
+        let queue = DispatchQueue(label: "test.trash")
+        let scratch: URL = tmp
+        queue.async {
+            Thread.sleep(forTimeInterval: 0.3)
+            _ = C.removeTrash(tmp: scratch)
+        }
+        let finished = await C.pendingDeletionFinished(tmp: tmp, gate: gate, queue: queue, timeout: 5)
+        XCTAssertTrue(finished)
+        XCTAssertEqual(tmpNames(), [], "free space read now would still count the trash")
+    }
+
+    /// Nothing ran the inspect-and-rename yet: the await runs it (as the launch call would), then
+    /// deletes, then resolves.
+    func testPendingDeletionAttemptsTheCleanupWhenNothingRanIt() async throws {
+        let leftover = try session()
+        let gate = AetherEngineGate()
+        let finished = await C.pendingDeletionFinished(tmp: tmp, gate: gate, queue: DispatchQueue(label: "test.trash"),
+                                                       timeout: 5)
+        XCTAssertTrue(finished)
+        XCTAssertFalse(exists(leftover))
+        XCTAssertEqual(tmpNames(), [])
+        XCTAssertEqual(gate.state, .swept)
+    }
+
+    /// After an engine exists the await never inspects: a live session's folder is left alone.
+    func testPendingDeletionAfterAnEngineTouchesNoSession() async throws {
+        let gate = AetherEngineGate()
+        _ = C.sweep(tmp: tmp, gate: gate, caller: .engine)
+        let live = try session()
+        let finished = await C.pendingDeletionFinished(tmp: tmp, gate: gate, queue: DispatchQueue(label: "test.trash"),
+                                                       timeout: 5)
+        XCTAssertTrue(finished)
+        XCTAssertTrue(exists(live))
+        XCTAssertEqual(gate.state, .engineUsed)
+    }
+
+    /// A deletion that outlasts the bound: the await gives up at the bound, and the queue finishes later.
+    func testPendingDeletionGivesUpAtTheBound() async throws {
+        let queue = DispatchQueue(label: "test.trash")
+        let release = DispatchSemaphore(value: 0)
+        queue.async { release.wait() }
+        let start = Date()
+        let finished = await C.pendingDeletionFinished(tmp: tmp, gate: AetherEngineGate(), queue: queue, timeout: 0.2)
+        let waited = Date().timeIntervalSince(start)
+        release.signal()
+        XCTAssertFalse(finished)
+        XCTAssertGreaterThanOrEqual(waited, 0.15)
+        XCTAssertLessThan(waited, 2)
+        XCTAssertEqual(C.pendingDeletionWaitSeconds, 3)
+    }
+
     /// The cleanup duplicates the engine's directory and marker names (it imports no engine type). They
     /// are internal to AetherEngine, so this reads the pinned checkout's source, which the package test
     /// command provides through `-clonedSourcePackagesDirPath`.
