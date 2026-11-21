@@ -139,11 +139,10 @@ struct NuvioTVApp: App {
 
         // Disk cache (code review r2): Aether segment folders a killed or crashed earlier process left in
         // tmp/aether-segments, which can be several GB with the disk cache on. Whatever the setting says
-        // (a cache written under an earlier value is still cleaned). The façade gates it on first engine
-        // use, so it never runs once this process has made an engine; off the main thread.
-        DispatchQueue.global(qos: .utility).async {
-            AetherLeftoverCache.removeAtLaunch()
-        }
+        // (a cache written under an earlier value is still cleaned). Returns at once; the work runs on the
+        // façade's utility queue. This is the early attempt: if an engine is constructed first, that
+        // construction runs the same inspect-and-rename itself before the engine exists (code review r4).
+        AetherLeftoverCache.removeAtLaunch()
 
         #if DEBUG
         // Phase 2 headless remux/HLS-server validation, gated on the `debug.remuxSmokeURL` default.

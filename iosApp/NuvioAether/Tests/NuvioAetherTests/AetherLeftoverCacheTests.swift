@@ -3,8 +3,9 @@ import XCTest
 import AetherEngine
 @testable import NuvioAether
 
-/// Launch cleanup of leftover Aether segment folders (disk cache, code review r2): the pure decision,
-/// the IO shell against an injected scratch tmp (never the real tmp), the gate, and the engine names.
+/// Cleanup of leftover Aether segment folders (disk cache, code review r2 and r4): the pure gate step and
+/// decision, the IO shell against an injected scratch tmp (never the real tmp), the gate race, the
+/// worst-case time under the lock, and the engine names.
 final class AetherLeftoverCacheTests: XCTestCase {
     private typealias C = AetherLeftoverCache
     private var tmp: URL!
@@ -57,21 +58,64 @@ final class AetherLeftoverCacheTests: XCTestCase {
         .notADirectory, .markerAbsent, .markerUnheld, .markerHeld, .probeFailed(EIO),
     ]
 
-    func testGateNotFreshAlwaysSkipsWhateverTheRoot() {
-        let roots: [C.RootState] = [.notInspected, .missing, .unreadable(EACCES), .tooManyEntries, .entries([]),
-                                    .entries([.markerUnheld]), .entries(Self.allProbes)]
-        for r in roots {
-            XCTAssertEqual(C.decide(gate: .engineUsed, root: r), .skip(.engineInUse), "\(r)")
-            XCTAssertEqual(C.decide(gate: .sweepClaimed, root: r), .skip(.alreadyRan), "\(r)")
+    private func assertStep(_ state: AetherEngineGate.State, _ caller: C.Caller, inspects: Bool,
+                            next: AetherEngineGate.State, line: UInt = #line) {
+        let s = C.step(state, caller: caller)
+        XCTAssertEqual(s.inspects, inspects, "\(state) \(caller)", line: line)
+        XCTAssertEqual(s.next, next, "\(state) \(caller)", line: line)
+    }
+
+    /// The gate step, every state and caller (code review r4): the first call of the process inspects
+    /// whoever makes it; nothing inspects twice; an engine never leaves the state un-inspected.
+    func testGateStepTable() {
+        assertStep(.fresh, .launch, inspects: true, next: .swept)
+        assertStep(.fresh, .engine, inspects: true, next: .engineUsed)
+        assertStep(.swept, .launch, inspects: false, next: .swept)
+        assertStep(.swept, .engine, inspects: false, next: .engineUsed)
+        assertStep(.engineUsed, .launch, inspects: false, next: .engineUsed)
+        assertStep(.engineUsed, .engine, inspects: false, next: .engineUsed)
+    }
+
+    /// Every sequence of up to six calls from `.fresh`: exactly one inspect (the first call), and from
+    /// the first engine call on the state is `.engineUsed`, with the inspect at or before it.
+    func testEveryCallSequenceInspectsOnceAndBeforeTheFirstEngine() {
+        var sequences: [[C.Caller]] = []
+        var frontier: [[C.Caller]] = [[]]
+        for _ in 0..<6 {
+            frontier = frontier.flatMap { s in C.Caller.allCases.map { s + [$0] } }
+            sequences += frontier
+        }
+        XCTAssertEqual(sequences.count, 2 + 4 + 8 + 16 + 32 + 64)
+        for seq in sequences {
+            var state = AetherEngineGate.State.fresh
+            var inspects: [Int] = []
+            var firstEngine: Int?
+            for (i, caller) in seq.enumerated() {
+                let (inspected, next) = C.step(state, caller: caller)
+                if inspected { inspects.append(i) }
+                if caller == .engine, firstEngine == nil { firstEngine = i }
+                state = next
+                if firstEngine != nil { XCTAssertEqual(state, .engineUsed, "\(seq)") }
+            }
+            XCTAssertEqual(inspects, [0], "\(seq)")
+            if let firstEngine { XCTAssertLessThanOrEqual(inspects[0], firstEngine, "\(seq)") }
         }
     }
 
-    func testFreshGateRootStates() {
-        XCTAssertEqual(C.decide(gate: .fresh, root: .missing), .nothingToRename)
-        XCTAssertEqual(C.decide(gate: .fresh, root: .unreadable(EACCES)), .skip(.probeFailed))
-        XCTAssertEqual(C.decide(gate: .fresh, root: .tooManyEntries), .skip(.tooManyEntries))
-        XCTAssertEqual(C.decide(gate: .fresh, root: .notInspected), .skip(.probeFailed))
-        XCTAssertEqual(C.decide(gate: .fresh, root: .entries([])), .nothingToRename)
+    func testNotInspectingAlwaysSkipsWhateverTheRoot() {
+        let roots: [C.RootState?] = [nil, .missing, .unreadable(EACCES), .tooManyEntries, .entries([]),
+                                     .entries([.markerUnheld]), .entries(Self.allProbes)]
+        for r in roots {
+            XCTAssertEqual(C.decide(inspects: false, root: r), .skip(.alreadyRan), "\(String(describing: r))")
+        }
+        XCTAssertEqual(C.decide(inspects: true, root: nil), .skip(.alreadyRan))
+    }
+
+    func testInspectedRootStates() {
+        XCTAssertEqual(C.decide(inspects: true, root: .missing), .nothingToRename)
+        XCTAssertEqual(C.decide(inspects: true, root: .unreadable(EACCES)), .skip(.probeFailed))
+        XCTAssertEqual(C.decide(inspects: true, root: .tooManyEntries), .skip(.tooManyEntries))
+        XCTAssertEqual(C.decide(inspects: true, root: .entries([])), .nothingToRename)
     }
 
     /// Every listing of up to four children over the five probe kinds (781 listings): a held marker
@@ -85,7 +129,7 @@ final class AetherLeftoverCacheTests: XCTestCase {
         }
         XCTAssertEqual(listings.count, 1 + 5 + 25 + 125 + 625)
         for l in listings {
-            let d = C.decide(gate: .fresh, root: .entries(l))
+            let d = C.decide(inspects: true, root: .entries(l))
             if l.contains(.markerHeld) {
                 XCTAssertEqual(d, .skip(.liveSession), "\(l)")
             } else if l.contains(.probeFailed(EIO)) {
@@ -98,22 +142,22 @@ final class AetherLeftoverCacheTests: XCTestCase {
         }
     }
 
+    /// Trash selection does not depend on the decision (code review r4): only `aether-segments.trash-<x>`.
     func testTrashSelectionTouchesOnlyOwnTrash() {
         let names = ["aether-segments", "aether-segments.trash-", "aether-segments.trash-A",
                      "aether-segments.trash-B", "aether-segments.trashy", "xaether-segments.trash-C",
                      "aether-software-packets-1", "aether-fel-history", "nuvio-remux", "other"]
-        XCTAssertEqual(C.trashToRemove(decision: .rename, tmpEntries: names),
-                       ["aether-segments.trash-A", "aether-segments.trash-B"])
-        XCTAssertEqual(C.trashToRemove(decision: .nothingToRename, tmpEntries: names),
-                       ["aether-segments.trash-A", "aether-segments.trash-B"])
-        for s in [C.Skip.engineInUse, .alreadyRan, .liveSession, .probeFailed, .tooManyEntries] {
-            XCTAssertEqual(C.trashToRemove(decision: .skip(s), tmpEntries: names), [], "\(s)")
-        }
+        XCTAssertEqual(C.trashToRemove(tmpEntries: names), ["aether-segments.trash-A", "aether-segments.trash-B"])
         XCTAssertTrue(C.isTrashName(C.trashName(UUID())))
         XCTAssertFalse(C.isTrashName(C.rootName))
     }
 
     // MARK: IO shell (scratch tmp)
+
+    /// The launch call then the trash deletion, as `removeAtLaunch()` runs them.
+    private func launchCleanup(gate: AetherEngineGate, maxEntries: Int = C.maxEntries) -> (C.SweepReport, C.TrashReport) {
+        (C.sweep(tmp: tmp, gate: gate, caller: .launch, maxEntries: maxEntries), C.removeTrash(tmp: tmp))
+    }
 
     func testLeftoversAndOldTrashRemovedOthersUntouched() throws {
         try session()
@@ -127,143 +171,202 @@ final class AetherLeftoverCacheTests: XCTestCase {
         try session("keep", in: tmp.appendingPathComponent("other"))
 
         let gate = AetherEngineGate()
-        let report = C.run(tmp: tmp, gate: gate)
+        let (sweep, trash) = launchCleanup(gate: gate)
 
-        XCTAssertEqual(report.outcome, "renamed")
-        XCTAssertEqual(report.childrenSeen, 5)
-        XCTAssertEqual(report.trashRemoved, 2)
-        XCTAssertEqual(report.failures, [])
+        XCTAssertEqual(sweep.outcome, "renamed")
+        XCTAssertEqual(sweep.childrenSeen, 5)
+        XCTAssertEqual(sweep.failures, [])
+        XCTAssertEqual(trash, C.TrashReport(removed: 2, failures: []))
         XCTAssertEqual(tmpNames(), ["aether-fel-history", "aether-software-packets-1", "other"])
-        XCTAssertEqual(gate.state, .sweepClaimed)
+        XCTAssertEqual(gate.state, .swept)
     }
 
-    func testHeldMarkerAnywhereRemovesNothing() throws {
+    /// A held marker: `aether-segments` is left byte for byte. Old trash is still deleted (code review r4:
+    /// trash deletion is independent of the decision).
+    func testHeldMarkerRenamesNothingButOldTrashGoes() throws {
         try session()
         let live = try session()
         try session("parked-\(UUID().uuidString)")
         try session("x", in: tmp.appendingPathComponent("aether-segments.trash-OLD"))
         hold(live)
-        let before = try FileManager.default.subpathsOfDirectory(atPath: tmp.path).sorted()
+        let before = try FileManager.default.subpathsOfDirectory(atPath: root.path).sorted()
 
-        let report = C.run(tmp: tmp, gate: AetherEngineGate())
+        let (sweep, trash) = launchCleanup(gate: AetherEngineGate())
 
-        XCTAssertEqual(report.outcome, "skipped: a session marker is held")
-        XCTAssertEqual(report.trashRemoved, 0)
-        XCTAssertEqual(try FileManager.default.subpathsOfDirectory(atPath: tmp.path).sorted(), before)
+        XCTAssertEqual(sweep.outcome, "skipped: a session marker is held")
+        XCTAssertEqual(try FileManager.default.subpathsOfDirectory(atPath: root.path).sorted(), before)
+        XCTAssertEqual(trash.removed, 1)
+        XCTAssertEqual(tmpNames(), ["aether-segments"])
     }
 
-    func testFailedProbeRemovesNothing() throws {
+    func testFailedProbeRenamesNothing() throws {
         let dir = try session(marker: false)
         try FileManager.default.createSymbolicLink(at: dir.appendingPathComponent("session.lock"),
                                                    withDestinationURL: tmp.appendingPathComponent("elsewhere"))
         try session()
 
-        let report = C.run(tmp: tmp, gate: AetherEngineGate())
+        let (sweep, _) = launchCleanup(gate: AetherEngineGate())
 
-        XCTAssertEqual(report.outcome, "skipped: a probe failed")
+        XCTAssertEqual(sweep.outcome, "skipped: a probe failed")
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path).count, 2)
     }
 
-    func testTooManyEntriesRemovesNothing() throws {
+    func testTooManyEntriesRenamesNothing() throws {
         for _ in 0..<4 { try session() }
-        let report = C.run(tmp: tmp, gate: AetherEngineGate(), maxEntries: 3)
-        XCTAssertEqual(report.outcome, "skipped: too many entries")
+        let (over, _) = launchCleanup(gate: AetherEngineGate(), maxEntries: 3)
+        XCTAssertEqual(over.outcome, "skipped: too many entries")
         XCTAssertTrue(exists(root))
-        let atLimit = C.run(tmp: tmp, gate: AetherEngineGate(), maxEntries: 4)
+        let (atLimit, _) = launchCleanup(gate: AetherEngineGate(), maxEntries: 4)
         XCTAssertEqual(atLimit.outcome, "renamed")
         XCTAssertFalse(exists(root))
     }
 
-    func testLatchFlippedRemovesNothingAndDoesNotBlockTheEngine() throws {
+    /// Engine first (code review r4): the first engine's own call renames the leftovers before it
+    /// returns; the later launch call does not inspect again but still deletes the trash.
+    func testEngineFirstRemovesLeftoversBeforeTheEngine() throws {
         let leftover = try session()
         try session("x", in: tmp.appendingPathComponent("aether-segments.trash-OLD"))
         let gate = AetherEngineGate()
-        gate.noteEngineUse()
 
-        let report = C.run(tmp: tmp, gate: gate)
-
-        XCTAssertEqual(report.outcome, "skipped: engine already in use")
-        XCTAssertTrue(exists(leftover))
-        XCTAssertTrue(exists(tmp.appendingPathComponent("aether-segments.trash-OLD")))
-        let start = Date()
-        gate.noteEngineUse()
-        XCTAssertLessThan(Date().timeIntervalSince(start), 0.05)
+        let engine = C.sweep(tmp: tmp, gate: gate, caller: .engine)
+        XCTAssertEqual(engine.outcome, "renamed")
+        XCTAssertFalse(exists(leftover), "the leftover is still in place when the engine would be built")
         XCTAssertEqual(gate.state, .engineUsed)
+
+        let (launch, trash) = launchCleanup(gate: gate)
+        XCTAssertEqual(launch.outcome, "skipped: already ran")
+        XCTAssertEqual(trash.removed, 2)
+        XCTAssertEqual(tmpNames(), [])
+        XCTAssertEqual(gate.state, .engineUsed)
+    }
+
+    /// After the inspect, every engine construction takes the lock only.
+    func testLaterEnginesDoNotInspect() throws {
+        let gate = AetherEngineGate()
+        XCTAssertEqual(C.sweep(tmp: tmp, gate: gate, caller: .engine).outcome, "nothing to rename")
+        let later = try session()
+        let again = C.sweep(tmp: tmp, gate: gate, caller: .engine)
+        XCTAssertEqual(again.outcome, "skipped: already ran")
+        XCTAssertEqual(again.inspectSeconds, 0)
+        XCTAssertTrue(exists(later))
     }
 
     func testRunsOncePerProcess() throws {
         let gate = AetherEngineGate()
-        XCTAssertEqual(C.run(tmp: tmp, gate: gate).outcome, "nothing to rename")
+        XCTAssertEqual(launchCleanup(gate: gate).0.outcome, "nothing to rename")
         let leftover = try session()
-        XCTAssertEqual(C.run(tmp: tmp, gate: gate).outcome, "skipped: already ran")
+        XCTAssertEqual(launchCleanup(gate: gate).0.outcome, "skipped: already ran")
+        XCTAssertEqual(C.sweep(tmp: tmp, gate: gate, caller: .engine).outcome, "skipped: already ran")
         XCTAssertTrue(exists(leftover))
     }
 
     func testMissingRootStillClearsOldTrash() throws {
         try session("x", in: tmp.appendingPathComponent("aether-segments.trash-OLD"))
-        let report = C.run(tmp: tmp, gate: AetherEngineGate())
-        XCTAssertEqual(report.outcome, "nothing to rename")
-        XCTAssertEqual(report.trashRemoved, 1)
-        XCTAssertEqual(report.failures, [])
+        let (sweep, trash) = launchCleanup(gate: AetherEngineGate())
+        XCTAssertEqual(sweep.outcome, "nothing to rename")
+        XCTAssertEqual(trash, C.TrashReport(removed: 1, failures: []))
         XCTAssertEqual(tmpNames(), [])
     }
 
     func testEmptyTmpIsFine() {
-        let report = C.run(tmp: tmp, gate: AetherEngineGate())
-        XCTAssertEqual(report, C.Report(outcome: "nothing to rename", childrenSeen: 0, trashRemoved: 0, failures: []))
+        let (sweep, trash) = launchCleanup(gate: AetherEngineGate())
+        XCTAssertEqual(sweep.outcome, "nothing to rename")
+        XCTAssertEqual(sweep.childrenSeen, 0)
+        XCTAssertEqual(sweep.failures, [])
+        XCTAssertEqual(trash, C.TrashReport(removed: 0, failures: []))
     }
 
-    /// Engine construction waits for the decide-and-rename step, and goes ahead right after it.
-    func testEngineUseWaitsForTheRename() throws {
+    /// The first engine's call waits while the launch call holds the lock, then goes ahead without
+    /// inspecting again.
+    func testEngineWaitsForTheLaunchRename() throws {
         try session()
         let gate = AetherEngineGate()
         let returned = DispatchSemaphore(value: 0)
+        var engineReport: C.SweepReport?
         var blockedWhileLocked = false
-        let report = C.run(tmp: tmp, gate: gate, underLock: {
+        let scratch: URL = tmp
+        let launch = C.sweep(tmp: scratch, gate: gate, caller: .launch, underLock: {
             DispatchQueue.global().async {
-                gate.noteEngineUse()
+                engineReport = C.sweep(tmp: scratch, gate: gate, caller: .engine)
                 returned.signal()
             }
             blockedWhileLocked = returned.wait(timeout: .now() + 0.2) == .timedOut
         })
         XCTAssertTrue(blockedWhileLocked)
         XCTAssertEqual(returned.wait(timeout: .now() + 5), .success)
-        XCTAssertEqual(report.outcome, "renamed")
+        XCTAssertEqual(launch.outcome, "renamed")
+        XCTAssertEqual(engineReport?.outcome, "skipped: already ran")
         XCTAssertEqual(gate.state, .engineUsed)
     }
 
-    /// The race the gate exists for, with no marker on the new session so the latch alone protects it:
-    /// "first engine use" (then the engine making its folder) against the cleanup on two threads. The
-    /// new session's folder must survive every iteration, whichever side wins.
-    func testFirstEngineUseAgainstCleanupNeverLosesTheNewSession() throws {
-        var renamed = 0
-        var skipped = 0
+    /// The race the gate exists for (code review r4 version): the launch call against the first engine
+    /// (its call, then the engine making its folder with no marker, so only the gate protects it) on two
+    /// threads. Whichever wins, the leftover is gone before the engine makes its folder, the new folder
+    /// survives, and exactly one side inspected.
+    func testLaunchAgainstFirstEngineAlwaysCleansFirstAndNeverLosesTheNewSession() throws {
+        var engineInspected = 0
+        var launchInspected = 0
         for i in 0..<400 {
             let base = tmp.appendingPathComponent("race-\(i)", isDirectory: true)
             let leftover = try session(in: base.appendingPathComponent("aether-segments", isDirectory: true))
             let gate = AetherEngineGate()
             let liveSeg = base.appendingPathComponent("aether-segments/live/seg-0-0.m4s")
-            var report: C.Report?
+            var launch: C.SweepReport?
+            var engine: C.SweepReport?
+            var leftoverAtEngine = true
             DispatchQueue.concurrentPerform(iterations: 2) { k in
                 if k == 0 {
-                    report = C.run(tmp: base, gate: gate)
+                    // Odd iterations hold the launch side back a little, so the engine wins often too.
+                    if i % 2 == 1 { usleep(UInt32.random(in: 0...400)) }
+                    launch = C.sweep(tmp: base, gate: gate, caller: .launch)
                 } else {
-                    gate.noteEngineUse()
+                    engine = C.sweep(tmp: base, gate: gate, caller: .engine)
+                    leftoverAtEngine = FileManager.default.fileExists(atPath: leftover.path)
                     // What SegmentCache.init does next: createDirectory with intermediates, then files.
                     try? FileManager.default.createDirectory(at: liveSeg.deletingLastPathComponent(),
                                                              withIntermediateDirectories: true)
                     try? Data([7]).write(to: liveSeg)
                 }
             }
+            _ = C.removeTrash(tmp: base)
+            XCTAssertFalse(leftoverAtEngine, "iteration \(i): the leftover was still there when the engine started")
             XCTAssertTrue(exists(liveSeg), "iteration \(i): the new session's folder was removed")
-            switch report?.outcome {
-            case "renamed"?: renamed += 1; XCTAssertFalse(exists(leftover), "iteration \(i)")
-            case "skipped: engine already in use"?: skipped += 1; XCTAssertTrue(exists(leftover), "iteration \(i)")
-            default: XCTFail("iteration \(i): \(String(describing: report))")
+            XCTAssertFalse(exists(leftover), "iteration \(i)")
+            switch (launch?.outcome, engine?.outcome) {
+            case ("renamed"?, "skipped: already ran"?): launchInspected += 1
+            case ("skipped: already ran"?, "renamed"?): engineInspected += 1
+            default: XCTFail("iteration \(i): launch=\(String(describing: launch)) engine=\(String(describing: engine))")
             }
             XCTAssertEqual(gate.state, .engineUsed)
         }
-        XCTAssertEqual(renamed + skipped, 400)
+        XCTAssertEqual(launchInspected + engineInspected, 400)
+        print("[LeftoverRace] launch first \(launchInspected), engine first \(engineInspected)")
+    }
+
+    /// The worst case added to the first engine construction (code review r4): the entry cap's worth of
+    /// session folders, each with a marker to open and flock, inspected and renamed under the lock. The
+    /// bound asserted is loose (simulator timing); the measured time is printed for the spec.
+    func testWorstCaseTimeUnderTheLockAtTheEntryCap() throws {
+        for i in 0..<C.maxEntries {
+            let dir = root.appendingPathComponent("s\(i)", isDirectory: true)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try Data().write(to: dir.appendingPathComponent("session.lock"))
+        }
+        let atCap = C.sweep(tmp: tmp, gate: AetherEngineGate(), caller: .engine)
+        XCTAssertEqual(atCap.outcome, "renamed")
+        XCTAssertEqual(atCap.childrenSeen, C.maxEntries)
+        XCTAssertLessThan(atCap.inspectSeconds, 2.0)
+        _ = C.removeTrash(tmp: tmp)
+
+        // One over the cap: the listing stops at cap + 1 names, before any probe.
+        for i in 0...C.maxEntries {
+            try FileManager.default.createDirectory(at: root.appendingPathComponent("s\(i)", isDirectory: true),
+                                                    withIntermediateDirectories: true)
+        }
+        let over = C.sweep(tmp: tmp, gate: AetherEngineGate(), caller: .engine)
+        XCTAssertEqual(over.outcome, "skipped: too many entries")
+        print(String(format: "[LeftoverTiming] under lock: %.2f ms at %d children (inspect + rename), %.2f ms over the cap",
+                     atCap.inspectSeconds * 1000, C.maxEntries, over.inspectSeconds * 1000))
     }
 
     // MARK: Engine names
