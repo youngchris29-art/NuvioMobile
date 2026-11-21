@@ -368,6 +368,10 @@ final class LiveEngine: EngineDriving {
         case .programmatic: origin = .programmatic
         case .nativeScrub: origin = .nativeScrub
         case .deferred: origin = .deferred
+        // 7.71 names seeks the engine carries out for the system (Now Playing commands, Picture in
+        // Picture). The app never hands Now Playing to the engine, so neither arrives; if one ever
+        // does it is a seek the app did not start by scrubbing, which is what .programmatic means here.
+        case .remoteCommand, .pictureInPicture: origin = .programmatic
         }
         let outcome: AetherSeekEventSample.Outcome
         switch e.outcome {
