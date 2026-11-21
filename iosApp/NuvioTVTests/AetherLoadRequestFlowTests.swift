@@ -151,6 +151,41 @@ final class AetherLoadRequestFlowTests: XCTestCase {
         XCTAssertEqual(awaits, 1)
     }
 
+    /// Code review r6: with a delayed cleanup, the start watchdog is armed only after the wait returned,
+    /// right before the load, so the wait never counts against the watchdog budget.
+    func testStartArmsTheWatchdogOnlyAfterTheCleanupWait() async {
+        var events: [String] = []
+        let built = await AetherLoadRequestFlow.start(
+            base: base(),
+            awaitCleanup: {
+                events.append("wait begins")
+                try? await Task.sleep(nanoseconds: 50_000_000)
+                events.append("wait returns")
+                return true
+            },
+            readInputs: { events.append("read"); return self.inputs(.gigabytes(10)) },
+            isCurrent: { events.append("check"); return true },
+            armWatchdog: { events.append("arm") },
+            load: { fresh in events.append("load"); XCTAssertEqual(fresh.request.diskCache, self.tenGB) })
+        XCTAssertEqual(events, ["wait begins", "wait returns", "read", "check", "arm", "load"])
+        XCTAssertEqual(built?.request.diskCache, tenGB)
+    }
+
+    /// A load cancelled, handed off or torn down during the wait arms no watchdog and never loads.
+    func testStartDroppedDuringTheWaitArmsNothingAndLoadsNothing() async {
+        var events: [String] = []
+        var current = true
+        let built = await AetherLoadRequestFlow.start(
+            base: base(),
+            awaitCleanup: { events.append("wait"); current = false; return false },
+            readInputs: { self.inputs(.gigabytes(10)) },
+            isCurrent: { current },
+            armWatchdog: { events.append("arm") },
+            load: { _ in events.append("load") })
+        XCTAssertEqual(events, ["wait"])
+        XCTAssertNil(built)
+    }
+
     func testFreshReplacesAnyCacheOnTheBase() {
         var b = base()
         b.diskCache = twentyGB
@@ -256,7 +291,12 @@ final class AetherLoadRequestFlowTests: XCTestCase {
         XCTAssertEqual(occurrences(of: "AetherLoadRequest(", in: joined), 1, "only makeLoadRequest's base is built here")
         XCTAssertEqual(occurrences(of: ".diskCache =", in: joined), 0, "the cache is set only by the flow")
         XCTAssertEqual(occurrences(of: "AetherReloadRequestPlan.request(", in: joined), 0, "reloads go through the flow")
-        XCTAssertEqual(occurrences(of: "AetherLoadRequestFlow.fresh(", in: joined), 1)
+        XCTAssertEqual(occurrences(of: "AetherLoadRequestFlow.fresh(", in: joined), 0)
+        XCTAssertEqual(occurrences(of: "AetherLoadRequestFlow.start(", in: joined), 1)
+        // Review r6: the fresh load's watchdog is armed only by the flow, after the wait; the other two
+        // calls are rebuild and Replay (plus the definition).
+        XCTAssertEqual(occurrences(of: "armWatchdog: { self?.armStartWatchdog() }", in: joined), 1)
+        XCTAssertEqual(occurrences(of: "armStartWatchdog()", in: joined), 4)
         // Code review r5: the fresh load hands the flow the controller's cleanup awaiter, and only it.
         XCTAssertEqual(occurrences(of: "awaitCleanup: awaitCleanup", in: joined), 1)
         XCTAssertEqual(occurrences(of: "pendingDeletionFinished(", in: joined), 1, "only the awaiter's default")

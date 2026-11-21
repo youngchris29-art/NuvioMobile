@@ -47,6 +47,24 @@ enum AetherLoadRequestFlow {
         return Fresh(request: fresh(base: base, inputs: inputs), inputs: inputs, cleanupFinished: finished)
     }
 
+    /// The fresh load's start order (code review r6): the cleanup wait and the reading first, then,
+    /// only while `isCurrent()` (not cancelled, handed off or torn down during the wait), the engine
+    /// start watchdog and the load. The wait never counts against the watchdog, and a load dropped
+    /// during the wait arms nothing and loads nothing. Returns nil when dropped.
+    @discardableResult
+    static func start(base: AetherLoadRequest,
+                      awaitCleanup: () async -> Bool,
+                      readInputs: () -> AetherDiskCacheInputs,
+                      isCurrent: () -> Bool,
+                      armWatchdog: () -> Void,
+                      load: (Fresh) -> Void) async -> Fresh? {
+        let built = await fresh(base: base, awaitCleanup: awaitCleanup, readInputs: readInputs)
+        guard isCurrent() else { return nil }
+        armWatchdog()
+        load(built)
+        return built
+    }
+
     /// The DV-interruption rebuild and Replay: `AetherReloadRequestPlan.request(from: current, …)`.
     /// Takes no inputs: `diskCache` comes only from `current` (the snapshot).
     static func reload(from current: AetherLoadRequest, startSec: Double?, activeAudioID: Int?,

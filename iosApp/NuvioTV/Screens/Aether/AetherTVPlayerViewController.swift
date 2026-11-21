@@ -408,23 +408,29 @@ final class AetherTVPlayerViewController: UIViewController {
         }
         let base = makeLoadRequest(startSec: resume)
         publishStartupStage(.connecting)
-        armStartWatchdog()
         // Code review r5: the free-space reading waits (suspended, bounded) for leftover deletion that
         // is still running. The task is `loadTask`, so teardown and the handoff cancel it during the wait.
+        // Review r6: the start watchdog is armed after the wait, right before the load (the flow's order).
         let awaitCleanup = cleanupAwaiter
         let readInputs = diskCacheInputs
         loadTask?.cancel()
         loadTask = Task { @MainActor [weak self] in
-            let fresh = await AetherLoadRequestFlow.fresh(base: base, awaitCleanup: awaitCleanup, readInputs: readInputs)
-            guard let self, !Task.isCancelled, !self.handedOff, !self.teardownDone else { return }
-            if !fresh.cleanupFinished {
-                print("[AetherCache] leftover deletion still running after "
-                      + "\(Int(AetherLeftoverCache.pendingDeletionWaitSeconds)) s; free space read as is")
-            }
-            self.loadDiskCacheInputs = fresh.inputs
-            let request = fresh.request
-            self.logRequest(request)
-            self.runLoad(session, request)
+            await AetherLoadRequestFlow.start(
+                base: base, awaitCleanup: awaitCleanup, readInputs: readInputs,
+                isCurrent: { guard let self else { return false }
+                             return !Task.isCancelled && !self.handedOff && !self.teardownDone },
+                armWatchdog: { self?.armStartWatchdog() },
+                load: { fresh in
+                    guard let self else { return }
+                    if !fresh.cleanupFinished {
+                        print("[AetherCache] leftover deletion still running after "
+                              + "\(Int(AetherLeftoverCache.pendingDeletionWaitSeconds)) s; free space read as is")
+                    }
+                    self.loadDiskCacheInputs = fresh.inputs
+                    let request = fresh.request
+                    self.logRequest(request)
+                    self.runLoad(session, request)
+                })
         }
     }
 
