@@ -344,6 +344,17 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         readAhead?.kick()
     }
 
+    #if DEBUG
+    /// `-debug.nativeBackgroundFault failRemuxInput` (T-UI-N3, return from background): the worker's next
+    /// source read fails, as a source connection that died during a suspension would. The flag lives on
+    /// this session's interrupt box only, so a restarted session reads normally.
+    func debugFailInput() {
+        lock.lock(); let interrupts = _interrupts; lock.unlock()
+        print("[Remux] DEBUG fault: failing the next source read")
+        interrupts?.debugFailRead = true
+    }
+    #endif
+
     /// Remove the emitted directory once the worker has fully exited: enqueued on the worker's own
     /// serial queue, so it runs strictly after `runRemux` returns (a direct removal can race a final
     /// in-flight segment write).
@@ -1915,7 +1926,17 @@ nonisolated final class RemuxInterrupts: @unchecked Sendable {
         get { lock.lock(); defer { lock.unlock() }; return _repositionPending }
         set { lock.lock(); _repositionPending = newValue; lock.unlock() }
     }
+    #if DEBUG
+    private var _debugFailRead = false
+    /// DEBUG `failRemuxInput`: every blocking read is interrupted, so the next one fails.
+    var debugFailRead: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return _debugFailRead }
+        set { lock.lock(); _debugFailRead = newValue; lock.unlock() }
+    }
+    var shouldInterrupt: Bool { cancelled || repositionPending || debugFailRead }
+    #else
     var shouldInterrupt: Bool { cancelled || repositionPending }
+    #endif
 }
 
 nonisolated func remuxShouldInterrupt(_ opaque: UnsafeMutableRawPointer?) -> Int32 {

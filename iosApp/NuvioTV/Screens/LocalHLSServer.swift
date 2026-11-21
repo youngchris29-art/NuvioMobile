@@ -39,6 +39,10 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
     private let lock = NSLock()
     private var listener: NWListener?
     private var _port: UInt16?
+    /// Return from background (spec 5.2.5): the listener reached `.failed`/`.cancelled`/`.waiting` after
+    /// it was ready, and not through `stop()`. Nothing rebuilds here (the return restarts the pipeline);
+    /// `health` reports it. Lock-guarded.
+    private var _listenerFailedAfterReady = false
 
     // Synthesized-VOD configuration.
     private let map: SegmentMap
@@ -403,6 +407,51 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
         active?.cancel()
     }
 
+    // MARK: - Listener health (return from background, spec 5.2.5)
+
+    /// True once the listener died after it was ready (not a deliberate `stop()`).
+    var listenerFailedAfterReady: Bool { lock.lock(); defer { lock.unlock() }; return _listenerFailedAfterReady }
+
+    /// The health read at didBecomeActive, checked on every return and not only at start: a loopback
+    /// ping (any HTTP answer = alive; the trailer server's `pingLoopback`) and the listener flag.
+    /// `pingAnswered` is nil when the server has no port. `done` runs on the main queue.
+    func health(done: @escaping @Sendable (_ pingAnswered: Bool?, _ listenerFailedAfterReady: Bool) -> Void) {
+        lock.lock()
+        let port = _port
+        let failed = _listenerFailedAfterReady
+        lock.unlock()
+        guard let port else {
+            DispatchQueue.main.async { done(nil, failed) }
+            return
+        }
+        TrailerLocalHLS.pingLoopback(port: port, queue: listenerQueue) { [weak self] alive in
+            let failedNow = self?.listenerFailedAfterReady ?? failed
+            DispatchQueue.main.async { done(alive, failedNow) }
+        }
+    }
+
+    /// didEnterBackground: one line with the listener's state, for the device log of the native cause.
+    func noteBackground() {
+        lock.lock()
+        let port = _port.map(String.init) ?? "-"
+        let live = listener != nil
+        let failed = _listenerFailedAfterReady
+        lock.unlock()
+        print("[NativePlayer] background: loopback port=\(port) listener=\(live ? 1 : 0) failedAfterReady=\(failed ? 1 : 0)")
+    }
+
+    #if DEBUG
+    /// `-debug.nativeBackgroundFault killListener` (T-UI-N2): cancels the listener without `stop()`, so its
+    /// state handler sees a listener that died after ready, as a suspension that killed it would.
+    func debugKillListener() {
+        lock.lock()
+        let active = listener
+        lock.unlock()
+        print("[NativePlayer] DEBUG fault: killing the loopback listener")
+        active?.cancel()
+    }
+    #endif
+
     /// `http://127.0.0.1:{port}/{token}/{path}`
     func url(port: UInt16, path: String) -> URL {
         URL(string: "http://127.0.0.1:\(port)/\(token)/\(path)")!
@@ -440,8 +489,20 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
                 let boundPort = 8190 + portOffset
                 self.lock.lock(); self._port = boundPort; self.lock.unlock()
                 DispatchQueue.main.async { completion(self.url(port: boundPort, path: self.masterName)) }
-            case .failed, .cancelled:
-                guard resolved.fire() else { return }
+            case .failed, .cancelled, .waiting:
+                guard resolved.fire() else {
+                    // Resolved earlier: a terminal state after `.ready` that `stop()` did not cause (it
+                    // clears `listener` first) is a listener that died while serving (spec 5.2.5).
+                    if case .waiting = state { return }
+                    self.lock.lock()
+                    let isCurrent = self.listener === candidate
+                    if isCurrent { self._listenerFailedAfterReady = true }
+                    self.lock.unlock()
+                    if isCurrent { print("[NativePlayer] loopback listener failed after ready (\(state))") }
+                    return
+                }
+                // Stale-safe rebind: a port still held by a retired listener can leave the new one in
+                // `.waiting` instead of `.failed`; either way this port is given up and the next is tried.
                 candidate.cancel()
                 self.lock.lock()
                 let isCurrent = self.listener === candidate
