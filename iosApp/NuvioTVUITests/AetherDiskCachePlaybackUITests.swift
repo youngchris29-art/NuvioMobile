@@ -61,7 +61,10 @@ final class AetherDiskCachePlaybackUITests: XCTestCase {
 
     func testSmallHardLimitFillsEvictsAndSeekBackKeepsPlaying() throws {
         let env = ProcessInfo.processInfo.environment
-        let url = try XCTUnwrap(env["AETHER_SMOKE_URL"], "AETHER_SMOKE_URL not set")
+        // Code review r5: an absent fixture skips (as `AetherPlayerUITests` does), never fails.
+        guard let url = env["AETHER_SMOKE_URL"] else {
+            throw XCTSkip("AETHER_SMOKE_URL not set: TEST_RUNNER_AETHER_SMOKE_URL=http://127.0.0.1:8766/aether-long.mkv")
+        }
         let app = XCUIApplication()
         app.launchArguments += ["-debug.mpvSmokeURL", url, "-debug.mpvSmokeEngine", "aether",
                                 "-debug.mpvSmokeStartOver", "YES", "-player.aetherEngine", "YES",
