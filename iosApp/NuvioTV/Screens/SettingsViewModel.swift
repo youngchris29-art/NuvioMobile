@@ -597,6 +597,39 @@ final class SettingsViewModel: ObservableObject {
     @Published var aetherStyledSubsToMpv: Bool = AetherTuning.keepStyledSubsOnMpv()
     /// Send TrueHD and DTS as lossless LPCM. On by default; Off sends Dolby Digital Plus 5.1.
     @Published var aetherLosslessBridge: Bool = AetherTuning.isLosslessBridgeEnabled()
+    /// Aether disk cache (GitHub #29). Device-wide: not profile-scoped, not synced. Applies to the next playback.
+    @Published var diskCacheChoice: AetherDiskCacheChoice = AetherTuning.diskCacheChoice()
+    /// Free bytes on the tmp volume at the last refresh; nil until the first one returns.
+    @Published private(set) var diskCacheFreeBytes: Int64?
+    /// Only the newest free-space probe publishes.
+    private var diskCacheProbeGeneration = 0
+
+    func setDiskCache(_ choice: AetherDiskCacheChoice) {
+        diskCacheChoice = choice
+        UserDefaults.standard.set(choice.rawValue, forKey: PlayerTuning.diskCacheGBKey)
+    }
+
+    /// Reads the tmp volume's free space off the main thread; publishes only if no newer refresh started.
+    func refreshDiskCacheSpace() {
+        diskCacheProbeGeneration += 1
+        let generation = diskCacheProbeGeneration
+        Task { [weak self] in
+            let free = await Task.detached(priority: .utility) { TemporaryVolumeSpace.availableBytes() }.value
+            guard let self, generation == self.diskCacheProbeGeneration else { return }
+            self.diskCacheFreeBytes = free
+        }
+    }
+
+    /// The Disk Cache menu: Off, the sizes that fit, Maximum; the stored choice always kept.
+    var diskCacheOptions: [AetherDiskCacheChoice] {
+        AetherDiskCachePlan.options(stored: diskCacheChoice, freeBytes: diskCacheFreeBytes)
+    }
+
+    /// Row value and menu item text, both through `resolve`, so the row shows exactly the G the next
+    /// load would enforce at this free-space reading.
+    func diskCacheLabel(_ choice: AetherDiskCacheChoice) -> String {
+        AetherDiskCachePlan.resolve(choice, aetherOn: true, freeBytes: diskCacheFreeBytes).label.text
+    }
 
     func setBufferMB(_ value: Int) {
         bufferMB = value

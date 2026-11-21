@@ -53,6 +53,9 @@ extension PlayerTuning {
     static let aetherDualLayerDVKey = "player.aetherDualLayerDV"
     static let aetherStyledSubsToMpvKey = "player.aetherStyledSubsToMpv"
     static let aetherLosslessBridgeKey = "player.aetherLosslessBridge"
+    /// Aether disk cache (GitHub #29): 0 Off (default), 5, 10, 20 GB, -1 Maximum. Device-local, never
+    /// synced, not in the sign-out wipe (a hardware knob like `bufferMBKey`). Read once per fresh load.
+    static let diskCacheGBKey = "player.diskCacheGB"
 }
 
 /// Defaults and readers for the Aether settings. A missing key reads as its default, so the
@@ -85,6 +88,10 @@ nonisolated enum AetherTuning {
     }
     static func isLosslessBridgeEnabled(defaults: UserDefaults = .standard) -> Bool {
         bool(PlayerTuning.aetherLosslessBridgeKey, default: true, defaults: defaults)
+    }
+    /// The stored Disk Cache choice. A missing key reads 0 = Off; any value that is not a choice reads Off.
+    static func diskCacheChoice(defaults: UserDefaults = .standard) -> AetherDiskCacheChoice {
+        AetherDiskCacheChoice(rawValue: defaults.integer(forKey: PlayerTuning.diskCacheGBKey))
     }
 }
 

@@ -1241,6 +1241,40 @@
         }
       }
     },
+    "%lld GB": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld GB"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld GB"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld Go"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld GB"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld GB"
+          }
+        }
+      }
+    },
     "%lld PGS/VobSub · not shown natively": {
       "localizations": {
         "de": {
@@ -18166,6 +18200,40 @@
         }
       }
     },
+    "Disk Cache": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Datenträger-Cache"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Caché en disco"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cache disque"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cache su disco"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bộ nhớ đệm trên ổ đĩa"
+          }
+        }
+      }
+    },
     "Dismiss": {
       "localizations": {
         "de": {
@@ -28071,6 +28139,40 @@
         }
       }
     },
+    "Maximum": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Maximum"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Máximo"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Maximum"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Massimo"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tối đa"
+          }
+        }
+      }
+    },
     "Maximum rating": {
       "localizations": {
         "fr": {
@@ -31235,6 +31337,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Chưa kết nối"
+          }
+        }
+      }
+    },
+    "Not enough free space": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nicht genug freier Speicher"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No hay suficiente espacio libre"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Espace libre insuffisant"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Spazio libero insufficiente"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không đủ dung lượng trống"
           }
         }
       }
@@ -49245,6 +49381,40 @@
         }
       }
     },
+    "Stores video ahead of where you are watching on this Apple TV's storage, so large files keep playing through slow patches in the connection. Maximum uses up to a quarter of the free space. Played parts are cleared as you watch, and the rest shortly after playback stops. Videos Aether decodes in software, such as Dolby Vision with a full enhancement layer, play without it. Aether engine only. This Apple TV only. Default: Off.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Speichert das Video im Voraus auf diesem Apple TV, damit große Dateien bei langsamer Verbindung weiterlaufen. Maximum nutzt bis zu einem Viertel des freien Speichers. Gesehenes wird beim Ansehen gelöscht, der Rest kurz nach dem Ende. Videos, die Aether in Software decodiert, etwa Dolby Vision mit vollem Enhancement Layer, laufen ohne. Nur Aether-Engine. Nur dieses Apple TV. Standard: Aus."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Guarda en este Apple TV el vídeo por delante de donde estás, para que los archivos grandes sigan sin cortes cuando la conexión va lenta. Máximo usa hasta una cuarta parte del espacio libre. Lo visto se borra mientras ves, y el resto poco después de terminar. Los vídeos que Aether decodifica por software, como Dolby Vision con capa de mejora completa, van sin él. Solo motor Aether. Solo este Apple TV. Por defecto: Desactivado."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enregistre la vidéo à l’avance sur cette Apple TV, pour que les gros fichiers continuent quand la connexion ralentit. Maximum utilise jusqu’au quart de l’espace libre. Le déjà-vu est effacé en cours de lecture, le reste peu après l’arrêt. Les vidéos décodées en logiciel par Aether, comme le Dolby Vision à couche d’amélioration complète, s’en passent. Moteur Aether uniquement. Cette Apple TV uniquement. Par défaut : Désactivé."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Salva in anticipo il video su questa Apple TV, così i file grandi continuano anche se la connessione rallenta. Massimo usa fino a un quarto dello spazio libero. Le parti viste si cancellano mentre guardi, il resto poco dopo la fine. I video che Aether decodifica via software, come Dolby Vision con livello di miglioramento completo, ne fanno a meno. Solo motore Aether. Solo questa Apple TV. Predefinito: Off."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lưu trước phần video phía trước vị trí bạn đang xem vào bộ nhớ của Apple TV này, để tệp lớn vẫn phát mượt khi kết nối chậm. Tối đa dùng đến một phần tư dung lượng trống. Phần đã xem được xóa khi bạn xem, phần còn lại ngay sau khi dừng phát. Video Aether giải mã bằng phần mềm, như Dolby Vision có lớp tăng cường đầy đủ, phát mà không dùng nó. Chỉ với Aether. Chỉ áp dụng cho Apple TV này. Mặc định: Tắt."
+          }
+        }
+      }
+    },
     "Story": {
       "localizations": {
         "de": {
@@ -56284,6 +56454,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Tiếp theo · %@ · phát sau %lld giây"
+          }
+        }
+      }
+    },
+    "Up to %lld GB": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bis zu %lld GB"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hasta %lld GB"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Jusqu’à %lld Go"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fino a %lld GB"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tối đa %lld GB"
           }
         }
       }

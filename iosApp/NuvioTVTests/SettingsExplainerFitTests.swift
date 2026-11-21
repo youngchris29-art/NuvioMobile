@@ -45,11 +45,20 @@ final class SettingsExplainerFitTests: XCTestCase {
     // MARK: - Tests
 
     func testSeekPreviewExplainerFitsEveryLanguageAndLayout() throws {
+        try assertExplainerFits(id: .playerSeekPreview, titleKey: "Seek Preview Pictures", attachmentName: "seek_preview_explainer_heights")
+    }
+
+    /// GitHub #29: Player › Buffering › Disk Cache, the same six languages and two layouts.
+    func testDiskCacheExplainerFitsEveryLanguageAndLayout() throws {
+        try assertExplainerFits(id: .playerDiskCache, titleKey: "Disk Cache", attachmentName: "disk_cache_explainer_heights")
+    }
+
+    /// The row's whole explainer (title, description, footnote) fits both 1080p columns in every language.
+    private func assertExplainerFits(id: SettingsDescriptionID, titleKey: String, attachmentName: String,
+                                     file: StaticString = #filePath, line: UInt = #line) throws {
         let catalog = try loadCatalog()
-        let id = SettingsDescriptionID.playerSeekPreview
         let bodyKey = SettingsDescriptions.text(for: id).key
-        let footnoteKey = try XCTUnwrap(SettingsDescriptions.footnote(for: id)).key
-        let titleKey = "Seek Preview Pictures"
+        let footnoteKey = try XCTUnwrap(SettingsDescriptions.footnote(for: id), file: file, line: line).key
 
         var report: [String] = []
         for locale in Self.locales {
@@ -62,15 +71,16 @@ final class SettingsExplainerFitTests: XCTestCase {
                 report.append("\(locale) \(layout.name): content=\(Int(height.rounded())) avail=\(Int(layout.availableHeight)) width=\(Int(width))")
                 XCTAssertFalse(
                     SettingsExplainerLayout.isTruncated(content: height, available: layout.availableHeight),
-                    "\(locale) (\(layout.name)): the Seek Preview Pictures explainer is \(Int(height.rounded())) pt tall, its column \(Int(layout.availableHeight)) pt"
+                    "\(locale) (\(layout.name)): the \(titleKey) explainer is \(Int(height.rounded())) pt tall, its column \(Int(layout.availableHeight)) pt",
+                    file: file, line: line
                 )
             }
         }
         let attachment = XCTAttachment(string: report.joined(separator: "\n"))
-        attachment.name = "seek_preview_explainer_heights"
+        attachment.name = attachmentName
         attachment.lifetime = .keepAlways
         add(attachment)
-        print("[ExplainerFit]\n" + report.joined(separator: "\n"))
+        print("[ExplainerFit] \(titleKey)\n" + report.joined(separator: "\n"))
     }
 
     /// The test reads the copy from the catalog file; this ties that file to what the app shows
@@ -83,6 +93,32 @@ final class SettingsExplainerFitTests: XCTestCase {
             "Shows a picture of where you will land when you skip or scrub. Watched Parts uses pictures saved from what you have played. Whole Video also reads unwatched parts: about 2% of the file, between 16 and 150 MB for most titles, plus up to 50 MB more while you skip around. On Aether both choices work the same. The Apple TV player (Dolby Vision, HDR10) shows no picture card. This Apple TV only. Default: Watched Parts."
         )
         XCTAssertEqual(SettingsDescriptions.footnote(for: id)?.key, "Applies to the next playback.")
+    }
+
+    /// GitHub #29: the Disk Cache copy the fit test measures is the copy the app shows in English.
+    func testDiskCacheEnglishCatalogKeysAreWhatTheAppShows() {
+        let id = SettingsDescriptionID.playerDiskCache
+        XCTAssertEqual(String(localized: SettingsDescriptions.text(for: id)), SettingsDescriptions.text(for: id).key)
+        XCTAssertEqual(
+            SettingsDescriptions.text(for: id).key,
+            "Stores video ahead of where you are watching on this Apple TV's storage, so large files keep playing through slow patches in the connection. Maximum uses up to a quarter of the free space. Played parts are cleared as you watch, and the rest shortly after playback stops. Videos Aether decodes in software, such as Dolby Vision with a full enhancement layer, play without it. Aether engine only. This Apple TV only. Default: Off."
+        )
+        XCTAssertEqual(SettingsDescriptions.footnote(for: id)?.key, "Applies to the next playback.")
+        XCTAssertEqual(String(localized: "Disk Cache"), "Disk Cache")
+    }
+
+    /// Every new Disk Cache string has all five translations, with its format specifiers kept.
+    func testDiskCacheStringsAreTranslated() throws {
+        let catalog = try loadCatalog()
+        for key in ["Disk Cache", "%lld GB", "Up to %lld GB", "Maximum", "Not enough free space",
+                    SettingsDescriptions.text(for: .playerDiskCache).key] {
+            for locale in Self.locales where locale != "en" {
+                let value = try translation(of: key, in: locale, catalog: catalog)
+                XCTAssertFalse(value.isEmpty, "\(key) [\(locale)]")
+                XCTAssertEqual(value.components(separatedBy: "%lld").count, key.components(separatedBy: "%lld").count,
+                               "\(key) [\(locale)] = \(value)")
+            }
+        }
     }
 
     /// Guards the measurement itself: a stack that obviously cannot fit must read as truncated,

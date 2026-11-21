@@ -40,13 +40,17 @@ final class AetherPanelState {
 extension AetherTVPlayerViewController {
 
     /// Review r1 F3: a fresh `load` (rebuild, Replay) at `startSec` keeps what is playing: the live
-    /// audio, the decided subtitle (or Off), and the add-on files added so far.
+    /// audio, the decided subtitle (or Off), and the add-on files added so far. GitHub #29: built by
+    /// `AetherLoadRequestFlow.reload`, so the disk cache is the session's snapshot (never re-read), and
+    /// logged like the fresh load.
     func reloadRequest(_ base: AetherLoadRequest, startSec: Double?) -> AetherLoadRequest {
         panel.freshLoad.begin()   // review r8: the declared list is fixed from here until load returns
-        return AetherReloadRequestPlan.request(from: base, startSec: startSec, activeAudioID: session?.activeAudioID,
-                                        activeSubtitleID: session?.activeSubtitleID,
-                                        subtitleDecided: panel.didAutoSelectSubtitles || panel.userSelectedSubtitle,
-                                        addedSubtitles: panel.addedAddonSubtitles)
+        let request = AetherLoadRequestFlow.reload(from: base, startSec: startSec, activeAudioID: session?.activeAudioID,
+                                                   activeSubtitleID: session?.activeSubtitleID,
+                                                   subtitleDecided: panel.didAutoSelectSubtitles || panel.userSelectedSubtitle,
+                                                   addedSubtitles: panel.addedAddonSubtitles)
+        logRequest(request)
+        return request
     }
 
     /// `viewDidLoad`: the state closures the panels call.

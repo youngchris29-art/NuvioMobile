@@ -79,6 +79,11 @@ final class AetherTVPlayerViewController: UIViewController {
     var onFallback: ((PlaybackHandoff) -> Void)?
     /// Decides every failure. Set before the view loads (W3-C: `AetherFailurePolicy`).
     var failureDecider: AetherFailureDeciding = AetherDefaultFailureDecider()
+    /// GitHub #29: the Disk Cache inputs (setting, Aether toggle, tmp free space), read once by the
+    /// fresh load through `AetherLoadRequestFlow`. Tests replace it.
+    var diskCacheInputs: () -> AetherDiskCacheInputs = AetherDiskCacheInputs.live
+    /// The fresh load's inputs, kept for the visit: its rebuild and Replay log the same `diskCache=`.
+    private var loadDiskCacheInputs: AetherDiskCacheInputs?
 
     // MARK: Owned objects
 
@@ -398,7 +403,9 @@ final class AetherTVPlayerViewController: UIViewController {
             skipPlanner.beginSeek(kind: .resume, targetSec: resume, fromSec: nil, now: ProcessInfo.processInfo.systemUptime)
             plannerStartSeekPending = true
         }
-        let request = makeLoadRequest(startSec: resume)
+        let fresh = AetherLoadRequestFlow.fresh(base: makeLoadRequest(startSec: resume), readInputs: diskCacheInputs)
+        loadDiskCacheInputs = fresh.inputs
+        let request = fresh.request
         logRequest(request)
         publishStartupStage(.connecting)
         armStartWatchdog()
@@ -406,7 +413,8 @@ final class AetherTVPlayerViewController: UIViewController {
     }
 
     /// The load request (W2-A "Request" notes): the fork's settings, the stream's headers and sidecars,
-    /// the subtitle targets, the audio delay seed and the shaping, all set before `load()`.
+    /// the subtitle targets, the audio delay seed and the shaping, all set before `load()`. The base of
+    /// the fresh load only: it leaves `diskCache` nil (`AetherLoadRequestFlow.fresh` sets it).
     func makeLoadRequest(startSec: Double?) -> AetherLoadRequest {
         var r = AetherLoadRequest(url: context.url)
         r.startSec = startSec
@@ -442,13 +450,15 @@ final class AetherTVPlayerViewController: UIViewController {
         return r
     }
 
-    private func logRequest(_ r: AetherLoadRequest) {
+    /// One line per request sent (the fresh load, the rebuild and Replay through `reloadRequest`).
+    func logRequest(_ r: AetherLoadRequest) {
         let start = r.startSec.map { String(format: "%.1f", $0) } ?? "-"
         let shaping = "\(r.audioShaping.dialogueLiftDB)/\(r.audioShaping.boostDB)"
         var line = "[AetherPlayer] load start=\(start) bridge=\(r.audioBridge.rawValue) objectAudio=\(r.objectAudio)"
         line += " dualLayer=\(r.dualLayerDV) owner=\(r.displayCriteriaOwner) systemMatching=\(r.systemMatchingEnabled)"
         line += " audioDelay=\(r.audioDelaySec) shaping=\(shaping) subs=\(r.initialSubtitle)"
         line += " external=\(r.externalSubtitles.count) headers=\(r.headers.count)"
+        line += " diskCache=\(AetherLoadRequestFlow.cacheLogField(r, inputs: loadDiskCacheInputs))"
         print(line)
     }
 

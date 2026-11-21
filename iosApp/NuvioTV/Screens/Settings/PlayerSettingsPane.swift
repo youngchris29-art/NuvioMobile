@@ -203,6 +203,19 @@ struct PlayerSettingsPane: View {
                 descriptionID: .playerNetworkReadahead,
                 label: Self.readaheadLabel
             )
+            // GitHub #29: the Aether engine's disk cache. Shown only while Aether is On (the stored
+            // choice is kept while hidden); "Up to G GB" is the hard limit the next load sends.
+            if AetherDiskCachePlan.rowVisible(aetherOn: model.aetherEngine) {
+                SettingsPickerRow(
+                    title: String(localized: "Disk Cache"),
+                    selection: Binding(get: { model.diskCacheChoice }, set: { model.setDiskCache($0) }),
+                    options: model.diskCacheOptions,
+                    descriptionID: .playerDiskCache,
+                    label: model.diskCacheLabel
+                )
+                .accessibilityIdentifier("player_row_disk_cache")
+                .onAppear { model.refreshDiskCacheSpace() }
+            }
             Text("Buffer changes apply to the next playback. Larger buffers smooth out flaky connections at the cost of memory.")
                 .font(Theme.Font.caption)
                 .foregroundStyle(Theme.Palette.textSecondary)

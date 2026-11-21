@@ -163,6 +163,7 @@ enum SettingsDescriptionID: String, CaseIterable {
     case playerAetherLosslessBridge = "player.aetherLosslessBridge"
     case playerStreamingBuffer = "player.streamingBuffer"
     case playerNetworkReadahead = "player.networkReadahead"
+    case playerDiskCache = "player.diskCache"
     case playerPreloadNextEpisode = "player.preloadNextEpisode"
     case playerAutoPlayNextEpisode = "player.autoPlayNextEpisode"
     case playerPreferBingeGroup = "player.preferBingeGroup"
@@ -394,6 +395,7 @@ enum SettingsDescriptions {
         case .playerAetherLosslessBridge: return LocalizedStringResource("Sends TrueHD and DTS as lossless surround. Off sends Dolby Digital Plus 5.1 instead, for soundbars. On by default.")
         case .playerStreamingBuffer: return LocalizedStringResource("Sets how much memory the player may use to store video ahead of time. A larger buffer helps on a shaky connection. Default: Default.")
         case .playerNetworkReadahead: return LocalizedStringResource("Sets how many seconds of video the player downloads ahead of what you are watching. More seconds help on a slow connection. Default: Default.")
+        case .playerDiskCache: return LocalizedStringResource("Stores video ahead of where you are watching on this Apple TV's storage, so large files keep playing through slow patches in the connection. Maximum uses up to a quarter of the free space. Played parts are cleared as you watch, and the rest shortly after playback stops. Videos Aether decodes in software, such as Dolby Vision with a full enhancement layer, play without it. Aether engine only. This Apple TV only. Default: Off.")
         case .playerPreloadNextEpisode: return LocalizedStringResource("Starts looking for the next episode's sources about 30 seconds before the Up Next card appears, so playback starts sooner. Off by default.")
         case .playerAutoPlayNextEpisode: return LocalizedStringResource("Applies while Auto-Play Best Source is off. With Prefer Same Source on, Up Next already picks the next episode's source by itself: from the same release or group, or the first source found when the episode playing has no group. This switch matters with Prefer Same Source off, where it lets Up Next pick the first source found, and it adds Fall Back to Any Source. Off by default.")
         case .playerPreferBingeGroup: return LocalizedStringResource("Up Next picks the next episode from the same release or add-on group as the episode playing, when that stream has one. On by default.")
@@ -507,6 +509,7 @@ enum SettingsDescriptions {
         case .playerMatchFrameRate: return LocalizedStringResource("Also set in tvOS Settings › Video and Audio › Match Content.")
         case .playerStreamingBuffer: return LocalizedStringResource("Applies to the next playback.")
         case .playerNetworkReadahead: return LocalizedStringResource("Applies to the next playback.")
+        case .playerDiskCache: return LocalizedStringResource("Applies to the next playback.")
         case .playerHoldMode, .playerEdgeClick, .devHoldTick, .devHoldRamp, .devCommitExactDelay, .devScrubCurve, .devScrubSpeed, .devHarvestInterval,
              .devHarvestScreenshotPath, .devNativeIFrameScan, .playerSeekPreview:
             return LocalizedStringResource("Applies to the next playback.")
