@@ -118,6 +118,24 @@ final class AetherLoadRequestFlowTests: XCTestCase {
         XCTAssertEqual(withoutCache, b)
     }
 
+    /// Code review r1, finding 2: the app does not predict the engine's route. The engine picks it after
+    /// `load` and has one window field for both routes, so an On load carries the same cache whatever the
+    /// request hints (dual-layer Dolby Vision, software decode); on the software route that window only
+    /// lifts the memory store's seconds limit inside its fixed caps (`AetherDiskCachePlan.forwardSegments`).
+    func testOnCacheDoesNotDependOnRouteHints() {
+        var hints = base()
+        hints.dualLayerDV = true
+        hints.preferSoftwareDecode = true
+        var plain = base()
+        plain.dualLayerDV = false
+        plain.preferSoftwareDecode = false
+        for choice in AetherDiskCacheChoice.all {
+            XCTAssertEqual(AetherLoadRequestFlow.fresh(base: hints, inputs: inputs(choice)).diskCache,
+                           AetherLoadRequestFlow.fresh(base: plain, inputs: inputs(choice)).diskCache, "\(choice)")
+        }
+        XCTAssertEqual(AetherLoadRequestFlow.fresh(base: hints, inputs: inputs(.gigabytes(10))).diskCache?.forwardSegments, 2700)
+    }
+
     func testAetherOffSendsNoCache() {
         XCTAssertNil(AetherLoadRequestFlow.fresh(base: base(), inputs: inputs(.maximum, aetherOn: false)).diskCache)
     }

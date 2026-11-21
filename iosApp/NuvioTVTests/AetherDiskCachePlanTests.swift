@@ -207,6 +207,49 @@ final class AetherDiskCachePlanTests: XCTestCase {
         }
     }
 
+    /// Code review r1, finding 3: menu items carry each choice's own name, so no two items read the same
+    /// even when they resolve to the same size; the closed row shows the resolved value, whose number is
+    /// the enforced hard limit.
+    func testMenuItemNamesAreDistinctAndIndependentOfFreeSpace() {
+        let names = AetherDiskCacheChoice.all.map(AetherDiskCachePlan.itemName)
+        XCTAssertEqual(names, ["Off", "5 GB", "10 GB", "20 GB", "Maximum"])
+        for free in frees + [nil] {
+            for stored in AetherDiskCacheChoice.all {
+                let items = AetherDiskCachePlan.options(stored: stored, freeBytes: free).map(AetherDiskCachePlan.itemName)
+                XCTAssertEqual(Set(items).count, items.count, "duplicate menu names \(items) at free \(String(describing: free))")
+            }
+        }
+    }
+
+    func testClampedTwentyAndMaximumShareARowValueButNotAName() {
+        let free: Int64 = 40_000_000_000
+        XCTAssertEqual(AetherDiskCachePlan.rowLabel(stored: .gigabytes(20), freeBytes: free), .upTo(10))
+        XCTAssertEqual(AetherDiskCachePlan.rowLabel(stored: .maximum, freeBytes: free), .upTo(10))
+        XCTAssertNotEqual(AetherDiskCachePlan.itemName(.gigabytes(20)), AetherDiskCachePlan.itemName(.maximum))
+        XCTAssertEqual(AetherDiskCachePlan.rowLabel(stored: .gigabytes(5), freeBytes: free), .gigabytes(5))
+        XCTAssertEqual(AetherDiskCachePlan.rowLabel(stored: .off, freeBytes: free), .off)
+        XCTAssertEqual(AetherDiskCachePlan.rowLabel(stored: .maximum, freeBytes: nil), .unmeasured(.maximum))
+        XCTAssertEqual(AetherDiskCachePlan.rowLabel(stored: .maximum, freeBytes: 3_900_000_000), .notEnoughSpace)
+    }
+
+    /// The closed row's number is the hard limit the load sends, for every choice and free reading.
+    func testRowValueNumberEqualsHardLimitGrid() {
+        for free in gridFrees {
+            for choice in AetherDiskCacheChoice.all {
+                let label = AetherDiskCachePlan.rowLabel(stored: choice, freeBytes: free)
+                let cache = AetherDiskCachePlan.resolve(choice, aetherOn: true, freeBytes: free).cache
+                switch label {
+                case .gigabytes(let g), .upTo(let g):
+                    XCTAssertEqual(cache?.hardLimitBytes, g * 1_000_000_000, "\(choice) at \(free)")
+                case .off, .notEnoughSpace, .unmeasured:
+                    XCTAssertNil(cache, "\(choice) at \(free)")
+                case .about:
+                    XCTFail("about() only under .budgetOnly")
+                }
+            }
+        }
+    }
+
     func testRowVisibleOnlyWithAether() {
         XCTAssertFalse(AetherDiskCachePlan.rowVisible(aetherOn: false))
         XCTAssertTrue(AetherDiskCachePlan.rowVisible(aetherOn: true))

@@ -625,10 +625,15 @@ final class SettingsViewModel: ObservableObject {
         AetherDiskCachePlan.options(stored: diskCacheChoice, freeBytes: diskCacheFreeBytes)
     }
 
-    /// Row value and menu item text, both through `resolve`, so the row shows exactly the G the next
-    /// load would enforce at this free-space reading.
-    func diskCacheLabel(_ choice: AetherDiskCacheChoice) -> String {
-        AetherDiskCachePlan.resolve(choice, aetherOn: true, freeBytes: diskCacheFreeBytes).label.text
+    /// A menu item's text: the choice's own name, so distinct choices never read the same.
+    func diskCacheItemName(_ choice: AetherDiskCacheChoice) -> String {
+        AetherDiskCachePlan.itemName(choice)
+    }
+
+    /// The closed row's value, through `resolve`, so it shows exactly the G the next load would enforce
+    /// at this free-space reading.
+    func diskCacheRowValue(_ choice: AetherDiskCacheChoice) -> String {
+        AetherDiskCachePlan.rowLabel(stored: choice, freeBytes: diskCacheFreeBytes).text
     }
 
     func setBufferMB(_ value: Int) {

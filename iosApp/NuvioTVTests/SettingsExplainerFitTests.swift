@@ -101,7 +101,7 @@ final class SettingsExplainerFitTests: XCTestCase {
         XCTAssertEqual(String(localized: SettingsDescriptions.text(for: id)), SettingsDescriptions.text(for: id).key)
         XCTAssertEqual(
             SettingsDescriptions.text(for: id).key,
-            "Stores video ahead of where you are watching on this Apple TV's storage, so large files keep playing through slow patches in the connection. Maximum uses up to a quarter of the free space. Played parts are cleared as you watch, and the rest shortly after playback stops. Videos Aether decodes in software, such as Dolby Vision with a full enhancement layer, play without it. Aether engine only. This Apple TV only. Default: Off."
+            "Lets Aether save more of the video ahead of you on this Apple TV's storage, beyond its small built-in buffer, so large files keep playing through slow patches in the connection. Maximum uses up to a quarter of the free space. The extra video is cleared shortly after playback stops. Videos Aether decodes in software buffer in memory instead, up to a small fixed limit. Aether engine only. This Apple TV only. Default: Off."
         )
         XCTAssertEqual(SettingsDescriptions.footnote(for: id)?.key, "Applies to the next playback.")
         XCTAssertEqual(String(localized: "Disk Cache"), "Disk Cache")

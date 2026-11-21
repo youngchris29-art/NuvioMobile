@@ -448,6 +448,9 @@ final class LiveEngine: EngineDriving {
         // Disk cache (GitHub #29): Off (nil, or a cache that sanitizes to nil) leaves all six cache fields
         // at the engine's defaults. Never set here: softwarePacketCacheStorage (decision U),
         // sessionCacheFreeReserveBytes (R), retainsSessionCacheAfterStop (X).
+        // The window goes to whichever route the engine picks after load (it has one field for both). On
+        // the software route it only lifts the memory packet store's forward-seconds limit (window x 4 s);
+        // that store stays inside its fixed tvOS caps (96 MiB forward, 128 MiB history) and never touches disk.
         if let requested = r.diskCache {
             let outcome = requested.sanitization
             if !outcome.rules.isEmpty, outcome.result != requested {

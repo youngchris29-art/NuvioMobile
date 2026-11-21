@@ -550,7 +550,11 @@ struct SettingsPickerRow<T: Hashable>: View {
     let selection: Binding<T>
     let options: [T]
     var descriptionID: SettingsDescriptionID?
+    /// A menu item's text.
     let label: (T) -> String
+    /// The closed row's value for the selection; nil uses `label`. Set when the row shows a resolved
+    /// value that two items could share (Disk Cache: "Up to 10 GB" for both a clamped 20 GB and Maximum).
+    let value: ((T) -> String)?
 
     init(
         title: String,
@@ -558,7 +562,8 @@ struct SettingsPickerRow<T: Hashable>: View {
         selection: Binding<T>,
         options: [T],
         descriptionID: SettingsDescriptionID? = nil,
-        label: @escaping (T) -> String
+        label: @escaping (T) -> String,
+        value: ((T) -> String)? = nil
     ) {
         self.title = title
         self.subtitle = subtitle
@@ -566,6 +571,7 @@ struct SettingsPickerRow<T: Hashable>: View {
         self.options = options
         self.descriptionID = descriptionID
         self.label = label
+        self.value = value
     }
 
     var body: some View {
@@ -584,7 +590,7 @@ struct SettingsPickerRow<T: Hashable>: View {
             LabeledContent {
                 // V4: `value ›` in `.secondary` (was the accent value). Inherits the Menu's own
                 // label ink, like the title.
-                SettingsTrailingValue(value: label(selection.wrappedValue))
+                SettingsTrailingValue(value: (value ?? label)(selection.wrappedValue))
             } label: {
                 SettingsRowLabel(title: title, subtitle: subtitle, descriptionID: descriptionID)
             }

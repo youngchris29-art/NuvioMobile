@@ -204,14 +204,16 @@ struct PlayerSettingsPane: View {
                 label: Self.readaheadLabel
             )
             // GitHub #29: the Aether engine's disk cache. Shown only while Aether is On (the stored
-            // choice is kept while hidden); "Up to G GB" is the hard limit the next load sends.
+            // choice is kept while hidden). Menu items show each choice's name; the closed row shows the
+            // resolved value, where "Up to G GB" is the hard limit the next load sends.
             if AetherDiskCachePlan.rowVisible(aetherOn: model.aetherEngine) {
                 SettingsPickerRow(
                     title: String(localized: "Disk Cache"),
                     selection: Binding(get: { model.diskCacheChoice }, set: { model.setDiskCache($0) }),
                     options: model.diskCacheOptions,
                     descriptionID: .playerDiskCache,
-                    label: model.diskCacheLabel
+                    label: model.diskCacheItemName,
+                    value: model.diskCacheRowValue
                 )
                 .accessibilityIdentifier("player_row_disk_cache")
                 .onAppear { model.refreshDiskCacheSpace() }

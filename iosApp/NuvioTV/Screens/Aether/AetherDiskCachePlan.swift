@@ -98,6 +98,16 @@ nonisolated struct AetherDiskCacheInputs: Equatable, Sendable {
 nonisolated enum AetherDiskCachePlan {
     static let bytesPerGB: Int64 = 1_000_000_000
     static let headroomCapBytes: Int64 = 2_000_000_000
+    /// The forward window every On load sends, whatever route the engine then picks (code review r1,
+    /// finding 2). The engine has one window field for both routes and decides the route itself after
+    /// `load` (codec, the hardware decode probe, Dolby Vision dual layer and what the box can afford,
+    /// escalations mid-play), so the app does not predict it. On the loopback route the window lets the
+    /// producer fill the disk budget. On the software route the same field sets the in-memory packet
+    /// store's forward-seconds limit (window × 4 s, `SoftwarePlaybackHost.swift:1759-1765`), while the
+    /// store stays bounded by its fixed tvOS memory caps (96 MiB forward, 128 MiB history,
+    /// `SoftwarePlaybackHost.swift:77, 113-125`): a low-bitrate software title reads further ahead in
+    /// memory, up to that cap, than with Off (~40 s). The explainer says software-decoded videos buffer
+    /// in memory up to a small fixed limit, which holds in both cases.
     static let forwardSegments = 2700
     /// Decision R, pending the device spike. `.budgetOnly` drops the hard limit and relabels.
     static let enforcement: AetherDiskCacheEnforcement = .hardLimit
@@ -168,7 +178,16 @@ nonisolated enum AetherDiskCachePlan {
         return [.off] + sizes.map { .gigabytes($0) } + [.maximum]
     }
 
-    /// A menu item's own name ("5 GB", "Maximum"), independent of free space.
+    /// The closed row's value for the stored choice (code review r1, finding 3): the size the next load
+    /// would enforce at this free-space reading, so "Up to G GB" shows G == the hard limit in GB. The
+    /// menu items do not use it: two choices can resolve to the same size ("20 GB" clamped and Maximum
+    /// both "Up to 10 GB" at 40 GB free), so each item shows `itemName` instead.
+    static func rowLabel(stored: AetherDiskCacheChoice, freeBytes: Int64?) -> AetherDiskCacheLabel {
+        resolve(stored, aetherOn: true, freeBytes: freeBytes).label
+    }
+
+    /// A menu item's own name ("Off", "5 GB", "10 GB", "20 GB", "Maximum"), independent of free space,
+    /// so distinct choices always read differently in the menu.
     static func itemName(_ choice: AetherDiskCacheChoice) -> String {
         switch choice {
         case .off: return String(localized: "Off")

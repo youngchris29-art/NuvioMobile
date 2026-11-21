@@ -3,7 +3,9 @@ import XCTest
 /// GitHub #29: Settings › Player › Buffering › Disk Cache. The row shows only while Experimental
 /// engine: Aether is On, its explainer fits the laid-out column (the DEBUG probe
 /// `debug_settings_explainer … desc_truncated=0`, read from the laid-out view like `test82`), the
-/// last menu item (Maximum) reads "Up to G GB" (or "Not enough free space" when the Mac's disk, which
+/// menu items carry each choice's own name (Off / 5 GB / 10 GB / 20 GB / Maximum) while the closed row
+/// shows the resolved value, so after picking the last menu item (Maximum) the row reads "Up to G GB"
+/// (or "Not enough free space" when the Mac's disk, which
 /// is the simulator's tmp volume, is that full; no exact G is asserted), and the choice persists
 /// across a relaunch. Ends by setting Off through the picker (a `-player.diskCacheGB -1` launch
 /// argument may misparse, so the leg never seeds Maximum that way).
@@ -224,8 +226,8 @@ final class DiskCacheSettingsUITests: XCTestCase {
 
     /// With the Disk Cache row focused (verified by the explainer), opens its menu and picks the last
     /// item (`last`) or the first (Off). The tvOS menu popover is drawn outside the app's accessibility
-    /// tree (2026-11-21 run: the snapshot holds only the row's own "Off" while the popover shows Off /
-    /// 5 GB / 10 GB / Up to 12 GB), so the item's focus cannot be read. The walk is deterministic
+    /// tree (2026-11-21 run: the snapshot holds only the row's own "Off" while the popover shows its
+    /// items; since code review r1 they read Off / 5 GB / 10 GB / Maximum), so the item's focus cannot be read. The walk is deterministic
     /// instead: the menu has at most five items and Down past the last (Up past the first) does
     /// nothing, so eight presses always land on the end. The pick is then verified by the row value.
     private func pickMenuItem(_ app: XCUIApplication, last: Bool) throws {
