@@ -866,4 +866,42 @@ final class PlayerForegroundReturnRuleTests: XCTestCase {
         h.send(.sequenceArmed(token: 1))
         XCTAssertEqual(h.send(.restoreTimedOut(token: 1, facts())), [.handOff(atSec: 200), .setUI(.handingOff), .releasePosition])
     }
+
+    // MARK: W2 rulings (spec "W1 gap rulings")
+
+    /// Ruling 9: a pause in place before the first frame (or during an operation) re-arms the start
+    /// budget the background stopped; a return that already showed its frame does not.
+    func testAPauseInPlaceDuringAStartRearmsTheStartWatchdog() {
+        for phase in [PlayerReturnPhase.starting, .operation] {
+            let h = harness()
+            h.send(.enteredBackground(snap(phase: phase)))
+            h.send(.becameActive(facts(op: true)))
+            XCTAssertEqual(h.send(.settled(facts(needs: false))), [.rearmStartWatchdog] + pausedInPlace, "\(phase)")
+            XCTAssertEqual(h.rule.mode, .idle)
+        }
+        let h = harness()
+        h.send(.enteredBackground(snap(phase: .paused)))
+        XCTAssertEqual(h.send(.becameActive(facts(needs: false))), pausedInPlace)
+    }
+
+    /// Ruling 5: a reappearance adopts the clock with the restore rule, but not while the operation the
+    /// user started before Home is still in flight: its own settle adopts the landing.
+    func testAReappearanceWithAnOperationInFlightKeepsTheHeldTarget() {
+        let h = harness()
+        h.send(.enteredBackground(snap(phase: .operation, pos: 100, pending: 200)))
+        h.send(.becameActive(facts(presence: .covered, op: true)))
+        XCTAssertEqual(h.rule.mode, .deferred(.playerFront))
+        h.send(.reappeared(facts(op: true, clock: 100)))
+        XCTAssertEqual(h.rule.mode, .deferred(.operationSettles))
+        h.send(.settled(facts(needs: true, clock: nil)))
+        h.send(.sequenceArmed(token: 1))
+        XCTAssertEqual(h.send(.restoreTimedOut(token: 1, facts())), [.handOff(atSec: 200), .setUI(.handingOff), .releasePosition])
+        // With nothing in flight the reappearance adopts the clock (restore rule).
+        let g = harness()
+        g.send(.enteredBackground(snap(pos: 100)))
+        g.send(.becameActive(facts(presence: .covered)))
+        g.send(.reappeared(facts(clock: 105)))
+        g.send(.sequenceArmed(token: 1))
+        XCTAssertEqual(g.send(.restoreTimedOut(token: 1, facts())), [.handOff(atSec: 105), .setUI(.handingOff), .releasePosition])
+    }
 }

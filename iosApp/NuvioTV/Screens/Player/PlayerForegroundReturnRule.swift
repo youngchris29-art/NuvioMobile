@@ -517,6 +517,12 @@ nonisolated struct PlayerForegroundReturnRule: Sendable {
         if pictureOwed { return resumeForPicture() }
         mode = .idle
         var fx: [PlayerReturnEffect] = []
+        // W2 ruling 9: a return that pauses in place before the first frame (or during an operation
+        // after one) still owes the start budget it stopped at background, from now (I3: never a
+        // spinner without a watchdog).
+        if let phase = snapshot?.phase, phase == .starting || phase == .operation {
+            fx.append(.rearmStartWatchdog)
+        }
         if intent == .play {
             fx.append(.play)
             armBackstopAtNextTick(clock: clock)
@@ -718,7 +724,9 @@ nonisolated struct PlayerForegroundReturnRule: Sendable {
             }
             return applyDecide(action, facts: f)
         case .reappeared(let f) where point == .playerFront:
-            position.adopt(f.clockSec, at: .restore)
+            // W1 ruling 5: the restore rule (a transient 0 is not a landing). An operation still in
+            // flight keeps the held target; its own settle adopts the landing (operation rule).
+            if !f.operationInFlight { position.adopt(f.clockSec, at: .restore) }
             return applyDecide(decideNow(facts: f.withEnteredBackground(true)), facts: f)
         case .userPlay:
             intent = .play
