@@ -33,6 +33,10 @@ final class LiveEngine: EngineDriving {
     private var firstFrame = false
 
     init() throws {
+        // First, before the engine exists and can create `tmp/aether-segments`: flips the one-way latch
+        // that stops the launch cleanup, waiting if that cleanup is mid-rename (`AetherLeftoverCache`).
+        // This is the only `AetherEngine(` call in the façade.
+        AetherEngineGate.shared.noteEngineUse()
         engine = try AetherEngine()
         // Contract 6: an Aether to mpv fallback leaves the audio session to mpv's own setup.
         engine.deactivatesAudioSessionOnStop = false

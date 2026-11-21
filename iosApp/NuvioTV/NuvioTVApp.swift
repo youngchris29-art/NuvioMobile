@@ -7,6 +7,7 @@
 
 import AVFAudio
 import CoreText
+import NuvioAether
 import SwiftUI
 import SharedCore
 import UIKit
@@ -135,6 +136,14 @@ struct NuvioTVApp: App {
         // remux-bitrate session can be several GB). Async on a utility queue; live sessions are
         // shielded via a registry.
         RemuxCacheJanitor.sweepAtLaunch()
+
+        // Disk cache (code review r2): Aether segment folders a killed or crashed earlier process left in
+        // tmp/aether-segments, which can be several GB with the disk cache on. Whatever the setting says
+        // (a cache written under an earlier value is still cleaned). The façade gates it on first engine
+        // use, so it never runs once this process has made an engine; off the main thread.
+        DispatchQueue.global(qos: .utility).async {
+            AetherLeftoverCache.removeAtLaunch()
+        }
 
         #if DEBUG
         // Phase 2 headless remux/HLS-server validation, gated on the `debug.remuxSmokeURL` default.
