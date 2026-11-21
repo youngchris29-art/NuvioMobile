@@ -21,7 +21,7 @@ let package = Package(
         // rerun (plan section 11).
         .package(
             url: "https://github.com/superuser404notfound/AetherEngine",
-            exact: "7.54.0",
+            exact: "7.70.0",
             traits: ["TrueHDObjectAudio", "DTSXObjectAudio", "DualLayerDolbyVision"]
         ),
     ],
