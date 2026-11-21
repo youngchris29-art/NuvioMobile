@@ -268,6 +268,38 @@ final class AetherLeftoverCacheTests: XCTestCase {
 
     // MARK: Engine names
 
+    /// The revision SwiftPM pinned for `aetherengine` in the app project's Package.resolved.
+    private static func pinnedEngineRevision(iosApp: URL) -> String? {
+        let url = iosApp.appendingPathComponent(
+            "iosApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved")
+        guard let data = try? Data(contentsOf: url),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let pins = json["pins"] as? [[String: Any]],
+              let pin = pins.first(where: { ($0["identity"] as? String)?.lowercased() == "aetherengine" }),
+              let state = pin["state"] as? [String: Any]
+        else { return nil }
+        return state["revision"] as? String
+    }
+
+    /// The checkout's current commit from `.git/HEAD` (a raw sha, or a ref resolved via its file or packed-refs).
+    private static func gitCommit(of checkout: URL) -> String? {
+        let git = checkout.appendingPathComponent(".git")
+        func isSha(_ s: String) -> Bool { s.count == 40 && s.allSatisfy(\.isHexDigit) }
+        guard let head = (try? String(contentsOf: git.appendingPathComponent("HEAD"), encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
+        if isSha(head) { return head }
+        guard head.hasPrefix("ref: ") else { return nil }
+        let ref = String(head.dropFirst(5))
+        if let sha = (try? String(contentsOf: git.appendingPathComponent(ref), encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines), isSha(sha) { return sha }
+        let packed = (try? String(contentsOf: git.appendingPathComponent("packed-refs"), encoding: .utf8)) ?? ""
+        for line in packed.split(separator: "\n") where line.hasSuffix(" " + ref) {
+            let sha = String(line.prefix(40))
+            if isSha(sha) { return sha }
+        }
+        return nil
+    }
+
     /// The cleanup duplicates the engine's directory and marker names (it imports no engine type). They
     /// are internal to AetherEngine, so this reads the pinned checkout's source, which the package test
     /// command provides through `-clonedSourcePackagesDirPath`.
@@ -276,11 +308,22 @@ final class AetherLeftoverCacheTests: XCTestCase {
         let iosApp = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
-        let candidates = ["build/DerivedData/SourcePackages", "build/DerivedDataPkg/SourcePackages"]
-            .map { iosApp.appendingPathComponent($0).appendingPathComponent("checkouts/AetherEngine/Sources/AetherEngine") }
-        guard let src = candidates.first(where: { exists($0) }) else {
-            return XCTFail("AetherEngine checkout not found under \(iosApp.path)/build")
+        let pinned = Self.pinnedEngineRevision(iosApp: iosApp)
+        var roots: [URL] = []
+        if let env = ProcessInfo.processInfo.environment["AETHER_ENGINE_CHECKOUT"], !env.isEmpty {
+            roots.append(URL(fileURLWithPath: env))
         }
+        roots += ["build/DerivedData/SourcePackages", "build/DerivedDataPkg/SourcePackages"]
+            .map { iosApp.appendingPathComponent($0).appendingPathComponent("checkouts/AetherEngine") }
+        // A checkout is usable only when its commit equals the pinned revision (no stale copies).
+        guard let root = roots.first(where: {
+            exists($0.appendingPathComponent("Sources/AetherEngine"))
+                && pinned != nil && Self.gitCommit(of: $0) == pinned
+        }) else {
+            throw XCTSkip("No AetherEngine checkout at the pinned revision \(pinned ?? "unknown"). "
+                + "Run with AETHER_ENGINE_CHECKOUT=<path to the AetherEngine checkout at the pinned revision>.")
+        }
+        let src = root.appendingPathComponent("Sources/AetherEngine")
         func read(_ rel: String) throws -> String {
             try String(contentsOf: src.appendingPathComponent(rel), encoding: .utf8)
         }
