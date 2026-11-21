@@ -21,6 +21,9 @@ import XCTest
 final class AetherDiskCachePlaybackUITests: XCTestCase {
     private let remote = XCUIRemote.shared
     private static let hardLimit = 3_000_000
+    /// The retention budget the app derives from that limit (`applyingDebugHardLimit`: the limit less
+    /// its ¼ headroom), which the engine enforces as is.
+    private static let budget = 2_250_000
 
     private func probe(_ app: XCUIApplication) -> [String: String] {
         let el = app.descendants(matching: .any)["debug_seekProbe"]
@@ -85,9 +88,13 @@ final class AetherDiskCachePlaybackUITests: XCTestCase {
         let started = wait(app, timeout: 15, "the cache ledger") { $0["chard"] != nil }
         XCTAssertEqual(started["chard"], "\(Self.hardLimit)", "the load did not carry the test limit (Mac disk under 4 GB free?)")
 
-        // 2. The cache fills: the producer waits for admission with the ledger at the limit.
-        let filled = wait(app, timeout: 60, "the cache to fill") {
-            $0["cwait"] == "1" && Int(self.num($0, "cdisk") ?? 0) >= Self.hardLimit * 3 / 5
+        // 2. The cache fills. Review r6: the engine (pinned source, `PrefetchDiskBudget.shouldPark`) parks
+        // the producer once its forward bytes reach the retention budget, which can hold the ledger
+        // below the hard limit for the whole load, so `cwait` (hard-limit admission) may never read 1.
+        // Either is the filled state: the ledger at the budget (forward bytes are part of `cdisk`), or
+        // a writer waiting at the hard limit.
+        let filled = wait(app, timeout: 60, "the cache to fill (budget park or hard-limit wait)") {
+            $0["cwait"] == "1" || Int(self.num($0, "cdisk") ?? 0) >= Self.budget
         }
         let fillEnd = try XCTUnwrap(num(filled, "bto"), "no resident span at the fill: \(filled)")
         print("[CacheLeg] filled: \(filled)")
