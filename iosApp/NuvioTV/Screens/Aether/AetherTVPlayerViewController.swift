@@ -102,7 +102,10 @@ final class AetherTVPlayerViewController: UIViewController {
     private(set) var subtitleOverlay: AetherSubtitleOverlayModel?
     private var surfaceHost: UIHostingController<AetherSurfaceRoot>?
     /// Replaced on Play Again after the end (review r5): the second viewing is a new watch session.
-    private(set) var recorder: PlaybackProgressRecorder
+    /// Made with the playback's owner (return from background, spec 7): every write is refused once the
+    /// account or profile changed.
+    private(set) var recorder: PlaybackRecording
+    private let makeRecorder: @MainActor (PlaybackContext, PlaybackIdentity) -> PlaybackRecording
     var bag = Set<AnyCancellable>()
     private var loadTask: Task<Void, Never>?
     /// Scrub stills over `session.scrubFrame` (time-only when the session cannot serve them); never
@@ -119,8 +122,11 @@ final class AetherTVPlayerViewController: UIViewController {
 
     // MARK: Main-thread mirrors (the transport reads these; never a synchronous engine query)
 
-    /// The playhead on the seek axis: the clock's `currentSec`, or where the last seek landed.
-    private(set) var positionMirror: Double = 0
+    /// The playhead on the seek axis: the clock's `currentSec`, or where the last seek landed. While a
+    /// return from background holds a position (spec 4.7), every reader (bar, progress, flushes, the
+    /// handoff) gets the held value and clock samples are ignored.
+    var positionMirror: Double { returnRunner?.heldPosition ?? rawPositionMirror }
+    private var rawPositionMirror: Double = 0
     private(set) var pausedMirror = false
     /// The last façade phase (willSet value).
     private(set) var phaseMirror: AetherPhase = .idle
@@ -134,6 +140,38 @@ final class AetherTVPlayerViewController: UIViewController {
     private(set) var probe: AetherProbeSummary?
     /// The user's speed; applied while playing (a paused engine keeps it for the next play).
     private(set) var desiredSpeed: Double = 1
+
+    // MARK: Return from background (spec 5.1.3; every decision is `PlayerForegroundReturnRule`'s)
+
+    /// Who this playback belongs to: taken when the player is made, at the start of playback.
+    let playbackOwner: PlaybackIdentity
+    /// Made at `startPlayback`; the controller only forwards events to it and implements its host.
+    private(set) var returnRunner: AetherReturnEffectRunner?
+    private var lifecycleObservers: [NSObjectProtocol] = []
+    /// The rule's UI: `.restoring` and `.handingOff` keep the spinner up (and so the pause card down).
+    private var returnUI: PlayerReturnUI = .normal
+    /// `viewDidAppear` ran and `viewDidDisappear` has not (a cover over the player clears it).
+    private var isOnScreen = false
+    /// Loads issued and not yet settled (the fresh start's cleanup wait counts as one).
+    private var loadsInFlight = 0
+    /// The newest seek issued whose outcome has not reported (the snapshot's pending target).
+    private var pendingSeek: (generation: Int, targetSec: Double)?
+    /// Where the newest seek landed during a return (a deferred operation's settle, spec 4.7 a).
+    private var lastLandedSeekSec: Double?
+    private var lastHeldPosition: Double?
+    /// What the fresh-load fallback carries (spec 5.1.5), read at didEnterBackground: the teardown can
+    /// publish empty track lists while away.
+    struct ReturnBackgroundAudio {
+        var audioTrackID: Int?
+        var subtitleTrackID: Int?
+        var subtitleDecided = false
+        var delaySec: Double = 0
+        var shaping = AetherAudioShaping()
+    }
+    private(set) var returnBackgroundAudio = ReturnBackgroundAudio()
+    #if DEBUG
+    private var debugBackgroundCycle = DebugBackgroundCycle()
+    #endif
 
     // MARK: Lifecycle state
 
@@ -192,10 +230,16 @@ final class AetherTVPlayerViewController: UIViewController {
     /// P5 N1: the audio delay's saved / stream-hint / session parts for this file.
     var audioDelayParts = AudioDelayParts(savedMs: 0, streamMs: nil, sessionAdjustMs: 0)
 
-    init(context: PlaybackContext, state: MPVPlaybackState) {
+    init(context: PlaybackContext, state: MPVPlaybackState,
+         makeRecorder: @escaping @MainActor (PlaybackContext, PlaybackIdentity) -> PlaybackRecording = {
+             PlaybackProgressRecorder(context: $0, owner: $1)
+         }) {
         self.context = context
         self.state = state
-        self.recorder = PlaybackProgressRecorder(context: context)
+        let owner = PlaybackIdentity.current()
+        self.playbackOwner = owner
+        self.makeRecorder = makeRecorder
+        self.recorder = makeRecorder(context, owner)
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -279,10 +323,13 @@ final class AetherTVPlayerViewController: UIViewController {
 
         wirePanels()
         if let session { wireSession(session) }
+        installLifecycleObservers()
     }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        isOnScreen = true
+        let backFromCover = didStart
         transportInput.resetPressesDown()   // a press begun under a cover never ended on this controller
         becomeFirstResponder()
         gateCoverMenuTap(enabled: false)
@@ -302,6 +349,7 @@ final class AetherTVPlayerViewController: UIViewController {
             // stopped the tick when the cover went up.
             startHousekeeping()
         }
+        if backFromCover { returnRunner?.reappeared() }
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -315,6 +363,7 @@ final class AetherTVPlayerViewController: UIViewController {
 
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
+        isOnScreen = false
         housekeepingTimer?.invalidate()
         housekeepingTimer = nil
         transportInput.viewDidDisappear()
@@ -400,6 +449,7 @@ final class AetherTVPlayerViewController: UIViewController {
             handleFailure(failure)
             return
         }
+        returnRunner = AetherReturnEffectRunner(owner: playbackOwner, session: returnSession(session), host: self)
         let resume = resumeStartSec()
         if let resume {
             // THE resume seek, as the planner sees it (an intro it lands inside is not auto-skipped).
@@ -411,10 +461,15 @@ final class AetherTVPlayerViewController: UIViewController {
         // Code review r5: the free-space reading waits (suspended, bounded) for leftover deletion that
         // is still running. The task is `loadTask`, so teardown and the handoff cancel it during the wait.
         // Review r6: the start watchdog is armed after the wait, right before the load (the flow's order).
-        let awaitCleanup = cleanupAwaiter
+        var awaitCleanup = cleanupAwaiter
+        #if DEBUG
+        awaitCleanup = Self.debugDelayedStart(awaitCleanup)
+        #endif
         let readInputs = diskCacheInputs
         loadTask?.cancel()
+        loadsInFlight += 1
         loadTask = Task { @MainActor [weak self] in
+            defer { self?.loadSettled() }
             await AetherLoadRequestFlow.start(
                 base: base, awaitCleanup: awaitCleanup, readInputs: readInputs,
                 isCurrent: { guard let self else { return false }
@@ -510,7 +565,9 @@ final class AetherTVPlayerViewController: UIViewController {
         stillsGeneration += 1
         transportInput.previewSourceMayHaveChanged()
         loadTask?.cancel()
+        loadsInFlight += 1
         loadTask = Task { @MainActor [weak self] in
+            defer { self?.loadSettled() }
             do {
                 let probe = try await session.load(request)
                 self?.loadReturned(probe)
@@ -524,11 +581,17 @@ final class AetherTVPlayerViewController: UIViewController {
         }
     }
 
+    /// A load (or the fresh start's cleanup wait) ended, however it ended.
+    private func loadSettled() {
+        loadsInFlight = max(0, loadsInFlight - 1)
+        returnRunner?.operationMayHaveSettled()
+    }
+
     /// Where the first load starts: a failure-alert retry's position, then the saved progress
     /// (`PlaybackProgressRecorder`'s rule: > 10 s, not completed, never on Start Over).
     private func resumeStartSec() -> Double? {
         if let s = context.resumeAtSec, s > 10 { return s }
-        if let sec = recorder.resumePositionSec() { return sec }
+        if let sec = recorder.resumePositionSec(actualDurationSec: 0) { return sec }
         pendingResumePercent = recorder.pendingResumePercent()
         return nil
     }
@@ -558,6 +621,7 @@ final class AetherTVPlayerViewController: UIViewController {
         } else {
             freshLoadReturned()
         }
+        returnRunner?.loadReturned()
     }
 
     // MARK: - Session wiring
@@ -616,8 +680,10 @@ final class AetherTVPlayerViewController: UIViewController {
 
     private func clockMoved(_ sec: Double) {
         guard sec.isFinite, !handedOff else { return }
+        // A held position (spec 4.7): the reload zeroes the clock while it rebuilds; nothing reads it.
+        guard returnRunner?.heldPosition == nil else { return }
         let position = max(0, sec)
-        positionMirror = position
+        rawPositionMirror = position
         if state.transport.positionSec != position { state.transport.positionSec = position }
         // The screen (and Up Next) observe `positionSec`: twice a second is the mpv cadence.
         if abs(state.positionSec - position) >= 0.5 || position == 0 {
@@ -642,6 +708,8 @@ final class AetherTVPlayerViewController: UIViewController {
     private func phaseChanged(_ phase: AetherPhase) {
         phaseMirror = phase
         updateBuffering()
+        returnRunner?.sessionStateChanged()
+        returnRunner?.operationMayHaveSettled()
         #if DEBUG
         NSLog("[AetherPlayer] phase %@", phase.label)
         #endif
@@ -663,6 +731,7 @@ final class AetherTVPlayerViewController: UIViewController {
     private func firstFrameChanged(_ shown: Bool) {
         viewing.firstFrameChanged(shown)
         updateBuffering()
+        returnRunner?.sessionStateChanged()
         guard shown else { return }
         stopStartWatchdogTimer()
         startWatchdog.noteFileLoaded()
@@ -676,7 +745,7 @@ final class AetherTVPlayerViewController: UIViewController {
     }
 
     private func updateBuffering() {
-        let buffering: Bool
+        var buffering: Bool
         switch phaseMirror {
         case .loading, .buffering: buffering = true
         case .ended, .failed: buffering = false
@@ -684,6 +753,8 @@ final class AetherTVPlayerViewController: UIViewController {
         case .playing, .paused: buffering = !firstFrameMirror
         @unknown default: buffering = false
         }
+        // Return from background: the restore's spinner, with the pause card down (it hides on buffering).
+        if returnUI != .normal { buffering = true }
         if state.isBuffering != buffering { state.isBuffering = buffering }
     }
 
@@ -735,6 +806,8 @@ final class AetherTVPlayerViewController: UIViewController {
 
     private func housekeepingTick() {
         guard session != nil, !handedOff, !teardownDone else { return }
+        returnRunner?.tick()
+        guard !handedOff, !teardownDone else { return }
         let now = ProcessInfo.processInfo.systemUptime
         let playing = firstFrameMirror && phaseMirror == .playing && !pausedMirror
         viewing.note(playing: playing, at: now)
@@ -745,6 +818,8 @@ final class AetherTVPlayerViewController: UIViewController {
         #if DEBUG
         transportInput.updateSeekProbe(paused: pausedMirror)
         updateCacheProbe()
+        updateReturnProbe()
+        debugBackgroundCycle.noteTick(positionSec: positionMirror)
         #endif
         // Info rows only while someone can see them (BUG-180's rule), at most every 2 s.
         if state.showStreamInfo || state.transport.openInfoPill == .info,
@@ -813,21 +888,38 @@ final class AetherTVPlayerViewController: UIViewController {
 
     // MARK: - Speed and pause
 
+    /// Every Play/Pause goes through the return rule (spec 5.1.3): in normal playback it passes the press
+    /// straight back (`returnPlay` / `returnPause`); during a return it records the intent.
     func togglePause() {
-        guard let session, canTransport, phaseMirror != .ended else { return }
-        let target = !pausedMirror
-        // Optimistic UI: the session's `isPaused` confirms it.
-        pausedChanged(target)
-        if target {
-            session.pause()
+        guard let session, !handedOff, !teardownDone, phaseMirror != .ended else { return }
+        let toPlay = pausedMirror
+        if let returnRunner {
+            returnRunner.userToggle(toPlay: toPlay)
         } else {
-            session.play()
-            if desiredSpeed != 1 { session.setRate(Float(desiredSpeed)) }
+            applyTransport(play: toPlay, session: session)
         }
     }
 
+    /// Optimistic UI (the session's `isPaused` confirms it), then the session call.
+    private func applyTransport(play: Bool, session: AetherPlaybackSession) {
+        pausedChanged(!play)
+        if play {
+            session.play()
+            if desiredSpeed != 1 { session.setRate(Float(desiredSpeed)) }
+        } else {
+            session.pause()
+        }
+    }
+
+    /// A transport input dropped while a return refuses transport (spec 4.5 `refuseTransport`).
+    private func returnRefuses(_ what: String) -> Bool {
+        guard returnRunner?.transportRefused == true else { return false }
+        print("[Return] transport dropped: \(what)")
+        return true
+    }
+
     func setSpeed(_ speed: Double) {
-        guard let session else { return }
+        guard let session, !returnRefuses("speed") else { return }
         if scanRate != nil { return }
         let clamped = AetherRatePlan.clampedSpeed(speed, maxRate: session.maxRate)
         if clamped != speed { print("[AetherPlayer] speed \(speed) clamped to \(clamped) (maxRate \(session.maxRate))") }
@@ -853,7 +945,7 @@ final class AetherTVPlayerViewController: UIViewController {
     // MARK: - Scan (2x engine rate; 3x / 4x stepped seeks at the cap)
 
     private func applyScan(_ rate: Int) {
-        guard let session else { return }
+        guard let session, !returnRefuses("scan") else { return }
         scanRate = rate
         let engineRate = AetherScanPlan.engineRate(scanRate: rate, maxRate: session.maxRate)
         session.setRate(engineRate)
@@ -896,6 +988,7 @@ final class AetherTVPlayerViewController: UIViewController {
     @discardableResult
     func issueSeek(kind: SkipSegmentPlanner.SeekKind, targetSec: Double?, fromSec: Double?,
                    mode: TransportSeekMode, planner: Bool, onRejected: (() -> Void)?) -> Int {
+        if returnRefuses("seek") { return seekGeneration }
         guard let session, canTransport else { return seekGeneration }
         guard let target = AetherSeekPlan.target(mode: mode, targetSec: targetSec, positionSec: positionMirror,
                                                  inFlightTargetSec: skipPlanner.seekInFlight?.targetSec,
@@ -907,6 +1000,7 @@ final class AetherTVPlayerViewController: UIViewController {
         if planner { skipPlanner.beginSeek(kind: kind, targetSec: target, fromSec: fromSec, now: now) }
         seekGeneration += 1
         let generation = seekGeneration
+        pendingSeek = (generation, target)
         let exact = AetherSeekPlan.isExact(mode)
         #if DEBUG
         NSLog("[SeekProbe] aether seek gen=%ld target=%.3f exact=%d", generation, target, exact ? 1 : 0)
@@ -922,6 +1016,8 @@ final class AetherTVPlayerViewController: UIViewController {
         #if DEBUG
         NSLog("[SeekProbe] aether outcome gen=%ld %@", generation, String(describing: outcome))
         #endif
+        if pendingSeek?.generation == generation { pendingSeek = nil }
+        defer { returnRunner?.operationMayHaveSettled() }
         switch AetherSeekPlan.landing(for: outcome, targetSec: targetSec) {
         case .landed(let at):
             // The preview playhead hands back on a commit's first landing, newest or not.
@@ -930,8 +1026,12 @@ final class AetherTVPlayerViewController: UIViewController {
             skipPlanner.seekCompleted(atSec: at, now: ProcessInfo.processInfo.systemUptime)
             // Keyframes landed: that picture first, then the exact stage.
             transportInput.seekLandedForExact(generation: generation)
-            positionMirror = at
-            if state.transport.positionSec != at { state.transport.positionSec = at }
+            rawPositionMirror = at
+            if returnRunner?.heldPosition != nil {
+                lastLandedSeekSec = at
+            } else if state.transport.positionSec != at {
+                state.transport.positionSec = at
+            }
         case .superseded:
             break
         case .rejected:
@@ -1055,11 +1155,11 @@ final class AetherTVPlayerViewController: UIViewController {
         plannerStartSeekPending = true
         endedHandled = false
         state.isEnded = false
-        positionMirror = 0
+        rawPositionMirror = 0
         // Review r5: the end closed tracking; the second viewing records progress and scrobbles as a
         // new watch (fresh recorder, sessions reopened at its first frame by `startTrackingIfNeeded`).
         if handoffLedger.beginReplay() {
-            recorder = PlaybackProgressRecorder(context: context)
+            recorder = makeRecorder(context, playbackOwner)
             trackingStarted = false
             // Review r6: a new viewing, so its early end or pre-frame failure is judged on its own.
             viewing.replayStarting()
@@ -1161,6 +1261,12 @@ final class AetherTVPlayerViewController: UIViewController {
             print("[Failover] aether failure ignored (\(failure.kind.token)) handedOff=\(handedOff) reported=\(failoverReported) closed=\(failoverClosed)")
             return
         }
+        // Return from background (spec 5.1.2): during a restore, or while the return waits on the
+        // operation that failed, the failure is the rule's (one attempt, then mpv), never the ladder's.
+        if let returnRunner, returnRunner.failureArrived(failure) {
+            print("[Failover] aether failure kind=\(failure.kind.token) owned by the return")
+            return
+        }
         guard !state.playbackFailoverSuppressed else {
             print("[Failover] aether failure suppressed (\(failure.kind.token)): a context swap is underway")
             return
@@ -1204,8 +1310,11 @@ final class AetherTVPlayerViewController: UIViewController {
 
     /// Fallback: stop for a handoff, flush once, then `onFallback`. With no host for a handoff the
     /// failure is reported instead (the stream never sits on a dead screen).
-    private func handOff(reason: String) {
+    /// `atSec`: the return's authoritative position (spec 4.7); nil = the mirror.
+    private func handOff(reason: String, atSec: Double? = nil) {
         guard !handedOff else { return }
+        // A handoff ends any return in progress (its held position is released into the mirror first).
+        returnRunner?.cancelled()
         guard let onFallback else {
             reportPlaybackFailure(reason: reason, startedPlaying: everShowedFrame, kind: .local, httpStatus: nil)
             return
@@ -1218,7 +1327,7 @@ final class AetherTVPlayerViewController: UIViewController {
         stopStartWatchdogTimer()
         stopScanTimer()
         loadTask?.cancel()
-        let effects = handoffLedger.handOff(positionSec: positionMirror, secondsPlayed: secondsPlayed,
+        let effects = handoffLedger.handOff(positionSec: atSec ?? positionMirror, secondsPlayed: secondsPlayed,
                                             durationSec: transportDurationSec, everShowedFrame: everShowedFrame)
         apply(effects)
         session?.stop(handingOff: true)
@@ -1285,6 +1394,9 @@ final class AetherTVPlayerViewController: UIViewController {
     /// tracker stops, then the session stops (idempotent; a handed-off session already stopped).
     private func teardown(reason: String) {
         guard !teardownDone else { return }
+        // A return in progress ends first: its held position lands in the mirror the flush reads (I6).
+        returnRunner?.cancelled()
+        removeLifecycleObservers()
         teardownDone = true
         closeFailover()
         stopScanTimer()
@@ -1299,6 +1411,7 @@ final class AetherTVPlayerViewController: UIViewController {
     }
 
     isolated deinit {
+        lifecycleObservers.forEach { NotificationCenter.default.removeObserver($0) }
         housekeepingTimer?.invalidate()
         startWatchdogTimer?.invalidate()
         scanTimer?.invalidate()
@@ -1315,7 +1428,9 @@ final class AetherTVPlayerViewController: UIViewController {
 // MARK: - Transport seam
 
 extension AetherTVPlayerViewController: PlayerTransportEngine {
-    var canTransport: Bool { session != nil && !handedOff && !teardownDone }
+    var canTransport: Bool {
+        session != nil && !handedOff && !teardownDone && returnRunner?.transportRefused != true
+    }
     var mediaLoaded: Bool { mediaReady }
     var transportPositionSec: Double { positionMirror }
     var transportDurationSec: Double { session?.clock.durationSec ?? probe?.durationSec ?? 0 }
@@ -1395,6 +1510,241 @@ extension AetherTVPlayerViewController: PlayerTransportHost {
 }
 
 extension AetherTVPlayerViewController: ChromePlayerController {}
+
+// MARK: - Return from background (spec 5.1.3): lifecycle, facts and the runner's effects
+
+extension AetherTVPlayerViewController: AetherReturnHost {
+    /// Main queue; each handler hops once (spec 6.1) so the engine's own background or active handler
+    /// (also a main-actor hop) has run before the facts are read.
+    func installLifecycleObservers() {
+        guard lifecycleObservers.isEmpty else { return }
+        let center = NotificationCenter.default
+        lifecycleObservers.append(center.addObserver(forName: UIApplication.didEnterBackgroundNotification,
+                                                     object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                await Task.yield()
+                self?.appEnteredBackground()
+            }
+        })
+        lifecycleObservers.append(center.addObserver(forName: UIApplication.didBecomeActiveNotification,
+                                                     object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                await Task.yield()
+                self?.appBecameActive()
+            }
+        })
+    }
+
+    func removeLifecycleObservers() {
+        lifecycleObservers.forEach { NotificationCenter.default.removeObserver($0) }
+        lifecycleObservers.removeAll()
+    }
+
+    private func appEnteredBackground() {
+        guard !teardownDone, !handedOff else { return }
+        returnRunner?.enteredBackground()
+    }
+
+    private func appBecameActive() {
+        guard !teardownDone, !handedOff else { return }
+        returnRunner?.becameActive()
+    }
+
+    /// The session the runner drives: the façade, or in DEBUG the `-debug.aetherRestoreFault` wrapper.
+    func returnSession(_ session: AetherPlaybackSession) -> AetherReturnSession {
+        #if DEBUG
+        if let fault = DebugAetherRestoreFault.current() {
+            print("[Return] DEBUG restore fault \(fault.rawValue)")
+            return DebugFaultingReturnSession(base: session, fault: fault)
+        }
+        #endif
+        return session
+    }
+
+    // MARK: Facts
+
+    func returnSnapshot(enteredAtUptime: TimeInterval) -> PlayerBackgroundSnapshot {
+        let route: PlayerReturnRoute = session?.diagnostics.route == .software ? .aetherSoftware : .aetherLoopback
+        let phase: PlayerReturnPhase
+        if handedOff {
+            phase = .handedOff
+        } else if failoverReported {
+            phase = .failed
+        } else if state.isEnded {
+            phase = .postPlay
+        } else if endedHandled {
+            phase = .ended
+        } else if !everShowedFrame {
+            phase = .starting
+        } else if returnOperationInFlight {
+            phase = .operation
+        } else if pausedMirror {
+            phase = .paused
+        } else {
+            phase = .playing
+        }
+        let decided = panel.didAutoSelectSubtitles || panel.userSelectedSubtitle
+        returnBackgroundAudio = ReturnBackgroundAudio(
+            audioTrackID: session?.activeAudioID, subtitleTrackID: session?.activeSubtitleID, subtitleDecided: decided,
+            delaySec: session?.audioDelaySec ?? state.audioDelaySec,
+            shaping: AetherShapingPlan.shaping(boostDb: state.audioEffects.boostDb, mode: state.audioEffects.mode))
+        lastLandedSeekSec = nil
+        let snapshot = PlayerBackgroundSnapshot(
+            route: route, phase: phase, positionSec: rawPositionMirror, pendingSeekTargetSec: pendingSeek?.targetSec,
+            enteredAtUptime: enteredAtUptime, audioTrackID: session?.activeAudioID,
+            subtitleTrackID: session?.activeSubtitleID, subtitleDecided: decided, audioName: nil, subtitleName: nil)
+        print("[Return] snapshot route=\(route) phase=\(phase) pos=\(String(format: "%.1f", snapshot.positionSec))"
+              + " pendingSeek=\(snapshot.pendingSeekTargetSec.map { String(format: "%.1f", $0) } ?? "-")")
+        return snapshot
+    }
+
+    private var returnOperationInFlight: Bool {
+        phaseMirror == .loading || phaseMirror == .buffering(.seeking) || loadsInFlight > 0 || pendingSeek != nil
+    }
+
+    func returnFacts(enteredBackground: Bool, awaySec: Double) -> PlayerReturnFacts {
+        var failed = false
+        if case .failed = phaseMirror { failed = true }
+        let facts = PlayerReturnFacts(
+            identity: returnIdentity, enteredBackground: enteredBackground, awaySec: awaySec, presence: returnPresence,
+            contextSwapPending: state.playbackFailoverSuppressed, operationInFlight: returnOperationInFlight,
+            aetherNeedsRestore: session?.needsForegroundRestore ?? false, aetherSessionFailed: failed,
+            clockSec: lastLandedSeekSec ?? returnClockSec, nativeHealth: .notApplicable)
+        print("[Return] facts entered=\(enteredBackground ? 1 : 0) away=\(Int(awaySec)) presence=\(facts.presence)"
+              + " ctx=\(facts.contextSwapPending ? 1 : 0) op=\(facts.operationInFlight ? 1 : 0)"
+              + " needsRestore=\(facts.aetherNeedsRestore == true ? 1 : 0) failed=\(failed ? 1 : 0)"
+              + " clock=\(facts.clockSec.map { String(format: "%.1f", $0) } ?? "-") health=notApplicable")
+        return facts
+    }
+
+    func returnBackstopSample(now: TimeInterval) -> PlayerBackstopSample {
+        var buffering = false
+        switch phaseMirror {
+        case .loading, .buffering: buffering = true
+        default: break
+        }
+        return PlayerBackstopSample(now: now, clockSec: returnClockSec, userPaused: pausedMirror,
+                                    reportsPlaying: phaseMirror == .playing, reportsBuffering: buffering)
+    }
+
+    var returnIdentity: PlaybackIdentity { PlaybackIdentity.current() }
+
+    var returnPresence: PlayerPresence {
+        if teardownDone || handedOff { return .leaving }
+        if !isOnScreen || presentedViewController != nil { return .covered }
+        return .front
+    }
+
+    var returnTransportSettled: Bool { phaseMirror == .paused || phaseMirror == .playing }
+
+    var returnClockSec: Double? {
+        guard let sec = session?.clock.currentSec, sec.isFinite else { return nil }
+        return max(0, sec)
+    }
+
+    var returnRestoreBudgetSec: Double {
+        MPVStartWatchdog.limitSeconds(shortened: startWatchdogShortened, startupLimitSec: startupLimitSec)
+    }
+
+    // MARK: Effects
+
+    func returnActivateAudioSession() async {
+        await AetherPlaybackSession.ensureAudioSessionActive()
+    }
+
+    func returnRestoreWillInvoke() {
+        // The restore lowers the session's frame latch; the controller's mirror follows now, so nothing
+        // reads the old load's frame while the engine rebuilds (review r6 F2's rule).
+        viewing.loadStarting()
+        updateBuffering()
+    }
+
+    func returnRunRestoreLoad(atSec: Double) {
+        guard let session, let restoreLoad = restoreRequest(at: atSec) else {
+            print("[Return] fresh-load fallback: no request to restore from (the restore watchdog decides)")
+            return
+        }
+        runLoad(session, restoreLoad)
+    }
+
+    func returnPlay() {
+        guard let session, !handedOff, !teardownDone else { return }
+        applyTransport(play: true, session: session)
+    }
+
+    func returnPause() {
+        guard let session, !handedOff, !teardownDone else { return }
+        applyTransport(play: false, session: session)
+    }
+
+    func returnHandOff(atSec: Double, reason: String) {
+        // Spec 6.13: a closed failover or a context swap underway wins over the rule's handoff.
+        guard !failoverClosed, !state.playbackFailoverSuppressed else {
+            print("[Return] handoff dropped (\(reason)): closed=\(failoverClosed) swapped=\(state.playbackFailoverSuppressed)")
+            return
+        }
+        handOff(reason: reason, atSec: atSec)
+    }
+
+    func returnExit() {
+        print("[Return] exit: identity changed")
+        closeFailover()
+        onExit?()
+    }
+
+    func returnSetUI(_ ui: PlayerReturnUI) {
+        guard returnUI != ui else { return }
+        returnUI = ui
+        updateBuffering()
+    }
+
+    func returnSetHeldPosition(_ sec: Double?) {
+        if let sec {
+            lastHeldPosition = sec
+            if state.transport.positionSec != sec { state.transport.positionSec = sec }
+            if state.positionSec != sec { state.positionSec = sec }
+        } else {
+            if let last = lastHeldPosition { rawPositionMirror = last }
+            lastHeldPosition = nil
+            lastLandedSeekSec = nil
+        }
+    }
+
+    func returnStopStartWatchdog() {
+        stopStartWatchdogTimer()
+    }
+
+    func returnRearmStartBudget() {
+        guard !firstFrameMirror else { return }
+        armStartWatchdog()
+    }
+
+    #if DEBUG
+    /// `-debug.aetherStartDelaySec <n>` (T-UI-A6): holds the first load for n seconds before the cleanup
+    /// wait returns, so a background can land while the player is starting. The start watchdog is armed
+    /// after the wait (the flow's order), so the hold never counts against it.
+    static func debugDelayedStart(_ awaiter: @escaping () async -> Bool) -> () async -> Bool {
+        let delay = UserDefaults.standard.double(forKey: "debug.aetherStartDelaySec")
+        guard delay > 0 else { return awaiter }
+        return {
+            print("[Return] DEBUG holding the first load \(delay) s")
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            return await awaiter()
+        }
+    }
+
+    /// `ret=<mode>/<last outcome> picture= nudged= delay= shaping= audio= sub=` on `debug_seekProbe`.
+    func updateReturnProbe() {
+        guard let returnRunner, let session else { return }
+        let shaping = session.audioShaping
+        let text = "ret=\(returnRunner.probeMode)/\(returnRunner.lastOutcome) picture=\(session.firstFrameShown ? 1 : 0)"
+            + " nudged=\(returnRunner.nudged ? 1 : 0) delay=\(String(format: "%.2f", session.audioDelaySec))"
+            + " shaping=\(shaping.dialogueLiftDB)/\(shaping.boostDB)"
+            + " audio=\(session.activeAudioID.map(String.init) ?? "-") sub=\(session.activeSubtitleID.map(String.init) ?? "-")"
+        if state.seekProbe.ret != text { state.seekProbe.ret = text }
+    }
+    #endif
+}
 
 // MARK: - Surface and overlay host
 

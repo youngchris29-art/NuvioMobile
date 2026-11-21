@@ -168,8 +168,12 @@ enum AetherStartWatchdogRule {
         case reportTimeout
     }
 
-    static func action(verdict: MPVStartWatchdog.Verdict, firstFrameShown: Bool) -> Action {
-        if firstFrameShown { return .standDown }
+    /// `restoreSettled`: for the start budget always true; for a foreground restore's budget (return from
+    /// background, spec 4.9 / I9), true once the restored transport is paused or playing. The budget
+    /// stands down only when the transport has settled AND a frame is shown.
+    static func action(verdict: MPVStartWatchdog.Verdict, firstFrameShown: Bool,
+                       restoreSettled: Bool = true) -> Action {
+        if firstFrameShown && restoreSettled { return .standDown }
         switch verdict {
         case .waiting: return .wait
         case .fired: return .reportTimeout

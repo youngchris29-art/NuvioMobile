@@ -7,6 +7,7 @@ import NuvioAether
 //
 // | Failure | Verdict |
 // | --- | --- |
+// | `foregroundRestoreFailed` (return from background, decision E) | `.fallbackToMpv`, before every other row |
 // | `sourceRateLimited` | `.fail` (no handoff: mpv meets the same meter; `.network`, not remembered) |
 // | `nativeItemFailed` / `softwarePipelineFailed`, a first frame was shown, within 10 s of an audio-session interruption or route change | `.rebuildOnce` (a fresh `load` at the last position; the controller allows it once, then mpv) |
 // | everything else (every other kind, the same two kinds outside the window or before a first frame, `firstFrameTimeout`, unknown future tokens, the live / HLS / custom-reader kinds that Phase 1 routes to mpv) | `.fallbackToMpv` (`.local`, never remembered against the link) |
@@ -30,6 +31,8 @@ final class AetherFailurePolicy: AetherFailureDeciding {
     /// row reads it (the controller logs it).
     nonisolated static func decide(kind: AetherFailureKind, startedPlaying: Bool, secondsPlayed: Double,
                                    sinceInterruptionSec: Double?) -> AetherFailureDecision {
+        // Decision E: one restore attempt per return, then mpv at the position; never a rebuild.
+        if kind == .foregroundRestoreFailed { return .fallbackToMpv }
         if kind == .sourceRateLimited { return .fail }
         if startedPlaying, interruptionKinds.contains(kind), isWithinWindow(sinceInterruptionSec) {
             return .rebuildOnce

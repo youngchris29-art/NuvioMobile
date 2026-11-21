@@ -18,6 +18,9 @@ import SwiftUI
     /// Aether only: the engine's session-cache ledger and the resident span (`AetherCacheProbe.text`);
     /// empty on mpv.
     @Published var cache = ""
+    /// Aether only (return from background): the rule's mode, the last restore outcome, the picture and
+    /// the restored delay, shaping and tracks; empty on mpv.
+    @Published var ret = ""
 
     func note(commit target: Double, stages: String) {
         commits += 1
@@ -30,7 +33,7 @@ struct SeekProbeLabel: View {
     @ObservedObject var probe: SeekProbe
 
     var body: some View {
-        Text(verbatim: "commits=\(probe.commits) lastTarget=\(String(format: "%.0f", probe.lastTarget)) stages=\(probe.stages) speed=\(String(format: "%.1f", probe.speed)) mode=\(probe.modeName) chip=\(probe.chip ? 1 : 0) paused=\(probe.paused ? 1 : 0) pos=\(String(format: "%.1f", probe.pos)) scrubs=\(probe.scrubs)\(probe.cache.isEmpty ? "" : " " + probe.cache)")
+        Text(verbatim: "commits=\(probe.commits) lastTarget=\(String(format: "%.0f", probe.lastTarget)) stages=\(probe.stages) speed=\(String(format: "%.1f", probe.speed)) mode=\(probe.modeName) chip=\(probe.chip ? 1 : 0) paused=\(probe.paused ? 1 : 0) pos=\(String(format: "%.1f", probe.pos)) scrubs=\(probe.scrubs)\(probe.cache.isEmpty ? "" : " " + probe.cache)\(probe.ret.isEmpty ? "" : " " + probe.ret)")
             .font(.system(size: 8))
             .opacity(0.011)
             .accessibilityIdentifier("debug_seekProbe")

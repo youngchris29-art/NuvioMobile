@@ -53,6 +53,21 @@ extension AetherTVPlayerViewController {
         return request
     }
 
+    /// Return from background, the fresh-load fallback (spec 5.1.5): the visit's request at the
+    /// authoritative position, paused, with the tracks, delay and shaping of the background snapshot.
+    /// Begins the fresh-load gate and logs like the other two. Built only by `AetherLoadRequestFlow.restore`.
+    func restoreRequest(at atSec: Double) -> AetherLoadRequest? {
+        guard let base = session?.currentRequest else { return nil }
+        panel.freshLoad.begin()
+        let audio = returnBackgroundAudio
+        let request = AetherLoadRequestFlow.restore(
+            from: base, atSec: atSec, audioTrackID: audio.audioTrackID, subtitleTrackID: audio.subtitleTrackID,
+            subtitleDecided: audio.subtitleDecided, liveAudioDelaySec: audio.delaySec, liveShaping: audio.shaping,
+            addedSubtitles: panel.addedAddonSubtitles)
+        logRequest(request)
+        return request
+    }
+
     /// `viewDidLoad`: the state closures the panels call.
     func wirePanels() {
         state.selectAudio = { [weak self] id in self?.selectAudio(id) }

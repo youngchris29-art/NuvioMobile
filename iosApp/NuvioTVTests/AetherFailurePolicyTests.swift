@@ -147,4 +147,28 @@ final class AetherFailurePolicyTests: XCTestCase {
             XCTAssertEqual(AetherFailurePlan.failureKind(kind), .local, kind.token)
         }
     }
+
+    // MARK: Return from background (decision E)
+
+    func testForegroundRestoreFailedAlwaysFallsBackToMpv() {
+        for since in [nil, 0.0, 3.0, 9.9, 30.0] as [Double?] {
+            for started in [true, false] {
+                XCTAssertEqual(AetherFailurePolicy.decide(kind: .foregroundRestoreFailed, startedPlaying: started,
+                                                          secondsPlayed: 120, sinceInterruptionSec: since),
+                               .fallbackToMpv, "since=\(String(describing: since)) started=\(started)")
+            }
+        }
+        XCTAssertEqual(AetherFailurePlan.failureKind(.foregroundRestoreFailed), .local)
+        XCTAssertEqual(AetherFailureKind(token: "foregroundRestoreFailed"), .foregroundRestoreFailed)
+        XCTAssertFalse(AetherFailureKind.engineTokens.contains("foregroundRestoreFailed"), "façade-raised, not an engine token")
+    }
+
+    func testRestoreWatchdogStandsDownOnlyWithSettledTransportAndAFrame() {
+        XCTAssertEqual(AetherStartWatchdogRule.action(verdict: .fired(elapsed: 25), firstFrameShown: true, restoreSettled: false),
+                       .reportTimeout)
+        XCTAssertEqual(AetherStartWatchdogRule.action(verdict: .fired(elapsed: 25), firstFrameShown: false, restoreSettled: true),
+                       .reportTimeout)
+        XCTAssertEqual(AetherStartWatchdogRule.action(verdict: .waiting, firstFrameShown: true, restoreSettled: false), .wait)
+        XCTAssertEqual(AetherStartWatchdogRule.action(verdict: .waiting, firstFrameShown: true, restoreSettled: true), .standDown)
+    }
 }

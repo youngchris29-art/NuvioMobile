@@ -75,6 +75,24 @@ enum AetherLoadRequestFlow {
                                         addedSubtitles: addedSubtitles)
     }
 
+    /// Return from background, the fresh-load fallback (decision D): the engine refused to rebuild the
+    /// torn-down session in place, so a fresh load of the visit's request at the authoritative position,
+    /// mounted paused (decision A). Tracks come from the background snapshot (the teardown may publish
+    /// empty lists while away), the delay and shaping from the live values read at background, and
+    /// `diskCache` only from `current` (the visit's snapshot: never re-read, no cleanup wait; spec I8).
+    static func restore(from current: AetherLoadRequest, atSec: Double, audioTrackID: Int?,
+                        subtitleTrackID: Int?, subtitleDecided: Bool, liveAudioDelaySec: Double,
+                        liveShaping: AetherAudioShaping,
+                        addedSubtitles: [AetherExternalSubtitle]) -> AetherLoadRequest {
+        var r = AetherReloadRequestPlan.request(from: current, startSec: atSec > 1 ? atSec : nil,
+                                                activeAudioID: audioTrackID, activeSubtitleID: subtitleTrackID,
+                                                subtitleDecided: subtitleDecided, addedSubtitles: addedSubtitles)
+        r.startPaused = true
+        r.audioDelaySec = liveAudioDelaySec
+        r.audioShaping = liveShaping
+        return r
+    }
+
     /// The `diskCache=` field `logRequest` prints. `inputs` is the fresh load's snapshot (the same on its
     /// rebuild and Replay, so one visit logs one value); it only names why a request is Off.
     ///   `off`, `off(free unknown)`, `off(below 1 GB)`, or `shown:<G>GB,budget:<MB>,hard:<MB|->,window:<n>`

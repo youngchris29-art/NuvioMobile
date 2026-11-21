@@ -252,6 +252,58 @@ final class AetherLoadRequestFlowTests: XCTestCase {
         XCTAssertEqual(AetherLoadRequestFlow.cacheLogField(budgetOnly, inputs: nil), "shown:-GB,budget:8000,hard:-,window:2700")
     }
 
+    // MARK: - Return from background: the fresh-load fallback (spec 5.1.5)
+
+    private func restore(_ current: AetherLoadRequest, at: Double = 600) -> AetherLoadRequest {
+        AetherLoadRequestFlow.restore(from: current, atSec: at, audioTrackID: 2, subtitleTrackID: 7,
+                                      subtitleDecided: true, liveAudioDelaySec: 0.35,
+                                      liveShaping: AetherAudioShaping(dialogueLiftDB: 4, boostDB: 6),
+                                      addedSubtitles: [])
+    }
+
+    func testRestoreTakesTheSnapshotTracksAndTheLiveDelayAndShapingPaused() {
+        let first = AetherLoadRequestFlow.fresh(base: base(), inputs: inputs(.gigabytes(10)))
+        let r = restore(first)
+        XCTAssertTrue(r.startPaused)
+        XCTAssertEqual(r.startSec, 600)
+        XCTAssertEqual(r.audioStreamIndex, 2, "the snapshot's audio, not the live (possibly empty) list")
+        XCTAssertEqual(r.initialSubtitle, .track(id: 7))
+        XCTAssertEqual(r.audioDelaySec, 0.35)
+        XCTAssertEqual(r.audioShaping, AetherAudioShaping(dialogueLiftDB: 4, boostDB: 6))
+        // Everything else is the rebuild's request.
+        var expected = rebuild(first)
+        expected.startPaused = true
+        expected.audioDelaySec = 0.35
+        expected.audioShaping = AetherAudioShaping(dialogueLiftDB: 4, boostDB: 6)
+        XCTAssertEqual(r, expected)
+        XCTAssertFalse(first.startPaused, "the fresh load itself autoplays")
+    }
+
+    func testRestoreKeepsTheVisitsCacheSnapshotOnAndOff() {
+        let on = AetherLoadRequestFlow.fresh(base: base(), inputs: inputs(.gigabytes(10)))
+        let off = AetherLoadRequestFlow.fresh(base: base(), inputs: inputs(.off))
+        XCTAssertEqual(restore(on).diskCache, tenGB)
+        XCTAssertNil(restore(off).diskCache)
+    }
+
+    func testRestoreNearTheHeadStartsAtTheHead() {
+        let first = AetherLoadRequestFlow.fresh(base: base(), inputs: inputs(.off))
+        XCTAssertNil(restore(first, at: 0.5).startSec)
+        XCTAssertEqual(restore(first, at: 1.5).startSec, 1.5)
+    }
+
+    /// I8: the fallback reads no setting and waits on no cleanup. It takes no reader or awaiter at all,
+    /// and the flow's only awaiter / reader use is `fresh`.
+    func testRestoreReadsNoInputsAndAwaitsNoCleanup() throws {
+        let flow = try appSources().first { $0.name == "AetherLoadRequestFlow.swift" }?.source ?? ""
+        let body = flow.components(separatedBy: "static func restore(").dropFirst().first ?? ""
+        let restoreBody = body.components(separatedBy: "static func cacheLogField(").first ?? ""
+        XCTAssertFalse(restoreBody.isEmpty)
+        for needle in ["readInputs", "awaitCleanup", "AetherDiskCacheInputs", "pendingDeletionFinished"] {
+            XCTAssertFalse(restoreBody.contains(needle), "restore names \(needle)")
+        }
+    }
+
     // MARK: - The mpv handoff
 
     func testHandoffCarriesNoCache() {
@@ -296,7 +348,9 @@ final class AetherLoadRequestFlowTests: XCTestCase {
         // Review r6: the fresh load's watchdog is armed only by the flow, after the wait; the other two
         // calls are rebuild and Replay (plus the definition).
         XCTAssertEqual(occurrences(of: "armWatchdog: { self?.armStartWatchdog() }", in: joined), 1)
-        XCTAssertEqual(occurrences(of: "armStartWatchdog()", in: joined), 4)
+        // Return from background: the fifth is the rule's `rearmStartWatchdog` effect (start budget after
+        // a return during a start or an operation).
+        XCTAssertEqual(occurrences(of: "armStartWatchdog()", in: joined), 5)
         // Code review r5: the fresh load hands the flow the controller's cleanup awaiter, and only it.
         XCTAssertEqual(occurrences(of: "awaitCleanup: awaitCleanup", in: joined), 1)
         XCTAssertEqual(occurrences(of: "pendingDeletionFinished(", in: joined), 1, "only the awaiter's default")
@@ -304,6 +358,12 @@ final class AetherLoadRequestFlowTests: XCTestCase {
         // Both reload paths build through `reloadRequest`.
         XCTAssertEqual(occurrences(of: "runLoad(session, reloadRequest(", in: joined), 2)
         XCTAssertEqual(occurrences(of: "runLoad(session, request)", in: joined), 1)
+        // Return from background (spec I8): the reload path sends no request; the fresh-load fallback
+        // sends exactly one, built by the flow through `restoreRequest(at:)`.
+        XCTAssertEqual(occurrences(of: "runLoad(session, restoreLoad)", in: joined), 1)
+        XCTAssertEqual(occurrences(of: "AetherLoadRequestFlow.restore(", in: joined), 1)
+        XCTAssertEqual(occurrences(of: "restoreRequest(at:", in: joined), 1)
+        XCTAssertEqual(occurrences(of: "restoreAfterBackground(", in: joined), 0, "the restore goes through the runner")
         // No other app file sets a cache on a request (the smoke harness never does).
         for (name, source) in try appSources() where name != "AetherLoadRequestFlow.swift" {
             XCTAssertFalse(source.contains(".diskCache ="), "\(name) sets a request's cache")
