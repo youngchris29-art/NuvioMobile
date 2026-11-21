@@ -1,15 +1,189 @@
 import Foundation
 import SharedCore
 
-/// Engine-agnostic watch-progress + Trakt scrobbling for a `PlaybackContext`. Mirrors the logic in
-/// `MPVTVPlayerViewController` exactly so both engines record identically; the native AVPlayer path
-/// (Phase 3) uses it. The mpv controller can be migrated onto this later — it still has its own copy
-/// for now to avoid touching the shipping player. See docs/tvos-hybrid-player-plan.md.
-@MainActor
-final class PlaybackProgressRecorder {
-    private let context: PlaybackContext
+// MARK: - Identity (return from background, spec section 7)
 
-    init(context: PlaybackContext) { self.context = context }
+extension PlaybackIdentity {
+    /// Who is signed in and which profile is active, read now. The owner of a playback is this value
+    /// taken once when it starts; every Aether and native write is compared against it.
+    @MainActor
+    static func current() -> PlaybackIdentity {
+        let account = (AuthRepository.shared.state.value_ as? AuthStateAuthenticated)?.userId ?? "signed-out"
+        return PlaybackIdentity(accountKey: account, profileId: ActiveProfileProvider.shared.activeProfileId)
+    }
+}
+
+// MARK: - Seams
+
+/// What a player controller needs from its progress and tracker recorder. `PlaybackProgressRecorder`
+/// is the only production conformer; tests inject fakes.
+@MainActor
+protocol PlaybackRecording: AnyObject {
+    func pendingResumePercent() -> Double?
+    func resumePositionSec(actualDurationSec: Double) -> Double?
+    func record(positionSec: Double, durationSec: Double, isPaused: Bool, speed: Double, flush: Bool, isLive: Bool)
+    func startTrakt(positionSec: Double, durationSec: Double)
+    func stopTrakt(positionSec: Double, durationSec: Double, isLive: Bool)
+    func startTrackers(positionSec: Double, durationSec: Double)
+    func stopTrackers(positionSec: Double, durationSec: Double, isLive: Bool)
+}
+
+/// A Trakt scrobble item as the backend hands it over (opaque to the recorder).
+final class TraktItemBox {
+    let item: TraktScrobbleItem?
+    init(_ item: TraktScrobbleItem?) { self.item = item }
+}
+
+/// A non-Trakt tracker session's recipients and media, as the backend opened them (opaque to the
+/// recorder: `stop` goes to exactly the recipients `start` reached).
+protocol TrackerScrobbleTargets: AnyObject {}
+
+enum TrackerScrobbleDispatch: Sendable, Equatable { case start, stop }
+
+/// Every write the recorder and its tracker session dispatch, in one place. The live backend calls the
+/// shared repositories; tests replace it to hold completions and count dispatches.
+@MainActor
+protocol PlaybackRecorderBackend: AnyObject {
+    func noteSessionProgress(profileId: Int32, item: TraktItemBox, percent: Float)
+    func writeProgress(context: PlaybackContext, snapshot: PlayerPlaybackSnapshot, flush: Bool)
+    func buildTraktItem(context: PlaybackContext, completion: @escaping @MainActor (TraktItemBox?) -> Void)
+    func scrobbleStart(profileId: Int32, item: TraktItemBox, percent: Float)
+    func scrobbleStop(profileId: Int32, item: TraktItemBox, percent: Float)
+    /// The connected non-Trakt scrobblers for `context`, nil when there are none.
+    func openTrackerTargets(context: PlaybackContext) -> TrackerScrobbleTargets?
+    func dispatchTracker(_ action: TrackerScrobbleDispatch, targets: TrackerScrobbleTargets, profileId: Int32,
+                         percent: Double, completion: (@MainActor () -> Void)?)
+}
+
+/// The shared repositories (today's behaviour).
+@MainActor
+final class LivePlaybackRecorderBackend: PlaybackRecorderBackend {
+    private var progressSession: WatchProgressPlaybackSession?
+
+    func noteSessionProgress(profileId: Int32, item: TraktItemBox, percent: Float) {
+        guard let traktItem = item.item else { return }
+        TraktScrobbleRepository.shared.noteSessionProgress(profileId: profileId, item: traktItem,
+                                                           progressPercent: percent) { _, _ in }
+    }
+
+    func writeProgress(context: PlaybackContext, snapshot: PlayerPlaybackSnapshot, flush: Bool) {
+        let session = progressSession ?? PlaybackProgressRecorder.playbackSession(for: context)
+        progressSession = session
+        if flush {
+            WatchProgressRepository.shared.flushPlaybackProgress(session: session, snapshot: snapshot, syncRemote: false)
+        } else {
+            WatchProgressRepository.shared.upsertPlaybackProgress(session: session, snapshot: snapshot, syncRemote: false)
+        }
+    }
+
+    func buildTraktItem(context: PlaybackContext, completion: @escaping @MainActor (TraktItemBox?) -> Void) {
+        TraktScrobbleRepository.shared.buildItem(
+            contentType: context.contentType,
+            parentMetaId: context.parentMetaId,
+            videoId: context.videoId,
+            title: context.title,
+            seasonNumber: context.season.map { KotlinInt(int: Int32($0)) },
+            episodeNumber: context.episode.map { KotlinInt(int: Int32($0)) },
+            episodeTitle: nil,
+            releaseInfo: nil
+        ) { item, _ in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { completion(item.map(TraktItemBox.init)) }
+            }
+        }
+    }
+
+    func scrobbleStart(profileId: Int32, item: TraktItemBox, percent: Float) {
+        guard let traktItem = item.item else { return }
+        TraktScrobbleRepository.shared.scrobbleStart(profileId: profileId, item: traktItem, progressPercent: percent) { _ in }
+    }
+
+    func scrobbleStop(profileId: Int32, item: TraktItemBox, percent: Float) {
+        guard let traktItem = item.item else { return }
+        TraktScrobbleRepository.shared.scrobbleStop(profileId: profileId, item: traktItem, progressPercent: percent) { _ in }
+    }
+
+    private final class LiveTargets: TrackerScrobbleTargets {
+        let media: TrackingMediaReference
+        let recipients: [TrackingScrobbler]
+        init(media: TrackingMediaReference, recipients: [TrackingScrobbler]) {
+            self.media = media
+            self.recipients = recipients
+        }
+    }
+
+    func openTrackerTargets(context: PlaybackContext) -> TrackerScrobbleTargets? {
+        TrackingProviderRegistry.shared.ensureLoaded()
+        let targets = TrackingProviderRegistry.shared.connectedScrobblers()
+            .filter { TrackerScrobblePolicy.receivesFanout(storageId: $0.providerId.storageId) }
+        guard !targets.isEmpty else { return nil }
+        let media = TrackingMediaKt.buildTrackingMediaReference(
+            contentType: context.contentType,
+            parentMetaId: context.parentMetaId,
+            videoId: context.videoId,
+            title: context.title,
+            releaseInfo: nil,
+            seasonNumber: context.season.map { KotlinInt(int: Int32($0)) },
+            episodeNumber: context.episode.map { KotlinInt(int: Int32($0)) },
+            episodeTitle: nil
+        )
+        return LiveTargets(media: media, recipients: targets)
+    }
+
+    func dispatchTracker(_ action: TrackerScrobbleDispatch, targets: TrackerScrobbleTargets, profileId: Int32,
+                         percent: Double, completion: (@MainActor () -> Void)?) {
+        guard let live = targets as? LiveTargets else { return }
+        let wire: TrackingScrobbleAction = action == .start ? .start : .stop
+        TrackingScrobbleCoordinatorKt.dispatchTrackingScrobble(
+            scrobblers: live.recipients,
+            profileId: profileId,
+            action: wire,
+            event: TrackingScrobbleEvent(media: live.media, progressPercent: percent)
+        ) { failures, _ in
+            #if DEBUG
+            for failure in failures ?? [] {
+                print("[TrackerScrobble] \(failure.providerId.storageId) \(wire.wireValue) failed: \(failure.cause)")
+            }
+            #endif
+            if let completion {
+                Task { @MainActor in completion() }
+            }
+        }
+    }
+}
+
+/// The identity check every dispatch point runs (section 7): true when the write may go out. A refusal
+/// logs one line naming the site.
+@MainActor
+struct PlaybackWriteGate {
+    let owner: PlaybackIdentity?
+    let identity: @MainActor () -> PlaybackIdentity
+
+    func allows(_ site: String) -> Bool {
+        guard let owner else { return true }
+        if PlaybackWriteGuard.allows(owner: owner, current: identity()) { return true }
+        print("[Return] write refused: identity changed (\(site))")
+        return false
+    }
+}
+
+@MainActor
+final class PlaybackProgressRecorder: PlaybackRecording {
+    private let context: PlaybackContext
+    private let gate: PlaybackWriteGate
+    private let backend: PlaybackRecorderBackend
+    private let identity: @MainActor () -> PlaybackIdentity
+
+    /// `owner` nil = today's behaviour (no identity check). With an owner, every write is refused once the
+    /// account or profile is no longer the owner's (return from background, spec section 7).
+    init(context: PlaybackContext, owner: PlaybackIdentity? = nil,
+         identity: @escaping @MainActor () -> PlaybackIdentity = { PlaybackIdentity.current() },
+         backend: PlaybackRecorderBackend? = nil) {
+        self.context = context
+        self.identity = identity
+        self.gate = PlaybackWriteGate(owner: owner, identity: identity)
+        self.backend = backend ?? LivePlaybackRecorderBackend()
+    }
 
     // MARK: - Resume
 
@@ -60,8 +234,6 @@ final class PlaybackProgressRecorder {
 
     // MARK: - Progress save
 
-    private lazy var session = Self.playbackSession(for: context)
-
     /// The progress-write session for `context`. Also what the stream picker hands the shared
     /// external-player return (`ExternalPlaybackReturn.prepare`) for an Infuse launch, so a
     /// position Infuse reports back lands on the same progress entry the built-in player writes.
@@ -96,21 +268,17 @@ final class PlaybackProgressRecorder {
         // outbox, nothing is sent), so a crash or force-quit still leaves one for the next launch.
         // Before the gate below on purpose: a live stream or a placeholder clip reports 0 here,
         // which makes the outbox drop what this session wrote.
-        if let item = traktItem {
-            TraktScrobbleRepository.shared.noteSessionProgress(
+        if let item = traktItem, gate.allows("noteSessionProgress") {
+            backend.noteSessionProgress(
                 profileId: ActiveProfileProvider.shared.activeProfileId,
                 item: item,
-                progressPercent: Float(TrackerScrobblePolicy.stopPercent(positionSec: positionSec, durationSec: durationSec,
-                                                                         isLive: isLive))
-            ) { _, _ in }
+                percent: Float(TrackerScrobblePolicy.stopPercent(positionSec: positionSec, durationSec: durationSec,
+                                                                 isLive: isLive)))
         }
         guard let snapshot = Self.progressSnapshot(positionSec: positionSec, durationSec: durationSec,
                                                    isPaused: isPaused, speed: speed, isLive: isLive) else { return }
-        if flush {
-            WatchProgressRepository.shared.flushPlaybackProgress(session: session, snapshot: snapshot, syncRemote: false)
-        } else {
-            WatchProgressRepository.shared.upsertPlaybackProgress(session: session, snapshot: snapshot, syncRemote: false)
-        }
+        guard gate.allows(flush ? "progress flush" : "progress write") else { return }
+        backend.writeProgress(context: context, snapshot: snapshot, flush: flush)
     }
 
     /// Pure form of `record`'s gate and snapshot: nil when nothing may be written
@@ -134,7 +302,7 @@ final class PlaybackProgressRecorder {
 
     // MARK: - Trakt scrobbling
 
-    private var traktItem: TraktScrobbleItem?
+    private var traktItem: TraktItemBox?
     private var traktRequested = false
     private var traktClosed = false
 
@@ -143,26 +311,21 @@ final class PlaybackProgressRecorder {
         // Error/placeholder clips (debrid cache-sync stubs, error videos) must not
         // open a Trakt session — mirrors the shared short-placeholder guard.
         if WatchingPoliciesKt.isShortPlaceholderDuration(durationMs: Int64(durationSec * 1000)) { return }
+        guard gate.allows("startTrakt") else {
+            traktClosed = true
+            return
+        }
         traktRequested = true
-        TraktScrobbleRepository.shared.buildItem(
-            contentType: context.contentType,
-            parentMetaId: context.parentMetaId,
-            videoId: context.videoId,
-            title: context.title,
-            seasonNumber: context.season.map { KotlinInt(int: Int32($0)) },
-            episodeNumber: context.episode.map { KotlinInt(int: Int32($0)) },
-            episodeTitle: nil,
-            releaseInfo: nil
-        ) { [weak self] item, _ in
-            DispatchQueue.main.async {
-                guard let self, let item, !self.traktClosed else { return }
-                self.traktItem = item
-                TraktScrobbleRepository.shared.scrobbleStart(
-                    profileId: ActiveProfileProvider.shared.activeProfileId,
-                    item: item,
-                    progressPercent: Self.percent(positionSec, durationSec)
-                ) { _ in }
+        backend.buildTraktItem(context: context) { [weak self] item in
+            guard let self, let item, !self.traktClosed else { return }
+            // The item is built asynchronously: the identity is checked again right before the start.
+            guard self.gate.allows("scrobbleStart") else {
+                self.traktClosed = true
+                return
             }
+            self.traktItem = item
+            self.backend.scrobbleStart(profileId: ActiveProfileProvider.shared.activeProfileId, item: item,
+                                       percent: Self.percent(positionSec, durationSec))
         }
     }
 
@@ -170,14 +333,14 @@ final class PlaybackProgressRecorder {
         traktClosed = true
         guard let item = traktItem else { return }
         traktItem = nil
+        guard gate.allows("scrobbleStop") else { return }
         // A session can open before a placeholder's short duration is known, or before the stream
         // reads live: close it at 0% so Trakt never marks the stub or the live stream watched.
-        TraktScrobbleRepository.shared.scrobbleStop(
+        backend.scrobbleStop(
             profileId: ActiveProfileProvider.shared.activeProfileId,
             item: item,
-            progressPercent: Float(TrackerScrobblePolicy.stopPercent(positionSec: positionSec, durationSec: durationSec,
-                                                                     isLive: isLive))
-        ) { _ in }
+            percent: Float(TrackerScrobblePolicy.stopPercent(positionSec: positionSec, durationSec: durationSec,
+                                                             isLive: isLive)))
     }
 
     private static func percent(_ positionSec: Double, _ durationSec: Double) -> Float {
@@ -187,7 +350,8 @@ final class PlaybackProgressRecorder {
 
     // MARK: - Other trackers (Simkl, MDBList)
 
-    private lazy var trackerScrobble = TrackerScrobbleSession(context: context)
+    private lazy var trackerScrobble = TrackerScrobbleSession(context: context, owner: gate.owner,
+                                                              identity: identity, backend: backend)
 
     /// Opens the non-Trakt tracker session alongside `startTrakt` — same trigger, same guard.
     func startTrackers(positionSec: Double, durationSec: Double) {
@@ -288,69 +452,55 @@ struct TrackerScrobbleSequencer {
 @MainActor
 final class TrackerScrobbleSession {
     private let context: PlaybackContext
+    private let gate: PlaybackWriteGate
+    private let backend: PlaybackRecorderBackend
     private var sequencer = TrackerScrobbleSequencer()
     private var profileId: Int32 = 0
-    private var media: TrackingMediaReference?
-    private var recipients: [TrackingScrobbler] = []
+    private var targets: TrackerScrobbleTargets?
 
-    init(context: PlaybackContext) { self.context = context }
+    /// `owner` nil (the mpv controller's use) = today's behaviour; with one, every dispatch is refused
+    /// once the identity changed, and a refusal closes the session's local state.
+    init(context: PlaybackContext, owner: PlaybackIdentity? = nil,
+         identity: @escaping @MainActor () -> PlaybackIdentity = { PlaybackIdentity.current() },
+         backend: PlaybackRecorderBackend? = nil) {
+        self.context = context
+        self.gate = PlaybackWriteGate(owner: owner, identity: identity)
+        self.backend = backend ?? LivePlaybackRecorderBackend()
+    }
 
     func start(positionSec: Double, durationSec: Double) {
         guard TrackerScrobblePolicy.shouldOpen(durationSec: durationSec) else { return }
+        guard gate.allows("tracker start") else {
+            _ = sequencer.stop(percent: 0)
+            return
+        }
         guard sequencer.start() else { return }
-        TrackingProviderRegistry.shared.ensureLoaded()
-        let targets = TrackingProviderRegistry.shared.connectedScrobblers()
-            .filter { TrackerScrobblePolicy.receivesFanout(storageId: $0.providerId.storageId) }
-        guard !targets.isEmpty else { _ = sequencer.startCompleted(); return }
-        let media = TrackingMediaKt.buildTrackingMediaReference(
-            contentType: context.contentType,
-            parentMetaId: context.parentMetaId,
-            videoId: context.videoId,
-            title: context.title,
-            releaseInfo: nil,
-            seasonNumber: context.season.map { KotlinInt(int: Int32($0)) },
-            episodeNumber: context.episode.map { KotlinInt(int: Int32($0)) },
-            episodeTitle: nil
-        )
-        self.media = media
-        self.recipients = targets
-        self.profileId = ActiveProfileProvider.shared.activeProfileId
+        guard let opened = backend.openTrackerTargets(context: context) else { _ = sequencer.startCompleted(); return }
+        targets = opened
+        profileId = ActiveProfileProvider.shared.activeProfileId
         dispatch(.start, percent: TrackerScrobblePolicy.percent(positionSec: positionSec, durationSec: durationSec)) { [weak self] in
-            Task { @MainActor in self?.startFinished() }
+            self?.startFinished()
         }
     }
 
     private func startFinished() {
         if let percent = sequencer.startCompleted() {
-            dispatch(.stop, percent: percent)
-            media = nil
-            recipients = []
+            // The deferred stop goes out after an await: the identity is checked again here.
+            if gate.allows("tracker deferred stop") { dispatch(.stop, percent: percent) }
+            targets = nil
         }
     }
 
     func stop(positionSec: Double, durationSec: Double, isLive: Bool) {
         let percent = TrackerScrobblePolicy.stopPercent(positionSec: positionSec, durationSec: durationSec, isLive: isLive)
         guard let now = sequencer.stop(percent: percent) else { return }
-        guard media != nil, !recipients.isEmpty else { return }
-        dispatch(.stop, percent: now)
-        media = nil
-        recipients = []
+        guard targets != nil else { return }
+        if gate.allows("tracker stop") { dispatch(.stop, percent: now) }
+        targets = nil
     }
 
-    private func dispatch(_ action: TrackingScrobbleAction, percent: Double, completion: (@Sendable () -> Void)? = nil) {
-        guard let media else { return }
-        TrackingScrobbleCoordinatorKt.dispatchTrackingScrobble(
-            scrobblers: recipients,
-            profileId: profileId,
-            action: action,
-            event: TrackingScrobbleEvent(media: media, progressPercent: percent)
-        ) { failures, _ in
-            #if DEBUG
-            for failure in failures ?? [] {
-                print("[TrackerScrobble] \(failure.providerId.storageId) \(action.wireValue) failed: \(failure.cause)")
-            }
-            #endif
-            completion?()
-        }
+    private func dispatch(_ action: TrackerScrobbleDispatch, percent: Double, completion: (@MainActor () -> Void)? = nil) {
+        guard let targets else { return }
+        backend.dispatchTracker(action, targets: targets, profileId: profileId, percent: percent, completion: completion)
     }
 }
