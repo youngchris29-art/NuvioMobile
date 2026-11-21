@@ -31,6 +31,13 @@ final class FakeEngine: EngineDriving {
     var onLoad: ((FakeEngine) -> Void)?
     var loadResult: Result<AetherProbeSummary?, Error> = .success(nil)
     var reloadResult: Result<Void, Error> = .success(())
+    /// `needsForegroundVideoRestore` as the fake reports it.
+    var needsForegroundRestore = false
+    /// How `reloadForForegroundReturn` ends; `.reloaded` also lowers `needsForegroundRestore`.
+    var restoreResult: Result<AetherForegroundRestoreOutcome, Error> = .success(.reloaded)
+    /// Runs inside `reloadForForegroundReturn` before it returns or throws.
+    var onRestore: ((FakeEngine) -> Void)?
+    var restores = 0
     /// Runs inside `seek` before it returns.
     var onSeek: ((FakeEngine, Double) -> Void)?
 
@@ -57,6 +64,14 @@ final class FakeEngine: EngineDriving {
     func reloadAtCurrentPosition() async throws {
         reloads += 1
         try reloadResult.get()
+    }
+
+    func reloadForForegroundReturn() async throws -> AetherForegroundRestoreOutcome {
+        restores += 1
+        onRestore?(self)
+        let outcome = try restoreResult.get()
+        if outcome == .reloaded { needsForegroundRestore = false }
+        return outcome
     }
 
     func play() { plays += 1 }

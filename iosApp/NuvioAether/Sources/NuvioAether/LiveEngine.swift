@@ -117,6 +117,39 @@ final class LiveEngine: EngineDriving {
         }
     }
 
+    var needsForegroundRestore: Bool { engine.needsForegroundVideoRestore }
+
+    func reloadForForegroundReturn() async throws -> AetherForegroundRestoreOutcome {
+        // On a torn-down session `autoplay` is an applied field (the transport is not the session's
+        // own), so the rebuild mounts paused; a live session would answer `rebuilt: false` or rebuild
+        // for nothing, which is why the gate is the teardown itself (spec E10).
+        guard engine.needsForegroundVideoRestore else { return .notNeeded }
+        if let refusal = engine.sessionReloadRefusal { return .refused(Self.refusal(refusal)) }
+        do {
+            let outcome = try await engine.reloadAtCurrentPosition { $0.autoplay = false }
+            if !outcome.rebuilt {
+                AetherLog.hostLine("[NuvioAether] foreground restore: the engine rebuilt nothing "
+                                   + "(sessionOwned=\(outcome.sessionOwned.joined(separator: ",")))")
+                return .notNeeded
+            }
+            return .reloaded
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch AetherEngineError.sessionNotReloadable(let refusal) {
+            return .refused(Self.refusal(refusal))
+        } catch {
+            throw failure(forThrown: error)
+        }
+    }
+
+    private static func refusal(_ r: SessionReloadRefusal) -> AetherReloadRefusal {
+        switch r {
+        case .noActiveSession: return .noActiveSession
+        case .customSourceNotSeekable: return .notSeekable
+        default: return .other
+        }
+    }
+
     func play() { engine.play() }
     func pause() { engine.pause() }
     func togglePause() { engine.togglePlayPause() }
@@ -460,6 +493,9 @@ final class LiveEngine: EngineDriving {
         o.audioDelaySeconds = r.audioDelaySec
         o.audioShaping = engineShaping(r.audioShaping)
         if r.preferSoftwareDecode { o.preferredDecodePath = .software }
+        // Return from background (decision A): the fresh-load fallback mounts paused. Every other
+        // request keeps the engine's default (`autoplay = true`).
+        if r.startPaused { o.autoplay = false }
         // Contract 3: the engine's own software rung stays on; the session only reports it.
         o.escalatesToSoftwarePath = true
         // Disk cache (GitHub #29): Off (nil, or a cache that sanitizes to nil) leaves all six cache fields

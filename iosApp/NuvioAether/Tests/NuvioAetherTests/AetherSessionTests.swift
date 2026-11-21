@@ -421,3 +421,132 @@ final class AetherSessionTests: XCTestCase {
         assertEngineDefaults(opts[0])
     }
 }
+
+/// Return from background (spec 5.1.1, 9.2): the façade's foreground restore and its transport guard.
+@MainActor
+final class AetherSessionRestoreTests: XCTestCase {
+    private var engine: FakeEngine!
+    private var session: AetherPlaybackSession!
+    private let url = URL(string: "http://127.0.0.1:8099/a.mkv")!
+
+    override func setUp() async throws {
+        engine = FakeEngine()
+        session = AetherPlaybackSession(engine: engine)
+        _ = try await session.load(AetherLoadRequest(url: url))
+        engine.send(.firstFrame(true))
+        engine.send(.phase(.playing))
+        engine.send(.clock(AetherClockSample(currentSec: 120)))
+    }
+
+    override func tearDown() async throws {
+        session.stop()
+        session = nil
+        engine = nil
+    }
+
+    func testRestoreLowersTheFrameSetsLoadingKeepsTheClockAndReloadsOnce() async throws {
+        engine.needsForegroundRestore = true
+        XCTAssertTrue(session.needsForegroundRestore)
+        var seenDuring: (frame: Bool, phase: AetherPhase, clock: Double)?
+        engine.onRestore = { [unowned self] _ in
+            seenDuring = (self.session.firstFrameShown, self.session.phase, self.session.clock.currentSec)
+        }
+        let outcome = try await session.restoreAfterBackground()
+        XCTAssertEqual(outcome, .reloaded)
+        XCTAssertEqual(engine.restores, 1)
+        XCTAssertEqual(seenDuring?.frame, false)
+        XCTAssertEqual(seenDuring?.phase, .loading)
+        XCTAssertEqual(seenDuring?.clock, 120)
+        XCTAssertEqual(engine.loads.count, 1, "a restore sends no load")
+        XCTAssertFalse(session.needsForegroundRestore)
+        engine.send(.firstFrame(true))
+        XCTAssertTrue(session.firstFrameShown, "the engine's latch raises it again")
+    }
+
+    func testRestoreReturnsEachOutcome() async throws {
+        engine.needsForegroundRestore = true
+        engine.restoreResult = .success(.refused(.notSeekable))
+        let refused = try await session.restoreAfterBackground()
+        XCTAssertEqual(refused, .refused(.notSeekable))
+        engine.restoreResult = .success(.notNeeded)
+        let notNeeded = try await session.restoreAfterBackground()
+        XCTAssertEqual(notNeeded, .notNeeded)
+    }
+
+    func testRestoreWithNoTeardownOwedTouchesNothing() async throws {
+        let outcome = try await session.restoreAfterBackground()
+        XCTAssertEqual(outcome, .notNeeded)
+        XCTAssertEqual(engine.restores, 0, "the engine is never asked to reload a live session")
+        XCTAssertTrue(session.firstFrameShown)
+        XCTAssertEqual(session.phase, .playing)
+    }
+
+    func testRestoreThrowIsReportedOnceAsANewGeneration() async {
+        var failures: [AetherFailure] = []
+        session.onFailure = { failures.append($0) }
+        // The old generation reported a failure already; the restore's own failure still reports.
+        engine.send(.failure(AetherFailure.sample(.nativeItemFailed)))
+        XCTAssertEqual(failures.count, 1)
+        engine.needsForegroundRestore = true
+        engine.restoreResult = .failure(AetherFailure.sample(.reloadFailed))
+        do {
+            _ = try await session.restoreAfterBackground()
+            XCTFail("the restore should throw")
+        } catch let f as AetherFailure {
+            XCTAssertEqual(f.kind, .reloadFailed)
+        } catch {
+            XCTFail("unexpected \(error)")
+        }
+        XCTAssertEqual(failures.map(\.kind), [.nativeItemFailed, .reloadFailed])
+    }
+
+    func testStopDuringTheRestoreUnwindsAsCancellationAndReportsNothing() async {
+        var failures = 0
+        session.onFailure = { _ in failures += 1 }
+        engine.needsForegroundRestore = true
+        engine.restoreResult = .failure(AetherFailure.sample(.reloadFailed))
+        engine.onRestore = { [unowned self] _ in self.session.stop() }
+        do {
+            _ = try await session.restoreAfterBackground()
+            XCTFail("should unwind")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("unexpected \(error)")
+        }
+        XCTAssertEqual(failures, 0)
+    }
+
+    func testStoppedSessionRestoreIsCancellation() async {
+        session.stop()
+        engine.needsForegroundRestore = true
+        do {
+            _ = try await session.restoreAfterBackground()
+            XCTFail("should unwind")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("unexpected \(error)")
+        }
+        XCTAssertEqual(engine.restores, 0)
+        XCTAssertFalse(session.needsForegroundRestore, "a stopped session owes nothing")
+    }
+
+    func testTransportIsRefusedWhileARestoreIsOwed() async {
+        engine.needsForegroundRestore = true
+        session.play()
+        session.togglePause()
+        session.setRate(1)
+        let seek = await session.seek(toSec: 30, exact: true)
+        XCTAssertEqual(seek, .rejected(.foregroundRestoreOwed))
+        XCTAssertEqual(engine.plays, 0)
+        XCTAssertEqual(engine.toggles, 0)
+        XCTAssertEqual(engine.rates, [])
+        XCTAssertTrue(engine.seeks.isEmpty)
+        session.pause()
+        session.setRate(0)
+        XCTAssertEqual(engine.pauses, 1, "pause still reaches the engine")
+        XCTAssertEqual(engine.rates, [0])
+        engine.needsForegroundRestore = false
+        session.play()
+        XCTAssertEqual(engine.plays, 1)
+    }
+}

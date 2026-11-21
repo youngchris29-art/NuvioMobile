@@ -189,6 +189,48 @@ public final class AetherPlaybackSession: ObservableObject {
         }
     }
 
+    // MARK: Return from background
+
+    /// The engine released its video pipeline on background (`needsForegroundVideoRestore`): it must be
+    /// rebuilt before any play. While true, `play()`, `togglePause()`, `setRate(> 0)` and seeks are refused.
+    public var needsForegroundRestore: Bool { !stopped && engine.needsForegroundRestore }
+
+    /// The foreground restore (decisions A, D): rebuilds the torn-down session at the engine's playhead,
+    /// paused, as a new load generation (its failure is reported once through `onFailure`, then thrown).
+    /// No await before the engine call: the caller's restore sequence activated the audio session.
+    /// `.notNeeded` when no teardown is owed (nothing is reset, the live session is untouched);
+    /// `.refused` when the engine cannot rebuild in place (the caller sends a fresh paused `load`).
+    /// A `stop()` or a newer `load` during the call unwinds as `CancellationError`, never a failure.
+    public func restoreAfterBackground() async throws -> AetherForegroundRestoreOutcome {
+        loadTicket += 1
+        let ticket = loadTicket
+        guard !stopped, lastRequest != nil else { throw CancellationError() }
+        // Checked before anything is reset: a live session keeps its frame latch and phase.
+        guard engine.needsForegroundRestore else { return .notNeeded }
+        let generation = ledger.begin()
+        resetForLoad(newSource: false)
+        attach()
+        do {
+            let outcome = try await engine.reloadForForegroundReturn()
+            guard ticket == loadTicket, ledger.isCurrent(generation) else { throw CancellationError() }
+            return outcome
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            guard ticket == loadTicket, ledger.isCurrent(generation) else { throw CancellationError() }
+            let failure = (error as? AetherFailure)
+                ?? AetherFailure.thrown(error, atSec: engine.clockSample.currentSec, beforeFirstFrame: true)
+            report(failure, generation: generation)
+            throw ledger.reportedFailure ?? failure
+        }
+    }
+
+    private func refuseWhileRestoreOwed(_ what: String) -> Bool {
+        guard engine.needsForegroundRestore else { return false }
+        AetherLog.hostLine("[NuvioAether] \(what) refused: foreground restore owed")
+        return true
+    }
+
     /// Idempotent until the next `load`. `handingOff: true` keeps the panel mode for mpv (no display
     /// criteria reset, so no bounce); every other exit resets it.
     public func stop(handingOff: Bool = false) {
@@ -223,7 +265,7 @@ public final class AetherPlaybackSession: ObservableObject {
     public var sessionCache: AetherSessionCacheSnapshot? { stopped ? nil : engine.sessionCache }
 
     public func play() {
-        guard !stopped, !phase.isTerminal else { return }
+        guard !stopped, !phase.isTerminal, !refuseWhileRestoreOwed("play") else { return }
         engine.play()
     }
 
@@ -233,20 +275,25 @@ public final class AetherPlaybackSession: ObservableObject {
     }
 
     public func togglePause() {
-        guard !stopped, !phase.isTerminal else { return }
+        guard !stopped, !phase.isTerminal, !refuseWhileRestoreOwed("togglePause") else { return }
         engine.togglePause()
     }
 
     /// Clamped to `maxRate` by the engine; 0 pauses.
     public func setRate(_ rate: Float) {
         guard !stopped, !phase.isTerminal else { return }
+        if rate > 0, refuseWhileRestoreOwed("setRate") { return }
         engine.setRate(rate)
     }
 
     /// Seeks and reports how it ended, from the engine's seek events (its own `seek` returns Void).
     public func seek(toSec target: Double, exact: Bool) async -> AetherSeekOutcome {
         if let refused = AetherSeekResolver.precheck(targetSec: target, phase: phase,
-                                                     hasSession: !stopped && lastRequest != nil) {
+                                                     hasSession: !stopped && lastRequest != nil,
+                                                     foregroundRestoreOwed: !stopped && engine.needsForegroundRestore) {
+            if refused == .rejected(.foregroundRestoreOwed) {
+                AetherLog.hostLine("[NuvioAether] seek refused: foreground restore owed")
+            }
             return refused
         }
         let token = nextSeekToken

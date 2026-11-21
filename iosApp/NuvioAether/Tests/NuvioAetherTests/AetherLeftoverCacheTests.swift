@@ -372,7 +372,7 @@ final class AetherLeftoverCacheTests: XCTestCase {
     // MARK: Engine names
 
     /// The revision SwiftPM pinned for `aetherengine` in the app project's Package.resolved.
-    private static func pinnedEngineRevision(iosApp: URL) -> String? {
+    static func pinnedEngineRevision(iosApp: URL) -> String? {
         let url = iosApp.appendingPathComponent(
             "iosApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved")
         guard let data = try? Data(contentsOf: url),
@@ -385,7 +385,7 @@ final class AetherLeftoverCacheTests: XCTestCase {
     }
 
     /// The checkout's current commit from `.git/HEAD` (a raw sha, or a ref resolved via its file or packed-refs).
-    private static func gitCommit(of checkout: URL) -> String? {
+    static func gitCommit(of checkout: URL) -> String? {
         let git = checkout.appendingPathComponent(".git")
         func isSha(_ s: String) -> Bool { s.count == 40 && s.allSatisfy(\.isHexDigit) }
         guard let head = (try? String(contentsOf: git.appendingPathComponent("HEAD"), encoding: .utf8))?

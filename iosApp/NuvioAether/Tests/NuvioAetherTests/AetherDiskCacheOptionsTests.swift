@@ -142,6 +142,67 @@ final class AetherDiskCacheOptionsTests: XCTestCase {
         XCTAssertNil(busy(nil).starting(atSec: 0).diskCache)
     }
 
+    // MARK: Return from background (decision A): the paused fresh-load fallback
+
+    func testStartPausedMapsToAutoplayOff() {
+        var r = busy(cache(8 * gb, 10 * gb))
+        r.startPaused = true
+        XCTAssertFalse(LiveEngine.options(for: r).autoplay)
+        XCTAssertTrue(LiveEngine.options(for: AetherLoadRequest(url: url, startPaused: true)).autoplay == false)
+    }
+
+    func testEveryOtherRequestKeepsAutoplay() {
+        XCTAssertFalse(AetherLoadRequest(url: url).startPaused)
+        XCTAssertTrue(LiveEngine.options(for: AetherLoadRequest(url: url)).autoplay)
+        XCTAssertTrue(LiveEngine.options(for: busy(nil)).autoplay)
+        XCTAssertTrue(LiveEngine.options(for: busy(cache(8 * gb, 10 * gb))).autoplay)
+    }
+
+    func testStartingAtCopiesStartPaused() {
+        var r = busy(nil)
+        r.startPaused = true
+        XCTAssertTrue(r.starting(atSec: 600).startPaused)
+        XCTAssertFalse(busy(nil).starting(atSec: 600).startPaused)
+    }
+
+    /// Spec 5.1.1 / E5, E8, E10: the engine facts the foreground restore relies on, read from the pinned
+    /// checkout. Fails on any other engine version, or when one of the rules changes shape.
+    func testEngineReloadContractAt7712() throws {
+        XCTAssertEqual(AetherEngine.version, "7.71.2", "engine bumped: re-read the reload contract (spec E5, E8, E10)")
+        let iosApp = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let pinned = AetherLeftoverCacheTests.pinnedEngineRevision(iosApp: iosApp)
+        var roots: [URL] = []
+        if let env = ProcessInfo.processInfo.environment["AETHER_ENGINE_CHECKOUT"], !env.isEmpty {
+            roots.append(URL(fileURLWithPath: env))
+        }
+        roots += ["build/DerivedData/SourcePackages", "build/DerivedDataPkg/SourcePackages",
+                  "build/DerivedDataUITests/SourcePackages"]
+            .map { iosApp.appendingPathComponent($0).appendingPathComponent("checkouts/AetherEngine") }
+        guard let root = roots.first(where: {
+            FileManager.default.fileExists(atPath: $0.appendingPathComponent("Sources/AetherEngine").path)
+                && pinned != nil && AetherLeftoverCacheTests.gitCommit(of: $0) == pinned
+        }) else {
+            throw XCTSkip("No AetherEngine checkout at the pinned revision \(pinned ?? "unknown").")
+        }
+        let src = root.appendingPathComponent("Sources/AetherEngine")
+        func read(_ rel: String) throws -> String {
+            try String(contentsOf: src.appendingPathComponent(rel), encoding: .utf8)
+        }
+        let engine = try read("AetherEngine.swift")
+        let reload = try read("AetherEngine+ReloadWithOptions.swift")
+        // E5: the flag the façade gates on.
+        XCTAssertTrue(engine.contains("public var needsForegroundVideoRestore: Bool { backgroundTeardownSelection != nil }"))
+        // E8: a torn-down session replays the mount flag, so `autoplay = false` comes back paused.
+        XCTAssertTrue(engine.contains("let resumesTornDownSession = backgroundTeardownSelection != nil"))
+        XCTAssertTrue(engine.contains("if !resumesTornDownSession { setLoadedAutoplay(sessionRebuildResumesPlaying) }"))
+        // E10: the partition's torn-down branch and the no-rebuild condition.
+        XCTAssertTrue(reload.contains("changed, sessionOwnsTransport: backgroundTeardownSelection == nil)"))
+        XCTAssertTrue(reload.contains("if applied.isEmpty, !sessionOwned.isEmpty {"))
+        XCTAssertTrue(reload.contains("throw AetherEngineError.sessionNotReloadable(refusal)"))
+    }
+
     func testDefaultRequestHasNoDiskCache() {
         XCTAssertNil(AetherLoadRequest(url: url).diskCache)
     }

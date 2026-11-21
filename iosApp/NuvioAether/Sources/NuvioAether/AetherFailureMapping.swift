@@ -18,6 +18,9 @@ public enum AetherFailureKind: Sendable, Equatable, Hashable {
     /// Façade-raised (`AetherPlaybackSession.reportFirstFrameTimeout()`): the host's start budget elapsed
     /// with no first frame.
     case firstFrameTimeout
+    /// Façade-raised (return from background): the one foreground restore of a return failed. Not an
+    /// engine token; the app's policy hands it to mpv before every other row.
+    case foregroundRestoreFailed
     /// Any token a later engine adds, or a throw that published no `errorInfo` (`"thrown:<Type>"`).
     case unknown(String)
 
@@ -57,6 +60,7 @@ public enum AetherFailureKind: Sendable, Equatable, Hashable {
         case "audioBridgeProducedNoOutput": self = .audioBridgeProducedNoOutput
         case "storageExhausted": self = .storageExhausted
         case "firstFrameTimeout": self = .firstFrameTimeout
+        case "foregroundRestoreFailed": self = .foregroundRestoreFailed
         default: self = .unknown(token)
         }
     }
@@ -86,6 +90,7 @@ public enum AetherFailureKind: Sendable, Equatable, Hashable {
         case .audioBridgeProducedNoOutput: return "audioBridgeProducedNoOutput"
         case .storageExhausted: return "storageExhausted"
         case .firstFrameTimeout: return "firstFrameTimeout"
+        case .foregroundRestoreFailed: return "foregroundRestoreFailed"
         case .unknown(let token): return token
         }
     }
@@ -250,6 +255,14 @@ public struct AetherSeekResolver: Sendable, Equatable {
         if phase == .ended { return .rejected(.ended) }
         guard hasSession else { return .rejected(.noActiveSession) }
         return nil
+    }
+
+    /// `precheck`, then the return-from-background guard: a seek while the engine owes a foreground
+    /// restore is refused before the engine is called (spec I1).
+    public static func precheck(targetSec: Double, phase: AetherPhase, hasSession: Bool,
+                                foregroundRestoreOwed: Bool) -> AetherSeekOutcome? {
+        if let refused = precheck(targetSec: targetSec, phase: phase, hasSession: hasSession) { return refused }
+        return foregroundRestoreOwed ? .rejected(.foregroundRestoreOwed) : nil
     }
 
     func matchesTarget(_ t: Double) -> Bool {

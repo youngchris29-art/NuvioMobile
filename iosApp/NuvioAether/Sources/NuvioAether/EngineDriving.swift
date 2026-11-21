@@ -15,6 +15,14 @@ protocol EngineDriving: AnyObject {
     func stop(resetDisplayCriteria: Bool, finalTeardown: Bool)
     /// Throws like `load`.
     func reloadAtCurrentPosition() async throws
+    /// `AetherEngine.needsForegroundVideoRestore`: the background policy released the video pipeline and
+    /// the host must rebuild before sending play().
+    var needsForegroundRestore: Bool { get }
+    /// Only while `needsForegroundRestore`: `reloadAtCurrentPosition(applying: { $0.autoplay = false })`.
+    /// Returns `.notNeeded` without calling the engine when the teardown is gone (never reloads a live
+    /// session); `.refused` for `sessionNotReloadable` (never throws for it); `CancellationError`
+    /// untouched; every other throw as `load`.
+    func reloadForForegroundReturn() async throws -> AetherForegroundRestoreOutcome
 
     func play()
     func pause()

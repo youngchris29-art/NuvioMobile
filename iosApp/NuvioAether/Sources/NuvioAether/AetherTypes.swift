@@ -220,6 +220,9 @@ public struct AetherLoadRequest: Sendable, Equatable {
     /// The session cache for this load (loopback route). nil = Off, the engine's defaults. `starting(atSec:)`
     /// keeps it, so a DV rebuild and Replay reuse the load's snapshot.
     public var diskCache: AetherDiskCache?
+    /// Return from background (decision A): the fresh-load fallback of a foreground restore mounts paused
+    /// (`LoadOptions.autoplay = !startPaused`). false on every other request. `starting(atSec:)` copies it.
+    public var startPaused: Bool
 
     public init(url: URL,
                 startSec: Double? = nil,
@@ -237,7 +240,8 @@ public struct AetherLoadRequest: Sendable, Equatable {
                 audioShaping: AetherAudioShaping = .init(),
                 preferSoftwareDecode: Bool = false,
                 logTag: String? = nil,
-                diskCache: AetherDiskCache? = nil) {
+                diskCache: AetherDiskCache? = nil,
+                startPaused: Bool = false) {
         self.url = url
         self.startSec = startSec
         self.headers = headers
@@ -255,6 +259,7 @@ public struct AetherLoadRequest: Sendable, Equatable {
         self.preferSoftwareDecode = preferSoftwareDecode
         self.logTag = logTag
         self.diskCache = diskCache
+        self.startPaused = startPaused
     }
 
     /// The same request at another start position: Replay (`0`) and the DV-interruption rebuild (a fresh
@@ -500,6 +505,24 @@ public struct AetherDiagnostics: Sendable, Equatable {
 
 public enum AetherSeekRejection: String, Sendable, CaseIterable {
     case noActiveSession, liveWithoutDVR, sourceNotSeekable, ended, notFinite
+    /// Return from background: the engine released its video pipeline and a foreground restore is owed;
+    /// the session refuses the seek without calling the engine (spec I1).
+    case foregroundRestoreOwed
+}
+
+/// Why the engine cannot rebuild the session in place (`AetherEngine.SessionReloadRefusal`, folded).
+public enum AetherReloadRefusal: String, Sendable, Equatable {
+    case noActiveSession, notSeekable, other
+}
+
+/// How `AetherPlaybackSession.restoreAfterBackground()` ended.
+public enum AetherForegroundRestoreOutcome: Sendable, Equatable {
+    /// The torn-down session was rebuilt at the engine's playhead, paused.
+    case reloaded
+    /// No teardown was owed when the call ran: the session is live and untouched.
+    case notNeeded
+    /// The engine cannot rebuild this session in place (`sessionNotReloadable`): send a fresh load.
+    case refused(AetherReloadRefusal)
 }
 
 /// How a `seek(toSec:exact:)` ended, read from the engine's seek events (its `seek` returns Void).
