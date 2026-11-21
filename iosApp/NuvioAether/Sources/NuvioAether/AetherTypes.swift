@@ -119,6 +119,52 @@ public struct AetherAudioShaping: Sendable, Equatable {
 }
 
 /// Everything the engine reads before `load()` (engine docs, "What must be set before load()").
+/// The engine's session cache for one load (loopback route). nil on the request = Off: the engine's
+/// defaults for every cache field (invariant). Built only by the app's `AetherDiskCachePlan`.
+/// Carries no packet-store field: the software route keeps the engine's memory store (decision U).
+public struct AetherDiskCache: Sendable, Equatable {
+    /// `LoadOptions.sessionCacheByteBudget`.
+    public var budgetBytes: Int
+    /// `LoadOptions.sessionCacheHardLimitBytes`; nil leaves it unset (`.budgetOnly` enforcement).
+    public var hardLimitBytes: Int?
+    /// `LoadOptions.forwardBufferSegments` (the engine clamps 4...2700).
+    public var forwardSegments: Int
+
+    public init(budgetBytes: Int, hardLimitBytes: Int?, forwardSegments: Int) {
+        self.budgetBytes = budgetBytes
+        self.hardLimitBytes = hardLimitBytes
+        self.forwardSegments = forwardSegments
+    }
+
+    /// The engine's own window clamp (`HLSVideoEngine.swift:1417-1419`).
+    static let forwardSegmentRange = 4...2700
+
+    /// What `LiveEngine` sends. Deterministic, total, and fails closed: nil (= Off) for any input it
+    /// cannot make safe. Rules apply in order; the first that yields nil wins:
+    /// 1. `hardLimitBytes` set and <= 0 -> nil. 2. `budgetBytes` <= 0 -> nil.
+    /// 3. `budgetBytes` > `hardLimitBytes` -> budget = hard limit. 4. `forwardSegments` clamped to 4...2700.
+    /// 5. A nil hard limit stays nil. Valid input is unchanged (idempotent).
+    public var sanitized: AetherDiskCache? { sanitization.result }
+
+    /// The result plus the rules that changed or rejected the input (for the `[AetherCache] sanitized:` line).
+    var sanitization: (result: AetherDiskCache?, rules: [String]) {
+        if let hard = hardLimitBytes, hard <= 0 { return (nil, ["1 non-positive hard limit"]) }
+        if budgetBytes <= 0 { return (nil, ["2 non-positive budget"]) }
+        var out = self
+        var rules: [String] = []
+        if let hard = hardLimitBytes, budgetBytes > hard {
+            out.budgetBytes = hard
+            rules.append("3 budget above hard limit")
+        }
+        let clamped = min(max(forwardSegments, Self.forwardSegmentRange.lowerBound), Self.forwardSegmentRange.upperBound)
+        if clamped != forwardSegments {
+            out.forwardSegments = clamped
+            rules.append("4 window clamped")
+        }
+        return (out, rules)
+    }
+}
+
 public struct AetherLoadRequest: Sendable, Equatable {
     public var url: URL
     /// `load(url:startPosition:)`. nil starts at the head.
@@ -146,6 +192,9 @@ public struct AetherLoadRequest: Sendable, Equatable {
     public var preferSoftwareDecode: Bool
     /// The engine's `logTag`, set before `load()`.
     public var logTag: String?
+    /// The session cache for this load (loopback route). nil = Off, the engine's defaults. `starting(atSec:)`
+    /// keeps it, so a DV rebuild and Replay reuse the load's snapshot.
+    public var diskCache: AetherDiskCache?
 
     public init(url: URL,
                 startSec: Double? = nil,
@@ -162,7 +211,8 @@ public struct AetherLoadRequest: Sendable, Equatable {
                 audioDelaySec: Double = 0,
                 audioShaping: AetherAudioShaping = .init(),
                 preferSoftwareDecode: Bool = false,
-                logTag: String? = nil) {
+                logTag: String? = nil,
+                diskCache: AetherDiskCache? = nil) {
         self.url = url
         self.startSec = startSec
         self.headers = headers
@@ -179,6 +229,7 @@ public struct AetherLoadRequest: Sendable, Equatable {
         self.audioShaping = audioShaping
         self.preferSoftwareDecode = preferSoftwareDecode
         self.logTag = logTag
+        self.diskCache = diskCache
     }
 
     /// The same request at another start position: Replay (`0`) and the DV-interruption rebuild (a fresh

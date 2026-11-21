@@ -39,7 +39,9 @@ let package = Package(
         ),
         .testTarget(
             name: "NuvioAetherTests",
-            dependencies: ["NuvioAether"],
+            // The engine product is here only so tests can read `LoadOptions` fields (disk cache mapping).
+            // The test target does not link MPVKit, so the Libavutil clash does not apply.
+            dependencies: ["NuvioAether", .product(name: "AetherEngine", package: "AetherEngine")],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
     ]

@@ -1,4 +1,5 @@
 import XCTest
+import AetherEngine
 @testable import NuvioAether
 
 /// The session's event wiring, driven by `FakeEngine`.
@@ -338,7 +339,85 @@ final class AetherSessionTests: XCTestCase {
         r.displayCriteriaOwner = .forMatchContent(false)
         r.systemMatchingEnabled = false
         r.objectAudio = .render(.l514)
+        r.diskCache = AetherDiskCache(budgetBytes: 8_000_000_000, hardLimitBytes: 10_000_000_000, forwardSegments: 2700)
         _ = try await session.load(r)
         XCTAssertEqual(engine.loads, [r])
+    }
+
+    // MARK: Disk cache request path (5.1b layer 2)
+
+    /// Sends each request through a real session over `FakeEngine` and maps what the engine recorded
+    /// through the real `LiveEngine.options(for:)`.
+    private func recordedOptions(_ requests: [AetherLoadRequest]) async throws -> [LoadOptions] {
+        for r in requests { _ = try await session.load(r) }
+        XCTAssertEqual(engine.loads, requests)
+        return engine.loads.map(LiveEngine.options(for:))
+    }
+
+    private func cacheFields(_ o: LoadOptions) -> (Int?, Int?, Int?, Int, SoftwarePacketCacheStorage, Bool) {
+        (o.forwardBufferSegments, o.sessionCacheByteBudget, o.sessionCacheHardLimitBytes,
+         o.sessionCacheFreeReserveBytes, o.softwarePacketCacheStorage, o.retainsSessionCacheAfterStop)
+    }
+
+    private func assertEngineDefaults(_ o: LoadOptions, file: StaticString = #filePath, line: UInt = #line) {
+        let f = cacheFields(o)
+        XCTAssertNil(f.0, file: file, line: line)
+        XCTAssertNil(f.1, file: file, line: line)
+        XCTAssertNil(f.2, file: file, line: line)
+        XCTAssertEqual(f.3, 0, file: file, line: line)
+        XCTAssertEqual(f.4, .automatic, file: file, line: line)
+        XCTAssertFalse(f.5, file: file, line: line)
+    }
+
+    private func assertTenGB(_ o: LoadOptions, file: StaticString = #filePath, line: UInt = #line) {
+        let f = cacheFields(o)
+        XCTAssertEqual(f.0, 2700, file: file, line: line)
+        XCTAssertEqual(f.1, 8_000_000_000, file: file, line: line)
+        XCTAssertEqual(f.2, 10_000_000_000, file: file, line: line)
+        XCTAssertEqual(f.3, 0, file: file, line: line)
+        XCTAssertEqual(f.4, .automatic, file: file, line: line)
+        XCTAssertFalse(f.5, file: file, line: line)
+    }
+
+    private let tenGB = AetherDiskCache(budgetBytes: 8_000_000_000, hardLimitBytes: 10_000_000_000, forwardSegments: 2700)
+
+    func testStartedOnSnapshotSurvivesRebuildAndReplay() async throws {
+        let first = AetherLoadRequest(url: url, diskCache: tenGB)
+        let rebuild = first.starting(atSec: 600)
+        let replay = rebuild.starting(atSec: 0)
+        XCTAssertEqual(rebuild.diskCache, tenGB)
+        XCTAssertEqual(replay.diskCache, tenGB)
+        let opts = try await recordedOptions([first, rebuild, replay])
+        XCTAssertEqual(opts.count, 3)
+        opts.forEach { assertTenGB($0) }
+    }
+
+    func testStartedOffSnapshotSurvivesRebuildAndReplay() async throws {
+        let first = AetherLoadRequest(url: url)
+        let opts = try await recordedOptions([first, first.starting(atSec: 600), first.starting(atSec: 0)])
+        XCTAssertEqual(opts.count, 3)
+        opts.forEach { assertEngineDefaults($0) }
+    }
+
+    func testOnToOffAndOffToOnApplyOnlyToTheNextFreshLoad() async throws {
+        // On -> Off: rebuild and Replay keep On, the next fresh load is Off.
+        let on = AetherLoadRequest(url: url, diskCache: tenGB)
+        let off = AetherLoadRequest(url: url)
+        let a = try await recordedOptions([on, on.starting(atSec: 600), on.starting(atSec: 0), off])
+        assertTenGB(a[0]); assertTenGB(a[1]); assertTenGB(a[2]); assertEngineDefaults(a[3])
+        // Off -> On (20 GB).
+        engine.loads = []
+        let twenty = AetherDiskCache(budgetBytes: 18_000_000_000, hardLimitBytes: 20_000_000_000, forwardSegments: 2700)
+        let on20 = AetherLoadRequest(url: url, diskCache: twenty)
+        let b = try await recordedOptions([off, off.starting(atSec: 600), off.starting(atSec: 0), on20])
+        assertEngineDefaults(b[0]); assertEngineDefaults(b[1]); assertEngineDefaults(b[2])
+        XCTAssertEqual(b[3].sessionCacheHardLimitBytes, 20_000_000_000)
+        XCTAssertEqual(b[3].sessionCacheByteBudget, 18_000_000_000)
+    }
+
+    func testInvalidCacheOnTheRequestSendsOffThroughTheEngine() async throws {
+        let bad = AetherLoadRequest(url: url, diskCache: AetherDiskCache(budgetBytes: 0, hardLimitBytes: 5, forwardSegments: 2700))
+        let opts = try await recordedOptions([bad])
+        assertEngineDefaults(opts[0])
     }
 }

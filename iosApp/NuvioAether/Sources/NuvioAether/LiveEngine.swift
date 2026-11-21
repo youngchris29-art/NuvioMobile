@@ -231,6 +231,12 @@ final class LiveEngine: EngineDriving {
                                                      durationSec: $0.durationSeconds) }))
         }
 
+        // Session cache telemetry (log only): one line per 30 s while the loopback route owns the cache.
+        sink(engine.diagnostics.$sessionCacheStatus
+                .throttle(for: .seconds(30), scheduler: RunLoop.main, latest: true)) { _, s in
+            if let line = Self.cacheLogLine(s) { AetherLog.hostLine(line) }
+        }
+
         // Diagnostics: cached field by field, published coalesced at 2 Hz.
         sink(engine.$videoRoute.removeDuplicates()) { me, v in me.updateDiag { $0.route = Self.route(v) } }
         sink(engine.$sourceVideoFormat.removeDuplicates()) { me, v in me.updateDiag { $0.sourceFormat = Self.format(v) } }
@@ -439,6 +445,32 @@ final class LiveEngine: EngineDriving {
         if r.preferSoftwareDecode { o.preferredDecodePath = .software }
         // Contract 3: the engine's own software rung stays on; the session only reports it.
         o.escalatesToSoftwarePath = true
+        // Disk cache (GitHub #29): Off (nil, or a cache that sanitizes to nil) leaves all six cache fields
+        // at the engine's defaults. Never set here: softwarePacketCacheStorage (decision U),
+        // sessionCacheFreeReserveBytes (R), retainsSessionCacheAfterStop (X).
+        if let requested = r.diskCache {
+            let outcome = requested.sanitization
+            if !outcome.rules.isEmpty, outcome.result != requested {
+                AetherLog.hostLine("[AetherCache] sanitized: \(outcome.rules.joined(separator: ", "))")
+            }
+            if let c = outcome.result {
+                o.forwardBufferSegments = c.forwardSegments
+                o.sessionCacheByteBudget = c.budgetBytes
+                o.sessionCacheHardLimitBytes = c.hardLimitBytes
+            }
+        }
         return o
+    }
+
+    /// One `[AetherCache]` line for a cache snapshot, only while the loopback route owns the cache.
+    static func cacheLogLine(_ s: SessionCacheStatus) -> String? {
+        guard s.route == .loopbackFMP4 else { return nil }
+        func mb(_ bytes: Int) -> Int { bytes / 1_000_000 }
+        let hard = s.hardLimitBytes.map { String(mb($0)) } ?? "-"
+        let failure = s.lastFailure?.rawValue ?? "-"
+        return "[AetherCache] budget=\(mb(s.effectiveBudgetBytes)) hard=\(hard) disk=\(mb(s.currentDiskBytes)) "
+            + "staging=\(mb(s.stagingBytes)) fwd=\(mb(s.currentForwardBytes)) "
+            + "parked=\(s.producerParked ? 1 : 0) waiting=\(s.diskAdmissionWaiting ? 1 : 0) "
+            + "rejected=\(s.rejectedDiskWrites) evictions=\(s.evictionCount) failure=\(failure)"
     }
 }
