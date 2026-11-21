@@ -268,6 +268,18 @@ final class AetherRoutingTests: XCTestCase {
         XCTAssertEqual(route(sample(), plain).engine, .aether)
     }
 
+    /// GitHub #29, code review r4 finding 2: the Disk Cache explainer names no exception for HLS because
+    /// no HLS or DASH source reaches Aether (where the engine would hand a VOD playlist to AVPlayer's own
+    /// remote-HLS path and the disk cache would not apply). By extension (row 4) or by the demuxer the
+    /// probe found (row 5), every such source goes to mpv.
+    func testAdaptiveStreamsNeverRouteToAether() {
+        for container in ["hls", "applehttp", "dash"] {
+            XCTAssertEqual(route(sample(container: container)).engine, .mpv, container)
+        }
+        var hls = on; hls.sourceURL = URL(string: "https://example.com/v/index.M3U8?token=1")
+        XCTAssertEqual(route(sample(), hls).engine, .mpv)
+    }
+
     // Row 5
     func testContainerGate() {
         XCTAssertEqual(route(sample(container: "avi")).reason, "container avi")
