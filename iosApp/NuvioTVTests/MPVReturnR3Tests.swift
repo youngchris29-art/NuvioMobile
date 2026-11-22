@@ -488,3 +488,62 @@ final class TraktScrobbleOrderTests: XCTestCase {
         XCTAssertEqual(settled, 2)
     }
 }
+
+/// Delta review of r6: a chain hold that times out voids the deferred stop it was waiting for, so the
+/// old start's late completion never sends a stop after the next session's start.
+@MainActor
+final class TrackerChainAbandonTests: XCTestCase {
+    private func context() -> PlaybackContext {
+        PlaybackContext(url: URL(string: "https://example.invalid/a.mkv")!, title: "T", contentType: "movie",
+                        parentMetaId: "tt1", videoId: "tt1", season: nil, episode: nil, poster: nil, background: nil,
+                        providerName: nil, providerAddonId: nil, streamTitle: nil, streamSubtitle: nil, externalSubtitles: [])
+    }
+
+    func testATimedOutHoldDropsTheTrackerSessionsDeferredStop() {
+        var log: [String] = []
+        let backend = TrackerReturnChainTests.SlowBackend("old")
+        backend.shared = { log.append($0) }
+        let chain = TrackerReturnChain()
+        let old = TrackerScrobbleSession(context: context(), backend: backend)
+        old.start(positionSec: 100, durationSec: 1000)
+        old.stop(positionSec: 300, durationSec: 1000, isLive: false,
+                 settled: chain.hold(old, timeoutSec: 0.05, onAbandon: { old.abandonDeferredStop() }))
+        let idle = expectation(description: "released by the timeout")
+        chain.whenIdle { log.append("new start"); idle.fulfill() }
+        wait(for: [idle], timeout: 2)
+        backend.completeNext()                              // the old start completes late
+        XCTAssertEqual(log, ["old start 10", "new start"], "no stop after the next session's start")
+    }
+
+    func testATimedOutHoldDropsTheTraktDeferredStop() {
+        var log: [String] = []
+        var pending: [@MainActor () -> Void] = []
+        func send(_ name: String) -> TraktScrobbleOrder.Send { { p, done in log.append("\(name) \(Int(p))"); pending.append(done) } }
+        let chain = TrackerReturnChain()
+        let order = TraktScrobbleOrder(owner: nil)
+        order.start(percent: 10, send: send("start"))
+        order.stop(percent: 30, send: send("stop"),
+                   settled: chain.hold(order, timeoutSec: 0.05, onAbandon: { order.abandonDeferredStop() }))
+        let idle = expectation(description: "released by the timeout")
+        chain.whenIdle { log.append("new start"); idle.fulfill() }
+        wait(for: [idle], timeout: 2)
+        pending.removeFirst()()                             // the old start completes late
+        XCTAssertEqual(log, ["start 10", "new start"], "no stop after the next session's start")
+    }
+
+    /// The normal case is unchanged: a start that completes before the timeout sends its stop first.
+    func testWithinTheTimeoutTheStopStillGoesFirst() {
+        var log: [String] = []
+        let backend = TrackerReturnChainTests.SlowBackend("old")
+        backend.shared = { log.append($0) }
+        let chain = TrackerReturnChain()
+        let old = TrackerScrobbleSession(context: context(), backend: backend)
+        old.start(positionSec: 100, durationSec: 1000)
+        old.stop(positionSec: 300, durationSec: 1000, isLive: false,
+                 settled: chain.hold(old, onAbandon: { old.abandonDeferredStop() }))
+        chain.whenIdle { log.append("new start") }
+        backend.completeNext()
+        backend.completeNext()
+        XCTAssertEqual(log, ["old start 10", "old stop 30", "new start"])
+    }
+}

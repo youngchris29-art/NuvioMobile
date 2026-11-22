@@ -1925,7 +1925,9 @@ final class MPVTVPlayerViewController: UIViewController {
         // idempotent, and independent of whether a Trakt item was ever built. Code r3-3: a replaced
         // controller's stops hold the chain (which keeps the tracker session alive) until they settle.
         let replaced: Bool = { if case .replaced = teardownStop.disposition { return true }; return false }()
-        let trackerSettled: (@MainActor () -> Void)? = replaced ? chain.hold(trackerScrobble) : nil
+        let tracker = trackerScrobble
+        let trackerSettled: (@MainActor () -> Void)? = replaced
+            ? chain.hold(tracker, onAbandon: { tracker.abandonDeferredStop() }) : nil
         trackerScrobble.stop(positionSec: atSec, durationSec: state.durationSec, isLive: holdsLiveProgress,
                              settled: trackerSettled)
         traktSessionClosed = true
@@ -1947,7 +1949,9 @@ final class MPVTVPlayerViewController: UIViewController {
                 ) { _ in Task { @MainActor in done() } }
             }
         }
-        traktOrder.stop(percent: percent, send: send, settled: replaced ? chain.hold(traktOrder) : nil)
+        let order = traktOrder
+        order.stop(percent: percent, send: send,
+                   settled: replaced ? chain.hold(order, onAbandon: { order.abandonDeferredStop() }) : nil)
     }
 
     private func currentProgressPercent() -> Float {

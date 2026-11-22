@@ -196,6 +196,13 @@ final class TraktScrobbleOrder {
         }
     }
 
+    /// The chain gave up waiting (its hold timed out): a stop still deferred behind the start is dropped.
+    func abandonDeferredStop() {
+        guard deferredStop != nil else { return }
+        deferredStop = nil
+        print("[MPVReturn] trakt deferred stop abandoned")
+    }
+
     /// `send` nil: no item was ever built (nothing to stop). `settled` exactly once.
     func stop(percent: Float, send: Send?, settled: (@MainActor () -> Void)?) {
         let now = sequencer.stop(percent: Double(percent))
@@ -232,14 +239,19 @@ final class TrackerReturnChain {
     var isIdle: Bool { holds.isEmpty }
 
     /// Holds the chain (keeping `retaining` alive) until the returned closure runs (once; later calls do nothing).
-    func hold(_ retaining: AnyObject? = nil, timeoutSec: TimeInterval = TrackerReturnChain.holdTimeoutSec) -> @MainActor () -> Void {
+    /// `onAbandon` (delta review of r6): called when the hold is released by its timeout instead of by
+    /// its owner. The held work is void from then on (the next session's start supersedes it), so the
+    /// owner drops a stop it is still deferring; a stop already in flight cannot be recalled.
+    func hold(_ retaining: AnyObject? = nil, timeoutSec: TimeInterval = TrackerReturnChain.holdTimeoutSec,
+              onAbandon: (@MainActor () -> Void)? = nil) -> @MainActor () -> Void {
         nextID += 1
         let id = nextID
         holds[id] = .some(retaining)
         DispatchQueue.main.asyncAfter(deadline: .now() + timeoutSec) { [weak self] in
             MainActor.assumeIsolated {
                 guard let self, self.holds[id] != nil else { return }
-                print("[MPVReturn] tracker chain hold \(id) timed out after \(Int(timeoutSec)) s")
+                print("[MPVReturn] tracker chain hold \(id) timed out after \(Int(timeoutSec)) s: its deferred stop is abandoned")
+                onAbandon?()
                 self.release(id)
             }
         }
@@ -594,12 +606,23 @@ final class TrackerScrobbleSession {
     /// nothing to send), so a replacement can start its own session strictly after it.
     private var stopSettled: (@MainActor () -> Void)?
 
+    /// The chain gave up waiting (its hold timed out): the stop deferred behind the start is dropped.
+    private var deferredStopAbandoned = false
+
+    func abandonDeferredStop() {
+        guard sequencer.startInFlight, sequencer.pendingStop != nil else { return }
+        deferredStopAbandoned = true
+        print("[MPVReturn] tracker deferred stop abandoned")
+    }
+
     private func startFinished() {
         if let percent = sequencer.startCompleted() {
             // The deferred stop goes out after an await: the identity is checked again here.
             let settled = stopSettled
             stopSettled = nil
-            if gate.allows("tracker deferred stop"), targets != nil {
+            if deferredStopAbandoned {
+                settled?()
+            } else if gate.allows("tracker deferred stop"), targets != nil {
                 dispatch(.stop, percent: percent, completion: settled)
             } else {
                 settled?()
