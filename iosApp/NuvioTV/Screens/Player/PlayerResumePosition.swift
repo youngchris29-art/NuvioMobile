@@ -114,3 +114,14 @@ extension PlayerResumePosition {
         }
     }
 }
+
+extension PlayerResumePosition {
+    /// Which duration counts for a start's percentage (W5 r6): the load's probe when it is finite and
+    /// positive, else the live clock's when it is, else 0 (unknown). An unknown or zero probe never
+    /// hides a live duration that arrived later.
+    static func knownDuration(probeSec: Double?, liveSec: Double?) -> Double {
+        if let p = probeSec, p.isFinite, p > 0 { return p }
+        if let l = liveSec, l.isFinite, l > 0 { return l }
+        return 0
+    }
+}
