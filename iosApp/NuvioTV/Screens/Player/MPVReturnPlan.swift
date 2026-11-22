@@ -223,6 +223,15 @@ nonisolated enum PlayerReturnFailureOwner: Sendable, Equatable {
         return localOwnerAvailable ? .local : .none
     }
 
+    /// Code r6-2: the return start a failure carries (`PlaybackFailure.returnRecovery`), for both owners.
+    /// The held start (the payload's, else a retry's `returnStart`) survives any number of failed retries
+    /// until one settles; a start that settled, or one that never carried a return start, carries none.
+    static func recoveryStart(payloadStart: PlayerReturnHandoff.Start?, contextReturnStart: PlayerReturnHandoff.Start?,
+                              settled: Bool) -> PlayerReturnHandoff.Start? {
+        guard !settled else { return nil }
+        return payloadStart ?? contextReturnStart
+    }
+
     /// The local alert's "Try with mpv" start: a return failure's held start; else where an ordinary
     /// start that played had got to; else a normal start.
     static func localRetryStart(for failure: PlaybackFailure) -> PlayerReturnHandoff.Start {
@@ -271,21 +280,24 @@ nonisolated struct MPVStartDeadline: Sendable, Equatable {
     }
 }
 
-// MARK: - The position a return start reports (code review W7 r4-1, r5-3)
+// MARK: - The position a return start reports (code review W7 r4-1, r5-3, r6-1)
 
-/// The position every tracker start, progress save, Trakt note and stop reports (r4-1, r5-3). Pure:
-/// - `.held`: until the held start is reached (the payload's landing completed, or a retry's start);
-/// - `.landed(x)`: after that, the confirmed landing (or the latest seek landing) until the published
-///   clock (a 0.5 s poll) has caught up with it, so an exit right after the landing never reports 0;
-/// - `.clock`: the player's own position.
+/// The position every tracker start, progress save, Trakt note and stop reports (r4-1, r5-3, r6-1). Pure:
+/// - `.held(h)`: until the held start is reached (the payload's landing completed, or a retry's start);
+/// - `.landed(x)`: a known landing (settled, an off-target landing, a later seek's landing) until the
+///   published clock (a 0.5 s poll) has caught up with it, so an exit right after it never reports 0;
+/// - `.awaitingClock`: the start ended where nothing is known (a rejected seek, an off-target with no
+///   reading, a start with no landing): never the held target; mpv's own observed time-pos until the
+///   first published sample, and `nil` (report nothing) when even that is unusable;
+/// - `.clock`: the published clock.
 /// A start with no held start is `.clock` from the beginning (today's).
 nonisolated struct MPVReturnReportedPosition: Sendable, Equatable {
-    enum Phase: Sendable, Equatable { case held(Double), landed(Double), clock }
+    enum Phase: Sendable, Equatable { case held(Double), landed(Double), awaitingClock, clock }
+    enum Reached: Sendable, Equatable { case at(Double), unknown }
 
     private(set) var phase: Phase
 
-    /// A clock sample within this neighbourhood of the landing has caught up (paused: equal; playing:
-    /// a little past; the window allows a slow first tick).
+    /// A clock sample within this neighbourhood of a landing has caught up.
     static let catchUpBeforeSec = 1.0
     static let catchUpAfterSec = 60.0
 
@@ -293,14 +305,16 @@ nonisolated struct MPVReturnReportedPosition: Sendable, Equatable {
         if let h = heldStartSec, h.isFinite, h >= 0 { phase = .held(h) } else { phase = .clock }
     }
 
-    /// The held start was reached: at `landedSec` (nil = the held start itself).
-    mutating func reached(landedSec: Double?) {
-        guard case .held(let h) = phase else { return }
-        phase = .landed(landedSec.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil } ?? h)
+    /// The held start's outcome.
+    mutating func reached(_ r: Reached) {
+        guard case .held = phase else { return }
+        switch r {
+        case .at(let x) where x.isFinite && x >= 0: phase = .landed(x)
+        case .at, .unknown: phase = .awaitingClock
+        }
     }
 
-    /// A later app seek landed: the reference moves there until the clock catches up again. Ignored
-    /// while the held start has not been reached.
+    /// A later app seek landed: the reference moves there. Ignored while the held start is not reached.
     mutating func seekLanded(atSec: Double) {
         if case .held = phase { return }
         if atSec.isFinite, atSec >= 0 { phase = .landed(atSec) }
@@ -308,14 +322,23 @@ nonisolated struct MPVReturnReportedPosition: Sendable, Equatable {
 
     /// A published clock sample (the poll).
     mutating func clockSample(_ live: Double) {
-        guard case .landed(let x) = phase, live.isFinite else { return }
-        if live >= x - Self.catchUpBeforeSec && live <= x + Self.catchUpAfterSec { phase = .clock }
+        guard live.isFinite else { return }
+        switch phase {
+        case .landed(let x):
+            if live >= x - Self.catchUpBeforeSec && live <= x + Self.catchUpAfterSec { phase = .clock }
+        case .awaitingClock:
+            phase = .clock
+        case .held, .clock:
+            break
+        }
     }
 
-    func position(livePositionSec: Double) -> Double {
+    /// nil: nothing trustworthy to report (a periodic save is skipped; a stop uses its fallback).
+    func position(livePositionSec: Double, observedSec: Double) -> Double? {
         switch phase {
         case .held(let h): return h
         case .landed(let x): return x
+        case .awaitingClock: return observedSec.isFinite && observedSec >= 0 ? observedSec : nil
         case .clock: return livePositionSec.isFinite ? max(0, livePositionSec) : 0
         }
     }

@@ -372,6 +372,8 @@ final class MPVTVPlayerViewController: UIViewController {
     /// Code r4-2: bound to the creation owner, so a stop deferred behind an in-flight start (also one the
     /// tracker chain keeps alive after this controller went) is refused after an identity change.
     private lazy var trackerScrobble = TrackerScrobbleSession(context: context, owner: creationOwner)
+    /// Code r6-3: the Trakt start / stop pair, ordered like the other trackers and bound to the owner.
+    private lazy var traktOrder = TraktScrobbleOrder(owner: creationOwner)
     /// Main: the provider fetch and the chapter-derived intervals, re-merged into `skipPlanner`,
     /// the bar spans and the up-next hold whenever either changes (`applyMergedSkipIntervals`).
     private var skipSources = SkipIntervalSources()
@@ -555,7 +557,15 @@ final class MPVTVPlayerViewController: UIViewController {
     /// Code r4-1, r5-3: the position trackers, progress saves and stops report: the held start until it is
     /// reached, then the landing until the published clock caught up, then the clock.
     private lazy var reportedPosition = MPVReturnReportedPosition(heldStartSec: heldStartSec)
-    private var reportedPositionSec: Double { reportedPosition.position(livePositionSec: state.positionSec) }
+    /// nil: nothing trustworthy yet (a periodic save is skipped); stops and starts fall back to the clock.
+    private var reportedPositionSec: Double? {
+        reportedPosition.position(livePositionSec: state.positionSec, observedSec: cachedProps().position)
+    }
+    private var reportedOrClockSec: Double { reportedPositionSec ?? max(0, state.positionSec) }
+    /// Code r6-2: a return start (the payload's, or a retry's held start) has not settled yet.
+    private var returnStartUnsettled: Bool {
+        returnHandoff != nil ? returnStartPending : (context.returnStart != nil && !startupStages.started)
+    }
     /// The controller's held start (the payload's `.position`, else a retry's `returnStart`), nil for others.
     private var heldStartSec: Double? {
         MPVReturnReportedPosition.heldStart(payload: returnHandoff?.start, contextReturnStart: context.returnStart)
@@ -921,7 +931,7 @@ final class MPVTVPlayerViewController: UIViewController {
         transportInput.viewDidDisappear()
         // spec-mpv-return §3.6: one flush and stop per tracking session; a replaced controller writes
         // at its held position, a discarded one (or one whose owner changed since) writes nothing.
-        let teardown = teardownStop.next(.viewDidDisappear, livePositionSec: reportedPositionSec,
+        let teardown = teardownStop.next(.viewDidDisappear, livePositionSec: reportedOrClockSec,
                                          ownerValid: creationOwner == PlaybackIdentity.current())
         if teardownStop.disposition != .normal {
             print("[MPVReturn] teardown g=\(parkBox.generation) disposition=\(teardownStop.disposition.logToken) stop=\(teardown == .none ? 0 : 1) lease=\(lease.owner == leaseToken ? "held" : "transferred") subtitles=\(teardownStop.disposition == .discard ? "cleared" : "kept")")
@@ -1884,11 +1894,12 @@ final class MPVTVPlayerViewController: UIViewController {
                 self.debugWrites += 1
                 #endif
                 self.traktScrobbleItem = item
-                TraktScrobbleRepository.shared.scrobbleStart(
-                    profileId: ActiveProfileProvider.shared.activeProfileId,
-                    item: item,
-                    progressPercent: self.currentProgressPercent()
-                ) { _ in }
+                // Code r6-3: through the order, so a stop never overtakes this start.
+                self.traktOrder.start(percent: self.currentProgressPercent()) { percent, done in
+                    TraktScrobbleRepository.shared.scrobbleStart(
+                        profileId: ActiveProfileProvider.shared.activeProfileId, item: item, progressPercent: percent
+                    ) { _ in Task { @MainActor in done() } }
+                }
             }
         }
     }
@@ -1903,7 +1914,7 @@ final class MPVTVPlayerViewController: UIViewController {
         // owner is the current identity.
         if parkBox.allows(.trackerWrite, issuedGeneration: parkBox.generation),
            returnHandoff == nil || creationOwner == PlaybackIdentity.current() {
-            trackerScrobble.start(positionSec: reportedPositionSec, durationSec: state.durationSec)
+            trackerScrobble.start(positionSec: reportedOrClockSec, durationSec: state.durationSec)
         } else {
             print("[MPVReturn] tracker start refused parked=\(parkBox.parked ? 1 : 0)")
         }
@@ -1918,28 +1929,31 @@ final class MPVTVPlayerViewController: UIViewController {
         trackerScrobble.stop(positionSec: atSec, durationSec: state.durationSec, isLive: holdsLiveProgress,
                              settled: trackerSettled)
         traktSessionClosed = true
-        guard let item = traktScrobbleItem else { return }
+        let item = traktScrobbleItem
         traktScrobbleItem = nil
         #if DEBUG
-        debugWrites += 1
+        if item != nil { debugWrites += 1 }
         #endif
         // A session can open before a placeholder's short duration is known, or before the stream
         // reads live: close it at 0% so Trakt never marks the stub or the live stream watched.
-        TraktScrobbleRepository.shared.scrobbleStop(
-            profileId: ActiveProfileProvider.shared.activeProfileId,
-            item: item,
-            progressPercent: Float(TrackerScrobblePolicy.stopPercent(positionSec: atSec,
-                                                                     durationSec: state.durationSec,
-                                                                     isLive: holdsLiveProgress))
-        ) { [traktSettled = replaced ? chain.hold() : nil] _ in
-            if let traktSettled { Task { @MainActor in traktSettled() } }
+        // Code r6-3: through the order (deferred behind an in-flight start, owner re-checked there);
+        // a replaced controller's stop holds the chain, which keeps the order alive, until it completed.
+        let percent = Float(TrackerScrobblePolicy.stopPercent(positionSec: atSec, durationSec: state.durationSec,
+                                                              isLive: holdsLiveProgress))
+        let send: TraktScrobbleOrder.Send? = item.map { item in
+            { percent, done in
+                TraktScrobbleRepository.shared.scrobbleStop(
+                    profileId: ActiveProfileProvider.shared.activeProfileId, item: item, progressPercent: percent
+                ) { _ in Task { @MainActor in done() } }
+            }
         }
+        traktOrder.stop(percent: percent, send: send, settled: replaced ? chain.hold(traktOrder) : nil)
     }
 
     private func currentProgressPercent() -> Float {
         let duration = state.durationSec
         guard duration > 0 else { return 0 }
-        return Float(min(100, max(0, reportedPositionSec / duration * 100)))
+        return Float(min(100, max(0, reportedOrClockSec / duration * 100)))
     }
 
     // MARK: - Subtitle appearance (mirrors the mobile libmpv mapping)
@@ -2510,7 +2524,8 @@ final class MPVTVPlayerViewController: UIViewController {
         debugWrites += 1
         #endif
         let duration = state.durationSec
-        let position = atSec ?? reportedPositionSec
+        // r6-1: a periodic save with nothing trustworthy to report writes nothing.
+        guard let position = atSec ?? reportedPositionSec else { return }
         // BUG-231: with Trakt as the progress source the resume position lives on Trakt, which
         // learns it from this session's stop. Keep the position as a provisional pending stop
         // (throttled in the outbox, nothing is sent) so a crash or force-quit still leaves one for
@@ -3705,13 +3720,15 @@ final class MPVTVPlayerViewController: UIViewController {
         // spec-mpv-return §3.7: a return start that fails before it settled reports the held start
         // from the payload (independent of this controller's clock); the host routes it to the
         // return alert with a retry there.
-        var recovery: PlayerReturnHandoff.Start?
-        if returnStartPending, let p = returnHandoff {
-            recovery = p.start
-            if case .position(let held) = p.start { position = held }
+        // Code r6-2: the payload's or a retry's held start, until a start settles (both owners).
+        let recovery = PlayerReturnFailureOwner.recoveryStart(payloadStart: returnHandoff?.start,
+                                                              contextReturnStart: context.returnStart,
+                                                              settled: !returnStartUnsettled)
+        if let recovery {
+            if case .position(let held) = recovery { position = held }
             returnStartPending = false
             state.returnLandingPending = false
-            print("[MPVReturn] fresh start failed g=\(p.returnGeneration) reason=\(PlaybackFailureClassifier.applyingPath(verdict, pathSatisfied: true).kind.rawValue) -> returnAlert start=\(p.start.logToken)")
+            print("[MPVReturn] return start failed g=\(returnHandoff?.returnGeneration ?? parkBox.generation) reason=\(PlaybackFailureClassifier.applyingPath(verdict, pathSatisfied: true).kind.rawValue) -> returnAlert start=\(recovery.logToken)")
         }
         print("[Failover] mpv failure: \(reason) pos=\(Int(position)) played=\(Int(secondsPlayed)) started=\(startedPlaying)"
               + " kind=\(v.kind.rawValue) http=\(v.httpStatus.map(String.init) ?? "-")")
@@ -3870,7 +3887,7 @@ final class MPVTVPlayerViewController: UIViewController {
 
     /// `deinit`'s latch inputs, read now (the identity immediately before the stop, r3-2).
     private func deinitTeardownInputs() -> (positionSec: Double, ownerValid: Bool) {
-        (reportedPositionSec, creationOwner == PlaybackIdentity.current())
+        (reportedOrClockSec, creationOwner == PlaybackIdentity.current())
     }
 
     private func destroyPlayer() {
@@ -4162,7 +4179,7 @@ final class MPVTVPlayerViewController: UIViewController {
             state.playbackStarted = true
             returnSeeks.startupCompleted()
             if !returnSeeks.hasLanding {
-                reportedPosition.reached(landedSec: nil)
+                reportedPosition.reached(.unknown)   // the resume restart's landing follows (seekLanded)
                 completeStartDeadline("started")
             }
             applyPauseAfterFirstFrameIfPending()
@@ -5129,9 +5146,10 @@ extension MPVTVPlayerViewController {
         if let completion = out.completion {
             returnStartPending = false
             switch completion {
-            case .settled(let x): reportedPosition.reached(landedSec: x)
-            case .offTarget(let x): reportedPosition.reached(landedSec: x)
-            case .cancelled: reportedPosition.reached(landedSec: returnSeeks.inFlight?.targetSec)
+            case .settled(let x): reportedPosition.reached(.at(x))
+            // r6-1: a rejected seek or an unread landing is never the held target.
+            case .offTarget(let x): reportedPosition.reached(x.map { .at($0) } ?? .unknown)
+            case .cancelled: reportedPosition.reached(returnSeeks.inFlight.map { .at($0.targetSec) } ?? .unknown)
             }
             completeStartDeadline("landing")
             let t = ProcessInfo.processInfo.systemUptime

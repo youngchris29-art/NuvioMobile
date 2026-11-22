@@ -160,6 +160,56 @@ final class LivePlaybackRecorderBackend: PlaybackRecorderBackend {
     }
 }
 
+/// Code review W7 r6-3: the mpv controller's Trakt start / stop pair, ordered by the same
+/// `TrackerScrobbleSequencer` as the other trackers: a stop that arrives while the start is in flight is
+/// held and sent from the start's completion, re-checked against the owner there (r4-2), and `settled`
+/// is told once the stop completed or nothing was sent. An object, so `TrackerReturnChain` can keep a
+/// deferred stop alive after the controller went (the same means as `TrackerScrobbleSession`).
+/// The sends are passed in (the controller binds the item and the profile; tests record them).
+@MainActor
+final class TraktScrobbleOrder {
+    typealias Send = @MainActor (_ percent: Float, _ completion: @escaping @MainActor () -> Void) -> Void
+
+    private var sequencer = TrackerScrobbleSequencer()
+    private let gate: PlaybackWriteGate
+    private var deferredStop: (send: Send, settled: (@MainActor () -> Void)?)?
+
+    init(owner: PlaybackIdentity?, identity: @escaping @MainActor () -> PlaybackIdentity = { PlaybackIdentity.current() }) {
+        gate = PlaybackWriteGate(owner: owner, identity: identity)
+    }
+
+    /// The start went out through `send`; refused once stopped (the session closed first).
+    @discardableResult
+    func start(percent: Float, send: Send) -> Bool {
+        guard gate.allows("trakt start"), sequencer.start() else { return false }
+        send(percent) { [self] in self.startFinished() }
+        return true
+    }
+
+    private func startFinished() {
+        guard let percent = sequencer.startCompleted(), let deferred = deferredStop else { return }
+        deferredStop = nil
+        if gate.allows("trakt deferred stop") {
+            deferred.send(Float(percent)) { deferred.settled?() }
+        } else {
+            deferred.settled?()
+        }
+    }
+
+    /// `send` nil: no item was ever built (nothing to stop). `settled` exactly once.
+    func stop(percent: Float, send: Send?, settled: (@MainActor () -> Void)?) {
+        let now = sequencer.stop(percent: Double(percent))
+        guard let send else { settled?(); return }
+        if let now {
+            if gate.allows("trakt stop") { send(Float(now)) { settled?() } } else { settled?() }
+        } else if sequencer.startInFlight, sequencer.pendingStop != nil, deferredStop == nil {
+            deferredStop = (send, settled)
+        } else {
+            settled?()
+        }
+    }
+}
+
 /// spec-mpv-return code r3-3: tracker and Trakt operations across an mpv controller replacement. The
 /// replaced controller holds the chain from `prepareForReplacement` until its stops have settled (the
 /// chain retains what it hands in, so a stop deferred behind an in-flight start is not lost when that
