@@ -66,13 +66,17 @@ enum AetherLoadRequestFlow {
     }
 
     /// The DV-interruption rebuild and Replay: `AetherReloadRequestPlan.request(from: current, …)`.
-    /// Takes no inputs: `diskCache` comes only from `current` (the snapshot).
+    /// Takes no inputs: `diskCache` comes only from `current` (the snapshot). Always autoplays: after a
+    /// paused fresh-load restore `current` carries `startPaused`, which belongs to that restore only
+    /// (W5 r1: Play Again and the interruption rebuild must not come back paused).
     static func reload(from current: AetherLoadRequest, startSec: Double?, activeAudioID: Int?,
                        activeSubtitleID: Int?, subtitleDecided: Bool,
                        addedSubtitles: [AetherExternalSubtitle]) -> AetherLoadRequest {
-        AetherReloadRequestPlan.request(from: current, startSec: startSec, activeAudioID: activeAudioID,
-                                        activeSubtitleID: activeSubtitleID, subtitleDecided: subtitleDecided,
-                                        addedSubtitles: addedSubtitles)
+        var r = AetherReloadRequestPlan.request(from: current, startSec: startSec, activeAudioID: activeAudioID,
+                                                activeSubtitleID: activeSubtitleID, subtitleDecided: subtitleDecided,
+                                                addedSubtitles: addedSubtitles)
+        r.startPaused = false
+        return r
     }
 
     /// Return from background, the fresh-load fallback (decision D): the engine refused to rebuild the

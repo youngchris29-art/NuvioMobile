@@ -279,6 +279,17 @@ final class AetherLoadRequestFlowTests: XCTestCase {
         XCTAssertFalse(first.startPaused, "the fresh load itself autoplays")
     }
 
+    /// W5 r1: after a paused fresh-load restore `currentRequest` carries `startPaused`; the interruption
+    /// rebuild and Replay built from it must autoplay again, and a second restore stays paused.
+    func testRebuildAndReplayFromAPausedRestoreAutoplay() {
+        let first = AetherLoadRequestFlow.fresh(base: base(), inputs: inputs(.gigabytes(10)))
+        let restored = restore(first)
+        XCTAssertTrue(restored.startPaused)
+        XCTAssertFalse(rebuild(restored).startPaused, "the interruption rebuild resumes playing")
+        XCTAssertFalse(replay(restored).startPaused, "Play Again plays")
+        XCTAssertTrue(restore(restored).startPaused, "a later restore is paused again")
+    }
+
     func testRestoreKeepsTheVisitsCacheSnapshotOnAndOff() {
         let on = AetherLoadRequestFlow.fresh(base: base(), inputs: inputs(.gigabytes(10)))
         let off = AetherLoadRequestFlow.fresh(base: base(), inputs: inputs(.off))
