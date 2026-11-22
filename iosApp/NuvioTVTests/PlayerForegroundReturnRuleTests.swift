@@ -301,12 +301,13 @@ final class PlayerForegroundReturnRuleTests: XCTestCase {
         case (.away, "userPlay"), (.away, "userPause"): return (.away, [])
         case (.away, "cancelled"): return (.finished, release)
 
-        case (.deferredOp, "settled"): return intoReload
+        // W5 r1: a landed clock that differs from the held one is emitted again before anything reads it.
+        case (.deferredOp, "settled"): return (.preparing, [.holdPosition(121)] + reloadStart)
         case (.deferredOp, "enteredBackground"): return (.away, [.stopStartWatchdog])
         case (.deferredOp, "userPlay"), (.deferredOp, "userPause"): return (.deferred(.operationSettles), [])
         case (.deferredOp, "cancelled"): return (.finished, release)
 
-        case (.deferredFront, "reappeared"): return intoReload
+        case (.deferredFront, "reappeared"): return (.preparing, [.holdPosition(121)] + reloadStart)
         case (.deferredFront, "enteredBackground"): return (.away, [.stopStartWatchdog])
         case (.deferredFront, "userPlay"), (.deferredFront, "userPause"): return (.deferred(.playerFront), [])
         case (.deferredFront, "cancelled"): return (.finished, release)
@@ -321,8 +322,10 @@ final class PlayerForegroundReturnRuleTests: XCTestCase {
 
         case (.restoring, "userPlay"), (.restoring, "userPause"): return (.restoring, [])
         case (.restoring, "enteredBackground"): return (.awayRestoring, [.pauseRestoreWatchdog])
-        case (.restoring, "finished.settledFrame"), (.restoring, "finished.notNeeded"): return (.idle, settledPaused)
-        case (.restoring, "finished.settledNoFrame"): return (.restoring, [.schedulePictureNudge(token: 1, afterSec: 3)])
+        case (.restoring, "finished.settledFrame"): return (.idle, [.holdPosition(130)] + settledPaused)
+        case (.restoring, "finished.notNeeded"): return (.idle, [.holdPosition(121)] + settledPaused)
+        case (.restoring, "finished.settledNoFrame"):
+            return (.restoring, [.holdPosition(130), .schedulePictureNudge(token: 1, afterSec: 3)])
         case (.restoring, "finished.refused"):
             return (.preparing, [.startRestore(.aetherFreshLoad(atSec: 120), token: 2), .refuseTransport(true), .setUI(.restoring)])
         case (.restoring, "finished.failed"), (.restoring, "timedOut"):
@@ -330,8 +333,9 @@ final class PlayerForegroundReturnRuleTests: XCTestCase {
         case (.restoring, "nudgeDue"): return (.restoring, [.nudgePicture(atSec: 120)])
         case (.restoring, "cancelled"): return (.finished, [.cancelRestore(token: 1)] + release)
 
-        case (.awayRestoring, "finished.settledFrame"), (.awayRestoring, "finished.settledNoFrame"),
-             (.awayRestoring, "finished.notNeeded"), (.awayRestoring, "finished.refused"),
+        case (.awayRestoring, "finished.settledFrame"), (.awayRestoring, "finished.settledNoFrame"):
+            return (.away, [.holdPosition(130)])
+        case (.awayRestoring, "finished.notNeeded"), (.awayRestoring, "finished.refused"),
              (.awayRestoring, "finished.failed"), (.awayRestoring, "timedOut"):
             return (.away, [])
         case (.awayRestoring, "becameActive"): return (.restoring, [.resumeRestoreWatchdog])
@@ -416,7 +420,7 @@ final class PlayerForegroundReturnRuleTests: XCTestCase {
         h.send(.enteredBackground(snap()))
         XCTAssertEqual(h.send(.becameActive(facts())), reloadStart)
         h.send(.sequenceArmed(token: 1))
-        XCTAssertEqual(h.send(.restoreFinished(token: 1, .settled(clockSec: 130, picture: true), facts())), settledPaused)
+        XCTAssertEqual(h.send(.restoreFinished(token: 1, .settled(clockSec: 130, picture: true), facts())), [.holdPosition(130)] + settledPaused)
         XCTAssertEqual(h.count(.pauseTransport), 1)
         XCTAssertEqual(h.count(.play), 0)
         XCTAssertEqual(h.rule.mode, .idle)
@@ -426,7 +430,7 @@ final class PlayerForegroundReturnRuleTests: XCTestCase {
         let h = harness()
         reloading(h)
         XCTAssertEqual(h.send(.userPlay(facts())), [], "never a transport effect during a restore")
-        XCTAssertEqual(h.send(.restoreFinished(token: 1, .settled(clockSec: 130, picture: true), facts())), settledPlaying)
+        XCTAssertEqual(h.send(.restoreFinished(token: 1, .settled(clockSec: 130, picture: true), facts())), [.holdPosition(130)] + settledPlaying)
         XCTAssertEqual(h.count(.play), 1)
         XCTAssertEqual(h.count(.pauseTransport), 0)
     }
@@ -483,12 +487,12 @@ final class PlayerForegroundReturnRuleTests: XCTestCase {
         reloading(h)
         XCTAssertEqual(h.send(.enteredBackground(snap())), [.pauseRestoreWatchdog])
         h.send(.userPlay(facts()))
-        XCTAssertEqual(h.send(.restoreFinished(token: 1, .settled(clockSec: 130, picture: true), facts())), [])
+        XCTAssertEqual(h.send(.restoreFinished(token: 1, .settled(clockSec: 130, picture: true), facts())), [.holdPosition(130)])
         XCTAssertEqual(h.count(.play), 0, "no play while away")
         XCTAssertEqual(h.rule.mode, .away, "still pending")
         // The engine kept the restored session: pause in place, with the queued Play.
         let fx = h.send(.becameActive(facts(needs: false)))
-        XCTAssertEqual(fx, [.play, .releasePosition, .refuseTransport(false), .setUI(.normal)])
+        XCTAssertEqual(fx, [.holdPosition(121), .play, .releasePosition, .refuseTransport(false), .setUI(.normal)])
         XCTAssertEqual(h.count(.play), 1)
     }
 
@@ -529,7 +533,7 @@ final class PlayerForegroundReturnRuleTests: XCTestCase {
         h.send(.enteredBackground(snap()))
         XCTAssertEqual(h.send(.becameActive(facts(presence: .covered))), [.refuseTransport(true), .setUI(.restoring)])
         XCTAssertEqual(h.rule.mode, .deferred(.playerFront))
-        XCTAssertEqual(h.send(.reappeared(facts())), reloadStart)
+        XCTAssertEqual(h.send(.reappeared(facts())), [.holdPosition(121)] + reloadStart)
         XCTAssertEqual(h.send(.reappeared(facts())), [], "a second reappearance is ignored")
     }
 
@@ -537,19 +541,19 @@ final class PlayerForegroundReturnRuleTests: XCTestCase {
         let h = harness()
         h.send(.enteredBackground(snap()))
         h.send(.becameActive(facts(presence: .covered)))
-        XCTAssertEqual(h.send(.reappeared(facts(entered: false))), reloadStart)
+        XCTAssertEqual(h.send(.reappeared(facts(entered: false))), [.holdPosition(121)] + reloadStart)
     }
 
     func testDeferredThenSettledReloadsOrPausesInPlace() {
         var h = harness()
         h.send(.enteredBackground(snap()))
         XCTAssertEqual(h.send(.becameActive(facts(op: true))), [.refuseTransport(true), .setUI(.restoring)])
-        XCTAssertEqual(h.send(.settled(facts(needs: true))), reloadStart)
+        XCTAssertEqual(h.send(.settled(facts(needs: true))), [.holdPosition(121)] + reloadStart)
 
         h = harness()
         h.send(.enteredBackground(snap()))
         h.send(.becameActive(facts(op: true)))
-        XCTAssertEqual(h.send(.settled(facts(needs: false))), pausedInPlace)
+        XCTAssertEqual(h.send(.settled(facts(needs: false))), [.holdPosition(121)] + pausedInPlace)
         XCTAssertEqual(h.rule.mode, .idle)
     }
 
@@ -564,13 +568,13 @@ final class PlayerForegroundReturnRuleTests: XCTestCase {
     func testNoRestoreReturnThenLateTeardownThenPlayReloadsWithPlayQueuedAndPlaysOnce() {
         let h = harness()
         h.send(.enteredBackground(snap()))
-        XCTAssertEqual(h.send(.becameActive(facts(needs: false))), pausedInPlace)
+        XCTAssertEqual(h.send(.becameActive(facts(needs: false))), [.holdPosition(121)] + pausedInPlace)
         // The engine tears down late: the controller sees needsForegroundRestore at the Play press.
         let fresh = snap(pos: 140)
         XCTAssertEqual(h.send(.restoreOwedInForeground(fresh, facts(clock: 140), pressedPlay: true)),
                        [.holdPosition(140)] + reloadStart)
         h.send(.sequenceArmed(token: 1))
-        XCTAssertEqual(h.send(.restoreFinished(token: 1, .settled(clockSec: 141, picture: true), facts())), settledPlaying)
+        XCTAssertEqual(h.send(.restoreFinished(token: 1, .settled(clockSec: 141, picture: true), facts())), [.holdPosition(141)] + settledPlaying)
         XCTAssertEqual(h.count(.play), 1)
     }
 
@@ -580,7 +584,7 @@ final class PlayerForegroundReturnRuleTests: XCTestCase {
         h.send(.becameActive(facts(needs: false)))
         h.send(.restoreOwedInForeground(snap(pos: 140), facts(clock: 140), pressedPlay: false))
         h.send(.sequenceArmed(token: 1))
-        XCTAssertEqual(h.send(.restoreFinished(token: 1, .settled(clockSec: 141, picture: true), facts())), settledPaused)
+        XCTAssertEqual(h.send(.restoreFinished(token: 1, .settled(clockSec: 141, picture: true), facts())), [.holdPosition(141)] + settledPaused)
         XCTAssertEqual(h.count(.play), 0)
     }
 
@@ -692,7 +696,7 @@ final class PlayerForegroundReturnRuleTests: XCTestCase {
         let h = harness()
         reloading(h)
         let fx = h.send(.restoreFinished(token: 1, .settled(clockSec: 130, picture: false), facts()))
-        XCTAssertEqual(fx, [.schedulePictureNudge(token: 1, afterSec: 3)])
+        XCTAssertEqual(fx, [.holdPosition(130), .schedulePictureNudge(token: 1, afterSec: 3)])
         XCTAssertEqual(h.rule.mode, .restoring)
         XCTAssertFalse(fx.contains(.resumeRestoreWatchdog))
     }
@@ -731,7 +735,7 @@ final class PlayerForegroundReturnRuleTests: XCTestCase {
         h.send(.restoreFinished(token: 1, .settled(clockSec: 130, picture: false), facts()))
         XCTAssertEqual(h.rule.mode, .away)
         let fx = h.send(.becameActive(facts(needs: false)))
-        XCTAssertEqual(fx, [.resumeRestoreWatchdog, .schedulePictureNudge(token: 2, afterSec: 3)], "fresh budget and the nudge")
+        XCTAssertEqual(fx, [.holdPosition(121), .resumeRestoreWatchdog, .schedulePictureNudge(token: 2, afterSec: 3)], "fresh budget and the nudge")
         XCTAssertEqual(h.rule.mode, .restoring)
         XCTAssertEqual(h.send(.userPlay(facts())), [], "a queued Play waits")
         XCTAssertEqual(h.send(.frameShown(token: 2)), settledPlaying)
@@ -742,7 +746,7 @@ final class PlayerForegroundReturnRuleTests: XCTestCase {
         reloading(h)
         h.send(.enteredBackground(snap()))
         h.send(.restoreFinished(token: 1, .settled(clockSec: 130, picture: true), facts()))
-        XCTAssertEqual(h.send(.becameActive(facts(needs: false))), pausedInPlace)
+        XCTAssertEqual(h.send(.becameActive(facts(needs: false))), [.holdPosition(121)] + pausedInPlace)
         XCTAssertEqual(h.rule.mode, .idle)
     }
 
@@ -876,12 +880,12 @@ final class PlayerForegroundReturnRuleTests: XCTestCase {
             let h = harness()
             h.send(.enteredBackground(snap(phase: phase)))
             h.send(.becameActive(facts(op: true)))
-            XCTAssertEqual(h.send(.settled(facts(needs: false))), [.rearmStartWatchdog] + pausedInPlace, "\(phase)")
+            XCTAssertEqual(h.send(.settled(facts(needs: false))), [.holdPosition(121), .rearmStartWatchdog] + pausedInPlace, "\(phase)")
             XCTAssertEqual(h.rule.mode, .idle)
         }
         let h = harness()
         h.send(.enteredBackground(snap(phase: .paused)))
-        XCTAssertEqual(h.send(.becameActive(facts(needs: false))), pausedInPlace)
+        XCTAssertEqual(h.send(.becameActive(facts(needs: false))), [.holdPosition(121)] + pausedInPlace)
     }
 
     /// Ruling 5: a reappearance adopts the clock with the restore rule, but not while the operation the
@@ -903,5 +907,88 @@ final class PlayerForegroundReturnRuleTests: XCTestCase {
         g.send(.reappeared(facts(clock: 105)))
         g.send(.sequenceArmed(token: 1))
         XCTAssertEqual(g.send(.restoreTimedOut(token: 1, facts())), [.handOff(atSec: 105), .setUI(.handingOff), .releasePosition])
+    }
+
+    // MARK: W5 review r1
+
+    /// r1 finding 1: an adopted landing is emitted as the held position before the release, so the
+    /// runner's held value and the mirror the release writes are the landing, never the requested target.
+    func testAnAdoptedLandingIsEmittedBeforeTheRelease() {
+        // A seek to 250 issued before Home lands at 240 while away; the return pauses in place.
+        let h = harness()
+        h.send(.enteredBackground(snap(phase: .operation, pos: 100, pending: 250)))
+        h.send(.becameActive(facts(op: true)))
+        let fx = h.send(.settled(facts(needs: false, clock: 240)))
+        XCTAssertEqual(fx.first, .holdPosition(240))
+        guard let hold = fx.firstIndex(of: .holdPosition(240)), let release = fx.firstIndex(of: .releasePosition) else {
+            return XCTFail("missing effects \(fx)")
+        }
+        XCTAssertLessThan(hold, release)
+        XCTAssertEqual(h.count(.holdPosition(250)), 1, "the target was held once, at background")
+        // A restore settle that lands away from the held value: re-held, then released.
+        let g = harness()
+        reloading(g, snapshot: snap(pos: 100))
+        XCTAssertEqual(g.send(.restoreFinished(token: 1, .settled(clockSec: 98, picture: true), facts())),
+                       [.holdPosition(98)] + settledPaused)
+        // Settled without a frame: the bar follows the landing while the rule waits for the picture.
+        let k = harness()
+        reloading(k, snapshot: snap(pos: 100))
+        XCTAssertEqual(k.send(.restoreFinished(token: 1, .settled(clockSec: 97, picture: false), facts())),
+                       [.holdPosition(97), .schedulePictureNudge(token: 1, afterSec: 3)])
+        // An unchanged or rejected clock emits nothing extra.
+        let m = harness()
+        reloading(m, snapshot: snap(pos: 100))
+        XCTAssertEqual(m.send(.restoreFinished(token: 1, .settled(clockSec: 100, picture: true), facts())), settledPaused)
+        let n = harness()
+        reloading(n, snapshot: snap(pos: 100))
+        XCTAssertEqual(n.send(.restoreFinished(token: 1, .settled(clockSec: 0, picture: true), facts())), settledPaused,
+                       "a transient 0 at a restore settle is not adopted")
+    }
+
+    /// r1 finding 2: while the return holds the intent a press toggles it (the held transport stays paused,
+    /// so its paused state carries no meaning); otherwise the live transport decides.
+    func testAPressTogglesTheQueuedIntentWhileTheReturnHoldsItAndFollowsTheTransportOtherwise() {
+        for key in ModeKey.allCases {
+            let rule = build(key)
+            let holds = [ModeKey.away, .deferredOp, .deferredFront, .preparing, .restoring, .awayRestoring].contains(key)
+            XCTAssertEqual(rule.holdsIntent, holds, "\(key)")
+            for paused in [true, false] {
+                let want = holds ? rule.intent == .pause : paused
+                XCTAssertEqual(rule.pressAsksForPlay(transportPaused: paused), want, "\(key) paused=\(paused)")
+            }
+        }
+        // Two presses during a restore with the transport paused throughout: Play then Pause, ends paused.
+        let h = harness()
+        reloading(h)
+        for _ in 0..<2 {
+            h.send(h.rule.pressAsksForPlay(transportPaused: true) ? .userPlay(facts()) : .userPause)
+        }
+        XCTAssertEqual(h.rule.intent, .pause)
+        XCTAssertEqual(h.send(.restoreFinished(token: 1, .settled(clockSec: 120, picture: true), facts())), settledPaused)
+        XCTAssertEqual(h.count(.play), 0)
+        // One press with the mirror still saying "playing": queues Play, not Pause.
+        let g = harness()
+        reloading(g)
+        g.send(g.rule.pressAsksForPlay(transportPaused: false) ? .userPlay(facts()) : .userPause)
+        XCTAssertEqual(g.send(.restoreFinished(token: 1, .settled(clockSec: 120, picture: true), facts())), settledPlaying)
+    }
+
+    /// r1 finding 3: who owns an Aether session failure, per mode. A failure while a restore op runs in the
+    /// background is the restore's (not an attempt, no handoff while away), never the ladder's.
+    func testTheFailureOwnerPerMode() {
+        typealias O = PlayerForegroundReturnRule.FailureOwner
+        let want: [ModeKey: O] = [.idle: .ladder, .away: .ladder, .deferredOp: .operation, .deferredFront: .ladder,
+                                  .preparing: .absorbed, .restoring: .restore, .awayRestoring: .restore,
+                                  .abandoned: .ladder, .finished: .ladder]
+        for key in ModeKey.allCases {
+            XCTAssertEqual(build(key).aetherFailureOwner, want[key], "\(key)")
+        }
+        // The awayRestoring row for that failure: away, no handoff; the next return takes a fresh load.
+        var rule = build(.awayRestoring)
+        XCTAssertEqual(nonLog(rule.handle(.restoreFinished(token: 1, .failed("reloadFailed"), facts()))), [])
+        XCTAssertEqual(rule.mode, .away)
+        XCTAssertEqual(rule.failedAttempts, 0)
+        XCTAssertEqual(nonLog(rule.handle(.becameActive(facts(failed: true)))),
+                       [.startRestore(.aetherFreshLoad(atSec: 120), token: 2), .refuseTransport(true), .setUI(.restoring)])
     }
 }

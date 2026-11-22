@@ -151,12 +151,7 @@ final class NativeReturnEffectRunner {
 
 
     /// While true, presses are recorded as intent and the transport is held paused (I1, I5).
-    private var holdsTransport: Bool {
-        switch rule.mode {
-        case .away, .deferred, .preparing, .restoring, .awayRestoring: return true
-        case .idle, .abandoned, .finished: return false
-        }
-    }
+    private var holdsTransport: Bool { rule.holdsIntent }
 
     // MARK: Events from the coordinator
 
@@ -217,7 +212,7 @@ final class NativeReturnEffectRunner {
     /// observer already carries it.
     func observedPress() {
         guard holdsTransport else { return }
-        let toPlay = rule.intent == .pause
+        let toPlay = rule.pressAsksForPlay(transportPaused: true)
         record(toPlay ? "press play (held)" : "press pause (held)")
         feed(.rule(toPlay ? .userPlay(facts(entered: false)) : .userPause, observed: true))
         host?.returnPause()

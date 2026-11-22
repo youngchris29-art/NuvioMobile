@@ -892,11 +892,10 @@ final class AetherTVPlayerViewController: UIViewController {
     /// straight back (`returnPlay` / `returnPause`); during a return it records the intent.
     func togglePause() {
         guard let session, !handedOff, !teardownDone, phaseMirror != .ended else { return }
-        let toPlay = pausedMirror
         if let returnRunner {
-            returnRunner.userToggle(toPlay: toPlay)
+            returnRunner.userToggle(transportPaused: pausedMirror)
         } else {
-            applyTransport(play: toPlay, session: session)
+            applyTransport(play: pausedMirror, session: session)
         }
     }
 

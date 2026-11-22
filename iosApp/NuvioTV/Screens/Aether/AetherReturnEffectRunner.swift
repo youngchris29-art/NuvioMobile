@@ -140,13 +140,9 @@ final class AetherReturnEffectRunner {
     var blocksTransport: Bool { rule.blocksTransport }
 
     /// While true, a session failure is the restore's (or the deferred operation's), never the failover
-    /// ladder's (spec 5.1.2): the controller hands it here instead of to its decider.
-    var ownsFailures: Bool {
-        switch rule.mode {
-        case .preparing, .restoring, .deferred(.operationSettles): return true
-        default: return false
-        }
-    }
+    /// ladder's (spec 5.1.2): the controller hands it here instead of to its decider. The rule decides who
+    /// owns it (`aetherFailureOwner`).
+    var ownsFailures: Bool { rule.aetherFailureOwner != .ladder }
 
     // MARK: Events from the controller
 
@@ -171,9 +167,10 @@ final class AetherReturnEffectRunner {
         feed(.becameActive(facts(entered: entered)))
     }
 
-    /// A Play/Pause press. `toPlay`: the press asks for play (the transport is paused now).
-    func userToggle(toPlay: Bool) {
-        if toPlay {
+    /// A Play/Pause press. `transportPaused`: the controller's paused mirror now. What the press asks for
+    /// is the rule's call (`pressAsksForPlay`): while the return holds the intent a press toggles it.
+    func userToggle(transportPaused: Bool) {
+        if rule.pressAsksForPlay(transportPaused: transportPaused) {
             if rule.mode == .idle, session.needsForegroundRestore, let host {
                 // 6.1: a late engine teardown seen at the press; the reload starts with Play queued.
                 enteredAtUptime = now()
@@ -237,11 +234,13 @@ final class AetherReturnEffectRunner {
     func failureArrived(_ failure: AetherFailure) -> Bool {
         guard ownsFailures else { return false }
         record("failure \(failure.kind.token)")
-        switch rule.mode {
-        case .restoring:
+        switch rule.aetherFailureOwner {
+        case .restore:
+            // Active: one attempt, then mpv. Away (`awayRestoring`): the op is over, not an attempt, and
+            // nothing hands off while backgrounded; the next return decides from the failed session.
             handOffNote = "aether: foregroundRestoreFailed (\(failure.kind.token))"
             feed(.restoreFinished(token: rule.token, .failed(failure.kind.token), facts(entered: true)))
-        case .deferred(.operationSettles):
+        case .operation:
             // The operation the return waited on ended in a failure: row 8 decides (a fresh load).
             let f = facts(entered: true)
             feed(.settled(PlayerReturnFacts(identity: f.identity, enteredBackground: true, awaySec: f.awaySec,
@@ -249,7 +248,7 @@ final class AetherReturnEffectRunner {
                                             operationInFlight: false, aetherNeedsRestore: f.aetherNeedsRestore,
                                             aetherSessionFailed: true, clockSec: f.clockSec,
                                             nativeHealth: f.nativeHealth)))
-        default:
+        case .absorbed, .ladder:
             // Preparing: the sequence has not invoked the engine; the restore starts a new generation.
             log("[Return] failure \(failure.kind.token) absorbed while preparing")
         }

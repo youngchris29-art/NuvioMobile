@@ -386,6 +386,43 @@ nonisolated struct PlayerForegroundReturnRule: Sendable {
     }
     var allowsPlay: Bool { mode == .idle }
 
+    /// The modes in which a Play/Pause press only records the intent (the transport is held, I1, I5).
+    var holdsIntent: Bool {
+        switch mode {
+        case .away, .deferred, .preparing, .restoring, .awayRestoring: return true
+        case .idle, .abandoned, .finished: return false
+        }
+    }
+
+    /// What a Play/Pause press asks for (W5 r1). While the return holds the intent, a press toggles the
+    /// queued intent: the held transport stays paused, so its state says nothing about the last press,
+    /// and two presses must cancel out (last press wins, I5). Otherwise the live transport decides.
+    func pressAsksForPlay(transportPaused: Bool) -> Bool {
+        holdsIntent ? intent == .pause : transportPaused
+    }
+
+    /// Who owns an Aether session failure now (W2 ruling 10, W5 r1).
+    enum FailureOwner: Sendable, Equatable {
+        /// The controller's failover ladder (normal playback, terminal modes, a plain absence).
+        case ladder
+        /// Preparing: the engine was not called yet and the restore starts a new generation; logged only.
+        case absorbed
+        /// A restore op was invoked: `restoreFinished(.failed)`. Active: one attempt, then mpv. Away
+        /// (`awayRestoring`): not an attempt, no handoff while backgrounded; the next return decides.
+        case restore
+        /// The operation the return waits on failed: its `settled` with a failed session (row 8).
+        case operation
+    }
+
+    var aetherFailureOwner: FailureOwner {
+        switch mode {
+        case .preparing: return .absorbed
+        case .restoring, .awayRestoring: return .restore
+        case .deferred(.operationSettles): return .operation
+        case .idle, .away, .deferred(.playerFront), .abandoned, .finished: return .ladder
+        }
+    }
+
     init(owner: PlaybackIdentity) {
         self.owner = owner
     }
@@ -512,11 +549,20 @@ nonisolated struct PlayerForegroundReturnRule: Sendable {
         return fx
     }
 
+    /// Adopts a landed clock (4.7). While the position is held, a changed value is emitted again, so the
+    /// runner's held value, the bar and the mirror the release writes follow it (W5 r1: a seek that
+    /// landed short of its target must never be flushed or handed off at the target).
+    private mutating func adoptPosition(_ clock: Double?, at point: PlayerReturnPosition.SettlePoint) -> [PlayerReturnEffect] {
+        let before = position.value
+        guard position.adopt(clock, at: point), position.isHeld, position.value != before else { return [] }
+        return [.holdPosition(position.value)]
+    }
+
     private mutating func pauseInPlaceRow(clock: Double?) -> [PlayerReturnEffect] {
-        position.adopt(clock, at: .restore)
-        if pictureOwed { return resumeForPicture() }
+        let adopted = adoptPosition(clock, at: .restore)
+        if pictureOwed { return adopted + resumeForPicture() }
         mode = .idle
-        var fx: [PlayerReturnEffect] = []
+        var fx: [PlayerReturnEffect] = adopted
         // W2 ruling 9: a return that pauses in place before the first frame (or during an operation
         // after one) still owes the start budget it stopped at background, from now (I3: never a
         // spinner without a watchdog).
@@ -536,13 +582,13 @@ nonisolated struct PlayerForegroundReturnRule: Sendable {
     }
 
     private mutating func settleSuccess(clock: Double?) -> [PlayerReturnEffect] {
-        position.adopt(clock, at: .restore)
+        let adopted = adoptPosition(clock, at: .restore)
         mode = .idle
         pictureOwed = false
         framePending = false
         failedAttempts = 0
         position.release()
-        var fx: [PlayerReturnEffect] = [.releasePosition, .refuseTransport(false), .setUI(.normal)]
+        var fx: [PlayerReturnEffect] = adopted + [.releasePosition, .refuseTransport(false), .setUI(.normal)]
         if intent == .play {
             fx.append(.play)
             armBackstopAtNextTick(clock: clock)
@@ -715,19 +761,19 @@ nonisolated struct PlayerForegroundReturnRule: Sendable {
     private mutating func deferredStep(_ event: PlayerReturnEvent, point: PlayerReturnSettlePoint) -> [PlayerReturnEffect]? {
         switch event {
         case .settled(let f) where point == .operationSettles:
-            position.adopt(f.clockSec, at: .operation)
+            let adopted = adoptPosition(f.clockSec, at: .operation)
             let action = decideNow(facts: f.withEnteredBackground(true))
             if case .deferUntil(.operationSettles) = action {
                 // Impossible by construction (operationInFlight is false at a settle): treated as pauseInPlace.
-                return [.log("[Return] re-defer at settled treated as pauseInPlace")]
+                return adopted + [.log("[Return] re-defer at settled treated as pauseInPlace")]
                     + applyDecide(.pauseInPlace, facts: f)
             }
-            return applyDecide(action, facts: f)
+            return adopted + applyDecide(action, facts: f)
         case .reappeared(let f) where point == .playerFront:
             // W1 ruling 5: the restore rule (a transient 0 is not a landing). An operation still in
             // flight keeps the held target; its own settle adopts the landing (operation rule).
-            if !f.operationInFlight { position.adopt(f.clockSec, at: .restore) }
-            return applyDecide(decideNow(facts: f.withEnteredBackground(true)), facts: f)
+            let adopted: [PlayerReturnEffect] = f.operationInFlight ? [] : adoptPosition(f.clockSec, at: .restore)
+            return adopted + applyDecide(decideNow(facts: f.withEnteredBackground(true)), facts: f)
         case .userPlay:
             intent = .play
             return []
@@ -803,9 +849,9 @@ nonisolated struct PlayerForegroundReturnRule: Sendable {
             switch outcome {
             case .settled(let clock, let picture):
                 if picture { return settleSuccess(clock: clock) }
-                position.adopt(clock, at: .restore)
+                let adopted = adoptPosition(clock, at: .restore)
                 framePending = true
-                return [.schedulePictureNudge(token: token, afterSec: Self.pictureNudgeDelaySec)]
+                return adopted + [.schedulePictureNudge(token: token, afterSec: Self.pictureNudgeDelaySec)]
             case .notNeeded:
                 return settleSuccess(clock: f.clockSec)
             case .refused:
@@ -835,13 +881,14 @@ nonisolated struct PlayerForegroundReturnRule: Sendable {
     private mutating func awayRestoringStep(_ event: PlayerReturnEvent) -> [PlayerReturnEffect]? {
         switch event {
         case .restoreFinished(_, let outcome, _):
+            var adopted: [PlayerReturnEffect] = []
             if case .settled(let clock, let picture) = outcome {
-                position.adopt(clock, at: .restore)
+                adopted = adoptPosition(clock, at: .restore)
                 pictureOwed = !picture
             }
             framePending = false
             mode = .away
-            return []
+            return adopted
         case .restoreTimedOut:
             framePending = false
             mode = .away

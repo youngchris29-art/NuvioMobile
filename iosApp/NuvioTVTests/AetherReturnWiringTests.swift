@@ -59,6 +59,8 @@ final class AetherReturnWiringTests: XCTestCase {
         var clock: Double? = 121
         var position: Double = 120
         var operationInFlight = false
+        var sessionFailed = false
+        var pendingSeek: Double?
         var calls: [String] = []
         var held: [Double?] = []
         var handOffs: [Double] = []
@@ -71,14 +73,14 @@ final class AetherReturnWiringTests: XCTestCase {
 
         func returnSnapshot(enteredAtUptime: TimeInterval) -> PlayerBackgroundSnapshot {
             PlayerBackgroundSnapshot(route: .aetherLoopback, phase: .playing, positionSec: position,
-                                     pendingSeekTargetSec: nil, enteredAtUptime: enteredAtUptime, audioTrackID: 2,
+                                     pendingSeekTargetSec: pendingSeek, enteredAtUptime: enteredAtUptime, audioTrackID: 2,
                                      subtitleTrackID: 3, subtitleDecided: true, audioName: nil, subtitleName: nil)
         }
 
         func returnFacts(enteredBackground: Bool, awaySec: Double) -> PlayerReturnFacts {
             PlayerReturnFacts(identity: identity, enteredBackground: enteredBackground, awaySec: awaySec,
                               presence: presence, contextSwapPending: false, operationInFlight: operationInFlight,
-                              aetherNeedsRestore: session.needsForegroundRestore, aetherSessionFailed: false,
+                              aetherNeedsRestore: session.needsForegroundRestore, aetherSessionFailed: sessionFailed,
                               clockSec: clock, nativeHealth: .notApplicable)
         }
 
@@ -180,8 +182,8 @@ final class AetherReturnWiringTests: XCTestCase {
 
     func testNoSessionTransportWhileRestoringAndTheReturnEndsPaused() async {
         await returnAndReload()
-        runner.userToggle(toPlay: true)
-        runner.userToggle(toPlay: false)
+        runner.userToggle(transportPaused: true)
+        runner.userToggle(transportPaused: true)
         XCTAssertEqual(host.plays, 0)
         XCTAssertEqual(host.pauses, 0, "presses during the restore only record the intent")
         settleTransport()
@@ -194,7 +196,7 @@ final class AetherReturnWiringTests: XCTestCase {
 
     func testAPlayQueuedDuringTheRestoreIsAppliedOnceAtTheSettle() async {
         await returnAndReload()
-        runner.userToggle(toPlay: true)
+        runner.userToggle(transportPaused: true)
         settleTransport()
         XCTAssertEqual(host.plays, 1)
         XCTAssertEqual(host.pauses, 0)
@@ -232,7 +234,7 @@ final class AetherReturnWiringTests: XCTestCase {
         XCTAssertEqual(runner.heldPosition, 120, "clock samples (the reload zeroes the clock) never reach the mirror")
         settleTransport()
         XCTAssertNil(runner.heldPosition)
-        XCTAssertEqual(host.held, [120, nil])
+        XCTAssertEqual(host.held, [120, 121, nil], "the landed clock is held, then released into the mirror")
     }
 
     func testTeardownDuringTheRestoreReleasesTheHeldPositionAndReportsNoFailure() async {
@@ -252,7 +254,7 @@ final class AetherReturnWiringTests: XCTestCase {
 
     func testAnIdentityChangeBetweenTheReloadAndTheSettleNeverPlays() async {
         await returnAndReload()
-        runner.userToggle(toPlay: true)
+        runner.userToggle(transportPaused: true)
         host.identity = PlaybackIdentity(accountKey: "user-1", profileId: 2)
         settleTransport()
         XCTAssertEqual(host.plays, 0)
@@ -316,7 +318,7 @@ final class AetherReturnWiringTests: XCTestCase {
         XCTAssertEqual(session.restores, 0)
         XCTAssertEqual(host.pauses, 1)
         XCTAssertEqual(runner.rule.mode, .idle)
-        XCTAssertEqual(host.held, [120, nil])
+        XCTAssertEqual(host.held, [120, 121, nil])
     }
 
     func testALateTeardownSeenAtThePressReloadsWithThePlayQueued() async {
@@ -324,7 +326,7 @@ final class AetherReturnWiringTests: XCTestCase {
         runner.enteredBackground()
         runner.becameActive()
         session.needsForegroundRestore = true
-        runner.userToggle(toPlay: true)
+        runner.userToggle(transportPaused: true)
         await drain()
         XCTAssertEqual(session.restores, 1)
         XCTAssertEqual(host.plays, 0)
@@ -366,5 +368,72 @@ final class AetherReturnWiringTests: XCTestCase {
         XCTAssertEqual(clock.live, [25], "a fresh budget from the return")
         settleTransport()
         XCTAssertEqual(runner.rule.mode, .idle)
+    }
+
+    // MARK: W5 review r1
+
+    /// Finding 1: a seek to 250 issued before Home landed at 240 while away. The runner's held value and
+    /// the value released into the mirror (the exit flush and the paused bar read it) are the landing.
+    func testALandingAwayFromTheHeldTargetIsWhatTheMirrorGetsAtTheRelease() async {
+        host.operationInFlight = true
+        session.needsForegroundRestore = false
+        host.position = 100
+        host.pendingSeek = 250
+        host.clock = 240
+        runner.enteredBackground()
+        runner.becameActive()
+        XCTAssertEqual(runner.rule.mode, .deferred(.operationSettles))
+        host.operationInFlight = false
+        runner.operationMayHaveSettled()
+        XCTAssertEqual(runner.rule.mode, .idle, "paused in place")
+        XCTAssertEqual(host.held, [250, 240, nil], "the last held value before the release is the landing")
+        XCTAssertNil(runner.heldPosition)
+    }
+
+    /// Finding 2: the controller's paused mirror does not change while the return holds the transport, so
+    /// two presses during a restore must cancel out: the second asks for Pause, and the return ends paused.
+    func testTwoPressesDuringTheRestoreCancelOutWhileTheMirrorStaysPaused() async {
+        await returnAndReload()
+        runner.userToggle(transportPaused: true)
+        XCTAssertEqual(runner.rule.intent, .play)
+        runner.userToggle(transportPaused: true)
+        XCTAssertEqual(runner.rule.intent, .pause, "the second press toggles the queued intent")
+        settleTransport()
+        XCTAssertEqual(host.plays, 0)
+        XCTAssertEqual(host.pauses, 1)
+        // With the mirror still saying "playing", one press queues Play.
+        setUp2()
+        await returnAndReload()
+        runner.userToggle(transportPaused: false)
+        XCTAssertEqual(runner.rule.intent, .play)
+        settleTransport()
+        XCTAssertEqual(host.plays, 1)
+    }
+
+    /// Finding 3: a reload that fails while the app is backgrounded again is the return's: the failover
+    /// ladder never sees it, nothing hands off while away, and the next return takes the fresh load.
+    func testAReloadFailureWhileAwayIsTheReturnsAndTheNextReturnTakesAFreshLoad() async {
+        await returnAndReload()
+        runner.enteredBackground()
+        XCTAssertEqual(runner.rule.mode, .awayRestoring)
+        XCTAssertTrue(runner.ownsFailures)
+        let failure = AetherFailure(kind: .reloadFailed, message: "x", atSec: 0, beforeFirstFrame: true)
+        XCTAssertTrue(runner.failureArrived(failure), "owned: never the ladder's rebuild or mpv handoff")
+        XCTAssertEqual(host.handOffs, [])
+        XCTAssertEqual(runner.rule.mode, .away)
+        XCTAssertEqual(runner.rule.failedAttempts, 0, "not an attempt")
+        host.sessionFailed = true
+        runner.becameActive()
+        await drain()
+        XCTAssertEqual(host.restoreLoads, [120], "row 8: a fresh load at the held position")
+        XCTAssertEqual(host.handOffs, [])
+    }
+
+    private func setUp2() {
+        session = Session()
+        host = Host(session: session)
+        clock = Clock()
+        runner = AetherReturnEffectRunner(owner: host.identity, session: session, host: host,
+                                          schedule: clock.schedule, now: { [unowned self] in self.clock.now })
     }
 }
