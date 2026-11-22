@@ -42,10 +42,14 @@ nonisolated enum NativeRestartEvent: Sendable, Equatable {
     case itemFailedPreReady(signalingRetryAllowed: Bool)
     case itemFailedAfterReady
     case remuxFailed(stage: String)
-    /// The seek finished (`AVPlayer.seek` returned true): the player is at the target.
-    case seekLanded(clockSec: Double?, pictureReady: Bool)
-    /// The seek returned false (interrupted or failed): never a landing. Retried once, then the failure.
-    case seekFailed
+    /// The seek of `generation` finished (`AVPlayer.seek` returned true). spec-mpv-return §6.2: the
+    /// landing is checked against the target (`PlayerLandingCheck`) before it is stored; the durations
+    /// are the item's at the issue and after the await. A stale generation is ignored.
+    case seekLanded(clockSec: Double?, durationAtIssueSec: Double?, durationNowSec: Double?, pictureReady: Bool,
+                    generation: Int)
+    /// The seek of `generation` returned false (interrupted or failed): never a landing. Retried once,
+    /// then the failure.
+    case seekFailed(generation: Int)
     /// From scratch, awaiting a duration: the restart's item sampled (W5 r3).
     case durationKnown(positionSec: Double, durationSec: Double, pictureReady: Bool)
     /// Mid-play: the snapshot's audio and subtitle are selected on the new item (W5 r1: the restart
@@ -67,7 +71,9 @@ nonisolated enum NativeRestartEffect: Sendable, Equatable {
     case makeServer
     case stopServer(stale: Bool)
     case makeItem(signalingAttempt: Int)
-    case seek(Double)
+    /// spec-mpv-return §6.2: every restart seek is exact (both kinds and the percentage seek), and
+    /// carries its generation back in `seekLanded` / `seekFailed`.
+    case seek(Double, exact: Bool, generation: Int)
     case restoreTracks(audio: String?, subtitle: String?)
     case startTrackersOnce
     case report(PlayerRestoreOutcome)
@@ -91,6 +97,12 @@ nonisolated struct NativeRestartMachine: Sendable, Equatable {
     private(set) var seekRetried = false
     /// From scratch, awaiting a duration: the row's percentage.
     private(set) var awaitPercent: Double?
+    /// spec-mpv-return §6.2: the generation of the restart seek in flight (a landing of an older one is
+    /// ignored), and whether the one corrective seek was used.
+    private(set) var seekGeneration = 0
+    private(set) var correctionUsed = false
+    /// The verdict of the last current-generation landing (tests' oracle: settled ⇒ `.confirmed`).
+    private(set) var lastVerdict: PlayerLandingCheck.Verdict?
 
     nonisolated struct Landing: Sendable, Equatable {
         let clockSec: Double?
@@ -120,6 +132,8 @@ nonisolated struct NativeRestartMachine: Sendable, Equatable {
             seekTarget = nil
             seekRetried = false
             awaitPercent = nil
+            correctionUsed = false
+            lastVerdict = nil
             state = .activating
             switch kind {
             case .midPlay:
@@ -167,11 +181,9 @@ nonisolated struct NativeRestartMachine: Sendable, Equatable {
             guard state == .itemPending, let kind, let target else { return [] }
             switch kind {
             case .midPlay:
-                state = .seeking
                 tracksPending = true
                 pendingLanding = nil
-                seekTarget = target.positionSec
-                return [.seek(target.positionSec), .restoreTracks(audio: target.audioName, subtitle: target.subtitleName)]
+                return startSeek(target.positionSec) + [.restoreTracks(audio: target.audioName, subtitle: target.subtitleName)]
             case .fromScratch:
                 state = .resuming
                 return []
@@ -206,18 +218,31 @@ nonisolated struct NativeRestartMachine: Sendable, Equatable {
             case .drop: return settle(clockSec: pos, pictureReady: picture)
             case .seek(let t): return startSeek(t)
             }
-        case .seekFailed:
-            guard state == .seeking, pendingLanding == nil, let t = seekTarget else { return [] }
+        case .seekFailed(let generation):
+            guard state == .seeking, pendingLanding == nil, generation == seekGeneration, let t = seekTarget else { return [] }
             guard !seekRetried else { return fail(.failed("seekFailed")) }
             seekRetried = true
-            return [.seek(t)]
-        case .seekLanded(let clock, let picture):
-            guard state == .seeking, pendingLanding == nil else { return [] }
-            if tracksPending {
-                pendingLanding = Landing(clockSec: clock, pictureReady: picture)
-                return []
+            return [issueSeek(t)]
+        case .seekLanded(let clock, let atIssue, let now, let picture, let generation):
+            guard state == .seeking, pendingLanding == nil, generation == seekGeneration, let t = seekTarget else { return [] }
+            // spec-mpv-return §6.2: checked before anything is stored.
+            let verdict = PlayerLandingCheck.verdict(target: t, landed: clock, durationAtIssue: atIssue,
+                                                     durationNow: now, correctionUsed: correctionUsed)
+            lastVerdict = verdict
+            switch verdict {
+            case .confirmed:
+                if tracksPending {
+                    pendingLanding = Landing(clockSec: clock, pictureReady: picture)
+                    return []
+                }
+                return settle(clockSec: clock, pictureReady: picture)
+            case .correct:
+                // One corrective exact seek to the same target; the tracks state is kept, nothing stored.
+                correctionUsed = true
+                return [issueSeek(t)]
+            case .offTarget, .invalidTarget:
+                return fail(.failed("offTarget"))
             }
-            return settle(clockSec: clock, pictureReady: picture)
         case .tracksRestored:
             guard state == .seeking, tracksPending else { return [] }
             tracksPending = false
@@ -228,9 +253,19 @@ nonisolated struct NativeRestartMachine: Sendable, Equatable {
     }
 
     private mutating func startSeek(_ sec: Double) -> [NativeRestartEffect] {
+        // An unusable target is never sought (spec-mpv-return §6.2 step 1): the restart fails.
+        guard sec.isFinite, sec >= 0 else {
+            lastVerdict = .invalidTarget
+            return fail(.failed("offTarget"))
+        }
         state = .seeking
         seekTarget = sec
-        return [.seek(sec)]
+        return [issueSeek(sec)]
+    }
+
+    private mutating func issueSeek(_ sec: Double) -> NativeRestartEffect {
+        seekGeneration += 1
+        return .seek(sec, exact: true, generation: seekGeneration)
     }
 
     private mutating func fail(_ outcome: PlayerRestoreOutcome) -> [NativeRestartEffect] {
