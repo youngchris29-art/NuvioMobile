@@ -117,7 +117,12 @@ final class AetherReturnEffectRunner {
     var owner: PlaybackIdentity { rule.owner }
 
     /// DEBUG probe and logs: the last restore outcome the rule was fed, the mode, the one nudge.
-    private(set) var lastOutcome = "-"
+    private(set) var lastOutcome = "-" {
+        didSet { if lastOutcome != oldValue { outcomeTrail = Array((outcomeTrail + [lastOutcome]).suffix(6)) } }
+    }
+    /// The last few outcomes in order (DEBUG probe `trail=`), so a leg can see a short-lived one such as
+    /// `refused` before the fresh load replaces it.
+    private(set) var outcomeTrail: [String] = []
     var nudged: Bool { rule.nudgeIssued }
     var probeMode: String {
         switch rule.mode {

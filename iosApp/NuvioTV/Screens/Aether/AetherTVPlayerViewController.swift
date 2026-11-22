@@ -1741,6 +1741,7 @@ extension AetherTVPlayerViewController: AetherReturnHost {
             + " nudged=\(returnRunner.nudged ? 1 : 0) delay=\(String(format: "%.2f", session.audioDelaySec))"
             + " shaping=\(shaping.dialogueLiftDB)/\(shaping.boostDB)"
             + " audio=\(session.activeAudioID.map(String.init) ?? "-") sub=\(session.activeSubtitleID.map(String.init) ?? "-")"
+            + " trail=\(returnRunner.outcomeTrail.isEmpty ? "-" : returnRunner.outcomeTrail.joined(separator: ","))"
         if state.seekProbe.ret != text { state.seekProbe.ret = text }
     }
     #endif
