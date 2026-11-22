@@ -182,6 +182,9 @@ nonisolated struct MPVReturnLanding: Sendable, Equatable {
     enum Completion: Sendable, Equatable {
         case settled(landedSec: Double)
         case offTarget(landedSec: Double?)
+        /// A viewer seek superseded the return seek (code review W7 r1-1): the viewer's seek
+        /// completes the start; nothing is checked against the held target any more.
+        case cancelled(bySeekGeneration: Int)
     }
 
     enum Step: Sendable, Equatable {
@@ -226,6 +229,13 @@ nonisolated struct MPVReturnLanding: Sendable, Equatable {
         }
     }
 
+    /// A viewer seek went out while this landing waits: it is over, the viewer's seek stands.
+    mutating func cancel(bySeekGeneration generation: Int) -> Step {
+        guard completion == nil else { return .none }
+        awaitingGeneration = nil
+        return finish(.cancelled(bySeekGeneration: generation))
+    }
+
     /// mpv rejected the seek in flight: with the correction used (or none possible) it is the second miss.
     mutating func seekRejected(generation: Int) -> Step {
         guard completion == nil, generation == awaitingGeneration else { return .none }
@@ -236,5 +246,111 @@ nonisolated struct MPVReturnLanding: Sendable, Equatable {
     private mutating func finish(_ c: Completion) -> Step {
         completion = c
         return .complete(c)
+    }
+}
+
+// MARK: - Every app seek around a return (code review W7 r1: one decision)
+
+/// The outcome of every mpv seek the app issues, as one pure decision (code review W7 r1, findings
+/// 1-3): which seek it is (the start's resume, the return's correction, or the viewer's), its
+/// generation, and how it ended (landed, rejected; a superseded seek never reports and is resolved
+/// by the issue that superseded it). It owns the newest targeted seek in flight (the park's held
+/// target) and the return landing, so neither can outlive its seek:
+/// - a viewer seek during the landing cancels it (the viewer's seek completes the start);
+/// - a rejected start resume tells the start-up reducer the resume is over (no restart will come),
+///   and a return landing waiting on it completes `offTarget`;
+/// - a rejected seek clears the in-flight target when it is the newest one;
+/// - a result with a stale generation changes nothing.
+nonisolated struct MPVReturnSeeks: Sendable, Equatable {
+    enum Kind: Sendable, Equatable { case resume, correction, viewer }
+    enum Result: Sendable, Equatable {
+        case landed(atSec: Double?)
+        case rejected
+    }
+
+    struct Seek: Sendable, Equatable {
+        let generation: Int
+        let targetSec: Double
+    }
+
+    struct Outcome: Sendable, Equatable {
+        /// Issue the one corrective exact seek to this target (kind `.correction`).
+        var correctToSec: Double?
+        /// The return landing ended (settled, offTarget or cancelled).
+        var completion: MPVReturnLanding.Completion?
+        /// The start's resume seek will never restart playback: the start-up reducer completes now.
+        var startupResumeRejected = false
+    }
+
+    /// The newest app seek with a target that has not ended (nil after it landed or was rejected,
+    /// or when the newest seek had no target).
+    private(set) var inFlight: Seek?
+    private(set) var landing: MPVReturnLanding?
+    private(set) var landingDurationAtIssue: Double?
+    /// The generation of the start's resume seek (return or not), and the newest issued generation.
+    private(set) var resumeGeneration: Int?
+    private(set) var latestGeneration = 0
+
+    /// The return landing still waits: the loading screen stays up.
+    var landingPending: Bool { landing?.isPending ?? false }
+    var hasLanding: Bool { landing != nil }
+
+    /// The payload's `.position` start: its landing is checked (before the resume seek is issued).
+    mutating func beginReturnLanding(targetSec: Double, durationAtIssue: Double?) {
+        landing = MPVReturnLanding(targetSec: targetSec)
+        landingDurationAtIssue = durationAtIssue
+    }
+
+    mutating func issued(_ kind: Kind, generation: Int, targetSec: Double?) -> Outcome {
+        var out = Outcome()
+        latestGeneration = max(latestGeneration, generation)
+        inFlight = targetSec.flatMap { $0.isFinite ? Seek(generation: generation, targetSec: $0) : nil }
+        switch kind {
+        case .resume:
+            resumeGeneration = generation
+            landing?.seekIssued(generation: generation)
+        case .correction:
+            landing?.seekIssued(generation: generation)
+        case .viewer:
+            if var l = landing, l.isPending, case .complete(let c) = l.cancel(bySeekGeneration: generation) {
+                landing = l
+                out.completion = c
+            }
+        }
+        return out
+    }
+
+    mutating func finished(generation: Int, result: Result, durationNow: Double?) -> Outcome {
+        var out = Outcome()
+        if inFlight?.generation == generation { inFlight = nil }
+        switch result {
+        case .landed(let at):
+            if var l = landing {
+                let step = l.landed(generation: generation, atSec: at, durationAtIssue: landingDurationAtIssue,
+                                    durationNow: durationNow)
+                landing = l
+                apply(step, to: &out)
+            }
+        case .rejected:
+            if var l = landing {
+                let step = l.seekRejected(generation: generation)
+                landing = l
+                apply(step, to: &out)
+            }
+            // Only the newest seek: a later seek's restart completes the start itself.
+            if generation == resumeGeneration, generation == latestGeneration {
+                resumeGeneration = nil
+                out.startupResumeRejected = true
+            }
+        }
+        return out
+    }
+
+    private func apply(_ step: MPVReturnLanding.Step, to out: inout Outcome) {
+        switch step {
+        case .none: break
+        case .correct(let t): out.correctToSec = t
+        case .complete(let c): out.completion = c
+        }
     }
 }

@@ -527,3 +527,152 @@ final class MPVParkBoxQueueTests: XCTestCase {
         XCTAssertEqual(executed, ["unpause"])
     }
 }
+
+/// Code review W7 r1 (findings 1-3): every app seek's outcome around a return, as one decision. Each
+/// row is a sequence of issues and results; the oracle is that nothing outlives its seek.
+final class MPVReturnSeeksTests: XCTestCase {
+    private typealias S = MPVReturnSeeks
+    private typealias O = MPVReturnSeeks.Outcome
+
+    private func returnStart(target: Double = 100) -> S {
+        var s = S()
+        s.beginReturnLanding(targetSec: target, durationAtIssue: 7000)
+        XCTAssertEqual(s.issued(.resume, generation: 1, targetSec: target), O())
+        XCTAssertTrue(s.landingPending)
+        return s
+    }
+
+    private func outcome(correct: Double? = nil, _ c: MPVReturnLanding.Completion? = nil, rejected: Bool = false) -> O {
+        O(correctToSec: correct, completion: c, startupResumeRejected: rejected)
+    }
+
+    func testTheTable() {
+        struct Row { let name: String; let run: (inout S) -> [O]; let expected: [O]; let pending: Bool; let inFlight: S.Seek? }
+        let rows: [Row] = [
+            Row(name: "resume lands on target",
+                run: { s in [s.finished(generation: 1, result: .landed(atSec: 100), durationNow: 7000)] },
+                expected: [outcome(.settled(landedSec: 100))], pending: false, inFlight: nil),
+            Row(name: "resume misses, correction lands",
+                run: { s in [s.finished(generation: 1, result: .landed(atSec: 90), durationNow: 7000),
+                             s.issued(.correction, generation: 2, targetSec: 100),
+                             s.finished(generation: 2, result: .landed(atSec: 100), durationNow: 7000)] },
+                expected: [outcome(correct: 100), O(), outcome(.settled(landedSec: 100))], pending: false, inFlight: nil),
+            Row(name: "two misses: offTarget",
+                run: { s in [s.finished(generation: 1, result: .landed(atSec: 90), durationNow: 7000),
+                             s.issued(.correction, generation: 2, targetSec: 100),
+                             s.finished(generation: 2, result: .landed(atSec: 91), durationNow: 7000)] },
+                expected: [outcome(correct: 100), O(), outcome(.offTarget(landedSec: 91))], pending: false, inFlight: nil),
+            // Finding 1: the viewer's seek supersedes the resume; the resume never reports.
+            Row(name: "viewer seek supersedes the resume",
+                run: { s in [s.issued(.viewer, generation: 2, targetSec: 300),
+                             s.finished(generation: 2, result: .landed(atSec: 300), durationNow: 7000)] },
+                expected: [outcome(.cancelled(bySeekGeneration: 2)), O()], pending: false, inFlight: nil),
+            Row(name: "viewer seek supersedes the correction",
+                run: { s in [s.finished(generation: 1, result: .landed(atSec: 90), durationNow: 7000),
+                             s.issued(.correction, generation: 2, targetSec: 100),
+                             s.issued(.viewer, generation: 3, targetSec: nil),
+                             s.finished(generation: 2, result: .landed(atSec: 100), durationNow: 7000)] },
+                expected: [outcome(correct: 100), O(), outcome(.cancelled(bySeekGeneration: 3)), O()], pending: false, inFlight: nil),
+            // Finding 2: a rejected resume (paused start): offTarget and the start completes.
+            Row(name: "resume rejected while paused",
+                run: { s in [s.finished(generation: 1, result: .rejected, durationNow: 7000)] },
+                expected: [outcome(.offTarget(landedSec: nil), rejected: true)], pending: false, inFlight: nil),
+            Row(name: "correction rejected",
+                run: { s in [s.finished(generation: 1, result: .landed(atSec: 90), durationNow: 7000),
+                             s.issued(.correction, generation: 2, targetSec: 100),
+                             s.finished(generation: 2, result: .rejected, durationNow: 7000)] },
+                expected: [outcome(correct: 100), O(), outcome(.offTarget(landedSec: 90))], pending: false, inFlight: nil),
+            Row(name: "stale rejection ignored",
+                run: { s in [s.finished(generation: 0, result: .rejected, durationNow: 7000)] },
+                expected: [O()], pending: true, inFlight: S.Seek(generation: 1, targetSec: 100)),
+            Row(name: "stale landing ignored",
+                run: { s in [s.finished(generation: 7, result: .landed(atSec: 100), durationNow: 7000)] },
+                expected: [O()], pending: true, inFlight: S.Seek(generation: 1, targetSec: 100)),
+            Row(name: "resume rejected after a viewer seek superseded it: the viewer's restart starts it",
+                run: { s in [s.issued(.viewer, generation: 2, targetSec: 50),
+                             s.finished(generation: 1, result: .rejected, durationNow: 7000)] },
+                expected: [outcome(.cancelled(bySeekGeneration: 2)), O()], pending: false, inFlight: S.Seek(generation: 2, targetSec: 50)),
+        ]
+        for row in rows {
+            var s = returnStart()
+            XCTAssertEqual(row.run(&s), row.expected, row.name)
+            XCTAssertEqual(s.landingPending, row.pending, row.name)
+            XCTAssertEqual(s.inFlight, row.inFlight, row.name)
+        }
+    }
+
+    /// Finding 3: a rejected viewer seek is not the next background's held target.
+    func testAViewerSeekRejectedThenBackground() {
+        var s = S()
+        _ = s.issued(.viewer, generation: 4, targetSec: 900)
+        XCTAssertEqual(s.inFlight, S.Seek(generation: 4, targetSec: 900))
+        _ = s.finished(generation: 4, result: .rejected, durationNow: 7000)
+        XCTAssertNil(s.inFlight)
+        XCTAssertEqual(MPVReturnPlan.start(isLive: false, started: true, positionSec: 120,
+                                           seekInFlightTargetSec: s.inFlight?.targetSec, ownReturnStart: nil,
+                                           resumeTargetSec: nil), .position(120))
+        // An older seek's rejection never clears a newer one.
+        _ = s.issued(.viewer, generation: 5, targetSec: 30)
+        _ = s.issued(.viewer, generation: 6, targetSec: 40)
+        _ = s.finished(generation: 5, result: .rejected, durationNow: nil)
+        XCTAssertEqual(s.inFlight, S.Seek(generation: 6, targetSec: 40))
+    }
+
+    /// A normal start (no return landing): a rejected resume still completes the start; viewer seeks
+    /// never touch a landing that does not exist.
+    func testANormalStartsRejectedResumeCompletesTheStart() {
+        var s = S()
+        _ = s.issued(.resume, generation: 1, targetSec: 600)
+        XCTAssertEqual(s.finished(generation: 1, result: .rejected, durationNow: nil), outcome(rejected: true))
+        XCTAssertEqual(s.finished(generation: 1, result: .rejected, durationNow: nil), O(), "once")
+        XCTAssertEqual(s.issued(.viewer, generation: 2, targetSec: 10), O())
+        XCTAssertFalse(s.landingPending)
+    }
+
+    /// Exhaustive: for every sequence of up to three steps after the return's resume, the landing is
+    /// never pending once its seek ended or was superseded, and at most one completion is reported.
+    func testNoLandingOutlivesItsSeek() {
+        enum Step: CaseIterable { case viewer, landOn, landOff, reject, staleLand, staleReject }
+        func gen(_ s: S) -> Int { s.latestGeneration }
+        for a in Step.allCases { for b in Step.allCases { for c in Step.allCases {
+            var s = returnStart()
+            var completions = 0
+            var pendingSeek = 1   // generation the landing waits on, nil when none
+            var waiting: Int? = pendingSeek
+            for step in [a, b, c] {
+                var out = O()
+                switch step {
+                case .viewer: out = s.issued(.viewer, generation: gen(s) + 1, targetSec: 5); waiting = nil
+                case .landOn: out = s.finished(generation: gen(s), result: .landed(atSec: 100), durationNow: 7000)
+                case .landOff: out = s.finished(generation: gen(s), result: .landed(atSec: 50), durationNow: 7000)
+                case .reject: out = s.finished(generation: gen(s), result: .rejected, durationNow: 7000)
+                case .staleLand: out = s.finished(generation: gen(s) - 1, result: .landed(atSec: 100), durationNow: 7000)
+                case .staleReject: out = s.finished(generation: gen(s) - 1, result: .rejected, durationNow: 7000)
+                }
+                if let t = out.correctToSec {
+                    pendingSeek = gen(s) + 1
+                    _ = s.issued(.correction, generation: pendingSeek, targetSec: t)
+                    waiting = pendingSeek
+                } else if [.landOn, .landOff, .reject].contains(step) { waiting = nil }
+                if out.completion != nil { completions += 1 }
+                if s.landingPending { XCTAssertNotNil(waiting, "\(a) \(b) \(c): pending with no seek of its own") }
+            }
+            XCTAssertLessThanOrEqual(completions, 1, "\(a) \(b) \(c)")
+        } } }
+    }
+}
+
+final class MPVStartupResumeRejectedTests: XCTestCase {
+    func testARejectedResumeCompletesAPausedStart() {
+        var r = MPVStartupStageReducer()
+        XCTAssertFalse(r.resumeSeekRejected(), "nothing before FILE_LOADED")
+        r.fileLoaded(resumeGeneration: 3)
+        XCTAssertFalse(r.tick(positionSec: 100, paused: true))
+        XCTAssertFalse(r.tick(positionSec: 100, paused: true), "a paused start never trips the backstop")
+        XCTAssertTrue(r.resumeSeekRejected())
+        XCTAssertTrue(r.started)
+        var none = MPVStartupStageReducer()
+        none.fileLoaded(resumeGeneration: nil)
+        XCTAssertFalse(none.resumeSeekRejected(), "no resume seek, nothing to complete")
+    }
+}

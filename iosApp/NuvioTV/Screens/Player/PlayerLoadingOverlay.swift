@@ -304,6 +304,14 @@ struct MPVStartupStageReducer: Equatable {
         return set(.started)
     }
 
+    /// The resume seek was rejected (code review W7 r1-2): no PLAYBACK_RESTART will complete it, and
+    /// a paused start never trips the position backstop, so the start completes now.
+    @discardableResult
+    mutating func resumeSeekRejected() -> Bool {
+        guard fileLoaded, !started, resumeGeneration != nil else { return false }
+        return set(.started)
+    }
+
     /// `cache-buffering-state` (0–100) while buffering before start.
     @discardableResult
     mutating func bufferingPercent(_ percent: Int?) -> Bool {

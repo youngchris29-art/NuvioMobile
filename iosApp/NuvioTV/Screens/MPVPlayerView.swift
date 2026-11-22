@@ -519,13 +519,11 @@ final class MPVTVPlayerViewController: UIViewController {
     /// Main: the play/pause the viewer last asked for. The display-mode release and the live reconnect
     /// apply `pause = !desiredPlaying` (§3.3, §3.7); `togglePause`, `replay` and the start option write it.
     private var desiredPlaying = true
-    /// Main: the newest app seek with a target that has not landed (the park's held target).
-    private var seekInFlight: (generation: Int, targetSec: Double)?
     /// Main: the resume target this start will seek to (or did, before it landed).
     private var resumeTargetSec: Double?
-    /// The fresh start's `.position` landing check (§3.5); nil when not a return start.
-    private var returnLanding: MPVReturnLanding?
-    private var returnLandingDurationAtIssue: Double?
+    /// Main: every app seek's outcome around a return (code review W7 r1): the newest targeted seek in
+    /// flight (the park's held target), the start's resume, and the fresh start's landing check (§3.5).
+    private var returnSeeks = MPVReturnSeeks()
     /// A return start has not settled yet: its failure is a return failure (§3.7).
     private var returnStartPending = false
     /// The pending restorations of the viewer's picks (§3.3).
@@ -3396,7 +3394,8 @@ final class MPVTVPlayerViewController: UIViewController {
     /// engine-confirmed completion (MPV_EVENT_SEEK, then MPV_EVENT_PLAYBACK_RESTART — `drainEvents`).
     @discardableResult
     private func issueSeek(kind: SkipSegmentPlanner.SeekKind, targetSec: Double?, fromSec: Double? = nil,
-                           args: [String?], planner: Bool = true, onRejected: (() -> Void)? = nil) -> Int {
+                           args: [String?], planner: Bool = true, role: MPVReturnSeeks.Kind = .viewer,
+                           onRejected: (() -> Void)? = nil) -> Int {
         guard mpv != nil else { return seekGeneration }
         if planner {
             skipPlanner.beginSeek(kind: kind, targetSec: targetSec, fromSec: fromSec,
@@ -3404,13 +3403,15 @@ final class MPVTVPlayerViewController: UIViewController {
         }
         seekGeneration += 1
         let generation = seekGeneration
-        // spec-mpv-return §3.2: the newest targeted seek in flight is the park's held target.
-        seekInFlight = targetSec.map { (generation, $0) }
+        // spec-mpv-return §3.2 + code review W7 r1: one decision for every seek's outcome.
+        applyReturnSeekOutcome(returnSeeks.issued(role, generation: generation, targetSec: targetSec))
         let issued = parkBox.generation
         eventQueue.async { [weak self] in
             guard let self else { return }
             guard self.parkBox.allows(.seek, issuedGeneration: issued) else {
                 print("[MPVReturn] queued seek refused g=\(issued)")
+                // Refused like a rejection: nothing in flight may outlive it.
+                DispatchQueue.main.async { self.returnSeekFinished(generation: generation, result: .rejected) }
                 return
             }
             self.awaitingSeekStartGeneration = generation
@@ -3427,6 +3428,7 @@ final class MPVTVPlayerViewController: UIViewController {
             self.awaitingSeekStartGeneration = nil
             DispatchQueue.main.async {
                 onRejected?()
+                self.returnSeekFinished(generation: generation, result: .rejected)
                 guard generation == self.seekGeneration else { return }
                 self.skipPlanner.seekInterrupted()
             }
@@ -3888,8 +3890,7 @@ final class MPVTVPlayerViewController: UIViewController {
                 #endif
                 DispatchQueue.main.async {
                     // spec-mpv-return §3.5: a return start's landing is checked first (own generation).
-                    self.returnSeekLanded(generation: generation, landed: landed)
-                    if self.seekInFlight?.generation == generation { self.seekInFlight = nil }
+                    self.returnSeekFinished(generation: generation, result: .landed(atSec: landed.isFinite ? landed : nil))
                     // The preview playhead hands back to the real position on a commit's first
                     // landing, whether or not the planner guard below passes.
                     self.transportInput.seekLandedForCommit(generation: generation)
@@ -4026,16 +4027,13 @@ final class MPVTVPlayerViewController: UIViewController {
             didResumeSeek = true
             // spec-mpv-return §3.5: a payload's `.position` start is an exact seek with its landing checked.
             if let p = returnHandoff, case .position = p.start {
-                returnLanding = MPVReturnLanding(targetSec: seconds)
-                returnLandingDurationAtIssue = actualDurationSec
+                returnSeeks.beginReturnLanding(targetSec: seconds, durationAtIssue: actualDurationSec)
                 state.returnLandingPending = true
-                let generation = issueSeek(kind: .resume, targetSec: seconds,
-                                           args: [String(format: "%.3f", seconds), "absolute+exact"],
-                                           onRejected: { [weak self] in self?.returnSeekRejected() })
-                returnLanding?.seekIssued(generation: generation)
-                return generation
+                return issueSeek(kind: .resume, targetSec: seconds,
+                                 args: [String(format: "%.3f", seconds), "absolute+exact"], role: .resume)
             }
-            return seekAbsolute(seconds, kind: .resume)
+            return issueSeek(kind: .resume, targetSec: seconds, args: [String(format: "%.3f", seconds), "absolute"],
+                             role: .resume)
         }
         guard let entry = pendingResumeEntry else { return nil }
         pendingResumeEntry = nil
@@ -4043,13 +4041,15 @@ final class MPVTVPlayerViewController: UIViewController {
             let seconds = Double(entry.resolveResumePosition(actualDurationMs: Int64(actualDurationSec * 1000))) / 1000.0
             guard seconds > 10 else { return nil }
             didResumeSeek = true
-            return seekAbsolute(seconds, kind: .resume)
+            return issueSeek(kind: .resume, targetSec: seconds, args: [String(format: "%.3f", seconds), "absolute"],
+                             role: .resume)
         } else {
             // Duration unknown (some HLS): let mpv resolve the percentage itself.
             let pct = Double(entry.progressFraction) * 100
             guard pct > 0 else { return nil }
             didResumeSeek = true
-            return issueSeek(kind: .resume, targetSec: nil, args: [String(format: "%.3f", pct), "absolute-percent"])
+            return issueSeek(kind: .resume, targetSec: nil, args: [String(format: "%.3f", pct), "absolute-percent"],
+                             role: .resume)
         }
     }
 
@@ -4834,7 +4834,7 @@ extension MPVTVPlayerViewController {
         let held = cachedProps().position
         let start = MPVReturnPlan.start(isLive: live, started: startupStages.started,
                                         positionSec: held.isFinite ? held : state.positionSec,
-                                        seekInFlightTargetSec: seekInFlight?.targetSec,
+                                        seekInFlightTargetSec: returnSeeks.inFlight?.targetSec,
                                         ownReturnStart: returnHandoff?.start, resumeTargetSec: resumeTargetSec)
         if case .position(let p) = start { parkedPositionSec = p } else { parkedPositionSec = max(0, state.positionSec) }
         let current = PlaybackIdentity.current()
@@ -4963,51 +4963,47 @@ extension MPVTVPlayerViewController {
 
     // MARK: Fresh start settle (§3.5)
 
-    fileprivate func returnSeekLanded(generation: Int, landed: Double) {
-        guard var landing = returnLanding, landing.isPending else { return }
-        let step = landing.landed(generation: generation, atSec: landed.isFinite ? landed : nil,
-                                  durationAtIssue: returnLandingDurationAtIssue, durationNow: cachedProps().duration)
-        returnLanding = landing
-        handleLandingStep(step)
+    /// Main: a seek of ours ended (its restart landed, or mpv rejected or the gate refused it).
+    fileprivate func returnSeekFinished(generation: Int, result: MPVReturnSeeks.Result) {
+        applyReturnSeekOutcome(returnSeeks.finished(generation: generation, result: result,
+                                                    durationNow: cachedProps().duration))
     }
 
-    fileprivate func returnSeekRejected() {
-        guard var landing = returnLanding, landing.isPending, let g = landing.awaitingGeneration else { return }
-        let step = landing.seekRejected(generation: g)
-        returnLanding = landing
-        handleLandingStep(step)
-    }
-
-    private func handleLandingStep(_ step: MPVReturnLanding.Step) {
+    /// Carries out the pure decision's outcome (code review W7 r1): every path ends with the loading
+    /// screen dismissed (settled, offTarget, cancelled, or a rejected resume completing the start).
+    fileprivate func applyReturnSeekOutcome(_ out: MPVReturnSeeks.Outcome) {
         let g = returnHandoff?.returnGeneration ?? 0
-        switch step {
-        case .none:
-            return
-        case .correct(let target):
+        if out.startupResumeRejected {
+            print("[MPVReturn] resume seek rejected g=\(g): the start completes where it is")
+            if startupStages.resumeSeekRejected() { publishStartupStage() }
+        }
+        if let target = out.correctToSec {
             print("[MPVReturn] landing g=\(g) verdict=correct target=\(String(format: "%.2f", target))")
-            let generation = issueSeek(kind: .resume, targetSec: target,
-                                       args: [String(format: "%.3f", target), "absolute+exact"],
-                                       onRejected: { [weak self] in self?.returnSeekRejected() })
-            returnLanding?.seekIssued(generation: generation)
-        case .complete(let completion):
+            issueSeek(kind: .resume, targetSec: target, args: [String(format: "%.3f", target), "absolute+exact"],
+                      role: .correction)
+        }
+        if let completion = out.completion {
             returnStartPending = false
-            state.returnLandingPending = false
             let t = ProcessInfo.processInfo.systemUptime
             switch completion {
             case .settled(let landed):
                 print("[MPVReturn] settled g=\(g) landed=\(String(format: "%.2f", landed)) verdict=confirmed t=+\(String(format: "%.2f", t - loadingStartUptime))s uptime=\(String(format: "%.3f", t))")
                 debugPublishReturnProbe("settled")
             case .offTarget(let landed):
-                let target = returnLanding?.targetSec ?? 0
+                let target = returnSeeks.landing?.targetSec ?? 0
                 print("[MPVReturn] offTarget g=\(g) landed=\(landed.map { String(format: "%.2f", $0) } ?? "-") target=\(String(format: "%.2f", target)) t=+\(String(format: "%.2f", t - loadingStartUptime))s")
                 debugPublishReturnProbe("offTarget")
+            case .cancelled(let by):
+                print("[MPVReturn] landing cancelled g=\(g) by viewer seek \(by)")
+                debugPublishReturnProbe("cancelled")
             }
         }
+        if state.returnLandingPending != returnSeeks.landingPending { state.returnLandingPending = returnSeeks.landingPending }
     }
 
     /// The start stage reached `.started`: `.live` and `.normalStart` returns settle here.
     fileprivate func returnStartedNoted() {
-        guard returnStartPending, returnLanding == nil, let p = returnHandoff else { return }
+        guard returnStartPending, !returnSeeks.hasLanding, let p = returnHandoff else { return }
         returnStartPending = false
         let t = ProcessInfo.processInfo.systemUptime
         print("[MPVReturn] settled g=\(p.returnGeneration) landed=- verdict=started start=\(p.start.logToken) t=+\(String(format: "%.2f", t - loadingStartUptime))s uptime=\(String(format: "%.3f", t))")
