@@ -336,6 +336,8 @@ final class NativePlaybackCoordinator: ObservableObject {
     private var restartTarget: NativeRestartTarget?
     /// KVO on the current player's rate: presses on this route are AVKit's, observed here (I1, I5).
     private var rateObserver: NSKeyValueObservation?
+    /// Open only inside `primeTransportModel()`; read synchronously by the rate observer.
+    private let ratePrimeGate = NativeRatePrimeGate()
     /// `AVPlayerViewController.isReadyForDisplay`, as the screen reports it, and for which player.
     private var displayReadyPlayer: ObjectIdentifier?
     private var displayReady = false
@@ -1212,10 +1214,14 @@ final class NativePlaybackCoordinator: ObservableObject {
             }
         }
         rateObserver?.invalidate()
+        let primeGate = ratePrimeGate
         rateObserver = player.observe(\.rate, options: [.old, .new]) { [weak self] player, change in
             let was = (change.oldValue ?? 0) > 0
             let now = (change.newValue ?? 0) > 0
             guard was != now else { return }
+            // `primeTransportModel()`'s own play/pause: KVO fires synchronously inside those calls, so
+            // the gate is read in the same turn that set it. Never a press.
+            guard !primeGate.isOpen else { return }
             Task { @MainActor [weak self] in
                 guard let self, self.player === player else { return }
                 self.returnRunner?.observedRate(playing: now)
@@ -2163,6 +2169,12 @@ extension NativePlaybackCoordinator: NativeReturnHost {
         returnRunner?.pictureChanged()
     }
 
+    /// A Play/Pause press seen by the host's recogniser (the return's press source while it holds the
+    /// transport).
+    func notePlayPausePress() {
+        returnRunner?.observedPress()
+    }
+
     /// The post-play cover (or another cover) went away: a return deferred on it decides now.
     func noteReappeared() {
         returnRunner?.reappeared()
@@ -2170,11 +2182,17 @@ extension NativePlaybackCoordinator: NativeReturnHost {
 
     #if DEBUG
     /// The native probe's return fields (W4's legs read them): `ret=<mode>/<last outcome>
-    /// restoring=<0|1> picture=<0|1> nudged=<0|1> health=<last health>`.
+    /// restoring=<0|1> picture=<0|1> nudged=<0|1> health=<last health> aud=<audio rendition>
+    /// sub=<subtitle rendition | off>` (names with spaces as `_`, so the probe stays one token per field).
     var returnProbeText: String {
-        guard let runner = returnRunner else { return "ret=- restoring=0 picture=0 nudged=0 health=-" }
+        let aud = (currentAudioOption.map(Self.renditionName(of:)) ?? "-").replacingOccurrences(of: " ", with: "_")
+        let sub = (currentLegibleName ?? "off").replacingOccurrences(of: " ", with: "_")
+        guard let runner = returnRunner else {
+            return "ret=- restoring=0 picture=0 nudged=0 health=- aud=\(aud) sub=\(sub)"
+        }
         return "ret=\(runner.probeMode)/\(runner.lastOutcome) restoring=\(isRestoringPipeline ? 1 : 0)"
             + " picture=\(returnPictureReady ? 1 : 0) nudged=\(runner.nudged ? 1 : 0) health=\(runner.lastHealth)"
+            + " aud=\(aud) sub=\(sub) trail=\(runner.outcomeTrail.isEmpty ? "-" : runner.outcomeTrail.joined(separator: ","))"
     }
     #endif
 
@@ -2311,7 +2329,7 @@ extension NativePlaybackCoordinator: NativeReturnHost {
         switch debugBackgroundFault {
         case .killListener: server?.debugKillListener()
         case .failRemuxInput: remux?.debugFailInput()
-        case .failRestart, nil: break
+        case .failRestart, .delayRestart, nil: break
         }
         #endif
     }
@@ -2401,6 +2419,15 @@ extension NativePlaybackCoordinator: NativeReturnHost {
             debugFailRestartUsed = true
             print("[Return] DEBUG fault: the restart's server step fails")
             returnRunner?.machine(.bindFailed, token: token)
+            return
+        }
+        if debugBackgroundFault == .delayRestart, !debugFailRestartUsed {
+            debugFailRestartUsed = true
+            print("[Return] DEBUG fault: the restart's server step waits 5 s")
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                self?.restartMakeServer(token: token)
+            }
             return
         }
         #endif
@@ -2552,6 +2579,22 @@ extension NativePlaybackCoordinator: NativeReturnHost {
         returnRunner?.machine(.resumeChosen(sec: resume), token: token)
     }
 
+    /// A restart hands AVKit a player that has never played (from scratch) or swaps in a new one under
+    /// an item-less shell (mid-play). AVKit's transport keeps its own time model for that player, still
+    /// at 0, and its Play press seeks there before playing: measured on the sim 2026-11-21 (W4), every
+    /// restart that came back paused at 12 s or 30 s resumed from 0 on the first remote Play, while a
+    /// programmatic `play()` resumed in place. One synchronous play/pause after the corrective seek
+    /// brings AVKit's model to the landed time; nothing is rendered (the rate is back at 0 in the same
+    /// turn) and the rate observer drops both edges through `ratePrimeGate`.
+    private func primeTransportModel() {
+        guard let player, player.timeControlStatus != .playing else { return }
+        ratePrimeGate.isOpen = true
+        player.play()
+        player.pause()
+        ratePrimeGate.isOpen = false
+        print("[Return] AVKit transport primed at \(String(format: "%.1f", CMTimeGetSeconds(player.currentTime())))s")
+    }
+
     func restartEnded(token: Int, settled: Bool) {
         guard restartToken == token else { return }
         restartToken = nil
@@ -2567,7 +2610,14 @@ extension NativePlaybackCoordinator: NativeReturnHost {
         if let player { isPaused = player.timeControlStatus != .playing }
         advanceLoadingStage(.started)
         if restartKind == .fromScratch, let item = playerItem { loadLegibleSelection(item: item) }
+        primeTransportModel()
         print("[Return] native restart settled kind=\(restartKind.map { "\($0)" } ?? "-")"
               + " at \(String(format: "%.1f", readyClockSec ?? lastPositionSec))s picture=\(returnPictureReady ? 1 : 0)")
     }
+}
+
+/// The rate observer's synchronous gate for `primeTransportModel()` (main thread only: the coordinator
+/// sets it and calls `play()`/`pause()` on main, and KVO delivers inside those calls).
+final class NativeRatePrimeGate: @unchecked Sendable {
+    var isOpen = false
 }

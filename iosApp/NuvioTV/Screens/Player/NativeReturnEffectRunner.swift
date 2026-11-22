@@ -113,7 +113,12 @@ final class NativeReturnEffectRunner {
     /// The kind of the restart the machine runs (for the cancel's teardown).
     private var machineKind: NativeRestartKind?
     private(set) var trace: [String] = []
-    private(set) var lastOutcome = "-"
+    private(set) var lastOutcome = "-" {
+        didSet { if lastOutcome != oldValue { outcomeTrail = Array((outcomeTrail + [lastOutcome]).suffix(6)) } }
+    }
+    /// The last few outcomes in order (DEBUG probe `trail=`), so a leg can see a short-lived one such as
+    /// `refused` before the fresh load replaces it.
+    private(set) var outcomeTrail: [String] = []
 
     init(owner: PlaybackIdentity, host: NativeReturnHost,
          schedule: @escaping AetherReturnSchedule = AetherReturnEffectRunner.liveSchedule,
@@ -143,6 +148,7 @@ final class NativeReturnEffectRunner {
         case .finished: return "finished"
         }
     }
+
 
     /// While true, presses are recorded as intent and the transport is held paused (I1, I5).
     private var holdsTransport: Bool {
@@ -188,21 +194,33 @@ final class NativeReturnEffectRunner {
         }
     }
 
-    /// The player's rate changed (KVO on the coordinator's current player). AVKit owns the remote on this
-    /// route, so presses are observed, not routed: while a return holds the transport a start of playback
-    /// is one press (the intent flips, the player is paused again); in idle the press is passed to the
-    /// rule for the backstop and its own transport effect is dropped.
+    /// The player's rate changed (KVO on the coordinator's current player). While a return holds the
+    /// transport, a start of playback is never read as a press (W4, measured on the sim 2026-11-21: one
+    /// press can raise the rate twice, the system resumes the old player on the way back from a real
+    /// background, and a press during the restart raises nothing at all because AVKit ignores an
+    /// item-less player); it only pauses the held player again (I1). Presses come from
+    /// `observedPress()`. In idle a start or stop is passed to the rule (the backstop's first Play) and
+    /// the rule's own transport effect is dropped, since AVKit already applied it.
     func observedRate(playing: Bool) {
         if holdsTransport {
             guard playing else { return }
-            let toPlay = rule.intent == .pause
-            record(toPlay ? "press play (held)" : "press pause (held)")
-            feed(.rule(toPlay ? .userPlay(facts(entered: false)) : .userPause, observed: true))
+            record("rate rise held")
             host?.returnPause()
             return
         }
         guard rule.mode == .idle else { return }
         feed(.rule(playing ? .userPlay(facts(entered: false)) : .userPause, observed: true))
+    }
+
+    /// A Play/Pause press (the host's recogniser, which sees it whether or not AVKit acts on it). While
+    /// the return holds the transport it flips the intent (last press wins, I5); otherwise the rate
+    /// observer already carries it.
+    func observedPress() {
+        guard holdsTransport else { return }
+        let toPlay = rule.intent == .pause
+        record(toPlay ? "press play (held)" : "press pause (held)")
+        feed(.rule(toPlay ? .userPlay(facts(entered: false)) : .userPause, observed: true))
+        host?.returnPause()
     }
 
     /// The observe loop's tick (native: 3 s).
@@ -589,9 +607,10 @@ final class NativeReturnEffectRunner {
 /// `-debug.nativeBackgroundFault killListener|failRemuxInput|failRestart` (T-UI-N2 to N4, R6), read once
 /// per player. `killListener` cancels the loopback listener at didEnterBackground; `failRemuxInput` makes
 /// the remux worker's next source read fail at didEnterBackground; `failRestart` makes the restart's
-/// server step fail once (a bind failure inside the one attempt, so the return hands to mpv).
+/// server step fail once (a bind failure inside the one attempt, so the return hands to mpv);
+/// `delayRestart` holds the restart's server step 5 s once, so a press can land while it runs.
 enum DebugNativeBackgroundFault: String {
-    case killListener, failRemuxInput, failRestart
+    case killListener, failRemuxInput, failRestart, delayRestart
 
     static func current(defaults: UserDefaults = .standard) -> DebugNativeBackgroundFault? {
         defaults.string(forKey: "debug.nativeBackgroundFault").flatMap(DebugNativeBackgroundFault.init(rawValue:))

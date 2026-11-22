@@ -138,6 +138,7 @@ struct NativePlayerScreen: View {
                         rememberSpeedShowId: (context.season != nil || context.episode != nil) ? context.parentMetaId : nil,
                         onBarVisibility: { visible in barVisibilityChanged(visible) },
                         onAnyPress: { hidePauseCard(reason: "press") },
+                        onPlayPausePress: { [weak coordinator] in coordinator?.notePlayPausePress() },
                         onReadyForDisplay: { [weak coordinator] ready, shown in
                             coordinator?.noteReadyForDisplay(ready, player: shown)
                         }
@@ -615,6 +616,8 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
     let onBarVisibility: (Bool) -> Void
     /// Any remote press (P4 B16: hides the pause card).
     let onAnyPress: () -> Void
+    /// A Play/Pause press (return from background: the runner's press source while it holds the transport).
+    let onPlayPausePress: () -> Void
     /// `AVPlayerViewController.isReadyForDisplay` changed, with the player it is for (return from
     /// background, spec 4.9: a restart settles only with a displayed frame).
     let onReadyForDisplay: (Bool, AVPlayer?) -> Void
@@ -709,6 +712,7 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
             }
         }
         host.onAnyPress = onAnyPress
+        host.onPlayPausePress = onPlayPausePress
         let speedList = PlayerPlaybackColumns.speeds.map { String(format: "%g", $0) }.joined(separator: ",")
         let menuTitles = host.playerVC.transportBarCustomMenuItems
             .compactMap { ($0 as? UIMenu)?.title ?? ($0 as? UIAction)?.title }.joined(separator: ",")

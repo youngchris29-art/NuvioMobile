@@ -24,6 +24,10 @@ final class NativePlayerHostController: UIViewController, UIGestureRecognizerDel
     /// Any remote press (Select, Play/Pause, the arrows, Menu), observed without consuming it
     /// (P4 B16: a press hides the pause card).
     var onAnyPress: (() -> Void)?
+    /// A Play/Pause press, observed without consuming it. Return from background (W4): AVKit acts on
+    /// Play/Pause before the app sees it, and ignores it altogether while the player has no item (the
+    /// restart's shell), so the return's runner takes its presses from here, not from the rate.
+    var onPlayPausePress: (() -> Void)?
     /// Last reported transport-bar visibility, so the log line prints transitions only.
     private var lastBarVisible: Bool?
     /// Fired after a presented sheet has been dismissed (any way: Menu, swipe up, programmatic).
@@ -35,6 +39,7 @@ final class NativePlayerHostController: UIViewController, UIGestureRecognizerDel
     private var swallowMenuRelease = false
     private(set) var panelHost: PlayerPanelPresenting?
     private var anyPress: UITapGestureRecognizer!
+    private var playPausePress: UITapGestureRecognizer!
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -59,9 +64,15 @@ final class NativePlayerHostController: UIViewController, UIGestureRecognizerDel
         anyPress.cancelsTouchesInView = false
         anyPress.delegate = self
         view.addGestureRecognizer(anyPress)
+        playPausePress = UITapGestureRecognizer(target: self, action: #selector(handlePlayPausePress))
+        playPausePress.allowedPressTypes = [NSNumber(value: UIPress.PressType.playPause.rawValue)]
+        playPausePress.cancelsTouchesInView = false
+        playPausePress.delegate = self
+        view.addGestureRecognizer(playPausePress)
     }
 
     @objc private func handleAnyPress() { onAnyPress?() }
+    @objc private func handlePlayPausePress() { onPlayPausePress?() }
 
     // MARK: AVPlayerViewControllerDelegate
 

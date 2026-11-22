@@ -192,12 +192,12 @@ final class NativeRestartWiringTests: XCTestCase {
         XCTAssertEqual(host.handOffs, [])
     }
 
-    // MARK: Presses (AVKit owns the remote; observed, I1 and I5)
+    // MARK: Presses (AVKit owns the remote; the host's Play/Pause recogniser is the press source, I1 and I5)
 
     func testAPlayPressDuringTheRestartIsHeldAndAppliedOnceAtTheSettle() async {
         await returnAndRestart()
         let pausesBefore = host.pauses
-        runner.observedRate(playing: true)
+        runner.observedPress()
         XCTAssertEqual(host.pauses, pausesBefore + 1, "the player is held paused while the return runs")
         XCTAssertEqual(host.plays, 0)
         buildPipeline()
@@ -205,16 +205,47 @@ final class NativeRestartWiringTests: XCTestCase {
         XCTAssertEqual(host.plays, 1, "exactly one play, after the settle")
         runner.observedRate(playing: true)
         XCTAssertEqual(host.plays, 1, "the observed start of that play is not played again")
+        runner.observedPress()
+        XCTAssertEqual(host.plays, 1, "in idle a press is the rate observer's, not a second intent")
     }
 
     func testPlayThenPauseDuringTheRestartEndsPaused() async {
         await returnAndRestart()
-        runner.observedRate(playing: true)
-        runner.observedRate(playing: false)
-        runner.observedRate(playing: true)
+        runner.observedPress()
+        runner.observedPress()
         buildPipeline()
         land(picture: true)
         XCTAssertEqual(host.plays, 0, "the last press (pause) wins")
+    }
+
+    /// W4 (sim, 2026-11-21): one remote Play while away raised the rate twice (AVKit plays again after
+    /// the held re-pause); counted from the rate, the second rise was a Pause and the return ended paused.
+    func testRateRisesWhileHeldAreNeverPresses() async {
+        await returnAndRestart()
+        let pausesBefore = host.pauses
+        runner.observedPress()
+        runner.observedRate(playing: true)
+        runner.observedRate(playing: false)
+        runner.observedRate(playing: true)
+        XCTAssertEqual(host.pauses, pausesBefore + 3, "the press and both rises are held paused")
+        buildPipeline()
+        land(picture: true)
+        XCTAssertEqual(host.plays, 1, "one press, one play at the settle")
+    }
+
+    /// W4 (sim, 2026-11-21, real background): the system resumed the old player on the way back; read as
+    /// a press it brought the return back playing (against A).
+    func testTheSystemResumeOnTheWayBackIsNotAPress() async {
+        runner.enteredBackground()
+        clock.now += 30
+        runner.observedRate(playing: true)          // the system resumes the old player before the hop
+        runner.becameActive()
+        await drain()
+        runner.observedRate(playing: true)          // and again just after it
+        buildPipeline()
+        land(picture: true)
+        XCTAssertEqual(host.plays, 0, "A: no press, the return ends paused")
+        XCTAssertEqual(runner.rule.mode, .idle)
     }
 
     // MARK: Picture (I9)
@@ -420,7 +451,7 @@ final class NativeRestartWiringTests: XCTestCase {
 
     func testAnIdentityChangeBeforeAQueuedPlayIsAppliedExits() async {
         await returnAndRestart()
-        runner.observedRate(playing: true)
+        runner.observedPress()
         buildPipeline()
         host.identity = PlaybackIdentity(accountKey: "user-2", profileId: 1)
         land(picture: true)
