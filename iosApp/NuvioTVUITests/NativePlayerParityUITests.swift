@@ -676,34 +676,96 @@ class NativePlayerParityUITests: XCTestCase {
         print("[ReturnLeg] N3 health=\(after["health"] ?? "-")")
     }
 
-    /// T-UI-N4 (`-debug.nativeBackgroundFault failRestart`, DEBUG cycle at 10 s): the restart fails once, and
-    /// the stream goes to mpv at the held position (decision E). Routed, not forced: a forced native engine
-    /// (`-debug.mpvSmokeEngine native`) has no mpv fallback by design (`PlayerScreen`, the failure-alert
-    /// retry), so this leg lets the router pick native for the SDR Matroska fixture, as the app does.
-    func testNativeRestartFailureHandsToMpv() throws {
+    /// The mpv seek probe's key=value fields.
+    func mpvSeekProbe(_ app: XCUIApplication) -> [String: String] {
+        let el = element(app, "debug_seekProbe")
+        guard el.waitForExistence(timeout: 5) else { return [:] }
+        return Self.parse(el.label)
+    }
+
+    /// Routed (not forced) launch of the SDR Matroska smoke file with `failRestart` and a DEBUG cycle at 10 s: the
+    /// router picks native for it, as the app does (a forced native engine has no mpv fallback by design).
+    func launchRoutedWithFailedRestart(awaySec: Int) throws -> XCUIApplication {
         let env = ProcessInfo.processInfo.environment
         try XCTSkipUnless(env["PLAYER_NATIVE_PROBE"] == "1", "PLAYER_NATIVE_PROBE not set")
         let url = try requiredEnv("PLAYER_SMOKE_URL")
         let app = XCUIApplication()
         app.launchArguments += ["-debug.mpvSmokeURL", url, "-player.nativeDolbyVision", "YES", "-debug.mpvSmokeStartOver", "YES",
-                                "-debug.nativeBackgroundFault", "failRestart"] + cycleArgs(atSec: 10, awaySec: 5)
+                                "-debug.nativeBackgroundFault", "failRestart"] + cycleArgs(atSec: 10, awaySec: awaySec)
         app.launch()
         XCTAssertTrue(app.otherElements["player.native"].waitForExistence(timeout: 60), "the router did not pick the native player")
         XCTAssertTrue(waitNative(app, timeout: 40) { (Double($0["pos"] ?? "") ?? 0) > 1 }, "native playback never started: \(nativeProbeText(app))")
+        return app
+    }
+
+    /// T-UI-N4 (`-debug.nativeBackgroundFault failRestart`, DEBUG cycle at 10 s): the restart fails once, and
+    /// the stream goes to mpv from the payload (decision E). Decided spec (mpv returns, Q-M1): mpv starts PAUSED
+    /// at the native held position with no press, and Play plays on from there (never from before it).
+    func testNativeRestartFailureHandsToMpv() throws {
+        let app = try launchRoutedWithFailedRestart(awaySec: 5)
         XCTAssertTrue(app.otherElements["player.mpv"].waitForExistence(timeout: 60), "mpv never took over after the failed restart: \(nativeProbeText(app))")
         XCTAssertFalse(app.otherElements["player.native"].exists, "the native player is still showing after the handoff")
         let seek = element(app, "debug_seekProbe")
         XCTAssertTrue(seek.waitForExistence(timeout: 30), "no mpv seek probe")
-        var first = -1.0
-        let end = Date().addingTimeInterval(30)
+        var settled: [String: String] = [:]
+        let end = Date().addingTimeInterval(40)
         while Date() < end {
-            let p = Double(Self.parse(seek.label)["pos"] ?? "") ?? 0
-            if p > 1 { first = p; break }
+            let p = Self.parse(seek.label)
+            if p["paused"] == "1", (Double(p["pos"] ?? "") ?? 0) > 1 { settled = p; break }
             Thread.sleep(forTimeInterval: 0.3)
         }
-        print("[ReturnLeg] N4 mpv first pos=\(first) \(seek.label)")
-        XCTAssertGreaterThan(first, 7.5, "mpv did not resume at the held position (~10 s): first pos=\(first)")
-        XCTAssertLessThan(first, 17.0, "mpv resumed far past the held position (10 to 13 s): first pos=\(first)")
+        let first = Double(settled["pos"] ?? "") ?? -1
+        print("[ReturnLeg] N4 mpv first paused pos=\(first) \(seek.label)")
+        XCTAssertGreaterThan(first, 7.5, "mpv did not start paused at the held position (~10 s): \(seek.label)")
+        XCTAssertLessThan(first, 17.0, "mpv started far past the held position (10 to 13 s): \(seek.label)")
+        Thread.sleep(forTimeInterval: 2.5)
+        let still = mpvSeekProbe(app)
+        XCTAssertEqual(still["paused"], "1", "mpv did not stay paused with no press: \(seek.label)")
+        XCTAssertEqual(Double(still["pos"] ?? "") ?? -1, first, accuracy: 0.5, "the position moved while paused: \(seek.label)")
+        remote.press(.playPause)
+        var lowest = Double.infinity
+        let playEnd = Date().addingTimeInterval(20)
+        var played = false
+        while Date() < playEnd {
+            let p = Self.parse(seek.label)
+            let pos = Double(p["pos"] ?? "") ?? -1
+            if p["paused"] == "0", pos >= 0 { lowest = min(lowest, pos) }
+            if p["paused"] == "0", pos >= first + 2 { played = true; break }
+            Thread.sleep(forTimeInterval: 0.3)
+        }
+        XCTAssertTrue(played, "Play did not play on from the held position: first=\(first) \(seek.label)")
+        XCTAssertGreaterThanOrEqual(lowest, first - 0.5, "Play started from before the held position: first=\(first) lowest=\(lowest)")
+    }
+
+    /// M11 (spec-mpv-return §5.3): native `failRestart` with a Play press queued while away: the stream goes to mpv from
+    /// the payload at the native held position, and the queued Play makes it play without a second press.
+    func testNativeRestartFailureWithQueuedPlayStartsMpvPlaying() throws {
+        let app = try launchRoutedWithFailedRestart(awaySec: 10)
+        XCTAssertTrue(waitNative(app, timeout: 40) { self.retMode($0) == "away" }, "the DEBUG background cycle never ran: \(nativeProbeText(app))")
+        let nativeHeld = Double(nativeProbe(app)["pos"] ?? "") ?? -1
+        XCTAssertGreaterThan(nativeHeld, 7.5, "no native held position while away: \(nativeProbeText(app))")
+        remote.press(.playPause)
+        print("[ReturnLeg] M11 Play pressed while away at \(nativeHeld): \(nativeProbeText(app))")
+        XCTAssertTrue(app.otherElements["player.mpv"].waitForExistence(timeout: 90), "mpv never took over after the failed restart: \(nativeProbeText(app))")
+        let seek = element(app, "debug_seekProbe")
+        XCTAssertTrue(seek.waitForExistence(timeout: 30), "no mpv seek probe")
+        var heldField = -1.0
+        var lowest = Double.infinity
+        var playing = false
+        var intentSeen = "-"
+        let end = Date().addingTimeInterval(60)
+        while Date() < end {
+            let p = Self.parse(seek.label)
+            let pos = Double(p["pos"] ?? "") ?? -1
+            if let h = Double(p["held"] ?? "") { heldField = h; intentSeen = p["intent"] ?? "-" }
+            if p["paused"] == "0", pos > 1 { lowest = min(lowest, pos) }
+            if p["paused"] == "0", pos >= max(heldField, nativeHeld) + 2 { playing = true; break }
+            Thread.sleep(forTimeInterval: 0.3)
+        }
+        print("[ReturnLeg] M11 nativeHeld=\(nativeHeld) held=\(heldField) intent=\(intentSeen) lowest=\(lowest) \(seek.label)")
+        XCTAssertTrue(playing, "mpv did not play from the queued Play: nativeHeld=\(nativeHeld) \(seek.label)")
+        XCTAssertEqual(heldField, nativeHeld, accuracy: 0.5, "mpv's start is not the native held position: \(seek.label)")
+        XCTAssertGreaterThanOrEqual(lowest, nativeHeld - 0.5, "mpv played from before the native held position: lowest=\(lowest)")
     }
 
     /// Play/Pause during the restart (I5; `-debug.nativeBackgroundFault delayRestart` holds the restart 5 s;
@@ -749,6 +811,28 @@ class NativePlayerParityUITests: XCTestCase {
         print("[ReturnLeg] N5 settled: \(nativeProbeText(app))")
         XCTAssertEqual(back, 30, accuracy: 3, "the restart from scratch is not at its resume point: \(nativeProbeText(app))")
         XCTAssertFalse(app.otherElements["player.mpv"].exists, "the restart from scratch handed off to mpv")
+        assertNativePausedThenPlays(app, from: back)
+    }
+
+    /// N7 (spec-mpv-return §6.3): a saved resume that falls mid-segment (47.3 s), the DEBUG cycle at loading and the
+    /// first restart seek made coarse (`-debug.nativeRestartFirstSeekCoarse`: it lands on a segment start): the landing
+    /// check corrects it and the native restart settles within 0.5 s of the saved position.
+    func testNativeRestartMidSegmentResumeLandsExactly() throws {
+        let env = ProcessInfo.processInfo.environment
+        try XCTSkipUnless(env["PLAYER_NATIVE_PROBE"] == "1", "PLAYER_NATIVE_PROBE not set")
+        let url = try requiredEnv("PLAYER_SMOKE_URL")
+        let app = XCUIApplication()
+        app.launchArguments += ["-debug.mpvSmokeURL", url, "-player.nativeDolbyVision", "YES", "-debug.mpvSmokeEngine", "native",
+                                "-debug.mpvSmokeResumeSec", "47.3", "-debug.nativeStartDelaySec", "6",
+                                "-debug.nativeRestartFirstSeekCoarse", "YES"] + cycleArgs(atSec: 0, awaySec: 3)
+        app.launch()
+        XCTAssertTrue(waitNative(app, timeout: 90) { self.retMode($0) == "idle" && $0["paused"] == "1" && $0["picture"] == "1"
+                                                        && $0["restoring"] == "0" && (Double($0["pos"] ?? "") ?? 0) > 1 },
+                      "the start never ended paused with a picture after the return: \(nativeProbeText(app))")
+        let back = Double(nativeProbe(app)["pos"] ?? "") ?? -1
+        print("[ReturnLeg] N7 settled: \(nativeProbeText(app))")
+        XCTAssertEqual(back, 47.3, accuracy: 0.5, "the restart is not within 0.5 s of the saved position: \(nativeProbeText(app))")
+        XCTAssertFalse(app.otherElements["player.mpv"].exists, "the restart handed off to mpv")
         assertNativePausedThenPlays(app, from: back)
     }
 }

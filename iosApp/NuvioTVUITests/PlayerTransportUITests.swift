@@ -12,7 +12,7 @@ final class PlayerTransportUITests: XCTestCase {
 
     /// `url`: a fixture other than `PLAYER_SMOKE_URL` (the chapter legs pass
     /// `PLAYER_SMOKE_CHAPTERS_URL`, critique C24); nil = the plain smoke file.
-    private func launch(url fixture: String? = nil, extra: [String] = []) throws -> XCUIApplication {
+    private func launch(url fixture: String? = nil, extra: [String] = [], waitForPlay: Bool = true) throws -> XCUIApplication {
         let env = ProcessInfo.processInfo.environment
         try XCTSkipUnless(env["PLAYER_BAR_PROBE"] == "1")
         let url = try fixture ?? XCTUnwrap(env["PLAYER_SMOKE_URL"], "PLAYER_SMOKE_URL not set")
@@ -25,6 +25,7 @@ final class PlayerTransportUITests: XCTestCase {
                                 "-player.bufferMB", "8", "-debug.mpvSmokeStartOver", "YES"] + extra
         app.launch()
         XCTAssertTrue(app.otherElements["player.mpv"].waitForExistence(timeout: 30), "player did not appear")
+        guard waitForPlay else { return app }
         let deadline = Date().addingTimeInterval(30)
         while Date() < deadline {
             if probe(app)["pos"].flatMap(Double.init).map({ $0 > 1 }) == true { return app }
@@ -997,45 +998,465 @@ final class PlayerTransportUITests: XCTestCase {
         return n > 0 ? sum / n : -1
     }
 
-    // MARK: Return from background (spec 9.3, T-UI-M1)
+    // MARK: Return from background (spec-mpv-return §5.3, legs M1 to M13)
 
-    /// T-UI-M1, real background (Home, 5 s on the home screen, activate): mpv recovers on its own. The
-    /// return rule never runs on mpv (no `ret=` field on the seek probe), mpv stays in front with no
-    /// handoff, the position is not reset, and playback goes on (with one Play/Pause if mpv reports paused).
-    func testMpvBackgroundReturnUnchanged() throws {
-        let app = try launch()
-        XCTAssertTrue(waitFor(app, timeout: 30) { (Double($0["pos"] ?? "") ?? 0) >= 8 }, "never reached 8 s: \(probeText(app))")
-        let p0 = pos(app)
+    /// The process-wide ledger on the smoke host (`debug_mpvReturnLedger`): `mctl= mlast= mret= mcrit= mwrites= mfail=`.
+    private func ledgerText(_ app: XCUIApplication) -> String {
+        let el = app.descendants(matching: .any)["debug_mpvReturnLedger"]
+        guard el.waitForExistence(timeout: 5) else { return "" }
+        return el.label
+    }
+
+    private func ledger(_ app: XCUIApplication) -> [String: String] {
+        var out: [String: String] = [:]
+        for part in ledgerText(app).split(separator: " ") {
+            let kv = part.split(separator: "=", maxSplits: 1).map(String.init)
+            if kv.count == 2 { out[kv[0]] = kv[1] }
+        }
+        return out
+    }
+
+    private func ctl(_ p: [String: String]) -> Int { Int(p["ctl"] ?? "") ?? 0 }
+    private func heldSec(_ p: [String: String]) -> Double? { p["held"].flatMap(Double.init) }
+    private func posOf(_ p: [String: String]) -> Double { Double(p["pos"] ?? "") ?? -1 }
+
+    /// The position in a ledger failure, `returnAlert(position(6.0))` -> 6.0.
+    private func alertPosition(_ fail: String?) -> Double? {
+        guard let fail, fail.hasPrefix("returnAlert(position("), let close = fail.firstIndex(of: ")") else { return nil }
+        return Double(fail[fail.index(fail.startIndex, offsetBy: "returnAlert(position(".count)..<close])
+    }
+
+    /// A real background trip (Home, `awaySec` away, activate). The tvOS sim leaves the app in front on a
+    /// Home press, so the Settings app is brought forward the way the Aether and native return legs do.
+    private func realBackground(_ app: XCUIApplication, awaySec: TimeInterval) -> (ok: Bool, note: String) {
+        var how = "Home"
         remote.press(.home)
         var left = Date().addingTimeInterval(8)
         while Date() < left, app.state == .runningForeground { Thread.sleep(forTimeInterval: 0.25) }
         if app.state == .runningForeground {
-            // Same fallback as the Aether and native return legs: another app in front is a real background.
-            print("[ReturnLeg] M1 Home left the app in front; bringing the Settings app forward")
+            how = "Settings app in front"
             XCUIApplication(bundleIdentifier: "com.apple.TVSettings").activate()
             left = Date().addingTimeInterval(15)
             while Date() < left, app.state == .runningForeground { Thread.sleep(forTimeInterval: 0.25) }
         }
-        XCTAssertNotEqual(app.state, .runningForeground, "the simulator did not background the app")
-        Thread.sleep(forTimeInterval: 5)   // the time away itself, not an assertion
+        guard app.state != .runningForeground else { return (false, "still foreground after Home and after the Settings app") }
+        Thread.sleep(forTimeInterval: awaySec)   // the time away itself, not an assertion
         app.activate()
         let back = Date().addingTimeInterval(20)
         while Date() < back, app.state != .runningForeground { Thread.sleep(forTimeInterval: 0.25) }
-        XCTAssertEqual(app.state, .runningForeground, "the simulator did not foreground the app on activate")
+        guard app.state == .runningForeground else { return (false, "not foreground 20 s after activate") }
+        return (true, how)
+    }
+
+    /// The DEBUG in-process cycle at a playhead position.
+    private func cycle(atSec: Int, awaySec: Int) -> [String] {
+        ["-debug.backgroundCycleAtSec", String(atSec), "-debug.backgroundCycleAwaySec", String(awaySec)]
+    }
+
+    /// Waits for the probe of a controller with serial >= `minCtl` in `phase`.
+    private func waitReturn(_ app: XCUIApplication, minCtl: Int = 2, phase: String = "settled",
+                            timeout: TimeInterval = 60) -> Bool {
+        waitFor(app, timeout: timeout) { self.ctl($0) >= minCtl && $0["ret"] == phase }
+    }
+
+    /// The fresh controller first shows on the probe (`ctl >= minCtl`); returns that probe.
+    private func waitFreshAppears(_ app: XCUIApplication, minCtl: Int = 2, timeout: TimeInterval = 60) -> [String: String]? {
+        var seen: [String: String]?
+        _ = waitFor(app, timeout: timeout) {
+            if self.ctl($0) >= minCtl { seen = $0; return true }
+            return false
+        }
+        return seen
+    }
+
+    /// After a settled return that must stay paused: still paused 2 s later, same place.
+    private func assertStaysPaused(_ app: XCUIApplication, at held: Double, _ label: String,
+                                   file: StaticString = #filePath, line: UInt = #line) {
+        Thread.sleep(forTimeInterval: 2.0)
+        let p = probe(app)
+        XCTAssertEqual(p["paused"], "1", "\(label): did not stay paused: \(probeText(app))", file: file, line: line)
+        XCTAssertEqual(posOf(p), held, accuracy: 0.5, "\(label): the position moved while paused: \(probeText(app))", file: file, line: line)
+    }
+
+    /// Play from a paused return: advances >= 2 s from `held` and never plays from before it.
+    private func assertPlaysFrom(_ app: XCUIApplication, held: Double, press: Bool = true, _ label: String,
+                                 file: StaticString = #filePath, line: UInt = #line) {
+        if press { remote.press(.playPause) }
+        var lowest = Double.infinity
+        XCTAssertTrue(waitFor(app, timeout: 20) {
+            let p = self.posOf($0)
+            if $0["paused"] == "0", p >= 0 { lowest = min(lowest, p) }
+            return $0["paused"] == "0" && p >= held + 2
+        }, "\(label): Play did not advance 2 s from \(held): \(probeText(app))", file: file, line: line)
+        XCTAssertGreaterThanOrEqual(lowest, held - 0.5, "\(label): played from before the held position: held=\(held) lowest=\(lowest)", file: file, line: line)
+        XCTAssertTrue(app.otherElements["player.mpv"].exists, "\(label): mpv left", file: file, line: line)
+    }
+
+    private func reachSec(_ app: XCUIApplication, _ sec: Double) {
+        XCTAssertTrue(waitFor(app, timeout: 40) { self.posOf($0) >= sec }, "never reached \(sec) s: \(probeText(app))")
+    }
+
+    /// M1 (rewrites T-UI-M1), real background 5 s while playing: one fresh controller, back PAUSED (although it
+    /// was playing) within 0.5 s of its held position, the held position within ~2 s of the pre-Home one, and
+    /// Play advances at least 2 s from held without ever playing from before it.
+    func testMpvBackgroundReturnFreshControllerPaused() throws {
+        let app = try launch()
+        reachSec(app, 8)
+        let p0 = pos(app)
+        let trip = realBackground(app, awaySec: 5)
+        XCTAssertTrue(trip.ok, "the simulator did not background and foreground the app: \(trip.note)")
+        guard trip.ok else { return }
         XCTAssertTrue(app.otherElements["player.mpv"].waitForExistence(timeout: 10), "mpv is gone after the return")
         XCTAssertFalse(app.otherElements["player.aether"].exists, "an Aether player appeared")
         XCTAssertFalse(app.otherElements["player.native"].exists, "a native player appeared")
+        XCTAssertTrue(waitReturn(app), "the fresh controller never settled: p0=\(p0) \(probeText(app)) \(ledgerText(app))")
         let p = probe(app)
-        print("[ReturnLeg] M1 after return: p0=\(p0) \(probeText(app))")
-        XCTAssertNil(p["ret"], "the return rule ran on mpv: \(probeText(app))")
-        let resumed = Double(p["pos"] ?? "") ?? -1
-        XCTAssertGreaterThanOrEqual(resumed, p0 - 2, "mpv's position went back after the return: p0=\(p0) \(probeText(app))")
-        if p["paused"] == "1" {
-            print("[ReturnLeg] M1 mpv reports paused after the return; pressing Play/Pause")
-            remote.press(.playPause)
+        print("[ReturnLeg] M1 (\(trip.note)) p0=\(p0) \(probeText(app)) \(ledgerText(app))")
+        XCTAssertEqual(ctl(p), 2, "ctl did not change once: \(probeText(app))")
+        XCTAssertEqual(ledger(app)["mctl"], "2", "not exactly two controllers: \(ledgerText(app))")
+        XCTAssertEqual(p["paused"], "1", "the return came back playing: \(probeText(app))")
+        let held = try XCTUnwrap(heldSec(p), "no held position: \(probeText(app))")
+        XCTAssertEqual(held, p0, accuracy: 2.5, "held is not near the pre-Home position: p0=\(p0) \(probeText(app))")
+        XCTAssertEqual(posOf(p), held, accuracy: 0.5, "pos is not within 0.5 s of held: \(probeText(app))")
+        assertStaysPaused(app, at: held, "M1")
+        assertPlaysFrom(app, held: held, "M1")
+        XCTAssertEqual(ledger(app)["mctl"], "2", "a third controller appeared: \(ledgerText(app))")
+    }
+
+    /// M2: paused before Home (real background): a new controller, paused, the same position.
+    func testMpvReturnWhilePausedStaysPausedAtTheSamePosition() throws {
+        let app = try launch()
+        reachSec(app, 6)
+        remote.press(.playPause)
+        XCTAssertTrue(waitFor(app, timeout: 6) { $0["paused"] == "1" }, "never paused: \(probeText(app))")
+        Thread.sleep(forTimeInterval: 1.0)
+        let p0 = pos(app)
+        let trip = realBackground(app, awaySec: 4)
+        XCTAssertTrue(trip.ok, "the simulator did not background and foreground the app: \(trip.note)")
+        guard trip.ok else { return }
+        XCTAssertTrue(waitReturn(app), "the fresh controller never settled: \(probeText(app)) \(ledgerText(app))")
+        let p = probe(app)
+        print("[ReturnLeg] M2 p0=\(p0) \(probeText(app))")
+        XCTAssertEqual(ctl(p), 2, "no new controller: \(probeText(app))")
+        XCTAssertEqual(p["paused"], "1", "not paused: \(probeText(app))")
+        XCTAssertEqual(p["intent"], "pause", "the intent is not pause: \(probeText(app))")
+        XCTAssertEqual(posOf(p), p0, accuracy: 0.5, "not the same position: p0=\(p0) \(probeText(app))")
+        XCTAssertEqual(heldSec(p) ?? -1, p0, accuracy: 0.5, "held is not the paused position: \(probeText(app))")
+        assertStaysPaused(app, at: posOf(p), "M2")
+    }
+
+    /// M3: Play 0.5 s after the fresh controller appears: it plays, once, from held (no sample of the fresh controller
+    /// ever plays from before held). The probe's `intent=` field is not asserted: it lags the press by one
+    /// (see the report), the behaviour is what counts.
+    func testMpvPlayAfterReturnPlaysOnceFromHeld() throws {
+        let app = try launch(extra: cycle(atSec: 8, awaySec: 3))
+        let fresh = waitFreshAppears(app)
+        XCTAssertNotNil(fresh, "the fresh controller never appeared: \(probeText(app))")
+        Thread.sleep(forTimeInterval: 0.5)
+        remote.press(.playPause)
+        var lowest = Double.infinity
+        var held: Double?
+        var pauses = 0
+        var wasPlaying = false
+        XCTAssertTrue(waitFor(app, timeout: 60) {
+            guard self.ctl($0) >= 2 else { return false }
+            if let h = self.heldSec($0) { held = h }
+            let playing = $0["paused"] == "0"
+            if playing, self.posOf($0) >= 0 { lowest = min(lowest, self.posOf($0)) }
+            if wasPlaying, !playing { pauses += 1 }
+            wasPlaying = playing
+            return $0["ret"] == "settled" && playing && self.posOf($0) >= (held ?? 0) + 2
+        }, "the fresh controller never played on from held: \(probeText(app)) \(ledgerText(app))")
+        print("[ReturnLeg] M3 held=\(held ?? -1) lowest=\(lowest) pauses=\(pauses) \(probeText(app))")
+        let h = try XCTUnwrap(held, "no held position")
+        XCTAssertGreaterThanOrEqual(lowest, h - 0.5, "the fresh controller played from before held: held=\(h) lowest=\(lowest)")
+        XCTAssertEqual(pauses, 0, "it paused again after playing")
+        Thread.sleep(forTimeInterval: 3)
+        XCTAssertEqual(probe(app)["paused"], "0", "the player paused again: \(probeText(app))")
+        XCTAssertEqual(ledger(app)["mctl"], "2", "a third controller appeared: \(ledgerText(app))")
+    }
+
+    /// M4: Play then Pause during the fresh start: it ends paused at held.
+    func testMpvPlayThenPauseDuringStartEndsPaused() throws {
+        let app = try launch(extra: cycle(atSec: 8, awaySec: 3))
+        XCTAssertNotNil(waitFreshAppears(app), "the fresh controller never appeared: \(probeText(app))")
+        remote.press(.playPause)
+        Thread.sleep(forTimeInterval: 0.25)
+        remote.press(.playPause)
+        XCTAssertTrue(waitReturn(app, timeout: 40), "the fresh controller never settled: \(probeText(app)) \(ledgerText(app))")
+        let p = probe(app)
+        print("[ReturnLeg] M4 \(probeText(app))")
+        let held = try XCTUnwrap(heldSec(p), "no held position: \(probeText(app))")
+        XCTAssertEqual(p["paused"], "1", "Play then Pause did not end paused: \(probeText(app))")
+        XCTAssertEqual(posOf(p), held, accuracy: 0.5, "not at held: \(probeText(app))")
+        assertStaysPaused(app, at: held, "M4")
+    }
+
+    /// M5: the cycle runs right after the load is issued (`loadIssued`), 40 s away, on an auto-play launch with
+    /// a 15 s start-up limit and the return alert armed, saved resume 120: no limit fire, no failure, the fresh
+    /// controller settles paused at the resume point.
+    func testMpvReturnDuringLoadWithStartupLimitSettlesAtResume() throws {
+        let app = try launch(extra: ["-debug.backgroundCycleAtStage", "loadIssued", "-debug.backgroundCycleAwaySec", "40",
+                                     "-debug.mpvSmokeLaunchSource", "autoPlay", "-debug.mpvSmokeStartupLimitSec", "15",
+                                     "-debug.mpvSmokeReturnAlert", "YES", "-debug.mpvSmokeResumeSec", "120"],
+                             waitForPlay: false)
+        XCTAssertTrue(waitReturn(app, timeout: 150), "the fresh controller never settled: \(probeText(app)) \(ledgerText(app))")
+        let p = probe(app)
+        let l = ledger(app)
+        print("[ReturnLeg] M5 \(probeText(app)) \(ledgerText(app))")
+        XCTAssertEqual(l["mfail"], "none", "a failure or the start-up limit fired: \(ledgerText(app))")
+        XCTAssertEqual(ctl(p), 2, "not the second controller: \(probeText(app))")
+        XCTAssertEqual(p["paused"], "1", "not paused: \(probeText(app))")
+        XCTAssertEqual(posOf(p), 120, accuracy: 0.5, "not at the resume point: \(probeText(app))")
+        XCTAssertTrue(app.otherElements["player.mpv"].exists, "mpv left")
+        Thread.sleep(forTimeInterval: 3)
+        XCTAssertEqual(ledger(app)["mfail"], "none", "a failure came late: \(ledgerText(app))")
+    }
+
+    /// `failFreshStart` reports 1.5 s after the fresh controller's load, and only counts as a return failure while the
+    /// start has not settled. On the simulator with a local file the fresh start settles in under 1.5 s, so the report
+    /// is not a return failure (`mfail=other`, no alert): these legs need a start slower than that, a fixture URL behind
+    /// a delaying server (`PLAYER_SMOKE_SLOWSTART_URL`; the gate does not provide one, so they skip without it).
+    private func slowStartURL() throws -> String {
+        guard let url = ProcessInfo.processInfo.environment["PLAYER_SMOKE_SLOWSTART_URL"], !url.isEmpty else {
+            throw XCTSkip("PLAYER_SMOKE_SLOWSTART_URL not set: failFreshStart fires 1.5 s after the load and the local fixture settles first")
         }
-        XCTAssertTrue(waitFor(app, timeout: 15) { (Double($0["pos"] ?? "") ?? 0) >= resumed + 2 && $0["paused"] == "0" },
-                      "mpv did not play on after the return: \(probeText(app))")
-        XCTAssertTrue(app.otherElements["player.mpv"].exists, "mpv left after the return")
+        return url
+    }
+
+    /// Waits for the host's return alert and reads the held position from it.
+    private func waitReturnAlert(_ app: XCUIApplication, _ label: String) throws -> Double {
+        var fail: String?
+        let end = Date().addingTimeInterval(60)
+        while Date() < end {
+            if let f = ledger(app)["mfail"], f != "none" { fail = f; break }
+            Thread.sleep(forTimeInterval: 0.3)
+        }
+        print("[ReturnLeg] \(label) ledger \(ledgerText(app))")
+        return try XCTUnwrap(alertPosition(fail), "\(label): no return alert with a position: mfail=\(fail ?? "nil") \(ledgerText(app))")
+    }
+
+    /// The retry player (the third controller serial) starts at `x`: its first position is within 0.5 s of `x`, it never
+    /// shows an earlier one, and it plays. The DEBUG position cycle re-fires on the retry (it starts at or past the
+    /// trigger and has no payload), so later controllers are not looked at.
+    private func assertRetryStartsAt(_ app: XCUIApplication, x: Double, _ label: String) {
+        var first = -1.0
+        var lowest = Double.infinity
+        var playing = false
+        let end = Date().addingTimeInterval(40)
+        var lastSeen = Date.distantFuture
+        while Date() < end {
+            let p = probe(app)
+            if ctl(p) == 3, posOf(p) > 1 {
+                if first < 0 { first = posOf(p); lastSeen = Date() }
+                lowest = min(lowest, posOf(p))
+                if p["paused"] == "0" { playing = true }
+            }
+            if first >= 0, playing || Date().timeIntervalSince(lastSeen) > 4 { break }
+            Thread.sleep(forTimeInterval: 0.15)
+        }
+        print("[ReturnLeg] \(label) retry x=\(x) first=\(first) lowest=\(lowest) playing=\(playing) \(probeText(app))")
+        XCTAssertGreaterThan(first, 0, "\(label): the retry player never showed a position: \(probeText(app))")
+        XCTAssertEqual(first, x, accuracy: 0.5, "\(label): the retry did not start at the held position \(x): first=\(first)")
+        XCTAssertGreaterThanOrEqual(lowest, x - 0.5, "\(label): the retry played from before \(x): lowest=\(lowest)")
+        XCTAssertTrue(playing, "\(label): the retry did not play: \(probeText(app))")
+    }
+
+    private func failFreshStartLeg(source: String, cycleAt: Int, label: String) throws {
+        let app = try launch(url: slowStartURL(), extra: cycle(atSec: cycleAt, awaySec: 3) + ["-debug.mpvReturnFault", "failFreshStart",
+                                                                                           "-debug.mpvSmokeReturnAlert", "YES",
+                                                                                           "-debug.mpvSmokeLaunchSource", source])
+        let x = try waitReturnAlert(app, label)
+        assertRetryStartsAt(app, x: x, label)
+    }
+
+    /// M6 (auto-play): `failFreshStart`: the alert (no picker redirect) and the retry from held.
+    func testMpvFreshStartFailureRetriesAtHeldAutoPlay() throws { try failFreshStartLeg(source: "autoPlay", cycleAt: 12, label: "M6 autoPlay") }
+
+    /// M6 (next-episode context).
+    func testMpvFreshStartFailureRetriesAtHeldNextEpisode() throws { try failFreshStartLeg(source: "nextEpisode", cycleAt: 12, label: "M6 nextEpisode") }
+
+    /// M6b: `failFreshStart` with held about 6 s: the retry resumes at about 6 s, not at 0 or at saved progress.
+    func testMpvFreshStartFailureRetryResumesAtShortHeld() throws {
+        let app = try launch(url: slowStartURL(), extra: cycle(atSec: 6, awaySec: 3) + ["-debug.mpvReturnFault", "failFreshStart",
+                                                                                     "-debug.mpvSmokeReturnAlert", "YES",
+                                                                                     "-debug.mpvSmokeLaunchSource", "autoPlay"])
+        let x = try waitReturnAlert(app, "M6b")
+        XCTAssertTrue((5.5...9.5).contains(x), "the held position is not about 6 s: \(x)")
+        assertRetryStartsAt(app, x: x, "M6b")
+    }
+
+    /// M7: `stuckOldQueue`: the old controller's queue never answers; the fresh controller still settles promptly.
+    func testMpvStuckOldQueueStillSettlesPromptly() throws {
+        let app = try launch(extra: cycle(atSec: 8, awaySec: 3) + ["-debug.mpvReturnFault", "stuckOldQueue"])
+        let began = Date()
+        XCTAssertTrue(waitReturn(app, timeout: 60), "the fresh controller never settled: \(probeText(app)) \(ledgerText(app))")
+        let p = probe(app)
+        print("[ReturnLeg] M7 settled after \(Date().timeIntervalSince(began)) s \(probeText(app))")
+        XCTAssertEqual(ctl(p), 2, "not the second controller: \(probeText(app))")
+        XCTAssertEqual(p["paused"], "1", "not paused: \(probeText(app))")
+        let held = try XCTUnwrap(heldSec(p), "no held position")
+        XCTAssertEqual(posOf(p), held, accuracy: 0.5, "not at held: \(probeText(app))")
+        XCTAssertEqual(ledger(app)["mctl"], "2", "not exactly two controllers: \(ledgerText(app))")
+    }
+
+    /// M8: Menu right after the fresh controller appears: the player closes, one fresh controller, criteria cleared.
+    func testMpvMenuRightAfterReturnClosesAndClearsCriteria() throws {
+        let app = try launch(extra: cycle(atSec: 8, awaySec: 3))
+        XCTAssertNotNil(waitFreshAppears(app), "the fresh controller never appeared: \(probeText(app))")
+        for _ in 0..<4 where app.otherElements["player.mpv"].exists {
+            remote.press(.menu)
+            Thread.sleep(forTimeInterval: 1.5)
+        }
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.otherElements["player.mpv"])
+        XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: 10), .completed, "Menu never closed the player: \(ledgerText(app))")
+        Thread.sleep(forTimeInterval: 1.5)
+        let l = ledger(app)
+        print("[ReturnLeg] M8 \(ledgerText(app))")
+        XCTAssertEqual(l["mctl"], "2", "not exactly two controllers: \(ledgerText(app))")
+        XCTAssertEqual(l["mcrit"], "0", "display criteria were not cleared: \(ledgerText(app))")
+    }
+
+    /// M9: two cycles 2 s apart: the second return lands during the first fresh start; one settle, at the first
+    /// held position.
+    func testMpvSecondReturnDuringFreshStartSettlesAtFirstHeld() throws {
+        let app = try launch(extra: cycle(atSec: 8, awaySec: 3) + ["-debug.backgroundCycleSecondAfterSec", "2"])
+        var firstHeld: Double?
+        var parkedPos: Double?
+        XCTAssertTrue(waitFor(app, timeout: 90) {
+            if self.ctl($0) == 1, $0["ret"] == "parked" { parkedPos = self.posOf($0) }
+            if self.ctl($0) == 2, let h = self.heldSec($0) { firstHeld = h }
+            return self.ctl($0) >= 3 && $0["ret"] == "settled"
+        }, "no settle on the third controller: \(probeText(app)) \(ledgerText(app))")
+        let p = probe(app)
+        print("[ReturnLeg] M9 parked=\(parkedPos ?? -1) firstHeld=\(firstHeld ?? -1) \(probeText(app)) \(ledgerText(app))")
+        XCTAssertEqual(ctl(p), 3, "not the third controller: \(probeText(app))")
+        XCTAssertEqual(ledger(app)["mctl"], "3", "not exactly three controllers: \(ledgerText(app))")
+        let held = try XCTUnwrap(heldSec(p), "no held position")
+        let ref = try XCTUnwrap(firstHeld ?? parkedPos, "never observed the first held position or the park")
+        XCTAssertEqual(held, ref, accuracy: 0.5, "the second return did not settle at the first held position: first=\(ref) \(probeText(app))")
+        XCTAssertEqual(posOf(p), held, accuracy: 0.5, "pos is not at held: \(probeText(app))")
+        XCTAssertEqual(p["paused"], "1", "not paused: \(probeText(app))")
+    }
+
+    /// M10: user-picked audio plus an embedded subtitle survive a return. Needs a fixture with two audio tracks and an
+    /// embedded subtitle; the gate's mpv fixtures have one audio track and no subtitles.
+    func testMpvReturnKeepsAudioAndEmbeddedSubtitlePicks() throws {
+        throw XCTSkip("M10: no fixture with two audio tracks and an embedded subtitle on the mpv route (test-long.mkv has one AAC track and none)")
+    }
+
+    /// Opens the Subtitles popover from a bar that may already be showing (a paused return keeps it up): Up until a
+    /// disc has focus, Right to Subtitles, Select. Returns the row of the "Smoke EN" add-on subtitle.
+    private func smokeRow(_ app: XCUIApplication) -> XCUIElement {
+        for _ in 0..<4 where !(PlayerChrome.probe(app, "debug_transportProbe")["focus"] ?? "").hasPrefix("pill:") {
+            remote.press(.up)
+            Thread.sleep(forTimeInterval: 0.6)
+        }
+        for _ in 0..<8 where PlayerChrome.probe(app, "debug_transportProbe")["focus"] != "pill:subtitles" {
+            remote.press(.right)
+            Thread.sleep(forTimeInterval: 0.4)
+        }
+        XCTAssertEqual(PlayerChrome.probe(app, "debug_transportProbe")["focus"], "pill:subtitles", "never reached the subtitles disc")
+        remote.press(.select)
+        XCTAssertTrue(app.descendants(matching: .any)["player.popover.subtitles"].waitForExistence(timeout: 6), "subtitles popover did not open")
+        Thread.sleep(forTimeInterval: 1.0)
+        return app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'player.panel.subtitle.' AND NOT identifier BEGINSWITH 'player.panel.subtitleDelay' AND label CONTAINS 'Smoke EN'"))
+            .firstMatch
+    }
+
+    private func closeSubtitlePopover(_ app: XCUIApplication) {
+        remote.press(.menu)
+        let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),
+                                               object: app.descendants(matching: .any)["player.popover.subtitles"])
+        _ = XCTWaiter().wait(for: [closed], timeout: 4)
+    }
+
+    /// M10b: a user-picked add-on subtitle is selected again once the side-load lands after the return
+    /// (`-debug.subtitleSideLoadDelaySec 5`).
+    func testMpvReturnKeepsAddonSubtitlePickAfterSideLoad() throws {
+        let sub = try XCTUnwrap(ProcessInfo.processInfo.environment["PLAYER_SMOKE_SUB_URL"], "PLAYER_SMOKE_SUB_URL not set")
+        let app = try launch(extra: ["-debug.mpvSmokeSubtitleURL", sub, "-debug.subtitleSideLoadDelaySec", "5"])
+        XCTAssertTrue(waitFor(app, timeout: 30) { self.posOf($0) > 3 })
+        var row = smokeRow(app)
+        XCTAssertTrue(row.waitForExistence(timeout: 20), "no Smoke EN row")
+        XCTAssertTrue(PlayerChrome.focusWalk(app, to: row), "focus never reached the Smoke EN row")
+        remote.press(.select)
+        let pickEnd = Date().addingTimeInterval(8)
+        while Date() < pickEnd, (row.value as? String) != "selected" { Thread.sleep(forTimeInterval: 0.3) }
+        XCTAssertEqual(row.value as? String, "selected", "Smoke EN not selected before the return")
+        closeSubtitlePopover(app)
+        Thread.sleep(forTimeInterval: 1)
+        let trip = realBackground(app, awaySec: 3)
+        XCTAssertTrue(trip.ok, trip.note)
+        guard trip.ok else { return }
+        XCTAssertTrue(waitReturn(app, timeout: 60), "the fresh controller never settled: \(probeText(app))")
+        row = smokeRow(app)
+        XCTAssertTrue(row.waitForExistence(timeout: 20), "no Smoke EN row after the return")
+        let end = Date().addingTimeInterval(25)
+        while Date() < end, (row.value as? String) != "selected" { Thread.sleep(forTimeInterval: 0.5) }
+        print("[ReturnLeg] M10b selected=\(String(describing: row.value)) \(probeText(app))")
+        XCTAssertEqual(row.value as? String, "selected", "the add-on subtitle pick was not restored after the side-load")
+    }
+
+    /// M10b variant: the fresh controller loads none of the stream's own subtitle files: the pick falls to automatic
+    /// at the deadline and nothing is selected; the player keeps going.
+    func testMpvReturnAddonSubtitleMissFallsToAuto() throws {
+        let sub = try XCTUnwrap(ProcessInfo.processInfo.environment["PLAYER_SMOKE_SUB_URL"], "PLAYER_SMOKE_SUB_URL not set")
+        let app = try launch(extra: ["-debug.mpvSmokeSubtitleURL", sub, "-debug.mpvReturnDropExternalSubs", "YES"])
+        XCTAssertTrue(waitFor(app, timeout: 30) { self.posOf($0) > 3 })
+        let row = smokeRow(app)
+        XCTAssertTrue(row.waitForExistence(timeout: 20), "no Smoke EN row")
+        XCTAssertTrue(PlayerChrome.focusWalk(app, to: row), "focus never reached the Smoke EN row")
+        remote.press(.select)
+        let pickEnd = Date().addingTimeInterval(8)
+        while Date() < pickEnd, (row.value as? String) != "selected" { Thread.sleep(forTimeInterval: 0.3) }
+        XCTAssertEqual(row.value as? String, "selected", "Smoke EN not selected before the return")
+        closeSubtitlePopover(app)
+        Thread.sleep(forTimeInterval: 1)
+        let trip = realBackground(app, awaySec: 3)
+        XCTAssertTrue(trip.ok, trip.note)
+        guard trip.ok else { return }
+        XCTAssertTrue(waitReturn(app, timeout: 60), "the fresh controller never settled: \(probeText(app))")
+        Thread.sleep(forTimeInterval: 24)   // past the 20 s pending-pick deadline
+        let after = smokeRow(app)
+        let present = after.waitForExistence(timeout: 5)
+        let value = present ? (after.value as? String) : nil
+        print("[ReturnLeg] M10b-miss row present=\(present) value=\(value ?? "-") \(probeText(app))")
+        XCTAssertNotEqual(value, "selected", "the missing add-on subtitle is still shown as selected")
+        XCTAssertTrue(app.otherElements["player.mpv"].exists, "mpv left")
+    }
+
+    /// M12: the identity changes at park (`beforeHome`) or right after it (`away`): the player exits and nothing is
+    /// written after the park.
+    private func ownerFlipLeg(_ mode: String) throws {
+        let app = try launch(extra: cycle(atSec: 8, awaySec: 3) + ["-debug.ownerFlip", mode])
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.otherElements["player.mpv"])
+        XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: 60), .completed, "\(mode): the player did not exit: \(probeText(app)) \(ledgerText(app))")
+        Thread.sleep(forTimeInterval: 2)
+        let l = ledger(app)
+        print("[ReturnLeg] M12 \(mode) \(ledgerText(app))")
+        XCTAssertEqual(l["mwrites"], "0", "\(mode): a write happened after the park: \(ledgerText(app))")
+        XCTAssertEqual(l["mctl"], "1", "\(mode): a fresh controller was made: \(ledgerText(app))")
+    }
+
+    func testMpvOwnerFlipBeforeHomeExitsWithoutWrites() throws { try ownerFlipLeg("beforeHome") }
+    func testMpvOwnerFlipWhileAwayExitsWithoutWrites() throws { try ownerFlipLeg("away") }
+
+    /// M13: a live HLS stream returns paused, and the forced reconnect (`-debug.liveForceEOFAtSec`) leaves it
+    /// paused. Needs `scripts/device/fixtures/live-hls-fixture.py` served (its segments generated first); pass its
+    /// playlist as `TEST_RUNNER_LIVE_HLS_URL`.
+    func testMpvLiveReturnPausedAndReconnectStaysPaused() throws {
+        guard let live = ProcessInfo.processInfo.environment["LIVE_HLS_URL"], !live.isEmpty else {
+            throw XCTSkip("LIVE_HLS_URL not set (needs scripts/device/fixtures/live-hls-fixture.py running; pass TEST_RUNNER_LIVE_HLS_URL)")
+        }
+        let app = try launch(url: live, extra: cycle(atSec: 6, awaySec: 3) + ["-debug.liveForceEOFAtSec", "4"])
+        XCTAssertTrue(waitReturn(app, timeout: 60), "the live return never settled: \(probeText(app)) \(ledgerText(app))")
+        XCTAssertEqual(probe(app)["paused"], "1", "the live return came back playing: \(probeText(app))")
+        Thread.sleep(forTimeInterval: 8)   // past the forced reconnect
+        let p = probe(app)
+        print("[ReturnLeg] M13 \(probeText(app))")
+        XCTAssertEqual(p["paused"], "1", "the reconnect resumed a paused live stream: \(probeText(app))")
+        XCTAssertTrue(app.otherElements["player.mpv"].exists, "mpv left")
     }
 }
