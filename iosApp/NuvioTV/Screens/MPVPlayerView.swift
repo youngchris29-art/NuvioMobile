@@ -551,6 +551,8 @@ final class MPVTVPlayerViewController: UIViewController {
     private lazy var debugSerial = MPVReturnDebugLedger.shared.nextSerial()
     private var debugBackgroundCycle = DebugBackgroundCycle()
     private var debugLiveEOFForced = false
+    /// The last return phase the probe showed (a press republishes it with the new intent).
+    private var debugReturnPhase = "none"
     #endif
 
     private var startWatchdog = MPVStartWatchdog(limitSeconds: MPVStartWatchdog.defaultLimitSeconds)
@@ -712,9 +714,10 @@ final class MPVTVPlayerViewController: UIViewController {
             print("[Loading] engine=mpv stage=\(startupStages.stage.logToken) t=+\(String(format: "%.2f", ProcessInfo.processInfo.systemUptime - loadingStartUptime))s")
             #if DEBUG
             if returnHandoff == nil {
-                debugBackgroundCycle.noteStage("loadIssued")
+                if !MPVReturnDebug.cycleUsed, debugBackgroundCycle.noteStage("loadIssued") { MPVReturnDebug.cycleUsed = true }
             } else if MPVReturnDebug.fault == "failFreshStart" {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                // Before the fresh start can settle (a local fixture settles in well under a second).
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
                     guard let self else { return }
                     print("[MPVReturn] DEBUG failFreshStart")
                     self.reportPlaybackFailure(reason: "DEBUG failFreshStart", startedPlaying: false,
@@ -3335,6 +3338,7 @@ final class MPVTVPlayerViewController: UIViewController {
         if parkBox.parked, returnSnapshot != nil {
             returnSnapshot?.notePress()
             print("[MPVReturn] press after park g=\(parkBox.generation) intent=\(returnSnapshot?.intent == .play ? "play" : "pause")")
+            debugPublishReturnProbe()
             return
         }
         // BUG-170: Play/Pause during the display-mode hold takes over from it.
@@ -3345,6 +3349,7 @@ final class MPVTVPlayerViewController: UIViewController {
         }
         let target = !cachedProps().paused
         desiredPlaying = !target
+        if returnHandoff != nil { debugPublishReturnProbe() }
         // Optimistic UI: reflect the new state immediately; the pause property event confirms it.
         updateProps { $0.paused = target }
         let issued = parkBox.generation
@@ -5125,11 +5130,13 @@ extension MPVTVPlayerViewController {
 
     // MARK: Probe (DEBUG)
 
-    fileprivate func debugPublishReturnProbe(_ phase: String) {
+    fileprivate func debugPublishReturnProbe(_ phase: String? = nil) {
         #if DEBUG
+        let phase = phase ?? debugReturnPhase
+        debugReturnPhase = phase
         var held = "-"
         if case .position(let p)? = returnHandoff?.start { held = String(format: "%.2f", p) }
-        state.seekProbe.ret = "ctl=\(debugSerial) ret=\(phase) crit=\(lease.holdsCriteria ? 1 : 0) writes=\(debugWrites) held=\(held) intent=\(returnSnapshot?.intent == .play ? "play" : (desiredPlaying ? "play" : "pause"))"
+        state.seekProbe.ret = "ctl=\(debugSerial) ret=\(phase) crit=\(lease.holdsCriteria ? 1 : 0) writes=\(debugWrites) held=\(held) intent=\((returnSnapshot.map { $0.intent == .play } ?? desiredPlaying) ? "play" : "pause")"
         MPVReturnDebugLedger.shared.note(phase: phase, controller: debugSerial)
         #endif
     }
@@ -5138,7 +5145,10 @@ extension MPVTVPlayerViewController {
     /// The refresh tick: the DEBUG background cycle (never from a return-started controller, so a
     /// position trigger does not fire again on the fresh one) and the forced live reconnect.
     fileprivate func debugReturnTick(positionSec: Double) {
-        if returnHandoff == nil { debugBackgroundCycle.noteTick(positionSec: positionSec) }
+        // Once per process: a retry player (no payload) must not run the cycle again.
+        if returnHandoff == nil, !MPVReturnDebug.cycleUsed, debugBackgroundCycle.noteTick(positionSec: positionSec) {
+            MPVReturnDebug.cycleUsed = true
+        }
         if returnHandoff != nil, !debugLiveEOFForced, let at = MPVReturnDebug.liveForceEOFAtSec, fileLoaded,
            ProcessInfo.processInfo.systemUptime - fileLoadedUptime >= at, isLiveStream {
             debugLiveEOFForced = true

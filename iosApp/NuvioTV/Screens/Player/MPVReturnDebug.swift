@@ -18,6 +18,10 @@ enum MPVReturnDebug {
             ? nil : max(0, UserDefaults.standard.double(forKey: "debug.liveForceEOFAtSec"))
     }
 
+    /// The mpv DEBUG background cycle ran in this process (it never runs twice: a retry player would
+    /// otherwise background again at the same position).
+    @MainActor static var cycleUsed = false
+
     /// `debug.ownerFlip`: from now on `PlaybackIdentity.current()` answers another profile (once).
     @MainActor
     static func flipIdentity(reason: String) {

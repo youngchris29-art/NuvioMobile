@@ -1213,14 +1213,11 @@ final class PlayerTransportUITests: XCTestCase {
         XCTAssertEqual(ledger(app)["mfail"], "none", "a failure came late: \(ledgerText(app))")
     }
 
-    /// `failFreshStart` reports 1.5 s after the fresh controller's load, and only counts as a return failure while the
-    /// start has not settled. On the simulator with a local file the fresh start settles in under 1.5 s, so the report
-    /// is not a return failure (`mfail=other`, no alert): these legs need a start slower than that, a fixture URL behind
-    /// a delaying server (`PLAYER_SMOKE_SLOWSTART_URL`; the gate does not provide one, so they skip without it).
-    private func slowStartURL() throws -> String {
-        guard let url = ProcessInfo.processInfo.environment["PLAYER_SMOKE_SLOWSTART_URL"], !url.isEmpty else {
-            throw XCTSkip("PLAYER_SMOKE_SLOWSTART_URL not set: failFreshStart fires 1.5 s after the load and the local fixture settles first")
-        }
+    /// `failFreshStart` reports 0.1 s after the fresh controller's load, before its start can settle, so it is a return
+    /// failure on the plain smoke file too. `PLAYER_SMOKE_SLOWSTART_URL` (a fixture behind a delaying server) is used
+    /// when set; nil = the plain smoke file.
+    private func slowStartURL() -> String? {
+        guard let url = ProcessInfo.processInfo.environment["PLAYER_SMOKE_SLOWSTART_URL"], !url.isEmpty else { return nil }
         return url
     }
 
@@ -1236,9 +1233,8 @@ final class PlayerTransportUITests: XCTestCase {
         return try XCTUnwrap(alertPosition(fail), "\(label): no return alert with a position: mfail=\(fail ?? "nil") \(ledgerText(app))")
     }
 
-    /// The retry player (the third controller serial) starts at `x`: its first position is within 0.5 s of `x`, it never
-    /// shows an earlier one, and it plays. The DEBUG position cycle re-fires on the retry (it starts at or past the
-    /// trigger and has no payload), so later controllers are not looked at.
+    /// The retry player (a normal start, no return fields on its probe) starts at `x`: its first position is within 0.5 s of `x`, it never
+    /// shows an earlier one, and it plays. (The DEBUG cycle runs once per process, so the retry is not backgrounded.)
     private func assertRetryStartsAt(_ app: XCUIApplication, x: Double, _ label: String) {
         var first = -1.0
         var lowest = Double.infinity
@@ -1247,7 +1243,8 @@ final class PlayerTransportUITests: XCTestCase {
         var lastSeen = Date.distantFuture
         while Date() < end {
             let p = probe(app)
-            if ctl(p) == 3, posOf(p) > 1 {
+            // The retry is a normal start: it never parked, so its probe carries no return fields.
+            if p["ctl"] == nil, posOf(p) > 1 {
                 if first < 0 { first = posOf(p); lastSeen = Date() }
                 lowest = min(lowest, posOf(p))
                 if p["paused"] == "0" { playing = true }
