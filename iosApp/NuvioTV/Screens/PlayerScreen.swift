@@ -70,6 +70,13 @@ struct PlayerScreen: View {
     @State private var mpvGeneration = 0
     @State private var lastReturnGeneration = 0
     @State private var displayLease = DisplayCriteriaLease()
+    /// Code r3-3: a replaced mpv controller's tracker stops settle before the fresh one's starts.
+    @State private var trackerChain = TrackerReturnChain()
+    /// Code r3-2: a return-start failure with no host callback (the library) gets this screen's own alert.
+    @State private var localReturnFailure: PlaybackFailure?
+    /// The held start the local alert's "Try with mpv" retries at (the next mpv controller's context).
+    @State private var localRetryStart: PlayerReturnHandoff.Start?
+    @Environment(\.dismiss) private var dismissPlayer
 
     /// The native screen delivers its return transfer just before `onFallback` (a box, so the two
     /// closures share it without a state round trip).
@@ -153,7 +160,7 @@ struct PlayerScreen: View {
                                 onViewerChoice: onViewerChoice,
                                 onViewerChoiceAbandoned: onViewerChoiceAbandoned)
             case .mpv:
-                MPVPlayerScreen(context: context, onPlayNext: onPlayNext,
+                MPVPlayerScreen(context: mpvContext, onPlayNext: onPlayNext,
                                 routingNote: mpvRoutingNote,
                                 onPlaybackFailed: annotated(.mpv),
                                 onPlaybackHealthy: onPlaybackHealthy,
@@ -169,7 +176,9 @@ struct PlayerScreen: View {
                                 returnHandoff: returnPayload,
                                 displayLease: displayLease,
                                 leaseToken: mpvGeneration,
-                                onReturnReplace: { payload, prepare in acceptReturn(payload, prepare: prepare) })
+                                onReturnReplace: { payload, prepare in acceptReturn(payload, prepare: prepare) },
+                                trackerChain: trackerChain,
+                                onReturnFailed: { failure in noteLocalReturnFailure(failure) })
                 // One mpv controller per accepted return payload (spec-mpv-return §3.1).
                 .id(mpvGeneration)
             case .deciding:
@@ -206,6 +215,7 @@ struct PlayerScreen: View {
             nativeFailedBeforeStart = false
             handoffPositionSec = nil
             returnPayload = nil
+            localRetryStart = nil
             armStartupLimit()
         }
         // spec-mpv-return §3.7 (M6): a background before the start cancels the start-up limit for the
@@ -213,6 +223,49 @@ struct PlayerScreen: View {
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
             startupClock.noteBackgrounded()
         }
+        // Code r3-2: the same manual alert as the picker's, with Try with mpv at the held start and Close
+        // in place of the picker's actions (existing strings only).
+        .alert(
+            "Couldn\u{2019}t play this source",
+            isPresented: Binding(get: { localReturnFailure != nil }, set: { if !$0 { localReturnFailure = nil } }),
+            presenting: localReturnFailure
+        ) { failure in
+            Button(LocalizedStringKey("Try with mpv")) {
+                localReturnFailure = nil
+                retryLocally(failure)
+            }
+            Button("Close", role: .cancel) {
+                localReturnFailure = nil
+                dismissPlayer()
+            }
+        } message: { failure in
+            Text(verbatim: failure.reason)
+        }
+    }
+
+    /// The mpv screen's context: a local retry carries the held start.
+    private var mpvContext: PlaybackContext {
+        guard let start = localRetryStart else { return context }
+        var ctx = context
+        ctx.returnStart = start
+        return ctx
+    }
+
+    /// Code r3-2: a return-start failure when the host gave no failure callback.
+    private func noteLocalReturnFailure(_ failure: PlaybackFailure) {
+        guard onPlaybackFailed == nil else { return }
+        print("[MPVReturn] return failure -> local alert start=\(failure.returnRecovery?.logToken ?? "-")")
+        localReturnFailure = failure
+    }
+
+    /// "Try with mpv": a fresh mpv controller (no payload) at the held start, as the picker's retry does.
+    private func retryLocally(_ failure: PlaybackFailure) {
+        guard let plan = PlaybackFailoverPolicy.returnAlert(for: context, failure: failure, pickerVideoId: context.videoId) else { return }
+        localRetryStart = plan.retry.returnStart
+        returnPayload = nil
+        forcedMPV = true
+        mpvGeneration += 1
+        print("[MPVReturn] local retry start=\(plan.retry.returnStart?.logToken ?? "-") ctl=\(mpvGeneration)")
     }
 
     /// spec-mpv-return §3.6: the mpv controller asks for its replacement. In one main turn: validate

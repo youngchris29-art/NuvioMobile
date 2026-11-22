@@ -160,6 +160,41 @@ final class LivePlaybackRecorderBackend: PlaybackRecorderBackend {
     }
 }
 
+/// spec-mpv-return code r3-3: tracker and Trakt operations across an mpv controller replacement. The
+/// replaced controller holds the chain from `prepareForReplacement` until its stops have settled (the
+/// chain retains what it hands in, so a stop deferred behind an in-flight start is not lost when that
+/// controller goes); the fresh controller's starts run only once the chain is idle. So the held-position
+/// stop always reaches the trackers before the next session's start (one stop per tracking session,
+/// design r3). Owned by `PlayerScreen`.
+@MainActor
+final class TrackerReturnChain {
+    private var holds: [Int: AnyObject?] = [:]
+    private var nextID = 0
+    private var waiters: [@MainActor () -> Void] = []
+
+    var isIdle: Bool { holds.isEmpty }
+
+    /// Holds the chain (keeping `retaining` alive) until the returned closure runs (once; later calls do nothing).
+    func hold(_ retaining: AnyObject? = nil) -> @MainActor () -> Void {
+        nextID += 1
+        let id = nextID
+        holds[id] = .some(retaining)
+        return { [weak self] in self?.release(id) }
+    }
+
+    /// Runs `body` now when idle, else after the last hold is released (in order).
+    func whenIdle(_ body: @escaping @MainActor () -> Void) {
+        if holds.isEmpty { body() } else { waiters.append(body) }
+    }
+
+    private func release(_ id: Int) {
+        guard holds.removeValue(forKey: id) != nil, holds.isEmpty else { return }
+        let run = waiters
+        waiters = []
+        run.forEach { $0() }
+    }
+}
+
 /// The identity check every dispatch point runs (section 7): true when the write may go out. A refusal
 /// logs one line naming the site.
 @MainActor
@@ -491,19 +526,43 @@ final class TrackerScrobbleSession {
         }
     }
 
+    /// spec-mpv-return code r3-3: told once the stop has gone out and completed (or once there is
+    /// nothing to send), so a replacement can start its own session strictly after it.
+    private var stopSettled: (@MainActor () -> Void)?
+
     private func startFinished() {
         if let percent = sequencer.startCompleted() {
             // The deferred stop goes out after an await: the identity is checked again here.
-            if gate.allows("tracker deferred stop") { dispatch(.stop, percent: percent) }
+            let settled = stopSettled
+            stopSettled = nil
+            if gate.allows("tracker deferred stop"), targets != nil {
+                dispatch(.stop, percent: percent, completion: settled)
+            } else {
+                settled?()
+            }
             targets = nil
         }
     }
 
-    func stop(positionSec: Double, durationSec: Double, isLive: Bool) {
+    /// `settled`: called exactly once, after the stop dispatch completed, or at once when there is
+    /// nothing to send; a stop deferred behind an in-flight start calls it from that start's
+    /// completion (the caller keeps this session alive until then).
+    func stop(positionSec: Double, durationSec: Double, isLive: Bool, settled: (@MainActor () -> Void)? = nil) {
         let percent = TrackerScrobblePolicy.stopPercent(positionSec: positionSec, durationSec: durationSec, isLive: isLive)
-        guard let now = sequencer.stop(percent: percent) else { return }
-        guard targets != nil else { return }
-        if gate.allows("tracker stop") { dispatch(.stop, percent: now) }
+        guard let now = sequencer.stop(percent: percent) else {
+            if sequencer.startInFlight, sequencer.pendingStop != nil, stopSettled == nil {
+                stopSettled = settled
+            } else {
+                settled?()
+            }
+            return
+        }
+        guard targets != nil else { settled?(); return }
+        if gate.allows("tracker stop") {
+            dispatch(.stop, percent: now, completion: settled)
+        } else {
+            settled?()
+        }
         targets = nil
     }
 

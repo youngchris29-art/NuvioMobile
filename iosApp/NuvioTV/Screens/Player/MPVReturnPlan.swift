@@ -166,14 +166,60 @@ nonisolated struct MPVViewerIntent: Sendable, Equatable {
         let subtitle: PlayerReturnHandoff.SubtitlePick
         let speed: Double
         let audioDelaySec: Double?
+        /// Seconds played over the whole viewing (code r3-4): what the controller was handed plus its own.
+        var playedSec: Double = 0
     }
 
     /// The park snapshot's picks and tuning: intent first, observed state where intent is silent
     /// (the picks have no observed fallback: the fresh controller's own automatic choice reproduces
     /// an unpicked track). `observedAudioDelaySec` nil = the file never loaded.
-    func parked(observedSpeed: Double, observedAudioDelaySec: Double?) -> Parked {
-        Parked(audio: audio, subtitle: subtitle,
-               speed: speed ?? (observedSpeed.isFinite && observedSpeed > 0 ? observedSpeed : 1),
-               audioDelaySec: audioDelaySec ?? observedAudioDelaySec)
+    /// `carriedPlayedSec`: what the engines and controllers before this one played (the handoff's, or
+    /// the native/Aether seconds), counted from the start, not from this controller's FILE_LOADED;
+    /// `ownPlayedSec`: this controller's play clock (0 before its load).
+    func parked(observedSpeed: Double, observedAudioDelaySec: Double?, carriedPlayedSec: Double = 0,
+                ownPlayedSec: Double = 0) -> Parked {
+        func clean(_ v: Double) -> Double { v.isFinite && v > 0 ? v : 0 }
+        return Parked(audio: audio, subtitle: subtitle,
+                      speed: speed ?? (observedSpeed.isFinite && observedSpeed > 0 ? observedSpeed : 1),
+                      audioDelaySec: audioDelaySec ?? observedAudioDelaySec,
+                      playedSec: clean(carriedPlayedSec) + clean(ownPlayedSec))
+    }
+}
+
+// MARK: - First-frame-safe paused start (code review W7 r3-1)
+
+/// How a return-started controller honours a paused intent. On `gpu-next` a file held paused before
+/// its first frame wedged that player's mpv queue (Batch E device pass 10-18, DV P5 MP4; the reason
+/// the display-mode hold is skipped there), so that route loads playing and muted, and pauses once
+/// the first frame is out. Pure.
+nonisolated enum MPVReturnStartMode: Sendable, Equatable {
+    case loadPaused
+    case loadPlaying
+    /// Load playing with audio muted; at the first frame apply `pause = !desiredPlaying`, then unmute.
+    case pauseAfterFirstFrame
+
+    static func decide(usesGpuNext: Bool, startsPaused: Bool) -> MPVReturnStartMode {
+        guard startsPaused else { return .loadPlaying }
+        return usesGpuNext ? .pauseAfterFirstFrame : .loadPaused
+    }
+
+    /// At the first frame of `.pauseAfterFirstFrame`: the pause is applied before the unmute, so no
+    /// audio is heard unless a press during the window asked for play.
+    static func atFirstFrame(desiredPlaying: Bool) -> (pause: Bool, unmute: Bool) {
+        (pause: !desiredPlaying, unmute: true)
+    }
+}
+
+// MARK: - Who owns a return failure (code review W7 r3-2)
+
+/// A failure of a return start always has an owner: the host's failure callback when it has one,
+/// else `PlayerScreen`'s own alert (Try with mpv at the held start, Close). A failure after the
+/// return settled is today's (the host's, or none). Pure.
+nonisolated enum PlayerReturnFailureOwner: Sendable, Equatable {
+    case host, local, none
+
+    static func decide(hostHasCallback: Bool, returnStartPending: Bool) -> PlayerReturnFailureOwner {
+        if hostHasCallback { return .host }
+        return returnStartPending ? .local : .none
     }
 }

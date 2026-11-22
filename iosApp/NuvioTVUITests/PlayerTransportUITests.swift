@@ -1271,6 +1271,29 @@ final class PlayerTransportUITests: XCTestCase {
         assertRetryStartsAt(app, x: x, label)
     }
 
+    /// Code review W7 r3-2: a host with no failure callback (the library's): the fresh start's failure
+    /// still has an owner, PlayerScreen's own alert ("Try with mpv" at the held start, "Close"), and
+    /// the retry resumes at the held position.
+    func testMpvFreshStartFailureWithNoHostCallbackShowsTheLocalAlert() throws {
+        let app = try launch(url: slowStartURL(), extra: cycle(atSec: 12, awaySec: 3) + ["-debug.mpvReturnFault", "failFreshStart"])
+        var held: Double?
+        let end = Date().addingTimeInterval(40)
+        while Date() < end, held == nil {
+            if let h = probe(app)["held"].flatMap(Double.init) { held = h }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        let x = try XCTUnwrap(held, "no fresh controller with a held start: \(probeText(app))")
+        let alert = app.alerts.firstMatch
+        XCTAssertTrue(alert.waitForExistence(timeout: 30), "no local return alert: \(probeText(app))")
+        XCTAssertTrue(alert.buttons["Try with mpv"].exists, "no retry on the local alert")
+        XCTAssertTrue(alert.buttons["Close"].exists, "no close on the local alert")
+        // tvOS: the first button is at the top of the stack; move focus there and take it.
+        for _ in 0..<3 { remote.press(.up) }
+        remote.press(.select)
+        XCTAssertTrue(waitFor(app, timeout: 10) { _ in !app.alerts.firstMatch.exists }, "the alert stayed up")
+        assertRetryStartsAt(app, x: x, "local alert")
+    }
+
     /// M6 (auto-play): `failFreshStart`: the alert (no picker redirect) and the retry from held.
     func testMpvFreshStartFailureRetriesAtHeldAutoPlay() throws { try failFreshStartLeg(source: "autoPlay", cycleAt: 12, label: "M6 autoPlay") }
 
