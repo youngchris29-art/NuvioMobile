@@ -50,6 +50,8 @@ struct NativePlayerScreen: View {
     @StateObject private var moreLikeThisLoader = PostPlayMoreLikeThisLoader()
     @StateObject private var upNext: NextEpisodeEngine
     @StateObject private var panelModel: PlayerTopPanelModel
+    /// Up Next committed a context swap (`onPlayNext` ran): only then does a return yield to it.
+    @State private var swapLatch: NativeContextSwapLatch
     @State private var panelAdapter: NativePlayerPanelAdapter?
     /// Skip chip + auto-skip policy shared with the mpv screen.
     @State private var skipPlanner = SkipSegmentPlanner()
@@ -96,7 +98,10 @@ struct NativePlayerScreen: View {
         self.onPlaybackHealthy = onPlaybackHealthy
         _loadingOverlayOn = State(initialValue: PlayerLoadingOverlaySetting.enabled)
         _coordinator = StateObject(wrappedValue: NativePlaybackCoordinator(context: context))
-        _upNext = StateObject(wrappedValue: NextEpisodeEngine(context: context, onPlayNext: onPlayNext ?? { _ in },
+        let swapLatch = NativeContextSwapLatch()
+        _swapLatch = State(initialValue: swapLatch)
+        _upNext = StateObject(wrappedValue: NextEpisodeEngine(context: context,
+                                                              onPlayNext: swapLatch.wrap(onPlayNext ?? { _ in }),
                                                               onViewerChoice: onViewerChoice,
                                                               onViewerChoiceAbandoned: onViewerChoiceAbandoned))
         _panelModel = StateObject(wrappedValue: PlayerTopPanelModel(
@@ -313,7 +318,7 @@ struct NativePlayerScreen: View {
                 guard let coordinator else { return .leaving }
                 return coordinator.didPlayToEnd && upNext?.phase == .hidden ? .covered : .front
             }
-            coordinator.returnContextSwapProvider = { [weak upNext] in upNext?.phase == .searching }
+            coordinator.returnContextSwapProvider = { [weak swapLatch] in swapLatch?.committed == true }
             coordinator.returnPostPlayProvider = { [weak coordinator, weak upNext] in
                 guard let coordinator else { return false }
                 return coordinator.didPlayToEnd && upNext?.phase == .hidden
@@ -806,5 +811,19 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
         var sheetOpen = false
         /// KVO on `playerVC.isReadyForDisplay`, alive as long as the container.
         var readyObserver: NSKeyValueObservation?
+    }
+}
+
+/// W5 r1: an Up Next swap counts for a return (row 5) only once it is committed, i.e. `onPlayNext` ran,
+/// as `MPVPlaybackState.playbackFailoverSuppressed` marks it on mpv and Aether. A source search that is
+/// still running can end with no stream or be cancelled; the current player then still needs its restart.
+final class NativeContextSwapLatch {
+    private(set) var committed = false
+
+    func wrap(_ onPlayNext: @escaping (PlaybackContext) -> Void) -> (PlaybackContext) -> Void {
+        { [weak self] next in
+            self?.committed = true
+            onPlayNext(next)
+        }
     }
 }

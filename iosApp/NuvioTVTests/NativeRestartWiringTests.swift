@@ -32,6 +32,9 @@ final class NativeRestartWiringTests: XCTestCase {
         var ui: [PlayerReturnUI] = []
         var lastToken = 0
         var ended: [Bool] = []
+        weak var runner: NativeReturnEffectRunner?
+        var holdTracks = false
+        var heldTracks: (() -> Void)?
 
         func returnSnapshot(enteredAtUptime: TimeInterval) -> PlayerBackgroundSnapshot {
             PlayerBackgroundSnapshot(route: .native, phase: phase, positionSec: position, pendingSeekTargetSec: nil,
@@ -84,6 +87,9 @@ final class NativeRestartWiringTests: XCTestCase {
         func restartSeek(token: Int, toSec: Double) { calls.append("seek \(Int(toSec))") }
         func restartRestoreTracks(token: Int, audio: String?, subtitle: String?) {
             calls.append("tracks \(audio ?? "-")/\(subtitle ?? "off")")
+            // The coordinator answers after its media-selection await; held when a test says so.
+            if holdTracks { heldTracks = { [weak self] in self?.runner?.machine(.tracksRestored, token: token) } }
+            else { runner?.machine(.tracksRestored, token: token) }
         }
         func restartStartTrackersOnce() { trackerStarts += 1 }
         func restartChooseResume(token: Int) { resumeReads += 1; calls.append("chooseResume") }
@@ -126,6 +132,7 @@ final class NativeRestartWiringTests: XCTestCase {
         clock = Clock()
         runner = NativeReturnEffectRunner(owner: host.identity, host: host, schedule: clock.schedule,
                                           now: { [unowned self] in self.clock.now })
+        host.runner = runner
     }
 
     private func drain() async {
@@ -505,5 +512,41 @@ final class NativeRestartWiringTests: XCTestCase {
         await drain()
         XCTAssertEqual(host.calls.filter { $0.hasPrefix("begin") }.count, begins + 1,
                        "the clock never moved while reporting playing: one more restart")
+    }
+
+    // MARK: W5 review r1
+
+    /// Finding 6: the restart settles only after the snapshot's tracks were selected on the new item, so
+    /// the delayed selection can never overwrite a pick the viewer makes once the spinner drops.
+    func testTheRestartSettlesOnlyAfterTheTracksAreRestored() async {
+        host.holdTracks = true
+        await returnAndRestart()
+        buildPipeline()
+        land(picture: true)
+        XCTAssertEqual(runner.rule.mode, .restoring, "the seek landed, the tracks have not answered")
+        XCTAssertTrue(runner.restartActive, "the machine still owns the restart")
+        XCTAssertTrue(runner.transportRefused)
+        XCTAssertEqual(host.ended, [])
+        host.heldTracks?()
+        XCTAssertEqual(runner.rule.mode, .idle)
+        XCTAssertEqual(host.ended, [true])
+        XCTAssertEqual(host.pauses, 1, "A: settled paused, once")
+    }
+
+    /// Finding 5: an Up Next search is not a context swap; only a committed hand-off (`onPlayNext` ran)
+    /// makes the return yield. Before it, the return restarts the current player as usual.
+    func testOnlyACommittedUpNextHandOffCountsAsAContextSwap() {
+        let latch = NativeContextSwapLatch()
+        var handed: [String] = []
+        let onPlayNext = latch.wrap { handed.append($0.videoId) }
+        XCTAssertFalse(latch.committed, "a search that is still running, or ended with no stream, swaps nothing")
+        let next = PlaybackContext(
+            url: URL(string: "https://cdn.example.com/b.mkv")!, title: "Show", contentType: "series",
+            parentMetaId: "tt1", videoId: "tt1:1:5", season: 1, episode: 5, poster: nil,
+            background: nil, providerName: nil, providerAddonId: nil,
+            streamTitle: "Release.1080p", streamSubtitle: nil, externalSubtitles: [])
+        onPlayNext(next)
+        XCTAssertTrue(latch.committed)
+        XCTAssertEqual(handed, ["tt1:1:5"], "the hand-off itself is forwarded unchanged")
     }
 }

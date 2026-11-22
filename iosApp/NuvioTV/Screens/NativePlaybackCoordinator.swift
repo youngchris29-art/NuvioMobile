@@ -2525,12 +2525,16 @@ extension NativePlaybackCoordinator: NativeReturnHost {
         }
     }
 
+    /// Answers `tracksRestored` on every path after the await: the machine settles only after it (W5 r1),
+    /// so a viewer's own pick after the spinner drops is never overwritten by this late selection.
     func restartRestoreTracks(token: Int, audio: String?, subtitle: String?) {
         guard restartToken == token, let item = playerItem else { return }
         Task { @MainActor [weak self] in
             let audible = (try? await item.asset.loadMediaSelectionGroup(for: .audible)) ?? nil
             let legible = (try? await item.asset.loadMediaSelectionGroup(for: .legible)) ?? nil
-            guard let self, self.playerItem === item else { return }
+            guard let self else { return }
+            defer { self.returnRunner?.machine(.tracksRestored, token: token) }
+            guard self.restartToken == token, self.playerItem === item else { return }
             if let audible, let audio,
                let option = audible.options.first(where: { Self.renditionName(of: $0) == audio }) {
                 item.select(option, in: audible)

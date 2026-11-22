@@ -40,6 +40,9 @@ nonisolated enum NativeRestartEvent: Sendable, Equatable {
     case itemFailedAfterReady
     case remuxFailed(stage: String)
     case seekLanded(clockSec: Double?, pictureReady: Bool)
+    /// Mid-play: the snapshot's audio and subtitle are selected on the new item (W5 r1: the restart
+    /// settles only after it, so a late selection can never overwrite one the viewer makes after the settle).
+    case tracksRestored
     /// From scratch: the coordinator read the resume row (identity checked first); nil or 0 = start at the top.
     case resumeChosen(sec: Double?)
     case identityChanged
@@ -70,6 +73,15 @@ nonisolated struct NativeRestartMachine: Sendable, Equatable {
     private(set) var target: NativeRestartTarget?
     private(set) var signalingAttempt = 0
     private(set) var trackersStarted = false
+    /// Mid-play: `restoreTracks` was issued and has not answered yet.
+    private(set) var tracksPending = false
+    /// The corrective seek landed while the tracks were still pending: the settle waits for them.
+    private(set) var pendingLanding: Landing?
+
+    nonisolated struct Landing: Sendable, Equatable {
+        let clockSec: Double?
+        let pictureReady: Bool
+    }
 
     /// Any state but idle, settled, failed, cancelled: every failure source of the coordinator feeds the machine.
     var isActive: Bool {
@@ -89,6 +101,8 @@ nonisolated struct NativeRestartMachine: Sendable, Equatable {
             self.target = target
             signalingAttempt = 0
             trackersStarted = false
+            tracksPending = false
+            pendingLanding = nil
             state = .activating
             switch kind {
             case .midPlay:
@@ -137,6 +151,8 @@ nonisolated struct NativeRestartMachine: Sendable, Equatable {
             switch kind {
             case .midPlay:
                 state = .seeking
+                tracksPending = true
+                pendingLanding = nil
                 return [.seek(target.positionSec), .restoreTracks(audio: target.audioName, subtitle: target.subtitleName)]
             case .fromScratch:
                 state = .resuming
@@ -160,8 +176,18 @@ nonisolated struct NativeRestartMachine: Sendable, Equatable {
             }
             return settle(clockSec: nil, pictureReady: false)
         case .seekLanded(let clock, let picture):
-            guard state == .seeking else { return [] }
+            guard state == .seeking, pendingLanding == nil else { return [] }
+            if tracksPending {
+                pendingLanding = Landing(clockSec: clock, pictureReady: picture)
+                return []
+            }
             return settle(clockSec: clock, pictureReady: picture)
+        case .tracksRestored:
+            guard state == .seeking, tracksPending else { return [] }
+            tracksPending = false
+            guard let landing = pendingLanding else { return [] }
+            pendingLanding = nil
+            return settle(clockSec: landing.clockSec, pictureReady: landing.pictureReady)
         }
     }
 
