@@ -495,7 +495,7 @@ struct NativePlayerScreen: View {
         }
         let startedAt = ProcessInfo.processInfo.systemUptime
         skipPlanner.beginSeek(kind: kind, targetSec: target, fromSec: coordinator.lastPositionSec, now: startedAt)
-        coordinator.noteUserSeek(to: target)   // r1 P3: wins over a B17 rebuild's corrective seek
+        let seekToken = coordinator.noteUserSeek(to: target)   // r1 P3: wins over a B17 rebuild's corrective seek
         // The chip can't re-fire while this is in flight: the planner offers no chip until then.
         if skipPrompt != nil { skipPrompt = nil }
         // r2 P2: during a B17 rebuild the current item is the new one, not `readyToPlay` yet, and
@@ -512,6 +512,7 @@ struct NativePlayerScreen: View {
         Task { @MainActor in
             let finished = await player.seek(to: CMTime(seconds: target, preferredTimescale: 600),
                                              toleranceBefore: .zero, toleranceAfter: .zero)
+            coordinator.userSeekLanded(token: seekToken)
             // A newer app seek replaced this one in the planner: not ours to report.
             guard skipPlanner.seekInFlight?.startedAt == startedAt else { return }
             if finished {

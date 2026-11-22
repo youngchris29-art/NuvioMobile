@@ -294,6 +294,13 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// rebuild is in flight. The rebuild's corrective seek goes there instead of back to the
     /// captured playhead, so the viewer's seek wins.
     private var rebuildUserSeekSec: Double?
+    /// W5 r2: where the start's resume stands (`NativeResumePosition`); a start that has not reached its
+    /// position is still a start for a return.
+    private(set) var startupResume: NativeStartupResume = .unresolved
+    /// W5 r2: the newest app user seek (chapter, skip, replay) that has not completed, by token. A
+    /// background while it runs makes its target the one a mid-play restart holds.
+    private var userSeekInFlight: (token: Int, sec: Double)?
+    private var userSeekToken = 0
     /// `none` / `published` / `rebuilt` (the DEBUG probe's `late=` field).
     @Published private(set) var lateState = "none"
     #if DEBUG
@@ -942,6 +949,8 @@ final class NativePlaybackCoordinator: ObservableObject {
                               toleranceBefore: .zero, toleranceAfter: .zero)
             guard rebuildStillOwns(player: player, item: item) else { return abandonRebuild("after seek") }
         }
+        // The corrective seek reached the user's deferred target too (W5 r2).
+        userSeekInFlight = nil
         guard rebuildStillOwns(player: player, item: item) else { return abandonRebuild("before play") }
         if target.wasPlaying { player.play() }
         let audible = (try? await item.asset.loadMediaSelectionGroup(for: .audible)) ?? nil
@@ -1016,16 +1025,28 @@ final class NativePlaybackCoordinator: ObservableObject {
         }
         let target = PlayerChapters.clampedSeek(sec, durationSec: lastDurationSec > 0 ? lastDurationSec : durationSec)
         print("[Chapters] native seek → \(String(format: "%.1f", target))s")
-        noteUserSeek(to: target)
-        player.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+        let token = noteUserSeek(to: target)
+        player.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+            Task { @MainActor in self?.userSeekLanded(token: token) }
+        }
     }
 
-    /// Every app-issued user seek reports its target here (chapter pick, the screen's skip seeks).
-    /// Outside a B17 rebuild it does nothing.
-    func noteUserSeek(to sec: Double) {
+    /// Every app-issued user seek reports its target here (chapter pick, the screen's skip seeks,
+    /// replay) and `userSeekLanded` when it completes. During a B17 rebuild the target also aims the
+    /// rebuild's corrective seek. Returns the seek's token.
+    @discardableResult
+    func noteUserSeek(to sec: Double) -> Int {
         if didPlayToEnd { didPlayToEnd = false }
-        guard isRebuildingItem, sec.isFinite else { return }
-        rebuildUserSeekSec = sec
+        userSeekToken &+= 1
+        guard sec.isFinite else { return userSeekToken }
+        userSeekInFlight = (userSeekToken, sec)
+        if isRebuildingItem { rebuildUserSeekSec = sec }
+        return userSeekToken
+    }
+
+    /// The user seek with this token completed (finished or cancelled by a newer one).
+    func userSeekLanded(token: Int) {
+        if userSeekInFlight?.token == token { userSeekInFlight = nil }
     }
 
     /// Fetches the Now Playing artwork once per coordinator (poster first, 400×600) and encodes it
@@ -1324,9 +1345,12 @@ final class NativePlaybackCoordinator: ObservableObject {
     func replayFromStart() {
         didPlayToEnd = false
         guard let player else { return }
-        noteUserSeek(to: 0)
-        player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
-            Task { @MainActor in player.play() }
+        let token = noteUserSeek(to: 0)
+        player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+            Task { @MainActor in
+                self?.userSeekLanded(token: token)
+                player.play()
+            }
         }
     }
 
@@ -1345,7 +1369,6 @@ final class NativePlaybackCoordinator: ObservableObject {
             var waitingTicks = 0
             var notReadyTicks = 0
             var lastProducingSeg = 0
-            var pendingResumePercent: Double?
             while !Task.isCancelled {
                 guard let self, self.player === player else { return }
 
@@ -1373,17 +1396,11 @@ final class NativePlaybackCoordinator: ObservableObject {
                     // A failure-alert retry resumes where the failed attempt stopped, Start Over
                     // included (mpv's `computeResumePosition` rule). Otherwise Start Over ignores saved
                     // progress (gated here: `PlaybackProgressRecorder` is untouched).
-                    let retryResume = self.context.resumeAtSec.flatMap { $0 > 10 ? $0 : nil }
-                    let startOver = retryResume == nil && self.context.startFromBeginning
-                    if startOver { print("[Failover] start over: ignoring saved progress") }
-                    let resume: Double? = startOver
-                        ? nil
-                        : (retryResume ?? self.recorder.resumePositionSec(actualDurationSec: duration.isFinite ? duration : 0))
-                    // Percentage-only row and no finite duration yet: apply on the first tick that has one.
-                    if resume == nil, !startOver, !(duration.isFinite && duration > 0) {
-                        pendingResumePercent = self.recorder.pendingResumePercent()
-                    }
-                    if let resume {
+                    // W5 r2: the one start-resume plan (shared with the restart from scratch). A
+                    // percentage-only row with no finite duration yet waits for the first tick that has one.
+                    let plan = self.startResumePlan(durationSec: duration)
+                    self.startupResume = NativeResumePosition.state(after: plan)
+                    if case .seek(let resume) = plan {
                         // The resume seek (user-initiated for skip logic).
                         self.didResumeSeek = true
                         self.onResumeSeekBegin?(resume)
@@ -1397,6 +1414,7 @@ final class NativePlaybackCoordinator: ObservableObject {
                             return
                         }
                         self.lastPositionSec = resume
+                        self.startupResume = .done
                         // Where it really landed (default tolerance: can be past the target).
                         self.onResumeSeekCompleted?(CMTimeGetSeconds(player.currentTime()))
                     }
@@ -1486,23 +1504,28 @@ final class NativePlaybackCoordinator: ObservableObject {
                             ?? (abs(pos - self.lastPositionSec) > SkipSegmentPlanner.userJumpThresholdSec)
                         if userSeek { waitingTicks = 0; self.lastUserSeekUptime = ProcessInfo.processInfo.systemUptime }
                     }
-                    if let pct = pendingResumePercent, pos.isFinite, dur.isFinite, dur > 0 {
-                        pendingResumePercent = nil
-                        // Only while still near the start, so a user scrub is never overridden.
-                        if pos < 30 {
-                            let target = dur * pct / 100
-                            if target > 10 {
-                                // The pending-percentage resume seek (user-initiated for skip logic).
-                                self.didResumeSeek = true
-                                self.onResumeSeekBegin?(target)
-                                await player.seek(to: CMTime(seconds: target, preferredTimescale: 600))
-                                self.lastPositionSec = target
-                                // `pos` was read before the seek: use the real landing, not a stale
-                                // pre-seek position the skip planner could auto-skip from.
-                                let landed = CMTimeGetSeconds(player.currentTime())
-                                pos = landed.isFinite ? landed : target
-                                self.onResumeSeekCompleted?(pos)
-                            }
+                    // Only while still near the start, so a user scrub is never overridden (W5 r2: the
+                    // state is the coordinator's, so a restart from scratch keeps it too).
+                    if case .awaitingDuration(let pct) = self.startupResume {
+                        switch NativeResumePosition.percentStep(percent: pct, positionSec: pos, durationSec: dur) {
+                        case .wait:
+                            break
+                        case .drop:
+                            self.startupResume = .done
+                        case .seek(let target):
+                            // The pending-percentage resume seek (user-initiated for skip logic).
+                            self.startupResume = .seeking(target)
+                            self.didResumeSeek = true
+                            self.onResumeSeekBegin?(target)
+                            await player.seek(to: CMTime(seconds: target, preferredTimescale: 600))
+                            guard !Task.isCancelled, self.player === player, self.playerItem === item else { return }
+                            self.lastPositionSec = target
+                            self.startupResume = .done
+                            // `pos` was read before the seek: use the real landing, not a stale
+                            // pre-seek position the skip planner could auto-skip from.
+                            let landed = CMTimeGetSeconds(player.currentTime())
+                            pos = landed.isFinite ? landed : target
+                            self.onResumeSeekCompleted?(pos)
                         }
                     }
                     #if DEBUG
@@ -2225,6 +2248,23 @@ extension NativePlaybackCoordinator: NativeReturnHost {
 
     // MARK: Facts
 
+    /// W5 r2: what a restart from this instant must reach (`NativeResumePosition.restart`).
+    private var restartPosition: NativeResumePosition.Restart {
+        NativeResumePosition.restart(itemEverReady: readyUptime != nil, startup: startupResume, clockSec: readyClockSec,
+                                     lastPositionSec: lastPositionSec,
+                                     userSeekInFlightSec: userSeekInFlight?.sec ?? rebuildUserSeekSec)
+    }
+
+    /// The start-resume plan both starts take: the normal readiness branch and the restart from scratch.
+    private func startResumePlan(durationSec: Double) -> NativeResumePosition.Plan {
+        let plan = NativeResumePosition.plan(
+            retryResumeSec: context.resumeAtSec, startFromBeginning: context.startFromBeginning, durationSec: durationSec,
+            savedResumeSec: { [recorder] in recorder.resumePositionSec(actualDurationSec: $0) },
+            pendingPercent: { [recorder] in recorder.pendingResumePercent() })
+        if plan == .atStart, context.startFromBeginning { print("[Failover] start over: ignoring saved progress") }
+        return plan
+    }
+
     func returnSnapshot(enteredAtUptime: TimeInterval) -> PlayerBackgroundSnapshot {
         let returnPhase: PlayerReturnPhase
         if failureKind != nil || isPhaseFailed {
@@ -2233,7 +2273,7 @@ extension NativePlaybackCoordinator: NativeReturnHost {
             returnPhase = .postPlay
         } else if didPlayToEnd {
             returnPhase = .ended
-        } else if readyUptime == nil {
+        } else if case .fromScratch = restartPosition {
             returnPhase = .starting
         } else if isRebuildingItem || isRestoringPipeline {
             returnPhase = .operation
@@ -2242,9 +2282,14 @@ extension NativePlaybackCoordinator: NativeReturnHost {
         } else {
             returnPhase = .playing
         }
-        let position = NativeReturnMath.snapshotPositionSec(playerTimeSec: readyClockSec, lastPositionSec: lastPositionSec)
+        let position: Double
+        let pending: Double?
+        switch restartPosition {
+        case .fromScratch(let sec): position = sec; pending = nil
+        case .midPlay(let sec, let seek): position = sec; pending = seek
+        }
         let snapshot = PlayerBackgroundSnapshot(
-            route: .native, phase: returnPhase, positionSec: position, pendingSeekTargetSec: rebuildUserSeekSec,
+            route: .native, phase: returnPhase, positionSec: position, pendingSeekTargetSec: pending,
             enteredAtUptime: enteredAtUptime, audioTrackID: nil, subtitleTrackID: nil, subtitleDecided: true,
             audioName: currentAudioOption.map(Self.renditionName(of:)),
             subtitleName: pendingLateSelection ?? currentLegibleName)
@@ -2396,11 +2441,15 @@ extension NativePlaybackCoordinator: NativeReturnHost {
             // Nothing played: back to the start path, the loading overlay stays up.
             playIssued = false
             phase = .preparing
+            startupResume = .unresolved
         }
     }
 
     func restartSetPosition(_ sec: Double) {
         lastPositionSec = sec
+        // The restart's target already includes a user seek in flight (the snapshot held it).
+        userSeekInFlight = nil
+        rebuildUserSeekSec = nil
     }
 
     func restartTeardown(keepPlayer: Bool) {
@@ -2518,6 +2567,7 @@ extension NativePlaybackCoordinator: NativeReturnHost {
             let landed = CMTimeGetSeconds(player.currentTime())
             if kind == .fromScratch {
                 self.lastPositionSec = sec
+                if case .seeking = self.startupResume { self.startupResume = .done }
                 self.onResumeSeekCompleted?(landed.isFinite ? landed : sec)
             }
             self.returnRunner?.machine(.seekLanded(clockSec: landed.isFinite ? landed : nil,
@@ -2573,14 +2623,16 @@ extension NativePlaybackCoordinator: NativeReturnHost {
             returnRunner?.machine(.identityChanged, token: token)
             return
         }
-        let duration = CMTimeGetSeconds(item.duration)
-        let retryResume = context.resumeAtSec.flatMap { $0 > 10 ? $0 : nil }
-        let startOver = retryResume == nil && context.startFromBeginning
-        let resume: Double? = startOver
-            ? nil
-            : (retryResume ?? recorder.resumePositionSec(actualDurationSec: duration.isFinite ? duration : 0))
-        print("[Return] restart from scratch resume=\(resume.map { String(format: "%.1f", $0) } ?? "start")")
-        returnRunner?.machine(.resumeChosen(sec: resume), token: token)
+        // W5 r2: the normal start's plan. A percentage-only row with no duration yet is kept for the
+        // first tick that has one (the restart's observe loop ticks once the machine settled).
+        let plan = startResumePlan(durationSec: CMTimeGetSeconds(item.duration))
+        startupResume = NativeResumePosition.state(after: plan)
+        print("[Return] restart from scratch resume=\(plan)")
+        if case .seek(let resume) = plan {
+            returnRunner?.machine(.resumeChosen(sec: resume), token: token)
+        } else {
+            returnRunner?.machine(.resumeChosen(sec: nil), token: token)
+        }
     }
 
     /// A restart hands AVKit a player that has never played (from scratch) or swaps in a new one under
