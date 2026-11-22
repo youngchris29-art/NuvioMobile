@@ -80,10 +80,15 @@ final class PlayerTransportUITests: XCTestCase {
         XCTAssertEqual(probe(app)["commits"], "1", "a short press must be a relative seek, not a commit")
     }
 
+    /// A press that lands while a keyframes-first commit still owes its exact stage cancels that stage.
+    /// `-debug.commitExactHoldMs 4000` (DEBUG) holds the exact stage at least 4 s after the commit on
+    /// both of its paths, so the second press always lands first; without it the stage could finish
+    /// inside the 150 ms window before the press arrived ("ke", the 2026-11-17 flake).
+    /// `testExactStageRunsWhenNotInterrupted` is the control: the same hold with no second press.
     func testExactStageCancelledByNewPress() throws {
-        let app = try launch()
+        let app = try launch(extra: ["-debug.commitExactHoldMs", "4000"])
         remote.press(.right, forDuration: 1.5)
-        remote.press(.right)    // within the exact stage's 150 ms window
+        remote.press(.right)    // lands inside the 4 s hold
         Thread.sleep(forTimeInterval: 2.0)
         var p = probe(app)
         XCTAssertEqual(p["stages"], "k", "exact stage should have been cancelled: \(probeText(app))")
@@ -92,6 +97,17 @@ final class PlayerTransportUITests: XCTestCase {
         Thread.sleep(forTimeInterval: 2.0)
         p = probe(app)
         XCTAssertEqual(p["commits"], "2", probeText(app))
+    }
+
+    /// Control for the leg above: the same 4 s hold and no second press, so the exact stage runs once the
+    /// hold is over ("ke"). Proves the hold only delays the stage and does not suppress it.
+    func testExactStageRunsWhenNotInterrupted() throws {
+        let app = try launch(extra: ["-debug.commitExactHoldMs", "4000"])
+        remote.press(.right, forDuration: 1.5)
+        Thread.sleep(forTimeInterval: 1.0)
+        XCTAssertEqual(probe(app)["stages"], "k", "the exact stage ran inside the hold: \(probeText(app))")
+        XCTAssertTrue(waitFor(app, timeout: 8) { $0["stages"] == "ke" }, "the exact stage never ran after the hold: \(probeText(app))")
+        XCTAssertEqual(probe(app)["commits"], "1", probeText(app))
     }
 
     func testScanLatchesAndCycles() throws {

@@ -108,6 +108,14 @@ final class PlayerTransportInput: NSObject, UIGestureRecognizerDelegate {
     private var lastChromeCompact = false
     private let holdTickSec: TimeInterval               // `debug.holdTickSec` (0 = Auto 0.25)
     private let commitExactDelaySec: TimeInterval       // `debug.commitExactDelayMs`; < 0 = never run the exact stage
+    #if DEBUG
+    /// `debug.commitExactHoldMs` (DEBUG only, 0 = off): a floor on the time from a keyframes-first commit
+    /// to its exact stage, on both paths (the delay after the keyframes land and the 1.5 s deadline).
+    /// The exact-stage UI legs set it so a second press reliably lands before the exact stage (spec 9.6).
+    private let commitExactHoldSec: TimeInterval
+    /// `systemUptime` of the pending keyframes commit's issue, for the hold above.
+    private var pendingExactIssuedUptime: TimeInterval = 0
+    #endif
     // Swipe scrub (P2-A1): a horizontal stroke on the touch surface moves a preview, Select commits.
     private var scrubArbiter = ScrubGestureArbiter()
     private weak var scrubPan: UIPanGestureRecognizer?
@@ -165,6 +173,9 @@ final class PlayerTransportInput: NSObject, UIGestureRecognizerDelegate {
         self.holdTickSec = tick > 0 ? tick : TransportPreview.defaultTickSec
         let exactMs = UserDefaults.standard.integer(forKey: "debug.commitExactDelayMs")
         self.commitExactDelaySec = exactMs == 0 ? 0.15 : (exactMs < 0 ? -1 : Double(exactMs) / 1000)
+        #if DEBUG
+        self.commitExactHoldSec = max(0, Double(UserDefaults.standard.integer(forKey: "debug.commitExactHoldMs")) / 1000)
+        #endif
         self.scrubCurve = ScrubRateCurve.fromSetting(UserDefaults.standard.string(forKey: "debug.scrubCurve"))
         let scrubScale = UserDefaults.standard.double(forKey: "debug.scrubRateScale")
         self.scrubRateScale = scrubScale > 0 ? scrubScale : 1
@@ -1062,6 +1073,9 @@ final class PlayerTransportInput: NSObject, UIGestureRecognizerDelegate {
             if commitExactDelaySec >= 0 {
                 let deadline = DispatchWorkItem { [weak self] in self?.exactDeadlineFired(generation: expected) }
                 pendingExact = (gen, r, deadline)
+                #if DEBUG
+                pendingExactIssuedUptime = ProcessInfo.processInfo.systemUptime
+                #endif
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: deadline)
             }
             #if DEBUG
@@ -1125,6 +1139,21 @@ final class PlayerTransportInput: NSObject, UIGestureRecognizerDelegate {
     private func runExactStage(ifGeneration expected: Int? = nil) {
         guard let engine, let p = pendingExact else { return }
         if let expected, p.generation != expected { return }
+        #if DEBUG
+        // `debug.commitExactHoldMs`: the one gate both paths pass through. Too early → run again when
+        // the hold is over, for the same generation (a newer commit or a cancel drops it).
+        if commitExactHoldSec > 0 {
+            let remaining = commitExactHoldSec - (ProcessInfo.processInfo.systemUptime - pendingExactIssuedUptime)
+            if remaining > 0 {
+                exactWork?.cancel()
+                let gen = p.generation
+                let work = DispatchWorkItem { [weak self] in self?.runExactStage(ifGeneration: gen) }
+                exactWork = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + remaining, execute: work)
+                return
+            }
+        }
+        #endif
         p.deadline.cancel()
         pendingExact = nil
         exactWork?.cancel()   // the 0.15 s item may still be queued when the deadline hop ran us first
