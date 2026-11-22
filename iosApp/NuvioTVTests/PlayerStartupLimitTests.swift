@@ -90,6 +90,44 @@ final class PlayerStartupLimitTests: XCTestCase {
         XCTAssertFalse(clock.isArmed)
     }
 
+    /// spec-mpv-return §3.7 (M6): a background before the start cancels the limit for the context.
+    func testABackgroundBeforeTheStartCancelsTheLimit() {
+        let sink = Sink()
+        let clock = makeClock(sink)
+        clock.arm(contextID: "ctx-1", limitSeconds: 15, onReached: { sink.reached += 1 })
+        sink.now += 2
+        XCTAssertTrue(clock.noteBackgrounded())
+        XCTAssertFalse(clock.isArmed)
+        sink.now += 100; clock.tick()
+        XCTAssertEqual(sink.reached, 0, "a trip away never fires the limit")
+        // Arming the same context again (the engine view re-appears) does not bring it back.
+        clock.arm(contextID: "ctx-1", limitSeconds: 15, onReached: { sink.reached += 1 })
+        sink.now += 100; clock.tick()
+        XCTAssertEqual(sink.reached, 0)
+        XCTAssertFalse(clock.noteBackgrounded(), "nothing left to cancel")
+    }
+
+    /// A background after the start (or with nothing armed) changes nothing; the start is still forwarded once.
+    func testABackgroundAfterTheStartDoesNothing() {
+        let sink = Sink()
+        let clock = makeClock(sink)
+        clock.arm(contextID: "ctx-1", limitSeconds: 15, onReached: { sink.reached += 1 })
+        XCTAssertTrue(clock.noteStarted())
+        XCTAssertFalse(clock.noteBackgrounded())
+        XCTAssertFalse(clock.noteStarted(), "the host heard the start once")
+        let manual = makeClock(sink)
+        manual.arm(contextID: "ctx-2", limitSeconds: nil, onReached: nil)
+        XCTAssertFalse(manual.noteBackgrounded())
+        // A new context after a background starts a fresh limit.
+        let next = makeClock(sink)
+        next.arm(contextID: "a", limitSeconds: 15, onReached: { sink.reached += 1 })
+        XCTAssertTrue(next.noteBackgrounded())
+        next.arm(contextID: "b", limitSeconds: 15, onReached: { sink.reached += 1 })
+        XCTAssertTrue(next.isArmed)
+        sink.now += 15; next.tick()
+        XCTAssertEqual(sink.reached, 1)
+    }
+
     /// A manual pick (no limit) or no host callback arms nothing.
     func testNoLimitOrNoHostArmsNothing() {
         let sink = Sink()

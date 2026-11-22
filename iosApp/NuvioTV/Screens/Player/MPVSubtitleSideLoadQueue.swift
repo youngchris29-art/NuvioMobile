@@ -24,7 +24,11 @@ nonisolated struct MPVSubtitleSideLoadQueue {
         /// external subtitles (rank 0) and add-on subtitles in a preferred language, which is what
         /// the auto selection looks for, and it waits for them (`MPVSubtitleAutoSelectGate`).
         let rank: Int?
+        /// spec-mpv-return §3.3: the add-on's own URL when `source` is not it (the credential path
+        /// hands mpv a downloaded local file). A pending return pick matches on `original`.
+        var originalSource: String? = nil
         var preferred: Bool { rank != nil }
+        var original: String { originalSource ?? source }
     }
 
     /// `reply_userdata` for this queue's async commands: a tag in the high bits keeps them apart

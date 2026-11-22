@@ -147,6 +147,19 @@ final class PlayerStartupLimitClock: ObservableObject {
         onReached = nil
     }
 
+    /// spec-mpv-return §3.7 (M6): the app went to the background before this context started. A
+    /// viewer who left the app is not waiting at the screen, so the limit is cancelled for the
+    /// context (every engine); the engine's own watchdog is the only start budget from here. A
+    /// background after the start (or with nothing armed) changes nothing. Returns true when it
+    /// cancelled.
+    @discardableResult
+    func noteBackgrounded() -> Bool {
+        guard isArmed else { return false }
+        cancel()
+        print("[MPVReturn] startup limit cancelled: background before start")
+        return true
+    }
+
     /// One poll; the timer calls it every second.
     func tick() {
         guard var current = limit else { stop(); return }
