@@ -13,7 +13,12 @@ final class AetherReturnWiringTests: XCTestCase {
     @MainActor
     final class Session: AetherReturnSession {
         var needsForegroundRestore = true
-        var firstFrameShown = true
+        /// Like the façade's `@Published` latch: subscribers hear the new value in willSet, while the
+        /// property still reads the old one (W5 r4).
+        var firstFrameShown = true {
+            willSet { if newValue != firstFrameShown { onFrame?(newValue) } }
+        }
+        var onFrame: ((Bool) -> Void)?
         var restoreResult: Result<AetherForegroundRestoreOutcome, Error> = .success(.reloaded)
         var restores = 0
         var seeks: [Double] = []
@@ -103,6 +108,8 @@ final class AetherReturnWiringTests: XCTestCase {
         func returnExit() { exits += 1 }
         func returnSetUI(_ ui: PlayerReturnUI) { self.ui.append(ui) }
         func returnSetHeldPosition(_ sec: Double?) { held.append(sec) }
+        var refused: [Bool] = []
+        func returnSetTransportRefused(_ refused: Bool) { self.refused.append(refused) }
         func returnStopStartWatchdog() { watchdogStops += 1 }
         func returnRearmStartBudget() { rearms += 1 }
     }
@@ -147,6 +154,7 @@ final class AetherReturnWiringTests: XCTestCase {
         clock = Clock()
         runner = AetherReturnEffectRunner(owner: host.identity, session: session, host: host,
                                           schedule: clock.schedule, now: { [unowned self] in self.clock.now })
+        session.onFrame = { [unowned self] shown in self.runner.frameChanged(shown) }
     }
 
     /// Lets the restore sequence's tasks run.
@@ -435,5 +443,38 @@ final class AetherReturnWiringTests: XCTestCase {
         clock = Clock()
         runner = AetherReturnEffectRunner(owner: host.identity, session: session, host: host,
                                           schedule: clock.schedule, now: { [unowned self] in self.clock.now })
+        session.onFrame = { [unowned self] shown in self.runner.frameChanged(shown) }
+    }
+
+    // MARK: W5 review r4
+
+    /// Finding 3: the transport settles first, then the frame rises through the façade's willSet. The
+    /// runner uses the published value, so the return settles at once: no 3 s nudge, the queued Play
+    /// goes out now.
+    func testAFrameRisingAfterTheTransportSettlesAtOnceWithThePublishedValue() async {
+        await returnAndReload()
+        runner.userToggle(transportPaused: true)
+        host.settled = true
+        runner.sessionStateChanged()
+        XCTAssertEqual(runner.rule.mode, .restoring, "transport settled, no frame yet")
+        session.firstFrameShown = true
+        XCTAssertEqual(runner.rule.mode, .idle, "settled on the published frame, not after the nudge")
+        XCTAssertEqual(host.plays, 1)
+        XCTAssertEqual(session.seeks, [], "no nudge seek")
+    }
+
+    /// Finding 1 (runner side): every release of the transport reaches the controller, so a start resume
+    /// owed while the return held it is applied then.
+    func testTheTransportReleaseReachesTheHost() async {
+        host.operationInFlight = true
+        session.needsForegroundRestore = false
+        runner.enteredBackground()
+        runner.becameActive()
+        XCTAssertEqual(host.refused, [true])
+        host.operationInFlight = false
+        runner.operationMayHaveSettled()
+        XCTAssertEqual(host.refused, [true, false])
+        XCTAssertFalse(runner.transportRefused)
+        XCTAssertFalse(runner.rule.holdsIntent, "nothing holds the transport when the host hears the release")
     }
 }

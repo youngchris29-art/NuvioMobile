@@ -52,7 +52,7 @@ nonisolated enum NativeRestartEvent: Sendable, Equatable {
     /// settles only after it, so a late selection can never overwrite one the viewer makes after the settle).
     case tracksRestored
     /// From scratch: the coordinator ran the start plan (identity checked first).
-    case resumeChosen(NativeResumePosition.Plan)
+    case resumeChosen(PlayerResumePosition.Plan)
     case identityChanged
     case deadline
     case stop
@@ -201,7 +201,7 @@ nonisolated struct NativeRestartMachine: Sendable, Equatable {
             }
         case .durationKnown(let pos, let dur, let picture):
             guard state == .awaitingDuration, let pct = awaitPercent else { return [] }
-            switch NativeResumePosition.percentStep(percent: pct, positionSec: pos, durationSec: dur) {
+            switch PlayerResumePosition.percentStep(percent: pct, positionSec: pos, durationSec: dur) {
             case .wait: return []
             case .drop: return settle(clockSec: pos, pictureReady: picture)
             case .seek(let t): return startSeek(t)
@@ -260,6 +260,14 @@ nonisolated enum NativeReturnMath {
         return 0
     }
 
+    /// The subtitle a snapshot records (W5 r4): a late-subtitle pick wins only while its B17 rebuild is in
+    /// flight (the pick is not on screen yet). Once the rebuild is done, abandoned or replaced by a return
+    /// restart, the live selection wins, so a leftover pending pick can never override a later choice.
+    static func snapshotSubtitleName(rebuilding: Bool, pendingLate: String?, current: String?) -> String? {
+        if rebuilding, let pendingLate { return pendingLate }
+        return current
+    }
+
     /// Loopback health at return: a dead remux wins, then a listener that failed after ready or a ping that
     /// went unanswered, then a answered ping; no ping reading is `unknown`. Logged only (decision C).
     static func health(pingAnswered: Bool?, listenerFailedAfterReady: Bool, remuxFailed: Bool) -> PlayerNativeHealth {
@@ -267,93 +275,5 @@ nonisolated enum NativeReturnMath {
         if listenerFailedAfterReady || pingAnswered == false { return .listenerDead }
         if pingAnswered == true { return .alive }
         return .unknown
-    }
-}
-
-// MARK: - Where a native restart must land (W5 r2)
-
-/// Where the start's resume stands. Owned by the coordinator, decided only by `NativeResumePosition`.
-nonisolated enum NativeStartupResume: Sendable, Equatable {
-    /// No item has been ready yet, or a restart from scratch is choosing again.
-    case unresolved
-    /// The start resume seek (or the pending-percent seek) to this target has not landed yet.
-    case seeking(Double)
-    /// A percentage-only resume row and no finite duration yet: applied on the first tick that has one.
-    case awaitingDuration(percent: Double)
-    /// Resolved: the start position is reached (or there was none).
-    case done
-}
-
-/// The one decision about the position a native start or restart must reach (W5 r2). The normal start
-/// and the restart from scratch take the same `plan`; the first finite-duration tick takes
-/// `percentStep`; the background snapshot takes `restart`, so a start whose resume has not landed is
-/// still a start (it reruns `plan`), and a user seek still in flight is the target a mid-play restart
-/// holds. Pure and exhaustively tested (`NativeResumePositionTests`).
-nonisolated enum NativeResumePosition {
-    enum Plan: Sendable, Equatable {
-        case seek(Double)
-        case atStart
-        case awaitDuration(percent: Double)
-    }
-
-    /// The start resume. A failure-alert retry position over 10 s wins (Start Over included, mpv's
-    /// `computeResumePosition` rule); then Start Over; then the saved row read with the item's duration
-    /// when it is known (0 = unknown); a row that only has a percentage waits for a finite duration.
-    static func plan(retryResumeSec: Double?, startFromBeginning: Bool, durationSec: Double,
-                     savedResumeSec: (Double) -> Double?, pendingPercent: () -> Double?) -> Plan {
-        if let retry = retryResumeSec, retry.isFinite, retry > 10 { return .seek(retry) }
-        if startFromBeginning { return .atStart }
-        let known = durationSec.isFinite && durationSec > 0
-        if let saved = savedResumeSec(known ? durationSec : 0), saved.isFinite, saved > 0 { return .seek(saved) }
-        if !known, let pct = pendingPercent(), pct.isFinite, pct > 0 { return .awaitDuration(percent: pct) }
-        return .atStart
-    }
-
-    /// The state a plan leaves the start in before its seek is issued.
-    static func state(after plan: Plan) -> NativeStartupResume {
-        switch plan {
-        case .seek(let sec): return .seeking(sec)
-        case .atStart: return .done
-        case .awaitDuration(let pct): return .awaitingDuration(percent: pct)
-        }
-    }
-
-    enum PercentStep: Sendable, Equatable {
-        /// No finite position or duration yet: keep waiting.
-        case wait
-        /// The viewer is past the start (a scrub, 30 s in) or the target is under 10 s: dropped.
-        case drop
-        case seek(Double)
-    }
-
-    static func percentStep(percent: Double, positionSec: Double, durationSec: Double) -> PercentStep {
-        guard positionSec.isFinite, durationSec.isFinite, durationSec > 0 else { return .wait }
-        guard positionSec < 30 else { return .drop }
-        let target = durationSec * percent / 100
-        return target.isFinite && target > 10 ? .seek(target) : .drop
-    }
-
-    enum Restart: Sendable, Equatable {
-        /// The start has not reached its position: rerun the start path (`plan`) from scratch.
-        /// `positionSec` is what a failed restart hands to mpv: the start target when one was in flight.
-        case fromScratch(positionSec: Double)
-        /// Restart at `positionSec`; `pendingSeekSec` is a user seek that has not landed (held instead).
-        case midPlay(positionSec: Double, pendingSeekSec: Double?)
-    }
-
-    /// What a background snapshot records. `itemEverReady` false or a start that is not `.done` is a
-    /// start; otherwise mid-play at the ready clock (else the last position), with the newest user
-    /// seek still in flight (chapter, skip, replay, or one aimed at a B17 rebuild) as the target.
-    static func restart(itemEverReady: Bool, startup: NativeStartupResume, clockSec: Double?,
-                        lastPositionSec: Double, userSeekInFlightSec: Double?) -> Restart {
-        let position = NativeReturnMath.snapshotPositionSec(playerTimeSec: clockSec, lastPositionSec: lastPositionSec)
-        guard itemEverReady, startup == .done else {
-            if case .seeking(let target) = startup, target.isFinite, target >= 0 {
-                return .fromScratch(positionSec: target)
-            }
-            return .fromScratch(positionSec: position)
-        }
-        let pending = userSeekInFlightSec.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
-        return .midPlay(positionSec: position, pendingSeekSec: pending)
     }
 }

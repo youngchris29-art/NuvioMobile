@@ -45,6 +45,9 @@ protocol AetherReturnHost: AnyObject {
     func returnSetUI(_ ui: PlayerReturnUI)
     /// nil = released: the mirror takes the last held value and the next finite clock sample as is.
     func returnSetHeldPosition(_ sec: Double?)
+    /// `refuseTransport` as the rule set it; a release lets the controller apply what it owes (W5 r4:
+    /// the start's percentage resume).
+    func returnSetTransportRefused(_ refused: Bool)
     func returnStopStartWatchdog()
     func returnRearmStartBudget()
 }
@@ -88,6 +91,9 @@ final class AetherReturnEffectRunner {
     private(set) var transportRefused = false
     /// `holdPosition` / `releasePosition`: the authoritative position every consumer reads (spec 4.7).
     private(set) var heldPosition: Double?
+    /// The frame latch as the session last published it (`frameChanged`), never read back from the
+    /// session inside its own willSet.
+    private(set) var frameShown: Bool
 
     private var queue: [PlayerReturnEvent] = []
     private var draining = false
@@ -109,6 +115,7 @@ final class AetherReturnEffectRunner {
          now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
         rule = PlayerForegroundReturnRule(owner: owner)
         self.session = session
+        frameShown = session.firstFrameShown
         self.host = host
         self.schedule = schedule
         self.now = now
@@ -215,8 +222,15 @@ final class AetherReturnEffectRunner {
         feed(.settled(f))
     }
 
-    /// The session's phase or frame latch changed.
+    /// The session's phase changed (the controller set its phase mirror first).
     func sessionStateChanged() {
+        postChecks()
+    }
+
+    /// The session's frame latch changed. The value is passed in (W5 r4): `firstFrameShown` is
+    /// `@Published`, so its subscriber runs in willSet and the session still reads the old value.
+    func frameChanged(_ shown: Bool) {
+        frameShown = shown
         postChecks()
     }
 
@@ -303,13 +317,13 @@ final class AetherReturnEffectRunner {
         if let t = awaitingSettleToken, t == rule.token, mode == .restoring || mode == .awayRestoring,
            host?.returnTransportSettled == true {
             awaitingSettleToken = nil
-            let picture = session.firstFrameShown
+            let picture = frameShown
             record("settled picture=\(picture ? 1 : 0)")
             feed(.restoreFinished(token: t, .settled(clockSec: host?.returnClockSec, picture: picture),
                                   facts(entered: true)))
             return
         }
-        if rule.mode == .restoring, rule.framePending, awaitingSettleToken == nil, session.firstFrameShown {
+        if rule.mode == .restoring, rule.framePending, awaitingSettleToken == nil, frameShown {
             record("frameShown")
             feed(.frameShown(token: rule.token))
         }
@@ -375,6 +389,7 @@ final class AetherReturnEffectRunner {
                 host?.returnSetHeldPosition(nil)
             case .refuseTransport(let refused):
                 transportRefused = refused
+                host?.returnSetTransportRefused(refused)
             case .schedulePictureNudge(let token, let afterSec):
                 nudge?.cancel()
                 nudge = schedule(afterSec) { [weak self] in
@@ -507,13 +522,13 @@ final class AetherReturnEffectRunner {
     private func watchdogFired(token: Int, budget: Double) {
         guard token == rule.token, rule.mode == .restoring else { return }
         let settled = awaitingSettleToken == nil && host?.returnTransportSettled == true
-        switch AetherStartWatchdogRule.action(verdict: .fired(elapsed: budget), firstFrameShown: session.firstFrameShown,
+        switch AetherStartWatchdogRule.action(verdict: .fired(elapsed: budget), firstFrameShown: frameShown,
                                               restoreSettled: settled) {
         case .standDown:
             postChecks()
         case .wait, .reportTimeout:
             handOffNote = "aether: foregroundRestoreFailed (timedOut)"
-            log("[Return] restore watchdog fired after \(Int(budget)) s (settled=\(settled), picture=\(session.firstFrameShown))")
+            log("[Return] restore watchdog fired after \(Int(budget)) s (settled=\(settled), picture=\(frameShown))")
             feed(.restoreTimedOut(token: token, facts(entered: true)))
         }
     }

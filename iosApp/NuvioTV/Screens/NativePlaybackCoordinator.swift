@@ -294,9 +294,9 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// rebuild is in flight. The rebuild's corrective seek goes there instead of back to the
     /// captured playhead, so the viewer's seek wins.
     private var rebuildUserSeekSec: Double?
-    /// W5 r2: where the start's resume stands (`NativeResumePosition`); a start that has not reached its
+    /// W5 r2: where the start's resume stands (`PlayerResumePosition`); a start that has not reached its
     /// position is still a start for a return.
-    private(set) var startupResume: NativeStartupResume = .unresolved
+    private(set) var startupResume: PlayerStartResume = .unresolved
     /// W5 r2: the newest app user seek (chapter, skip, replay) that has not completed, by token. A
     /// background while it runs makes its target the one a mid-play restart holds.
     private var userSeekInFlight: (token: Int, sec: Double)?
@@ -1399,7 +1399,7 @@ final class NativePlaybackCoordinator: ObservableObject {
                     // W5 r2: the one start-resume plan (shared with the restart from scratch). A
                     // percentage-only row with no finite duration yet waits for the first tick that has one.
                     let plan = self.startResumePlan(durationSec: duration)
-                    self.startupResume = NativeResumePosition.state(after: plan)
+                    self.startupResume = PlayerResumePosition.state(after: plan)
                     if case .seek(let resume) = plan {
                         // The resume seek (user-initiated for skip logic).
                         self.didResumeSeek = true
@@ -1513,7 +1513,7 @@ final class NativePlaybackCoordinator: ObservableObject {
                     // Only while still near the start, so a user scrub is never overridden (W5 r2: the
                     // state is the coordinator's, so a restart from scratch keeps it too).
                     if case .awaitingDuration(let pct) = self.startupResume {
-                        switch NativeResumePosition.percentStep(percent: pct, positionSec: pos, durationSec: dur) {
+                        switch PlayerResumePosition.percentStep(percent: pct, positionSec: pos, durationSec: dur) {
                         case .wait:
                             break
                         case .drop:
@@ -2254,16 +2254,16 @@ extension NativePlaybackCoordinator: NativeReturnHost {
 
     // MARK: Facts
 
-    /// W5 r2: what a restart from this instant must reach (`NativeResumePosition.restart`).
-    private var restartPosition: NativeResumePosition.Restart {
-        NativeResumePosition.restart(itemEverReady: readyUptime != nil, startup: startupResume, clockSec: readyClockSec,
+    /// W5 r2: what a restart from this instant must reach (`PlayerResumePosition.restart`).
+    private var restartPosition: PlayerResumePosition.Restart {
+        PlayerResumePosition.restart(itemEverReady: readyUptime != nil, startup: startupResume, clockSec: readyClockSec,
                                      lastPositionSec: lastPositionSec,
                                      userSeekInFlightSec: userSeekInFlight?.sec ?? rebuildUserSeekSec)
     }
 
     /// The start-resume plan both starts take: the normal readiness branch and the restart from scratch.
-    private func startResumePlan(durationSec: Double) -> NativeResumePosition.Plan {
-        let plan = NativeResumePosition.plan(
+    private func startResumePlan(durationSec: Double) -> PlayerResumePosition.Plan {
+        let plan = PlayerResumePosition.plan(
             retryResumeSec: context.resumeAtSec, startFromBeginning: context.startFromBeginning, durationSec: durationSec,
             savedResumeSec: { [recorder] in recorder.resumePositionSec(actualDurationSec: $0) },
             pendingPercent: { [recorder] in recorder.pendingResumePercent() })
@@ -2298,7 +2298,9 @@ extension NativePlaybackCoordinator: NativeReturnHost {
             route: .native, phase: returnPhase, positionSec: position, pendingSeekTargetSec: pending,
             enteredAtUptime: enteredAtUptime, audioTrackID: nil, subtitleTrackID: nil, subtitleDecided: true,
             audioName: currentAudioOption.map(Self.renditionName(of:)),
-            subtitleName: pendingLateSelection ?? currentLegibleName)
+            subtitleName: NativeReturnMath.snapshotSubtitleName(rebuilding: isRebuildingItem,
+                                                                 pendingLate: pendingLateSelection,
+                                                                 current: currentLegibleName))
         print("[Return] snapshot route=native phase=\(returnPhase) pos=\(String(format: "%.1f", position))"
               + " audio=\(snapshot.audioName ?? "-") sub=\(snapshot.subtitleName ?? "off")")
         return snapshot
@@ -2614,6 +2616,9 @@ extension NativePlaybackCoordinator: NativeReturnHost {
             }
             self.legibleGroup = legible
             self.legibleSnapshot = .some(self.currentLegibleName)
+            // W5 r4: a late-subtitle pick the snapshot carried is consumed by this restore; left set, the
+            // next snapshot would prefer it over whatever the viewer picks after the return.
+            if legible != nil { self.pendingLateSelection = nil }
             self.selectionVersion &+= 1
             print("[Return] restart tracks audio=\(self.currentAudioOption.map(Self.renditionName(of:)) ?? "-")"
                   + " sub=\(self.currentLegibleName ?? "off") (wanted \(audio ?? "-") / \(subtitle ?? "off"))")
@@ -2639,7 +2644,7 @@ extension NativePlaybackCoordinator: NativeReturnHost {
         // W5 r2: the normal start's plan. A percentage-only row with no duration yet is kept for the
         // first tick that has one (the restart's observe loop ticks once the machine settled).
         let plan = startResumePlan(durationSec: CMTimeGetSeconds(item.duration))
-        startupResume = NativeResumePosition.state(after: plan)
+        startupResume = PlayerResumePosition.state(after: plan)
         print("[Return] restart from scratch resume=\(plan)")
         // W5 r3: the machine owns what follows (a seek, the top, or waiting for the duration while unsettled).
         returnRunner?.machine(.resumeChosen(plan), token: token)

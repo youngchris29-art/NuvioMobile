@@ -182,7 +182,11 @@ final class AetherTVPlayerViewController: UIViewController {
     private static let streamInfoRefreshSec: TimeInterval = 2
     private let loadingStartUptime = ProcessInfo.processInfo.systemUptime
     /// A percentage-only resume row: resolved against the probed duration when `load()` returns.
-    private var pendingResumePercent: Double?
+    /// W5 r4: where the start's resume stands (`PlayerResumePosition`, shared with the native route). A
+    /// percentage-only row is owned here until its seek is issued, even while a return holds the transport.
+    private var startResume: PlayerStartResume = .unresolved
+    /// The generation of the start's percentage seek, so its landing marks the resume done.
+    private var startResumeSeekGeneration: Int?
     /// The resume / replay start the planner was told about, completed at the first frame.
     private var plannerStartSeekPending = false
     /// Last `.ended` was handled (the post-play cover is up or the early-end report went out).
@@ -590,10 +594,34 @@ final class AetherTVPlayerViewController: UIViewController {
     /// Where the first load starts: a failure-alert retry's position, then the saved progress
     /// (`PlaybackProgressRecorder`'s rule: > 10 s, not completed, never on Start Over).
     private func resumeStartSec() -> Double? {
-        if let s = context.resumeAtSec, s > 10 { return s }
-        if let sec = recorder.resumePositionSec(actualDurationSec: 0) { return sec }
-        pendingResumePercent = recorder.pendingResumePercent()
+        // W5 r4: the one start-resume plan (`PlayerResumePosition`); the duration is unknown before the load.
+        let plan = PlayerResumePosition.plan(
+            retryResumeSec: context.resumeAtSec, startFromBeginning: context.startFromBeginning, durationSec: 0,
+            savedResumeSec: { [recorder] in recorder.resumePositionSec(actualDurationSec: $0) },
+            pendingPercent: { [recorder] in recorder.pendingResumePercent() })
+        startResume = PlayerResumePosition.state(after: plan)
+        if case .seek(let sec) = plan { return sec }
         return nil
+    }
+
+    /// W5 r4: the start's owed percentage seek, at the first load's return and again whenever a return
+    /// releases the transport. Never dropped by the transport gate: while a return holds it, it waits.
+    private func applyOwedStartResume() {
+        let held = returnRunner.map { $0.transportRefused || $0.rule.holdsIntent } ?? false
+        let duration = probe?.durationSec ?? session?.clock.durationSec ?? 0
+        switch PlayerResumePosition.owedStep(startResume, mediaReady: mediaReady, transportHeld: held,
+                                             positionSec: positionMirror, durationSec: duration) {
+        case .keep:
+            if held, case .awaitingDuration = startResume { print("[Return] start resume owed: the return holds the transport") }
+        case .done:
+            startResume = .done
+        case .seek(let target):
+            let before = seekGeneration
+            let generation = issueSeek(kind: .resume, targetSec: target, fromSec: nil, mode: .absolute, planner: true, onRejected: nil)
+            guard generation != before else { return }   // not issued: still owed
+            startResume = .seeking(target)
+            startResumeSeekGeneration = generation
+        }
     }
 
     /// `load()` returned: the source opened and was probed (playback may not have started yet).
@@ -610,11 +638,9 @@ final class AetherTVPlayerViewController: UIViewController {
         stillsLoadReady = true
         transportInput.previewSourceMayHaveChanged()
         if firstReturn {
-            if let pct = pendingResumePercent, duration > 0 {
-                pendingResumePercent = nil
-                let target = duration * pct / 100
-                if target > 10 { issueSeek(kind: .resume, targetSec: target, fromSec: nil, mode: .absolute, planner: true, onRejected: nil) }
-            }
+            // The load started at a saved position in seconds: that start is reached.
+            if case .seeking = startResume { startResume = .done }
+            applyOwedStartResume()
             firstLoadReturned()
             mediaOpened()
             fetchSkipSegments()
@@ -696,6 +722,8 @@ final class AetherTVPlayerViewController: UIViewController {
         if state.durationSec != sec { state.durationSec = sec }
         if state.transport.durationSec != sec { state.transport.durationSec = sec }
         transportInput.noteDuration(sec)
+        // W5 r4: a percentage still owed because the load returned without a duration applies now.
+        if case .awaitingDuration = startResume { applyOwedStartResume() }
         if sec != chaptersTrimDuration {
             chaptersTrimDuration = sec
             if let next = PlayerChapters.republished(raw: rawChapters, published: state.transport.chapters, durationSec: sec) {
@@ -731,7 +759,8 @@ final class AetherTVPlayerViewController: UIViewController {
     private func firstFrameChanged(_ shown: Bool) {
         viewing.firstFrameChanged(shown)
         updateBuffering()
-        returnRunner?.sessionStateChanged()
+        // W5 r4: the published value, not `session.firstFrameShown` (this sink runs in its willSet).
+        returnRunner?.frameChanged(shown)
         guard shown else { return }
         stopStartWatchdogTimer()
         startWatchdog.noteFileLoaded()
@@ -1016,6 +1045,11 @@ final class AetherTVPlayerViewController: UIViewController {
         NSLog("[SeekProbe] aether outcome gen=%ld %@", generation, String(describing: outcome))
         #endif
         if pendingSeek?.generation == generation { pendingSeek = nil }
+        if startResumeSeekGeneration == generation {
+            // Landed, superseded by the viewer's own seek, or rejected: the start's resume is over.
+            startResumeSeekGeneration = nil
+            startResume = .done
+        }
         defer { returnRunner?.operationMayHaveSettled() }
         switch AetherSeekPlan.landing(for: outcome, targetSec: targetSec) {
         case .landed(let at):
@@ -1707,6 +1741,10 @@ extension AetherTVPlayerViewController: AetherReturnHost {
             lastHeldPosition = nil
             lastLandedSeekSec = nil
         }
+    }
+
+    func returnSetTransportRefused(_ refused: Bool) {
+        if !refused { applyOwedStartResume() }
     }
 
     func returnStopStartWatchdog() {

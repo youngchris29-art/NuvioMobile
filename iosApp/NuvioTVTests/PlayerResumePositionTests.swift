@@ -1,13 +1,13 @@
 import XCTest
 @testable import NuvioTV
 
-/// W5 r2: `NativeResumePosition`, the one decision about the position a native start or restart must
+/// W5 r2: `PlayerResumePosition`, the one decision about the position a native start or restart must
 /// reach. The plan is checked against an oracle written from the prose of the normal start rule over
 /// its full input product; the percent step and the restart decision over theirs; then the two review
 /// scenarios end to end through the pure types.
-final class NativeResumePositionTests: XCTestCase {
+final class PlayerResumePositionTests: XCTestCase {
 
-    private typealias P = NativeResumePosition
+    private typealias P = PlayerResumePosition
 
     // MARK: plan
 
@@ -77,7 +77,7 @@ final class NativeResumePositionTests: XCTestCase {
     // MARK: restart
 
     func testRestartOverTheFullProduct() {
-        let startups: [NativeStartupResume] = [.unresolved, .seeking(250), .seeking(.nan), .awaitingDuration(percent: 40), .done]
+        let startups: [PlayerStartResume] = [.unresolved, .seeking(250), .seeking(.nan), .awaitingDuration(percent: 40), .done]
         let clocks: [Double?] = [nil, 0.4, 120]
         let seeks: [Double?] = [nil, 300, -1]
         for ready in [false, true] {
@@ -168,5 +168,48 @@ final class NativeResumePositionTests: XCTestCase {
         XCTAssertEqual(source.components(separatedBy: "pendingResumePercent()").count - 1, 1,
                        "only inside startResumePlan")
         XCTAssertFalse(source.contains("var pendingResumePercent"), "the percentage is the coordinator's startupResume")
+    }
+
+    // MARK: W5 r4: Aether's owed start resume
+
+    func testOwedStepOverStateMediaHoldAndDuration() {
+        let states: [PlayerStartResume] = [.unresolved, .seeking(250), .awaitingDuration(percent: 40), .done]
+        for state in states {
+            for media in [false, true] {
+                for held in [false, true] {
+                    for dur in [0.0, .nan, 1800] {
+                        let got = P.owedStep(state, mediaReady: media, transportHeld: held, positionSec: 0.4, durationSec: dur)
+                        let want: P.OwedStep
+                        if case .awaitingDuration = state, media, !held, dur.isFinite, dur > 0 { want = .seek(720) }
+                        else { want = .keep }
+                        XCTAssertEqual(got, want, "\(state) media=\(media) held=\(held) dur=\(dur)")
+                    }
+                }
+            }
+        }
+        XCTAssertEqual(P.owedStep(.awaitingDuration(percent: 40), mediaReady: true, transportHeld: false,
+                                  positionSec: 45, durationSec: 1800), .done, "past the start: dropped")
+    }
+
+    /// Finding 1: the first load returns (with its duration) while the return still holds the transport.
+    /// The percentage stays owed instead of being dropped by the gate, and the release applies it.
+    func testALoadReturningDuringTheReturnKeepsThePercentUntilTheRelease() {
+        let plan = P.plan(retryResumeSec: nil, startFromBeginning: false, durationSec: 0,
+                          savedResumeSec: { _ in nil }, pendingPercent: { 40 })
+        let state = P.state(after: plan)
+        XCTAssertEqual(state, .awaitingDuration(percent: 40))
+        XCTAssertEqual(P.owedStep(state, mediaReady: true, transportHeld: true, positionSec: 0, durationSec: 1800), .keep,
+                       "load returned while the return holds the transport: still owed")
+        XCTAssertEqual(P.owedStep(state, mediaReady: true, transportHeld: false, positionSec: 0.2, durationSec: 1800),
+                       .seek(720), "the release applies it")
+    }
+
+    /// Finding 2: a late-subtitle pick wins the snapshot only while its rebuild runs.
+    func testTheSnapshotSubtitlePrefersAPendingPickOnlyDuringItsRebuild() {
+        XCTAssertEqual(NativeReturnMath.snapshotSubtitleName(rebuilding: true, pendingLate: "Late", current: "English"), "Late")
+        XCTAssertEqual(NativeReturnMath.snapshotSubtitleName(rebuilding: true, pendingLate: nil, current: "English"), "English")
+        XCTAssertEqual(NativeReturnMath.snapshotSubtitleName(rebuilding: false, pendingLate: "Late", current: nil), nil,
+                       "after the restart consumed it, the viewer's Off wins")
+        XCTAssertEqual(NativeReturnMath.snapshotSubtitleName(rebuilding: false, pendingLate: "Late", current: "French"), "French")
     }
 }
