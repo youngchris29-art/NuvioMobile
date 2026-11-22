@@ -166,3 +166,25 @@ nonisolated enum MPVSelectionRestore {
         return choose(lang: lang, title: title, ordinal: ordinal, tracks: tracks)
     }
 }
+
+// MARK: - Native / Aether transfer during a return
+
+/// spec-mpv-return §3.3: what the native or Aether return runner knows when its rule hands off to mpv
+/// during a return (it runs only in a non-idle mode). The screen completes it into a payload.
+nonisolated struct PlayerReturnTransfer: Sendable, Equatable {
+    let owner: PlaybackIdentity
+    let intent: PlayerReturnHandoff.Intent
+    let atSec: Double
+    let generation: Int
+
+    /// Picks by meaning are not carried across engines (their track names do not map onto mpv's
+    /// tracks): the fresh mpv start uses its own automatic choice. `freshStartsLeft` is 0.
+    func payload(contextID: String, streamKey: String, origin: PlayerReturnHandoff.Origin,
+                 playedSec: Double) -> PlayerReturnHandoff {
+        PlayerReturnHandoff(owner: owner, contextID: contextID, streamKey: streamKey,
+                            start: .position(atSec.isFinite ? max(0, atSec) : 0), intent: intent,
+                            playedSec: playedSec, healthyReported: false, returnGeneration: generation,
+                            freshStartsLeft: 0, audio: .auto, subtitle: .auto, audioDelaySec: nil, speed: 1,
+                            origin: origin)
+    }
+}

@@ -6,8 +6,16 @@ import SharedCore
 extension PlaybackIdentity {
     /// Who is signed in and which profile is active, read now. The owner of a playback is this value
     /// taken once when it starts; every Aether and native write is compared against it.
+    #if DEBUG
+    /// spec-mpv-return §5.3 `debug.ownerFlip`: a leg's stand-in for a profile change.
+    @MainActor static var debugOverride: PlaybackIdentity?
+    #endif
+
     @MainActor
     static func current() -> PlaybackIdentity {
+        #if DEBUG
+        if let debugOverride { return debugOverride }
+        #endif
         let account = (AuthRepository.shared.state.value_ as? AuthStateAuthenticated)?.userId ?? "signed-out"
         return PlaybackIdentity(accountKey: account, profileId: ActiveProfileProvider.shared.activeProfileId)
     }

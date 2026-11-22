@@ -174,6 +174,9 @@ struct PlaybackContext: Identifiable {
     var forcedEngine: PlaybackEngine? = nil
     /// Failure-alert retry: both engines resume from here instead of the saved progress (> 10 s).
     var resumeAtSec: Double? = nil
+    /// spec-mpv-return §3.7: a return-failure retry's held start, read first by mpv's resume
+    /// (`.position` resumes exactly there, 0 and <= 10 s included). Not part of `id`.
+    var returnStart: PlayerReturnHandoff.Start? = nil
     /// Batch D U2: `url` was resolved on this device from an add-on `ytId`-only stream and expires
     /// within hours, so it is session-only — neither engine writes it to the watch-progress
     /// entry's `lastSourceUrl` (the field mobile's "reuse last link" reads back), see
@@ -345,6 +348,9 @@ struct PlaybackFailure: Equatable {
     var kind: PlaybackFailureKind = .unknown
     /// The HTTP status behind a `.http` failure, when known. Log / diagnostic only.
     var httpStatus: Int? = nil
+    /// spec-mpv-return §3.7: a fresh mpv start after a return failed before it settled; the held
+    /// start from its payload. The picker routes it to the return alert on every launch source.
+    var returnRecovery: PlayerReturnHandoff.Start? = nil
 }
 
 /// Classified cause of a playback failure (P4, BUG-143). The first group is positive evidence
@@ -450,6 +456,33 @@ enum PlaybackFailoverPolicy {
         case nextEpisodePicker
         /// Close the player and offer "Try Next Source" / "Back to Sources".
         case manualAlert
+    }
+
+    /// spec-mpv-return §3.7 (M4): a fresh mpv start after a return failed. Checked before `route`, for
+    /// every launch source: always the manual alert, never a silent source swap or the episode picker.
+    struct ReturnAlertPlan: Equatable {
+        /// "Try with mpv": the same stream on mpv, a manual pick, the next attempt, at the held start.
+        let retry: PlaybackContext
+        /// "Try Next Source" only for the picker's own title (its list is the wrong one otherwise).
+        let offersNextSource: Bool
+
+        static func == (a: ReturnAlertPlan, b: ReturnAlertPlan) -> Bool {
+            a.retry.id == b.retry.id && a.retry.returnStart == b.retry.returnStart
+                && a.retry.forcedEngine == b.retry.forcedEngine && a.retry.launchSource == b.retry.launchSource
+                && a.offersNextSource == b.offersNextSource
+        }
+    }
+
+    /// nil when the failure is not a return failure (the normal routing applies). The retry is
+    /// present whatever `otherEngineEligible` says.
+    static func returnAlert(for ctx: PlaybackContext, failure: PlaybackFailure, pickerVideoId: String) -> ReturnAlertPlan? {
+        guard let start = failure.returnRecovery else { return nil }
+        var retry = ctx
+        retry.forcedEngine = .mpv
+        retry.launchSource = .manual
+        retry.attempt = ctx.attempt + 1
+        retry.returnStart = start
+        return ReturnAlertPlan(retry: retry, offersNextSource: ctx.videoId == pickerVideoId)
     }
 
     /// Before W4: the launch source alone. Kept as the "no fallback left" answer `route` gives.

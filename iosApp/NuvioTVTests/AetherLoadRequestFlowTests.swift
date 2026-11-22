@@ -321,9 +321,10 @@ final class AetherLoadRequestFlowTests: XCTestCase {
         let first = AetherLoadRequestFlow.fresh(base: base(), inputs: inputs(.maximum))
         XCTAssertNotNil(first.diskCache)
         let handoff = PlaybackHandoff(positionSec: 120, secondsPlayed: 80, startedPlaying: true, kind: .local)
-        // A later cache field on the handoff fails here.
+        // A later cache field on the handoff fails here (spec-mpv-return added the return payload,
+        // which carries no cache).
         XCTAssertEqual(Mirror(reflecting: handoff).children.compactMap(\.label),
-                       ["positionSec", "secondsPlayed", "startedPlaying", "kind"])
+                       ["positionSec", "secondsPlayed", "startedPlaying", "kind", "returnTransfer"])
     }
 
     /// mpv builds its options inline from UserDefaults (no pure builder exists), so the guarantee that

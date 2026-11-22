@@ -1933,13 +1933,14 @@ struct StreamPickerView: View {
         // W4 (2b.7): an auto-picked debrid link that failed with an HTTP error before it started is
         // re-resolved once (cache bypassed) before the walk moves on; its memory is left to that
         // step (the controller remembers it if the refresh does not help).
-        let refreshFirst: FirstPlayAutoPlayController.Candidate? = ctx.launchSource == .autoPlay
+        let refreshFirst: FirstPlayAutoPlayController.Candidate? = ctx.launchSource == .autoPlay && failure.returnRecovery == nil
             ? Self.refreshCandidate(ctx, failure).flatMap {
                 autoPlay.willRefreshBeforeMovingOn(streamKey: $0.streamKey) ? $0 : nil
             }
             : nil
-        let deferRejection = refreshFirst != nil && PlaybackFailoverPolicy.shouldReject(failure)
-        if PlaybackFailoverPolicy.shouldReject(failure) {
+        let deferRejection = refreshFirst != nil && failure.returnRecovery == nil && PlaybackFailoverPolicy.shouldReject(failure)
+        // spec-mpv-return §8.4: a return failure is not evidence against the link (it played).
+        if failure.returnRecovery == nil, PlaybackFailoverPolicy.shouldReject(failure) {
             if deferRejection {
                 print("[Failover] reject key=\(ctx.streamKey) deferred: the link is refreshed once first")
             } else {
@@ -1962,6 +1963,21 @@ struct StreamPickerView: View {
     /// What a failure of the presented context leads to (also a held failure, replayed when the
     /// viewer's pending choice is abandoned).
     private func routeFailure(_ failure: PlaybackFailure, context ctx: PlaybackContext) {
+        // spec-mpv-return §3.7 (M4): a fresh mpv start after a return failed. Before `route`, on every
+        // launch source: the manual alert with "Try with mpv" at the held start, never a silent swap.
+        if let plan = PlaybackFailoverPolicy.returnAlert(for: ctx, failure: failure, pickerVideoId: videoId) {
+            print("[MPVReturn] return failure -> alert source=\(ctx.launchSource) retry=\(plan.retry.returnStart?.logToken ?? "-") next=\(plan.offersNextSource ? 1 : 0)")
+            closeFailure(ctx, rejectionSettled: false)
+            pendingManualFailureAlert = ManualFailureAlert(
+                reason: failure.reason,
+                next: plan.offersNextSource ? nextManualStream(after: ctx) : nil,
+                attempt: ctx.attempt + 1,
+                retry: plan.retry,
+                retryEngine: .mpv
+            )
+            selected = nil
+            return
+        }
         let refreshFirst: FirstPlayAutoPlayController.Candidate? = ctx.launchSource == .autoPlay
             ? Self.refreshCandidate(ctx, failure).flatMap {
                 autoPlay.willRefreshBeforeMovingOn(streamKey: $0.streamKey) ? $0 : nil

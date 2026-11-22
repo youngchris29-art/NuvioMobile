@@ -335,6 +335,8 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// The return's authoritative position while one is held (spec 4.7): ticks neither record nor move
     /// `lastPositionSec` while it is set, and `stop()`/the handoff read it through `lastPositionSec`.
     private var heldPositionSec: Double?
+    /// spec-mpv-return §3.3: the return rule's handoff to mpv; `NativePlayerScreen` hands it on.
+    private(set) var returnTransfer: PlayerReturnTransfer?
     /// The rule refuses transport: the screen's skip and chapter seeks are dropped.
     private(set) var returnRefusesTransport = false
     /// The restart machine's token while it runs (every pipeline step feeds the machine then).
@@ -2425,6 +2427,10 @@ extension NativePlaybackCoordinator: NativeReturnHost {
         onReturnExit?()
     }
 
+    func returnNoteTransfer(_ transfer: PlayerReturnTransfer) {
+        returnTransfer = transfer
+    }
+
     func returnSetUI(_ ui: PlayerReturnUI) {
         if returnUI != ui { returnUI = ui }
     }
@@ -2564,8 +2570,10 @@ extension NativePlaybackCoordinator: NativeReturnHost {
         }
     }
 
-    func restartSeek(token: Int, toSec sec: Double) {
+    func restartSeek(token: Int, toSec sec: Double, exact: Bool, generation: Int) {
         guard restartToken == token, let player, let item = playerItem else { return }
+        // spec-mpv-return §6.2: the duration at the issue and after the await go to the landing check.
+        let durationAtIssue = CMTimeGetSeconds(item.duration)
         let kind = restartKind
         if kind == .fromScratch {
             // The resume seek (user-initiated for skip logic), as on a normal start.
@@ -2575,10 +2583,17 @@ extension NativePlaybackCoordinator: NativeReturnHost {
         Task { @MainActor [weak self] in
             let time = CMTime(seconds: sec, preferredTimescale: 600)
             let finished: Bool
-            if kind == .midPlay {
-                finished = await player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
-            } else {
+            // spec-mpv-return §6.2: every restart seek is exact (from scratch the default tolerance
+            // snapped 1265.781 to the segment start at 1252.2).
+            #if DEBUG
+            let coarse = !exact || NativeRestartDebug.takeCoarseFirstSeek()
+            #else
+            let coarse = !exact
+            #endif
+            if coarse {
                 finished = await player.seek(to: time)
+            } else {
+                finished = await player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
             }
             guard let self, self.restartToken == token, self.player === player, self.playerItem === item else {
                 print("[Return] restart seek overtaken (stopped, cancelled or replaced)")
@@ -2587,7 +2602,7 @@ extension NativePlaybackCoordinator: NativeReturnHost {
             // W5 r3: a seek that returned false is never a landing (the machine retries once, then fails).
             guard finished else {
                 print("[Return] restart seek to \(String(format: "%.1f", sec))s did not finish")
-                self.returnRunner?.machine(.seekFailed, token: token)
+                self.returnRunner?.machine(.seekFailed(generation: generation), token: token)
                 return
             }
             // Spec 5.2.2: identity again after the seek await, before any tracker start.
@@ -2601,8 +2616,13 @@ extension NativePlaybackCoordinator: NativeReturnHost {
                 if case .seeking = self.startupResume { self.startupResume = .done }
                 self.onResumeSeekCompleted?(landed.isFinite ? landed : sec)
             }
+            let durationNow = CMTimeGetSeconds(item.duration)
+            print("[Return] restart seek g=\(generation) target=\(String(format: "%.3f", sec)) landed=\(String(format: "%.3f", landed)) exact=\(coarse ? 0 : 1)")
             self.returnRunner?.machine(.seekLanded(clockSec: landed.isFinite ? landed : nil,
-                                                   pictureReady: self.returnPictureReady), token: token)
+                                                   durationAtIssueSec: durationAtIssue.isFinite ? durationAtIssue : nil,
+                                                   durationNowSec: durationNow.isFinite ? durationNow : nil,
+                                                   pictureReady: self.returnPictureReady, generation: generation),
+                                       token: token)
         }
     }
 

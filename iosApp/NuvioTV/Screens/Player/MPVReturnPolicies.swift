@@ -35,6 +35,11 @@ final class MPVParkBox: @unchecked Sendable {
         return _generation
     }
 
+    /// A return-started controller continues the generation its payload was accepted under.
+    func continueGeneration(from generation: Int) {
+        lock.lock(); _generation = max(_generation, generation); lock.unlock()
+    }
+
     /// A return that keeps this controller (`.nothing`): parked no more, the generation stays.
     func unpark() { lock.lock(); _parked = false; lock.unlock() }
 

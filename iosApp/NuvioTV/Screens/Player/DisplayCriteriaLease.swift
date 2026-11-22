@@ -31,6 +31,9 @@ final class DisplayCriteriaLease {
         self.criteria = criteria
         owner = token
         writer(window, criteria)
+        #if DEBUG
+        MPVReturnDebugLedger.shared.crit = 1
+        #endif
     }
 
     /// Clears only when `token` owns the lease. Returns whether it cleared.
@@ -42,6 +45,9 @@ final class DisplayCriteriaLease {
         window = nil
         owner = nil
         writer(w, nil)
+        #if DEBUG
+        MPVReturnDebugLedger.shared.crit = 0
+        #endif
         return true
     }
 

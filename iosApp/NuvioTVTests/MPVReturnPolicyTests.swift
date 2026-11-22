@@ -491,3 +491,39 @@ final class DisplayCriteriaLeaseTests: XCTestCase {
         XCTAssertEqual(writes, [])
     }
 }
+
+/// spec-mpv-return §5.2, the part with no controller: the gate read on a real serial queue. A block
+/// issued before the park and executed after it is refused; one issued after an unpark (kept
+/// controller) runs; the park itself never waits on the queue.
+final class MPVParkBoxQueueTests: XCTestCase {
+    func testWorkQueuedBeforeTheParkIsRefusedAtExecution() {
+        let box = MPVParkBox()
+        let queue = DispatchQueue(label: "mpv-events-test")
+        let hold = DispatchSemaphore(value: 0)
+        let done = expectation(description: "drained")
+        var executed: [String] = []
+        queue.async { hold.wait() }                       // the queue is busy (a stuck command)
+        for command in [MPVCommandGate.Command.load, .unpause, .seek] {
+            let issued = box.generation
+            queue.async {
+                dispatchPrecondition(condition: .onQueue(queue))
+                if box.allows(command, issuedGeneration: issued) { executed.append(command.rawValue) }
+            }
+        }
+        let started = Date()
+        let g = box.park()                                // main: never waits on the busy queue
+        XCTAssertLessThan(Date().timeIntervalSince(started), 0.05)
+        hold.signal()
+        queue.async { done.fulfill() }
+        wait(for: [done], timeout: 2)
+        XCTAssertEqual(executed, [], "reconnect, toggle and seek issued before the park are refused")
+        box.unpark()
+        let after = expectation(description: "after unpark")
+        queue.async {
+            if box.allows(.unpause, issuedGeneration: g) { executed.append("unpause") }
+            after.fulfill()
+        }
+        wait(for: [after], timeout: 2)
+        XCTAssertEqual(executed, ["unpause"])
+    }
+}

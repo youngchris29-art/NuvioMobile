@@ -11,6 +11,14 @@ import SharedCore
 // Playback models (PlaybackContext, PlayerTuning, PlayerTrack, SkipSegment/SkipPrompt,
 // StreamInfoSnapshot, SubtitleFile) now live in PlaybackModels.swift so every engine shares them.
 
+/// spec-mpv-return §3.6: set on the old queue when `mpv_terminate_destroy` returned.
+final class MPVDestroyFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    func set() { lock.lock(); value = true; lock.unlock() }
+    var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
+}
+
 /// CAMetalLayer subclass that ignores degenerate drawable sizes (mirrors the iOS player's MetalLayer).
 final class TVMetalLayer: CAMetalLayer {
     override var drawableSize: CGSize {
@@ -110,6 +118,8 @@ final class MPVPlaybackState: ObservableObject {
     /// BUG-170: the start is held paused for the TV's display-mode switch. The paused first frame
     /// already counts as "started", so the loading screen also stays up while this is true.
     @Published var displayModeHolding = false
+    /// spec-mpv-return §3.5: a return start's landing is not complete yet: the loading screen stays.
+    @Published var returnLandingPending = false
     /// Info tab "Seek Previews" row: frames · store MB (· process RSS in debug builds); empty until
     /// a harvest lands, or the reason the harvest is off on this device.
     @Published var previewStoreSummary: String = ""
@@ -475,6 +485,74 @@ final class MPVTVPlayerViewController: UIViewController {
     /// When > 0 it wins over the failure-alert retry position and the saved progress
     /// (`computeResumePosition`). nil / 0 for every other start.
     var handoffPositionSec: Double?
+
+    // MARK: Return from background (spec-mpv-return-2026-11-22)
+    /// The payload this controller starts from (a return, or a native / Aether transfer during one).
+    /// Set by the representable before `viewDidLoad`; nil for every other start.
+    var returnHandoff: PlayerReturnHandoff?
+    /// `PlayerScreen`'s display-criteria lease and this controller's token in it (its mpv generation).
+    var displayLease: DisplayCriteriaLease?
+    var leaseToken = 0
+    /// The host replaces this controller with a fresh one from the payload. The host validates the
+    /// payload, calls `prepare` (this controller's `prepareForReplacement`) before it takes the lease,
+    /// and answers whether it accepted. Nil: no replacement (today's behaviour).
+    var onReturnReplace: ((PlayerReturnHandoff, _ prepare: () -> Void) -> Bool)?
+    private lazy var ownLease = DisplayCriteriaLease()
+    private var lease: DisplayCriteriaLease { displayLease ?? ownLease }
+    /// The identity at `init`; the creation owner is the payload's when there is one.
+    private let initOwner: PlaybackIdentity
+    private var creationOwner: PlaybackIdentity { returnHandoff?.owner ?? initOwner }
+    /// Parked flag and park generation, read by `eventQueue` blocks (`MPVCommandGate`).
+    private let parkBox = MPVParkBox()
+    private var returnObservers: [NSObjectProtocol] = []
+    /// What the controller held at the last park; nil when not parked (or after the decision).
+    private var returnSnapshot: MPVReturnSnapshot?
+    /// The held position at park (the snapshot's position, or the clock for a normal / live start).
+    private var parkedPositionSec: Double = 0
+    /// Video was turned off at park (`vid=no`): a kept controller turns it back on.
+    private var parkedVideoOff = false
+    private var returnDeferred = false
+    /// The viewer is leaving this player (`viewWillDisappear` with `isLeavingPlayer`).
+    private var isLeaving = false
+    /// One flush and stop per tracking session; replaced and discard dispositions (§3.6).
+    private var teardownStop = MPVTeardownStop()
+    /// Main: the play/pause the viewer last asked for. The display-mode release and the live reconnect
+    /// apply `pause = !desiredPlaying` (§3.3, §3.7); `togglePause`, `replay` and the start option write it.
+    private var desiredPlaying = true
+    /// Main: the newest app seek with a target that has not landed (the park's held target).
+    private var seekInFlight: (generation: Int, targetSec: Double)?
+    /// Main: the resume target this start will seek to (or did, before it landed).
+    private var resumeTargetSec: Double?
+    /// The fresh start's `.position` landing check (§3.5); nil when not a return start.
+    private var returnLanding: MPVReturnLanding?
+    private var returnLandingDurationAtIssue: Double?
+    /// A return start has not settled yet: its failure is a return failure (§3.7).
+    private var returnStartPending = false
+    /// The pending restorations of the viewer's picks (§3.3).
+    private var pendingAudioPick: PlayerReturnHandoff.AudioPick = .auto
+    private var pendingEmbeddedSubtitle: PlayerReturnHandoff.SubtitlePick = .auto
+    private var pendingSubtitlePick: MPVPendingSubtitlePick?
+    /// Main: side-load sources that are not the add-on's own URL (credential path) → that URL.
+    private var sideLoadOriginalBySource: [String: String] = [:]
+    /// `eventQueue` only: the walk reads every external subtitle's source (a pending pick waits).
+    private var walkReadsExternalSources = false
+    /// Main: the last walk's tracks by meaning, and the selected ids (the park's picks).
+    private var lastAudioSemantics: [MPVTrackSemantics] = []
+    private var lastSubtitleSemantics: [MPVTrackSemantics] = []
+    private var lastSelectedAudioID: Int?
+    private var lastSelectedSubtitleID: Int?
+    private var lastSelectedSubtitleExternal: String?
+    #if DEBUG
+    /// Probe: progress and tracker writes this controller made (`writes=`).
+    private var debugWrites = 0 {
+        didSet { MPVReturnDebugLedger.shared.noteWrite() }
+    }
+    /// Probe: this controller's serial among the mpv controllers of the process (`ctl=`).
+    private lazy var debugSerial = MPVReturnDebugLedger.shared.nextSerial()
+    private var debugBackgroundCycle = DebugBackgroundCycle()
+    private var debugLiveEOFForced = false
+    #endif
+
     private var startWatchdog = MPVStartWatchdog(limitSeconds: MPVStartWatchdog.defaultLimitSeconds)
     private var startWatchdogTimer: Timer?
     /// Main thread: a failure was already reported (every path shares this one-shot).
@@ -495,6 +573,7 @@ final class MPVTVPlayerViewController: UIViewController {
         self.context = context
         self.state = state
         self.trackerScrobble = TrackerScrobbleSession(context: context)
+        self.initOwner = PlaybackIdentity.current()
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -601,7 +680,9 @@ final class MPVTVPlayerViewController: UIViewController {
 
         transportInput.installGestures(on: view)
 
+        applyReturnHandoffAtStart()
         setupMpv()
+        installReturnObservers()
     }
 
     override func viewDidLayoutSubviews() {
@@ -624,8 +705,23 @@ final class MPVTVPlayerViewController: UIViewController {
             // the fallback for a `setupMpv()` that ran before the settings store had hydrated.
             applyAudioLanguagePreferences()
             beginDisplayModeHoldIfNeeded()
+            if let p = returnHandoff {
+                print("[MPVReturn] fresh start g=\(p.returnGeneration) origin=\(p.origin) pause=\(p.startsPaused ? 1 : 0) resume=\(p.start.logToken) audio=\(p.audio.logToken) sub=\(p.subtitle.logToken) t=\(String(format: "%.3f", ProcessInfo.processInfo.systemUptime))")
+            }
             command("loadfile", args: [context.url.absoluteString, "replace"])
             print("[Loading] engine=mpv stage=\(startupStages.stage.logToken) t=+\(String(format: "%.2f", ProcessInfo.processInfo.systemUptime - loadingStartUptime))s")
+            #if DEBUG
+            if returnHandoff == nil {
+                debugBackgroundCycle.noteStage("loadIssued")
+            } else if MPVReturnDebug.fault == "failFreshStart" {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                    guard let self else { return }
+                    print("[MPVReturn] DEBUG failFreshStart")
+                    self.reportPlaybackFailure(reason: "DEBUG failFreshStart", startedPlaying: false,
+                                               secondsPlayed: self.failoverSecondsPlayed, verdict: .init(.noMedia))
+                }
+            }
+            #endif
             armStartWatchdog()
             startPolling()
             transportInput.flashControls()
@@ -672,10 +768,17 @@ final class MPVTVPlayerViewController: UIViewController {
             // Review r2 #2: that same teardown also ended the Trakt scrobble and released the
             // display mode. Replay plays on this controller, so restore both; a real exit keeps
             // today's teardown (deliberately not gated on `isLeavingPlayer`, unproven on hardware).
+            // spec-mpv-return r3-1: a new tracking session, so its own exit flushes and stops once.
+            teardownStop.beginSession()
             if fileLoaded {
                 applyDisplayCriteriaIfEnabled()
                 startTraktScrobble()
             }
+        }
+        // A return decided while covered waits for the player to be in front again (§3.4 row 6).
+        if returnDeferred, let snap = returnSnapshot {
+            returnDeferred = false
+            decideReturn(snap, at: "viewDidAppear")
         }
     }
 
@@ -685,7 +788,7 @@ final class MPVTVPlayerViewController: UIViewController {
         // covers the player: Replay comes back to this same controller.
         // Device-pass probe (review r2 #3): must read true on a Menu exit, false under the card.
         print("[Failover] viewWillDisappear isLeavingPlayer=\(isLeavingPlayer) cover=\(coverIsBeingDismissed ? 1 : 0) sinceExit=\(transportInput.sinceExitMs())ms")
-        if isLeavingPlayer { closeFailover() }
+        if isLeavingPlayer { closeFailover(); isLeaving = true }
         // The hosting cover gets its Menu recogniser back whenever the cover itself stays: a
         // full-screen cover over the player (the post-play card) and, review r1 P1-1, an in-place
         // swap of this controller inside the same cover (Up Next / failover: `StreamPickerView`'s
@@ -746,8 +849,17 @@ final class MPVTVPlayerViewController: UIViewController {
         pollTimer?.invalidate()
         pollTimer = nil
         transportInput.viewDidDisappear()
-        saveProgress(flush: true)
-        stopTraktScrobble()
+        // spec-mpv-return §3.6: one flush and stop per tracking session; a replaced controller writes
+        // at its held position, a discarded one (or one whose owner changed since) writes nothing.
+        let teardown = teardownStop.next(.viewDidDisappear, livePositionSec: state.positionSec,
+                                         ownerValid: creationOwner == PlaybackIdentity.current())
+        if teardownStop.disposition != .normal {
+            print("[MPVReturn] teardown g=\(parkBox.generation) disposition=\(teardownStop.disposition.logToken) stop=\(teardown == .none ? 0 : 1) lease=\(lease.owner == leaseToken ? "held" : "transferred") subtitles=\(teardownStop.disposition == .discard ? "cleared" : "kept")")
+        }
+        if case .flushAndStop(let atSec) = teardown {
+            saveProgress(flush: true, atSec: atSec)
+            stopTraktScrobble(atSec: atSec)
+        }
         displayModeHoldStartedAt = nil
         state.displayModeHolding = false
         clearDisplayCriteria()
@@ -921,6 +1033,14 @@ final class MPVTVPlayerViewController: UIViewController {
         // WebVTT: a late line costs less than a stacked one.
         checkError(mpv_set_option_string(mpv, "sub-clear-on-seek", "yes"))
 
+        // spec-mpv-return §3.3: a return start loads paused unless a press after Home asked for play.
+        // An option before `mpv_initialize`, so the first frame never plays; presses during the start
+        // act on mpv's own `pause` (last press wins).
+        if let p = returnHandoff {
+            checkError(mpv_set_option_string(mpv, "pause", p.startsPaused ? "yes" : "no"))
+            updateProps { $0.paused = p.startsPaused }
+        }
+
         checkError(mpv_initialize(mpv))
         // Everything the UI needs is observed with a data payload so state flows to us on the
         // event queue — the main thread never issues a synchronous property read (see PropSnapshot).
@@ -1059,6 +1179,9 @@ final class MPVTVPlayerViewController: UIViewController {
         var audioInfos: [TrackInfo] = []
         var subInfos: [TrackInfo] = []
         var externalSource: String?
+        /// spec-mpv-return §3.3: every external subtitle's source while a return pick waits for its file.
+        var externalSubs: [(id: Int, source: String)] = []
+        let readsExternal = walkReadsExternalSources
         var badgeVideo: PlayerBadgeFacts?
         var badgeAudio: [Int: PlayerBadgeFacts] = [:]
 
@@ -1088,6 +1211,10 @@ final class MPVTVPlayerViewController: UIViewController {
                 if selected, getFlag("track-list/\(i)/external") {
                     externalSource = getString("track-list/\(i)/external-filename")
                 }
+                if readsExternal, getFlag("track-list/\(i)/external"),
+                   let source = getString("track-list/\(i)/external-filename") {
+                    externalSubs.append((id, source))
+                }
             }
         }
         if badgesInPlayer {
@@ -1111,6 +1238,13 @@ final class MPVTVPlayerViewController: UIViewController {
             // Hand-offs still on their way, and an add-on subtitle search still running, count as
             // loading (review r1 P3-2): their files have not reached the queue yet.
             let arriving = self.subtitleHandoffsInFlight > 0 || self.state.subtitleSearchInFlight
+            // spec-mpv-return §3.3: remember the picks by meaning, and restore a return's picks
+            // before the automatic selection runs (a restored pick counts as the viewer's).
+            self.noteReturnWalk(audio: audioInfos.map { MPVTrackSemantics(id: $0.id, lang: $0.lang, title: $0.title) },
+                                subs: subInfos.map { MPVTrackSemantics(id: $0.id, lang: $0.lang, title: $0.title) },
+                                selectedAudio: audioInfos.first(where: \.selected)?.id,
+                                selectedSubtitle: subInfos.first(where: \.selected)?.id,
+                                selectedExternal: externalSource, externalSubs: externalSubs)
             self.autoSelectPreferredTracks(audioInfos: audioInfos, subInfos: subInfos,
                                            sideLoadActive: sideLoadActive || arriving,
                                            preferredLoadsPending: preferredLoadsPending || arriving)
@@ -1256,6 +1390,8 @@ final class MPVTVPlayerViewController: UIViewController {
 
         // Subtitles: shared plan decides targets + forced/normal mode.
         guard !didAutoSelectSubtitles, !didUserSelectSubtitle else { return }
+        // spec-mpv-return §3.3: a return's add-on pick waits for its file; the automatic choice waits too.
+        if pendingSubtitlePick?.isPending == true { return }
         // FEAT-84 Off stays Off: no fallback subtitle language while Subtitles is Off (the shared
         // resolver would return it). See `SubtitleFallbackGuard`.
         let subTargets = PlayerLanguagePreferencesKt.resolvePreferredSubtitleLanguageTargets(
@@ -1393,7 +1529,7 @@ final class MPVTVPlayerViewController: UIViewController {
                 setSpeed(saved)
             }
         }
-        for sub in context.externalSubtitles {
+        for sub in returnExternalSubtitles {
             subAdd(url: sub.url, title: sub.name ?? sub.language, lang: sub.language, rank: 0)
         }
         context.fetchAddonSubtitlesForPlayback()
@@ -1417,13 +1553,22 @@ final class MPVTVPlayerViewController: UIViewController {
         applySmokeSkipInterval()
         #endif
         startTraktScrobble()
-        trackerScrobble.start(positionSec: state.positionSec, durationSec: state.durationSec)
+        // spec-mpv-return §3.6: the tracker start runs only for an unparked controller whose creation
+        // owner is the current identity.
+        if parkBox.allows(.trackerWrite, issuedGeneration: parkBox.generation),
+           returnHandoff == nil || creationOwner == PlaybackIdentity.current() {
+            trackerScrobble.start(positionSec: state.positionSec, durationSec: state.durationSec)
+        } else {
+            print("[MPVReturn] tracker start refused parked=\(parkBox.parked ? 1 : 0)")
+        }
+        applyReturnTuningAfterLoad()
+        armReturnSubtitleDeadline()
     }
 
     // MARK: - Match content frame rate (AVDisplayManager)
 
-    /// Window whose display criteria we set — cleared on teardown so the display mode reverts.
-    private weak var displayCriteriaWindow: UIWindow?
+    // The window's display criteria go through `lease` (spec-mpv-return §3.6, M9): it records the
+    // window and the owner, and a controller clears only what it owns.
 
     /// Ask tvOS to switch the display mode to the content's native frame rate (and dynamic range,
     /// when mpv reports BT.2020/PQ/HLG). Public-API path for non-AVAsset players: build a
@@ -1475,11 +1620,8 @@ final class MPVTVPlayerViewController: UIViewController {
         )
         guard status == noErr, let formatDescription else { return false }
 
-        displayCriteriaWindow = window
-        window.avDisplayManager.preferredDisplayCriteria = AVDisplayCriteria(
-            refreshRate: Float(fps),
-            formatDescription: formatDescription
-        )
+        lease.apply(AVDisplayCriteria(refreshRate: Float(fps), formatDescription: formatDescription),
+                    window: window, token: leaseToken)
         print("[DisplayMode] criteria fps=\(String(format: "%.3f", fps)) \(width)x\(height) codec=\(codecName) primaries=\(primaries.isEmpty ? "-" : primaries) gamma=\(gamma.isEmpty ? "-" : gamma)")
         return true
     }
@@ -1504,6 +1646,12 @@ final class MPVTVPlayerViewController: UIViewController {
     private var usesGpuNext = false
 
     private func beginDisplayModeHoldIfNeeded() {
+        // spec-mpv-return §3.6: a fresh controller that took the old one's criteria already has the
+        // TV in its mode: no hold (and the same criteria are applied again later, no switch).
+        if lease.holdsCriteria, lease.owner == leaseToken {
+            print("[DisplayMode] hold skipped: criteria held from the replaced controller")
+            return
+        }
         guard UserDefaults.standard.bool(forKey: PlayerTuning.matchFrameRateKey),
               !UserDefaults.standard.bool(forKey: "debug.displayModeHoldOff"),
               !usesGpuNext,
@@ -1588,7 +1736,7 @@ final class MPVTVPlayerViewController: UIViewController {
     private func waitForDisplayModeSwitch(appliedAt: TimeInterval, sawSwitch: Bool) {
         guard displayModeHoldStartedAt != nil else { return }
         let elapsed = ProcessInfo.processInfo.systemUptime - appliedAt
-        let switching = displayCriteriaWindow?.avDisplayManager.isDisplayModeSwitchInProgress ?? false
+        let switching = view.window?.avDisplayManager.isDisplayModeSwitchInProgress ?? false
         if elapsed >= 6 { releaseDisplayModeHold(reason: "cap"); return }
         if !switching && (sawSwitch || elapsed >= 0.6) {
             releaseDisplayModeHold(reason: sawSwitch ? "switched" : "no-switch")
@@ -1605,15 +1753,26 @@ final class MPVTVPlayerViewController: UIViewController {
         state.displayModeHolding = false
         print("[DisplayMode] release reason=\(reason) held=\(Int((ProcessInfo.processInfo.systemUptime - started) * 1000))ms")
         guard mpv != nil else { return }
-        updateProps { $0.paused = false }
-        eventQueue.async { [weak self] in self?.setFlag("pause", false) }
+        // spec-mpv-return §3.3: the hold releases to what the viewer last asked for (a return start
+        // that is paused stays paused); checked on the queue against a park (M7).
+        let pause = !desiredPlaying
+        updateProps { $0.paused = pause }
+        let issued = parkBox.generation
+        eventQueue.async { [weak self] in
+            guard let self else { return }
+            guard pause || self.parkBox.allows(.unpause, issuedGeneration: issued) else {
+                print("[MPVReturn] queued release refused g=\(issued)")
+                return
+            }
+            self.setFlag("pause", pause)
+        }
         refreshState()
     }
 
     private func clearDisplayCriteria() {
         displayCriteriaEpoch &+= 1
-        displayCriteriaWindow?.avDisplayManager.preferredDisplayCriteria = nil
-        displayCriteriaWindow = nil
+        // Only what this controller owns: after a replacement's transfer the fresh one owns it.
+        lease.clear(token: leaseToken)
     }
 
     // MARK: - Trakt scrobbling
@@ -1641,6 +1800,16 @@ final class MPVTVPlayerViewController: UIViewController {
             // Suspend completions can land off-main; hop before touching controller state.
             DispatchQueue.main.async {
                 guard let self, let item, !self.traktSessionClosed else { return }
+                // spec-mpv-return §3.6: a parked controller, or one whose creation owner is no longer
+                // the current identity, starts nothing.
+                guard self.parkBox.allows(.trackerWrite, issuedGeneration: self.parkBox.generation),
+                      self.returnHandoff == nil || self.creationOwner == PlaybackIdentity.current() else {
+                    print("[MPVReturn] trakt start refused parked=\(self.parkBox.parked ? 1 : 0)")
+                    return
+                }
+                #if DEBUG
+                self.debugWrites += 1
+                #endif
                 self.traktScrobbleItem = item
                 TraktScrobbleRepository.shared.scrobbleStart(
                     profileId: ActiveProfileProvider.shared.activeProfileId,
@@ -1651,19 +1820,24 @@ final class MPVTVPlayerViewController: UIViewController {
         }
     }
 
-    private func stopTraktScrobble() {
+    /// `atSec`: the position the teardown latch chose (the held one when replaced, r3-3); every stop
+    /// below uses it, never `state.positionSec` directly.
+    private func stopTraktScrobble(atSec: Double) {
         // The other trackers close on the same two teardown paths (viewDidDisappear + deinit);
         // idempotent, and independent of whether a Trakt item was ever built.
-        trackerScrobble.stop(positionSec: state.positionSec, durationSec: state.durationSec, isLive: holdsLiveProgress)
+        trackerScrobble.stop(positionSec: atSec, durationSec: state.durationSec, isLive: holdsLiveProgress)
         traktSessionClosed = true
         guard let item = traktScrobbleItem else { return }
         traktScrobbleItem = nil
+        #if DEBUG
+        debugWrites += 1
+        #endif
         // A session can open before a placeholder's short duration is known, or before the stream
         // reads live: close it at 0% so Trakt never marks the stub or the live stream watched.
         TraktScrobbleRepository.shared.scrobbleStop(
             profileId: ActiveProfileProvider.shared.activeProfileId,
             item: item,
-            progressPercent: Float(TrackerScrobblePolicy.stopPercent(positionSec: state.positionSec,
+            progressPercent: Float(TrackerScrobblePolicy.stopPercent(positionSec: atSec,
                                                                      durationSec: state.durationSec,
                                                                      isLive: holdsLiveProgress))
         ) { _ in }
@@ -1831,14 +2005,20 @@ final class MPVTVPlayerViewController: UIViewController {
     /// not lost when no later list emission follows.
     private func sideLoadCompletedAddonSubtitles() {
         guard (SubtitleRepository.shared.completedRequest.value_ as? String)
-                == SubtitleRepository.shared.requestKey(type: context.contentType, videoId: context.videoId),
-              let subs = SubtitleRepository.shared.addonSubtitles.value_ as? [AddonSubtitle], !subs.isEmpty
+                == SubtitleRepository.shared.requestKey(type: context.contentType, videoId: context.videoId)
         else { return }
-        addAddonSubtitles(subs)
+        let subs = SubtitleRepository.shared.addonSubtitles.value_ as? [AddonSubtitle] ?? []
+        let kept = subs.isEmpty ? [] : addAddonSubtitles(subs)
+        // spec-mpv-return §3.3: the completed list is what this controller will load (the stream's
+        // own files too); a return pick missing from it falls back to the automatic choice.
+        if fileLoaded, pendingSubtitlePick?.isPending == true {
+            resolvePendingSubtitlePick(.searchEnded(urls: Set(kept).union(returnExternalSubtitles.map(\.url))))
+        }
     }
 
-    private func addAddonSubtitles(_ subs: [AddonSubtitle]) {
-        guard fileLoaded else { return }
+    @discardableResult
+    private func addAddonSubtitles(_ subs: [AddonSubtitle]) -> [String] {
+        guard fileLoaded else { return [] }
         // "Show only preferred languages": same shared filter the native path and the mobile
         // runtime apply, so the setting isn't engine-dependent.
         let kept = playerSettings.map {
@@ -1853,6 +2033,7 @@ final class MPVTVPlayerViewController: UIViewController {
                 rank: targets.firstIndex { SubtitleLanguageMatching.shared.matchesLanguageCode(language: sub.language, target: $0) }
             )
         })
+        return kept.map(\.url)
     }
 
     private func subAdd(url: String, title: String, lang: String, rank: Int?) {
@@ -1879,8 +2060,11 @@ final class MPVTVPlayerViewController: UIViewController {
                 URLSession.shared.dataTask(with: remote) { [weak self] data, _, error in
                     guard let self else { return }
                     guard let data, error == nil, !data.isEmpty else {
-                        NSLog("[MPVPlayer] credential-scoped subtitle fetch failed for %@ — skipping side-load", url)
-                        DispatchQueue.main.async { self.subtitleHandoffArrived() }
+                        NSLog("[MPVPlayer] credential-scoped subtitle fetch failed — skipping side-load")
+                        DispatchQueue.main.async {
+                            self.resolvePendingSubtitlePick(.sideLoadFailed(originalURL: url))
+                            self.subtitleHandoffArrived()
+                        }
                         return
                     }
                     let ext = remote.pathExtension.isEmpty ? "srt" : remote.pathExtension
@@ -1890,11 +2074,14 @@ final class MPVTVPlayerViewController: UIViewController {
                         try data.write(to: local)
                     } catch {
                         NSLog("[MPVPlayer] credential-scoped subtitle write failed — skipping side-load")
-                        DispatchQueue.main.async { self.subtitleHandoffArrived() }
+                        DispatchQueue.main.async {
+                            self.resolvePendingSubtitlePick(.sideLoadFailed(originalURL: url))
+                            self.subtitleHandoffArrived()
+                        }
                         return
                     }
                     let localJob = MPVSubtitleSideLoadQueue.Job(source: local.path, title: job.title,
-                                                                 lang: job.lang, rank: job.rank)
+                                                                 lang: job.lang, rank: job.rank, originalSource: url)
                     self.handOffSubtitleSideLoads([localJob], counted: true)
                 }.resume()
                 continue
@@ -1909,7 +2096,12 @@ final class MPVTVPlayerViewController: UIViewController {
     /// Any thread. Queues the jobs on `eventQueue`, then (when `counted`) settles the hand-off
     /// counter on main once they are in the queue, where the next walk sees them.
     private func handOffSubtitleSideLoads(_ jobs: [MPVSubtitleSideLoadQueue.Job], counted: Bool) {
-        eventQueue.async { [weak self] in
+        #if DEBUG
+        let delay = MPVReturnDebug.subtitleSideLoadDelaySec
+        #else
+        let delay = 0.0
+        #endif
+        eventQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
             if self.mpv != nil {
                 for job in jobs { self.subtitleSideLoads.enqueue(job) }
@@ -1975,11 +2167,18 @@ final class MPVTVPlayerViewController: UIViewController {
         }
         #endif
         if finish.walkTracks { refreshTracksAsync() }
+        // spec-mpv-return §3.3: the add-on URL behind the loaded source, and whether it failed.
+        let source = finish.job.source, original = finish.job.original, failed = error < 0
+        DispatchQueue.main.async {
+            if source != original { self.sideLoadOriginalBySource[source] = original }
+            if failed { self.resolvePendingSubtitlePick(.sideLoadFailed(originalURL: original)) }
+        }
         eventQueue.async { [weak self] in self?.pumpSubtitleSideLoads() }
     }
 
     private func selectSubtitle(_ id: Int) {
         didUserSelectSubtitle = true
+        resolvePendingSubtitlePick(.userPicked)
         guard mpv != nil else { return }
         eventQueue.async { [weak self] in
             guard let self, let mpv = self.mpv else { return }
@@ -2144,6 +2343,21 @@ final class MPVTVPlayerViewController: UIViewController {
     // MARK: - Watch progress (resume + save)
 
     private func computeResumePosition() {
+        // spec-mpv-return §3.3: a return start (the payload's, or a return-failure retry's) is read
+        // first: `.position(p)` resumes exactly at p (0 and <= 10 s included, no saved-progress read),
+        // `.live` skips the resume, `.normalStart` is today's rule below.
+        switch PlayerReturnResume.decide(returnHandoff?.start ?? context.returnStart) {
+        case .at(let p):
+            print("[MPVReturn] resume at the held start \(String(format: "%.1f", p)) s")
+            pendingResumeSec = p
+            resumeTargetSec = p
+            return
+        case .none:
+            return
+        case .normal:
+            break
+        }
+        defer { resumeTargetSec = pendingResumeSec }
         // Aether W3-C: an engine that fell back to this one hands over where it was.
         if let p = handoffPositionSec, p.isFinite, p > 0 {
             print("[Failover] mpv resumes at the engine handoff position \(String(format: "%.1f", p)) s")
@@ -2194,10 +2408,16 @@ final class MPVTVPlayerViewController: UIViewController {
         lastSourceUrl: context.persistedSourceUrl
     )
 
-    private func saveProgress(flush: Bool = false) {
+    /// `atSec` nil: the periodic save at the live position, refused while parked (M7). A teardown's
+    /// flush passes the latch's position (`MPVTeardownStop`), which may be the held one.
+    private func saveProgress(flush: Bool = false, atSec: Double? = nil) {
         guard mpv != nil else { return }
+        if atSec == nil, !parkBox.allows(.progressWrite, issuedGeneration: parkBox.generation) { return }
+        #if DEBUG
+        debugWrites += 1
+        #endif
         let duration = state.durationSec
-        let position = state.positionSec
+        let position = atSec ?? state.positionSec
         // BUG-231: with Trakt as the progress source the resume position lives on Trakt, which
         // learns it from this session's stop. Keep the position as a provisional pending stop
         // (throttled in the outbox, nothing is sent) so a crash or force-quit still leaves one for
@@ -2279,6 +2499,9 @@ final class MPVTVPlayerViewController: UIViewController {
             if savedResumeThisSession { undoSessionResumeSaves() }
         }
         if state.positionSec != position { state.positionSec = position }
+        #if DEBUG
+        debugReturnTick(positionSec: position)
+        #endif
         // Paused → playing without input (the pause-card-off rule left no hide timer armed):
         // re-arm the hide so the bar does not stay up until the next press.
         if state.isPaused && !snap.paused && state.controlsVisible { transportInput.scheduleHide() }
@@ -3107,6 +3330,13 @@ final class MPVTVPlayerViewController: UIViewController {
 
     func togglePause() {
         guard mpv != nil else { return }
+        // spec-mpv-return §3.7: a press after park changes nothing in mpv; it flips the snapshot's
+        // intent, which becomes the payload's (last press wins).
+        if parkBox.parked, returnSnapshot != nil {
+            returnSnapshot?.notePress()
+            print("[MPVReturn] press after park g=\(parkBox.generation) intent=\(returnSnapshot?.intent == .play ? "play" : "pause")")
+            return
+        }
         // BUG-170: Play/Pause during the display-mode hold takes over from it.
         if displayModeHoldStartedAt != nil {
             displayModeHoldStartedAt = nil
@@ -3114,9 +3344,18 @@ final class MPVTVPlayerViewController: UIViewController {
             print("[DisplayMode] release reason=user")
         }
         let target = !cachedProps().paused
+        desiredPlaying = !target
         // Optimistic UI: reflect the new state immediately; the pause property event confirms it.
         updateProps { $0.paused = target }
-        eventQueue.async { [weak self] in self?.setFlag("pause", target) }
+        let issued = parkBox.generation
+        eventQueue.async { [weak self] in
+            guard let self else { return }
+            guard target || self.parkBox.allows(.unpause, issuedGeneration: issued) else {
+                print("[MPVReturn] queued toggle refused g=\(issued)")
+                return
+            }
+            self.setFlag("pause", target)
+        }
         refreshState()
     }
 
@@ -3125,7 +3364,17 @@ final class MPVTVPlayerViewController: UIViewController {
         guard mpv != nil else { return }
         transportInput.cancelExactStage()
         seekAbsolute(0, kind: .replay)   // intro/outro auto-skip arms again for the second viewing
-        setFlag("pause", false)
+        desiredPlaying = true
+        // On the queue (spec-mpv-return §3.7, M17: no new main-thread libmpv call), gated against a park.
+        let issued = parkBox.generation
+        eventQueue.async { [weak self] in
+            guard let self else { return }
+            guard self.parkBox.allows(.unpause, issuedGeneration: issued) else {
+                print("[MPVReturn] queued replay refused g=\(issued)")
+                return
+            }
+            self.setFlag("pause", false)
+        }
         state.isEnded = false
         transportInput.flashControls()
         becomeFirstResponder()
@@ -3150,8 +3399,15 @@ final class MPVTVPlayerViewController: UIViewController {
         }
         seekGeneration += 1
         let generation = seekGeneration
+        // spec-mpv-return §3.2: the newest targeted seek in flight is the park's held target.
+        seekInFlight = targetSec.map { (generation, $0) }
+        let issued = parkBox.generation
         eventQueue.async { [weak self] in
             guard let self else { return }
+            guard self.parkBox.allows(.seek, issuedGeneration: issued) else {
+                print("[MPVReturn] queued seek refused g=\(issued)")
+                return
+            }
             self.awaitingSeekStartGeneration = generation
             // An older seek's restart is not this one's completion.
             self.startedSeekGeneration = nil
@@ -3234,13 +3490,21 @@ final class MPVTVPlayerViewController: UIViewController {
             // is never called from there (BUG-2/BUG-3). The request headers are a property of the
             // handle and still hold from the first load.
             let url = context.url.absoluteString
+            // spec-mpv-return r2-6: the reopen keeps what the viewer last asked for (a returned paused
+            // live player is never unpaused by it), and a parked or stale controller loads nothing.
+            let pause = !desiredPlaying
+            let issued = parkBox.generation
             eventQueue.async { [weak self] in
                 guard let self else { return }
+                guard self.parkBox.allows(.load, issuedGeneration: issued) else {
+                    print("[MPVReturn] queued reconnect refused g=\(issued)")
+                    return
+                }
                 self.command("loadfile", args: [url, "replace"])
                 // `keep-open` paused the player when it reached the end, and a pause outlives
                 // `loadfile`: without this the reopened channel sits on its first frame, paused.
                 // (Nobody can reach an end-of-file while paused, so this never undoes a viewer's pause.)
-                self.setFlag("pause", false)
+                self.setFlag("pause", pause)
             }
             armStartWatchdog()
             return true
@@ -3334,11 +3598,24 @@ final class MPVTVPlayerViewController: UIViewController {
         if !position.isFinite || position < 0 { position = max(0, state.positionSec) }
         // BUG-143: no usable network path at the moment of failure → offline, whatever was seen.
         let v = PlaybackFailureClassifier.applyingPath(verdict, pathSatisfied: NetworkPathMonitor.shared.isSatisfied)
+        // spec-mpv-return §3.7: a return start that fails before it settled reports the held start
+        // from the payload (independent of this controller's clock); the host routes it to the
+        // return alert with a retry there.
+        var recovery: PlayerReturnHandoff.Start?
+        if returnStartPending, let p = returnHandoff {
+            recovery = p.start
+            if case .position(let held) = p.start { position = held }
+            returnStartPending = false
+            state.returnLandingPending = false
+            print("[MPVReturn] fresh start failed g=\(p.returnGeneration) reason=\(PlaybackFailureClassifier.applyingPath(verdict, pathSatisfied: true).kind.rawValue) -> returnAlert start=\(p.start.logToken)")
+        }
         print("[Failover] mpv failure: \(reason) pos=\(Int(position)) played=\(Int(secondsPlayed)) started=\(startedPlaying)"
               + " kind=\(v.kind.rawValue) http=\(v.httpStatus.map(String.init) ?? "-")")
-        onPlaybackFailed(PlaybackFailure(reason: reason, positionSec: position,
-                                         secondsPlayed: secondsPlayed, startedPlaying: startedPlaying,
-                                         kind: v.kind, httpStatus: v.httpStatus))
+        var failure = PlaybackFailure(reason: reason, positionSec: position,
+                                      secondsPlayed: secondsPlayed, startedPlaying: startedPlaying,
+                                      kind: v.kind, httpStatus: v.httpStatus)
+        failure.returnRecovery = recovery
+        onPlaybackFailed(failure)
         return true
     }
 
@@ -3473,10 +3750,20 @@ final class MPVTVPlayerViewController: UIViewController {
         subtitleLoadingWatcher?.cancel()
         playerSettingsWatcher?.cancel()
         // Idempotent final scrobble stop — normally a no-op after viewDidDisappear, but covers
-        // teardown paths where the disappearance callback never ran (ME-004).
-        stopTraktScrobble()
-        SubtitleRepository.shared.clear()
+        // teardown paths where the disappearance callback never ran (ME-004). spec-mpv-return §3.6:
+        // through the latch (the stop half only; `deinit` writes no progress).
+        for observer in returnObservers { NotificationCenter.default.removeObserver(observer) }
+        let inputs = deinitTeardownInputs()
+        let teardown = teardownStop.next(.deinitialize, livePositionSec: inputs.positionSec, ownerValid: inputs.ownerValid)
+        if case .flushAndStop(let atSec) = teardown { stopTraktScrobble(atSec: atSec) }
+        // The fresh controller owns the shared repository after a replacement (M11).
+        if case .replaced = teardownStop.disposition {} else { SubtitleRepository.shared.clear() }
         destroyPlayer()
+    }
+
+    /// `deinit`'s latch inputs, read now (the identity immediately before the stop, r3-2).
+    private func deinitTeardownInputs() -> (positionSec: Double, ownerValid: Bool) {
+        (state.positionSec, creationOwner == PlaybackIdentity.current())
     }
 
     private func destroyPlayer() {
@@ -3505,10 +3792,23 @@ final class MPVTVPlayerViewController: UIViewController {
         // P3-2: a CALayer should not deallocate on a background queue).
         let layerRef = Unmanaged.passRetained(metalLayer)   // +1 held across the destroy, released on main
         let started = ProcessInfo.processInfo.systemUptime
+        // spec-mpv-return §3.6 (M14): a replaced controller's destroy is timed and a stuck one logged;
+        // nothing waits for it.
+        let replaced = teardownStop.disposition != .normal
+        let generation = parkBox.generation
+        let done = MPVDestroyFlag()
         eventQueue.async {
             mpv_terminate_destroy(ctx)
-            NSLog("[MPV] terminate_destroy took=%dms", Int((ProcessInfo.processInfo.systemUptime - started) * 1000))
+            let took = Int((ProcessInfo.processInfo.systemUptime - started) * 1000)
+            NSLog("[MPV] terminate_destroy took=%dms", took)
+            done.set()
+            if replaced { print("[MPVReturn] old destroy took=\(took)ms g=\(generation)") }
             DispatchQueue.main.async { layerRef.release() }
+        }
+        if replaced {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
+                if !done.isSet { print("[MPVReturn] old destroy still pending g=\(generation)") }
+            }
         }
         // Plain property writes (no weak reference formed): the store goes with the controller. The
         // mirror then accepts no store's snapshot.
@@ -3582,6 +3882,9 @@ final class MPVTVPlayerViewController: UIViewController {
                 NSLog("[SeekProbe] restart gen=%ld landed=%.3f", generation, landed)
                 #endif
                 DispatchQueue.main.async {
+                    // spec-mpv-return §3.5: a return start's landing is checked first (own generation).
+                    self.returnSeekLanded(generation: generation, landed: landed)
+                    if self.seekInFlight?.generation == generation { self.seekInFlight = nil }
                     // The preview playhead hands back to the real position on a commit's first
                     // landing, whether or not the planner guard below passes.
                     self.transportInput.seekLandedForCommit(generation: generation)
@@ -3716,6 +4019,17 @@ final class MPVTVPlayerViewController: UIViewController {
         if let seconds = pendingResumeSec {
             pendingResumeSec = nil
             didResumeSeek = true
+            // spec-mpv-return §3.5: a payload's `.position` start is an exact seek with its landing checked.
+            if let p = returnHandoff, case .position = p.start {
+                returnLanding = MPVReturnLanding(targetSec: seconds)
+                returnLandingDurationAtIssue = actualDurationSec
+                state.returnLandingPending = true
+                let generation = issueSeek(kind: .resume, targetSec: seconds,
+                                           args: [String(format: "%.3f", seconds), "absolute+exact"],
+                                           onRejected: { [weak self] in self?.returnSeekRejected() })
+                returnLanding?.seekIssued(generation: generation)
+                return generation
+            }
             return seekAbsolute(seconds, kind: .resume)
         }
         guard let entry = pendingResumeEntry else { return nil }
@@ -3738,7 +4052,10 @@ final class MPVTVPlayerViewController: UIViewController {
     private func publishStartupStage() {
         let stage = startupStages.stage
         state.startupStage = stage
-        if stage.isStarted { state.playbackStarted = true }
+        if stage.isStarted {
+            state.playbackStarted = true
+            returnStartedNoted()
+        }
         let t = ProcessInfo.processInfo.systemUptime - loadingStartUptime
         print("[Loading] engine=mpv stage=\(stage.logToken) t=+\(String(format: "%.2f", t))s")
     }
@@ -3997,6 +4314,11 @@ private struct MPVPlayerRepresentable: UIViewControllerRepresentable {
     let handoffPositionSec: Double?
     /// W4: see `MPVTVPlayerViewController.startupLimitSec` (Aether has the same property).
     let startupLimitSec: Double?
+    /// spec-mpv-return: the return payload, the host's lease and token, the replacement hook (mpv only).
+    var returnHandoff: PlayerReturnHandoff? = nil
+    var displayLease: DisplayCriteriaLease? = nil
+    var leaseToken = 0
+    var onReturnReplace: ((PlayerReturnHandoff, () -> Void) -> Bool)? = nil
 
     func makeUIViewController(context ctx: Context) -> UIViewController {
         let controller: ChromePlayerController
@@ -4013,6 +4335,10 @@ private struct MPVPlayerRepresentable: UIViewControllerRepresentable {
             mpv.forcesGpuNext = forcesGpuNext
             mpv.handoffPositionSec = handoffPositionSec
             mpv.startupLimitSec = startupLimitSec
+            mpv.returnHandoff = returnHandoff
+            mpv.displayLease = displayLease
+            mpv.leaseToken = leaseToken
+            mpv.onReturnReplace = onReturnReplace
             controller = mpv
         }
         controller.onExit = onExit
@@ -4071,6 +4397,11 @@ struct MPVPlayerScreen: View {
     var onViewerChoice: ((UUID) -> Void)? = nil
     /// Review r2: that choice will not reach the screen (same id).
     var onViewerChoiceAbandoned: ((UUID) -> Void)? = nil
+    /// spec-mpv-return: see `MPVTVPlayerViewController.returnHandoff` (read once, when the controller is made).
+    var returnHandoff: PlayerReturnHandoff? = nil
+    var displayLease: DisplayCriteriaLease? = nil
+    var leaseToken = 0
+    var onReturnReplace: ((PlayerReturnHandoff, () -> Void) -> Bool)? = nil
 
     @StateObject private var state: MPVPlaybackState
     @StateObject private var upNext: NextEpisodeEngine
@@ -4114,8 +4445,16 @@ struct MPVPlayerScreen: View {
          startupLimitSec: Double? = nil,
          onPlaybackStarted: (() -> Void)? = nil,
          onViewerChoice: ((UUID) -> Void)? = nil,
-         onViewerChoiceAbandoned: ((UUID) -> Void)? = nil) {
+         onViewerChoiceAbandoned: ((UUID) -> Void)? = nil,
+         returnHandoff: PlayerReturnHandoff? = nil,
+         displayLease: DisplayCriteriaLease? = nil,
+         leaseToken: Int = 0,
+         onReturnReplace: ((PlayerReturnHandoff, () -> Void) -> Bool)? = nil) {
         self.context = context
+        self.returnHandoff = returnHandoff
+        self.displayLease = displayLease
+        self.leaseToken = leaseToken
+        self.onReturnReplace = onReturnReplace
         self.startupLimitSec = startupLimitSec
         self.onPlaybackStarted = onPlaybackStarted
         self.onViewerChoice = onViewerChoice
@@ -4174,14 +4513,18 @@ struct MPVPlayerScreen: View {
                 secondsPlayedBeforeFallback: nativeSecondsPlayedBeforeFallback,
                 forcesGpuNext: forcesGpuNext,
                 handoffPositionSec: handoffPositionSec,
-                startupLimitSec: startupLimitSec
+                startupLimitSec: startupLimitSec,
+                returnHandoff: returnHandoff,
+                displayLease: displayLease,
+                leaseToken: leaseToken,
+                onReturnReplace: onReturnReplace
             )
             .ignoresSafeArea()
 
             // B24: before the start the loading screen says what is happening; this spinner is
             // the mid-play rebuffer only (and the whole startup again with the screen off).
             if state.isBuffering && (state.playbackStarted || !loadingOverlayOn)
-                && !(loadingOverlayOn && state.displayModeHolding) {
+                && !(loadingOverlayOn && (state.displayModeHolding || state.returnLandingPending)) {
                 ProgressView()
                     .scaleEffect(1.6)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -4203,7 +4546,7 @@ struct MPVPlayerScreen: View {
             // B24: the loading screen until the first PLAYBACK_RESTART after the resume seek. Above
             // the transport bar, which `viewDidAppear` raises at load: the startup frame is the
             // overlay, not the bar over a black picture. Never on a mid-play rebuffer.
-            if loadingOverlayOn && (!state.playbackStarted || state.displayModeHolding) {
+            if loadingOverlayOn && (!state.playbackStarted || state.displayModeHolding || state.returnLandingPending) {
                 PlayerLoadingOverlay(context: context, stage: state.startupStage)
                     .transition(.opacity)
             }
@@ -4416,4 +4759,392 @@ private struct PlayerAspectFlashHost: View {
         .allowsHitTesting(false)
         .animation(.easeInOut(duration: 0.2), value: model.aspectFlash)
     }
+}
+
+
+// MARK: - Return from background (spec-mpv-return-2026-11-22)
+//
+// Park at didEnterBackground (best-effort: pause + `vid=no` on the queue, main never waits), then at
+// didBecomeActive the pure `MPVReturnPlan` decides; on replace `PlayerScreen` builds a fresh mpv
+// controller from the payload and this one is torn down in replaced mode. `[MPVReturn]` lines print
+// in every build and carry no URL or token.
+
+extension MPVTVPlayerViewController {
+
+    /// `viewDidLoad`, before `setupMpv`: take over what the payload carries.
+    fileprivate func applyReturnHandoffAtStart() {
+        guard let p = returnHandoff else { return }
+        returnStartPending = true
+        desiredPlaying = !p.startsPaused
+        if p.origin == .mpvReturn {
+            // The old controller's seconds already include the engines before it.
+            secondsPlayedBeforeFallback = p.playedSec
+            healthyReported = p.healthyReported
+        }
+        // The next park continues the generation this payload was accepted under.
+        parkBox.continueGeneration(from: p.returnGeneration)
+        pendingAudioPick = p.audio
+        switch p.subtitle {
+        case .addon(let url, _, _):
+            pendingSubtitlePick = MPVPendingSubtitlePick(originalURL: url)
+            eventQueue.async { [weak self] in self?.walkReadsExternalSources = true }
+        case .auto:
+            break
+        case .off, .embedded:
+            pendingEmbeddedSubtitle = p.subtitle
+        }
+        debugPublishReturnProbe("starting")
+    }
+
+    fileprivate func installReturnObservers() {
+        let center = NotificationCenter.default
+        // One `Task.yield()` hop each, as on Aether: the observers of the notification run first.
+        returnObservers.append(center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil,
+                                                  queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                await Task.yield()
+                self?.parkForBackground()
+            }
+        })
+        returnObservers.append(center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil,
+                                                  queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                await Task.yield()
+                self?.returnBecameActive()
+            }
+        })
+    }
+
+    // MARK: Park (§3.2, best-effort)
+
+    private func parkForBackground() {
+        guard mpv != nil, !isLeaving, teardownStop.disposition == .normal else { return }
+        let parkStarted = ProcessInfo.processInfo.systemUptime
+        #if DEBUG
+        if MPVReturnDebug.ownerFlip == "beforeHome" { MPVReturnDebug.flipIdentity(reason: "beforeHome") }
+        #endif
+        let generation = parkBox.park()
+        let terminal = state.isEnded || failoverReported
+        let live = isLiveStream || reportsLive
+        let held = cachedProps().position
+        let start = MPVReturnPlan.start(isLive: live, started: startupStages.started,
+                                        positionSec: held.isFinite ? held : state.positionSec,
+                                        seekInFlightTargetSec: seekInFlight?.targetSec,
+                                        ownReturnStart: returnHandoff?.start, resumeTargetSec: resumeTargetSec)
+        if case .position(let p) = start { parkedPositionSec = p } else { parkedPositionSec = max(0, state.positionSec) }
+        let current = PlaybackIdentity.current()
+        returnSnapshot = MPVReturnSnapshot(
+            owner: creationOwner, ownerValidAtPark: creationOwner == current, contextID: context.id,
+            streamKey: context.streamKey, start: start, audio: currentAudioPick(), subtitle: currentSubtitlePick(),
+            playedSec: failoverSecondsPlayed, healthyReported: healthyReported,
+            audioDelaySec: fileLoaded ? state.audioDelaySec : nil, speed: state.playbackSpeed,
+            generation: generation, terminalAtPark: terminal)
+        returnDeferred = false
+        print("[MPVReturn] park g=\(generation) start=\(start.logToken) owner=\(creationOwner == current ? "ok" : "changed") fileLoaded=\(fileLoaded ? 1 : 0) terminal=\(terminal ? 1 : 0) t=\(String(format: "%.3f", parkStarted))")
+        // Stand down: no failure, watchdog, tick (progress saves, harvest), thumbs or display work
+        // from this controller while it is away.
+        closeFailover()
+        pollTimer?.invalidate()
+        pollTimer = nil
+        thumbScrubWork?.cancel(); thumbScrubWork = nil
+        previewTimeline.thumbs.cancel()
+        displayCriteriaEpoch &+= 1
+        if displayModeHoldStartedAt != nil {
+            displayModeHoldStartedAt = nil
+            state.displayModeHolding = false
+        }
+        // A player at its end (post-play) or failed is only paused: plan row 4 keeps it (§8.4).
+        let videoOff = !terminal
+        parkedVideoOff = videoOff
+        #if DEBUG
+        let slow = MPVReturnDebug.fault == "slowPark"
+        #else
+        let slow = false
+        #endif
+        eventQueue.async { [weak self] in
+            guard let self, self.mpv != nil else { return }
+            if slow { Thread.sleep(forTimeInterval: 2) }
+            guard self.parkBox.parked, self.parkBox.generation == generation else { return }
+            self.setFlag("pause", true)
+            if videoOff { self.setMpvString("vid", "no") }
+            print("[MPVReturn] parked g=\(generation) took=\(Int((ProcessInfo.processInfo.systemUptime - parkStarted) * 1000))ms vid=\(videoOff ? "no" : "kept")")
+        }
+        #if DEBUG
+        if MPVReturnDebug.ownerFlip == "away" { MPVReturnDebug.flipIdentity(reason: "away") }
+        MPVReturnDebugLedger.shared.noteParked()
+        #endif
+        debugPublishReturnProbe("parked")
+    }
+
+    // MARK: Return (§3.4, invariant)
+
+    private func returnBecameActive() {
+        guard let snap = returnSnapshot, !returnDeferred else { return }
+        print("[MPVReturn] becameActive g=\(snap.generation) t=\(String(format: "%.3f", ProcessInfo.processInfo.systemUptime))")
+        decideReturn(snap, at: "becameActive")
+    }
+
+    fileprivate func decideReturn(_ snap: MPVReturnSnapshot, at point: String) {
+        let presence: PlayerPresence = isLeaving ? .leaving : (view.window == nil ? .covered : .front)
+        let facts = MPVReturnFacts(currentIdentity: PlaybackIdentity.current(), presence: presence,
+                                   terminal: state.isEnded || failoverReported,
+                                   contextSwapPending: state.playbackFailoverSuppressed)
+        let decision = MPVReturnPlan.decide(snapshot: snap, facts: facts)
+        print("[MPVReturn] plan g=\(snap.generation) at=\(point) -> \(decision.logToken)")
+        switch decision {
+        case .nothing:
+            keepAfterReturn()
+        case .abandon:
+            abandonAfterReturn()
+        case .deferUntilFront:
+            returnDeferred = true
+            debugPublishReturnProbe("deferred")
+        case .replace(let payload):
+            replaceAfterReturn(payload)
+        }
+    }
+
+    /// `.nothing`: this controller stays. Unparked; video comes back if the park turned it off.
+    private func keepAfterReturn() {
+        returnSnapshot = nil
+        parkBox.unpark()
+        if parkedVideoOff {
+            parkedVideoOff = false
+            eventQueue.async { [weak self] in self?.setMpvString("vid", "auto") }
+        }
+        // The park closed failure reporting; a controller that stays (post-play) reports again.
+        if !isLeaving, !state.playbackFailoverSuppressed { failoverClosed = false }
+        if view.window != nil, pollTimer == nil, !isLeaving { startPolling() }
+        debugPublishReturnProbe("kept")
+    }
+
+    /// `.abandon`: the owner changed (before Home or while away). Nothing is written; the player exits.
+    private func abandonAfterReturn() {
+        returnSnapshot = nil
+        teardownStop.prepare(.discard)
+        lease.clearAll()
+        debugPublishReturnProbe("abandoned")
+        onExit?()
+    }
+
+    /// `.replace`: the host validates the payload (identity, context, generation), calls `prepare`,
+    /// takes the lease for the fresh controller and rebuilds the mpv screen. Refused: abandon (a
+    /// payload the host will not take must not leave a parked player with no video).
+    private func replaceAfterReturn(_ payload: PlayerReturnHandoff) {
+        guard creationOwner == PlaybackIdentity.current() else { abandonAfterReturn(); return }
+        let held = parkedPositionSec
+        guard let host = onReturnReplace else {
+            print("[MPVReturn] payload discarded reason=noHost g=\(payload.returnGeneration)")
+            keepAfterReturn()
+            return
+        }
+        let accepted = host(payload) { [weak self] in self?.prepareForReplacement(heldPositionSec: held) }
+        if !accepted { abandonAfterReturn() }
+    }
+
+    /// One main turn with the host's replacement: from here the normal removal runs under `.replaced`.
+    private func prepareForReplacement(heldPositionSec: Double) {
+        returnSnapshot = nil
+        displayCriteriaEpoch &+= 1
+        teardownStop.prepare(.replaced(positionSec: heldPositionSec))
+        #if DEBUG
+        if MPVReturnDebug.fault == "stuckOldQueue" {
+            print("[MPVReturn] DEBUG stuckOldQueue: the old queue is held 12 s")
+            eventQueue.async { Thread.sleep(forTimeInterval: 12) }
+        }
+        #endif
+        debugPublishReturnProbe("replaced")
+    }
+
+    // MARK: Fresh start settle (§3.5)
+
+    fileprivate func returnSeekLanded(generation: Int, landed: Double) {
+        guard var landing = returnLanding, landing.isPending else { return }
+        let step = landing.landed(generation: generation, atSec: landed.isFinite ? landed : nil,
+                                  durationAtIssue: returnLandingDurationAtIssue, durationNow: cachedProps().duration)
+        returnLanding = landing
+        handleLandingStep(step)
+    }
+
+    fileprivate func returnSeekRejected() {
+        guard var landing = returnLanding, landing.isPending, let g = landing.awaitingGeneration else { return }
+        let step = landing.seekRejected(generation: g)
+        returnLanding = landing
+        handleLandingStep(step)
+    }
+
+    private func handleLandingStep(_ step: MPVReturnLanding.Step) {
+        let g = returnHandoff?.returnGeneration ?? 0
+        switch step {
+        case .none:
+            return
+        case .correct(let target):
+            print("[MPVReturn] landing g=\(g) verdict=correct target=\(String(format: "%.2f", target))")
+            let generation = issueSeek(kind: .resume, targetSec: target,
+                                       args: [String(format: "%.3f", target), "absolute+exact"],
+                                       onRejected: { [weak self] in self?.returnSeekRejected() })
+            returnLanding?.seekIssued(generation: generation)
+        case .complete(let completion):
+            returnStartPending = false
+            state.returnLandingPending = false
+            let t = ProcessInfo.processInfo.systemUptime
+            switch completion {
+            case .settled(let landed):
+                print("[MPVReturn] settled g=\(g) landed=\(String(format: "%.2f", landed)) verdict=confirmed t=+\(String(format: "%.2f", t - loadingStartUptime))s uptime=\(String(format: "%.3f", t))")
+                debugPublishReturnProbe("settled")
+            case .offTarget(let landed):
+                let target = returnLanding?.targetSec ?? 0
+                print("[MPVReturn] offTarget g=\(g) landed=\(landed.map { String(format: "%.2f", $0) } ?? "-") target=\(String(format: "%.2f", target)) t=+\(String(format: "%.2f", t - loadingStartUptime))s")
+                debugPublishReturnProbe("offTarget")
+            }
+        }
+    }
+
+    /// The start stage reached `.started`: `.live` and `.normalStart` returns settle here.
+    fileprivate func returnStartedNoted() {
+        guard returnStartPending, returnLanding == nil, let p = returnHandoff else { return }
+        returnStartPending = false
+        let t = ProcessInfo.processInfo.systemUptime
+        print("[MPVReturn] settled g=\(p.returnGeneration) landed=- verdict=started start=\(p.start.logToken) t=+\(String(format: "%.2f", t - loadingStartUptime))s uptime=\(String(format: "%.3f", t))")
+        debugPublishReturnProbe("settled")
+    }
+
+    // MARK: Picks by meaning (§3.3, best-effort)
+
+    fileprivate func currentAudioPick() -> PlayerReturnHandoff.AudioPick {
+        guard didUserSelectAudio, let id = lastSelectedAudioID,
+              let track = lastAudioSemantics.first(where: { $0.id == id }),
+              let ordinal = MPVSelectionRestore.ordinal(of: id, in: lastAudioSemantics) else { return .auto }
+        return .picked(lang: track.lang, title: track.title, ordinal: ordinal)
+    }
+
+    fileprivate func currentSubtitlePick() -> PlayerReturnHandoff.SubtitlePick {
+        guard didUserSelectSubtitle else { return .auto }
+        guard let id = lastSelectedSubtitleID, let track = lastSubtitleSemantics.first(where: { $0.id == id }) else {
+            return .off
+        }
+        if let source = lastSelectedSubtitleExternal {
+            return .addon(originalURL: sideLoadOriginalBySource[source] ?? source, lang: track.lang, title: track.title)
+        }
+        guard let ordinal = MPVSelectionRestore.ordinal(of: id, in: lastSubtitleSemantics) else { return .auto }
+        return .embedded(lang: track.lang, title: track.title, ordinal: ordinal)
+    }
+
+    /// Main, after every walk, before the automatic selection.
+    fileprivate func noteReturnWalk(audio: [MPVTrackSemantics], subs: [MPVTrackSemantics], selectedAudio: Int?,
+                                    selectedSubtitle: Int?, selectedExternal: String?,
+                                    externalSubs: [(id: Int, source: String)]) {
+        lastAudioSemantics = audio
+        lastSubtitleSemantics = subs
+        lastSelectedAudioID = selectedAudio
+        lastSelectedSubtitleID = selectedSubtitle
+        lastSelectedSubtitleExternal = selectedExternal
+        let g = returnHandoff?.returnGeneration ?? 0
+        if case .picked = pendingAudioPick, !audio.isEmpty {
+            let pick = pendingAudioPick
+            pendingAudioPick = .auto
+            switch MPVSelectionRestore.choose(pick, tracks: audio) {
+            case .select(let id)?:
+                didUserSelectAudio = true
+                print("[MPVReturn] audio pick g=\(g) -> select(\(id))")
+                if id != selectedAudio { eventQueue.async { [weak self] in self?.setMpvInt("aid", Int64(id)) } }
+            case .notFound?, nil:
+                print("[MPVReturn] audio pick g=\(g) -> notFound (auto)")
+            }
+        }
+        switch pendingEmbeddedSubtitle {
+        case .off:
+            pendingEmbeddedSubtitle = .auto
+            didUserSelectSubtitle = true
+            print("[MPVReturn] subtitle pick g=\(g) -> off")
+            eventQueue.async { [weak self] in self?.setMpvString("sid", "no") }
+        case .embedded where !subs.isEmpty:
+            let pick = pendingEmbeddedSubtitle
+            pendingEmbeddedSubtitle = .auto
+            if case .select(let id)? = MPVSelectionRestore.choose(pick, tracks: subs) {
+                didUserSelectSubtitle = true
+                print("[MPVReturn] subtitle pick g=\(g) -> select(\(id))")
+                if id != selectedSubtitle { eventQueue.async { [weak self] in self?.setMpvInt("sid", Int64(id)) } }
+            } else {
+                print("[MPVReturn] subtitle pick g=\(g) -> notFound (auto)")
+            }
+        default:
+            break
+        }
+        if pendingSubtitlePick?.isPending == true {
+            for ext in externalSubs {
+                let original = sideLoadOriginalBySource[ext.source] ?? ext.source
+                resolvePendingSubtitlePick(.trackAppeared(originalURL: original, trackID: ext.id))
+                if pendingSubtitlePick?.isPending != true { break }
+            }
+        }
+    }
+
+    /// Feeds the pending add-on pick; acts on its outcome once.
+    fileprivate func resolvePendingSubtitlePick(_ event: MPVPendingSubtitlePick.Event) {
+        guard var pick = pendingSubtitlePick, let outcome = pick.handle(event) else { return }
+        pendingSubtitlePick = pick
+        eventQueue.async { [weak self] in self?.walkReadsExternalSources = false }
+        print("[MPVReturn] subtitle pick g=\(returnHandoff?.returnGeneration ?? 0) -> \(outcome.logToken)")
+        switch outcome {
+        case .select(let id):
+            didUserSelectSubtitle = true
+            eventQueue.async { [weak self] in self?.setMpvInt("sid", Int64(id)) }
+            refreshTracksAsync()
+        case .fallbackAuto:
+            // The automatic choice was waiting: the next walk decides it.
+            refreshTracksAsync()
+        case .dropped:
+            break
+        }
+    }
+
+    /// 20 s after `FILE_LOADED`, a pick still waiting for its file goes to the automatic choice.
+    fileprivate func armReturnSubtitleDeadline() {
+        guard pendingSubtitlePick?.isPending == true else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + MPVPendingSubtitlePick.deadlineSec) { [weak self] in
+            self?.resolvePendingSubtitlePick(.deadline)
+        }
+    }
+
+    /// The stream's own subtitle files. DEBUG `-debug.mpvReturnDropExternalSubs YES` (leg M10b): a
+    /// return-started controller loads none, so a pick of one is missing from its list.
+    fileprivate var returnExternalSubtitles: [SubtitleFile] {
+        #if DEBUG
+        if returnHandoff != nil, UserDefaults.standard.bool(forKey: "debug.mpvReturnDropExternalSubs") { return [] }
+        #endif
+        return context.externalSubtitles
+    }
+
+    /// `onFileLoaded`, after the per-video restores: the payload's speed and audio delay.
+    fileprivate func applyReturnTuningAfterLoad() {
+        guard let p = returnHandoff else { return }
+        if p.speed.isFinite, p.speed > 0, abs(p.speed - state.playbackSpeed) > 0.001 { setSpeed(p.speed) }
+        if let delay = p.audioDelaySec, delay.isFinite, abs(delay - state.audioDelaySec) > 0.0005 { setAudioDelay(delay) }
+    }
+
+    // MARK: Probe (DEBUG)
+
+    fileprivate func debugPublishReturnProbe(_ phase: String) {
+        #if DEBUG
+        var held = "-"
+        if case .position(let p)? = returnHandoff?.start { held = String(format: "%.2f", p) }
+        state.seekProbe.ret = "ctl=\(debugSerial) ret=\(phase) crit=\(lease.holdsCriteria ? 1 : 0) writes=\(debugWrites) held=\(held) intent=\(returnSnapshot?.intent == .play ? "play" : (desiredPlaying ? "play" : "pause"))"
+        MPVReturnDebugLedger.shared.note(phase: phase, controller: debugSerial)
+        #endif
+    }
+
+    #if DEBUG
+    /// The refresh tick: the DEBUG background cycle (never from a return-started controller, so a
+    /// position trigger does not fire again on the fresh one) and the forced live reconnect.
+    fileprivate func debugReturnTick(positionSec: Double) {
+        if returnHandoff == nil { debugBackgroundCycle.noteTick(positionSec: positionSec) }
+        if returnHandoff != nil, !debugLiveEOFForced, let at = MPVReturnDebug.liveForceEOFAtSec, fileLoaded,
+           ProcessInfo.processInfo.systemUptime - fileLoadedUptime >= at, isLiveStream {
+            debugLiveEOFForced = true
+            print("[MPVReturn] DEBUG forced live reconnect paused=\(cachedProps().paused ? 1 : 0)")
+            _ = reconnectLiveStreamIfNeeded()
+        }
+    }
+    #endif
 }

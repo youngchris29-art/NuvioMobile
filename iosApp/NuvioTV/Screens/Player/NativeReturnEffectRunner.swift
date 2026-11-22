@@ -55,6 +55,8 @@ protocol NativeReturnHost: AnyObject {
     func returnPlay()
     func returnPause()
     func returnHandOff(atSec: Double, reason: String)
+    /// spec-mpv-return §3.3: the return rule's handoff carries an explicit payload for mpv.
+    func returnNoteTransfer(_ transfer: PlayerReturnTransfer)
     func returnExit()
     func returnSetUI(_ ui: PlayerReturnUI)
     /// nil = released: consumers go back to the live clock.
@@ -69,7 +71,7 @@ protocol NativeReturnHost: AnyObject {
     func restartLaunchRemux(token: Int)
     func restartMakeServer(token: Int)
     func restartMakeItem(token: Int, signalingAttempt: Int)
-    func restartSeek(token: Int, toSec: Double)
+    func restartSeek(token: Int, toSec: Double, exact: Bool, generation: Int)
     func restartRestoreTracks(token: Int, audio: String?, subtitle: String?)
     func restartStartTrackersOnce()
     /// From scratch, item ready: check identity, read the resume row, answer `resumeChosen` (or
@@ -77,6 +79,10 @@ protocol NativeReturnHost: AnyObject {
     func restartChooseResume(token: Int)
     /// The machine left its active states (settled, failed or cancelled).
     func restartEnded(token: Int, settled: Bool)
+}
+
+extension NativeReturnHost {
+    func returnNoteTransfer(_ transfer: PlayerReturnTransfer) {}
 }
 
 @MainActor
@@ -390,6 +396,8 @@ final class NativeReturnEffectRunner {
                 }
                 record("handOff \(String(format: "%.1f", atSec))")
                 stopTimers()
+                host.returnNoteTransfer(PlayerReturnTransfer(owner: rule.owner, intent: rule.intent == .play ? .play : .pause,
+                                                             atSec: atSec, generation: backgroundGeneration))
                 host.returnHandOff(atSec: atSec, reason: handOffNote)
             case .exitPlayer:
                 record("exit")
@@ -461,9 +469,9 @@ final class NativeReturnEffectRunner {
             case .makeItem(let attempt):
                 record("makeItem \(attempt)")
                 host?.restartMakeItem(token: token, signalingAttempt: attempt)
-            case .seek(let sec):
+            case .seek(let sec, let exact, let generation):
                 record("seek \(String(format: "%.1f", sec))")
-                host?.restartSeek(token: token, toSec: sec)
+                host?.restartSeek(token: token, toSec: sec, exact: exact, generation: generation)
             case .restoreTracks(let audio, let subtitle):
                 host?.restartRestoreTracks(token: token, audio: audio, subtitle: subtitle)
             case .startTrackersOnce:

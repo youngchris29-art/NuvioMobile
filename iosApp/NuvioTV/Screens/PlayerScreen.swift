@@ -63,6 +63,17 @@ struct PlayerScreen: View {
     /// appear and on a context change, re-armed by an engine handoff before the first frame,
     /// stood down by the first frame, cancelled on disappear.
     @StateObject private var startupClock = PlayerStartupLimitClock()
+    /// spec-mpv-return §3.3, §3.6: the payload the current mpv controller starts from (nil: a normal
+    /// start), the mpv controller generation (its `.id` and lease token), the last accepted return
+    /// generation, and the display-criteria lease every mpv controller of this screen shares.
+    @State private var returnPayload: PlayerReturnHandoff?
+    @State private var mpvGeneration = 0
+    @State private var lastReturnGeneration = 0
+    @State private var displayLease = DisplayCriteriaLease()
+
+    /// The native screen delivers its return transfer just before `onFallback` (a box, so the two
+    /// closures share it without a state round trip).
+    @State private var pendingTransfer = PlayerReturnTransferSlot()
 
     private var nativeDVEnabled: Bool { UserDefaults.standard.bool(forKey: PlayerTuning.nativeDVKey) }
 
@@ -91,6 +102,11 @@ struct PlayerScreen: View {
             case .native:
                 NativePlayerScreen(context: context, onPlayNext: onPlayNext,
                                    onFallback: context.forcedEngine == .native ? nil : { position, secondsPlayed, startedPlaying in
+                                       // spec-mpv-return §3.3: the return rule's handoff (delivered just
+                                       // before this) seeds the mpv start; outside a return there is none.
+                                       if let transfer = pendingTransfer.take() {
+                                           acceptTransfer(transfer, origin: .nativeReturn, playedSec: secondsPlayed)
+                                       }
                                        // W4: mpv gets the full start-up limit (a no-op once a frame showed).
                                        startupClock.noteHandoff()
                                        nativeSecondsPlayed = secondsPlayed
@@ -108,7 +124,8 @@ struct PlayerScreen: View {
                                    onOpenTitle: onOpenTitle,
                                    onPlaybackStarted: noteStarted,
                                    onViewerChoice: onViewerChoice,
-                                onViewerChoiceAbandoned: onViewerChoiceAbandoned)
+                                onViewerChoiceAbandoned: onViewerChoiceAbandoned,
+                                onReturnTransfer: { pendingTransfer.set($0) })
             case .aether:
                 // Its own `switch` case: the representable builds its controller once, so Aether and
                 // the mpv screen after a handoff are different identities.
@@ -119,6 +136,9 @@ struct PlayerScreen: View {
                                 onOpenTitle: onOpenTitle,
                                 engine: .aether,
                                 onFallback: { handoff in
+                                    if let transfer = handoff.returnTransfer {
+                                        acceptTransfer(transfer, origin: .aetherReturn, playedSec: handoff.secondsPlayed)
+                                    }
                                     // W4: mpv gets the full start-up limit (a no-op once a frame showed).
                                     startupClock.noteHandoff()
                                     nativeSecondsPlayed = handoff.secondsPlayed
@@ -145,7 +165,13 @@ struct PlayerScreen: View {
                                 startupLimitSec: startupLimitSec,
                                 onPlaybackStarted: noteStarted,
                                 onViewerChoice: onViewerChoice,
-                                onViewerChoiceAbandoned: onViewerChoiceAbandoned)
+                                onViewerChoiceAbandoned: onViewerChoiceAbandoned,
+                                returnHandoff: returnPayload,
+                                displayLease: displayLease,
+                                leaseToken: mpvGeneration,
+                                onReturnReplace: { payload, prepare in acceptReturn(payload, prepare: prepare) })
+                // One mpv controller per accepted return payload (spec-mpv-return §3.1).
+                .id(mpvGeneration)
             case .deciding:
                 // B24: the probe is the first startup phase; the loading screen draws it from the
                 // first frame (`.checking`, the only stage MediaProbe has). Off: the old spinner.
@@ -179,7 +205,50 @@ struct PlayerScreen: View {
             nativeSecondsPlayed = 0
             nativeFailedBeforeStart = false
             handoffPositionSec = nil
+            returnPayload = nil
             armStartupLimit()
+        }
+        // spec-mpv-return §3.7 (M6): a background before the start cancels the start-up limit for the
+        // context, on every engine; the engine's own watchdog stays the only start budget.
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
+            startupClock.noteBackgrounded()
+        }
+    }
+
+    /// spec-mpv-return §3.6: the mpv controller asks for its replacement. In one main turn: validate
+    /// (identity, context, generation), `prepare` the old controller, move the lease to the fresh
+    /// controller's token, set the payload and bump the generation (the `.id`).
+    private func acceptReturn(_ payload: PlayerReturnHandoff, prepare: () -> Void) -> Bool {
+        switch payload.validate(current: PlaybackIdentity.current(), contextID: context.id,
+                                lastGeneration: lastReturnGeneration) {
+        case .discard(let reason):
+            print("[MPVReturn] payload discarded reason=\(reason.rawValue) g=\(payload.returnGeneration)")
+            return false
+        case .accept:
+            prepare()
+            let next = mpvGeneration + 1
+            displayLease.transfer(to: next)
+            lastReturnGeneration = payload.returnGeneration
+            returnPayload = payload
+            mpvGeneration = next
+            print("[MPVReturn] payload accepted g=\(payload.returnGeneration) ctl=\(next)")
+            return true
+        }
+    }
+
+    /// spec-mpv-return §3.3 (M10): a native or Aether return rule handed off to mpv. The payload is
+    /// validated the same way; a stale or mismatched one is dropped and mpv starts as today.
+    private func acceptTransfer(_ transfer: PlayerReturnTransfer, origin: PlayerReturnHandoff.Origin, playedSec: Double) {
+        let payload = transfer.payload(contextID: context.id, streamKey: context.streamKey, origin: origin,
+                                       playedSec: playedSec)
+        switch payload.validate(current: PlaybackIdentity.current(), contextID: context.id,
+                                lastGeneration: lastReturnGeneration) {
+        case .discard(let reason):
+            print("[MPVReturn] payload discarded reason=\(reason.rawValue) g=\(payload.returnGeneration) origin=\(origin)")
+        case .accept:
+            lastReturnGeneration = payload.returnGeneration
+            returnPayload = payload
+            print("[MPVReturn] payload accepted g=\(payload.returnGeneration) origin=\(origin) start=\(payload.start.logToken) intent=\(payload.intent == .play ? "play" : "pause")")
         }
     }
 
@@ -342,6 +411,13 @@ struct PlayerScreen: View {
             useForcedSubtitles: settings?.subtitleStyle.useForcedSubtitles ?? false,
             preferredAudioTargets: audioTargets)
     }
+}
+
+/// spec-mpv-return §3.3: holds a native return transfer between its two callbacks.
+final class PlayerReturnTransferSlot {
+    private var value: PlayerReturnTransfer?
+    func set(_ transfer: PlayerReturnTransfer) { value = transfer }
+    func take() -> PlayerReturnTransfer? { defer { value = nil }; return value }
 }
 
 /// Review r1 P3-2 (W3-19): the `[PlayerRouter]` probe lines' pure parts.

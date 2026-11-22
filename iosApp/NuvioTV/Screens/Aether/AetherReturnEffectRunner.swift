@@ -41,6 +41,8 @@ protocol AetherReturnHost: AnyObject {
     func returnPlay()
     func returnPause()
     func returnHandOff(atSec: Double, reason: String)
+    /// spec-mpv-return §3.3: the return rule's handoff carries an explicit payload for mpv.
+    func returnNoteTransfer(_ transfer: PlayerReturnTransfer)
     func returnExit()
     func returnSetUI(_ ui: PlayerReturnUI)
     /// nil = released: the mirror takes the last held value and the next finite clock sample as is.
@@ -50,6 +52,10 @@ protocol AetherReturnHost: AnyObject {
     func returnSetTransportRefused(_ refused: Bool)
     func returnStopStartWatchdog()
     func returnRearmStartBudget()
+}
+
+extension AetherReturnHost {
+    func returnNoteTransfer(_ transfer: PlayerReturnTransfer) {}
 }
 
 /// A scheduled callback the runner can cancel (the restore watchdog, the picture nudge).
@@ -83,6 +89,8 @@ final class AetherReturnEffectRunner {
     /// The controller's own lifecycle flags (never `UIApplication.applicationState`: the DEBUG cycle posts
     /// the notifications in process, spec 9.3).
     private(set) var appActive = true
+    /// Bumped at every didEnterBackground: a stale mpv transfer is refused by its generation.
+    private var transferGeneration = 0
     /// A didEnterBackground arrived since the last didBecomeActive.
     private var backgroundSeen = false
     private var enteredAtUptime: TimeInterval = 0
@@ -158,6 +166,7 @@ final class AetherReturnEffectRunner {
     func enteredBackground() {
         appActive = false
         backgroundSeen = true
+        transferGeneration += 1
         guard let host else { return }
         // Only a return that starts now takes a snapshot (the controller reads tracks and delay into it);
         // a second background during a return keeps the first one (spec 4.5), so the event carries it.
@@ -369,6 +378,8 @@ final class AetherReturnEffectRunner {
                 }
                 record("handOff \(String(format: "%.1f", atSec))")
                 stopEverything()
+                host.returnNoteTransfer(PlayerReturnTransfer(owner: rule.owner, intent: rule.intent == .play ? .play : .pause,
+                                                             atSec: atSec, generation: transferGeneration))
                 host.returnHandOff(atSec: atSec, reason: handOffNote)
             case .exitPlayer:
                 record("exit")

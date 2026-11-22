@@ -84,6 +84,12 @@ struct MPVSmokeModifier: ViewModifier {
                     if UserDefaults.standard.object(forKey: "debug.mpvSmokeResumeSec") != nil {
                         ctx.resumeAtSec = UserDefaults.standard.double(forKey: "debug.mpvSmokeResumeSec")
                     }
+                    // spec-mpv-return §5.3 (legs M5, M6): `debug.mpvSmokeLaunchSource autoPlay|nextEpisode`.
+                    switch UserDefaults.standard.string(forKey: "debug.mpvSmokeLaunchSource") {
+                    case "autoPlay": ctx.launchSource = .autoPlay
+                    case "nextEpisode": ctx.launchSource = .nextEpisode
+                    default: break
+                    }
                     if let forced = ctx.forcedEngine { print("[MPVSmoke] forced engine: \(forced)") }
                     context = ctx
                 }
@@ -93,8 +99,24 @@ struct MPVSmokeModifier: ViewModifier {
                 // in `smokeOpened` instead of pushing a page.
                 let onOpenTitle: ((MetaPreview) -> Void)? = UserDefaults.standard.bool(forKey: "debug.mpvSmokePostPlay")
                     ? { smokeOpened = $0.id } : nil
+                #if DEBUG
+                // spec-mpv-return §5.3: `debug.mpvSmokeReturnAlert YES` routes a return failure through the
+                // picker's own pure decision and takes its "Try with mpv" retry a second later;
+                // `debug.mpvSmokeStartupLimitSec <n>` arms the host start-up limit (its firing is recorded).
+                let returnAlert = UserDefaults.standard.bool(forKey: "debug.mpvSmokeReturnAlert")
+                let limit: Double? = UserDefaults.standard.object(forKey: "debug.mpvSmokeStartupLimitSec") != nil
+                    ? UserDefaults.standard.double(forKey: "debug.mpvSmokeStartupLimitSec") : nil
+                PlayerScreen(context: ctx, onPlayNext: { _ in },
+                             onPlaybackFailed: returnAlert ? { failure in smokeFailure(failure, ctx) } : nil,
+                             onOpenTitle: onOpenTitle, startupLimitSec: limit,
+                             onStartupLimitReached: limit == nil ? nil : {
+                                 MPVReturnDebugLedger.shared.failure = "startupLimit"
+                             })
+                    .ignoresSafeArea()
+                #else
                 PlayerScreen(context: ctx, onPlayNext: { _ in }, onOpenTitle: onOpenTitle)
                     .ignoresSafeArea()
+                #endif
             }
             .overlay(alignment: .topLeading) {
                 if UserDefaults.standard.bool(forKey: "debug.mpvSmokePostPlay") {
@@ -107,7 +129,27 @@ struct MPVSmokeModifier: ViewModifier {
             .fullScreenCover(item: $bareURL) { url in
                 BareAVPlayerView(url: url).ignoresSafeArea()
             }
+            #if DEBUG
+            .overlay(alignment: .bottomTrailing) {
+                if UserDefaults.standard.string(forKey: "debug.mpvSmokeURL") != nil { MPVReturnDebugLedgerLabel() }
+            }
+            #endif
     }
+
+    #if DEBUG
+    /// The smoke host's stand-in for the picker's failure handling (legs M6, M6b).
+    private func smokeFailure(_ failure: PlaybackFailure, _ ctx: PlaybackContext) {
+        guard let plan = PlaybackFailoverPolicy.returnAlert(for: ctx, failure: failure, pickerVideoId: ctx.videoId) else {
+            MPVReturnDebugLedger.shared.failure = "other"
+            print("[MPVSmoke] failure (not a return failure): \(failure.reason)")
+            return
+        }
+        MPVReturnDebugLedger.shared.failure = "returnAlert(\(plan.retry.returnStart?.logToken ?? "-"))"
+        print("[MPVSmoke] return alert: retry \(plan.retry.returnStart?.logToken ?? "-")")
+        context = nil
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { context = plan.retry }
+    }
+    #endif
 }
 
 extension URL: @retroactive Identifiable { public var id: String { absoluteString } }

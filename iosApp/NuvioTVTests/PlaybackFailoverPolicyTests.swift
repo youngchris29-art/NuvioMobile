@@ -487,3 +487,72 @@ final class PlaybackFailoverPolicyTests: XCTestCase {
         XCTAssertFalse(PlaybackFailoverPolicy.shouldReject(timeout))
     }
 }
+
+/// spec-mpv-return §3.7 (M4): a fresh mpv start after a return failed goes to the manual alert on every
+/// launch source, with "Try with mpv" at the held start whatever `otherEngineEligible` says.
+final class PlaybackReturnAlertTests: XCTestCase {
+    private func context(_ source: PlaybackLaunchSource, videoId: String = "tt1") -> PlaybackContext {
+        var ctx = PlaybackContext(url: URL(string: "https://example.invalid/a.mkv")!, title: "T", contentType: "movie",
+                                  parentMetaId: "tt1", videoId: videoId, season: nil, episode: nil, poster: nil,
+                                  background: nil, providerName: nil, providerAddonId: nil, streamTitle: nil,
+                                  streamSubtitle: nil, externalSubtitles: [])
+        ctx.launchSource = source
+        ctx.attempt = 2
+        return ctx
+    }
+
+    private func failure(_ recovery: PlayerReturnHandoff.Start?, eligible: Bool = false) -> PlaybackFailure {
+        var f = PlaybackFailure(reason: "r", positionSec: 1265.8, secondsPlayed: 400, startedPlaying: true)
+        f.otherEngineEligible = eligible
+        f.returnRecovery = recovery
+        return f
+    }
+
+    func testEveryLaunchSourceGetsTheAlertWithARetryAtTheHeldStart() {
+        for source in [PlaybackLaunchSource.autoPlay, .nextEpisode, .manual] {
+            for start: PlayerReturnHandoff.Start in [.position(1265.8), .position(6), .position(0), .live, .normalStart] {
+                let plan = PlaybackFailoverPolicy.returnAlert(for: context(source), failure: failure(start), pickerVideoId: "tt1")
+                XCTAssertNotNil(plan, "\(source)")
+                XCTAssertEqual(plan?.retry.returnStart, start)
+                XCTAssertEqual(plan?.retry.forcedEngine, .mpv)
+                XCTAssertEqual(plan?.retry.launchSource, .manual)
+                XCTAssertEqual(plan?.retry.attempt, 3)
+                XCTAssertEqual(plan?.offersNextSource, true)
+            }
+        }
+    }
+
+    func testTheRetryIsPresentWithNoOtherEngineAndTheNextSourceOnlyForThisTitle() {
+        let plan = PlaybackFailoverPolicy.returnAlert(for: context(.nextEpisode, videoId: "tt1:1:2"),
+                                                      failure: failure(.position(6), eligible: false), pickerVideoId: "tt1")
+        XCTAssertNotNil(plan?.retry)
+        XCTAssertEqual(plan?.offersNextSource, false)
+    }
+
+    func testANormalFailureIsNotAReturnFailure() {
+        XCTAssertNil(PlaybackFailoverPolicy.returnAlert(for: context(.autoPlay), failure: failure(nil), pickerVideoId: "tt1"))
+    }
+
+    /// The retry's held start reaches mpv's resume exactly (6 s, not the saved progress; 0 kept).
+    func testTheRetryResumesAtTheHeldStart() {
+        let plan = PlaybackFailoverPolicy.returnAlert(for: context(.autoPlay), failure: failure(.position(6)), pickerVideoId: "tt1")
+        XCTAssertEqual(PlayerReturnResume.decide(plan?.retry.returnStart), .at(6))
+        XCTAssertEqual(plan?.retry.id, context(.autoPlay).id.replacingOccurrences(of: "|a2", with: "|a3"))
+    }
+
+    func testATransferBecomesAPayloadWithNoFreshStartLeft() {
+        let owner = PlaybackIdentity(accountKey: "a", profileId: 1)
+        let t = PlayerReturnTransfer(owner: owner, intent: .play, atSec: 812.4, generation: 3)
+        let p = t.payload(contextID: "ctx", streamKey: "key", origin: .nativeReturn, playedSec: 90)
+        XCTAssertEqual(p.start, .position(812.4))
+        XCTAssertEqual(p.intent, .play)
+        XCTAssertEqual(p.freshStartsLeft, 0)
+        XCTAssertEqual(p.returnGeneration, 3)
+        XCTAssertEqual(p.origin, .nativeReturn)
+        XCTAssertEqual(p.audio, .auto)
+        XCTAssertEqual(p.validate(current: owner, contextID: "ctx", lastGeneration: 2), .accept)
+        XCTAssertEqual(p.validate(current: owner, contextID: "ctx", lastGeneration: 3), .discard(.generation))
+        XCTAssertEqual(PlayerReturnTransfer(owner: owner, intent: .pause, atSec: .nan, generation: 1)
+            .payload(contextID: "c", streamKey: "", origin: .aetherReturn, playedSec: 0).start, .position(0))
+    }
+}

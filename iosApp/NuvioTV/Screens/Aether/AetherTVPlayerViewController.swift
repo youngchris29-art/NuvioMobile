@@ -172,6 +172,8 @@ final class AetherTVPlayerViewController: UIViewController {
     #if DEBUG
     private var debugBackgroundCycle = DebugBackgroundCycle()
     #endif
+    /// spec-mpv-return §3.3: the return rule's handoff carries an explicit payload for mpv.
+    fileprivate var pendingReturnTransfer: PlayerReturnTransfer?
 
     // MARK: Lifecycle state
 
@@ -1359,7 +1361,10 @@ final class AetherTVPlayerViewController: UIViewController {
         }).first else { return }
         print("[Failover] aether → mpv handoff (\(reason)) pos=\(String(format: "%.1f", handoff.positionSec))"
               + " played=\(Int(handoff.secondsPlayed)) started=\(handoff.startedPlaying)")
-        onFallback(handoff)
+        var carried = handoff
+        carried.returnTransfer = pendingReturnTransfer
+        pendingReturnTransfer = nil
+        onFallback(carried)
     }
 
     /// Terminal failure report (one-shot, the mpv guards).
@@ -1712,6 +1717,10 @@ extension AetherTVPlayerViewController: AetherReturnHost {
         print("[Return] exit: identity changed")
         closeFailover()
         onExit?()
+    }
+
+    func returnNoteTransfer(_ transfer: PlayerReturnTransfer) {
+        pendingReturnTransfer = transfer
     }
 
     func returnSetUI(_ ui: PlayerReturnUI) {

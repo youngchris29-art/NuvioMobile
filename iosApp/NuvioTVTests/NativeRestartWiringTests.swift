@@ -86,7 +86,15 @@ final class NativeRestartWiringTests: XCTestCase {
         func restartLaunchRemux(token: Int) { calls.append("launchRemux") }
         func restartMakeServer(token: Int) { calls.append("makeServer") }
         func restartMakeItem(token: Int, signalingAttempt: Int) { calls.append("makeItem \(signalingAttempt)") }
-        func restartSeek(token: Int, toSec: Double) { calls.append("seek \(Int(toSec))") }
+        func restartSeek(token: Int, toSec: Double, exact: Bool, generation: Int) {
+            calls.append("seek \(Int(toSec))")
+            seekExact.append(exact)
+            lastSeekGeneration = generation
+        }
+        var seekExact: [Bool] = []
+        var transfers: [PlayerReturnTransfer] = []
+        func returnNoteTransfer(_ transfer: PlayerReturnTransfer) { transfers.append(transfer) }
+        var lastSeekGeneration = 0
         func restartRestoreTracks(token: Int, audio: String?, subtitle: String?) {
             calls.append("tracks \(audio ?? "-")/\(subtitle ?? "off")")
             // The coordinator answers after its media-selection await; held when a test says so.
@@ -161,7 +169,7 @@ final class NativeRestartWiringTests: XCTestCase {
 
     private func land(picture: Bool) {
         host.pictureReady = picture
-        runner.machine(.seekLanded(clockSec: 120, pictureReady: picture), token: token)
+        runner.machine(.seekLanded(clockSec: 120, durationAtIssueSec: nil, durationNowSec: nil, pictureReady: picture, generation: host.lastSeekGeneration), token: token)
     }
 
     // MARK: Order
@@ -406,11 +414,11 @@ final class NativeRestartWiringTests: XCTestCase {
         XCTAssertEqual(host.calls.last, "seek 300")
         XCTAssertEqual(host.trackerStarts, 0, "no tracker before the seek landed")
         host.pictureReady = true
-        runner.machine(.seekLanded(clockSec: 300, pictureReady: true), token: token)
+        runner.machine(.seekLanded(clockSec: 300, durationAtIssueSec: nil, durationNowSec: nil, pictureReady: true, generation: host.lastSeekGeneration), token: token)
         XCTAssertEqual(host.trackerStarts, 1, "trackers start once")
         XCTAssertEqual(runner.rule.mode, .idle)
         XCTAssertEqual(host.plays, 0, "A: the paused start skips its play")
-        runner.machine(.seekLanded(clockSec: 300, pictureReady: true), token: token)
+        runner.machine(.seekLanded(clockSec: 300, durationAtIssueSec: nil, durationNowSec: nil, pictureReady: true, generation: host.lastSeekGeneration), token: token)
         XCTAssertEqual(host.trackerStarts, 1)
     }
 
@@ -567,7 +575,7 @@ final class NativeRestartWiringTests: XCTestCase {
         runner.machine(.durationKnown(positionSec: 0.2, durationSec: 1800, pictureReady: false), token: token)
         XCTAssertEqual(host.calls.last, "seek 720")
         XCTAssertTrue(runner.restartActive)
-        runner.machine(.seekLanded(clockSec: 720, pictureReady: false), token: token)
+        runner.machine(.seekLanded(clockSec: 720, durationAtIssueSec: nil, durationNowSec: nil, pictureReady: false, generation: host.lastSeekGeneration), token: token)
         XCTAssertFalse(runner.restartActive)
         XCTAssertEqual(runner.heldPosition, 720, "the rule holds the restart's final target")
         clock.fire(3)
@@ -578,15 +586,43 @@ final class NativeRestartWiringTests: XCTestCase {
         XCTAssertEqual(host.held.last ?? 0, nil)
     }
 
+    /// spec-mpv-return §6.3: `exact` and the generation pass through to the coordinator; a landing of an
+    /// older generation (the first seek, after the correction went out) moves nothing.
+    func testExactAndTheGenerationPassThrough() async {
+        await returnFromScratch()
+        buildPipeline()
+        runner.machine(.resumeChosen(.seek(300)), token: token)
+        XCTAssertEqual(host.seekExact, [true])
+        XCTAssertEqual(host.lastSeekGeneration, 1)
+        runner.machine(.seekLanded(clockSec: 287, durationAtIssueSec: 7000, durationNowSec: 7000, pictureReady: true,
+                                   generation: 1), token: token)
+        XCTAssertEqual(host.calls.filter { $0 == "seek 300" }.count, 2, "one corrective seek to the same target")
+        XCTAssertEqual(host.seekExact, [true, true])
+        XCTAssertEqual(host.lastSeekGeneration, 2)
+        XCTAssertTrue(runner.restartActive)
+        runner.machine(.seekLanded(clockSec: 300, durationAtIssueSec: 7000, durationNowSec: 7000, pictureReady: true,
+                                   generation: 1), token: token)
+        XCTAssertTrue(runner.restartActive, "a stale landing never settles")
+        runner.machine(.seekLanded(clockSec: 300, durationAtIssueSec: 7000, durationNowSec: 7000, pictureReady: true,
+                                   generation: 2), token: token)
+        XCTAssertFalse(runner.restartActive)
+        XCTAssertEqual(host.trackerStarts, 1)
+    }
+
     /// Finding 1: a restart seek that returns false is never a landing: one retry, then mpv.
     func testARestartSeekThatDoesNotFinishNeverSettles() async {
         await returnAndRestart()
         buildPipeline()
-        runner.machine(.seekFailed, token: token)
+        runner.machine(.seekFailed(generation: host.lastSeekGeneration), token: token)
         XCTAssertEqual(host.calls.filter { $0 == "seek 120" }.count, 2, "retried once at the same target")
         XCTAssertEqual(runner.rule.mode, .restoring)
-        runner.machine(.seekFailed, token: token)
+        runner.machine(.seekFailed(generation: host.lastSeekGeneration), token: token)
         XCTAssertEqual(host.handOffs, [120], "the restart failed: mpv at the held position, not the old clock")
+        // spec-mpv-return §3.3 (M10): the return rule's handoff carries an explicit payload for mpv.
+        XCTAssertEqual(host.transfers.count, 1)
+        XCTAssertEqual(host.transfers.first?.atSec, 120)
+        XCTAssertEqual(host.transfers.first?.intent, .pause, "no press: mpv starts paused")
+        XCTAssertEqual(host.transfers.first?.owner, runner.owner)
     }
 
     /// Finding 3: the viewer returns paused, picks other tracks, presses Play on a frozen clock: the

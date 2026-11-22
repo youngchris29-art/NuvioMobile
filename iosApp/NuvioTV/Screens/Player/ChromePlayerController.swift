@@ -30,4 +30,6 @@ struct PlaybackHandoff: Equatable {
     let startedPlaying: Bool
     /// `.local` / `.network` per the W1-A ladder; diagnostic only.
     let kind: PlaybackFailureKind
+    /// spec-mpv-return §3.3: set when the handoff is the return rule's (during a return); nil otherwise.
+    var returnTransfer: PlayerReturnTransfer? = nil
 }

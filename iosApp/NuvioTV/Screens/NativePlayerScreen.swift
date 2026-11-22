@@ -27,6 +27,8 @@ struct NativePlayerScreen: View {
     /// Called with the last known position and the seconds the native path actually played when it
     /// can't play — dispatcher → mpv.
     var onFallback: ((Double, Double, Bool) -> Void)?
+    /// spec-mpv-return §3.3: the return rule's handoff payload, delivered just before `onFallback`.
+    var onReturnTransfer: ((PlayerReturnTransfer) -> Void)? = nil
     /// Failover hook, set by `PlayerScreen`. Fired when the native path fails and there is NO
     /// `onFallback` to hand the context to (mpv already tried, or no fallback wired): the host then
     /// moves to the next source. With a fallback wired, the dispatcher owns the handoff instead.
@@ -85,8 +87,10 @@ struct NativePlayerScreen: View {
          onOpenTitle: ((MetaPreview) -> Void)? = nil,
          onPlaybackStarted: (() -> Void)? = nil,
          onViewerChoice: ((UUID) -> Void)? = nil,
-         onViewerChoiceAbandoned: ((UUID) -> Void)? = nil) {
+         onViewerChoiceAbandoned: ((UUID) -> Void)? = nil,
+         onReturnTransfer: ((PlayerReturnTransfer) -> Void)? = nil) {
         self.context = context
+        self.onReturnTransfer = onReturnTransfer
         self.onOpenTitle = onOpenTitle
         self.onPlaybackStarted = onPlaybackStarted
         self.onViewerChoice = onViewerChoice
@@ -164,6 +168,7 @@ struct NativePlayerScreen: View {
                 // With no fallback to hand to, report the failure (failover) before dismissing.
                 Color.clear.onAppear {
                     if let onFallback {
+                        if let transfer = coordinator.returnTransfer { onReturnTransfer?(transfer) }
                         // Review r2 #1: "started" comes from readiness, not from the play clock —
                         // a mid-play fallback inside the first tick, or while paused/buffering,
                         // reads 0 played seconds yet the link demonstrably worked.
