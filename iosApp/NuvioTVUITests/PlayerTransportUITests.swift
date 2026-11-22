@@ -996,4 +996,46 @@ final class PlayerTransportUITests: XCTestCase {
         }
         return n > 0 ? sum / n : -1
     }
+
+    // MARK: Return from background (spec 9.3, T-UI-M1)
+
+    /// T-UI-M1, real background (Home, 5 s on the home screen, activate): mpv recovers on its own. The
+    /// return rule never runs on mpv (no `ret=` field on the seek probe), mpv stays in front with no
+    /// handoff, the position is not reset, and playback goes on (with one Play/Pause if mpv reports paused).
+    func testMpvBackgroundReturnUnchanged() throws {
+        let app = try launch()
+        XCTAssertTrue(waitFor(app, timeout: 30) { (Double($0["pos"] ?? "") ?? 0) >= 8 }, "never reached 8 s: \(probeText(app))")
+        let p0 = pos(app)
+        remote.press(.home)
+        var left = Date().addingTimeInterval(8)
+        while Date() < left, app.state == .runningForeground { Thread.sleep(forTimeInterval: 0.25) }
+        if app.state == .runningForeground {
+            // Same fallback as the Aether and native return legs: another app in front is a real background.
+            print("[ReturnLeg] M1 Home left the app in front; bringing the Settings app forward")
+            XCUIApplication(bundleIdentifier: "com.apple.TVSettings").activate()
+            left = Date().addingTimeInterval(15)
+            while Date() < left, app.state == .runningForeground { Thread.sleep(forTimeInterval: 0.25) }
+        }
+        XCTAssertNotEqual(app.state, .runningForeground, "the simulator did not background the app")
+        Thread.sleep(forTimeInterval: 5)   // the time away itself, not an assertion
+        app.activate()
+        let back = Date().addingTimeInterval(20)
+        while Date() < back, app.state != .runningForeground { Thread.sleep(forTimeInterval: 0.25) }
+        XCTAssertEqual(app.state, .runningForeground, "the simulator did not foreground the app on activate")
+        XCTAssertTrue(app.otherElements["player.mpv"].waitForExistence(timeout: 10), "mpv is gone after the return")
+        XCTAssertFalse(app.otherElements["player.aether"].exists, "an Aether player appeared")
+        XCTAssertFalse(app.otherElements["player.native"].exists, "a native player appeared")
+        let p = probe(app)
+        print("[ReturnLeg] M1 after return: p0=\(p0) \(probeText(app))")
+        XCTAssertNil(p["ret"], "the return rule ran on mpv: \(probeText(app))")
+        let resumed = Double(p["pos"] ?? "") ?? -1
+        XCTAssertGreaterThanOrEqual(resumed, p0 - 2, "mpv's position went back after the return: p0=\(p0) \(probeText(app))")
+        if p["paused"] == "1" {
+            print("[ReturnLeg] M1 mpv reports paused after the return; pressing Play/Pause")
+            remote.press(.playPause)
+        }
+        XCTAssertTrue(waitFor(app, timeout: 15) { (Double($0["pos"] ?? "") ?? 0) >= resumed + 2 && $0["paused"] == "0" },
+                      "mpv did not play on after the return: \(probeText(app))")
+        XCTAssertTrue(app.otherElements["player.mpv"].exists, "mpv left after the return")
+    }
 }

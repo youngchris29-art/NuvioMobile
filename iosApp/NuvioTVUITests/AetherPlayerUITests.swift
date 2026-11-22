@@ -262,4 +262,244 @@ final class AetherPlayerUITests: XCTestCase {
         XCTAssertLessThan(first, 26.0, "mpv resumed far past the failure point 20 s: first pos=\(first)")
         print("[AetherLeg] mid-play failure: mpv first pos=\(first) \(seekText(app))")
     }
+
+    // MARK: Return from background (spec 9.3, T-UI-A1 to A6; the simulator is the software route)
+
+    /// The rule's mode (`ret=<mode>/<last outcome>` on the seek probe).
+    private func retMode(_ p: [String: String]) -> String { (p["ret"] ?? "-").components(separatedBy: "/").first ?? "-" }
+    private func retOutcome(_ p: [String: String]) -> String { (p["ret"] ?? "-").components(separatedBy: "/").dropFirst().first ?? "-" }
+
+    /// A real background trip: Home on the Siri Remote, `awaySec` on the tvOS home screen, then the app is
+    /// brought back with `activate()`. Returns false (with the state it saw) when the simulator does not
+    /// background or foreground the app.
+    private func homeAndReturn(_ app: XCUIApplication, awaySec: TimeInterval) -> (ok: Bool, note: String) {
+        var how = "Home"
+        remote.press(.home)
+        var left = Date().addingTimeInterval(8)
+        while Date() < left, app.state == .runningForeground { Thread.sleep(forTimeInterval: 0.25) }
+        if app.state == .runningForeground {
+            // The tvOS simulator can leave the app in front on an XCUIRemote Home press; bringing another
+            // app forward is a real background trip too (the system sends didEnterBackground).
+            how = "Settings app in front"
+            XCUIApplication(bundleIdentifier: "com.apple.TVSettings").activate()
+            left = Date().addingTimeInterval(15)
+            while Date() < left, app.state == .runningForeground { Thread.sleep(forTimeInterval: 0.25) }
+        }
+        guard app.state != .runningForeground else { return (false, "still foreground after Home and after the Settings app") }
+        let away = app.state
+        Thread.sleep(forTimeInterval: awaySec)   // the time away itself, not an assertion
+        app.activate()
+        let back = Date().addingTimeInterval(20)
+        while Date() < back, app.state != .runningForeground { Thread.sleep(forTimeInterval: 0.25) }
+        guard app.state == .runningForeground else { return (false, "not foreground 20 s after activate (away state \(away.rawValue))") }
+        return (true, "\(how), away state \(away.rawValue)")
+    }
+
+    /// The DEBUG in-process cycle (`DebugBackgroundCycle`): background notifications at `atSec`, active again
+    /// `awaySec` later. The app stays foreground, so the faults and timings are deterministic.
+    private func cycleArgs(atSec: Int, awaySec: Int) -> [String] {
+        ["-debug.backgroundCycleAtSec", String(atSec), "-debug.backgroundCycleAwaySec", String(awaySec)]
+    }
+
+    /// Waits for the DEBUG cycle's background half to be seen by the rule (mode `away`, or already past it).
+    private func waitCycleStarted(_ app: XCUIApplication, timeout: TimeInterval = 40) -> Bool {
+        waitSeek(app, timeout: timeout) { (self.retMode($0) != "idle" && self.retMode($0) != "-") || self.retOutcome($0) != "-" }
+    }
+
+    /// The return is over: paused, the rule idle with `outcome`, a frame displayed.
+    private func waitReturnSettled(_ app: XCUIApplication, outcome: String? = "settled", timeout: TimeInterval = 45) -> Bool {
+        waitSeek(app, timeout: timeout) {
+            self.retMode($0) == "idle" && (outcome == nil || self.retOutcome($0) == outcome)
+                && $0["paused"] == "1" && $0["picture"] == "1"
+        }
+    }
+
+    /// After a settled return: still paused (no auto-resume), then one Play/Pause plays on from there.
+    private func assertPausedThenPlays(_ app: XCUIApplication, from back: Double, file: StaticString = #filePath, line: UInt = #line) {
+        Thread.sleep(forTimeInterval: 2.0)
+        XCTAssertEqual(seek(app)["paused"], "1", "the return did not stay paused: \(seekText(app))", file: file, line: line)
+        XCTAssertEqual(pos(app), back, accuracy: 0.6, "the position moved while paused after the return: \(seekText(app))", file: file, line: line)
+        remote.press(.playPause)
+        var lowest = Double.infinity
+        XCTAssertTrue(waitSeek(app, timeout: 20) {
+            let p = Double($0["pos"] ?? "") ?? -1
+            if $0["paused"] == "0", p >= 0 { lowest = min(lowest, p) }
+            return $0["paused"] == "0" && p >= back + 2
+        }, "Play after the return did not play on: back=\(back) \(seekText(app))", file: file, line: line)
+        XCTAssertGreaterThanOrEqual(lowest, back - 1, "Play started from an earlier position than the return showed: back=\(back) lowest=\(lowest)",
+                                    file: file, line: line)
+        XCTAssertTrue(app.otherElements["player.aether"].exists, "no longer the Aether controller", file: file, line: line)
+        XCTAssertFalse(app.otherElements["player.mpv"].exists, "mpv took over", file: file, line: line)
+    }
+
+    /// T-UI-A1, real background (Home, 5 s on the home screen, activate): paused at the pre-Home position
+    /// with a picture (`picture=1`), `ret=idle/settled`; Play plays on. Records whether the exact-seek nudge
+    /// was needed on the software route (`nudged=`, spec E11). Then leaves the player and backgrounds again:
+    /// nothing comes back (no restore after leaving).
+    func testBackgroundReturnComesBackPausedAndPlays() throws {
+        let app = try launchAether()
+        XCTAssertTrue(waitSeek(app, timeout: 40) { (Double($0["pos"] ?? "") ?? 0) >= 10 }, "never reached 10 s: \(seekText(app))")
+        let p0 = pos(app)
+        let trip = homeAndReturn(app, awaySec: 5)
+        XCTAssertTrue(trip.ok, "the simulator did not background and foreground the app: \(trip.note)")
+        guard trip.ok else { return }
+        print("[ReturnLeg] A1 home trip: \(trip.note) p0=\(p0)")
+        XCTAssertTrue(app.otherElements["player.aether"].waitForExistence(timeout: 10), "the Aether controller is gone after the return")
+        XCTAssertTrue(waitReturnSettled(app), "the return never settled paused with a picture: \(seekText(app))")
+        let back = pos(app)
+        print("[ReturnLeg] A1 settled: p0=\(p0) back=\(back) \(seekText(app))")
+        XCTAssertGreaterThan(back, 1, "the position was reset to 0: \(seekText(app))")
+        XCTAssertEqual(back, p0, accuracy: 2.5, "the return is not at the pre-Home position: p0=\(p0) \(seekText(app))")
+        XCTAssertFalse(app.otherElements["player.mpv"].exists, "a plain return handed off to mpv")
+        assertPausedThenPlays(app, from: back)
+
+        // Leave the player, then background and return: no player comes back.
+        for _ in 0..<3 where app.otherElements["player.aether"].exists {
+            remote.press(.menu)
+            Thread.sleep(forTimeInterval: 1.5)
+        }
+        XCTAssertFalse(app.otherElements["player.aether"].exists, "Menu never left the player")
+        let trip2 = homeAndReturn(app, awaySec: 3)
+        XCTAssertTrue(trip2.ok, trip2.note)
+        Thread.sleep(forTimeInterval: 4.0)
+        XCTAssertFalse(app.otherElements["player.aether"].exists, "a player came back after it was left")
+        XCTAssertFalse(app.otherElements["player.mpv"].exists, "mpv appeared after the player was left")
+    }
+
+    /// Opens the Subtitles popover and picks the row whose title contains `title`; closes the popover.
+    private func pickSubtitle(_ app: XCUIApplication, _ title: String) {
+        PlayerChrome.openDisc(app, "subtitles")
+        let row = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'player.panel.subtitle.' AND NOT identifier BEGINSWITH 'player.panel.subtitleDelay' AND label CONTAINS %@", title))
+            .firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 4), "no \(title) row in the Subtitles popover")
+        XCTAssertTrue(PlayerChrome.focusWalk(app, to: row), "focus never reached the \(title) row")
+        remote.press(.select)
+        let end = Date().addingTimeInterval(4)
+        while Date() < end, (row.value as? String) != "selected" { Thread.sleep(forTimeInterval: 0.3) }
+        XCTAssertEqual(row.value as? String, "selected", "\(title) not selected after the pick")
+        remote.press(.menu)
+        let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: element(app, "player.popover.subtitles"))
+        XCTAssertEqual(XCTWaiter().wait(for: [closed], timeout: 4), .completed, "Menu did not close the Subtitles popover")
+    }
+
+    /// T-UI-A2 (DEBUG cycle at 32 s, 5 s away): a picked subtitle, Boost 6 dB with Dialogue, and a 0.3 s audio
+    /// delay are all the same after the restore (`sub=`, `audio=`, `shaping=`, `delay=` on the seek probe).
+    func testBackgroundReturnKeepsTracksDelayAndShaping() throws {
+        let env = ProcessInfo.processInfo.environment
+        let url = try XCTUnwrap(env["AETHER_SMOKE_SUBS_URL"], "AETHER_SMOKE_SUBS_URL not set")
+        // Resume at 12 s (not Start Over: the controller honours `resumeAtSec` > 10), as the subtitle legs do.
+        let app = XCUIApplication()
+        app.launchArguments += ["-debug.mpvSmokeURL", url, "-debug.mpvSmokeEngine", "aether", "-debug.mpvSmokeResumeSec", "12",
+                                "-player.boostDb", "6", "-player.audioMode", "dialogue",
+                                "-debug.mpvSmokeAudioDelayMs", "300"] + cycleArgs(atSec: 50, awaySec: 5)
+        app.launch()
+        XCTAssertTrue(app.otherElements["player.aether"].waitForExistence(timeout: 30), "the Aether controller did not appear")
+        XCTAssertTrue(waitSeek(app, timeout: 40) { (Double($0["pos"] ?? "") ?? 0) >= 12 }, "playback never reached the resume point: \(seekText(app))")
+        // The Subtitles disc is reached from a hidden bar (as in the subtitle legs).
+        XCTAssertTrue(waitBar(app, timeout: 14) { $0["vis"] == "0" }, "the bar never hid: \(barText(app))")
+        pickSubtitle(app, "Embedded EN")
+        XCTAssertTrue(waitSeek(app, timeout: 10) { $0["sub"] != nil && $0["sub"] != "-" }, "no subtitle track active after the pick: \(seekText(app))")
+        let before = seek(app)
+        XCTAssertLessThan(pos(app), 47, "the pick took too long; the cycle would land inside it: \(seekText(app))")
+        print("[ReturnLeg] A2 before: \(seekText(app))")
+        XCTAssertEqual(before["shaping"], "3.5/6.0", "Boost/Dialogue did not reach the session: \(seekText(app))")
+        XCTAssertEqual(before["delay"], "0.30", "the audio delay did not reach the session: \(seekText(app))")
+        XCTAssertTrue(waitCycleStarted(app, timeout: 40), "the DEBUG background cycle never ran: \(seekText(app))")
+        XCTAssertTrue(waitReturnSettled(app), "the return never settled paused with a picture: \(seekText(app))")
+        let after = seek(app)
+        print("[ReturnLeg] A2 after: \(seekText(app))")
+        for key in ["sub", "audio", "delay", "shaping"] {
+            XCTAssertEqual(after[key], before[key], "\(key) changed across the return: before \(before[key] ?? "nil") after \(after[key] ?? "nil")")
+        }
+        XCTAssertEqual(Double(after["pos"] ?? "") ?? 0, 50.5, accuracy: 2.5, "not back at the cycle position: \(seekText(app))")
+    }
+
+    /// T-UI-A3 (`-debug.aetherRestoreFault refuse`, DEBUG cycle at 10 s): the reload is refused, the fresh
+    /// paused load takes over at the position (`refused` seen, then `idle/settled`), no mpv.
+    func testRestoreRefusedTakesFreshLoad() throws {
+        let app = try launchAether(extra: ["-debug.aetherRestoreFault", "refuse"] + cycleArgs(atSec: 10, awaySec: 5))
+        XCTAssertTrue(waitCycleStarted(app), "the DEBUG background cycle never ran: \(seekText(app))")
+        var sawRefused = false
+        let end = Date().addingTimeInterval(45)
+        var settled = false
+        while Date() < end {
+            let p = seek(app)
+            if retOutcome(p) == "refused" || (p["trail"] ?? "").components(separatedBy: ",").contains("refused") { sawRefused = true }
+            if retMode(p) == "idle", retOutcome(p) == "settled", p["paused"] == "1", p["picture"] == "1" { settled = true; break }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        XCTAssertTrue(sawRefused, "the refused reload was never reported: \(seekText(app))")
+        XCTAssertTrue(settled, "the fresh load never settled paused with a picture: \(seekText(app))")
+        let back = pos(app)
+        print("[ReturnLeg] A3 settled: \(seekText(app))")
+        XCTAssertEqual(back, 10.5, accuracy: 2.5, "the fresh load is not at the held position: \(seekText(app))")
+        XCTAssertFalse(app.otherElements["player.mpv"].exists, "a refusal handed off to mpv")
+        assertPausedThenPlays(app, from: back)
+    }
+
+    /// T-UI-A4 (`-debug.aetherRestoreFault throw`, DEBUG cycle at 10 s): the failed restore hands the stream to
+    /// mpv at the held position (decision E; mpv starts playing, Q1).
+    func testRestoreFailureHandsToMpv() throws {
+        let app = try launchAether(extra: ["-debug.aetherRestoreFault", "throw"] + cycleArgs(atSec: 10, awaySec: 5))
+        XCTAssertTrue(app.otherElements["player.mpv"].waitForExistence(timeout: 60), "mpv never took over after the failed restore: \(seekText(app))")
+        XCTAssertFalse(app.otherElements["player.aether"].exists, "the Aether controller is still showing after the handoff")
+        var first = -1.0
+        let end = Date().addingTimeInterval(30)
+        while Date() < end {
+            let p = pos(app)
+            if p > 1 { first = p; break }
+            Thread.sleep(forTimeInterval: 0.3)
+        }
+        print("[ReturnLeg] A4 mpv first pos=\(first) \(seekText(app))")
+        XCTAssertGreaterThan(first, 7.5, "mpv did not resume at the held position (~10 s): first pos=\(first)")
+        XCTAssertLessThan(first, 15.0, "mpv resumed far past the held position (~10 s): first pos=\(first)")
+    }
+
+    /// T-UI-A5 (`-debug.aetherRestoreFault delay3s`, DEBUG cycle at 10 s): Play pressed while the restore runs
+    /// is queued and applied when it settles: playback goes on without a second press.
+    func testPlayDuringRestoreIsQueued() throws {
+        let app = try launchAether(extra: ["-debug.aetherRestoreFault", "delay3s"] + cycleArgs(atSec: 10, awaySec: 4))
+        XCTAssertTrue(waitSeek(app, timeout: 40) { ["preparing", "restoring"].contains(self.retMode($0)) },
+                      "the restore never started: \(seekText(app))")
+        remote.press(.playPause)
+        let during = seek(app)
+        print("[ReturnLeg] A5 Play pressed during: \(seekText(app))")
+        XCTAssertTrue(["preparing", "restoring"].contains(retMode(during)), "Play landed after the restore, not during it: \(seekText(app))")
+        XCTAssertTrue(waitSeek(app, timeout: 45) { self.retMode($0) == "idle" && $0["paused"] == "0" && $0["picture"] == "1" },
+                      "the queued Play was not applied at the settle: \(seekText(app))")
+        let back = pos(app)
+        XCTAssertTrue(waitSeek(app, timeout: 15) { (Double($0["pos"] ?? "") ?? 0) >= back + 2 && $0["paused"] == "0" },
+                      "playback did not go on after the queued Play: \(seekText(app))")
+        XCTAssertGreaterThan(back, 7.5, "the queued Play started from a reset position: \(seekText(app))")
+        XCTAssertFalse(app.otherElements["player.mpv"].exists, "mpv took over")
+    }
+
+    /// T-UI-A6 (`-debug.aetherStartDelaySec 4`, DEBUG cycle at the first tick, 3 s away): a return while the
+    /// first load is still held ends paused near the start with a picture, and no false first-frame timeout
+    /// hands it to mpv.
+    func testReturnDuringStartPausesAtStart() throws {
+        let env = ProcessInfo.processInfo.environment
+        let url = try XCTUnwrap(env["AETHER_SMOKE_URL"])
+        let app = XCUIApplication()
+        app.launchArguments += ["-debug.mpvSmokeURL", url, "-debug.mpvSmokeEngine", "aether", "-debug.mpvSmokeStartOver", "YES",
+                                "-debug.aetherStartDelaySec", "4"] + cycleArgs(atSec: 0, awaySec: 3)
+        app.launch()
+        XCTAssertTrue(app.otherElements["player.aether"].waitForExistence(timeout: 30), "the Aether controller did not appear")
+        XCTAssertTrue(waitSeek(app, timeout: 60) { self.retMode($0) == "idle" && $0["paused"] == "1" && $0["picture"] == "1" },
+                      "the start never ended paused with a picture after the return: \(seekText(app))")
+        let back = pos(app)
+        print("[ReturnLeg] A6 settled: \(seekText(app))")
+        XCTAssertLessThan(back, 3, "a return during the start did not stay at the start: \(seekText(app))")
+        // Longer than the start watchdog would take to fire on a wrongly counted budget.
+        let watch = Date().addingTimeInterval(12)
+        while Date() < watch {
+            XCTAssertFalse(app.otherElements["player.mpv"].exists, "a false first-frame timeout handed off to mpv")
+            Thread.sleep(forTimeInterval: 1)
+        }
+        XCTAssertEqual(seek(app)["paused"], "1", "the start did not stay paused: \(seekText(app))")
+        remote.press(.playPause)
+        XCTAssertTrue(waitSeek(app, timeout: 20) { $0["paused"] == "0" && (Double($0["pos"] ?? "") ?? 0) >= back + 2 },
+                      "Play after the return did not play: \(seekText(app))")
+    }
 }

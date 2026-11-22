@@ -547,4 +547,208 @@ class NativePlayerParityUITests: XCTestCase {
         remote.press(.select)
         return element(app, "settings_pane_player").waitForExistence(timeout: 4)
     }
+
+    // MARK: Return from background (spec 9.3, T-UI-N1 to N5)
+
+    /// The rule's mode and last outcome (`ret=<mode>/<outcome>` on the native probe).
+    func retMode(_ p: [String: String]) -> String { (p["ret"] ?? "-").components(separatedBy: "/").first ?? "-" }
+    func retOutcome(_ p: [String: String]) -> String { (p["ret"] ?? "-").components(separatedBy: "/").dropFirst().first ?? "-" }
+
+    /// A real background trip: Home, `awaySec` on the home screen, `activate()`. False when the simulator
+    /// does not background or foreground the app.
+    func homeAndReturn(_ app: XCUIApplication, awaySec: TimeInterval) -> (ok: Bool, note: String) {
+        var how = "Home"
+        remote.press(.home)
+        var left = Date().addingTimeInterval(8)
+        while Date() < left, app.state == .runningForeground { Thread.sleep(forTimeInterval: 0.25) }
+        if app.state == .runningForeground {
+            // The tvOS simulator can leave the app in front on an XCUIRemote Home press; bringing another
+            // app forward is a real background trip too (the system sends didEnterBackground).
+            how = "Settings app in front"
+            XCUIApplication(bundleIdentifier: "com.apple.TVSettings").activate()
+            left = Date().addingTimeInterval(15)
+            while Date() < left, app.state == .runningForeground { Thread.sleep(forTimeInterval: 0.25) }
+        }
+        guard app.state != .runningForeground else { return (false, "still foreground after Home and after the Settings app") }
+        let away = app.state
+        Thread.sleep(forTimeInterval: awaySec)   // the time away itself, not an assertion
+        app.activate()
+        let back = Date().addingTimeInterval(20)
+        while Date() < back, app.state != .runningForeground { Thread.sleep(forTimeInterval: 0.25) }
+        guard app.state == .runningForeground else { return (false, "not foreground 20 s after activate (away state \(away.rawValue))") }
+        return (true, "\(how), away state \(away.rawValue)")
+    }
+
+    /// The DEBUG in-process cycle (`DebugBackgroundCycle`, ticked by the coordinator).
+    func cycleArgs(atSec: Int, awaySec: Int) -> [String] {
+        ["-debug.backgroundCycleAtSec", String(atSec), "-debug.backgroundCycleAwaySec", String(awaySec)]
+    }
+
+    /// The return is over: the rule idle with `outcome`, the restart finished, paused, a frame displayed.
+    func waitNativeReturnSettled(_ app: XCUIApplication, outcome: String = "settled", timeout: TimeInterval = 60) -> Bool {
+        waitNative(app, timeout: timeout) {
+            self.retMode($0) == "idle" && self.retOutcome($0) == outcome && $0["restoring"] == "0"
+                && $0["paused"] == "1" && $0["picture"] == "1"
+        }
+    }
+
+    /// After a settled return: still paused, then Play/Pause plays on from there.
+    func assertNativePausedThenPlays(_ app: XCUIApplication, from back: Double, file: StaticString = #filePath, line: UInt = #line) {
+        Thread.sleep(forTimeInterval: 2.0)
+        XCTAssertEqual(nativeProbe(app)["paused"], "1", "the return did not stay paused: \(nativeProbeText(app))", file: file, line: line)
+        let still = Double(nativeProbe(app)["pos"] ?? "") ?? -1
+        XCTAssertEqual(still, back, accuracy: 0.6, "the position moved while paused after the return: \(nativeProbeText(app))", file: file, line: line)
+        remote.press(.playPause)
+        var lowest = Double.infinity
+        XCTAssertTrue(waitNative(app, timeout: 20) {
+            let p = Double($0["pos"] ?? "") ?? -1
+            if $0["paused"] == "0", p >= 0 { lowest = min(lowest, p) }
+            return $0["paused"] == "0" && p >= back + 2
+        }, "Play after the return did not play on: back=\(back) \(nativeProbeText(app))", file: file, line: line)
+        // W4 (2026-11-21): AVKit's Play on a restarted player seeked to 0 before playing; the wait above
+        // alone passed that way once the clock ran past back + 2.
+        XCTAssertGreaterThanOrEqual(lowest, back - 1, "Play started from an earlier position than the return showed: back=\(back) lowest=\(lowest)",
+                                    file: file, line: line)
+        XCTAssertTrue(app.otherElements["player.native"].exists, "no longer the native player", file: file, line: line)
+        XCTAssertFalse(app.otherElements["player.mpv"].exists, "mpv took over", file: file, line: line)
+    }
+
+    /// One mid-play return (N1 to N3): paused at `p0` with a picture and the same audio and subtitle
+    /// renditions, then Play plays on. Returns the settled probe.
+    @discardableResult
+    func assertNativeMidPlayReturn(_ app: XCUIApplication, p0: Double, before: [String: String],
+                                   file: StaticString = #filePath, line: UInt = #line) -> [String: String] {
+        XCTAssertTrue(waitNativeReturnSettled(app), "the restart never settled paused with a picture: \(nativeProbeText(app))", file: file, line: line)
+        let after = nativeProbe(app)
+        let back = Double(after["pos"] ?? "") ?? -1
+        print("[ReturnLeg] native settled: p0=\(p0) \(nativeProbeText(app))")
+        XCTAssertGreaterThan(back, 1, "the position was reset to 0: \(nativeProbeText(app))", file: file, line: line)
+        XCTAssertEqual(back, p0, accuracy: 2.5, "the restart is not at the pre-Home position: p0=\(p0) \(nativeProbeText(app))", file: file, line: line)
+        XCTAssertEqual(after["aud"], before["aud"], "the audio rendition changed across the return", file: file, line: line)
+        XCTAssertEqual(after["sub"], before["sub"], "the subtitle rendition changed across the return", file: file, line: line)
+        XCTAssertFalse(app.otherElements["player.mpv"].exists, "a plain restart handed off to mpv", file: file, line: line)
+        assertNativePausedThenPlays(app, from: back, file: file, line: line)
+        return after
+    }
+
+    /// The DEBUG cycle's away half: the old player is paused at the held position (the observe tick fires
+    /// the cycle, so anywhere from 10 to 13 s). Returns that position.
+    func heldPositionWhileAway(_ app: XCUIApplication) throws -> Double {
+        XCTAssertTrue(waitNative(app, timeout: 40) { self.retMode($0) == "away" }, "the DEBUG background cycle never ran: \(nativeProbeText(app))")
+        let held = Double(nativeProbe(app)["pos"] ?? "") ?? -1
+        print("[ReturnLeg] native away: \(nativeProbeText(app))")
+        return try XCTUnwrap(held >= 9 ? held : nil, "no held position while away: \(nativeProbeText(app))")
+    }
+
+    /// T-UI-N1, real background (Home, 5 s on the home screen, activate): the pipeline restarts paused at the
+    /// position with a picture and the same renditions; Play plays on.
+    func testNativeBackgroundReturnRestartsPaused() throws {
+        let app = try launchNative()
+        XCTAssertTrue(waitNative(app, timeout: 40) { (Double($0["pos"] ?? "") ?? 0) >= 10 }, "never reached 10 s: \(nativeProbeText(app))")
+        let before = nativeProbe(app)
+        let p0 = Double(before["pos"] ?? "") ?? -1
+        let trip = homeAndReturn(app, awaySec: 5)
+        XCTAssertTrue(trip.ok, "the simulator did not background and foreground the app: \(trip.note)")
+        guard trip.ok else { return }
+        print("[ReturnLeg] N1 home trip: \(trip.note) p0=\(p0)")
+        XCTAssertTrue(app.otherElements["player.native"].waitForExistence(timeout: 10), "the native player is gone after the return")
+        let after = assertNativeMidPlayReturn(app, p0: p0, before: before)
+        print("[ReturnLeg] N1 health=\(after["health"] ?? "-") nudged=\(after["nudged"] ?? "-")")
+    }
+
+    /// T-UI-N2 (`-debug.nativeBackgroundFault killListener`, DEBUG cycle at 10 s): the loopback listener is
+    /// cancelled while away; the restart rebuilds it (health reads `listenerDead`).
+    func testNativeReturnWithDeadListenerRestarts() throws {
+        let app = try launchNative(extra: ["-debug.nativeBackgroundFault", "killListener"] + cycleArgs(atSec: 10, awaySec: 5))
+        let before = nativeProbe(app)
+        let p0 = try heldPositionWhileAway(app)
+        let after = assertNativeMidPlayReturn(app, p0: p0, before: before)
+        XCTAssertEqual(after["health"], "listenerDead", "the killed listener was not seen at the return: \(nativeProbeText(app))")
+    }
+
+    /// T-UI-N3 (`-debug.nativeBackgroundFault failRemuxInput`, DEBUG cycle at 10 s): the remux input fails
+    /// while away; the restart starts a new remux.
+    func testNativeReturnWithFailedRemuxInputRestarts() throws {
+        let app = try launchNative(extra: ["-debug.nativeBackgroundFault", "failRemuxInput"] + cycleArgs(atSec: 10, awaySec: 5))
+        let before = nativeProbe(app)
+        let p0 = try heldPositionWhileAway(app)
+        let after = assertNativeMidPlayReturn(app, p0: p0, before: before)
+        print("[ReturnLeg] N3 health=\(after["health"] ?? "-")")
+    }
+
+    /// T-UI-N4 (`-debug.nativeBackgroundFault failRestart`, DEBUG cycle at 10 s): the restart fails once, and
+    /// the stream goes to mpv at the held position (decision E). Routed, not forced: a forced native engine
+    /// (`-debug.mpvSmokeEngine native`) has no mpv fallback by design (`PlayerScreen`, the failure-alert
+    /// retry), so this leg lets the router pick native for the SDR Matroska fixture, as the app does.
+    func testNativeRestartFailureHandsToMpv() throws {
+        let env = ProcessInfo.processInfo.environment
+        try XCTSkipUnless(env["PLAYER_NATIVE_PROBE"] == "1", "PLAYER_NATIVE_PROBE not set")
+        let url = try requiredEnv("PLAYER_SMOKE_URL")
+        let app = XCUIApplication()
+        app.launchArguments += ["-debug.mpvSmokeURL", url, "-player.nativeDolbyVision", "YES", "-debug.mpvSmokeStartOver", "YES",
+                                "-debug.nativeBackgroundFault", "failRestart"] + cycleArgs(atSec: 10, awaySec: 5)
+        app.launch()
+        XCTAssertTrue(app.otherElements["player.native"].waitForExistence(timeout: 60), "the router did not pick the native player")
+        XCTAssertTrue(waitNative(app, timeout: 40) { (Double($0["pos"] ?? "") ?? 0) > 1 }, "native playback never started: \(nativeProbeText(app))")
+        XCTAssertTrue(app.otherElements["player.mpv"].waitForExistence(timeout: 60), "mpv never took over after the failed restart: \(nativeProbeText(app))")
+        XCTAssertFalse(app.otherElements["player.native"].exists, "the native player is still showing after the handoff")
+        let seek = element(app, "debug_seekProbe")
+        XCTAssertTrue(seek.waitForExistence(timeout: 30), "no mpv seek probe")
+        var first = -1.0
+        let end = Date().addingTimeInterval(30)
+        while Date() < end {
+            let p = Double(Self.parse(seek.label)["pos"] ?? "") ?? 0
+            if p > 1 { first = p; break }
+            Thread.sleep(forTimeInterval: 0.3)
+        }
+        print("[ReturnLeg] N4 mpv first pos=\(first) \(seek.label)")
+        XCTAssertGreaterThan(first, 7.5, "mpv did not resume at the held position (~10 s): first pos=\(first)")
+        XCTAssertLessThan(first, 17.0, "mpv resumed far past the held position (10 to 13 s): first pos=\(first)")
+    }
+
+    /// Play/Pause during the restart (I5; `-debug.nativeBackgroundFault delayRestart` holds the restart 5 s;
+    /// DEBUG cycle at 10 s). AVKit owns the remote on this route and ignores Play on the restart's item-less
+    /// player, so the press reaches the return through the host's Play/Pause recogniser, is queued, and is
+    /// applied when the restart settles: playback goes on from the held position without a second press.
+    func testNativePlayDuringReturnIsQueued() throws {
+        let app = try launchNative(extra: ["-debug.nativeBackgroundFault", "delayRestart"] + cycleArgs(atSec: 10, awaySec: 4))
+        let held = try heldPositionWhileAway(app)
+        XCTAssertTrue(waitNative(app, timeout: 20) { $0["restoring"] == "1" }, "the restart never started: \(nativeProbeText(app))")
+        remote.press(.playPause)
+        Thread.sleep(forTimeInterval: 1.0)   // the held re-pause lands in the same turn as the start
+        let during = nativeProbe(app)
+        print("[ReturnLeg] N6 after Play during the restart: \(nativeProbeText(app))")
+        XCTAssertEqual(during["restoring"], "1", "Play landed after the restart, not during it: \(nativeProbeText(app))")
+        XCTAssertNotEqual(during["paused"], "0", "a Play during the restart reached the player: \(nativeProbeText(app))")
+        var lowest = Double.infinity
+        XCTAssertTrue(waitNative(app, timeout: 60) {
+            let p = Double($0["pos"] ?? "") ?? -1
+            if self.retMode($0) == "idle", $0["paused"] == "0", p >= 0 { lowest = min(lowest, p) }
+            return self.retMode($0) == "idle" && $0["restoring"] == "0" && $0["paused"] == "0" && $0["picture"] == "1" && p >= held + 2
+        }, "the queued Play was not applied after the restart: \(nativeProbeText(app))")
+        XCTAssertGreaterThanOrEqual(lowest, held - 1, "the queued Play started before the held position: held=\(held) lowest=\(lowest)")
+        XCTAssertFalse(app.otherElements["player.mpv"].exists, "mpv took over")
+    }
+
+    /// T-UI-N5 (`-debug.nativeStartDelaySec 6`, DEBUG cycle at the first poll tick, 3 s away): a return before
+    /// anything played restarts from scratch through the normal start and ends paused at its resume point
+    /// (30 s, `-debug.mpvSmokeResumeSec`) with a picture.
+    func testNativeReturnBeforeReadyRestartsFromScratch() throws {
+        let env = ProcessInfo.processInfo.environment
+        try XCTSkipUnless(env["PLAYER_NATIVE_PROBE"] == "1", "PLAYER_NATIVE_PROBE not set")
+        let url = try requiredEnv("PLAYER_SMOKE_URL")
+        let app = XCUIApplication()
+        app.launchArguments += ["-debug.mpvSmokeURL", url, "-player.nativeDolbyVision", "YES", "-debug.mpvSmokeEngine", "native",
+                                "-debug.mpvSmokeResumeSec", "30", "-debug.nativeStartDelaySec", "6"] + cycleArgs(atSec: 0, awaySec: 3)
+        app.launch()
+        XCTAssertTrue(waitNative(app, timeout: 60) { self.retMode($0) == "idle" && $0["paused"] == "1" && $0["picture"] == "1"
+                                                        && $0["restoring"] == "0" && (Double($0["pos"] ?? "") ?? 0) > 1 },
+                      "the start never ended paused with a picture after the return: \(nativeProbeText(app))")
+        let p = nativeProbe(app)
+        let back = Double(p["pos"] ?? "") ?? -1
+        print("[ReturnLeg] N5 settled: \(nativeProbeText(app))")
+        XCTAssertEqual(back, 30, accuracy: 3, "the restart from scratch is not at its resume point: \(nativeProbeText(app))")
+        XCTAssertFalse(app.otherElements["player.mpv"].exists, "the restart from scratch handed off to mpv")
+        assertNativePausedThenPlays(app, from: back)
+    }
 }
