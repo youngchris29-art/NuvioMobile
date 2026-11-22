@@ -21,6 +21,8 @@ enum MPVReturnDebug {
     /// The mpv DEBUG background cycle ran in this process (it never runs twice: a retry player would
     /// otherwise background again at the same position).
     @MainActor static var cycleUsed = false
+    /// `failFreshStart` fails only the first fresh start of the process.
+    @MainActor static var freshStartFaultUsed = false
 
     /// `debug.ownerFlip`: from now on `PlaybackIdentity.current()` answers another profile (once).
     @MainActor

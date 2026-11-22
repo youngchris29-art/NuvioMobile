@@ -141,3 +141,112 @@ final class TrackerReturnChainTests: XCTestCase {
         XCTAssertTrue(settled)
     }
 }
+
+// MARK: - Code review W7 r4
+
+final class MPVReturnReportedPositionTests: XCTestCase {
+    func testTheHeldStartIsReportedUntilReached() {
+        typealias P = MPVReturnReportedPosition
+        let rows: [(held: Double?, reached: Bool, live: Double, expected: Double, name: String)] = [
+            (2400, false, 0, 2400, "fresh start at FILE_LOADED: the seek is only queued"),
+            (2400, false, 12, 2400, "mid-landing"),
+            (2400, true, 2400.3, 2400.3, "landed: the player's own"),
+            (6, false, 0, 6, "a short held start"),
+            (0, false, 3, 0, "held at the top"),
+            (nil, false, 12, 12, "a normal start"),
+            (.nan, false, 12, 12, "an unusable held start"),
+            (2400, true, .nan, 0, "garbage live reads 0"),
+        ]
+        for r in rows {
+            XCTAssertEqual(P.position(heldStartSec: r.held, heldReached: r.reached, livePositionSec: r.live), r.expected, r.name)
+        }
+        XCTAssertEqual(P.heldStart(payload: .position(100), contextReturnStart: .position(5)), 100)
+        XCTAssertEqual(P.heldStart(payload: nil, contextReturnStart: .position(5)), 5, "a retry's held start")
+        XCTAssertNil(P.heldStart(payload: .live, contextReturnStart: .position(5)))
+        XCTAssertNil(P.heldStart(payload: .normalStart, contextReturnStart: nil))
+        XCTAssertNil(P.heldStart(payload: nil, contextReturnStart: nil))
+    }
+}
+
+final class PlayerReturnEpochTests: XCTestCase {
+    private let owner = PlaybackIdentity(accountKey: "a", profileId: 1)
+
+    private func payload(_ g: Int) -> PlayerReturnHandoff {
+        PlayerReturnHandoff(owner: owner, contextID: "c", streamKey: "k", start: .position(100), intent: .pause,
+                            playedSec: 0, healthyReported: false, returnGeneration: g, freshStartsLeft: 1, audio: .auto,
+                            subtitle: .auto, audioDelaySec: nil, speed: 1, origin: .mpvReturn)
+    }
+
+    /// A controller's first park, from the base the screen handed it.
+    private func firstPark(base: Int) -> Int {
+        let box = MPVParkBox()
+        box.continueGeneration(from: base)
+        return box.park()
+    }
+
+    /// return → fresh start fails → local retry (no payload) → background → the return is accepted.
+    func testALocalRetryControllersFirstReturnIsAccepted() {
+        var epoch = PlayerReturnEpoch()
+        XCTAssertEqual(epoch.accept(payload(firstPark(base: epoch.baseForNextController)), current: owner, contextID: "c"), .accept)
+        XCTAssertEqual(epoch.lastAccepted, 1)
+        // The fresh controller failed; the local retry controller is created with the screen's base.
+        let retryPark = firstPark(base: epoch.baseForNextController)
+        XCTAssertEqual(epoch.accept(payload(retryPark), current: owner, contextID: "c"), .accept,
+                       "it used to park at 1 and be refused as already accepted")
+        // Before r4 the retry started at 0: its first park was refused.
+        XCTAssertEqual(epoch.accept(payload(firstPark(base: 0)), current: owner, contextID: "c"), .discard(.generation))
+    }
+
+    /// The picker's retry builds a new PlayerScreen (a new epoch): its first return is accepted too.
+    func testAPickerRetryStartsANewEpoch() {
+        var old = PlayerReturnEpoch()
+        _ = old.accept(payload(1), current: owner, contextID: "c")
+        var fresh = PlayerReturnEpoch()
+        XCTAssertEqual(fresh.accept(payload(firstPark(base: fresh.baseForNextController)), current: owner, contextID: "c"), .accept)
+    }
+
+    func testAContextChangeStartsOver() {
+        var e = PlayerReturnEpoch()
+        _ = e.accept(payload(3), current: owner, contextID: "c")
+        e.reset()
+        XCTAssertEqual(e.baseForNextController, 0)
+    }
+}
+
+@MainActor
+final class TrackerOwnerGateTests: XCTestCase {
+    private func context() -> PlaybackContext {
+        PlaybackContext(url: URL(string: "https://example.invalid/a.mkv")!, title: "T", contentType: "movie",
+                        parentMetaId: "tt1", videoId: "tt1", season: nil, episode: nil, poster: nil, background: nil,
+                        providerName: nil, providerAddonId: nil, streamTitle: nil, streamSubtitle: nil, externalSubtitles: [])
+    }
+
+    /// r4-2: the identity changes while the old start is in flight: the deferred stop is dropped, and
+    /// the chain is released so the fresh start is not blocked.
+    func testADeferredStopAfterAnIdentityChangeIsDroppedAndReleasesTheChain() {
+        var log: [String] = []
+        let backend = TrackerReturnChainTests.SlowBackend("old")
+        backend.shared = { log.append($0) }
+        let owner = PlaybackIdentity(accountKey: "a", profileId: 1)
+        var current = owner
+        let chain = TrackerReturnChain()
+        let old = TrackerScrobbleSession(context: context(), owner: owner, identity: { current }, backend: backend)
+        old.start(positionSec: 100, durationSec: 1000)
+        old.stop(positionSec: 300, durationSec: 1000, isLive: false, settled: chain.hold(old))
+        var freshStarted = false
+        chain.whenIdle { freshStarted = true }
+        current = PlaybackIdentity(accountKey: "a", profileId: 2)   // profile switched before the start completed
+        backend.completeNext()
+        XCTAssertEqual(log, ["old start 10"], "the deferred stop is dropped after the change")
+        XCTAssertTrue(freshStarted, "the chain is released")
+        XCTAssertTrue(chain.isIdle)
+    }
+
+    func testAHoldThatNeverSettlesTimesOut() {
+        let chain = TrackerReturnChain()
+        _ = chain.hold(nil, timeoutSec: 0.05)
+        let ran = expectation(description: "released by the timeout")
+        chain.whenIdle { ran.fulfill() }
+        wait(for: [ran], timeout: 2)
+    }
+}

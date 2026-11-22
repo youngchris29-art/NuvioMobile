@@ -1263,12 +1263,25 @@ final class PlayerTransportUITests: XCTestCase {
         XCTAssertTrue(playing, "\(label): the retry did not play: \(probeText(app))")
     }
 
+    /// Code review W7 r4-3: the retry controller's own first return is accepted (it used to park with a
+    /// generation the screen had already accepted, and the player closed).
+    private func assertRetryReturnsAgain(_ app: XCUIApplication, _ label: String) {
+        let trip = realBackground(app, awaySec: 4)
+        XCTAssertTrue(trip.ok, "\(label): no background: \(trip.note)")
+        guard trip.ok else { return }
+        XCTAssertTrue(app.otherElements["player.mpv"].waitForExistence(timeout: 10), "\(label): the player closed on the retry's return")
+        XCTAssertTrue(waitReturn(app), "\(label): the retry's return never settled: \(probeText(app)) \(ledgerText(app))")
+        XCTAssertEqual(probe(app)["paused"], "1", "\(label): the retry's return came back playing: \(probeText(app))")
+        XCTAssertTrue(app.otherElements["player.mpv"].exists, "\(label): the player left after the return")
+    }
+
     private func failFreshStartLeg(source: String, cycleAt: Int, label: String) throws {
         let app = try launch(url: slowStartURL(), extra: cycle(atSec: cycleAt, awaySec: 3) + ["-debug.mpvReturnFault", "failFreshStart",
                                                                                            "-debug.mpvSmokeReturnAlert", "YES",
                                                                                            "-debug.mpvSmokeLaunchSource", source])
         let x = try waitReturnAlert(app, label)
         assertRetryStartsAt(app, x: x, label)
+        if source == "autoPlay" { assertRetryReturnsAgain(app, "\(label) retry return") }
     }
 
     /// Code review W7 r3-2: a host with no failure callback (the library's): the fresh start's failure
@@ -1292,6 +1305,7 @@ final class PlayerTransportUITests: XCTestCase {
         remote.press(.select)
         XCTAssertTrue(waitFor(app, timeout: 10) { _ in !app.alerts.firstMatch.exists }, "the alert stayed up")
         assertRetryStartsAt(app, x: x, "local alert")
+        assertRetryReturnsAgain(app, "local retry return")
     }
 
     /// M6 (auto-play): `failFreshStart`: the alert (no picker redirect) and the retry from held.

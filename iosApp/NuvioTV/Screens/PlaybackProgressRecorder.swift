@@ -168,6 +168,13 @@ final class LivePlaybackRecorderBackend: PlaybackRecorderBackend {
 /// design r3). Owned by `PlayerScreen`.
 @MainActor
 final class TrackerReturnChain {
+    /// One chain for the process (code r4 re-read): a retry from the picker builds a new `PlayerScreen`
+    /// while the replaced controller of the old one may still be settling its stops.
+    static let shared = TrackerReturnChain()
+    /// A hold that never settles (a completion that never comes) releases itself after this long, so a
+    /// lost callback cannot block every later start.
+    static let holdTimeoutSec: TimeInterval = 20
+
     private var holds: [Int: AnyObject?] = [:]
     private var nextID = 0
     private var waiters: [@MainActor () -> Void] = []
@@ -175,10 +182,17 @@ final class TrackerReturnChain {
     var isIdle: Bool { holds.isEmpty }
 
     /// Holds the chain (keeping `retaining` alive) until the returned closure runs (once; later calls do nothing).
-    func hold(_ retaining: AnyObject? = nil) -> @MainActor () -> Void {
+    func hold(_ retaining: AnyObject? = nil, timeoutSec: TimeInterval = TrackerReturnChain.holdTimeoutSec) -> @MainActor () -> Void {
         nextID += 1
         let id = nextID
         holds[id] = .some(retaining)
+        DispatchQueue.main.asyncAfter(deadline: .now() + timeoutSec) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.holds[id] != nil else { return }
+                print("[MPVReturn] tracker chain hold \(id) timed out after \(Int(timeoutSec)) s")
+                self.release(id)
+            }
+        }
         return { [weak self] in self?.release(id) }
     }
 

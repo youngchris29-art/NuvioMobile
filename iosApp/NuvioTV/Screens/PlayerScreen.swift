@@ -68,10 +68,11 @@ struct PlayerScreen: View {
     /// generation, and the display-criteria lease every mpv controller of this screen shares.
     @State private var returnPayload: PlayerReturnHandoff?
     @State private var mpvGeneration = 0
-    @State private var lastReturnGeneration = 0
+    /// Code r4-3: the one owner of the return generation for every mpv controller this screen creates.
+    @State private var returnEpoch = PlayerReturnEpoch()
     @State private var displayLease = DisplayCriteriaLease()
     /// Code r3-3: a replaced mpv controller's tracker stops settle before the fresh one's starts.
-    @State private var trackerChain = TrackerReturnChain()
+    private var trackerChain: TrackerReturnChain { .shared }
     /// Code r3-2: a return-start failure with no host callback (the library) gets this screen's own alert.
     @State private var localReturnFailure: PlaybackFailure?
     /// The held start the local alert's "Try with mpv" retries at (the next mpv controller's context).
@@ -178,7 +179,8 @@ struct PlayerScreen: View {
                                 leaseToken: mpvGeneration,
                                 onReturnReplace: { payload, prepare in acceptReturn(payload, prepare: prepare) },
                                 trackerChain: trackerChain,
-                                onReturnFailed: { failure in noteLocalReturnFailure(failure) })
+                                onReturnFailed: { failure in noteLocalReturnFailure(failure) },
+                                returnGenerationBase: returnEpoch.baseForNextController)
                 // One mpv controller per accepted return payload (spec-mpv-return §3.1).
                 .id(mpvGeneration)
             case .deciding:
@@ -216,6 +218,7 @@ struct PlayerScreen: View {
             handoffPositionSec = nil
             returnPayload = nil
             localRetryStart = nil
+            returnEpoch.reset()
             armStartupLimit()
         }
         // spec-mpv-return §3.7 (M6): a background before the start cancels the start-up limit for the
@@ -272,8 +275,7 @@ struct PlayerScreen: View {
     /// (identity, context, generation), `prepare` the old controller, move the lease to the fresh
     /// controller's token, set the payload and bump the generation (the `.id`).
     private func acceptReturn(_ payload: PlayerReturnHandoff, prepare: () -> Void) -> Bool {
-        switch payload.validate(current: PlaybackIdentity.current(), contextID: context.id,
-                                lastGeneration: lastReturnGeneration) {
+        switch returnEpoch.accept(payload, current: PlaybackIdentity.current(), contextID: context.id) {
         case .discard(let reason):
             print("[MPVReturn] payload discarded reason=\(reason.rawValue) g=\(payload.returnGeneration)")
             return false
@@ -281,7 +283,6 @@ struct PlayerScreen: View {
             prepare()
             let next = mpvGeneration + 1
             displayLease.transfer(to: next)
-            lastReturnGeneration = payload.returnGeneration
             returnPayload = payload
             mpvGeneration = next
             print("[MPVReturn] payload accepted g=\(payload.returnGeneration) ctl=\(next)")
@@ -294,12 +295,10 @@ struct PlayerScreen: View {
     private func acceptTransfer(_ transfer: PlayerReturnTransfer, origin: PlayerReturnHandoff.Origin, playedSec: Double) {
         let payload = transfer.payload(contextID: context.id, streamKey: context.streamKey, origin: origin,
                                        playedSec: playedSec)
-        switch payload.validate(current: PlaybackIdentity.current(), contextID: context.id,
-                                lastGeneration: lastReturnGeneration) {
+        switch returnEpoch.accept(payload, current: PlaybackIdentity.current(), contextID: context.id) {
         case .discard(let reason):
             print("[MPVReturn] payload discarded reason=\(reason.rawValue) g=\(payload.returnGeneration) origin=\(origin)")
         case .accept:
-            lastReturnGeneration = payload.returnGeneration
             returnPayload = payload
             print("[MPVReturn] payload accepted g=\(payload.returnGeneration) origin=\(origin) start=\(payload.start.logToken) intent=\(payload.intent == .play ? "play" : "pause")")
         }

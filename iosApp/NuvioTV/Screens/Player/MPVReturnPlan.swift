@@ -223,3 +223,43 @@ nonisolated enum PlayerReturnFailureOwner: Sendable, Equatable {
         return returnStartPending ? .local : .none
     }
 }
+
+// MARK: - The position a return start reports (code review W7 r4-1)
+
+/// Until a held start is reached (the payload's landing completed, or a retry's resume seek ended the
+/// start), every tracker start, progress save, Trakt note and stop reports the held start, never the
+/// 0 the fresh player shows while its seek is queued. After that, the player's own position. Pure.
+nonisolated enum MPVReturnReportedPosition {
+    static func position(heldStartSec: Double?, heldReached: Bool, livePositionSec: Double) -> Double {
+        if let held = heldStartSec, held.isFinite, held >= 0, !heldReached { return held }
+        return livePositionSec.isFinite ? max(0, livePositionSec) : 0
+    }
+
+    /// The held start of a controller: the payload's `.position`, else a retry's `returnStart` `.position`.
+    static func heldStart(payload: PlayerReturnHandoff.Start?, contextReturnStart: PlayerReturnHandoff.Start?) -> Double? {
+        if case .position(let p)? = payload { return p }
+        if payload == nil, case .position(let p)? = contextReturnStart { return p }
+        return nil
+    }
+}
+
+// MARK: - One owner of the return generation (code review W7 r4-3)
+
+/// `PlayerScreen`'s return epoch: the last accepted generation, and the base every mpv controller it
+/// creates continues from (a payload start, a local retry, a plain fallback alike), so no creation path
+/// can park with a generation the screen already accepted. Pure.
+nonisolated struct PlayerReturnEpoch: Sendable, Equatable {
+    private(set) var lastAccepted = 0
+
+    /// What a new controller's park generation starts from.
+    var baseForNextController: Int { lastAccepted }
+
+    mutating func accept(_ payload: PlayerReturnHandoff, current: PlaybackIdentity, contextID: String) -> PlayerReturnHandoff.Validation {
+        let v = payload.validate(current: current, contextID: contextID, lastGeneration: lastAccepted)
+        if v == .accept { lastAccepted = payload.returnGeneration }
+        return v
+    }
+
+    /// A new context starts over.
+    mutating func reset() { lastAccepted = 0 }
+}
