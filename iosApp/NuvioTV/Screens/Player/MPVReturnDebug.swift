@@ -23,6 +23,7 @@ enum MPVReturnDebug {
     @MainActor static var cycleUsed = false
     /// `failFreshStart` fails only the first fresh start of the process.
     @MainActor static var freshStartFaultUsed = false
+    @MainActor static var retryFaultUsed = false
 
     /// `debug.ownerFlip`: from now on `PlaybackIdentity.current()` answers another profile (once).
     @MainActor

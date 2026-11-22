@@ -112,8 +112,9 @@ struct PlayerScreen: View {
                                    onFallback: context.forcedEngine == .native ? nil : { position, secondsPlayed, startedPlaying in
                                        // spec-mpv-return §3.3: the return rule's handoff (delivered just
                                        // before this) seeds the mpv start; outside a return there is none.
-                                       if let transfer = pendingTransfer.take() {
-                                           acceptTransfer(transfer, origin: .nativeReturn, playedSec: secondsPlayed)
+                                       // Code r5-2: the route is obeyed; an owner mismatch starts nothing.
+                                       if routeFallback(pendingTransfer.take(), origin: .nativeReturn, playedSec: secondsPlayed) == .exit {
+                                           return
                                        }
                                        // W4: mpv gets the full start-up limit (a no-op once a frame showed).
                                        startupClock.noteHandoff()
@@ -144,8 +145,8 @@ struct PlayerScreen: View {
                                 onOpenTitle: onOpenTitle,
                                 engine: .aether,
                                 onFallback: { handoff in
-                                    if let transfer = handoff.returnTransfer {
-                                        acceptTransfer(transfer, origin: .aetherReturn, playedSec: handoff.secondsPlayed)
+                                    if routeFallback(handoff.returnTransfer, origin: .aetherReturn, playedSec: handoff.secondsPlayed) == .exit {
+                                        return
                                     }
                                     // W4: mpv gets the full start-up limit (a no-op once a frame showed).
                                     startupClock.noteHandoff()
@@ -254,21 +255,22 @@ struct PlayerScreen: View {
         return ctx
     }
 
-    /// Code r3-2: a return-start failure when the host gave no failure callback.
+    /// Code r3-2, r5-4/5: an mpv start's failure when the host gave no failure callback (every start
+    /// this screen creates, a local retry included).
     private func noteLocalReturnFailure(_ failure: PlaybackFailure) {
         guard onPlaybackFailed == nil else { return }
-        print("[MPVReturn] return failure -> local alert start=\(failure.returnRecovery?.logToken ?? "-")")
+        print("[MPVReturn] failure -> local alert start=\(PlayerReturnFailureOwner.localRetryStart(for: failure).logToken)")
         localReturnFailure = failure
     }
 
-    /// "Try with mpv": a fresh mpv controller (no payload) at the held start, as the picker's retry does.
+    /// "Try with mpv": a fresh mpv controller (no payload) at the held start (or where the start got to).
     private func retryLocally(_ failure: PlaybackFailure) {
-        guard let plan = PlaybackFailoverPolicy.returnAlert(for: context, failure: failure, pickerVideoId: context.videoId) else { return }
-        localRetryStart = plan.retry.returnStart
+        let start = PlayerReturnFailureOwner.localRetryStart(for: failure)
+        localRetryStart = start
         returnPayload = nil
         forcedMPV = true
         mpvGeneration += 1
-        print("[MPVReturn] local retry start=\(plan.retry.returnStart?.logToken ?? "-") ctl=\(mpvGeneration)")
+        print("[MPVReturn] local retry start=\(start.logToken) ctl=\(mpvGeneration)")
     }
 
     /// spec-mpv-return §3.6: the mpv controller asks for its replacement. In one main turn: validate
@@ -290,18 +292,29 @@ struct PlayerScreen: View {
         }
     }
 
-    /// spec-mpv-return §3.3 (M10): a native or Aether return rule handed off to mpv. The payload is
-    /// validated the same way; a stale or mismatched one is dropped and mpv starts as today.
-    private func acceptTransfer(_ transfer: PlayerReturnTransfer, origin: PlayerReturnHandoff.Origin, playedSec: Double) {
-        let payload = transfer.payload(contextID: context.id, streamKey: context.streamKey, origin: origin,
-                                       playedSec: playedSec)
-        switch returnEpoch.accept(payload, current: PlaybackIdentity.current(), contextID: context.id) {
-        case .discard(let reason):
-            print("[MPVReturn] payload discarded reason=\(reason.rawValue) g=\(payload.returnGeneration) origin=\(origin)")
-        case .accept:
-            returnPayload = payload
-            print("[MPVReturn] payload accepted g=\(payload.returnGeneration) origin=\(origin) start=\(payload.start.logToken) intent=\(payload.intent == .play ? "play" : "pause")")
+    /// spec-mpv-return §3.3 (M10) + code r5-2: every engine fallback to mpv goes through this one
+    /// decision and its caller obeys the result: a validated return transfer seeds the mpv start; an
+    /// owner mismatch exits the player (nothing starts under the new identity); anything else is
+    /// today's handoff.
+    private func routeFallback(_ transfer: PlayerReturnTransfer?, origin: PlayerReturnHandoff.Origin,
+                               playedSec: Double) -> PlayerFallbackRoute {
+        let payload = transfer?.payload(contextID: context.id, streamKey: context.streamKey, origin: origin,
+                                        playedSec: playedSec)
+        let validation = payload.map { returnEpoch.accept($0, current: PlaybackIdentity.current(), contextID: context.id) }
+        let route = PlayerFallbackRoute.decide(transfer: payload, validation: validation)
+        switch route {
+        case .plain:
+            if let validation, case .discard(let reason) = validation {
+                print("[MPVReturn] payload discarded reason=\(reason.rawValue) origin=\(origin): today's handoff")
+            }
+        case .returnPayload(let p):
+            returnPayload = p
+            print("[MPVReturn] payload accepted g=\(p.returnGeneration) origin=\(origin) start=\(p.start.logToken) intent=\(p.intent == .play ? "play" : "pause")")
+        case .exit:
+            print("[MPVReturn] payload discarded reason=owner origin=\(origin): the player exits")
+            dismissPlayer()
         }
+        return route
     }
 
     /// W4: arms the start-up clock for the current context; nothing without a limit or a host.

@@ -552,12 +552,23 @@ final class MPVTVPlayerViewController: UIViewController {
     private var lastAudioSemantics: [MPVTrackSemantics] = []
     private var lastSubtitleSemantics: [MPVTrackSemantics] = []
     private var lastSubtitleExternalSources: [Int: String] = [:]
-    /// Code r4-1: the position trackers, progress saves and stops report (the held start until reached).
-    private var reportedPositionSec: Double {
-        let held = MPVReturnReportedPosition.heldStart(payload: returnHandoff?.start, contextReturnStart: context.returnStart)
-        let reached = returnSeeks.hasLanding ? !returnSeeks.landingPending : startupStages.started
-        return MPVReturnReportedPosition.position(heldStartSec: held, heldReached: reached, livePositionSec: state.positionSec)
+    /// Code r4-1, r5-3: the position trackers, progress saves and stops report: the held start until it is
+    /// reached, then the landing until the published clock caught up, then the clock.
+    private lazy var reportedPosition = MPVReturnReportedPosition(heldStartSec: heldStartSec)
+    private var reportedPositionSec: Double { reportedPosition.position(livePositionSec: state.positionSec) }
+    /// The controller's held start (the payload's `.position`, else a retry's `returnStart`), nil for others.
+    private var heldStartSec: Double? {
+        MPVReturnReportedPosition.heldStart(payload: returnHandoff?.start, contextReturnStart: context.returnStart)
     }
+    /// Code r5-4: a return start (payload or a retry's held start) ends within a bound of active time.
+    private var startDeadline: MPVStartDeadline = {
+        #if DEBUG
+        let sec = UserDefaults.standard.double(forKey: "debug.mpvStartDeadlineSec")
+        if sec > 0 { return MPVStartDeadline(limitSec: sec) }
+        #endif
+        return MPVStartDeadline()
+    }()
+    private var startDeadlineTimer: Timer?
     /// Main: what the viewer asked for (code review W7 r2): seeded from the handoff, updated at each
     /// viewer action; the park snapshot reads it, not the last finished track walk.
     private var viewerIntent = MPVViewerIntent()
@@ -752,11 +763,25 @@ final class MPVTVPlayerViewController: UIViewController {
                 print("[MPVReturn] fresh start g=\(p.returnGeneration) origin=\(p.origin) pause=\(p.startsPaused ? 1 : 0) resume=\(p.start.logToken) audio=\(p.audio.logToken) sub=\(p.subtitle.logToken) t=\(String(format: "%.3f", ProcessInfo.processInfo.systemUptime))")
             }
             command("loadfile", args: [context.url.absoluteString, "replace"])
+            beginStartDeadlineIfReturnStart()
             print("[Loading] engine=mpv stage=\(startupStages.stage.logToken) t=+\(String(format: "%.2f", ProcessInfo.processInfo.systemUptime - loadingStartUptime))s")
             #if DEBUG
             if returnHandoff == nil {
                 if !MPVReturnDebug.cycleUsed, debugBackgroundCycle.noteStage("loadIssued") { MPVReturnDebug.cycleUsed = true }
-            } else if MPVReturnDebug.fault == "failFreshStart", !MPVReturnDebug.freshStartFaultUsed {
+            }
+            // `failFreshAndRetry` (r5): also fails the first local / picker retry (a held start, no payload).
+            if returnHandoff == nil, context.returnStart != nil, MPVReturnDebug.fault == "failFreshAndRetry",
+               !MPVReturnDebug.retryFaultUsed {
+                MPVReturnDebug.retryFaultUsed = true
+                // 3 s: the first alert has gone (a leg tells the two alerts apart).
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                    guard let self else { return }
+                    print("[MPVReturn] DEBUG failFreshAndRetry: the retry fails")
+                    self.reportPlaybackFailure(reason: "DEBUG failRetryStart", startedPlaying: false,
+                                               secondsPlayed: self.failoverSecondsPlayed, verdict: .init(.noMedia))
+                }
+            } else if returnHandoff != nil, MPVReturnDebug.fault == "failFreshStart" || MPVReturnDebug.fault == "failFreshAndRetry",
+                      !MPVReturnDebug.freshStartFaultUsed {
                 MPVReturnDebug.freshStartFaultUsed = true   // once per process: a later return succeeds
                 // Before the fresh start can settle (a local fixture settles in well under a second).
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
@@ -833,7 +858,7 @@ final class MPVTVPlayerViewController: UIViewController {
         // covers the player: Replay comes back to this same controller.
         // Device-pass probe (review r2 #3): must read true on a Menu exit, false under the card.
         print("[Failover] viewWillDisappear isLeavingPlayer=\(isLeavingPlayer) cover=\(coverIsBeingDismissed ? 1 : 0) sinceExit=\(transportInput.sinceExitMs())ms")
-        if isLeavingPlayer { closeFailover(); isLeaving = true }
+        if isLeavingPlayer { closeFailover(); isLeaving = true; completeStartDeadline("leaving") }
         // The hosting cover gets its Menu recogniser back whenever the cover itself stays: a
         // full-screen cover over the player (the post-play card) and, review r1 P1-1, an in-place
         // swap of this controller inside the same cover (Up Next / failover: `StreamPickerView`'s
@@ -2567,6 +2592,7 @@ final class MPVTVPlayerViewController: UIViewController {
             if savedResumeThisSession { undoSessionResumeSaves() }
         }
         if state.positionSec != position { state.positionSec = position }
+        reportedPosition.clockSample(position)
         #if DEBUG
         debugReturnTick(positionSec: position)
         #endif
@@ -3464,6 +3490,13 @@ final class MPVTVPlayerViewController: UIViewController {
         let generation = seekGeneration
         // spec-mpv-return §3.2 + code review W7 r1: one decision for every seek's outcome.
         applyReturnSeekOutcome(returnSeeks.issued(role, generation: generation, targetSec: targetSec))
+        #if DEBUG
+        // `stallReturnSeek` (r5-4): the payload's resume is accepted and never restarts or errors.
+        if role == .resume, returnHandoff != nil, MPVReturnDebug.fault == "stallReturnSeek" {
+            print("[MPVReturn] DEBUG stallReturnSeek: the resume seek never completes")
+            return generation
+        }
+        #endif
         let issued = parkBox.generation
         eventQueue.async { [weak self] in
             guard let self else { return }
@@ -3647,8 +3680,9 @@ final class MPVTVPlayerViewController: UIViewController {
                                        positionSec: Double? = nil,
                                        verdict: PlaybackFailureClassifier.Verdict) -> Bool {
         // Code r3-2: a return start's failure always has an owner (the host's callback, else PlayerScreen's).
+        // r5-4/5: every start PlayerScreen creates has an owner (its alert when the host has no callback).
         let owner = PlayerReturnFailureOwner.decide(hostHasCallback: self.onPlaybackFailed != nil,
-                                                    returnStartPending: returnStartPending && returnHandoff != nil)
+                                                    localOwnerAvailable: onReturnFailed != nil)
         let handler: ((PlaybackFailure) -> Void)?
         switch owner {
         case .host: handler = self.onPlaybackFailed
@@ -3661,6 +3695,7 @@ final class MPVTVPlayerViewController: UIViewController {
             return false
         }
         failoverReported = true
+        completeStartDeadline("failure")
         startWatchdog.noteCancelled()
         stopStartWatchdogTimer()
         var position = positionSec ?? cachedProps().position
@@ -3708,7 +3743,7 @@ final class MPVTVPlayerViewController: UIViewController {
     /// failure (a dead host or stalled handshake makes mpv go quiet, not report an error).
     private func armStartWatchdog() {
         // Code r3-2: armed on every return start (its failure has an owner whatever the host).
-        guard onPlaybackFailed != nil || (returnHandoff != nil && returnStartPending && onReturnFailed != nil) else { return }
+        guard onPlaybackFailed != nil || onReturnFailed != nil else { return }
         startWatchdog = MPVStartWatchdog(limitSeconds: MPVStartWatchdog.limitSeconds(
             shortened: startWatchdogShortened, startupLimitSec: startupLimitSec))
         startWatchdog.noteLoadStarted(at: ProcessInfo.processInfo.systemUptime)
@@ -3815,6 +3850,7 @@ final class MPVTVPlayerViewController: UIViewController {
     deinit {
         pollTimer?.invalidate()
         startWatchdogTimer?.invalidate()
+        startDeadlineTimer?.invalidate()
         transportInput?.invalidate()
         subtitleWatcher?.cancel()
         subtitleLoadingWatcher?.cancel()
@@ -3955,6 +3991,7 @@ final class MPVTVPlayerViewController: UIViewController {
                 DispatchQueue.main.async {
                     // spec-mpv-return §3.5: a return start's landing is checked first (own generation).
                     self.returnSeekFinished(generation: generation, result: .landed(atSec: landed.isFinite ? landed : nil))
+                    if landed.isFinite { self.reportedPosition.seekLanded(atSec: landed) }
                     // The preview playhead hands back to the real position on a commit's first
                     // landing, whether or not the planner guard below passes.
                     self.transportInput.seekLandedForCommit(generation: generation)
@@ -4124,6 +4161,10 @@ final class MPVTVPlayerViewController: UIViewController {
         if stage.isStarted {
             state.playbackStarted = true
             returnSeeks.startupCompleted()
+            if !returnSeeks.hasLanding {
+                reportedPosition.reached(landedSec: nil)
+                completeStartDeadline("started")
+            }
             applyPauseAfterFirstFrameIfPending()
             returnStartedNoted()
         }
@@ -4943,6 +4984,8 @@ extension MPVTVPlayerViewController {
         // Stand down: no failure, watchdog, tick (progress saves, harvest), thumbs or display work
         // from this controller while it is away.
         closeFailover()
+        // r5-4: no deadline time while away or parked.
+        startDeadline.suspend(now: ProcessInfo.processInfo.systemUptime)
         pollTimer?.invalidate()
         pollTimer = nil
         thumbScrubWork?.cancel(); thumbScrubWork = nil
@@ -5017,6 +5060,7 @@ extension MPVTVPlayerViewController {
         }
         // The park closed failure reporting; a controller that stays (post-play) reports again.
         if !isLeaving, !state.playbackFailoverSuppressed { failoverClosed = false }
+        startDeadline.resume(now: ProcessInfo.processInfo.systemUptime)
         if view.window != nil, pollTimer == nil, !isLeaving { startPolling() }
         debugPublishReturnProbe("kept")
     }
@@ -5084,6 +5128,12 @@ extension MPVTVPlayerViewController {
         }
         if let completion = out.completion {
             returnStartPending = false
+            switch completion {
+            case .settled(let x): reportedPosition.reached(landedSec: x)
+            case .offTarget(let x): reportedPosition.reached(landedSec: x)
+            case .cancelled: reportedPosition.reached(landedSec: returnSeeks.inFlight?.targetSec)
+            }
+            completeStartDeadline("landing")
             let t = ProcessInfo.processInfo.systemUptime
             switch completion {
             case .settled(let landed):
@@ -5099,6 +5149,35 @@ extension MPVTVPlayerViewController {
             }
         }
         if state.returnLandingPending != returnSeeks.landingPending { state.returnLandingPending = returnSeeks.landingPending }
+    }
+
+    /// Code r5-4: a return start (a payload, or a retry's held start) runs a bounded deadline from its load
+    /// until it is complete; its timeout is a failure for the start's owner.
+    fileprivate func beginStartDeadlineIfReturnStart() {
+        guard returnHandoff != nil || context.returnStart != nil, onPlaybackFailed != nil || onReturnFailed != nil else { return }
+        startDeadline.begin(now: ProcessInfo.processInfo.systemUptime)
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in self?.tickStartDeadline() }
+        RunLoop.main.add(timer, forMode: .common)
+        startDeadlineTimer = timer
+        print("[MPVReturn] start deadline armed: \(Int(startDeadline.limitSec)) s")
+    }
+
+    private func tickStartDeadline() {
+        guard startDeadline.poll(now: ProcessInfo.processInfo.systemUptime) else {
+            if startDeadline.phase == .done { startDeadlineTimer?.invalidate(); startDeadlineTimer = nil }
+            return
+        }
+        startDeadlineTimer?.invalidate(); startDeadlineTimer = nil
+        print("[MPVReturn] start deadline fired: the start did not complete within \(Int(startDeadline.limitSec)) s")
+        reportPlaybackFailure(reason: "start did not complete within \(Int(startDeadline.limitSec)) s",
+                              startedPlaying: failoverLoadedUptime != nil, secondsPlayed: failoverSecondsPlayed,
+                              verdict: PlaybackFailureClassifier.fromMpvLog(logRing.snapshot, endFileError: nil, watchdogFired: true))
+    }
+
+    fileprivate func completeStartDeadline(_ why: String) {
+        guard startDeadline.phase != .done, startDeadline.phase != .idle else { return }
+        startDeadline.complete()
+        startDeadlineTimer?.invalidate(); startDeadlineTimer = nil
     }
 
     /// Code r4-4: every write that can unpause, unmute, load or bring video back goes through here: the

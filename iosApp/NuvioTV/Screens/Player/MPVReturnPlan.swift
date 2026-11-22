@@ -210,29 +210,114 @@ nonisolated enum MPVReturnStartMode: Sendable, Equatable {
     }
 }
 
-// MARK: - Who owns a return failure (code review W7 r3-2)
+// MARK: - Who owns a start's failure (code review W7 r3-2, r5-4/5)
 
-/// A failure of a return start always has an owner: the host's failure callback when it has one,
-/// else `PlayerScreen`'s own alert (Try with mpv at the held start, Close). A failure after the
-/// return settled is today's (the host's, or none). Pure.
+/// Every mpv start `PlayerScreen` creates has exactly one failure owner (r5-4/5): the host's callback
+/// when it has one, else `PlayerScreen`'s own alert. `.none` only for a controller with neither (not
+/// built by `PlayerScreen`). Pure.
 nonisolated enum PlayerReturnFailureOwner: Sendable, Equatable {
     case host, local, none
 
-    static func decide(hostHasCallback: Bool, returnStartPending: Bool) -> PlayerReturnFailureOwner {
+    static func decide(hostHasCallback: Bool, localOwnerAvailable: Bool) -> PlayerReturnFailureOwner {
         if hostHasCallback { return .host }
-        return returnStartPending ? .local : .none
+        return localOwnerAvailable ? .local : .none
+    }
+
+    /// The local alert's "Try with mpv" start: a return failure's held start; else where an ordinary
+    /// start that played had got to; else a normal start.
+    static func localRetryStart(for failure: PlaybackFailure) -> PlayerReturnHandoff.Start {
+        if let r = failure.returnRecovery { return r }
+        if failure.startedPlaying, failure.positionSec.isFinite, failure.positionSec > 0 { return .position(failure.positionSec) }
+        return .normalStart
     }
 }
 
-// MARK: - The position a return start reports (code review W7 r4-1)
+// MARK: - One bounded end for a return start (code review W7 r5-4)
 
-/// Until a held start is reached (the payload's landing completed, or a retry's resume seek ended the
-/// start), every tracker start, progress save, Trakt note and stop reports the held start, never the
-/// 0 the fresh player shows while its seek is queued. After that, the player's own position. Pure.
-nonisolated enum MPVReturnReportedPosition {
-    static func position(heldStartSec: Double?, heldReached: Bool, livePositionSec: Double) -> Double {
-        if let held = heldStartSec, held.isFinite, held >= 0, !heldReached { return held }
-        return livePositionSec.isFinite ? max(0, livePositionSec) : 0
+/// A return start (payload or a retry's held start) must end within a bound of active time, from its
+/// load until it is complete (landing settled / offTarget / cancelled, or the start stage completed
+/// when there is no landing). The start watchdog stands down at FILE_LOADED; this one does not. It
+/// never counts time while suspended (backgrounded or parked). Pure; the clock is passed in.
+nonisolated struct MPVStartDeadline: Sendable, Equatable {
+    enum Phase: Sendable, Equatable { case idle, running(since: Double, spent: Double), suspended(spent: Double), done }
+
+    static let defaultLimitSec: Double = 45
+
+    let limitSec: Double
+    private(set) var phase: Phase = .idle
+
+    init(limitSec: Double = MPVStartDeadline.defaultLimitSec) { self.limitSec = limitSec }
+
+    var isRunning: Bool { if case .running = phase { return true }; return false }
+
+    mutating func begin(now: Double) { if phase == .idle { phase = .running(since: now, spent: 0) } }
+
+    mutating func suspend(now: Double) {
+        if case .running(let since, let spent) = phase { phase = .suspended(spent: spent + max(0, now - since)) }
+    }
+
+    mutating func resume(now: Double) {
+        if case .suspended(let spent) = phase { phase = .running(since: now, spent: spent) }
+    }
+
+    /// The start completed (or the controller is going away): never fires.
+    mutating func complete() { phase = .done }
+
+    /// True exactly once, when the active time passed the limit.
+    mutating func poll(now: Double) -> Bool {
+        guard case .running(let since, let spent) = phase, spent + max(0, now - since) >= limitSec else { return false }
+        phase = .done
+        return true
+    }
+}
+
+// MARK: - The position a return start reports (code review W7 r4-1, r5-3)
+
+/// The position every tracker start, progress save, Trakt note and stop reports (r4-1, r5-3). Pure:
+/// - `.held`: until the held start is reached (the payload's landing completed, or a retry's start);
+/// - `.landed(x)`: after that, the confirmed landing (or the latest seek landing) until the published
+///   clock (a 0.5 s poll) has caught up with it, so an exit right after the landing never reports 0;
+/// - `.clock`: the player's own position.
+/// A start with no held start is `.clock` from the beginning (today's).
+nonisolated struct MPVReturnReportedPosition: Sendable, Equatable {
+    enum Phase: Sendable, Equatable { case held(Double), landed(Double), clock }
+
+    private(set) var phase: Phase
+
+    /// A clock sample within this neighbourhood of the landing has caught up (paused: equal; playing:
+    /// a little past; the window allows a slow first tick).
+    static let catchUpBeforeSec = 1.0
+    static let catchUpAfterSec = 60.0
+
+    init(heldStartSec: Double?) {
+        if let h = heldStartSec, h.isFinite, h >= 0 { phase = .held(h) } else { phase = .clock }
+    }
+
+    /// The held start was reached: at `landedSec` (nil = the held start itself).
+    mutating func reached(landedSec: Double?) {
+        guard case .held(let h) = phase else { return }
+        phase = .landed(landedSec.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil } ?? h)
+    }
+
+    /// A later app seek landed: the reference moves there until the clock catches up again. Ignored
+    /// while the held start has not been reached.
+    mutating func seekLanded(atSec: Double) {
+        if case .held = phase { return }
+        if atSec.isFinite, atSec >= 0 { phase = .landed(atSec) }
+    }
+
+    /// A published clock sample (the poll).
+    mutating func clockSample(_ live: Double) {
+        guard case .landed(let x) = phase, live.isFinite else { return }
+        if live >= x - Self.catchUpBeforeSec && live <= x + Self.catchUpAfterSec { phase = .clock }
+    }
+
+    func position(livePositionSec: Double) -> Double {
+        switch phase {
+        case .held(let h): return h
+        case .landed(let x): return x
+        case .clock: return livePositionSec.isFinite ? max(0, livePositionSec) : 0
+        }
     }
 
     /// The held start of a controller: the payload's `.position`, else a retry's `returnStart` `.position`.

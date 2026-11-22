@@ -396,8 +396,13 @@ final class NativeReturnEffectRunner {
                 }
                 record("handOff \(String(format: "%.1f", atSec))")
                 stopTimers()
+                // Code r5-1: three-way start (a restart's resolved target, a held position the engine
+                // had established, else a normal start), never a held 0 taken before readiness.
+                let transferStart = PlayerReturnTransfer.start(
+                    heldSec: atSec, startedBeforeBackground: lastSnapshot.map { $0.phase != .starting } ?? false,
+                    restartTargetSec: machine.seekTarget)
                 host.returnNoteTransfer(PlayerReturnTransfer(owner: rule.owner, intent: rule.intent == .play ? .play : .pause,
-                                                             atSec: atSec, generation: backgroundGeneration))
+                                                             start: transferStart, generation: backgroundGeneration))
                 host.returnHandOff(atSec: atSec, reason: handOffNote)
             case .exitPlayer:
                 record("exit")

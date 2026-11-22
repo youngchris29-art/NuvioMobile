@@ -23,16 +23,22 @@ final class MPVReturnStartModeTests: XCTestCase {
 }
 
 final class PlayerReturnFailureOwnerTests: XCTestCase {
-    func testEveryReturnFailureHasAnOwner() {
-        for host in [false, true] {
-            for pending in [false, true] {
-                let o = PlayerReturnFailureOwner.decide(hostHasCallback: host, returnStartPending: pending)
-                if host { XCTAssertEqual(o, .host) }
-                else if pending { XCTAssertEqual(o, .local, "the library host has no callback: PlayerScreen owns it") }
-                else { XCTAssertEqual(o, .none, "a failure after the return settled is today's") }
-                if pending { XCTAssertNotEqual(o, .none) }
-            }
-        }
+    /// r5-4/5: every start PlayerScreen creates has an owner, return or not.
+    func testEveryStartHasAnOwner() {
+        XCTAssertEqual(PlayerReturnFailureOwner.decide(hostHasCallback: true, localOwnerAvailable: true), .host)
+        XCTAssertEqual(PlayerReturnFailureOwner.decide(hostHasCallback: true, localOwnerAvailable: false), .host)
+        XCTAssertEqual(PlayerReturnFailureOwner.decide(hostHasCallback: false, localOwnerAvailable: true), .local,
+                       "the library: PlayerScreen's alert, a local retry's second failure included")
+        XCTAssertEqual(PlayerReturnFailureOwner.decide(hostHasCallback: false, localOwnerAvailable: false), .none)
+    }
+
+    func testTheLocalRetryStart() {
+        var f = PlaybackFailure(reason: "r", positionSec: 812, secondsPlayed: 90, startedPlaying: true)
+        XCTAssertEqual(PlayerReturnFailureOwner.localRetryStart(for: f), .position(812), "an ordinary start that played")
+        f.returnRecovery = .position(1265.8)
+        XCTAssertEqual(PlayerReturnFailureOwner.localRetryStart(for: f), .position(1265.8), "a return's held start wins")
+        let never = PlaybackFailure(reason: "r", positionSec: 0, secondsPlayed: 0, startedPlaying: false)
+        XCTAssertEqual(PlayerReturnFailureOwner.localRetryStart(for: never), .normalStart)
     }
 }
 
@@ -145,21 +151,45 @@ final class TrackerReturnChainTests: XCTestCase {
 // MARK: - Code review W7 r4
 
 final class MPVReturnReportedPositionTests: XCTestCase {
-    func testTheHeldStartIsReportedUntilReached() {
-        typealias P = MPVReturnReportedPosition
-        let rows: [(held: Double?, reached: Bool, live: Double, expected: Double, name: String)] = [
-            (2400, false, 0, 2400, "fresh start at FILE_LOADED: the seek is only queued"),
-            (2400, false, 12, 2400, "mid-landing"),
-            (2400, true, 2400.3, 2400.3, "landed: the player's own"),
-            (6, false, 0, 6, "a short held start"),
-            (0, false, 3, 0, "held at the top"),
-            (nil, false, 12, 12, "a normal start"),
-            (.nan, false, 12, 12, "an unusable held start"),
-            (2400, true, .nan, 0, "garbage live reads 0"),
-        ]
-        for r in rows {
-            XCTAssertEqual(P.position(heldStartSec: r.held, heldReached: r.reached, livePositionSec: r.live), r.expected, r.name)
-        }
+    typealias P = MPVReturnReportedPosition
+
+    func testTheHeldStartIsReportedUntilReachedThenTheLandingUntilTheClockCatchesUp() {
+        var r = P(heldStartSec: 2400)
+        XCTAssertEqual(r.position(livePositionSec: 0), 2400, "FILE_LOADED: the seek is only queued")
+        r.clockSample(0)
+        r.seekLanded(atSec: 50)
+        XCTAssertEqual(r.position(livePositionSec: 0), 2400, "held until reached")
+        r.reached(landedSec: 2400.2)
+        // r5-3: an exit right after the landing, before the next poll, reports the landing, not 0.
+        XCTAssertEqual(r.position(livePositionSec: 0), 2400.2)
+        r.clockSample(0)
+        XCTAssertEqual(r.position(livePositionSec: 0), 2400.2, "a stale 0 sample has not caught up")
+        r.clockSample(2400.2)
+        XCTAssertEqual(r.phase, .clock)
+        XCTAssertEqual(r.position(livePositionSec: 2405), 2405)
+    }
+
+    func testALaterSeekLandingMovesTheReferenceUntilTheClockFollows() {
+        var r = P(heldStartSec: 100)
+        r.reached(landedSec: nil)
+        XCTAssertEqual(r.position(livePositionSec: 0), 100, "reached at the held start itself")
+        r.clockSample(100.5)
+        r.seekLanded(atSec: 900)
+        XCTAssertEqual(r.position(livePositionSec: 100.6), 900)
+        r.clockSample(899.6)
+        XCTAssertEqual(r.position(livePositionSec: 899.6), 899.6)
+    }
+
+    func testANormalStartIsTheClockFromTheBeginning() {
+        var r = P(heldStartSec: nil)
+        XCTAssertEqual(r.position(livePositionSec: 12), 12)
+        r.reached(landedSec: 50)
+        XCTAssertEqual(r.position(livePositionSec: 12), 12)
+        XCTAssertEqual(P(heldStartSec: .nan).phase, .clock)
+        XCTAssertEqual(P(heldStartSec: 0).position(livePositionSec: 3), 0, "held at the top")
+    }
+
+    func testHeldStart() {
         XCTAssertEqual(P.heldStart(payload: .position(100), contextReturnStart: .position(5)), 100)
         XCTAssertEqual(P.heldStart(payload: nil, contextReturnStart: .position(5)), 5, "a retry's held start")
         XCTAssertNil(P.heldStart(payload: .live, contextReturnStart: .position(5)))
@@ -248,5 +278,78 @@ final class TrackerOwnerGateTests: XCTestCase {
         let ran = expectation(description: "released by the timeout")
         chain.whenIdle { ran.fulfill() }
         wait(for: [ran], timeout: 2)
+    }
+}
+
+
+// MARK: - Code review W7 r5
+
+final class PlayerReturnTransferStartTests: XCTestCase {
+    typealias T = PlayerReturnTransfer
+    func testThreeWay() {
+        XCTAssertEqual(T.start(heldSec: 0, startedBeforeBackground: false, restartTargetSec: nil), .normalStart,
+                       "held 0 before the engine was ready: mpv runs today's resume lookup")
+        XCTAssertEqual(T.start(heldSec: 0, startedBeforeBackground: false, restartTargetSec: 1265.8), .position(1265.8),
+                       "the from-scratch restart read the saved resume point, then failed")
+        XCTAssertEqual(T.start(heldSec: 300, startedBeforeBackground: true, restartTargetSec: nil), .position(300))
+        XCTAssertEqual(T.start(heldSec: 0, startedBeforeBackground: true, restartTargetSec: nil), .position(0), "it had played from the top")
+        XCTAssertEqual(T.start(heldSec: 300, startedBeforeBackground: true, restartTargetSec: 301), .position(301))
+        XCTAssertEqual(T.start(heldSec: .nan, startedBeforeBackground: true, restartTargetSec: .nan), .normalStart)
+    }
+}
+
+final class PlayerFallbackRouteTests: XCTestCase {
+    private let p = PlayerReturnTransfer(owner: PlaybackIdentity(accountKey: "a", profileId: 1), intent: .pause,
+                                         start: .position(10), generation: 2)
+        .payload(contextID: "c", streamKey: "k", origin: .nativeReturn, playedSec: 0)
+
+    func testEveryCallerGetsOneObeyedRoute() {
+        XCTAssertEqual(PlayerFallbackRoute.decide(transfer: nil, validation: nil), .plain)
+        XCTAssertEqual(PlayerFallbackRoute.decide(transfer: p, validation: .accept), .returnPayload(p))
+        XCTAssertEqual(PlayerFallbackRoute.decide(transfer: p, validation: .discard(.owner)), .exit,
+                       "the old stream never starts under the new profile")
+        XCTAssertEqual(PlayerFallbackRoute.decide(transfer: p, validation: .discard(.generation)), .plain)
+        XCTAssertEqual(PlayerFallbackRoute.decide(transfer: p, validation: .discard(.context)), .plain)
+    }
+
+    /// The epoch the screen validates with: an owner switched after the native failed phase.
+    func testAnOwnerChangeBeforeTheCallbackExits() {
+        var epoch = PlayerReturnEpoch()
+        let v = epoch.accept(p, current: PlaybackIdentity(accountKey: "a", profileId: 2), contextID: "c")
+        XCTAssertEqual(PlayerFallbackRoute.decide(transfer: p, validation: v), .exit)
+        XCTAssertEqual(epoch.lastAccepted, 0, "nothing accepted")
+    }
+}
+
+final class MPVStartDeadlineTests: XCTestCase {
+    func testAStallAfterAnAcceptedSeekFires() {
+        var d = MPVStartDeadline(limitSec: 45)
+        d.begin(now: 100)
+        XCTAssertFalse(d.poll(now: 144))
+        XCTAssertTrue(d.poll(now: 145), "the start never completed: one bounded end")
+        XCTAssertFalse(d.poll(now: 500), "once")
+    }
+
+    func testBackgroundMidStallDoesNotFire() {
+        var d = MPVStartDeadline(limitSec: 45)
+        d.begin(now: 0)
+        d.suspend(now: 30)
+        XCTAssertFalse(d.poll(now: 1000), "no time counts while away or parked")
+        d.resume(now: 1000)
+        XCTAssertFalse(d.poll(now: 1014))
+        XCTAssertTrue(d.poll(now: 1015), "30 s before + 15 s after")
+    }
+
+    func testCompletionOrACancellingViewerSeekEndsIt() {
+        var d = MPVStartDeadline(limitSec: 45)
+        d.begin(now: 0)
+        d.complete()
+        XCTAssertFalse(d.poll(now: 1000))
+        d.begin(now: 0)
+        XCTAssertEqual(d.phase, .done, "a completed deadline never starts again")
+        var idle = MPVStartDeadline()
+        XCTAssertFalse(idle.poll(now: 1000), "a normal start has none")
+        idle.resume(now: 5)
+        XCTAssertFalse(idle.isRunning)
     }
 }

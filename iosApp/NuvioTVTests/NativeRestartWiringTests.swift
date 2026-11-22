@@ -620,7 +620,7 @@ final class NativeRestartWiringTests: XCTestCase {
         XCTAssertEqual(host.handOffs, [120], "the restart failed: mpv at the held position, not the old clock")
         // spec-mpv-return §3.3 (M10): the return rule's handoff carries an explicit payload for mpv.
         XCTAssertEqual(host.transfers.count, 1)
-        XCTAssertEqual(host.transfers.first?.atSec, 120)
+        XCTAssertEqual(host.transfers.first?.start, .position(120), "the mid-play restart's resolved target")
         XCTAssertEqual(host.transfers.first?.intent, .pause, "no press: mpv starts paused")
         XCTAssertEqual(host.transfers.first?.owner, runner.owner)
     }

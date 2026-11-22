@@ -542,7 +542,7 @@ final class PlaybackReturnAlertTests: XCTestCase {
 
     func testATransferBecomesAPayloadWithNoFreshStartLeft() {
         let owner = PlaybackIdentity(accountKey: "a", profileId: 1)
-        let t = PlayerReturnTransfer(owner: owner, intent: .play, atSec: 812.4, generation: 3)
+        let t = PlayerReturnTransfer(owner: owner, intent: .play, start: .position(812.4), generation: 3)
         let p = t.payload(contextID: "ctx", streamKey: "key", origin: .nativeReturn, playedSec: 90)
         XCTAssertEqual(p.start, .position(812.4))
         XCTAssertEqual(p.intent, .play)
@@ -552,7 +552,7 @@ final class PlaybackReturnAlertTests: XCTestCase {
         XCTAssertEqual(p.audio, .auto)
         XCTAssertEqual(p.validate(current: owner, contextID: "ctx", lastGeneration: 2), .accept)
         XCTAssertEqual(p.validate(current: owner, contextID: "ctx", lastGeneration: 3), .discard(.generation))
-        XCTAssertEqual(PlayerReturnTransfer(owner: owner, intent: .pause, atSec: .nan, generation: 1)
-            .payload(contextID: "c", streamKey: "", origin: .aetherReturn, playedSec: 0).start, .position(0))
+        XCTAssertEqual(PlayerReturnTransfer(owner: owner, intent: .pause, start: .normalStart, generation: 1)
+            .payload(contextID: "c", streamKey: "", origin: .aetherReturn, playedSec: 0).start, .normalStart)
     }
 }

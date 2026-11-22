@@ -1308,6 +1308,34 @@ final class PlayerTransportUITests: XCTestCase {
         assertRetryReturnsAgain(app, "local retry return")
     }
 
+    /// Takes the alert's top button ("Try with mpv").
+    private func takeTopAlertButton(_ app: XCUIApplication) {
+        for _ in 0..<3 { remote.press(.up) }
+        remote.press(.select)
+    }
+
+    /// Code review W7 r5-5: a failed local retry on a host with no callback has an owner: the alert again.
+    func testMpvFailedLocalRetryShowsTheAlertAgain() throws {
+        let app = try launch(url: slowStartURL(), extra: cycle(atSec: 12, awaySec: 3) + ["-debug.mpvReturnFault", "failFreshAndRetry"])
+        let alert = app.alerts.firstMatch
+        XCTAssertTrue(alert.waitForExistence(timeout: 40), "no local alert for the fresh start: \(probeText(app))")
+        takeTopAlertButton(app)
+        XCTAssertTrue(waitFor(app, timeout: 10) { _ in !app.alerts.firstMatch.exists }, "the first alert stayed up")
+        XCTAssertTrue(app.alerts.firstMatch.waitForExistence(timeout: 40), "the failed retry left the viewer with no alert: \(probeText(app))")
+        XCTAssertTrue(app.alerts.firstMatch.buttons["Try with mpv"].exists)
+        XCTAssertTrue(app.alerts.firstMatch.buttons["Close"].exists)
+    }
+
+    /// Code review W7 r5-4: the return's resume seek is accepted and never restarts or errors: the start
+    /// deadline ends it on the start's owner (here the local alert) instead of a loading screen for ever.
+    func testMpvStalledReturnSeekEndsOnTheAlert() throws {
+        let app = try launch(url: slowStartURL(), extra: cycle(atSec: 10, awaySec: 3)
+                             + ["-debug.mpvReturnFault", "stallReturnSeek", "-debug.mpvStartDeadlineSec", "8"])
+        XCTAssertTrue(app.alerts.firstMatch.waitForExistence(timeout: 45),
+                      "the stalled return start never ended: \(probeText(app)) \(ledgerText(app))")
+        XCTAssertTrue(app.alerts.firstMatch.buttons["Try with mpv"].exists)
+    }
+
     /// M6 (auto-play): `failFreshStart`: the alert (no picker redirect) and the retry from held.
     func testMpvFreshStartFailureRetriesAtHeldAutoPlay() throws { try failFreshStartLeg(source: "autoPlay", cycleAt: 12, label: "M6 autoPlay") }
 

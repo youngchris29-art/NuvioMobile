@@ -171,20 +171,63 @@ nonisolated enum MPVSelectionRestore {
 
 /// spec-mpv-return §3.3: what the native or Aether return runner knows when its rule hands off to mpv
 /// during a return (it runs only in a non-idle mode). The screen completes it into a payload.
+/// Code r5-1: `start` is three-way (`PlayerReturnTransfer.start(...)`), never a held 0 taken before the
+/// engine was ready.
 nonisolated struct PlayerReturnTransfer: Sendable, Equatable {
     let owner: PlaybackIdentity
     let intent: PlayerReturnHandoff.Intent
-    let atSec: Double
+    let start: PlayerReturnHandoff.Start
     let generation: Int
+
+    init(owner: PlaybackIdentity, intent: PlayerReturnHandoff.Intent, start: PlayerReturnHandoff.Start, generation: Int) {
+        self.owner = owner
+        self.intent = intent
+        self.start = start
+        self.generation = generation
+    }
+
+    /// The handoff's start, three-way (code r5-1):
+    /// - a restart's resolved target (a from-scratch restart that read the saved resume point, or the
+    ///   mid-play restart's target) is authoritative;
+    /// - else a held position is authoritative only when the engine had established one (it had
+    ///   played, `starting` false);
+    /// - else nothing authoritative ever existed: `.normalStart`, so mpv runs today's resume lookup
+    ///   (saved progress, Start Over) instead of starting at an authoritative 0.
+    static func start(heldSec: Double, startedBeforeBackground: Bool, restartTargetSec: Double?) -> PlayerReturnHandoff.Start {
+        if let t = restartTargetSec, t.isFinite, t >= 0 { return .position(t) }
+        if startedBeforeBackground, heldSec.isFinite, heldSec >= 0 { return .position(heldSec) }
+        return .normalStart
+    }
 
     /// Picks by meaning are not carried across engines (their track names do not map onto mpv's
     /// tracks): the fresh mpv start uses its own automatic choice. `freshStartsLeft` is 0.
     func payload(contextID: String, streamKey: String, origin: PlayerReturnHandoff.Origin,
                  playedSec: Double) -> PlayerReturnHandoff {
-        PlayerReturnHandoff(owner: owner, contextID: contextID, streamKey: streamKey,
-                            start: .position(atSec.isFinite ? max(0, atSec) : 0), intent: intent,
+        PlayerReturnHandoff(owner: owner, contextID: contextID, streamKey: streamKey, start: start, intent: intent,
                             playedSec: playedSec, healthyReported: false, returnGeneration: generation,
                             freshStartsLeft: 0, audio: .auto, subtitle: .auto, audioDelaySec: nil, speed: 1,
                             origin: origin)
+    }
+}
+
+/// Code r5-2: what an engine fallback to mpv does, decided once for every fallback entry point
+/// (native `onFallback`, Aether `onFallback`). The caller obeys it: `.exit` starts nothing.
+nonisolated enum PlayerFallbackRoute: Sendable, Equatable {
+    /// No return transfer: today's handoff.
+    case plain
+    /// A validated return transfer: mpv starts from this payload.
+    case returnPayload(PlayerReturnHandoff)
+    /// The transfer's owner is not the current identity: the player exits, nothing starts.
+    case exit
+
+    static func decide(transfer payload: PlayerReturnHandoff?, validation: PlayerReturnHandoff.Validation?) -> PlayerFallbackRoute {
+        guard let payload, let validation else { return .plain }
+        switch validation {
+        case .accept: return .returnPayload(payload)
+        case .discard(.owner): return .exit
+        // A stale or foreign transfer carries nothing authoritative: today's handoff (its own owner
+        // check is the engine's write guard).
+        case .discard(.context), .discard(.generation): return .plain
+        }
     }
 }
