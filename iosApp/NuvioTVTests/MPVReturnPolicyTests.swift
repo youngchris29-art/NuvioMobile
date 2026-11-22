@@ -165,7 +165,10 @@ final class MPVReturnPlanTests: XCTestCase {
                                            ownReturnStart: .position(6), resumeTargetSec: 900), .position(6))
         XCTAssertEqual(MPVReturnPlan.start(isLive: false, started: false, positionSec: 3, seekInFlightTargetSec: nil,
                                            ownReturnStart: nil, resumeTargetSec: 900), .position(900))
+        // r2-2: a seek in flight wins before the start completed too (a viewer seek during a return start).
         XCTAssertEqual(MPVReturnPlan.start(isLive: false, started: false, positionSec: 3, seekInFlightTargetSec: 40,
+                                           ownReturnStart: .position(9), resumeTargetSec: 900), .position(40))
+        XCTAssertEqual(MPVReturnPlan.start(isLive: false, started: false, positionSec: 3, seekInFlightTargetSec: nil,
                                            ownReturnStart: nil, resumeTargetSec: nil), .normalStart)
     }
 }
@@ -674,5 +677,134 @@ final class MPVStartupResumeRejectedTests: XCTestCase {
         var none = MPVStartupStageReducer()
         none.fileLoaded(resumeGeneration: nil)
         XCTAssertFalse(none.resumeSeekRejected(), "no resume seek, nothing to complete")
+    }
+}
+
+
+/// Code review W7 r2-3: whenever the newest seek ends, landed or rejected, the start is not pending.
+final class MPVReturnSeeksStartupTests: XCTestCase {
+    func testAViewerSeekThatSupersededTheResumeAndIsRejectedCompletesTheStart() {
+        var s = MPVReturnSeeks()
+        s.beginReturnLanding(targetSec: 100, durationAtIssue: 7000)
+        _ = s.issued(.resume, generation: 1, targetSec: 100)
+        XCTAssertEqual(s.issued(.viewer, generation: 2, targetSec: 300).completion, .cancelled(bySeekGeneration: 2))
+        XCTAssertTrue(s.startupPending)
+        XCTAssertFalse(s.finished(generation: 1, result: .rejected, durationNow: nil).startupResumeRejected, "stale")
+        let out = s.finished(generation: 2, result: .rejected, durationNow: nil)
+        XCTAssertTrue(out.startupResumeRejected, "the newest seek's rejection completes the paused start")
+        XCTAssertFalse(s.startupPending)
+        XCTAssertNil(s.inFlight)
+    }
+
+    /// The exhaustive product over orderings of resume / correction / viewer issues and landed /
+    /// rejected results (newest or stale), up to four steps: once the newest issued seek has ended,
+    /// the start is never pending, and the landing never waits without a seek of its own.
+    func testNoFinishedSequenceLeavesTheStartPending() {
+        enum Step: CaseIterable { case viewer, viewerNoTarget, landNewestOn, landNewestOff, rejectNewest, landStale, rejectStale }
+        let all = Step.allCases
+        func run(_ steps: [Step], landing: Bool) {
+            var s = MPVReturnSeeks()
+            if landing { s.beginReturnLanding(targetSec: 100, durationAtIssue: 7000) }
+            _ = s.issued(.resume, generation: 1, targetSec: 100)
+            var newestEnded = false
+            var completions = 0
+            for step in steps {
+                var out = MPVReturnSeeks.Outcome()
+                let g = s.latestGeneration
+                switch step {
+                case .viewer: out = s.issued(.viewer, generation: g + 1, targetSec: 42); newestEnded = false
+                case .viewerNoTarget: out = s.issued(.viewer, generation: g + 1, targetSec: nil); newestEnded = false
+                case .landNewestOn: out = s.finished(generation: g, result: .landed(atSec: 100), durationNow: 7000); newestEnded = true
+                case .landNewestOff: out = s.finished(generation: g, result: .landed(atSec: 60), durationNow: 7000); newestEnded = true
+                case .rejectNewest: out = s.finished(generation: g, result: .rejected, durationNow: 7000); newestEnded = true
+                case .landStale: out = s.finished(generation: g - 1, result: .landed(atSec: 100), durationNow: 7000)
+                case .rejectStale: out = s.finished(generation: g - 1, result: .rejected, durationNow: 7000)
+                }
+                if let t = out.correctToSec {
+                    _ = s.issued(.correction, generation: s.latestGeneration + 1, targetSec: t)
+                    newestEnded = false
+                }
+                if out.completion != nil { completions += 1 }
+                let label = "\(steps) landing=\(landing)"
+                if newestEnded {
+                    XCTAssertFalse(s.startupPending, "\(label): the newest seek ended, the start still pending")
+                    XCTAssertNil(s.inFlight, "\(label): an ended seek is still in flight")
+                }
+                if s.landingPending { XCTAssertEqual(s.landing?.awaitingGeneration, s.latestGeneration, label) }
+                XCTAssertLessThanOrEqual(completions, 1, label)
+            }
+        }
+        for a in all { for b in all { for c in all { for d in all {
+            run([a, b, c, d], landing: true)
+            run([a, b, c, d], landing: false)
+        } } } }
+    }
+}
+
+/// Code review W7 r2 (findings 1, 2, 4): the park snapshot's picks and tuning are a pure function of
+/// the viewer's intent and observed state.
+final class MPVViewerIntentTests: XCTestCase {
+    private let audio = [MPVTrackSemantics(id: 1, lang: "eng", title: "Main"), MPVTrackSemantics(id: 2, lang: "jpn", title: "")]
+    private let subs = [MPVTrackSemantics(id: 3, lang: "eng", title: "SDH"), MPVTrackSemantics(id: 7, lang: "en", title: "Smoke EN")]
+    private let external = [7: "/tmp/mpv-sub-1.srt"]
+    private let addon = "https://subs.example/en.srt"
+    private func original(_ s: String) -> String { s == "/tmp/mpv-sub-1.srt" ? addon : s }
+
+    private func handoff(audio a: PlayerReturnHandoff.AudioPick = .auto, sub: PlayerReturnHandoff.SubtitlePick = .auto,
+                         speed: Double = 1, delay: Double? = nil) -> PlayerReturnHandoff {
+        PlayerReturnHandoff(owner: PlaybackIdentity(accountKey: "a", profileId: 1), contextID: "c", streamKey: "k",
+                            start: .position(100), intent: .pause, playedSec: 0, healthyReported: false, returnGeneration: 1,
+                            freshStartsLeft: 1, audio: a, subtitle: sub, audioDelaySec: delay, speed: speed, origin: .mpvReturn)
+    }
+
+    func testTheTable() {
+        struct Row { let name: String; let intent: MPVViewerIntent; let speed: Double; let delay: Double?; let expected: MPVViewerIntent.Parked }
+        var pickAudio = MPVViewerIntent(); pickAudio.viewerPickedAudio(id: 2, tracks: audio)
+        var pickSub = MPVViewerIntent(); pickSub.viewerPickedSubtitle(id: 3, tracks: subs, externalSources: external, originalURL: original)
+        var pickAddon = MPVViewerIntent(); pickAddon.viewerPickedSubtitle(id: 7, tracks: subs, externalSources: external, originalURL: original)
+        var pickOff = MPVViewerIntent(); pickOff.viewerPickedSubtitle(id: -1, tracks: subs, externalSources: external, originalURL: original)
+        var tuned = MPVViewerIntent(); tuned.viewerSetSpeed(1.5); tuned.viewerSetAudioDelay(0.25)
+        var overridden = MPVViewerIntent(handoff: handoff(sub: .addon(originalURL: addon, lang: "en", title: "Smoke EN")))
+        overridden.viewerPickedSubtitle(id: -1, tracks: subs, externalSources: external, originalURL: original)
+        let rows: [Row] = [
+            // Second background mid-restoration: the handoff's pending choices park again.
+            Row(name: "pending add-on subtitle", intent: MPVViewerIntent(handoff: handoff(sub: .addon(originalURL: addon, lang: "en", title: "Smoke EN"))),
+                speed: 1, delay: nil,
+                expected: .init(audio: .auto, subtitle: .addon(originalURL: addon, lang: "en", title: "Smoke EN"), speed: 1, audioDelaySec: nil)),
+            Row(name: "pending audio", intent: MPVViewerIntent(handoff: handoff(audio: .picked(lang: "jpn", title: "", ordinal: 0))),
+                speed: 1, delay: nil,
+                expected: .init(audio: .picked(lang: "jpn", title: "", ordinal: 0), subtitle: .auto, speed: 1, audioDelaySec: nil)),
+            Row(name: "pending tuning before the load", intent: MPVViewerIntent(handoff: handoff(speed: 1.25, delay: -0.4)),
+                speed: 1, delay: nil, expected: .init(audio: .auto, subtitle: .auto, speed: 1.25, audioDelaySec: -0.4)),
+            // A pick just before Home (no walk since).
+            Row(name: "audio picked before Home", intent: pickAudio, speed: 1, delay: 0,
+                expected: .init(audio: .picked(lang: "jpn", title: "", ordinal: 0), subtitle: .auto, speed: 1, audioDelaySec: 0)),
+            Row(name: "embedded subtitle picked before Home", intent: pickSub, speed: 1, delay: 0,
+                expected: .init(audio: .auto, subtitle: .embedded(lang: "eng", title: "SDH", ordinal: 0), speed: 1, audioDelaySec: 0)),
+            Row(name: "add-on (credential file) picked before Home", intent: pickAddon, speed: 1, delay: 0,
+                expected: .init(audio: .auto, subtitle: .addon(originalURL: addon, lang: "en", title: "Smoke EN"), speed: 1, audioDelaySec: 0)),
+            Row(name: "subtitles off before Home", intent: pickOff, speed: 1, delay: 0,
+                expected: .init(audio: .auto, subtitle: .off, speed: 1, audioDelaySec: 0)),
+            Row(name: "viewer tuning", intent: tuned, speed: 1, delay: 0,
+                expected: .init(audio: .auto, subtitle: .auto, speed: 1.5, audioDelaySec: 0.25)),
+            Row(name: "a viewer pick overrides the handoff's", intent: overridden, speed: 1, delay: nil,
+                expected: .init(audio: .auto, subtitle: .off, speed: 1, audioDelaySec: nil)),
+            // No viewer action: observed state / auto, as before.
+            Row(name: "silent", intent: MPVViewerIntent(), speed: 2, delay: 0.1,
+                expected: .init(audio: .auto, subtitle: .auto, speed: 2, audioDelaySec: 0.1)),
+            Row(name: "silent, never loaded", intent: MPVViewerIntent(), speed: .nan, delay: nil,
+                expected: .init(audio: .auto, subtitle: .auto, speed: 1, audioDelaySec: nil)),
+        ]
+        for r in rows {
+            XCTAssertEqual(r.intent.parked(observedSpeed: r.speed, observedAudioDelaySec: r.delay), r.expected, r.name)
+        }
+    }
+
+    func testAPickOfAnUnknownTrackChangesNothing() {
+        var i = MPVViewerIntent(handoff: handoff(audio: .picked(lang: "eng", title: "Main", ordinal: 0)))
+        i.viewerPickedAudio(id: 99, tracks: audio)
+        i.viewerPickedSubtitle(id: 99, tracks: subs, externalSources: external, originalURL: original)
+        XCTAssertEqual(i.audio, .picked(lang: "eng", title: "Main", ordinal: 0))
+        XCTAssertEqual(i.subtitle, .auto)
     }
 }

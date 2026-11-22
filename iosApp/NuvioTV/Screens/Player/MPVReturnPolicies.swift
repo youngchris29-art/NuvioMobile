@@ -278,7 +278,8 @@ nonisolated struct MPVReturnSeeks: Sendable, Equatable {
         var correctToSec: Double?
         /// The return landing ended (settled, offTarget or cancelled).
         var completion: MPVReturnLanding.Completion?
-        /// The start's resume seek will never restart playback: the start-up reducer completes now.
+        /// The seek the start waits on will never restart playback (the newest seek was rejected while
+        /// the start is pending, r1-2 / r2-3): the start-up reducer completes now.
         var startupResumeRejected = false
     }
 
@@ -290,6 +291,12 @@ nonisolated struct MPVReturnSeeks: Sendable, Equatable {
     /// The generation of the start's resume seek (return or not), and the newest issued generation.
     private(set) var resumeGeneration: Int?
     private(set) var latestGeneration = 0
+    /// The start waits on a seek of ours (from the resume's issue until the newest seek after it ends).
+    /// Invariant (r2-3): whenever the newest seek ends, landed or rejected, this is false.
+    private(set) var startupPending = false
+
+    /// The start-up reducer reached `.started` on its own (its restart or the position backstop).
+    mutating func startupCompleted() { startupPending = false }
 
     /// The return landing still waits: the loading screen stays up.
     var landingPending: Bool { landing?.isPending ?? false }
@@ -308,6 +315,7 @@ nonisolated struct MPVReturnSeeks: Sendable, Equatable {
         switch kind {
         case .resume:
             resumeGeneration = generation
+            startupPending = true
             landing?.seekIssued(generation: generation)
         case .correction:
             landing?.seekIssued(generation: generation)
@@ -325,6 +333,9 @@ nonisolated struct MPVReturnSeeks: Sendable, Equatable {
         if inFlight?.generation == generation { inFlight = nil }
         switch result {
         case .landed(let at):
+            // The newest seek's restart completes the start (the reducer counts any generation at or
+            // after the resume).
+            if generation == latestGeneration { startupPending = false }
             if var l = landing {
                 let step = l.landed(generation: generation, atSec: at, durationAtIssue: landingDurationAtIssue,
                                     durationNow: durationNow)
@@ -337,9 +348,10 @@ nonisolated struct MPVReturnSeeks: Sendable, Equatable {
                 landing = l
                 apply(step, to: &out)
             }
-            // Only the newest seek: a later seek's restart completes the start itself.
-            if generation == resumeGeneration, generation == latestGeneration {
-                resumeGeneration = nil
+            // Only the newest seek: a later seek's restart completes the start itself. Whichever seek
+            // it is (the resume, a viewer seek that superseded it, the correction), r2-3.
+            if startupPending, generation == latestGeneration {
+                startupPending = false
                 out.startupResumeRejected = true
             }
         }

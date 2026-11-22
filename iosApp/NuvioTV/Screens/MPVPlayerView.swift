@@ -532,14 +532,14 @@ final class MPVTVPlayerViewController: UIViewController {
     private var pendingSubtitlePick: MPVPendingSubtitlePick?
     /// Main: side-load sources that are not the add-on's own URL (credential path) → that URL.
     private var sideLoadOriginalBySource: [String: String] = [:]
-    /// `eventQueue` only: the walk reads every external subtitle's source (a pending pick waits).
-    private var walkReadsExternalSources = false
-    /// Main: the last walk's tracks by meaning, and the selected ids (the park's picks).
+    /// Main: the last walk's tracks by meaning and each external subtitle's source: what a viewer pick
+    /// is resolved against at the moment it is made.
     private var lastAudioSemantics: [MPVTrackSemantics] = []
     private var lastSubtitleSemantics: [MPVTrackSemantics] = []
-    private var lastSelectedAudioID: Int?
-    private var lastSelectedSubtitleID: Int?
-    private var lastSelectedSubtitleExternal: String?
+    private var lastSubtitleExternalSources: [Int: String] = [:]
+    /// Main: what the viewer asked for (code review W7 r2): seeded from the handoff, updated at each
+    /// viewer action; the park snapshot reads it, not the last finished track walk.
+    private var viewerIntent = MPVViewerIntent()
     #if DEBUG
     /// Probe: progress and tracker writes this controller made (`writes=`).
     private var debugWrites = 0 {
@@ -593,12 +593,34 @@ final class MPVTVPlayerViewController: UIViewController {
         view.layer.addSublayer(metalLayer)
         layoutMetalLayer()
 
-        state.selectAudio = { [weak self] id in self?.selectAudio(id) }
-        state.selectSubtitle = { [weak self] id in self?.selectSubtitle(id) }
-        state.setSpeed = { [weak self] speed in self?.setSpeed(speed) }
+        // Viewer actions record their intent synchronously (code review W7 r2), then act.
+        state.selectAudio = { [weak self] id in
+            guard let self else { return }
+            self.viewerIntent.viewerPickedAudio(id: id, tracks: self.lastAudioSemantics)
+            self.selectAudio(id)
+        }
+        state.selectSubtitle = { [weak self] id in
+            guard let self else { return }
+            self.viewerIntent.viewerPickedSubtitle(id: id, tracks: self.lastSubtitleSemantics,
+                                                   externalSources: self.lastSubtitleExternalSources,
+                                                   originalURL: { self.sideLoadOriginalBySource[$0] ?? $0 })
+            self.selectSubtitle(id)
+        }
+        state.setSpeed = { [weak self] speed in
+            self?.viewerIntent.viewerSetSpeed(speed)
+            self?.setSpeed(speed)
+        }
         state.setSubtitleDelay = { [weak self] seconds in self?.setSubtitleDelay(seconds) }
-        state.setAudioDelay = { [weak self] seconds in self?.setAudioDelay(seconds) }
-        state.resetAudioDelay = { [weak self] in self?.resetAudioDelay() }
+        state.setAudioDelay = { [weak self] seconds in
+            guard let self else { return }
+            self.setAudioDelay(seconds)
+            self.viewerIntent.viewerSetAudioDelay(self.state.audioDelaySec)
+        }
+        state.resetAudioDelay = { [weak self] in
+            guard let self else { return }
+            self.resetAudioDelay()
+            self.viewerIntent.viewerSetAudioDelay(self.state.audioDelaySec)
+        }
         state.setAudioBoost = { [weak self] db in self?.setAudioBoost(db) }
         state.setAudioMode = { [weak self] mode in self?.setAudioMode(mode) }
         state.setRememberSpeed = { [weak self] on in self?.setRememberSpeed(on) }
@@ -1180,9 +1202,9 @@ final class MPVTVPlayerViewController: UIViewController {
         var audioInfos: [TrackInfo] = []
         var subInfos: [TrackInfo] = []
         var externalSource: String?
-        /// spec-mpv-return §3.3: every external subtitle's source while a return pick waits for its file.
+        /// spec-mpv-return §3.3: every external subtitle's source (a viewer pick and a waiting return
+        /// pick both resolve add-on files by it).
         var externalSubs: [(id: Int, source: String)] = []
-        let readsExternal = walkReadsExternalSources
         var badgeVideo: PlayerBadgeFacts?
         var badgeAudio: [Int: PlayerBadgeFacts] = [:]
 
@@ -1212,7 +1234,7 @@ final class MPVTVPlayerViewController: UIViewController {
                 if selected, getFlag("track-list/\(i)/external") {
                     externalSource = getString("track-list/\(i)/external-filename")
                 }
-                if readsExternal, getFlag("track-list/\(i)/external"),
+                if getFlag("track-list/\(i)/external"),
                    let source = getString("track-list/\(i)/external-filename") {
                     externalSubs.append((id, source))
                 }
@@ -4059,6 +4081,7 @@ final class MPVTVPlayerViewController: UIViewController {
         state.startupStage = stage
         if stage.isStarted {
             state.playbackStarted = true
+            returnSeeks.startupCompleted()
             returnStartedNoted()
         }
         let t = ProcessInfo.processInfo.systemUptime - loadingStartUptime
@@ -4781,6 +4804,7 @@ extension MPVTVPlayerViewController {
         guard let p = returnHandoff else { return }
         returnStartPending = true
         desiredPlaying = !p.startsPaused
+        viewerIntent = MPVViewerIntent(handoff: p)
         if p.origin == .mpvReturn {
             // The old controller's seconds already include the engines before it.
             secondsPlayedBeforeFallback = p.playedSec
@@ -4792,7 +4816,6 @@ extension MPVTVPlayerViewController {
         switch p.subtitle {
         case .addon(let url, _, _):
             pendingSubtitlePick = MPVPendingSubtitlePick(originalURL: url)
-            eventQueue.async { [weak self] in self?.walkReadsExternalSources = true }
         case .auto:
             break
         case .off, .embedded:
@@ -4838,11 +4861,15 @@ extension MPVTVPlayerViewController {
                                         ownReturnStart: returnHandoff?.start, resumeTargetSec: resumeTargetSec)
         if case .position(let p) = start { parkedPositionSec = p } else { parkedPositionSec = max(0, state.positionSec) }
         let current = PlaybackIdentity.current()
+        // Code review W7 r2: picks and tuning from the viewer's intent (the handoff's until changed),
+        // observed state only where it is silent.
+        let parked = viewerIntent.parked(observedSpeed: state.playbackSpeed,
+                                         observedAudioDelaySec: fileLoaded ? state.audioDelaySec : nil)
         returnSnapshot = MPVReturnSnapshot(
             owner: creationOwner, ownerValidAtPark: creationOwner == current, contextID: context.id,
-            streamKey: context.streamKey, start: start, audio: currentAudioPick(), subtitle: currentSubtitlePick(),
+            streamKey: context.streamKey, start: start, audio: parked.audio, subtitle: parked.subtitle,
             playedSec: failoverSecondsPlayed, healthyReported: healthyReported,
-            audioDelaySec: fileLoaded ? state.audioDelaySec : nil, speed: state.playbackSpeed,
+            audioDelaySec: parked.audioDelaySec, speed: parked.speed,
             generation: generation, terminalAtPark: terminal)
         returnDeferred = false
         print("[MPVReturn] park g=\(generation) start=\(start.logToken) owner=\(creationOwner == current ? "ok" : "changed") fileLoaded=\(fileLoaded ? 1 : 0) terminal=\(terminal ? 1 : 0) t=\(String(format: "%.3f", parkStarted))")
@@ -5012,34 +5039,13 @@ extension MPVTVPlayerViewController {
 
     // MARK: Picks by meaning (§3.3, best-effort)
 
-    fileprivate func currentAudioPick() -> PlayerReturnHandoff.AudioPick {
-        guard didUserSelectAudio, let id = lastSelectedAudioID,
-              let track = lastAudioSemantics.first(where: { $0.id == id }),
-              let ordinal = MPVSelectionRestore.ordinal(of: id, in: lastAudioSemantics) else { return .auto }
-        return .picked(lang: track.lang, title: track.title, ordinal: ordinal)
-    }
-
-    fileprivate func currentSubtitlePick() -> PlayerReturnHandoff.SubtitlePick {
-        guard didUserSelectSubtitle else { return .auto }
-        guard let id = lastSelectedSubtitleID, let track = lastSubtitleSemantics.first(where: { $0.id == id }) else {
-            return .off
-        }
-        if let source = lastSelectedSubtitleExternal {
-            return .addon(originalURL: sideLoadOriginalBySource[source] ?? source, lang: track.lang, title: track.title)
-        }
-        guard let ordinal = MPVSelectionRestore.ordinal(of: id, in: lastSubtitleSemantics) else { return .auto }
-        return .embedded(lang: track.lang, title: track.title, ordinal: ordinal)
-    }
-
     /// Main, after every walk, before the automatic selection.
     fileprivate func noteReturnWalk(audio: [MPVTrackSemantics], subs: [MPVTrackSemantics], selectedAudio: Int?,
                                     selectedSubtitle: Int?, selectedExternal: String?,
                                     externalSubs: [(id: Int, source: String)]) {
         lastAudioSemantics = audio
         lastSubtitleSemantics = subs
-        lastSelectedAudioID = selectedAudio
-        lastSelectedSubtitleID = selectedSubtitle
-        lastSelectedSubtitleExternal = selectedExternal
+        lastSubtitleExternalSources = Dictionary(externalSubs.map { ($0.id, $0.source) }, uniquingKeysWith: { a, _ in a })
         let g = returnHandoff?.returnGeneration ?? 0
         if case .picked = pendingAudioPick, !audio.isEmpty {
             let pick = pendingAudioPick
@@ -5085,7 +5091,6 @@ extension MPVTVPlayerViewController {
     fileprivate func resolvePendingSubtitlePick(_ event: MPVPendingSubtitlePick.Event) {
         guard var pick = pendingSubtitlePick, let outcome = pick.handle(event) else { return }
         pendingSubtitlePick = pick
-        eventQueue.async { [weak self] in self?.walkReadsExternalSources = false }
         print("[MPVReturn] subtitle pick g=\(returnHandoff?.returnGeneration ?? 0) -> \(outcome.logToken)")
         switch outcome {
         case .select(let id):
