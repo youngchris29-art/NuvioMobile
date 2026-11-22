@@ -477,4 +477,27 @@ final class AetherReturnWiringTests: XCTestCase {
         XCTAssertFalse(runner.transportRefused)
         XCTAssertFalse(runner.rule.holdsIntent, "nothing holds the transport when the host hears the release")
     }
+
+    // MARK: W5 review r5
+
+    /// Finding 2: a frozen-clock rebuild starts a fresh load from a settled, framed session; the load
+    /// stalls and never returns. The old phase and the old frame latch must not stand the watchdog down.
+    func testAStalledFreshLoadAfterAFramedSessionStillTimesOut() async {
+        session.needsForegroundRestore = false
+        host.settled = true
+        runner.enteredBackground()
+        runner.becameActive()
+        XCTAssertEqual(runner.rule.mode, .idle)
+        runner.userToggle(transportPaused: true)
+        for _ in 0..<5 {
+            clock.now += 3
+            runner.tick()
+        }
+        await drain()
+        XCTAssertEqual(host.restoreLoads, [121], "the backstop's fresh load went out and never returns")
+        XCTAssertEqual(runner.rule.mode, .restoring)
+        XCTAssertTrue(session.firstFrameShown, "the session still shows the previous load's frame")
+        clock.fire(25)
+        XCTAssertEqual(host.handOffs, [121], "the watchdog fires: mpv, not a spinner for ever")
+    }
 }

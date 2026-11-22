@@ -1109,7 +1109,13 @@ final class NativePlaybackCoordinator: ObservableObject {
             return name == r.name ? r : SubtitleRendition(index: r.index, name: name, language: r.language,
                                                           source: r.source, forced: r.forced, hearingImpaired: r.hearingImpaired)
         }
-        embeddedSubtitleCount = embeddedRenditions.count
+        // W5 r5: a mid-play return restart serves exactly the renditions this playback served (late ones
+        // included). The add-on list is the shared repository's latest emission, which Up Next may have
+        // replaced with the next episode's results.
+        let midPlayRestart = restartToken != nil && restartKind == .midPlay
+        subtitleRenditions = NativeReturnMath.servedSubtitles(midPlayRestart: midPlayRestart,
+                                                              served: currentSubtitleRenditions, fresh: subtitleRenditions)
+        embeddedSubtitleCount = subtitleRenditions.filter(\.isEmbedded).count
         subtitleRenditionsByName = Dictionary(subtitleRenditions.map { ($0.name, $0) }, uniquingKeysWith: { a, _ in a })
         print("[NativePlayer] subtitle renditions: \(subtitleRenditions.count) (\(embeddedRenditions.count) embedded)"
               + (subtitleRenditions.isEmpty ? "" : " — \(subtitleRenditions.prefix(6).map(\.name).joined(separator: ", "))\(subtitleRenditions.count > 6 ? ", …" : "")"))
@@ -1139,10 +1145,11 @@ final class NativePlaybackCoordinator: ObservableObject {
                 label: track.title ?? track.language ?? "",
                 language: track.language, isSelected: true)
         })
-        let initialFlags = subtitleFlags(for: subtitleRenditions)
+        let initialFlags = midPlayRestart && currentSubtitleFlags.count == subtitleRenditions.count
+            ? currentSubtitleFlags : subtitleFlags(for: subtitleRenditions)
         currentSubtitleRenditions = subtitleRenditions
         currentSubtitleFlags = initialFlags
-        servedAddonURLs = Set((context.externalSubtitles + addonSubtitles).map(\.url))
+        if !midPlayRestart { servedAddonURLs = Set((context.externalSubtitles + addonSubtitles).map(\.url)) }
         let server = LocalHLSServer(rootDir: remux.outputDir, map: map,
                                     signaling: signaling,
                                     audioRenditions: audioRenditions,

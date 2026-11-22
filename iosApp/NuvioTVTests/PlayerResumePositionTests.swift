@@ -212,4 +212,30 @@ final class PlayerResumePositionTests: XCTestCase {
                        "after the restart consumed it, the viewer's Off wins")
         XCTAssertEqual(NativeReturnMath.snapshotSubtitleName(rebuilding: false, pendingLate: "Late", current: "French"), "French")
     }
+
+    // MARK: W5 r5
+
+    /// Finding 2: settled and stand-down over (op outstanding / returned) x (phase settled / not) x
+    /// (frame since the op / stale or none).
+    func testRestoreProgressOverOperationPhaseAndFrame() {
+        for outstanding in [false, true] {
+            for phase in [false, true] {
+                for frame in [false, true] {
+                    XCTAssertEqual(PlayerRestoreProgress.transportSettled(opOutstanding: outstanding, phaseSettled: phase),
+                                   !outstanding && phase)
+                    XCTAssertEqual(PlayerRestoreProgress.watchdogStandsDown(opOutstanding: outstanding, phaseSettled: phase,
+                                                                           frameSinceOp: frame),
+                                   !outstanding && phase && frame, "outstanding=\(outstanding) phase=\(phase) frame=\(frame)")
+                }
+            }
+        }
+    }
+
+    /// Finding 1: a mid-play restart serves what this playback served, never the repository's latest list.
+    func testAMidPlayRestartServesTheCurrentPlaybacksSubtitles() {
+        let served = ["English", "Late English"], next = ["Next ep English"]
+        XCTAssertEqual(NativeReturnMath.servedSubtitles(midPlayRestart: true, served: served, fresh: next), served)
+        XCTAssertEqual(NativeReturnMath.servedSubtitles(midPlayRestart: false, served: served, fresh: next), next,
+                       "a normal start or a restart from scratch builds fresh")
+    }
 }

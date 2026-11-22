@@ -254,6 +254,21 @@ nonisolated enum PlaybackWriteGuard {
     }
 }
 
+// MARK: - Restore progress (W5 r5)
+
+/// When a restore op counts as settled, and when its watchdog may stand down. Pure; the runners only
+/// feed it. A transport phase or a frame latch left over from before the op never counts: the op must
+/// have returned (nothing outstanding for this token) and the frame must have risen since it started.
+nonisolated enum PlayerRestoreProgress {
+    static func transportSettled(opOutstanding: Bool, phaseSettled: Bool) -> Bool {
+        !opOutstanding && phaseSettled
+    }
+
+    static func watchdogStandsDown(opOutstanding: Bool, phaseSettled: Bool, frameSinceOp: Bool) -> Bool {
+        transportSettled(opOutstanding: opOutstanding, phaseSettled: phaseSettled) && frameSinceOp
+    }
+}
+
 // MARK: - Restore sequence (4.8)
 
 nonisolated enum PlayerRestoreSequence {

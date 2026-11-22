@@ -105,6 +105,8 @@ final class AetherReturnEffectRunner {
     private var awaitingSettleToken: Int?
     /// The fresh-load fallback was sent: its `loadReturned` belongs to this token.
     private var awaitingLoadToken: Int?
+    /// W5 r5: the token of a restore op that was invoked and has not returned yet (reload or fresh load).
+    private var outstandingOpToken: Int?
     /// The `[Return]` reason the next handoff carries.
     private var handOffNote = "foreground restore failed"
     /// Recorded effects, for the wiring tests' call order (bounded).
@@ -238,6 +240,7 @@ final class AetherReturnEffectRunner {
     func loadReturned() {
         if let t = awaitingLoadToken, t == rule.token {
             awaitingLoadToken = nil
+            opReturned(token: t)
             awaitingSettleToken = t
         }
         operationMayHaveSettled()
@@ -346,6 +349,7 @@ final class AetherReturnEffectRunner {
                 nudge = nil
                 awaitingSettleToken = nil
                 awaitingLoadToken = nil
+                outstandingOpToken = nil
             case .pauseTransport:
                 record("pause")
                 host?.returnPause()
@@ -462,6 +466,10 @@ final class AetherReturnEffectRunner {
 
     /// Step 4: the engine call. Its watchdog is already armed (I2).
     private func invoke(_ kind: PlayerRestoreKind, token: Int) {
+        // W5 r5: the op is outstanding until it returns, and the frame latch starts over with it, so a
+        // stalled op is never judged settled from the previous load's phase or frame.
+        outstandingOpToken = token
+        frameShown = false
         switch kind {
         case .aetherReload:
             record("restoreAfterBackground")
@@ -487,7 +495,12 @@ final class AetherReturnEffectRunner {
         }
     }
 
+    private func opReturned(token: Int) {
+        if outstandingOpToken == token { outstandingOpToken = nil }
+    }
+
     private func reloadReturned(_ outcome: AetherForegroundRestoreOutcome, token: Int) {
+        opReturned(token: token)
         switch outcome {
         case .reloaded:
             guard token == rule.token else { return }
@@ -502,6 +515,7 @@ final class AetherReturnEffectRunner {
     }
 
     private func opFailed(_ reason: String, token: Int) {
+        opReturned(token: token)
         guard token == rule.token else { return }
         handOffNote = "aether: foregroundRestoreFailed (\(reason))"
         feed(.restoreFinished(token: token, .failed(reason), facts(entered: true)))
@@ -521,12 +535,14 @@ final class AetherReturnEffectRunner {
 
     private func watchdogFired(token: Int, budget: Double) {
         guard token == rule.token, rule.mode == .restoring else { return }
-        let settled = awaitingSettleToken == nil && host?.returnTransportSettled == true
-        switch AetherStartWatchdogRule.action(verdict: .fired(elapsed: budget), firstFrameShown: frameShown,
-                                              restoreSettled: settled) {
-        case .standDown:
+        let outstanding = outstandingOpToken == token || awaitingSettleToken == token
+        let settled = PlayerRestoreProgress.transportSettled(opOutstanding: outstanding,
+                                                             phaseSettled: host?.returnTransportSettled == true)
+        if PlayerRestoreProgress.watchdogStandsDown(opOutstanding: outstanding,
+                                                    phaseSettled: host?.returnTransportSettled == true,
+                                                    frameSinceOp: frameShown) {
             postChecks()
-        case .wait, .reportTimeout:
+        } else {
             handOffNote = "aether: foregroundRestoreFailed (timedOut)"
             log("[Return] restore watchdog fired after \(Int(budget)) s (settled=\(settled), picture=\(frameShown))")
             feed(.restoreTimedOut(token: token, facts(entered: true)))
@@ -548,6 +564,7 @@ final class AetherReturnEffectRunner {
         nudge = nil
         awaitingSettleToken = nil
         awaitingLoadToken = nil
+        outstandingOpToken = nil
     }
 
     // MARK: Logs

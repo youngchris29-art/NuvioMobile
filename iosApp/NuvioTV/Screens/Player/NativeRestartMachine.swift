@@ -260,6 +260,12 @@ nonisolated enum NativeReturnMath {
         return 0
     }
 
+    /// The subtitle renditions a pipeline serves (W5 r5): a mid-play return restart keeps exactly what
+    /// this playback served; any other start builds them fresh.
+    static func servedSubtitles<T>(midPlayRestart: Bool, served: [T], fresh: [T]) -> [T] {
+        midPlayRestart ? served : fresh
+    }
+
     /// The subtitle a snapshot records (W5 r4): a late-subtitle pick wins only while its B17 rebuild is in
     /// flight (the pick is not on screen yet). Once the rebuild is done, abandoned or replaced by a return
     /// restart, the live selection wins, so a leftover pending pick can never override a later choice.
