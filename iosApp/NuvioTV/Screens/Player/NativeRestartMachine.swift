@@ -24,6 +24,9 @@ nonisolated enum NativeRestartState: Sendable, Equatable {
     case itemPending    // item and player created, waiting for ready
     case seeking        // mid-play: the corrective seek (or from scratch: the resume seek) is in flight
     case resuming       // from scratch: item ready, waiting for the resume position to be chosen
+    /// From scratch: a percentage-only row and no finite duration yet. Unsettled until the percentage
+    /// resolves (W5 r3: the restart settles only at its final position).
+    case awaitingDuration
     case settled
     case failed
     case cancelled
@@ -39,12 +42,17 @@ nonisolated enum NativeRestartEvent: Sendable, Equatable {
     case itemFailedPreReady(signalingRetryAllowed: Bool)
     case itemFailedAfterReady
     case remuxFailed(stage: String)
+    /// The seek finished (`AVPlayer.seek` returned true): the player is at the target.
     case seekLanded(clockSec: Double?, pictureReady: Bool)
+    /// The seek returned false (interrupted or failed): never a landing. Retried once, then the failure.
+    case seekFailed
+    /// From scratch, awaiting a duration: the restart's item sampled (W5 r3).
+    case durationKnown(positionSec: Double, durationSec: Double, pictureReady: Bool)
     /// Mid-play: the snapshot's audio and subtitle are selected on the new item (W5 r1: the restart
     /// settles only after it, so a late selection can never overwrite one the viewer makes after the settle).
     case tracksRestored
-    /// From scratch: the coordinator read the resume row (identity checked first); nil or 0 = start at the top.
-    case resumeChosen(sec: Double?)
+    /// From scratch: the coordinator ran the start plan (identity checked first).
+    case resumeChosen(NativeResumePosition.Plan)
     case identityChanged
     case deadline
     case stop
@@ -77,6 +85,12 @@ nonisolated struct NativeRestartMachine: Sendable, Equatable {
     private(set) var tracksPending = false
     /// The corrective seek landed while the tracks were still pending: the settle waits for them.
     private(set) var pendingLanding: Landing?
+    /// The final position the restart seeks to (W5 r3): settled only once the player is confirmed there.
+    private(set) var seekTarget: Double?
+    /// The one retry of a seek that returned false has been used.
+    private(set) var seekRetried = false
+    /// From scratch, awaiting a duration: the row's percentage.
+    private(set) var awaitPercent: Double?
 
     nonisolated struct Landing: Sendable, Equatable {
         let clockSec: Double?
@@ -86,7 +100,7 @@ nonisolated struct NativeRestartMachine: Sendable, Equatable {
     /// Any state but idle, settled, failed, cancelled: every failure source of the coordinator feeds the machine.
     var isActive: Bool {
         switch state {
-        case .activating, .launching, .binding, .itemPending, .seeking, .resuming: return true
+        case .activating, .launching, .binding, .itemPending, .seeking, .resuming, .awaitingDuration: return true
         case .idle, .settled, .failed, .cancelled: return false
         }
     }
@@ -103,6 +117,9 @@ nonisolated struct NativeRestartMachine: Sendable, Equatable {
             trackersStarted = false
             tracksPending = false
             pendingLanding = nil
+            seekTarget = nil
+            seekRetried = false
+            awaitPercent = nil
             state = .activating
             switch kind {
             case .midPlay:
@@ -153,6 +170,7 @@ nonisolated struct NativeRestartMachine: Sendable, Equatable {
                 state = .seeking
                 tracksPending = true
                 pendingLanding = nil
+                seekTarget = target.positionSec
                 return [.seek(target.positionSec), .restoreTracks(audio: target.audioName, subtitle: target.subtitleName)]
             case .fromScratch:
                 state = .resuming
@@ -166,15 +184,33 @@ nonisolated struct NativeRestartMachine: Sendable, Equatable {
             }
             return fail(.failed("itemFailedPreReady"))
         case .itemFailedAfterReady:
-            guard state == .seeking || state == .resuming else { return [] }
+            guard state == .seeking || state == .resuming || state == .awaitingDuration else { return [] }
             return fail(.failed("itemFailedAfterReady"))
-        case .resumeChosen(let sec):
+        case .resumeChosen(let plan):
             guard state == .resuming else { return [] }
-            if let sec, sec.isFinite, sec > 0 {
-                state = .seeking
-                return [.seek(sec)]
+            switch plan {
+            case .seek(let sec) where sec.isFinite && sec > 0:
+                return startSeek(sec)
+            case .awaitDuration(let pct):
+                state = .awaitingDuration
+                awaitPercent = pct
+                return []
+            case .seek, .atStart:
+                // At the top: the item is ready there, confirmed by readiness itself.
+                return settle(clockSec: 0, pictureReady: false)
             }
-            return settle(clockSec: nil, pictureReady: false)
+        case .durationKnown(let pos, let dur, let picture):
+            guard state == .awaitingDuration, let pct = awaitPercent else { return [] }
+            switch NativeResumePosition.percentStep(percent: pct, positionSec: pos, durationSec: dur) {
+            case .wait: return []
+            case .drop: return settle(clockSec: pos, pictureReady: picture)
+            case .seek(let t): return startSeek(t)
+            }
+        case .seekFailed:
+            guard state == .seeking, pendingLanding == nil, let t = seekTarget else { return [] }
+            guard !seekRetried else { return fail(.failed("seekFailed")) }
+            seekRetried = true
+            return [.seek(t)]
         case .seekLanded(let clock, let picture):
             guard state == .seeking, pendingLanding == nil else { return [] }
             if tracksPending {
@@ -189,6 +225,12 @@ nonisolated struct NativeRestartMachine: Sendable, Equatable {
             pendingLanding = nil
             return settle(clockSec: landing.clockSec, pictureReady: landing.pictureReady)
         }
+    }
+
+    private mutating func startSeek(_ sec: Double) -> [NativeRestartEffect] {
+        state = .seeking
+        seekTarget = sec
+        return [.seek(sec)]
     }
 
     private mutating func fail(_ outcome: PlayerRestoreOutcome) -> [NativeRestartEffect] {

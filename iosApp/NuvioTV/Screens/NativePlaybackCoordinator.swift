@@ -1473,7 +1473,13 @@ final class NativePlaybackCoordinator: ObservableObject {
                 }
 
                 // A restart's item: no tick until the machine settled (no record from a pre-seek 0, I6).
+                // From scratch with a percentage-only row the machine waits for the duration (W5 r3).
                 if readied, let restart, self.restartToken == restart {
+                    if let runner = self.returnRunner, runner.machine.state == .awaitingDuration, runner.machine.token == restart {
+                        runner.machine(.durationKnown(positionSec: CMTimeGetSeconds(player.currentTime()),
+                                                      durationSec: CMTimeGetSeconds(item.duration),
+                                                      pictureReady: self.returnPictureReady), token: restart)
+                    }
                     try? await Task.sleep(nanoseconds: 200_000_000)
                     continue
                 }
@@ -2550,13 +2556,20 @@ extension NativePlaybackCoordinator: NativeReturnHost {
         }
         Task { @MainActor [weak self] in
             let time = CMTime(seconds: sec, preferredTimescale: 600)
+            let finished: Bool
             if kind == .midPlay {
-                await player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
+                finished = await player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
             } else {
-                await player.seek(to: time)
+                finished = await player.seek(to: time)
             }
             guard let self, self.restartToken == token, self.player === player, self.playerItem === item else {
                 print("[Return] restart seek overtaken (stopped, cancelled or replaced)")
+                return
+            }
+            // W5 r3: a seek that returned false is never a landing (the machine retries once, then fails).
+            guard finished else {
+                print("[Return] restart seek to \(String(format: "%.1f", sec))s did not finish")
+                self.returnRunner?.machine(.seekFailed, token: token)
                 return
             }
             // Spec 5.2.2: identity again after the seek await, before any tracker start.
@@ -2628,11 +2641,8 @@ extension NativePlaybackCoordinator: NativeReturnHost {
         let plan = startResumePlan(durationSec: CMTimeGetSeconds(item.duration))
         startupResume = NativeResumePosition.state(after: plan)
         print("[Return] restart from scratch resume=\(plan)")
-        if case .seek(let resume) = plan {
-            returnRunner?.machine(.resumeChosen(sec: resume), token: token)
-        } else {
-            returnRunner?.machine(.resumeChosen(sec: nil), token: token)
-        }
+        // W5 r3: the machine owns what follows (a seek, the top, or waiting for the duration while unsettled).
+        returnRunner?.machine(.resumeChosen(plan), token: token)
     }
 
     /// A restart hands AVKit a player that has never played (from scratch) or swaps in a new one under
@@ -2660,6 +2670,10 @@ extension NativePlaybackCoordinator: NativeReturnHost {
             print("[Return] native restart ended without settling")
             return
         }
+        // W5 r3: settled means the player is at the restart's final position: the start's resume is done
+        // (a percentage the machine dropped included), so no later tick seeks again.
+        startupResume = .done
+        if let landed = readyClockSec { lastPositionSec = landed }
         // A: the restart lands paused; a ready, paused picture ends startup (no `play()` was issued).
         playIssued = true
         hasStartedPlaying = true

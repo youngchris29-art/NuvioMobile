@@ -25,19 +25,20 @@ final class NativeRestartMachineTests: XCTestCase {
         if state == .itemPending { return m }
         _ = m.handle(.itemReady, token: token)
         if state == .resuming || (state == .seeking && kind == .midPlay) { return m }
-        if state == .seeking { _ = m.handle(.resumeChosen(sec: 50), token: token); return m }
+        if state == .seeking { _ = m.handle(.resumeChosen(.seek(50)), token: token); return m }
+        if state == .awaitingDuration { _ = m.handle(.resumeChosen(.awaitDuration(percent: 40)), token: token); return m }
         // settled
         if kind == .midPlay {
             _ = m.handle(.seekLanded(clockSec: 100, pictureReady: true), token: token)
             _ = m.handle(.tracksRestored, token: token)
-        } else { _ = m.handle(.resumeChosen(sec: nil), token: token) }
+        } else { _ = m.handle(.resumeChosen(.atStart), token: token) }
         return m
     }
 
     private func reachable(_ kind: NativeRestartKind) -> [NativeRestartState] {
         var all: [NativeRestartState] = [.idle, .activating, .launching, .binding, .itemPending, .seeking,
                                          .settled, .failed, .cancelled]
-        if kind == .fromScratch { all.append(.resuming) }
+        if kind == .fromScratch { all += [.resuming, .awaitingDuration] }
         return all
     }
 
@@ -59,8 +60,12 @@ final class NativeRestartMachineTests: XCTestCase {
             Variant(name: "remuxFailed", event: .remuxFailed(stage: "x")),
             Variant(name: "seekLanded", event: .seekLanded(clockSec: 100, pictureReady: true)),
             Variant(name: "tracksRestored", event: .tracksRestored),
-            Variant(name: "resumeChosen(50)", event: .resumeChosen(sec: 50)),
-            Variant(name: "resumeChosen(nil)", event: .resumeChosen(sec: nil)),
+            Variant(name: "resumeChosen(50)", event: .resumeChosen(.seek(50))),
+            Variant(name: "resumeChosen(nil)", event: .resumeChosen(.atStart)),
+            Variant(name: "resumeChosen(pct)", event: .resumeChosen(.awaitDuration(percent: 40))),
+            Variant(name: "seekFailed", event: .seekFailed),
+            Variant(name: "durationKnown(600)", event: .durationKnown(positionSec: 0.5, durationSec: 600, pictureReady: false)),
+            Variant(name: "durationKnown(nan)", event: .durationKnown(positionSec: 0.5, durationSec: .nan, pictureReady: false)),
             Variant(name: "identityChanged", event: .identityChanged),
             Variant(name: "deadline", event: .deadline),
             Variant(name: "stop", event: .stop),
@@ -69,7 +74,7 @@ final class NativeRestartMachineTests: XCTestCase {
     }
 
     private func isActive(_ s: NativeRestartState) -> Bool {
-        [.activating, .launching, .binding, .itemPending, .seeking, .resuming].contains(s)
+        [.activating, .launching, .binding, .itemPending, .seeking, .resuming, .awaitingDuration].contains(s)
     }
 
     /// The expected (next state, effects) for a current-token event, written from the prose of 5.2.2.
@@ -98,7 +103,8 @@ final class NativeRestartMachineTests: XCTestCase {
         case "itemFailedPreReady(false)":
             return state == .itemPending ? (.failed, [.report(.failed("itemFailedPreReady"))]) : (state, [])
         case "itemFailedAfterReady":
-            return state == .seeking || state == .resuming ? (.failed, [.report(.failed("itemFailedAfterReady"))]) : (state, [])
+            return [.seeking, .resuming, .awaitingDuration].contains(state)
+                ? (.failed, [.report(.failed("itemFailedAfterReady"))]) : (state, [])
         case "seekLanded":
             guard state == .seeking else { return (state, []) }
             // Mid-play: the tracks are still pending in the driver's seeking state, so the settle waits.
@@ -110,7 +116,16 @@ final class NativeRestartMachineTests: XCTestCase {
         case "resumeChosen(50)": return state == .resuming ? (.seeking, [.seek(50)]) : (state, [])
         case "resumeChosen(nil)":
             guard state == .resuming else { return (state, []) }
-            return (.settled, [.startTrackersOnce, .report(.settled(clockSec: nil, picture: false))])
+            return (.settled, [.startTrackersOnce, .report(.settled(clockSec: 0, picture: false))])
+        case "resumeChosen(pct)": return state == .resuming ? (.awaitingDuration, []) : (state, [])
+        case "seekFailed":
+            // The driver's seeking state has not used its retry: the same target again.
+            guard state == .seeking else { return (state, []) }
+            return (.seeking, [.seek(kind == .midPlay ? 100 : 50)])
+        case "durationKnown(600)":
+            // 40 % of 600 s from 0.5 s: the percentage seek, still unsettled.
+            return state == .awaitingDuration ? (.seeking, [.seek(240)]) : (state, [])
+        case "durationKnown(nan)": return (state, [])
         default:
             XCTFail("unknown variant \(name)")
             return (state, [])
@@ -291,7 +306,7 @@ final class NativeRestartMachineTests: XCTestCase {
         all += m.handle(.firstSegmentReady, token: 1)
         all += m.handle(.bindSucceeded(url: "u"), token: 1)
         all += m.handle(.itemReady, token: 1)
-        all += m.handle(.resumeChosen(sec: 42), token: 1)
+        all += m.handle(.resumeChosen(.seek(42)), token: 1)
         all += m.handle(.seekLanded(clockSec: 42, pictureReady: true), token: 1)
         all += m.handle(.seekLanded(clockSec: 42, pictureReady: true), token: 1)
         XCTAssertEqual(all.filter { $0 == .startTrackersOnce }.count, 1)
@@ -302,7 +317,7 @@ final class NativeRestartMachineTests: XCTestCase {
     func testFromScratchIdentityChangeBeforeTheResumeReadAbandonsWithoutTrackers() {
         var m = machine(.fromScratch, in: .resuming)
         XCTAssertEqual(m.handle(.identityChanged, token: 1), [.reportAbandon])
-        XCTAssertEqual(m.handle(.resumeChosen(sec: 42), token: 1), [])
+        XCTAssertEqual(m.handle(.resumeChosen(.seek(42)), token: 1), [])
         XCTAssertEqual(m.handle(.seekLanded(clockSec: 42, pictureReady: true), token: 1), [])
         XCTAssertEqual(m.state, .cancelled)
     }
@@ -316,8 +331,8 @@ final class NativeRestartMachineTests: XCTestCase {
 
     func testAResumeOfZeroStartsAtTheTopWithoutASeek() {
         var m = machine(.fromScratch, in: .resuming)
-        XCTAssertEqual(m.handle(.resumeChosen(sec: 0), token: 1),
-                       [.startTrackersOnce, .report(.settled(clockSec: nil, picture: false))])
+        XCTAssertEqual(m.handle(.resumeChosen(.seek(0)), token: 1),
+                       [.startTrackersOnce, .report(.settled(clockSec: 0, picture: false))])
     }
 
     /// W5 r1: the mid-play restart settles only once both the corrective seek landed and the snapshot's
@@ -350,6 +365,80 @@ final class NativeRestartMachineTests: XCTestCase {
         // From scratch selects no tracks: its landing settles directly.
         m = machine(.fromScratch, in: .seeking)
         XCTAssertFalse(m.tracksPending)
+    }
+
+    // MARK: W5 r3: settled ⇔ the player is confirmed at the final target
+
+    private enum SeekResult: CaseIterable { case ok, failedOnce, failedTwice }
+
+    /// The product (seek ok / failed then ok / failed twice) x (percentage pending / none) x (frame early /
+    /// late), from scratch, plus the mid-play corrective seek. The machine reports exactly one outcome;
+    /// a settle carries the landing at the final target, never a seek that returned false; a pending
+    /// percentage keeps it unsettled until its own seek landed.
+    func testSettledOnlyAtTheFinalTargetOverSeekResultPercentAndFrame() {
+        for result in SeekResult.allCases {
+            for percent in [false, true] {
+                for frameEarly in [false, true] {
+                    let label = "\(result) percent=\(percent) frameEarly=\(frameEarly)"
+                    var m = machine(.fromScratch, in: .resuming)
+                    var reports: [PlayerRestoreOutcome] = []
+                    func run(_ e: NativeRestartEvent) {
+                        for fx in m.handle(e, token: 1) { if case .report(let o) = fx { reports.append(o) } }
+                    }
+                    let finalTarget: Double
+                    if percent {
+                        run(.resumeChosen(.awaitDuration(percent: 40)))
+                        XCTAssertEqual(m.state, .awaitingDuration, label)
+                        run(.durationKnown(positionSec: 0, durationSec: .nan, pictureReady: frameEarly))
+                        XCTAssertEqual(reports, [], "\(label): no duration, no settle")
+                        run(.durationKnown(positionSec: 0.3, durationSec: 1800, pictureReady: frameEarly))
+                        finalTarget = 720
+                    } else {
+                        run(.resumeChosen(.seek(250)))
+                        finalTarget = 250
+                    }
+                    XCTAssertEqual(m.state, .seeking, label)
+                    XCTAssertEqual(m.seekTarget, finalTarget, label)
+                    switch result {
+                    case .ok:
+                        break
+                    case .failedOnce:
+                        XCTAssertEqual(m.handle(.seekFailed, token: 1), [.seek(finalTarget)], "\(label): one retry, same target")
+                    case .failedTwice:
+                        _ = m.handle(.seekFailed, token: 1)
+                        run(.seekFailed)
+                        XCTAssertEqual(reports, [.failed("seekFailed")], "\(label): the restart fails, never lands")
+                        XCTAssertEqual(m.state, .failed, label)
+                        run(.seekLanded(clockSec: 0, pictureReady: true))
+                        XCTAssertEqual(reports.count, 1, label)
+                        continue
+                    }
+                    XCTAssertEqual(reports, [], "\(label): nothing before the landing")
+                    run(.seekLanded(clockSec: finalTarget, pictureReady: frameEarly))
+                    XCTAssertEqual(reports, [.settled(clockSec: finalTarget, picture: frameEarly)], label)
+                    XCTAssertEqual(m.state, .settled, label)
+                }
+            }
+        }
+    }
+
+    func testAMidPlayCorrectiveSeekThatFailsIsRetriedThenFailsNeverLands() {
+        var m = machine(.midPlay, in: .seeking)
+        XCTAssertEqual(m.handle(.seekFailed, token: 1), [.seek(100)])
+        XCTAssertEqual(m.handle(.tracksRestored, token: 1), [], "tracks alone settle nothing")
+        XCTAssertEqual(m.handle(.seekFailed, token: 1), [.report(.failed("seekFailed"))])
+        XCTAssertEqual(m.state, .failed)
+        var n = machine(.midPlay, in: .seeking)
+        _ = n.handle(.seekFailed, token: 1)
+        _ = n.handle(.tracksRestored, token: 1)
+        XCTAssertEqual(n.handle(.seekLanded(clockSec: 100, pictureReady: false), token: 1),
+                       [.report(.settled(clockSec: 100, picture: false))], "the retry's landing settles")
+    }
+
+    func testAPercentThatResolvesToDropSettlesAtThePosition() {
+        var m = machine(.fromScratch, in: .awaitingDuration)
+        XCTAssertEqual(m.handle(.durationKnown(positionSec: 2, durationSec: 20, pictureReady: true), token: 1),
+                       [.startTrackersOnce, .report(.settled(clockSec: 2, picture: true))], "40 % of 20 s is under 10 s")
     }
 
     func testIsActiveCoversExactlyTheInFlightStates() {
