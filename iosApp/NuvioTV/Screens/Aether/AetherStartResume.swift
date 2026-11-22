@@ -56,6 +56,14 @@ final class AetherStartResume {
         }
     }
 
+    /// The viewer issued a seek (W5 r7): an owed or in-flight start resume is over for this load.
+    func viewerSeeked() {
+        let next = PlayerResumePosition.afterViewerSeek(state)
+        if next != state { print("[Return] start resume cancelled: the viewer seeked") }
+        state = next
+        seekGeneration = nil
+    }
+
     /// A seek finished (landed, superseded or rejected): the start's own percentage seek ends the resume.
     func seekFinished(generation: Int) {
         guard seekGeneration == generation else { return }

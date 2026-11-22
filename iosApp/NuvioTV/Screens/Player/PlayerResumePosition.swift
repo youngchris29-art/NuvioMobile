@@ -125,3 +125,15 @@ extension PlayerResumePosition {
         return 0
     }
 }
+
+extension PlayerResumePosition {
+    /// A viewer seek (scrub commit, skip, chapter, replay; on native also a jump the tick saw) ends the
+    /// start's automatic resume for this load (W5 r7): an owed percentage or a start seek still in flight
+    /// can never be issued over the viewer's choice afterwards.
+    static func afterViewerSeek(_ state: PlayerStartResume) -> PlayerStartResume {
+        switch state {
+        case .awaitingDuration, .seeking: return .done
+        case .unresolved, .done: return state
+        }
+    }
+}

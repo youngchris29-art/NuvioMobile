@@ -1037,6 +1037,8 @@ final class NativePlaybackCoordinator: ObservableObject {
     @discardableResult
     func noteUserSeek(to sec: Double) -> Int {
         if didPlayToEnd { didPlayToEnd = false }
+        // W5 r7: the viewer's seek ends an owed start resume (a percentage waiting for the duration).
+        startupResume = PlayerResumePosition.afterViewerSeek(startupResume)
         userSeekToken &+= 1
         guard sec.isFinite else { return userSeekToken }
         userSeekInFlight = (userSeekToken, sec)
@@ -1515,7 +1517,14 @@ final class NativePlaybackCoordinator: ObservableObject {
                     if pos.isFinite {
                         let userSeek = self.onPositionTick?(self.lastPositionSec, pos)
                             ?? (abs(pos - self.lastPositionSec) > SkipSegmentPlanner.userJumpThresholdSec)
-                        if userSeek { waitingTicks = 0; self.lastUserSeekUptime = ProcessInfo.processInfo.systemUptime }
+                        if userSeek {
+                            waitingTicks = 0
+                            self.lastUserSeekUptime = ProcessInfo.processInfo.systemUptime
+                            // W5 r7: an AVKit scrub the tick saw ends an owed start percentage too.
+                            if case .awaitingDuration = self.startupResume {
+                                self.startupResume = PlayerResumePosition.afterViewerSeek(self.startupResume)
+                            }
+                        }
                     }
                     // Only while still near the start, so a user scrub is never overridden (W5 r2: the
                     // state is the coordinator's, so a restart from scratch keeps it too).

@@ -1015,6 +1015,9 @@ final class AetherTVPlayerViewController: UIViewController {
         // The planner records the target actually sent (clamped into the file), never the raw
         // request: the next click starts from it (review r3 P2 #1).
         if planner { skipPlanner.beginSeek(kind: kind, targetSec: target, fromSec: fromSec, now: now) }
+        // W5 r7: a viewer seek (anything but the start's own resume and the planner's auto-skip) wins
+        // over an owed start resume for good.
+        if kind != .resume && kind != .auto { startResume.viewerSeeked() }
         seekGeneration += 1
         let generation = seekGeneration
         pendingSeek = (generation, target)

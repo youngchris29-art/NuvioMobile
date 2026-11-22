@@ -96,4 +96,37 @@ final class AetherStartResumeTests: XCTestCase {
         owner.loadReturned(probeDurationSec: 1800, liveDurationSec: 1800)
         XCTAssertEqual(owner.state, .done)
     }
+
+    // MARK: W5 r7: viewer intent wins
+
+    func testAfterViewerSeekOverEveryState() {
+        let cases: [(PlayerStartResume, PlayerStartResume)] = [
+            (.unresolved, .unresolved), (.seeking(250), .done), (.awaitingDuration(percent: 40), .done), (.done, .done),
+        ]
+        for (state, want) in cases {
+            XCTAssertEqual(PlayerResumePosition.afterViewerSeek(state), want, "\(state)")
+        }
+    }
+
+    /// Duration arrives while the viewer's seek is in flight: no automatic seek, the resume is done.
+    func testADurationArrivingDuringAViewerSeekIssuesNoAutomaticSeek() {
+        let owner = AetherStartResume()
+        let clock = FakeClock()
+        var seeks: [Double] = []
+        clock.$durationSec.dropFirst().sink { sec in
+            owner.durationChanged(sec)
+            if owner.isOwed {
+                owner.apply(mediaReady: true, transportHeld: false, positionSec: 0.3) { seeks.append($0); return 1 }
+            }
+        }.store(in: &bag)
+        _ = owner.plan(retryResumeSec: nil, startFromBeginning: false, savedResumeSec: { _ in nil }, pendingPercent: { 40 })
+        owner.loadReturned(probeDurationSec: nil, liveDurationSec: nil)
+        XCTAssertTrue(owner.isOwed)
+        owner.viewerSeeked()                 // the viewer scrubs to 900 s; the seek has not landed yet
+        clock.durationSec = 1800             // the duration arrives before the landing
+        XCTAssertEqual(seeks, [], "the viewer's seek is never replaced")
+        XCTAssertEqual(owner.state, .done)
+        owner.apply(mediaReady: true, transportHeld: false, positionSec: 0.3) { seeks.append($0); return 2 }
+        XCTAssertEqual(seeks, [], "permanently for this load")
+    }
 }
