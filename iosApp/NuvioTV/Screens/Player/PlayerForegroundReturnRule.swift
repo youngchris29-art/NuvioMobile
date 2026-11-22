@@ -121,6 +121,8 @@ nonisolated enum PlayerReturnEffect: Sendable, Equatable {
     case refuseTransport(Bool)
     case schedulePictureNudge(token: Int, afterSec: Double)
     case nudgePicture(atSec: Double)
+    /// The backstop decided to rebuild: take a fresh snapshot now and feed it back as `backstopRebuild`.
+    case captureBackstopSnapshot
     case log(String)
 }
 
@@ -141,6 +143,9 @@ nonisolated enum PlayerReturnEvent: Sendable, Equatable {
     case userPlay(PlayerReturnFacts)
     case userPause
     case backstopTick(PlayerBackstopSample, PlayerReturnFacts)
+    /// The answer to `captureBackstopSnapshot`: the selections as they are now (W5 r3), so a backstop
+    /// rebuild restores what the viewer chose after the return, not the background snapshot's tracks.
+    case backstopRebuild(PlayerBackgroundSnapshot, PlayerReturnFacts)
     case cancelled
 
     /// The token a tokened event was started with (nil for the others).
@@ -159,7 +164,7 @@ nonisolated enum PlayerReturnEvent: Sendable, Equatable {
         switch self {
         case .becameActive(let f), .settled(let f), .reappeared(let f), .userPlay(let f),
              .restoreOwedInForeground(_, let f, _), .restoreFinished(_, _, let f),
-             .restoreTimedOut(_, let f), .backstopTick(_, let f):
+             .restoreTimedOut(_, let f), .backstopTick(_, let f), .backstopRebuild(_, let f):
             return f
         default:
             return nil
@@ -182,6 +187,7 @@ nonisolated enum PlayerReturnEvent: Sendable, Equatable {
         case .userPlay: return "userPlay"
         case .userPause: return "userPause"
         case .backstopTick: return "backstopTick"
+        case .backstopRebuild: return "backstopRebuild"
         case .cancelled: return "cancelled"
         }
     }
@@ -375,6 +381,8 @@ nonisolated struct PlayerForegroundReturnRule: Sendable {
     private(set) var framePending = false
     /// The first Play after a return armed the backstop; it takes `now` from the first tick that follows.
     private(set) var backstopArmPending = false
+    /// The backstop's verdict was a rebuild and its fresh snapshot is owed (`backstopRebuild`).
+    private(set) var backstopRebuildDue = false
     private var backstopArmClock: Double?
     private var currentKind: PlayerRestoreKind?
 
@@ -581,8 +589,15 @@ nonisolated struct PlayerForegroundReturnRule: Sendable {
         return fx
     }
 
+    /// How a restore's settle clock is adopted. The native restart machine settles only with the player
+    /// confirmed at its final position (W5 r3), so its clock is a landing (0 included: a start at the top);
+    /// an Aether reload's clock can be a transient 0 read before the rebuilt clock reported.
+    private var restoreLandingPoint: PlayerReturnPosition.SettlePoint {
+        snapshot?.route == .native ? .operation : .restore
+    }
+
     private mutating func settleSuccess(clock: Double?) -> [PlayerReturnEffect] {
-        let adopted = adoptPosition(clock, at: .restore)
+        let adopted = adoptPosition(clock, at: restoreLandingPoint)
         mode = .idle
         pictureOwed = false
         framePending = false
@@ -640,6 +655,7 @@ nonisolated struct PlayerForegroundReturnRule: Sendable {
         backstopOwed = false
         backstopArmPending = false
         backstopArmClock = nil
+        backstopRebuildDue = false
         pictureOwed = false
         framePending = false
         nudgeIssued = false
@@ -710,29 +726,37 @@ nonisolated struct PlayerForegroundReturnRule: Sendable {
             case .wait, .disarm:
                 return []
             case .rebuild:
-                guard let base = snapshot else { return nil }
-                let clock: Double
-                if let c = f.clockSec, c.isFinite, c >= 0 { clock = c } else { clock = position.value }
-                let s = PlayerBackgroundSnapshot(route: base.route, phase: .playing, positionSec: clock,
-                                                 pendingSeekTargetSec: nil, enteredAtUptime: base.enteredAtUptime,
-                                                 audioTrackID: base.audioTrackID, subtitleTrackID: base.subtitleTrackID,
-                                                 subtitleDecided: base.subtitleDecided, audioName: base.audioName,
-                                                 subtitleName: base.subtitleName)
-                snapshot = s
-                position.hold(s)
-                nudgeIssued = false
-                intent = .play
-                let kind: PlayerRestoreKind
-                switch base.route {
-                case .native:
-                    kind = .nativeRestart(atSec: clock)
-                case .aetherLoopback, .aetherSoftware:
-                    kind = f.aetherNeedsRestore == true ? .aetherReload : .aetherFreshLoad(atSec: clock)
-                }
-                return [.holdPosition(position.value)] + beginRestore(kind)
+                guard snapshot != nil else { return nil }
+                backstopRebuildDue = true
+                return [.captureBackstopSnapshot]
             case .handOff:
                 return handOffRow(atSec: f.clockSec ?? position.value)
             }
+
+        case .backstopRebuild(let base, let f):
+            // W5 r3: tracks, names (and on Aether the delay and shaping the host read with it) are the
+            // ones of this instant; the clock is the frozen one the backstop saw.
+            guard backstopRebuildDue else { return nil }
+            backstopRebuildDue = false
+            let clock: Double
+            if let c = f.clockSec, c.isFinite, c >= 0 { clock = c } else { clock = position.value }
+            let s = PlayerBackgroundSnapshot(route: base.route, phase: .playing, positionSec: clock,
+                                             pendingSeekTargetSec: nil, enteredAtUptime: base.enteredAtUptime,
+                                             audioTrackID: base.audioTrackID, subtitleTrackID: base.subtitleTrackID,
+                                             subtitleDecided: base.subtitleDecided, audioName: base.audioName,
+                                             subtitleName: base.subtitleName)
+            snapshot = s
+            position.hold(s)
+            nudgeIssued = false
+            intent = .play
+            let kind: PlayerRestoreKind
+            switch base.route {
+            case .native:
+                kind = .nativeRestart(atSec: clock)
+            case .aetherLoopback, .aetherSoftware:
+                kind = f.aetherNeedsRestore == true ? .aetherReload : .aetherFreshLoad(atSec: clock)
+            }
+            return [.holdPosition(position.value)] + beginRestore(kind)
 
         default:
             return nil
@@ -849,7 +873,7 @@ nonisolated struct PlayerForegroundReturnRule: Sendable {
             switch outcome {
             case .settled(let clock, let picture):
                 if picture { return settleSuccess(clock: clock) }
-                let adopted = adoptPosition(clock, at: .restore)
+                let adopted = adoptPosition(clock, at: restoreLandingPoint)
                 framePending = true
                 return adopted + [.schedulePictureNudge(token: token, afterSec: Self.pictureNudgeDelaySec)]
             case .notNeeded:
@@ -883,7 +907,7 @@ nonisolated struct PlayerForegroundReturnRule: Sendable {
         case .restoreFinished(_, let outcome, _):
             var adopted: [PlayerReturnEffect] = []
             if case .settled(let clock, let picture) = outcome {
-                adopted = adoptPosition(clock, at: .restore)
+                adopted = adoptPosition(clock, at: restoreLandingPoint)
                 pictureOwed = !picture
             }
             framePending = false

@@ -32,6 +32,8 @@ final class NativeRestartWiringTests: XCTestCase {
         var ui: [PlayerReturnUI] = []
         var lastToken = 0
         var ended: [Bool] = []
+        var audioName = "English · AAC Stereo"
+        var subtitleName: String? = "English"
         weak var runner: NativeReturnEffectRunner?
         var holdTracks = false
         var heldTracks: (() -> Void)?
@@ -39,7 +41,7 @@ final class NativeRestartWiringTests: XCTestCase {
         func returnSnapshot(enteredAtUptime: TimeInterval) -> PlayerBackgroundSnapshot {
             PlayerBackgroundSnapshot(route: .native, phase: phase, positionSec: position, pendingSeekTargetSec: nil,
                                      enteredAtUptime: enteredAtUptime, audioTrackID: nil, subtitleTrackID: nil,
-                                     subtitleDecided: true, audioName: "English · AAC Stereo", subtitleName: "English")
+                                     subtitleDecided: true, audioName: audioName, subtitleName: subtitleName)
         }
 
         func returnFacts(enteredBackground: Bool, awaySec: Double, health: PlayerNativeHealth) -> PlayerReturnFacts {
@@ -400,7 +402,7 @@ final class NativeRestartWiringTests: XCTestCase {
         XCTAssertFalse(host.calls.contains { $0.hasPrefix("setPosition") })
         buildPipeline()
         XCTAssertEqual(host.resumeReads, 1, "the resume row is read once, after readiness")
-        runner.machine(.resumeChosen(sec: 300), token: token)
+        runner.machine(.resumeChosen(.seek(300)), token: token)
         XCTAssertEqual(host.calls.last, "seek 300")
         XCTAssertEqual(host.trackerStarts, 0, "no tracker before the seek landed")
         host.pictureReady = true
@@ -416,7 +418,7 @@ final class NativeRestartWiringTests: XCTestCase {
         await returnFromScratch()
         buildPipeline()
         host.pictureReady = true
-        runner.machine(.resumeChosen(sec: nil), token: token)
+        runner.machine(.resumeChosen(.atStart), token: token)
         XCTAssertEqual(host.trackerStarts, 1)
         XCTAssertEqual(runner.rule.mode, .idle)
     }
@@ -436,7 +438,7 @@ final class NativeRestartWiringTests: XCTestCase {
     func testAnIdentityChangeDuringTheResumeSeekAbandons() async {
         await returnFromScratch()
         buildPipeline()
-        runner.machine(.resumeChosen(sec: 300), token: token)
+        runner.machine(.resumeChosen(.seek(300)), token: token)
         host.identity = PlaybackIdentity(accountKey: "signed-out", profileId: 1)
         runner.machine(.identityChanged, token: token)
         XCTAssertEqual(runner.rule.mode, .abandoned)
@@ -548,5 +550,63 @@ final class NativeRestartWiringTests: XCTestCase {
         onPlayNext(next)
         XCTAssertTrue(latch.committed)
         XCTAssertEqual(handed, ["tt1:1:5"], "the hand-off itself is forwarded unchanged")
+    }
+
+    // MARK: W5 review r3
+
+    /// Finding 2: from scratch with a percentage-only row, the duration known late and the frame later
+    /// still. The restart stays unsettled until the percentage seek landed; the held position is that
+    /// landing, so the picture nudge seeks there and can never undo the resume.
+    func testADelayedPercentResumeSettlesAtItsLandingAndTheNudgeTargetsIt() async {
+        await returnFromScratch()
+        buildPipeline()
+        runner.machine(.resumeChosen(.awaitDuration(percent: 40)), token: token)
+        XCTAssertEqual(runner.rule.mode, .restoring)
+        XCTAssertTrue(runner.restartActive, "unsettled while the duration is unknown")
+        runner.machine(.durationKnown(positionSec: 0, durationSec: .nan, pictureReady: false), token: token)
+        runner.machine(.durationKnown(positionSec: 0.2, durationSec: 1800, pictureReady: false), token: token)
+        XCTAssertEqual(host.calls.last, "seek 720")
+        XCTAssertTrue(runner.restartActive)
+        runner.machine(.seekLanded(clockSec: 720, pictureReady: false), token: token)
+        XCTAssertFalse(runner.restartActive)
+        XCTAssertEqual(runner.heldPosition, 720, "the rule holds the restart's final target")
+        clock.fire(3)
+        XCTAssertEqual(host.nudges, [720], "the nudge goes to the landing, never back to 0")
+        host.pictureReady = true
+        runner.pictureChanged()
+        XCTAssertEqual(runner.rule.mode, .idle)
+        XCTAssertEqual(host.held.last ?? 0, nil)
+    }
+
+    /// Finding 1: a restart seek that returns false is never a landing: one retry, then mpv.
+    func testARestartSeekThatDoesNotFinishNeverSettles() async {
+        await returnAndRestart()
+        buildPipeline()
+        runner.machine(.seekFailed, token: token)
+        XCTAssertEqual(host.calls.filter { $0 == "seek 120" }.count, 2, "retried once at the same target")
+        XCTAssertEqual(runner.rule.mode, .restoring)
+        runner.machine(.seekFailed, token: token)
+        XCTAssertEqual(host.handOffs, [120], "the restart failed: mpv at the held position, not the old clock")
+    }
+
+    /// Finding 3: the viewer returns paused, picks other tracks, presses Play on a frozen clock: the
+    /// backstop's rebuild restores the tracks of that instant.
+    func testABackstopRebuildRestoresTheSelectionsOfThatInstant() async {
+        await returnAndRestart()
+        buildPipeline()
+        land(picture: true)
+        XCTAssertEqual(runner.rule.mode, .idle)
+        host.audioName = "Deutsch · AC3 5.1"
+        host.subtitleName = "Deutsch"
+        runner.observedRate(playing: true)
+        for _ in 0..<5 {
+            clock.now += 3
+            runner.tick()
+        }
+        await drain()
+        XCTAssertEqual(runner.rule.snapshot?.audioName, "Deutsch · AC3 5.1")
+        XCTAssertEqual(runner.rule.snapshot?.subtitleName, "Deutsch")
+        buildPipeline()
+        XCTAssertTrue(host.calls.contains("tracks Deutsch · AC3 5.1/Deutsch"), "the rebuild restores the new picks")
     }
 }

@@ -280,6 +280,8 @@ final class PlayerForegroundReturnRuleTests: XCTestCase {
             EventVariant(key: "userPlay", make: { _ in .userPlay(f) }, tokened: false, makeMismatch: { .userPlay(bad) }),
             EventVariant(key: "userPause", make: { _ in .userPause }, tokened: false, makeMismatch: nil),
             EventVariant(key: "tick", make: { _ in .backstopTick(sample, f) }, tokened: false, makeMismatch: { .backstopTick(sample, bad) }),
+            EventVariant(key: "backstopRebuild", make: { _ in .backstopRebuild(self.snap(), f) }, tokened: false,
+                         makeMismatch: { .backstopRebuild(self.snap(), bad) }),
             EventVariant(key: "cancelled", make: { _ in .cancelled }, tokened: false, makeMismatch: nil),
         ]
     }
@@ -778,7 +780,8 @@ final class PlayerForegroundReturnRuleTests: XCTestCase {
         XCTAssertFalse(h.rule.backstopOwed)
         XCTAssertEqual(h.send(tick(100)), [], "armed at the first tick")
         XCTAssertEqual(h.send(tick(107)), [])
-        XCTAssertEqual(h.send(tick(108)),
+        XCTAssertEqual(h.send(tick(108)), [.captureBackstopSnapshot], "W5 r3: the rebuild asks for the selections of now")
+        XCTAssertEqual(h.send(.backstopRebuild(snap(pos: 10), facts(needs: false, clock: 10))),
                        [.holdPosition(10), .startRestore(.aetherFreshLoad(atSec: 10), token: 1), .refuseTransport(true), .setUI(.restoring)])
         h.send(.sequenceArmed(token: 1))
         XCTAssertEqual(h.send(.restoreFinished(token: 1, .settled(clockSec: 10, picture: true), facts(needs: false, clock: 10))),
@@ -990,5 +993,56 @@ final class PlayerForegroundReturnRuleTests: XCTestCase {
         XCTAssertEqual(rule.failedAttempts, 0)
         XCTAssertEqual(nonLog(rule.handle(.becameActive(facts(failed: true)))),
                        [.startRestore(.aetherFreshLoad(atSec: 120), token: 2), .refuseTransport(true), .setUI(.restoring)])
+    }
+
+    // MARK: W5 review r3
+
+    /// Finding 3: a viewer who returned paused and changed tracks, then pressed Play on a frozen clock:
+    /// the rebuild's snapshot is the one captured when it starts, not the background's.
+    func testABackstopRebuildTakesTheSelectionsOfTheMomentItStarts() {
+        for route in [PlayerReturnRoute.aetherLoopback, .native] {
+            let h = harness()
+            h.send(.enteredBackground(snap(route: route, pos: 10)))
+            h.send(.becameActive(facts(needs: false, clock: 10)))
+            if route == .native {
+                h.send(.sequenceArmed(token: 1))
+                h.send(.restoreFinished(token: 1, .settled(clockSec: 10, picture: true), facts(needs: nil, clock: 10)))
+            }
+            XCTAssertEqual(h.rule.mode, .idle, "\(route)")
+            h.send(.userPlay(facts(clock: 10)))
+            let t0 = h.rule.token
+            for now in [100.0, 104, 108] {
+                h.send(.backstopTick(PlayerBackstopSample(now: now, clockSec: 10, userPaused: false, reportsPlaying: true,
+                                                          reportsBuffering: false), facts(needs: false, clock: 10)))
+            }
+            XCTAssertEqual(h.count(.captureBackstopSnapshot), 1, "\(route)")
+            XCTAssertEqual(h.rule.token, t0, "\(route): nothing starts before the fresh snapshot")
+            let now = PlayerBackgroundSnapshot(route: route, phase: .playing, positionSec: 10, pendingSeekTargetSec: nil,
+                                               enteredAtUptime: 2000, audioTrackID: 5, subtitleTrackID: nil,
+                                               subtitleDecided: true, audioName: "de", subtitleName: nil)
+            h.send(.backstopRebuild(now, facts(needs: false, clock: 10)))
+            XCTAssertEqual(h.rule.snapshot?.audioTrackID, 5, "\(route)")
+            XCTAssertEqual(h.rule.snapshot?.audioName, "de", "\(route)")
+            XCTAssertNil(h.rule.snapshot?.subtitleName, "\(route): subtitles turned off after the return stay off")
+            XCTAssertEqual(h.rule.mode, .preparing, "\(route)")
+            // A second answer is not owed: ignored.
+            XCTAssertEqual(h.send(.backstopRebuild(now, facts(clock: 10))), [])
+        }
+    }
+
+    /// Finding 1/2: the native restart settles only at its confirmed final position, so its clock is a
+    /// landing (0 included); an Aether reload's transient 0 is still rejected.
+    func testANativeRestartSettleAlwaysAdoptsItsLanding() {
+        let h = harness()
+        h.send(.enteredBackground(snap(route: .native, phase: .starting, pos: 250)))
+        h.send(.becameActive(facts(needs: nil)))
+        h.send(.sequenceArmed(token: 1))
+        XCTAssertEqual(h.send(.restoreFinished(token: 1, .settled(clockSec: 0, picture: false), facts(needs: nil))),
+                       [.holdPosition(0), .schedulePictureNudge(token: 1, afterSec: 3)])
+        XCTAssertEqual(h.send(.pictureNudgeDue(token: 1)), [.nudgePicture(atSec: 0)], "the nudge goes to the landing")
+        let g = harness()
+        reloading(g, snapshot: snap(pos: 250))
+        XCTAssertEqual(g.send(.restoreFinished(token: 1, .settled(clockSec: 0, picture: false), facts())),
+                       [.schedulePictureNudge(token: 1, afterSec: 3)], "Aether: a transient 0 is not a landing")
     }
 }

@@ -389,6 +389,13 @@ final class AetherReturnEffectRunner {
                     self?.log("[Return] picture nudge \(outcome)")
                     self?.postChecks()
                 }
+            case .captureBackstopSnapshot:
+                // W5 r3: the rebuild restores the selections of this instant, not the background's.
+                guard let host else { continue }
+                let fresh = host.returnSnapshot(enteredAtUptime: now())
+                lastSnapshot = fresh
+                record("backstop snapshot")
+                feed(.backstopRebuild(fresh, facts(entered: false)))
             case .log(let line):
                 log(line)
             }

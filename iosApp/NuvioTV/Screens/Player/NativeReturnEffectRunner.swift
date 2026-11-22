@@ -423,6 +423,13 @@ final class NativeReturnEffectRunner {
             case .nudgePicture(let atSec):
                 record("nudge \(String(format: "%.1f", atSec))")
                 host?.returnNudgePicture(atSec: atSec)
+            case .captureBackstopSnapshot:
+                // W5 r3: the rebuild restores the selections of this instant, not the background's.
+                guard let host else { continue }
+                let fresh = host.returnSnapshot(enteredAtUptime: now())
+                lastSnapshot = fresh
+                record("backstop snapshot")
+                feed(.rule(.backstopRebuild(fresh, facts(entered: false)), observed: false))
             case .log(let line):
                 print(line)
             }
