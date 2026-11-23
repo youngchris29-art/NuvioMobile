@@ -31,7 +31,19 @@ final class PlayerTransportUITests: XCTestCase {
             if probe(app)["pos"].flatMap(Double.init).map({ $0 > 1 }) == true { return app }
             Thread.sleep(forTimeInterval: 0.5)
         }
-        XCTFail("playback never started (pos <= 1)")
+        // Gate 2026-11-22 (FA87): every launch froze at pos≈1.8 with paused=0 once the simulator's
+        // audio output stopped consuming (about 2 s of audio buffered, then the clock stands still).
+        // Name that environment fault instead of failing as if the leg were wrong.
+        let p1 = probe(app)
+        Thread.sleep(forTimeInterval: 3)
+        let p2 = probe(app)
+        let pos1 = Double(p1["pos"] ?? "") ?? -1, pos2 = Double(p2["pos"] ?? "") ?? -1
+        if p2["paused"] == "0", pos1 >= 0, pos2 <= 3, abs(pos2 - pos1) < 0.05 {
+            XCTFail("playback never started: the clock stands at \(pos2) s while not paused, likely the simulator's "
+                    + "audio output stopped consuming (environment, not this leg; reboot the simulator): \(probeText(app))")
+        } else {
+            XCTFail("playback never started (pos <= 1)")
+        }
         return app
     }
 
