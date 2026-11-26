@@ -8,7 +8,9 @@ import com.nuvio.app.core.auth.AuthRepository
 import com.nuvio.app.core.auth.AuthState
 import com.nuvio.app.core.auth.isAnonymous
 import com.nuvio.app.core.network.SupabaseProvider
+import com.nuvio.app.core.identity.AccountKey
 import com.nuvio.app.core.identity.AccountToken
+import com.nuvio.app.core.identity.OwedProfilePull
 import com.nuvio.app.core.identity.CommitResult
 import com.nuvio.app.core.identity.IdentityGate
 import com.nuvio.app.core.identity.ProfileIdentityRouterProvider
@@ -114,6 +116,12 @@ object ProfileRepository {
             return
         }
         val accountToken = IdentityGate.currentAccountToken()
+        if (accountToken == null) {
+            // Fork (W2 review r1 #3): an identity window holds (a sign-in still publishing); the
+            // pull is owed to this account and re-issued once the identity opens on it.
+            OwedProfilePull.owe(AccountKey.of(AuthRepository.state.value))
+            return
+        }
         val ticket = AuthRepository.sessionTicket()
         try {
             val result = SupabaseProvider.client.postgrest.rpc("sync_pull_profiles")
