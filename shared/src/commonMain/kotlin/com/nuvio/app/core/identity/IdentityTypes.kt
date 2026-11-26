@@ -65,7 +65,16 @@ sealed interface IdentityPhase {
     data class Draining(val from: IdentityEpoch) : IdentityPhase
     data class Closed(val from: IdentityEpoch) : IdentityPhase
     data class Applying(val from: IdentityEpoch) : IdentityPhase
+
+    /**
+     * Revision 10, rule B: recovery required after a failed publish or a failed wipe. No token is
+     * minted and every commit is refused until a successful publish or a completed wipe.
+     */
+    data class Recovery(val from: IdentityEpoch) : IdentityPhase
 }
+
+/** Why the barrier is in [IdentityPhase.Recovery] (revision 10, rule B). */
+enum class RecoveryReason { FailedPublish, FailedWipe }
 
 enum class CommitKind { LocalWrite, RemoteSend, Publish, Start }
 
@@ -96,10 +105,12 @@ data class IdentityState(
     val scope: IdentityScope,
     val epoch: IdentityEpoch,
     val phase: IdentityPhase,
-    /** Non-null exactly while phase != Open. */
+    /** Non-null exactly while a drained transition or an auth window holds (null when Open or only Recovery holds). */
     val kind: TransitionKind?,
     /** Revision 8: the id of the drained transition in progress (0 when none); Swift echoes it in teardownDone. */
     val transitionId: Long = 0,
+    /** Revision 10: the recovery hold, if any (Swift retries only for FailedPublish, 4.7 rule B). */
+    val recovery: RecoveryReason? = null,
 ) {
     val transitioning: Boolean get() = phase !is IdentityPhase.Open
 }

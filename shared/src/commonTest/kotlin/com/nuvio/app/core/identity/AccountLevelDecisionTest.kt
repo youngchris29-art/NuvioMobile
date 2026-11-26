@@ -11,8 +11,8 @@ class AccountLevelDecisionTest {
     private val drainedKinds = TransitionKind.entries.filter { it.drains }
     private val accountKinds = setOf(TransitionKind.SignOut, TransitionKind.DeleteAccount, TransitionKind.ServerSwitch)
 
-    private fun oracle(drained: DrainedOp?, window: TransitionKind?, rel: AccountRel): Verdict = when {
-        window != null -> Verdict.Reject(RejectReason.WritesClosed)
+    private fun oracle(drained: DrainedOp?, window: TransitionKind?, recovery: RecoveryReason?, rel: AccountRel): Verdict = when {
+        window != null || recovery != null -> Verdict.Reject(RejectReason.WritesClosed)
         drained != null && drained.kind in accountKinds && drained.stage != DrainedStage.Draining ->
             Verdict.Reject(RejectReason.WritesClosed)
         rel != AccountRel.Same -> Verdict.Reject(RejectReason.AccountChanged)
@@ -25,16 +25,17 @@ class AccountLevelDecisionTest {
             drainedKinds.flatMap { k -> DrainedStage.entries.map { DrainedOp(k, it, windowsAtBegin = 0, transitionId = 1) } }
         val windows = listOf(null, TransitionKind.AccountWipe, TransitionKind.AccountPublished)
         var count = 0
-        for (drained in drainedAxis) for (window in windows) for (rel in AccountRel.entries) {
+        val recoveries = listOf<RecoveryReason?>(null) + RecoveryReason.entries
+        for (drained in drainedAxis) for (window in windows) for (recovery in recoveries) for (rel in AccountRel.entries) {
             val token = AccountToken(
                 account = if (rel == AccountRel.Other) accountB else accountA,
                 authSerial = if (rel == AccountRel.OtherSerial) 2 else 1,
             )
-            val actual = CommitDecision.decideAccountLevel(token, drained, window, accountA, 1)
-            assertEquals(oracle(drained, window, rel), actual, "$drained $window $rel")
+            val actual = CommitDecision.decideAccountLevel(token, drained, window, recovery, accountA, 1)
+            assertEquals(oracle(drained, window, recovery, rel), actual, "$drained $window $recovery $rel")
             count++
         }
-        assertEquals(19 * 3 * 3, count)
+        assertEquals(19 * 3 * 3 * 3, count)
     }
 
     @Test
@@ -42,7 +43,7 @@ class AccountLevelDecisionTest {
         val drained = DrainedOp(TransitionKind.ActiveProfileDelete, DrainedStage.Applying, 0, transitionId = 1, gated = true)
         assertEquals(
             Verdict.Reject(RejectReason.WritesClosed),
-            CommitDecision.decideAccountLevel(AccountToken(accountA, 1), drained, TransitionKind.AccountWipe, accountA, 1),
+            CommitDecision.decideAccountLevel(AccountToken(accountA, 1), drained, TransitionKind.AccountWipe, null, accountA, 1),
         )
     }
 
@@ -50,7 +51,7 @@ class AccountLevelDecisionTest {
     fun profileBarrierDoesNotRefuseAccountWork() {
         DrainedStage.entries.forEach { stage ->
             val drained = DrainedOp(TransitionKind.ProfileSelect, stage, 0, transitionId = 1)
-            assertEquals(Verdict.Commit, CommitDecision.decideAccountLevel(AccountToken(accountA, 1), drained, null, accountA, 1))
+            assertEquals(Verdict.Commit, CommitDecision.decideAccountLevel(AccountToken(accountA, 1), drained, null, null, accountA, 1))
         }
     }
 }

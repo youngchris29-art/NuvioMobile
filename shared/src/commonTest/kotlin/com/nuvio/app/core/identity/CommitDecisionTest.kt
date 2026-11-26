@@ -6,7 +6,7 @@ import kotlin.test.assertEquals
 /** Spec 3.2: every combination of the decision's inputs against an oracle written over the rows. */
 class CommitDecisionTest {
 
-    private enum class PhaseKind { Open, Draining, Closed, Applying }
+    private enum class PhaseKind { Open, Draining, Closed, Applying, Recovery }
     private enum class EpochRel { Older, Equal, Newer }
     private enum class AccountRel { Same, OtherAccount, OtherSerial }
 
@@ -27,7 +27,7 @@ class CommitDecisionTest {
     private fun oracle(c: Case): Verdict = when {
         c.epoch == EpochRel.Newer -> Verdict.Reject(RejectReason.Impossible)
         c.phase != PhaseKind.Open && !c.fromEqual -> Verdict.Reject(RejectReason.Impossible)
-        c.phase == PhaseKind.Closed || c.phase == PhaseKind.Applying -> Verdict.Reject(RejectReason.WritesClosed)
+        c.phase == PhaseKind.Closed || c.phase == PhaseKind.Applying || c.phase == PhaseKind.Recovery -> Verdict.Reject(RejectReason.WritesClosed)
         c.account != AccountRel.Same -> Verdict.Reject(RejectReason.AccountChanged)
         c.epoch == EpochRel.Older -> Verdict.Reject(RejectReason.StaleEpoch)
         !c.sameSlot -> Verdict.Reject(RejectReason.Impossible)
@@ -42,6 +42,7 @@ class CommitDecisionTest {
             PhaseKind.Draining -> IdentityPhase.Draining(from)
             PhaseKind.Closed -> IdentityPhase.Closed(from)
             PhaseKind.Applying -> IdentityPhase.Applying(from)
+            PhaseKind.Recovery -> IdentityPhase.Recovery(from)
         }
         val epoch = when (c.epoch) {
             EpochRel.Older -> IdentityEpoch(current.value - 1)
@@ -68,8 +69,8 @@ class CommitDecisionTest {
     @Test
     fun everyCombination() {
         val cases = allCases()
-        // (1 Open + 3 held × 2 from) × 3 epoch × 3 account × 2 slot × 4 kind.
-        assertEquals(504, cases.size)
+        // (1 Open + 4 held × 2 from) × 3 epoch × 3 account × 2 slot × 4 kind.
+        assertEquals(648, cases.size)
         cases.forEach { assertEquals(oracle(it), decide(it), "case $it") }
     }
 
@@ -97,7 +98,7 @@ class CommitDecisionTest {
 
     @Test
     fun closedAndApplyingRefuseWrites() {
-        listOf(PhaseKind.Closed, PhaseKind.Applying).forEach {
+        listOf(PhaseKind.Closed, PhaseKind.Applying, PhaseKind.Recovery).forEach {
             assertEquals(
                 Verdict.Reject(RejectReason.WritesClosed),
                 decide(Case(it, true, EpochRel.Equal, AccountRel.Same, true, CommitKind.LocalWrite)),

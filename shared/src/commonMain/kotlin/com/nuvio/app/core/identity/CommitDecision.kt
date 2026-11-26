@@ -23,7 +23,9 @@ object CommitDecision {
         val from = phase.from()
         if (from != null && from != currentEpoch) return reject(RejectReason.Impossible)
         // R3
-        if (phase is IdentityPhase.Closed || phase is IdentityPhase.Applying) return reject(RejectReason.WritesClosed)
+        if (phase is IdentityPhase.Closed || phase is IdentityPhase.Applying || phase is IdentityPhase.Recovery) {
+            return reject(RejectReason.WritesClosed)
+        }
         // R4: reported before a stale epoch.
         if (token.scope.account != currentScope.account || token.authSerial != currentAuthSerial) {
             return reject(RejectReason.AccountChanged)
@@ -46,10 +48,11 @@ object CommitDecision {
         token: AccountToken,
         drained: DrainedOp?,
         window: TransitionKind?,
+        recovery: RecoveryReason?,
         currentAccount: AccountKey,
         currentAuthSerial: Long,
     ): Verdict {
-        if (window != null) return reject(RejectReason.WritesClosed)
+        if (window != null || recovery != null) return reject(RejectReason.WritesClosed)
         if (drained != null && drained.kind.isAccountKind &&
             (drained.stage == DrainedStage.Preempted || drained.stage == DrainedStage.Applying)
         ) {
@@ -69,6 +72,7 @@ internal fun IdentityPhase.from(): IdentityEpoch? = when (this) {
     is IdentityPhase.Draining -> from
     is IdentityPhase.Closed -> from
     is IdentityPhase.Applying -> from
+    is IdentityPhase.Recovery -> from
 }
 
 sealed interface ClaimVerdict {

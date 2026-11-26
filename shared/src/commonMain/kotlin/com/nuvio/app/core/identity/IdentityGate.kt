@@ -46,10 +46,10 @@ object IdentityGate {
         }
     }
 
-    /** Null while an account hold is closed (a window, or an account kind past its drain; 3.5). */
+    /** Null while an account hold is closed (a window, Recovery, or an account kind past its drain; 3.5). */
     fun currentAccountToken(): AccountToken? = IdentityLocks.withCommit {
         val model = IdentityRuntime.snapshot()
-        val closed = model.window != null || model.drained?.let {
+        val closed = model.window != null || model.recovery != null || model.drained?.let {
             it.kind.isAccountKind && it.stage != DrainedStage.Draining
         } == true
         if (closed) null else AccountToken(model.latestAccount, IdentityRuntime.authSerial())
@@ -127,7 +127,7 @@ object IdentityGate {
         if (token == null) return Verdict.Reject(RejectReason.WritesClosed)
         val model = IdentityRuntime.snapshot()
         return CommitDecision.decideAccountLevel(
-            token, model.drained, model.window, model.latestAccount, IdentityRuntime.authSerial(),
+            token, model.drained, model.window, model.recovery, model.latestAccount, IdentityRuntime.authSerial(),
         )
     }
 

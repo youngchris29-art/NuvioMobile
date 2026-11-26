@@ -9,7 +9,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
-import kotlin.concurrent.Volatile
 import kotlin.coroutines.AbstractCoroutineContextElement
 import kotlin.coroutines.CoroutineContext
 
@@ -19,52 +18,46 @@ import kotlin.coroutines.CoroutineContext
  *
  * Design: docs/batch-scope-identity-spec.md, sections 4.3, 4.3a and 5.11 point 5 (revision 9).
  *
- * ---- Registry state ----
- *   jobs        Job → (name, WorkClass)        leaf  IdentityLocks.registry
- *   awaiting    Job → count of transitions it   leaf  IdentityLocks.registry
- *               is waiting for (mark/unmark)
- *   awaited     the drain in progress:          commit
- *               (transitionId, teardownRequired, ackMatched)
- *   pending     cancellation snapshots taken    commit
- *               but not yet issued (count)
- *   changes     wake-up counter for the drain   lock-free (StateFlow.update)
+ * ---- Registry state (revision 10) ----
+ *   jobs             Job → (name, WorkClass)          leaf    IdentityLocks.registry
+ *   awaited          the drain in progress:           commit
+ *                    (transitionId, teardownRequired, ackMatched)
+ *   effectsInFlight  reducing sections whose revoke    commit
+ *                    or cancels have not finished
+ *   changes          wake-up counter for the drain    lock-free (StateFlow.update)
+ *   (no awaiting marker: rule A. Work that requests a transition does not wait for it.)
  *
- * ---- Operations (lock taken; what it is atomic with) ----
- *   admit (launch, launchAccount)   commit, then registry inside: the verdict and the insert are one
- *                                   commit section, so a drain decision sees the job or the job
- *                                   was refused (R3/R5/R7 once the phase left Draining).
- *   complete (invokeOnCompletion)   registry only (never commit: a canceller may hold a store
- *                                   lock), then signal outside. Only lowers a count; the loop
- *                                   decides again.
- *   mark / unmark awaiting          registry only, then signal. Marked by the driver when the
- *                                   call arrives (before it queues on the lane) and unmarked in the
- *                                   lane's finally of that same transition, so the marker never
- *                                   outlives the wait and the next drain on the lane sees the job
- *                                   counted again.
- *   begin (beginTransition)         commit: B1 and `awaited` in one section.
- *   drain decision (tryEndDrain)    commit, registry inside for the counts: DrainDecision and the
- *                                   DrainEnded reduce in one section. Refuses to end while
- *                                   `pending` > 0.
- *   cancel snapshot                 inside the reducing section (commit, registry inside); issued
- *                                   after the lock by IdentityEffects.run, which then clears its
- *                                   `pending` mark (commit) and signals.
- *   teardown ack (recordTeardown)   commit: counts only for `awaited.transitionId`.
- *   pre-emption wake                B10's reduce makes the op Preempted; its cancel snapshot is
- *                                   `pending`, so the driver cannot end the drain (and apply an
- *                                   account kind, B5) until the window's cancels were issued.
+ * ---- Operations (lock; what it is atomic with) ----
+ *   admit (launch, launchAccount)  commit, registry inside. The verdict (phase, epoch, account,
+ *                                  serial, recovery) and the insert are one commit section, and the
+ *                                  drain decision is a commit section too: a drain sees the job, or
+ *                                  the job was refused (R3/R5/R7 once the phase left Draining).
+ *   complete (invokeOnCompletion)  registry only (never commit: a canceller may hold a store
+ *                                  lock), then signal outside. Only lowers a count.
+ *   begin (beginTransition)        commit: B1/B21 and `awaited` in one section.
+ *   drain decision (tryEndDrain)   commit, registry inside for the counts: DrainDecision and the
+ *                                  DrainEnded reduce in one section; null while effectsInFlight > 0
+ *                                  (deadline included).
+ *   effects in flight              raised in the reducing section of every step carrying a Revoke or
+ *                                  a CancelJobs (commit, same section as the reduce, empty snapshot
+ *                                  included); cleared by IdentityEffects.run after the revoke
+ *                                  returned and the cancels were issued (commit), then signal.
+ *   cancel snapshot                inside the reducing section (commit, registry inside); issued
+ *                                  after the lock, before effects-in-flight is cleared.
+ *   apply gate (B6)                the runtime reads effectsInFlight in the ApplyGate reducing
+ *                                  section (commit, under the apply lock): raised → EndPreempted.
+ *   teardown ack (recordTeardown)  commit: counts only for `awaited.transitionId`.
+ *   pre-emption wake               B10 makes the op Preempted and raises effects-in-flight; the
+ *                                  drain cannot end (nor an account kind apply, B5) until the
+ *                                  window's revoke returned and its cancels were issued.
  */
 
 /**
- * Marks a coroutine as registered identity work. [job] is the job the registry holds (set at
- * admission, before the job starts), so a child coroutine or withContext that inherits this
- * element still names the registered job (review r2-3).
+ * Marks a coroutine (and its children) as registered identity work. The barrier reads it: a
+ * transition requested from registered work is enqueued and not awaited (rule A).
  */
 internal class IdentityJobElement(val token: IdentityToken?, val name: String) :
     AbstractCoroutineContextElement(Key) {
-    @Volatile
-    var job: Job? = null
-        internal set
-
     companion object Key : CoroutineContext.Key<IdentityJobElement>
 }
 
@@ -81,11 +74,10 @@ object IdentityWork {
 
     // Under IdentityLocks.registry (the leaf).
     private val jobs = mutableMapOf<Job, Entry>()
-    private val awaiting = mutableMapOf<Job, Int>()
 
     // Under IdentityLocks.commit.
     private var awaited: Awaited? = null
-    private var pending = 0
+    private var effectsInFlight = 0
 
     /** Bumped on every change the drain waits for; conflation is fine, the condition is re-read. */
     private val changes = MutableStateFlow(0L)
@@ -128,7 +120,6 @@ object IdentityWork {
             verdict = v
             if (v != Verdict.Commit || cls == null) return@withCommit null
             val job = scope.launch(element, start = CoroutineStart.LAZY, block = block)
-            element.job = job
             IdentityLocks.withRegistry { jobs[job] = Entry(name, cls) }
             job
         }
@@ -138,10 +129,7 @@ object IdentityWork {
         }
         job.invokeOnCompletion {
             IdentityLocks.inCompletionHandler {
-                IdentityLocks.withRegistry {
-                    jobs.remove(job)
-                    awaiting.remove(job)
-                }
+                IdentityLocks.withRegistry { jobs.remove(job) }
             }
             bump()
         }
@@ -181,8 +169,8 @@ object IdentityWork {
                 ended != null
             }
         }
-        // The deadline decision returns null only while a reducing section's cancellations are
-        // still being issued (synchronously, on the thread that reduced): wait for that signal.
+        // Rule C: the deadline decision returns null only while effects are in flight (a revoke
+        // and its cancels, run synchronously on the thread that reduced): wait for that signal.
         if (ended == null) {
             changes.first {
                 ended = tryEndDrain(transitionId, deadline = true)
@@ -199,12 +187,12 @@ object IdentityWork {
     /**
      * One section: decide over the registry and the ack (DrainDecision) and, with an outcome,
      * reduce DrainEnded in the same section. A pre-empted op (B10 ran) is decided as at the
-     * deadline, so B4/B5 end it at once. Null = keep waiting: before the deadline, or while a
-     * cancellation snapshot is pending (review r2-4: an auth window's cancels are issued before
-     * the driver may apply).
+     * deadline, so B4/B5 end it at once. Null = keep waiting: before the deadline, or while
+     * effects are in flight (rule C: a window's revoke and cancels finish before the driver may
+     * apply), deadline included.
      */
     internal fun tryEndDrain(transitionId: Long, deadline: Boolean): Reduced? = IdentityLocks.withCommit {
-        if (pending > 0) return@withCommit null
+        if (effectsInFlight > 0) return@withCommit null
         val op = IdentityRuntime.snapshot().drained
         val wait = awaited?.takeIf { it.transitionId == transitionId }
         if (op == null || op.transitionId != transitionId || wait == null) {
@@ -214,8 +202,8 @@ object IdentityWork {
         val now = deadline || op.stage == DrainedStage.Preempted
         val view = IdentityLocks.withRegistry {
             DrainView(
-                profileJobs = jobs.count { (job, e) -> job !in awaiting && e.cls is WorkClass.Profile },
-                accountJobs = jobs.count { (job, e) -> job !in awaiting && e.cls is WorkClass.Account },
+                profileJobs = jobs.count { (_, e) -> e.cls is WorkClass.Profile },
+                accountJobs = jobs.count { (_, e) -> e.cls is WorkClass.Account },
                 ackMatched = wait.ackMatched,
             )
         }
@@ -237,29 +225,32 @@ object IdentityWork {
 
     /**
      * Under the commit lock (called from the reducing section): the jobs a CancelJobs for [kind]
-     * cancels, per CancelPolicy, awaiting-barrier jobs included.
+     * cancels, per CancelPolicy.
      */
     internal fun cancelSnapshotLocked(kind: TransitionKind, logNames: Boolean): List<CancelTarget> =
         IdentityLocks.withRegistry {
             jobs.filter { (_, e) -> CancelPolicy.cancels(kind, e.cls) }.map { (job, e) -> CancelTarget(job, e.name, logNames) }
         }
 
-    /** Under the commit lock: a reducing section took a non-empty snapshot. */
-    internal fun cancellationPendingLocked() {
-        pending++
+    /** Under the commit lock (the reducing section): a step carrying a Revoke or a CancelJobs. */
+    internal fun raiseEffectsInFlightLocked() {
+        effectsInFlight++
     }
 
-    /** Outside every lock: cancels a reducing section's snapshot (never joins), then clears its pending mark. */
+    /** Under the commit lock: read by the runtime for ApplyGate (B6, rule C). */
+    internal fun effectsInFlightLocked(): Int = effectsInFlight
+
+    /** After the revoke returned and the cancels were issued (IdentityEffects.run's finally). */
+    internal fun clearEffectsInFlight() {
+        IdentityLocks.withCommit { if (effectsInFlight > 0) effectsInFlight-- }
+        bump()
+    }
+
+    /** Outside every lock: cancels a reducing section's snapshot (never joins). */
     internal fun cancelTargets(targets: List<CancelTarget>) {
-        if (targets.isEmpty()) return
-        try {
-            targets.forEach {
-                it.job.cancel()
-                if (it.logName) log.w { "[Identity] drain cancelled ${it.name}" }
-            }
-        } finally {
-            IdentityLocks.withCommit { pending-- }
-            bump()
+        targets.forEach {
+            it.job.cancel()
+            if (it.logName) log.w { "[Identity] drain cancelled ${it.name}" }
         }
     }
 
@@ -276,32 +267,6 @@ object IdentityWork {
         if (accepted) bump() else log.i { "[Identity] teardown ack for transition $transitionId ignored (not awaited)" }
     }
 
-    /**
-     * The registered job of [element] waits for a transition: drains do not wait for it until
-     * [unmarkAwaitingBarrier]. Returns the marked job (null when the element's job is not registered).
-     */
-    internal fun markAwaitingBarrier(element: IdentityJobElement): Job? {
-        val job = element.job ?: return null
-        val marked = IdentityLocks.withRegistry {
-            if (job in jobs) {
-                awaiting[job] = (awaiting[job] ?: 0) + 1
-                true
-            } else {
-                false
-            }
-        }
-        bump()
-        return job.takeIf { marked }
-    }
-
-    internal fun unmarkAwaitingBarrier(job: Job) {
-        IdentityLocks.withRegistry {
-            val n = awaiting[job] ?: return@withRegistry
-            if (n <= 1) awaiting.remove(job) else awaiting[job] = n - 1
-        }
-        bump()
-    }
-
     private fun bump() {
         changes.update { it + 1 }
     }
@@ -311,18 +276,14 @@ object IdentityWork {
         jobs.filter { (_, e) -> (e.cls is WorkClass.Profile) == profile }.keys.toList()
     }
 
-    /** Tests only: whether [job] is marked awaiting. */
-    internal fun isAwaiting(job: Job): Boolean = IdentityLocks.withRegistry { job in awaiting }
-
     /** Tests only: cancels and forgets everything. */
     internal fun resetForTest() {
         val all = IdentityLocks.withCommit {
             awaited = null
-            pending = 0
+            effectsInFlight = 0
             IdentityLocks.withRegistry {
                 val all = jobs.keys.toList()
                 jobs.clear()
-                awaiting.clear()
                 all
             }
         }

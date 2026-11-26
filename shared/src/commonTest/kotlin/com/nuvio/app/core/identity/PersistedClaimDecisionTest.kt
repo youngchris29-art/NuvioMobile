@@ -3,7 +3,7 @@ package com.nuvio.app.core.identity
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
-/** Spec 3.3: account key × phase × current account × slot = 120 cases against an oracle. */
+/** Spec 3.3: account key × phase (5, revision 10) × current account × slot = 150 cases against an oracle. */
 class PersistedClaimDecisionTest {
 
     private enum class SessionKey(val raw: String?) {
@@ -17,6 +17,7 @@ class PersistedClaimDecisionTest {
     private val epoch = IdentityEpoch(3)
     private val phases = listOf(
         IdentityPhase.Open, IdentityPhase.Draining(epoch), IdentityPhase.Closed(epoch), IdentityPhase.Applying(epoch),
+        IdentityPhase.Recovery(epoch),
     )
 
     private fun oracle(key: SessionKey, phase: IdentityPhase, current: Current, sameSlot: Boolean): ClaimVerdict = when {
@@ -38,7 +39,7 @@ class PersistedClaimDecisionTest {
                 assertEquals(oracle(key, phase, current, sameSlot), actual, "$key $phase $current sameSlot=$sameSlot")
                 count++
             }
-        assertEquals(120, count)
+        assertEquals(150, count)
     }
 
     @Test

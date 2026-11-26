@@ -51,10 +51,14 @@ internal object IdentityEffects {
                 }
             }
         } finally {
-            // Review r2-4: the window's cancels are issued, and its pending mark cleared, before the
-            // pre-emption can end a drain; the wake follows the cancels, never precedes them.
-            IdentityWork.cancelTargets(reduced.toCancel)
-            if (reduced.effects.any { it == BarrierEffect.SignalPreempted }) IdentityWork.signalPreempted()
+            // Rules C (revision 10): issue the cancels, then clear effects-in-flight (after the
+            // revoke above has returned), and only then wake the drain loop and signal pre-emption.
+            try {
+                IdentityWork.cancelTargets(reduced.toCancel)
+            } finally {
+                if (reduced.inFlight) IdentityWork.clearEffectsInFlight()
+                if (reduced.effects.any { it == BarrierEffect.SignalPreempted }) IdentityWork.signalPreempted()
+            }
         }
         if (reduced.accountOpened) IdentityImmediate.launchAfterAccountOpen()
         return ok

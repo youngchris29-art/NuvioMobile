@@ -190,17 +190,6 @@ class IdentityBarrierDriverTest {
     }
 
     @Test
-    fun jobAwaitingBarrierIsNotWaitedFor() = real {
-        val token = IdentityGate.currentToken()
-        val job = assertNotNull(IdentityWork.launch(token, "caller", work) { IdentityBarrier.selectProfile(2) })
-        val start = TimeSource.Monotonic.markNow()
-        eventually { log.count("apply 2") == 1 && !IdentityGate.state.value.transitioning }
-        assertTrue(start.elapsedNow().inWholeMilliseconds < 400, "the drain waited for its caller")
-        eventually { job.isCancelled || job.isCompleted }
-        assertEquals(2L, epoch())
-    }
-
-    @Test
     fun accountResetRunsBlockAfterDrain() = real {
         assertNotNull(IdentityWork.launch(IdentityGate.currentToken(), "save", work) { delay(150); log.add("job end") })
         val result = IdentityBarrier.accountReset(TransitionKind.SignOut) {
@@ -351,27 +340,11 @@ class IdentityBarrierDriverTest {
         assertEquals(listOf("apply 2"), log.all())
     }
 
-    /** Review r2-3: a registered job that calls the barrier from a child context is not waited for. */
-    @Test
-    fun nestedCallerInsideRegisteredWorkIsNotWaitedFor() = real {
-        val token = IdentityGate.currentToken()
-        val result = kotlinx.coroutines.CompletableDeferred<TransitionResult>()
-        assertNotNull(IdentityWork.launch(token, "caller", work) {
-            withContext(Dispatchers.Default) {
-                val child = async { IdentityBarrier.selectProfile(2) }
-                result.complete(child.await())
-            }
-        })
-        val start = kotlin.time.TimeSource.Monotonic.markNow()
-        eventually { log.count("apply 2") == 1 }
-        assertTrue(start.elapsedNow().inWholeMilliseconds < 400, "the drain waited for the caller's parent job")
-    }
-
     /** Review r2-2: account work that awaited a profile switch and survived counts for the next account drain. */
     @Test
     fun survivingAccountJobIsDrainedByALaterSignOut() = real {
         assertNotNull(IdentityWork.launchAccount(IdentityGate.currentAccountToken(), "push", work) {
-            assertIs<TransitionResult.Done>(IdentityBarrier.selectProfile(2))
+            assertEquals(TransitionResult.Requested, IdentityBarrier.selectProfile(2)) // rule A
             delay(250)
             log.add("push end")
         })
@@ -433,41 +406,119 @@ class IdentityBarrierDriverTest {
         assertEquals((1..20).flatMap { listOf("apply 2", "apply 3") }, log.all())
     }
 
-    /**
-     * Review r3-1: an account job awaits a select while a sign-out is queued behind it. The marker
-     * ends with the select's request, before the lane takes the sign-out, so the sign-out's drain
-     * waits for the job's remaining work.
-     */
+
+    /** Rule A: a registered job requests a select; the call returns Requested at once; the select drains and waits for that job; it applies once. */
     @Test
-    fun queuedSignOutAtTheMarkerBoundaryWaitsForTheJob() = real {
-        IdentityBarrier.debugHoldMs = { 100 }
-        IdentityBarrier.drainDeadlineMs = 2_000
-        val selected = kotlinx.coroutines.CompletableDeferred<Unit>()
-        assertNotNull(IdentityWork.launchAccount(IdentityGate.currentAccountToken(), "push", work) {
-            IdentityBarrier.selectProfile(2)
-            selected.complete(Unit)
-            delay(300)
-            log.add("push end")
+    fun transitionFromJobReturnsRequested() = real {
+        val returned = kotlinx.coroutines.CompletableDeferred<TransitionResult>()
+        assertNotNull(IdentityWork.launch(IdentityGate.currentToken(), "caller", work) {
+            returned.complete(IdentityBarrier.selectProfile(2))
+            delay(200)
+            log.add("job end")
         })
-        eventually { IdentityGate.state.value.kind == TransitionKind.ProfileSelect }
-        // Queued while the select (and the job's marker) is in progress.
-        val signOut = async { IdentityBarrier.accountReset(TransitionKind.SignOut) { log.add("block"); Result.success(Unit) } }
-        assertTrue(signOut.await().isSuccess)
-        assertEquals(listOf("apply 2", "push end", "block"), log.all())
+        assertEquals(TransitionResult.Requested, returned.await())
+        eventually { log.count("apply 2") == 1 }
+        assertEquals(listOf("job end", "apply 2"), log.all()) // the select's drain waited for the job
+        delay(100)
+        assertEquals(1, log.count("apply 2"))
     }
 
-    /** An in-job request neither deadlocks nor leaves the job exempt: the marker is gone after it. */
+    /** Rule A (review r4-2): one child requests a switch while a sibling pushes; the sign-out drain still waits for the parent. */
     @Test
-    fun inJobRequestLeavesNoMarker() = real {
-        var element: IdentityJobElement? = null
-        val job = assertNotNull(IdentityWork.launch(IdentityGate.currentToken(), "caller", work) {
-            element = coroutineContext[IdentityJobElement]
-            IdentityBarrier.accountReset(TransitionKind.SignOut) { Result.success(Unit) }
+    fun childOfJobRequestingTransitionDoesNotExemptParent() = real {
+        IdentityBarrier.drainDeadlineMs = 2_000
+        val signOutRequested = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val signOut = async {
+            signOutRequested.await()
+            IdentityBarrier.accountReset(TransitionKind.SignOut) { log.add("block"); Result.success(Unit) }
+        }
+        assertNotNull(IdentityWork.launch(IdentityGate.currentToken(), "parent", work) {
+            launch { delay(300); log.add("push end") } // sibling still pushing
+            launch {
+                signOutRequested.complete(Unit)
+                delay(50)
+                assertEquals(TransitionResult.Requested, IdentityBarrier.selectProfile(2))
+            }
         })
-        job.join() // cancelled by the sign-out's own drain end (B2), after which the request still ran
-        eventually { !IdentityGate.state.value.transitioning }
-        assertTrue(!IdentityWork.isAwaiting(job))
-        assertNotNull(element)
+        assertTrue(signOut.await().isSuccess)
+        assertEquals("push end", log.all().first())
+        assertTrue(log.all().indexOf("push end") < log.all().indexOf("block"))
+    }
+
+    @Test
+    fun accountResetFromJobIsNotAwaited() = real {
+        val returned = kotlinx.coroutines.CompletableDeferred<Result<Unit>>()
+        assertNotNull(IdentityWork.launch(IdentityGate.currentToken(), "caller", work) {
+            returned.complete(IdentityBarrier.accountReset(TransitionKind.SignOut) { log.add("block"); Result.success(Unit) })
+        })
+        val result = returned.await()
+        assertIs<TransitionNotAwaited>(result.exceptionOrNull())
+        eventually { log.count("block") == 1 && !IdentityGate.state.value.transitioning }
         assertEquals(2L, epoch())
+    }
+
+    /** Rule B: a profile transition is refused at Begin in Recovery (B20); an account one clears it with a wipe. */
+    @Test
+    fun profileBeginRefusedInRecovery() = real {
+        IdentityImmediate.onAccountPublished = { error("hook fails") }
+        runCatching { IdentityImmediate.publishAuth(com.nuvio.app.core.auth.AuthState.Authenticated("user-b", null, isAnonymous = false)) { } }
+        IdentityImmediate.chainEnded()
+        assertIs<IdentityPhase.Recovery>(IdentityGate.state.value.phase)
+        val failed = assertIs<TransitionResult.Failed>(IdentityBarrier.selectProfile(2))
+        assertEquals("recovery required", failed.error)
+        assertEquals(0, log.count("apply 2"))
+    }
+
+    @Test
+    fun signOutFromRecoveryClears() = real {
+        IdentityImmediate.onAccountPublished = { if (it == accountB) error("hook fails") else error("recovery fails") }
+        runCatching { IdentityImmediate.publishAuth(com.nuvio.app.core.auth.AuthState.Authenticated("user-b", null, isAnonymous = false)) { } }
+        IdentityImmediate.chainEnded()
+        assertIs<IdentityPhase.Recovery>(IdentityGate.state.value.phase)
+        IdentityImmediate.onAccountPublished = {}
+        val result = IdentityBarrier.accountReset(TransitionKind.SignOut) {
+            IdentityImmediate.accountWipe { log.add("wipe") }
+            IdentityImmediate.publishAuth(com.nuvio.app.core.auth.AuthState.Unauthenticated) { log.add("write") }
+            IdentityImmediate.chainEnded()
+            Result.success(Unit)
+        }
+        assertTrue(result.isSuccess)
+        assertEquals(IdentityPhase.Open, IdentityGate.state.value.phase)
+        assertEquals(AccountKey.None, IdentityGate.state.value.scope.account)
+        assertNotNull(IdentityGate.currentToken())
+    }
+
+    /**
+     * Rule C (review r4-3): an account drain awaits teardown with no registered jobs; a window whose
+     * revoker sleeps 500 ms pre-empts it; the ack and the deadline both arrive during that revoke;
+     * the reset block starts only after the revoke returned.
+     */
+    @Test
+    fun drainWaitsForWindowRevokeWithEmptySnapshot() = real {
+        IdentityBarrier.drainDeadlineMs = 300
+        IdentityRevocation.required = true
+        val revoker = RecordingRevoker(log)
+        revoker.onRevoke = { state ->
+            if (state.phase is IdentityPhase.Closed) {
+                val t = kotlin.time.TimeSource.Monotonic.markNow()
+                while (t.elapsedNow().inWholeMilliseconds < 500) { /* slow main-thread revoke */ }
+                log.add("window revoke end")
+            } else {
+                // The sign-out's own revoke: acknowledge teardown 100 ms later, during the window's revoke.
+                work.launch { delay(100); IdentityBarrier.teardownDone(state.transitionId) }
+            }
+        }
+        IdentityRevocation.revoker = revoker
+        val signOut = async { IdentityBarrier.accountReset(TransitionKind.SignOut) { log.add("block"); Result.success(Unit) } }
+        eventually { IdentityGate.state.value.kind == TransitionKind.SignOut }
+        val auth = launch(Dispatchers.Default) {
+            delay(30)
+            IdentityImmediate.serialChanging() // B10: empty snapshot, slow revoke
+            IdentityImmediate.chainEnded()
+        }
+        assertTrue(signOut.await().isSuccess)
+        auth.join()
+        val all = log.all()
+        assertTrue(all.indexOf("window revoke end") in 0 until all.indexOf("block"), "$all")
     }
 }

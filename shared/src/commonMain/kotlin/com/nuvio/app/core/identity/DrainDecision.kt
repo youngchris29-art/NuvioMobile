@@ -16,7 +16,7 @@ internal sealed interface WorkClass {
     data class Account(val account: AccountKey) : WorkClass
 }
 
-/** What the drain sees: jobs not marked awaiting-barrier, by class, and whether its teardown ack arrived. */
+/** What the drain sees: registered jobs by class, and whether its teardown ack arrived. */
 internal data class DrainView(val profileJobs: Int, val accountJobs: Int, val ackMatched: Boolean)
 
 internal object DrainDecision {

@@ -37,20 +37,31 @@ internal data class BarrierState(
     /** The account in AuthRepository.state (written inside the window, 4.5). */
     val latestAccount: AccountKey,
     val version: Long,
+    /** Hold 3 (revision 10, rule B): recovery required. */
+    val recovery: RecoveryReason? = null,
 ) {
     val phase: IdentityPhase
         get() = when {
-            drained == null && window == null -> IdentityPhase.Open
-            window == null && drained!!.stage == DrainedStage.Draining -> IdentityPhase.Draining(epoch)
+            drained == null && window == null && recovery == null -> IdentityPhase.Open
+            drained == null && window == null -> IdentityPhase.Recovery(epoch)
+            // An account drain begun from Recovery (B21) is not Draining: old tokens of this epoch
+            // must not commit while recovery holds (rule B: nothing writes), so it reads Closed.
+            window == null && recovery == null && drained!!.stage == DrainedStage.Draining -> IdentityPhase.Draining(epoch)
             drained?.stage == DrainedStage.Applying -> IdentityPhase.Applying(epoch)
             else -> IdentityPhase.Closed(epoch)
         }
+
+    /** No hold at all. */
+    val allReleased: Boolean get() = drained == null && window == null && recovery == null
 
     /** The public kind: `drained?.kind ?: window`. */
     val kind: TransitionKind? get() = drained?.kind ?: window
 
     fun toPublic(): IdentityState =
-        IdentityState(scope = scope, epoch = epoch, phase = phase, kind = kind, transitionId = drained?.transitionId ?: 0)
+        IdentityState(
+            scope = scope, epoch = epoch, phase = phase, kind = kind,
+            transitionId = drained?.transitionId ?: 0, recovery = recovery,
+        )
 
     companion object {
         fun initial(slot: Int): BarrierState = BarrierState(
@@ -87,8 +98,12 @@ internal sealed interface BarrierEvent {
      */
     data class DrainEnded(val how: DrainEnd, val slotAfter: Int = SLOT_UNSET) : BarrierEvent
 
-    /** Profile kinds; sent under the apply lock right before the body. [slotAfter] as in [DrainEnded]. */
-    data class ApplyGate(val slotAfter: Int = SLOT_UNSET) : BarrierEvent
+    /**
+     * Profile kinds; sent under the apply lock right before the body. [slotAfter] as in [DrainEnded].
+     * [effectsBusy] (revision 10, rule C) is filled by the runtime: effects of an earlier step are
+     * still in flight, which ends the transition EndPreempted.
+     */
+    data class ApplyGate(val slotAfter: Int = SLOT_UNSET, val effectsBusy: Boolean = false) : BarrierEvent
     data class ApplyFinished(val slotAfter: Int) : BarrierEvent
     data class ApplyThrew(val slotAfter: Int, val error: String) : BarrierEvent
     data class Abandoned(val slotAfter: Int) : BarrierEvent
@@ -97,6 +112,12 @@ internal sealed interface BarrierEvent {
     data class WindowOpened(val kind: TransitionKind) : BarrierEvent
     data class WindowAccount(val account: AccountKey) : BarrierEvent
     data class WindowClosed(val slotAfter: Int) : BarrierEvent
+
+    /** Revision 10, rule B: a publish and its recovery failed, or a wipe threw (inside a window). */
+    data class RecoveryRequired(val reason: RecoveryReason) : BarrierEvent
+
+    /** Revision 10, rule B: the account wipe completed (inside a window). */
+    data object WipeSucceeded : BarrierEvent
 }
 
 /** Fills the slot of every finishing event with [slot] (read by the runtime under the commit lock, 4.1). */
@@ -107,7 +128,8 @@ internal fun BarrierEvent.withSlot(slot: Int): BarrierEvent = when (this) {
     is BarrierEvent.ApplyThrew -> copy(slotAfter = slot)
     is BarrierEvent.Abandoned -> copy(slotAfter = slot)
     is BarrierEvent.WindowClosed -> copy(slotAfter = slot)
-    is BarrierEvent.Begin, is BarrierEvent.WindowOpened, is BarrierEvent.WindowAccount -> this
+    is BarrierEvent.Begin, is BarrierEvent.WindowOpened, is BarrierEvent.WindowAccount,
+    is BarrierEvent.RecoveryRequired, BarrierEvent.WipeSucceeded -> this
 }
 
 internal sealed interface BarrierEffect {
@@ -160,7 +182,10 @@ internal object BarrierModel {
             is BarrierEvent.Begin -> when {
                 !event.kind.drains -> unchanged(s, "wrong lane: begin ${event.kind}") // B16
                 drained != null || s.window != null -> unchanged(s, "begin refused: held") // B13
-                else -> { // B1
+                // B20: recovery holds; a profile transition cannot begin.
+                s.recovery != null && event.kind.isProfileKind ->
+                    s to listOf(BarrierEffect.Log("begin refused: recovery required (${s.recovery})"), BarrierEffect.EndFailed)
+                else -> { // B1, or B21 from Recovery (account kinds)
                     val id = s.transitionsBegun + 1
                     val next = s.copy(
                         transitionsBegun = id,
@@ -186,8 +211,8 @@ internal object BarrierModel {
             is BarrierEvent.ApplyGate -> when {
                 drained == null || drained.stage != DrainedStage.Applying ||
                     !drained.kind.isProfileKind || drained.gated -> outOfOrder(s, event)
-                // B6
-                s.windowsOpened == drained.windowsAtBegin ->
+                // B6 (rule C: effects still in flight end it like a counted window)
+                s.windowsOpened == drained.windowsAtBegin && !event.effectsBusy ->
                     s.copy(drained = drained.copy(gated = true)) to listOf(BarrierEffect.Proceed)
                 else -> s.release(event.slotAfter) to listOf(BarrierEffect.EndPreempted)
             }
@@ -237,7 +262,23 @@ internal object BarrierModel {
             }
 
             is BarrierEvent.WindowAccount -> if (s.window != null) {
-                s.copy(latestAccount = event.account) to emptyList() // B11
+                // B11; B18: a successful publish clears FailedPublish (never FailedWipe).
+                val recovery = if (s.recovery == RecoveryReason.FailedPublish) null else s.recovery
+                s.copy(latestAccount = event.account, recovery = recovery) to emptyList()
+            } else {
+                outOfOrder(s, event)
+            }
+
+            is BarrierEvent.RecoveryRequired -> if (s.window != null) {
+                // B17; FailedWipe is never downgraded to FailedPublish.
+                val recovery = if (s.recovery == RecoveryReason.FailedWipe) s.recovery else event.reason
+                s.copy(recovery = recovery) to listOf(BarrierEffect.Log("recovery required: ${event.reason}"))
+            } else {
+                outOfOrder(s, event)
+            }
+
+            BarrierEvent.WipeSucceeded -> if (s.window != null) {
+                s.copy(recovery = null) to emptyList() // B19
             } else {
                 outOfOrder(s, event)
             }
@@ -294,9 +335,9 @@ internal object BarrierModel {
     /** Drops the drained hold and settles if that released the last hold. */
     private fun BarrierState.release(slotAfter: Int): BarrierState = copy(drained = null).settle(this, slotAfter)
 
-    /** settle(s): if both holds are now null and the phase before was not Open, bump once. */
+    /** settle(s): if all three holds are now null and the phase before was not Open, bump once. */
     private fun BarrierState.settle(before: BarrierState, slotAfter: Int): BarrierState {
-        if (drained != null || window != null || before.phase is IdentityPhase.Open) return this
+        if (!allReleased || before.phase is IdentityPhase.Open) return this
         val slot = if (slotAfter == SLOT_UNSET) scope.slot else slotAfter
         return copy(epoch = epoch.next(), scope = IdentityScope(latestAccount, slot))
     }

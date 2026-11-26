@@ -116,25 +116,63 @@ class IdentityImmediateTest {
         assertEquals(accountA, assertNotNull(IdentityGate.currentToken()).scope.account)
     }
 
-    /** Review r3-3: recovery fails too: the gate opens signed out, never on A or B; the next publish of A recovers. */
+    /** Rule B (review r4-1): publish and recovery both fail: Recovery, no token, every commit and launch refused. */
     @Test
-    fun secondFailureOpensTheGateSignedOut() {
+    fun doubleFailureMintsNoToken() = runTest {
         val tokenA = assertNotNull(IdentityGate.currentToken())
         IdentityImmediate.onAccountPublished = { error("everything fails") }
         kotlin.test.assertFailsWith<IllegalStateException> {
             IdentityImmediate.publishAuth(AuthState.Authenticated("user-b", null, isAnonymous = false)) { }
         }
         IdentityImmediate.chainEnded()
-        assertIs<IdentityPhase.Open>(IdentityGate.state.value.phase) // P3: the window closed
-        assertEquals(AccountKey.None, IdentityGate.state.value.scope.account)
-        assertEquals(Verdict.Reject(RejectReason.AccountChanged), IdentityGate.check(tokenA, CommitKind.LocalWrite))
-        // The auth state still shows A: its next publish is an identity change again and runs the hook.
+        assertEquals(IdentityPhase.Recovery(IdentityEpoch(1)), IdentityGate.state.value.phase) // P3: reached Recovery
+        assertEquals(RecoveryReason.FailedPublish, IdentityGate.state.value.recovery)
+        assertNull(IdentityGate.currentToken())
+        assertNull(IdentityGate.currentAccountToken())
+        assertEquals(CommitResult.Rejected(RejectReason.WritesClosed), IdentityGate.commit(tokenA, CommitKind.LocalWrite) { 1 })
+        assertEquals(Verdict.Reject(RejectReason.WritesClosed), IdentityGate.checkAccount(AccountToken(accountA, 1)))
+        assertNull(IdentityWork.launch(tokenA, "save", backgroundScope, CommitKind.RemoteSend) { })
+        assertEquals(PersistedResult.Parked, IdentityGate.commitPersisted("account:user-a", 1) { it })
+    }
+
+    @Test
+    fun recoveryClearsOnSuccessfulPublish() {
+        IdentityImmediate.onAccountPublished = { error("everything fails") }
+        runCatching { IdentityImmediate.publishAuth(AuthState.Authenticated("user-b", null, isAnonymous = false)) { } }
+        IdentityImmediate.chainEnded()
+        assertIs<IdentityPhase.Recovery>(IdentityGate.state.value.phase)
+        // The retry (W2: retryIdentityRecovery) re-publishes the shown state A: a window, the hook, the write.
         var ranFor: AccountKey? = null
         IdentityImmediate.onAccountPublished = { ranFor = it }
         IdentityImmediate.publishAuth(AuthState.Authenticated("user-a", null, isAnonymous = false)) { }
         IdentityImmediate.chainEnded()
         assertEquals(accountA, ranFor)
-        assertEquals(accountA, IdentityGate.state.value.scope.account)
+        assertEquals(IdentityPhase.Open, IdentityGate.state.value.phase)
+        assertEquals(accountA, assertNotNull(IdentityGate.currentToken()).scope.account)
+        assertEquals(IdentityEpoch(2), IdentityGate.state.value.epoch)
+    }
+
+    @Test
+    fun throwingWipeEntersRecovery() {
+        kotlin.test.assertFailsWith<IllegalStateException> { IdentityImmediate.accountWipe { error("disk full") } }
+        IdentityImmediate.chainEnded()
+        assertEquals(RecoveryReason.FailedWipe, IdentityGate.state.value.recovery)
+        assertIs<IdentityPhase.Recovery>(IdentityGate.state.value.phase)
+        assertNull(IdentityGate.currentToken())
+        // A completed wipe clears it.
+        IdentityImmediate.accountWipe { }
+        IdentityImmediate.chainEnded()
+        assertEquals(IdentityPhase.Open, IdentityGate.state.value.phase)
+    }
+
+    @Test
+    fun failedWipeNotClearedByPublish() {
+        runCatching { IdentityImmediate.accountWipe { error("disk full") } }
+        IdentityImmediate.chainEnded()
+        IdentityImmediate.publishAuth(AuthState.Authenticated("user-a", null, isAnonymous = false)) { }
+        IdentityImmediate.chainEnded()
+        assertEquals(RecoveryReason.FailedWipe, IdentityGate.state.value.recovery)
+        assertNull(IdentityGate.currentToken())
     }
 
     @Test

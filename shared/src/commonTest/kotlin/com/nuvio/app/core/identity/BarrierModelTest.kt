@@ -365,6 +365,97 @@ class BarrierModelTest {
         assertEquals(IdentityScope(accountA, 3), last.state.scope)
     }
 
+    // ---- revision 10: recovery rows B17–B22 and the busy gate (rule C) ----
+
+    /** A window that recorded a failed publish and closed: Recovery(FailedPublish). */
+    private fun inRecovery(reason: RecoveryReason = RecoveryReason.FailedPublish): BarrierState =
+        run(open(), WindowOpened(AccountPublished), BarrierEvent.RecoveryRequired(reason), WindowClosed(1)).last().state
+
+    @Test
+    fun b17RecoveryRequiredHoldsInsideTheWindowAndOutlivesIt() {
+        val steps = run(open(), WindowOpened(AccountPublished), BarrierEvent.RecoveryRequired(RecoveryReason.FailedPublish), WindowClosed(1))
+        assertEquals(RecoveryReason.FailedPublish, steps[1].state.recovery)
+        assertIs<IdentityPhase.Closed>(steps[1].state.phase)
+        assertEquals(IdentityPhase.Recovery(IdentityEpoch(4)), steps[2].state.phase)
+        assertEquals(IdentityEpoch(4), steps[2].state.epoch) // no bump: not Open
+        assertEquals(RecoveryReason.FailedPublish, steps[2].published?.recovery)
+        assertNull(steps[2].published?.kind)
+        // Outside a window it is out of order.
+        assertTrue(run(open(), BarrierEvent.RecoveryRequired(RecoveryReason.FailedWipe)).single().onlyLogs())
+        // FailedWipe is never downgraded.
+        val wipe = run(open(), WindowOpened(AccountWipe), BarrierEvent.RecoveryRequired(RecoveryReason.FailedWipe),
+            BarrierEvent.RecoveryRequired(RecoveryReason.FailedPublish)).last()
+        assertEquals(RecoveryReason.FailedWipe, wipe.state.recovery)
+    }
+
+    @Test
+    fun b18SuccessfulPublishClearsFailedPublishOnly() {
+        val cleared = run(inRecovery(), WindowOpened(AccountPublished), WindowAccount(accountB), WindowClosed(2))
+        assertNull(cleared[1].state.recovery)
+        assertEquals(IdentityPhase.Open, cleared[2].state.phase)
+        assertEquals(IdentityScope(accountB, 2), cleared[2].state.scope)
+        assertEquals(IdentityEpoch(5), cleared[2].state.epoch)
+        val wipe = run(inRecovery(RecoveryReason.FailedWipe), WindowOpened(AccountPublished), WindowAccount(accountB), WindowClosed(2))
+        assertEquals(RecoveryReason.FailedWipe, wipe[2].state.recovery)
+        assertIs<IdentityPhase.Recovery>(wipe[2].state.phase)
+    }
+
+    @Test
+    fun b19WipeSucceededClearsBoth() {
+        RecoveryReason.entries.forEach { reason ->
+            val steps = run(inRecovery(reason), WindowOpened(AccountWipe), BarrierEvent.WipeSucceeded, WindowClosed(1))
+            assertNull(steps[1].state.recovery)
+            assertEquals(IdentityPhase.Open, steps[2].state.phase)
+        }
+        assertTrue(run(open(), BarrierEvent.WipeSucceeded).single().onlyLogs())
+    }
+
+    @Test
+    fun b20ProfileBeginRefusedInRecovery() {
+        listOf(ProfileSelect, ActiveProfileDelete, TransitionKind.SlotRemoved).forEach { kind ->
+            val s = inRecovery()
+            val step = run(s, Begin(kind)).single()
+            assertEquals(s, step.state)
+            assertTrue(step.has(EndFailed))
+            assertFalse(step.hasType<BarrierEffect.AwaitDrain>())
+        }
+    }
+
+    @Test
+    fun b21AccountBeginFromRecoveryDrainsClosed() {
+        val s = inRecovery()
+        val step = run(s, Begin(SignOut)).single()
+        assertEquals(DrainedStage.Draining, step.state.drained?.stage)
+        assertIs<IdentityPhase.Closed>(step.state.phase) // not Draining: nothing commits while recovery holds
+        assertTrue(step.hasType<BarrierEffect.Revoke>())
+        assertTrue(step.has(BarrierEffect.AwaitDrain(step.state.drained!!.transitionId)))
+    }
+
+    @Test
+    fun b22WindowFromRecoveryOpensWithoutARevoke() {
+        val step = run(inRecovery(), WindowOpened(AccountWipe)).single()
+        assertEquals(AccountWipe, step.state.window)
+        assertFalse(step.hasType<BarrierEffect.Revoke>())
+        assertTrue(step.has(CancelJobs(AccountWipe, false)))
+    }
+
+    @Test
+    fun signOutFromRecoveryClears() {
+        val steps = run(
+            inRecovery(RecoveryReason.FailedWipe), Begin(SignOut), DrainEnded(DrainEnd.Settled),
+            WindowOpened(AccountWipe), BarrierEvent.WipeSucceeded, WindowAccount(AccountKey.None), WindowClosed(1), ApplyFinished(1),
+        )
+        assertIs<IdentityPhase.Applying>(steps[5].state.phase) // window closed, drained op still applying
+        assertEquals(IdentityState(IdentityScope(AccountKey.None, 1), IdentityEpoch(5), IdentityPhase.Open, null), steps[6].published)
+    }
+
+    @Test
+    fun effectsInFlightEndTheGateLikeAWindow() {
+        val last = run(open(), Begin(ProfileSelect), DrainEnded(DrainEnd.Settled), ApplyGate(2, effectsBusy = true)).last()
+        assertEquals(listOf<BarrierEffect>(EndPreempted), last.effects)
+        assertEquals(IdentityPhase.Open, last.state.phase)
+    }
+
     // ---- invariants checked on every step ----
 
     private fun checkStepInvariants(before: BarrierState, event: BarrierEvent, step: BarrierStep) {
@@ -375,9 +466,22 @@ class BarrierModelTest {
         val b3aNoWindow = event is DrainEnded && event.how == DrainEnd.TeardownUnconfirmed &&
             before.drained?.kind?.isProfileKind == true && before.drained.stage == DrainedStage.Draining && before.window == null
         assertEquals(if (settled && !b3aNoWindow) 1L else 0L, delta, "epoch delta on $event from $before")
-        assertEquals(after.phase is IdentityPhase.Open, after.drained == null && after.window == null)
+        // Phase: Open iff no hold; Recovery iff only the recovery hold.
+        assertEquals(after.phase is IdentityPhase.Open, after.drained == null && after.window == null && after.recovery == null)
+        assertEquals(after.phase is IdentityPhase.Recovery, after.drained == null && after.window == null && after.recovery != null)
+        if (after.recovery != null) assertFalse(after.phase is IdentityPhase.Draining, "Draining while recovery holds")
+        // Recovery is left only by a successful publish (B18, FailedPublish) or a completed wipe (B19).
+        if (before.recovery != null && after.recovery == null) {
+            assertTrue(
+                event == BarrierEvent.WipeSucceeded || (event is WindowAccount && before.recovery == RecoveryReason.FailedPublish),
+                "recovery left by $event",
+            )
+        }
         if (before.drained?.stage == DrainedStage.Preempted) assertTrue(after.drained?.stage != DrainedStage.Draining)
-        if (Proceed in step.effects) assertIs<ApplyGate>(event)
+        if (Proceed in step.effects) {
+            assertIs<ApplyGate>(event)
+            assertFalse(event.effectsBusy, "Proceed while effects in flight")
+        }
         // Revision 8: CancelJobs names the window kind at B10, else the drained op's kind; B3a cancels nothing.
         step.effects.filterIsInstance<CancelJobs>().forEach {
             val expected = if (event is WindowOpened) event.kind else before.drained?.kind
@@ -387,11 +491,21 @@ class BarrierModelTest {
         step.state.drained?.let { op ->
             if (before.drained == null) assertEquals(before.transitionsBegun + 1, op.transitionId) else assertEquals(before.drained.transitionId, op.transitionId)
         }
-        if (b3aNoWindow || (event is DrainEnded && event.how == DrainEnd.TeardownUnconfirmed && before.drained?.kind?.isProfileKind == true)) {
+        if (event is DrainEnded && event.how == DrainEnd.TeardownUnconfirmed && before.drained?.kind?.isProfileKind == true) {
             assertFalse(RunApply in step.effects, "RunApply after TeardownUnconfirmed for a profile kind")
         }
+        // Nothing commits and no account work passes while recovery holds (rule B).
+        if (after.recovery != null) {
+            val token = IdentityToken(after.scope, after.epoch, 1)
+            CommitKind.entries.forEach {
+                assertIs<Verdict.Reject>(CommitDecision.decide(token, after.phase, after.scope, after.epoch, 1, it), "commit in recovery")
+            }
+            assertIs<Verdict.Reject>(
+                CommitDecision.decideAccountLevel(AccountToken(after.latestAccount, 1), after.drained, after.window, after.recovery, after.latestAccount, 1),
+            )
+        }
         step.published?.let { published ->
-            assertEquals(published.phase !is IdentityPhase.Open, published.kind != null)
+            assertEquals(after.drained != null || after.window != null, published.kind != null)
             assertEquals(after.toPublic(), published)
             assertEquals(before.version + 1, after.version)
         } ?: run {
@@ -400,7 +514,7 @@ class BarrierModelTest {
         }
     }
 
-    // ---- finite abstraction (round 4 #5) ----
+    // ---- finite abstraction (round 4 #5; revision 10 adds recovery) ----
 
     private data class AbsDrained(val kind: TransitionKind, val stage: DrainedStage, val gated: Boolean)
 
@@ -411,6 +525,7 @@ class BarrierModelTest {
         val scopeAccount: AccountKey,
         val slot: Int,
         val windowSinceBegin: Boolean,
+        val recovery: RecoveryReason?,
     )
 
     private fun alpha(s: BarrierState) = Abs(
@@ -420,6 +535,7 @@ class BarrierModelTest {
         scopeAccount = s.scope.account,
         slot = s.scope.slot,
         windowSinceBegin = s.drained != null && s.windowsOpened != s.drained.windowsAtBegin,
+        recovery = s.recovery,
     )
 
     private fun concrete(a: Abs) = BarrierState(
@@ -431,6 +547,7 @@ class BarrierModelTest {
         transitionsBegun = 7,
         latestAccount = a.latest,
         version = 100,
+        recovery = a.recovery,
     )
 
     private val accounts = listOf(AccountKey.None, accountA, accountB)
@@ -439,8 +556,13 @@ class BarrierModelTest {
     private val alphabet: List<BarrierEvent> = buildList {
         TransitionKind.entries.forEach { add(Begin(it)); add(WindowOpened(it)) }
         for (how in DrainEnd.entries) for (s in slots) add(DrainEnded(how, s))
-        slots.forEach { s -> add(ApplyGate(s)); add(ApplyFinished(s)); add(ApplyThrew(s, "e")); add(Abandoned(s)); add(WindowClosed(s)) }
+        slots.forEach { s ->
+            add(ApplyGate(s)); add(ApplyGate(s, effectsBusy = true))
+            add(ApplyFinished(s)); add(ApplyThrew(s, "e")); add(Abandoned(s)); add(WindowClosed(s))
+        }
         accounts.forEach { add(WindowAccount(it)) }
+        RecoveryReason.entries.forEach { add(BarrierEvent.RecoveryRequired(it)) }
+        add(BarrierEvent.WipeSucceeded)
     }
 
     private data class Expect(val after: Abs, val controls: Set<String>, val bump: Boolean)
@@ -449,16 +571,19 @@ class BarrierModelTest {
     private fun oracle(a: Abs, e: BarrierEvent): Expect {
         val same = Expect(a, emptySet(), bump = false)
         val d = a.drained
-        val profile = d != null && d.kind in setOf(ProfileSelect, ActiveProfileDelete, TransitionKind.SlotRemoved)
+        val profileKinds = setOf(ProfileSelect, ActiveProfileDelete, TransitionKind.SlotRemoved)
+        val windowKinds = setOf(AccountWipe, AccountPublished)
+        val profile = d != null && d.kind in profileKinds
         fun released(slot: Int): Expect {
             val cleared = a.copy(drained = null, windowSinceBegin = false)
-            return if (a.window == null) Expect(cleared.copy(scopeAccount = a.latest, slot = slot), emptySet(), true)
+            return if (a.window == null && a.recovery == null) Expect(cleared.copy(scopeAccount = a.latest, slot = slot), emptySet(), true)
             else Expect(cleared, emptySet(), false)
         }
         return when (e) {
             is Begin -> when {
-                e.kind == AccountWipe || e.kind == AccountPublished -> same
+                e.kind in windowKinds -> same
                 d != null || a.window != null -> same
+                a.recovery != null && e.kind in profileKinds -> same.copy(controls = setOf("EndFailed"))
                 else -> Expect(a.copy(drained = AbsDrained(e.kind, DrainedStage.Draining, false), windowSinceBegin = false), setOf("Revoke", "AwaitDrain"), false)
             }
             is DrainEnded -> when {
@@ -473,25 +598,27 @@ class BarrierModelTest {
                     }
                     DrainEnd.Preempted -> same
                 }
-                d.stage == DrainedStage.Preempted -> if (profile) released(e.slotAfter).let { it.copy(controls = setOf("EndPreempted")) }
+                d.stage == DrainedStage.Preempted -> if (profile) released(e.slotAfter).copy(controls = setOf("EndPreempted"))
                 else Expect(a.copy(drained = d.copy(stage = DrainedStage.Applying)), setOf("RunApply"), false)
                 else -> same
             }
             is ApplyGate -> if (d != null && profile && d.stage == DrainedStage.Applying && !d.gated) {
-                if (!a.windowSinceBegin) Expect(a.copy(drained = d.copy(gated = true)), setOf("Proceed"), false)
+                if (!a.windowSinceBegin && !e.effectsBusy) Expect(a.copy(drained = d.copy(gated = true)), setOf("Proceed"), false)
                 else released(e.slotAfter).copy(controls = setOf("EndPreempted"))
             } else same
             is ApplyFinished -> if (d != null && d.stage == DrainedStage.Applying && (!profile || d.gated)) released(e.slotAfter) else same
             is ApplyThrew -> if (d != null && d.stage == DrainedStage.Applying && (!profile || d.gated)) released(e.slotAfter) else same
             is Abandoned -> if (d != null) released(e.slotAfter).copy(controls = setOf("CancelJobs")) else same
             is WindowOpened -> when {
-                e.kind != AccountWipe && e.kind != AccountPublished -> same
+                e.kind !in windowKinds -> same
                 a.window != null -> same
                 else -> {
                     val wasDraining = d?.stage == DrainedStage.Draining
+                    // The phase was Open or Draining only with no recovery hold.
+                    val revokes = a.recovery == null && (d == null || wasDraining)
                     val controls = buildSet {
                         add("CancelJobs")
-                        if (d == null || wasDraining) add("Revoke")
+                        if (revokes) add("Revoke")
                         if (wasDraining) add("SignalPreempted")
                     }
                     Expect(
@@ -505,12 +632,18 @@ class BarrierModelTest {
                     )
                 }
             }
-            is WindowAccount -> if (a.window != null) Expect(a.copy(latest = e.account), emptySet(), false) else same
-            is WindowClosed -> if (a.window == null) same else if (d == null) {
+            is WindowAccount -> if (a.window != null) {
+                Expect(a.copy(latest = e.account, recovery = if (a.recovery == RecoveryReason.FailedPublish) null else a.recovery), emptySet(), false)
+            } else same
+            is WindowClosed -> if (a.window == null) same else if (d == null && a.recovery == null) {
                 Expect(a.copy(window = null, scopeAccount = a.latest, slot = e.slotAfter), emptySet(), true)
             } else {
                 Expect(a.copy(window = null), emptySet(), false)
             }
+            is BarrierEvent.RecoveryRequired -> if (a.window != null) {
+                Expect(a.copy(recovery = if (a.recovery == RecoveryReason.FailedWipe) a.recovery else e.reason), emptySet(), false)
+            } else same
+            BarrierEvent.WipeSucceeded -> if (a.window != null) Expect(a.copy(recovery = null), emptySet(), false) else same
         }
     }
 
@@ -529,7 +662,7 @@ class BarrierModelTest {
     }.toSet()
 
     private fun reachable(): Set<Abs> {
-        val start = accounts.flatMap { acc -> slots.map { Abs(null, null, acc, acc, it, false) } }
+        val start = accounts.flatMap { acc -> slots.map { Abs(null, null, acc, acc, it, false, null) } }
         val seen = start.toMutableSet()
         val queue = ArrayDeque(start)
         while (queue.isNotEmpty()) {
@@ -546,6 +679,7 @@ class BarrierModelTest {
     fun exhaustive() {
         val states = reachable()
         assertTrue(states.size in 10..10_000, "reachable abstract states: ${states.size}")
+        assertTrue(states.any { it.recovery != null && it.drained == null && it.window == null }, "Recovery not reached")
         println("BarrierModelTest.exhaustive: ${states.size} reachable abstract states x ${alphabet.size} events")
         var pairs = 0
         for (a in states) for (e in alphabet) {
@@ -561,7 +695,7 @@ class BarrierModelTest {
         assertEquals(states.size * alphabet.size, pairs)
     }
 
-    /** The closing event a well-behaved driver/auth lane would send next, or null when Open. */
+    /** The closing event a well-behaved driver/auth lane would send next, or null when only recovery (or nothing) holds. */
     private fun closer(a: Abs): BarrierEvent? {
         val d = a.drained
         return when {
@@ -573,8 +707,9 @@ class BarrierModelTest {
         }
     }
 
+    /** P3 (revision 10): from every reachable state the barrier reaches Open or Recovery within 4 events. */
     @Test
-    fun openReachable() {
+    fun openOrRecoveryReachable() {
         for (a in reachable()) {
             var state = concrete(a)
             var events = 0
@@ -582,9 +717,27 @@ class BarrierModelTest {
                 val e = closer(alpha(state)) ?: break
                 state = BarrierModel.reduce(state, e).state
                 events++
-                assertTrue(events <= 4, "not Open within 4 events from $a")
+                assertTrue(events <= 4, "not Open or Recovery within 4 events from $a")
             }
-            assertEquals(IdentityPhase.Open, state.phase)
+            assertTrue(state.phase is IdentityPhase.Open || state.phase is IdentityPhase.Recovery, "ended in ${state.phase}")
+            assertEquals(state.phase is IdentityPhase.Recovery, state.recovery != null)
+        }
+    }
+
+    /** Rule B: from every reachable Recovery state, the listed way out (publish for FailedPublish, wipe for either) reaches Open. */
+    @Test
+    fun recoveryLeftByItsTwoEvents() {
+        val recoveries = reachable().filter { it.recovery != null && it.drained == null && it.window == null }
+        assertTrue(recoveries.isNotEmpty())
+        for (a in recoveries) {
+            val wipe = run(concrete(a), WindowOpened(AccountWipe), BarrierEvent.WipeSucceeded, WindowClosed(1)).last().state
+            assertEquals(IdentityPhase.Open, wipe.phase)
+            val publish = run(concrete(a), WindowOpened(AccountPublished), WindowAccount(accountA), WindowClosed(1)).last().state
+            if (a.recovery == RecoveryReason.FailedPublish) assertEquals(IdentityPhase.Open, publish.phase)
+            else assertIs<IdentityPhase.Recovery>(publish.phase)
+            // Nothing else leaves it: an account transition that ends without a wipe keeps it.
+            val signOutNoWipe = run(concrete(a), Begin(SignOut), DrainEnded(DrainEnd.Settled), ApplyFinished(1)).last().state
+            assertIs<IdentityPhase.Recovery>(signOutNoWipe.phase)
         }
     }
 }

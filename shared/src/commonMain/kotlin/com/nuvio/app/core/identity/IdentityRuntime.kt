@@ -154,20 +154,25 @@ internal object IdentityRuntime {
      * Reentrant: IdentityWork calls it inside its own commit section (tryEndDrain, beginTransition).
      */
     fun reduceStep(event: BarrierEvent): Reduced = IdentityLocks.withCommit {
-        val step = BarrierModel.reduce(model, event.withSlot(activeSlot()))
+        var filled = event.withSlot(activeSlot())
+        if (filled is BarrierEvent.ApplyGate) filled = filled.copy(effectsBusy = IdentityWork.effectsInFlightLocked() > 0)
+        val step = BarrierModel.reduce(model, filled)
         model = step.state
         step.published?.let { _state.value = it }
         val toCancel = step.effects.filterIsInstance<BarrierEffect.CancelJobs>()
             .flatMap { IdentityWork.cancelSnapshotLocked(it.kind, it.logNames) }
-        // Finding r2-4: until this snapshot's cancels are issued, no drain may end (by construction).
-        if (toCancel.isNotEmpty()) IdentityWork.cancellationPendingLocked()
+        // Rule C (revision 10): a step with a revoke or a cancel, even an empty snapshot, raises
+        // effects-in-flight in this same section; IdentityEffects.run clears it once the revoke
+        // returned and the cancels were issued. No drain ends and no apply starts meanwhile.
+        val inFlight = step.effects.any { it is BarrierEffect.Revoke || it is BarrierEffect.CancelJobs }
+        if (inFlight) IdentityWork.raiseEffectsInFlightLocked()
         var accountOpened = false
         val published = step.published
         if (published != null && published.phase is IdentityPhase.Open) {
             if (published.scope.account != lastOpenAccount) accountOpened = true
             lastOpenAccount = published.scope.account
         }
-        Reduced(step, toCancel, accountOpened)
+        Reduced(step, toCancel, accountOpened, inFlight)
     }
 
     fun snapshot(): BarrierState = IdentityLocks.withCommit { model }
@@ -208,6 +213,8 @@ internal class Reduced(
     val step: BarrierStep,
     val toCancel: List<CancelTarget>,
     val accountOpened: Boolean,
+    /** This section raised effects-in-flight; IdentityEffects.run must clear it exactly once. */
+    val inFlight: Boolean = false,
 ) {
     val state: BarrierState get() = step.state
     val effects: List<BarrierEffect> get() = step.effects

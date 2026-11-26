@@ -34,7 +34,17 @@ sealed interface TransitionResult {
     /** Apply skipped: an auth window opened since the transition began. */
     data class Preempted(val final: IdentityState) : TransitionResult
     data class Failed(val error: String, val final: IdentityState) : TransitionResult
+
+    /**
+     * Revision 10, rule A: requested from inside registered work; enqueued in call order and not
+     * awaited. The requesting job is drained and cancelled like any other job.
+     */
+    data object Requested : TransitionResult
 }
+
+/** `accountReset` requested from inside registered work: enqueued, not awaited (rule A). */
+class TransitionNotAwaited(kind: TransitionKind) :
+    IllegalStateException("$kind requested from registered work: enqueued, not awaited")
 
 /**
  * The profile mutations the apply bodies run (W1 seam). `ProfileRepository.applySelection` and
@@ -71,8 +81,6 @@ object IdentityBarrier {
     private class Request(
         val kind: TransitionKind,
         val body: Body,
-        /** The registered job marked awaiting at call time, unmarked when this request ends. */
-        val marked: Job?,
         val done: CompletableDeferred<Outcome> = CompletableDeferred(),
     )
 
@@ -81,11 +89,7 @@ object IdentityBarrier {
         for (request in lane) process(request)
     }
 
-    /**
-     * One request, start to end, on the single lane coroutine. The awaiting marker is cleared in
-     * this same finally, before the loop takes the next request (review r3-1): the next drain on the
-     * lane always counts the job again.
-     */
+    /** One request, start to end, on the single lane coroutine. */
     private suspend fun process(request: Request) {
         try {
             request.done.complete(execute(request.kind, request.body))
@@ -96,8 +100,6 @@ object IdentityBarrier {
             }
             log.e(t) { "[Identity] ${request.kind} threw out of the lane" }
             request.done.completeExceptionally(t)
-        } finally {
-            request.marked?.let(IdentityWork::unmarkAwaitingBarrier)
         }
     }
     internal var applyDispatcher: CoroutineDispatcher = Dispatchers.Main
@@ -172,7 +174,6 @@ object IdentityBarrier {
                     }
                     true // a no-op slot removal is Done (5.2 step 3)
                 },
-                marked = null,
             )
     }
 
@@ -180,6 +181,7 @@ object IdentityBarrier {
     suspend fun accountReset(kind: TransitionKind, block: suspend () -> Result<Unit>): Result<Unit> {
         if (!kind.isAccountKind) return Result.failure(IllegalArgumentException("accountReset with $kind"))
         val outcome = run(kind, Body.Account(block))
+        if (outcome.result == TransitionResult.Requested) return Result.failure(TransitionNotAwaited(kind))
         return outcome.accountResult ?: Result.failure(IllegalStateException((outcome.result as? TransitionResult.Failed)?.error ?: "no result"))
     }
 
@@ -200,24 +202,19 @@ object IdentityBarrier {
     private class Outcome(val result: TransitionResult, val accountResult: Result<Unit>? = null)
 
     private suspend fun run(kind: TransitionKind, body: Body): Outcome {
-        // A registered job (or a child/withContext of one: the element names the registered job,
-        // review r2-3) that awaits a transition is not waited for by drains while it waits: marked
-        // here, at call time, and unmarked by the lane when this request ends (process's finally).
-        val marked = currentCoroutineContext()[IdentityJobElement]?.let(IdentityWork::markAwaitingBarrier)
-        // Mark and enqueue are both non-suspending: no cancellation point between them.
-        return enqueue(kind, body, marked).await()
+        val done = enqueue(kind, body)
+        // Rule A: from registered work (the element is inherited by children), never await: the
+        // job is drained and cancelled like any other, so nothing needs exempting.
+        if (currentCoroutineContext()[IdentityJobElement] != null) return Outcome(TransitionResult.Requested)
+        return done.await()
     }
 
     /** Synchronous: the request is accepted (its place in the FIFO taken) before this returns. */
-    private fun enqueue(kind: TransitionKind, body: Body, marked: Job?): CompletableDeferred<Outcome> {
-        val request = Request(kind, body, marked)
+    private fun enqueue(kind: TransitionKind, body: Body): CompletableDeferred<Outcome> {
+        val request = Request(kind, body)
         val sent = lane.trySend(request).isSuccess
         consumer.start()
-        if (!sent) {
-            // Unlimited and never closed: cannot happen. Fail the request without leaking the mark.
-            marked?.let(IdentityWork::unmarkAwaitingBarrier)
-            request.done.completeExceptionally(IllegalStateException("identity lane closed"))
-        }
+        if (!sent) request.done.completeExceptionally(IllegalStateException("identity lane closed")) // unlimited, never closed
         return request.done
     }
 
@@ -225,9 +222,10 @@ object IdentityBarrier {
         var began = false
         var finished = false
         try {
-            val begin = begin(kind) ?: return Outcome(
-                TransitionResult.Failed("an auth window stayed open", IdentityRuntime.state.value),
-            )
+            val begin = when (val b = begin(kind)) {
+                is BeginOutcome.Began -> b.step
+                is BeginOutcome.Refused -> return Outcome(TransitionResult.Failed(b.why, IdentityRuntime.state.value))
+            }
             began = true
             val epoch = begin.state.epoch
             val transitionId = begin.state.drained!!.transitionId
@@ -296,23 +294,35 @@ object IdentityBarrier {
         }
     }
 
-    /** Waits (bounded) for no window, then Begin. Profile kinds give up at the deadline; account kinds keep waiting. */
-    private suspend fun begin(kind: TransitionKind): Reduced? {
+    private sealed interface BeginOutcome {
+        class Began(val step: Reduced) : BeginOutcome
+        class Refused(val why: String) : BeginOutcome
+    }
+
+    /**
+     * Waits (bounded) for no window and no drained op (Open or Recovery), then Begin. B20: a
+     * profile kind is refused in Recovery. Profile kinds give up at the deadline; account kinds
+     * keep waiting.
+     */
+    private suspend fun begin(kind: TransitionKind): BeginOutcome {
         var waited = 0L
         while (true) {
-            val open = withTimeoutOrNull(drainDeadlineMs) {
-                IdentityRuntime.state.first { it.phase is IdentityPhase.Open }
+            val free = withTimeoutOrNull(drainDeadlineMs) {
+                IdentityRuntime.state.first { it.phase.isFreeForBegin() }
             }
-            if (open != null) {
+            if (free != null) {
                 val step = IdentityWork.beginTransition(kind)
-                if (step.state.drained?.kind == kind && step.effects.any { it is BarrierEffect.AwaitDrain }) return step
-                IdentityEffects.run(step) // B13: a window opened in between; wait again
-                continue
+                if (step.state.drained?.kind == kind && step.effects.any { it is BarrierEffect.AwaitDrain }) {
+                    return BeginOutcome.Began(step)
+                }
+                IdentityEffects.run(step)
+                if (BarrierEffect.EndFailed in step.effects) return BeginOutcome.Refused("recovery required") // B20
+                continue // B13: a window opened in between; wait again
             }
             waited += drainDeadlineMs
             if (kind.isProfileKind) {
                 log.e { "[Identity] $kind: an auth window stayed open ${waited} ms, not started" }
-                return null
+                return BeginOutcome.Refused("an auth window stayed open")
             }
             log.e { "[Identity] $kind: an auth window still open after ${waited} ms, waiting" }
         }
@@ -344,10 +354,16 @@ object IdentityBarrier {
         }
     }
 
-    /** The state once both holds are released (a window still open is awaited, bounded). */
+    /** The state once the window and drained holds are released (Open or Recovery; a window still open is awaited, bounded). */
     private suspend fun awaitFinal(): IdentityState =
-        withTimeoutOrNull(drainDeadlineMs) { IdentityRuntime.state.first { it.phase is IdentityPhase.Open } }
+        withTimeoutOrNull(drainDeadlineMs) { IdentityRuntime.state.first { it.phase.isFreeForBegin() } }
             ?: IdentityRuntime.state.value
+
+    /** Open, or only the recovery hold: no window and no drained op. Exhaustive on purpose. */
+    private fun IdentityPhase.isFreeForBegin(): Boolean = when (this) {
+        IdentityPhase.Open, is IdentityPhase.Recovery -> true
+        is IdentityPhase.Draining, is IdentityPhase.Closed, is IdentityPhase.Applying -> false
+    }
 
     private const val PREEMPTED = "\u0000preempted"
 

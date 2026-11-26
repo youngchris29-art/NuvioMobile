@@ -49,14 +49,22 @@ internal object IdentityImmediate {
     /** Wraps AuthRepository.RealAuthEffects.wipeAccountData. */
     fun accountWipe(wipe: () -> Unit) {
         openIfNeeded(TransitionKind.AccountWipe)
-        IdentityLocks.withApply { ActiveProfileProvider.changing { wipe() } }
+        try {
+            IdentityLocks.withApply { ActiveProfileProvider.changing { wipe() } }
+        } catch (t: Throwable) {
+            // Rule B: a part-wiped store is a recovery state, cleared only by a completed wipe.
+            IdentityEffects.run(IdentityRuntime.reduceStep(BarrierEvent.RecoveryRequired(RecoveryReason.FailedWipe)))
+            throw t
+        }
+        IdentityEffects.run(IdentityRuntime.reduceStep(BarrierEvent.WipeSucceeded))
     }
 
     /** Wraps AuthRepository.RealAuthEffects.publish: [write] is `_state.value = state`. */
     fun publishAuth(state: AuthState, write: () -> Unit) {
         val account = AccountKey.of(state)
         val model = IdentityRuntime.snapshot()
-        if (model.window == null && account == model.latestAccount) {
+        // A publish during Recovery always goes through a window: only a successful one clears it (B18).
+        if (model.window == null && model.recovery == null && account == model.latestAccount) {
             write()
             return
         }
@@ -95,31 +103,31 @@ internal object IdentityImmediate {
     }
 
     /**
-     * The gate never opens on an account whose hook failed part-way (review r3-3). Recovery runs
-     * once, inside the still-open window; if it succeeds the window settles on [shown] with its
-     * state reloaded; if it also throws, the window settles on AccountKey.None (fail closed: every
-     * token for [shown] or [failed] is refused, R4, and the next publish of [shown] opens a window
-     * and runs the hook again, since None differs from it). Either way the window closes in this
-     * same chainEnded, so P3 holds.
+     * The gate never opens on an account whose hook failed part-way (reviews r3-3, r4-1). Recovery
+     * runs once, inside the still-open window; if it succeeds the window settles on [shown] with
+     * its state reloaded; if it also throws, the barrier enters Recovery(FailedPublish) (rule B):
+     * the window closes, no token is minted and every commit is refused until a later publish
+     * succeeds (B18) or a wipe completes (B19). P3: the barrier reaches Open or Recovery in this
+     * same chainEnded.
      */
     private fun recover(failed: AccountKey, shown: AccountKey) {
         val recovered = try {
             IdentityLocks.withApply { ActiveProfileProvider.changing { recoverAfterFailedPublish(failed, shown) } }
             true
         } catch (t: Throwable) {
-            log.e(t) { "[Identity] recovery after a failed publish threw; the gate opens signed out" }
+            log.e(t) { "[Identity] recovery after a failed publish threw; recovery required" }
             false
         }
         if (recovered) {
             log.w { "[Identity] publish failed part-way; recovered the shown account before reopening" }
         } else {
-            IdentityEffects.run(IdentityRuntime.reduceStep(BarrierEvent.WindowAccount(AccountKey.None)))
+            IdentityEffects.run(IdentityRuntime.reduceStep(BarrierEvent.RecoveryRequired(RecoveryReason.FailedPublish)))
         }
     }
 
     /**
-     * Revision 8: IdentityRuntime detects every settle to Open whose account differs from the last
-     * Open period's (B12 here, or B7 when a drained account transition outlives its window) and the
+     * IdentityRuntime detects every settle to Open whose account differs from the last Open
+     * period's (B12 here, or B7 when a drained account transition outlives its window) and the
      * effect runner calls this after the lock: [afterAccountOpen] on Default, fire-and-forget.
      */
     internal fun launchAfterAccountOpen() {

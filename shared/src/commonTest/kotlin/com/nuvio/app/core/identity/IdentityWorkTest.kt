@@ -209,23 +209,6 @@ class IdentityWorkTest {
     }
 
     @Test
-    fun awaitingBarrierJobNotWaitedButCancelled() = runTest {
-        val job = assertNotNull(launchWork("caller") {
-            // A child context still names the registered job (review r2-3).
-            withContext(Dispatchers.Unconfined) {
-                assertNotNull(IdentityWork.markAwaitingBarrier(assertNotNull(coroutineContext[IdentityJobElement])))
-            }
-            awaitCancellation()
-        })
-        runCurrent()
-        assertTrue(IdentityWork.isAwaiting(job))
-        assertEquals(DrainEnd.Settled, drain(begin()))
-        assertEquals(0, currentTime)
-        runCurrent()
-        assertTrue(job.isCancelled) // B2's CancelJobs includes awaiting-barrier jobs
-    }
-
-    @Test
     fun profileSwitchCancelsEveryProfileJob() = runTest {
         val older = assertNotNull(launchWork("older") { awaitCancellation() })
         // A first switch that fails closed leaves the epoch; a second admission later still counts.
@@ -340,19 +323,6 @@ class IdentityWorkTest {
         }
     }
 
-    /** Review r2-2: the marker is scoped; once unmarked, the job counts for the next drain again. */
-    @Test
-    fun unmarkedJobIsWaitedForAgain() = runTest {
-        var element: IdentityJobElement? = null
-        assertNotNull(launchWork("caller") { element = coroutineContext[IdentityJobElement]; delay(800) })
-        runCurrent()
-        val job = assertNotNull(IdentityWork.markAwaitingBarrier(assertNotNull(element)))
-        IdentityWork.unmarkAwaitingBarrier(job)
-        assertFalse(IdentityWork.isAwaiting(job))
-        assertEquals(DrainEnd.Settled, drain(begin()))
-        assertEquals(800, currentTime)
-    }
-
     /**
      * 5.11 point 5 (revision 9): a canceller holding a store lock runs the completion handler inline
      * (Unconfined) while another thread holds commit and wants that store lock. Removal takes only
@@ -389,5 +359,43 @@ class IdentityWorkTest {
         kotlin.test.assertFailsWith<IllegalStateException> { IdentityLocks.inCompletionHandler { IdentityLocks.withCommit { } } }
         // commit → registry is the allowed order
         assertEquals(1, IdentityLocks.withCommit { IdentityLocks.withRegistry { IdentityLocks.commitDepth } })
+    }
+
+    /** Rule C: effects in flight end the apply gate like a counted window (B6). */
+    @Test
+    fun effectsInFlightBlocksApplyGate() = runTest {
+        val id = begin()
+        outcome(assertNotNull(IdentityWork.tryEndDrain(id, deadline = false))) // B2 → Applying
+        IdentityLocks.withCommit { IdentityWork.raiseEffectsInFlightLocked() } // a window's revoke still running
+        assertNull(IdentityWork.tryEndDrain(id, deadline = true)) // and no drain can end meanwhile
+        val gate = IdentityRuntime.reduceStep(BarrierEvent.ApplyGate())
+        IdentityEffects.run(gate)
+        assertTrue(BarrierEffect.EndPreempted in gate.effects)
+        assertFalse(BarrierEffect.Proceed in gate.effects)
+        IdentityWork.clearEffectsInFlight()
+    }
+
+    @Test
+    fun emptySnapshotStillRaisesEffectsInFlight() = runTest {
+        // B10 with no registered jobs: the cancel snapshot is empty, the revoke and cancel are still in flight.
+        val id = begin(TransitionKind.SignOut)
+        val window = IdentityRuntime.reduceStep(BarrierEvent.WindowOpened(TransitionKind.AccountWipe))
+        assertTrue(window.toCancel.isEmpty())
+        assertTrue(window.inFlight)
+        assertNull(IdentityWork.tryEndDrain(id, deadline = true))
+        IdentityEffects.run(window)
+        assertNotNull(IdentityWork.tryEndDrain(id, deadline = true))
+    }
+
+    @Test
+    fun recoveryRefusesAdmission() = runTest {
+        val t = token()
+        val accountToken = assertNotNull(IdentityGate.currentAccountToken())
+        IdentityRuntime.reduce(BarrierEvent.WindowOpened(TransitionKind.AccountPublished))
+        IdentityRuntime.reduce(BarrierEvent.RecoveryRequired(RecoveryReason.FailedPublish))
+        IdentityRuntime.reduce(BarrierEvent.WindowClosed(1))
+        assertIs<IdentityPhase.Recovery>(IdentityGate.state.value.phase)
+        assertNull(IdentityWork.launch(t, "save", backgroundScope, CommitKind.RemoteSend) { })
+        assertNull(IdentityWork.launchAccount(accountToken, "push", backgroundScope) { })
     }
 }
