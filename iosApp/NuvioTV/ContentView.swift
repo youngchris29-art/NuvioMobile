@@ -386,6 +386,15 @@ struct ContentView: View {
                     DeepLinkTitleView(preview: preview)
                 }
             }
+            #if DEBUG
+            // W2 UI leg (DeepLinkGateTeardownUITests): the cover's presence, read by identifier.
+            .overlay(alignment: .topLeading) {
+                Text(verbatim: "deeplink_cover")
+                    .font(.system(size: 8))
+                    .opacity(0.011)
+                    .accessibilityIdentifier("deeplink_cover")
+            }
+            #endif
             // Scope identity W2 (4.6): the barrier applies a profile only after this cover unmounted.
             .onAppear { identity.surfaceAppeared(.deepLinkCover) }
             .onDisappear { identity.surfaceDisappeared(.deepLinkCover) }

@@ -72,7 +72,10 @@ final class IdentityModel: ObservableObject {
     private let cover: IdentityCoverPresenting
     private let root: IdentityRootRecovering
     private var watcher: FlowWatcher?
-    private var mounted: Set<IdentityTeardownSurface> = []
+    /// Mounted instances per surface: a theme `.id()` rebuild mounts the incoming shell before the
+    /// outgoing one disappears, so presence is a count, never a flag.
+    private var mountCounts: [IdentityTeardownSurface: Int] = [:]
+    private var mounted: Set<IdentityTeardownSurface> { Set(mountCounts.filter { $0.value > 0 }.keys) }
     private var awaitingTeardown: (id: Int64, waiting: Set<IdentityTeardownSurface>)?
     private var retryTask: Task<Void, Never>?
     private(set) var recoveryRetries = 0
@@ -153,12 +156,12 @@ final class IdentityModel: ObservableObject {
     // MARK: - Teardown acknowledgement (4.6, revision 8)
 
     func surfaceAppeared(_ surface: IdentityTeardownSurface) {
-        mounted.insert(surface)
+        mountCounts[surface, default: 0] += 1
     }
 
     func surfaceDisappeared(_ surface: IdentityTeardownSurface) {
-        mounted.remove(surface)
-        guard var awaiting = awaitingTeardown else { return }
+        mountCounts[surface] = max(0, (mountCounts[surface] ?? 0) - 1)
+        guard (mountCounts[surface] ?? 0) == 0, var awaiting = awaitingTeardown else { return }
         awaiting.waiting.remove(surface)
         awaitingTeardown = awaiting
         if awaiting.waiting.isEmpty { finishTeardown() }
