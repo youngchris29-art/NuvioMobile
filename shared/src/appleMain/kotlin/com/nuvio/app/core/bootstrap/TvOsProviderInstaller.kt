@@ -2,10 +2,26 @@ package com.nuvio.app.core.bootstrap
 
 import com.nuvio.app.core.account.AccountDataCleanerProvider
 import com.nuvio.app.core.account.AccountDataStores
+import com.nuvio.app.core.auth.AuthMarkerKeys
+import com.nuvio.app.core.auth.AuthStorage
+import com.nuvio.app.core.auth.resolveBoot
+import com.nuvio.app.core.build.AppBuildConfig
 import com.nuvio.app.core.build.FeaturePolicy
 import com.nuvio.app.core.build.FeaturePolicyProvider
 import com.nuvio.app.core.network.ServerAuthRequirement
 import com.nuvio.app.core.network.ServerConfigurationRepository
+import com.nuvio.app.core.identity.BarrierProfileIdentityRouter
+import com.nuvio.app.core.identity.BootCacheAction
+import com.nuvio.app.core.identity.BootProfileCache
+import com.nuvio.app.core.identity.CheckedFanOut
+import com.nuvio.app.core.identity.IdentityAccountHooks
+import com.nuvio.app.core.identity.IdentityBarrier
+import com.nuvio.app.core.identity.IdentityImmediate
+import com.nuvio.app.core.identity.IdentityLocks
+import com.nuvio.app.core.identity.IdentityRevocation
+import com.nuvio.app.core.identity.IdentityRuntime
+import com.nuvio.app.core.identity.ProfileIdentityRouterProvider
+import com.nuvio.app.core.identity.ProfileRepositoryOps
 import com.nuvio.app.core.poster.CustomPosterUrlRepository
 import com.nuvio.app.core.profile.ActiveProfileIdProvider
 import com.nuvio.app.core.profile.ActiveProfileProvider
@@ -68,7 +84,7 @@ import com.nuvio.app.features.watchprogress.ContinueWatchingPreferencesRepositor
 import com.nuvio.app.features.watchprogress.WatchProgressRepository
 import com.nuvio.app.features.watchprogress.WatchProgressSourceCoordinator
 import co.touchlab.kermit.Logger
-import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import platform.Foundation.NSUserDefaults
 
 /**
@@ -203,10 +219,17 @@ fun installTvOsSharedProviders() {
     // falling back to NUVIO_SYNC.
     ensureTrackingProvidersRegistered()
 
+    // Fork (scope identity, W2): every account and profile transition goes through the identity
+    // barrier. Installed before the profile cache is restored and before AuthRepository starts.
+    installIdentityBarrier()
+
     // Restore any previously-persisted profiles + active selection from NSUserDefaults before the
     // repositories read the active profile id. No-op on a fresh install (no stored payload yet);
-    // wrapped defensively so a malformed cache can never crash startup.
-    runCatching { ProfileRepository.loadCachedProfiles() }
+    // wrapped defensively so a malformed cache can never crash startup. Fork (W2, 5.9): only a
+    // cache that belongs to the trusted guest or the recorded account owner is applied here (P6);
+    // otherwise the account's own publish loads it. Inside the apply lock, so the guarded slot
+    // setter accepts the restored slot.
+    restoreBootProfileCache()
 
     // The settings observers started above may already have loaded TraktSettingsRepository under
     // the default profile 1; if the restored active profile differs, reload so the coordinator
@@ -219,6 +242,43 @@ fun installTvOsSharedProviders() {
     // (HomeScreen.kt:129); tvOS's sync path armed it too late (after the first full pull's
     // refreshActiveSource step), so guests here never got it at all.
     WatchProgressSourceCoordinator.ensureStarted()
+}
+
+/** Fork (scope identity, W2): the identity core's tvOS installation (8.0.5, 8.1). */
+private fun installIdentityBarrier() {
+    ProfileIdentityRouterProvider.router = BarrierProfileIdentityRouter()
+    IdentityBarrier.profileOps = ProfileRepositoryOps
+    // 8.0.5: apply bodies run off Main, so Main never waits for the apply lock after boot.
+    IdentityBarrier.applyDispatcher = Dispatchers.Default
+    IdentityImmediate.onAccountPublished = IdentityAccountHooks::accountPublished
+    IdentityImmediate.afterAccountOpen = { AddonRepository.initialize() }
+    // Swift installs the revoker in NuvioTVApp.init; without one a profile transition fails closed.
+    IdentityRevocation.required = true
+    if (AppBuildConfig.IS_DEBUG_BUILD) {
+        IdentityBarrier.debugHoldMs = { NSUserDefaults.standardUserDefaults.integerForKey("debug.identityHoldMs") }
+    }
+}
+
+private fun restoreBootProfileCache() {
+    val log = Logger.withTag("Identity")
+    if (AppBuildConfig.IS_DEBUG_BUILD && NSUserDefaults.standardUserDefaults.integerForKey("debug.identitySimulateForeignCache") == 1L) {
+        NSUserDefaults.standardUserDefaults.removeObjectForKey(AuthMarkerKeys.OWNER)
+        ProfileRepository.debugRewriteCachedOwner("debug-foreign")
+        log.i { "[Identity] debug: simulated foreign profile cache" }
+    }
+    val owner = AuthStorage.loadAccountOwner()
+    val action = BootProfileCache.decide(
+        payloadUserId = ProfileRepository.cachedPayloadUserId(),
+        trustedGuestId = resolveBoot(AuthStorage.loadAnonymousUserId(), owner).trustedGuestId,
+        recordedAccountOwner = owner.takeIf { AuthStorage.isAccountOwnerRecorded() },
+    )
+    IdentityLocks.withApply {
+        when (action) {
+            BootCacheAction.Apply -> runCatching { ProfileRepository.loadCachedProfiles() }
+            BootCacheAction.Defer -> log.i { "[Identity] boot: profile cache deferred to the account's publish" }
+        }
+    }
+    IdentityRuntime.seedSlot(ProfileRepository.activeProfileId)
 }
 
 /**
@@ -389,31 +449,27 @@ private object TvOsProfileLifecycleCoordinator : ProfileLifecycleCoordinator {
     private val log = Logger.withTag("TvOsProfileLifecycle")
 
     /**
-     * Runs one fan-out step so a throw degrades that repository instead of killing the app.
+     * The fan-out, step by step; a throw degrades that repository instead of killing the app.
      *
-     * This whole fan-out runs on the CALLER'S thread, which for a profile tap is the Swift main
-     * thread (`ProfilesViewModel.select` → `ProfileRepository.selectProfile`). A Kotlin exception
-     * escaping into Swift there is not catchable on the Swift side — it reaches the Kotlin/Native
-     * unhandled-exception hook and aborts the process. Because the fan-out is the same every time,
-     * any one throwing repository turns into "the app force-closes every time I pick my profile"
-     * (beta.1 tester report, and again after beta.3's QR sign-in put far more testers on the
-     * signed-in path where the profile-scoped stores actually have content to load).
-     *
-     * The step name is logged before the call so a crash report or console log names the culprit
-     * even if a step fails in a way this cannot contain.
+     * Fork (scope identity, W2, 8.0.2): the identity barrier runs it through
+     * [onProfileSelectedChecked] on Dispatchers.Default inside an apply or window body, and a
+     * must-succeed step's failure is reported (the barrier then enters Recovery(FailedApply)
+     * instead of opening on a half-switched profile). Best-effort steps lose only a side effect
+     * their own trigger repeats. Every step still runs whatever the others did. The step name is
+     * logged so a crash report or console log names the culprit.
      */
-    private inline fun step(name: String, block: () -> Unit) {
-        try {
-            block()
-        } catch (error: CancellationException) {
-            throw error
-        } catch (error: Throwable) {
-            log.e(error) { "Profile-select step '$name' failed; continuing with the remaining steps" }
-        }
+    override fun onProfileSelected(profileIndex: Int) {
+        runFanOut(profileIndex)
     }
 
-    override fun onProfileSelected(profileIndex: Int) {
+    override fun onProfileSelectedChecked(profileIndex: Int): List<String> = runFanOut(profileIndex)
+
+    private fun runFanOut(profileIndex: Int): List<String> {
         log.i { "Profile selected: $profileIndex — running fan-out" }
+        val fanOut = CheckedFanOut { name, bestEffort, error ->
+            log.e(error) { "Profile-select step '$name' failed${if (bestEffort) " (best-effort)" else ""}; continuing with the remaining steps" }
+        }
+        fun step(name: String, bestEffort: Boolean = false, block: () -> Unit) = fanOut.step(name, bestEffort, block)
         // BUG-25: this list must mirror composeApp's ProfileLifecycleCoordinatorAdapter for every
         // repository tvOS uses — it had drifted to an early subset, so profile-scoped settings
         // repos NOT listed here (poster style being the reported one) kept the state loaded at
@@ -430,7 +486,7 @@ private object TvOsProfileLifecycleCoordinator : ProfileLifecycleCoordinator {
         step("traktAuth") { TraktAuthRepository.onProfileChanged(profileIndex) }
         // BUG-220: replay the incoming profile's pending Trakt scrobble stops (needs traktAuth
         // loaded first) and arm the watcher that replays again when Trakt auth turns on later.
-        step("traktPendingScrobbleStops") { TraktScrobbleRepository.onProfileChanged(profileIndex) }
+        step("traktPendingScrobbleStops", bestEffort = true) { TraktScrobbleRepository.onProfileChanged(profileIndex) }
         // MDBList account: stop the outgoing profile's device-flow poll and load the incoming
         // profile's Keychain tokens. Idempotent with the registry fan-out LibraryRepository runs.
         step("mdbListAccount") { MdbListTracker.onProfileChanged() }
@@ -474,7 +530,8 @@ private object TvOsProfileLifecycleCoordinator : ProfileLifecycleCoordinator {
         // initialize()'s same-key early-return show the previous profile's items.
         step("folderDetail") { FolderDetailRepository.clear() }
         step("collectionMobileSettings") { CollectionMobileSettingsRepository.onProfileChanged() }
-        step("downloads") { DownloadsRepository.onProfileChanged() }
+        // Best-effort (8.0.2): tvOS ships no downloads feature; nothing profile-visible.
+        step("downloads", bestEffort = true) { DownloadsRepository.onProfileChanged() }
         // Debrid keys/settings are profile-scoped too (tvOS-specific step; upstream keeps debrid
         // out of its adapter) — without this a guest profile switch (no cloud pull) would keep
         // the previous profile's keys in memory.
@@ -485,7 +542,9 @@ private object TvOsProfileLifecycleCoordinator : ProfileLifecycleCoordinator {
         // read as a local edit and pushed over the account blob for a profile this device has not
         // pulled yet.
         step("profileSettingsSync") { ProfileSettingsSync.onProfileChanged() }
-        log.i { "Profile-select fan-out complete for profile $profileIndex" }
+        val failed = fanOut.failedSteps
+        log.i { "Profile-select fan-out complete for profile $profileIndex${if (failed.isEmpty()) "" else " (failed: ${failed.joinToString()})"}" }
+        return failed
     }
 
     override fun onProfilesCached() {}
