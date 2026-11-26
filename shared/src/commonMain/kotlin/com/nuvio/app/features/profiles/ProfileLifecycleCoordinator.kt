@@ -13,6 +13,16 @@ interface ProfileLifecycleCoordinator {
     /** Active profile switched to [profileIndex] — refresh every profile-scoped repository. */
     fun onProfileSelected(profileIndex: Int)
 
+    /**
+     * Fork (scope identity, W2): the same fan-out for the identity barrier, reporting the names of
+     * the must-succeed steps that failed (empty = every one completed). The default runs
+     * [onProfileSelected] and reports nothing, so composeApp's adapter compiles unchanged.
+     */
+    fun onProfileSelectedChecked(profileIndex: Int): List<String> {
+        onProfileSelected(profileIndex)
+        return emptyList()
+    }
+
     /** Cached profiles were loaded from disk before any network pull. */
     fun onProfilesCached()
 }

@@ -8,6 +8,11 @@ import com.nuvio.app.core.auth.AuthRepository
 import com.nuvio.app.core.auth.AuthState
 import com.nuvio.app.core.auth.isAnonymous
 import com.nuvio.app.core.network.SupabaseProvider
+import com.nuvio.app.core.identity.AccountToken
+import com.nuvio.app.core.identity.CommitResult
+import com.nuvio.app.core.identity.IdentityGate
+import com.nuvio.app.core.identity.ProfileIdentityRouterProvider
+import com.nuvio.app.core.identity.Verdict
 import com.nuvio.app.core.i18n.StringKey
 import com.nuvio.app.core.i18n.resourceString
 import com.nuvio.app.core.sync.putSyncOriginClientId
@@ -49,8 +54,13 @@ object ProfileRepository {
     val state: StateFlow<ProfileState> = _state.asStateFlow()
 
     // Review r10: read off the main thread by the source-search store when a request arrives.
+    // Fork (scope identity, W2): a changing write asks the router; on tvOS it is accepted only
+    // inside a barrier apply or window body (P2). Same-value writes skip the hook.
     @Volatile
     private var activeProfileIndex: Int = 1
+        set(value) {
+            if (value == field || ProfileIdentityRouterProvider.router.onSlotWrite(field, value)) field = value
+        }
     private var loadedCacheForUserId: String? = null
 
     val activeProfileId: Int get() = activeProfileIndex
@@ -103,20 +113,29 @@ object ProfileRepository {
             }
             return
         }
+        val accountToken = IdentityGate.currentAccountToken()
         val ticket = AuthRepository.sessionTicket()
         try {
             val result = SupabaseProvider.client.postgrest.rpc("sync_pull_profiles")
             val profiles = result.decodeList<NuvioProfile>()
-            _state.value = _state.value.copy(
-                profiles = profiles.sortedBy { it.profileIndex },
-                isLoaded = true,
-                activeProfile = profiles.find { it.profileIndex == activeProfileIndex }
-                    ?: profiles.firstOrNull(),
-            )
-            if (_state.value.activeProfile != null) {
-                activeProfileIndex = _state.value.activeProfile!!.profileIndex
+            val router = ProfileIdentityRouterProvider.router
+            // Fork (W2, 8.0.1): published only for the account the pull started under; the block
+            // returns the active slot when the new list lacks it (the router requests its removal
+            // after the commit).
+            router.publishPulledProfiles(profiles, accountToken) {
+                val missing = activeProfileIndex.takeIf { slot -> profiles.none { it.profileIndex == slot } }
+                _state.value = _state.value.copy(
+                    profiles = profiles.sortedBy { it.profileIndex },
+                    isLoaded = true,
+                    activeProfile = profiles.find { it.profileIndex == activeProfileIndex }
+                        ?: router.onActiveSlotMissing(activeProfileIndex, profiles, accountToken),
+                )
+                if (_state.value.activeProfile != null) {
+                    activeProfileIndex = _state.value.activeProfile!!.profileIndex
+                }
+                persist()
+                missing
             }
-            persist()
         } catch (e: Throwable) {
             if (AuthRepository.reportSessionError(ticket, e, "Profile pull")) return
             log.e(e) { "Failed to pull profiles" }
@@ -129,7 +148,8 @@ object ProfileRepository {
     // Stage B review r10 findings: the id write and the fan-out below are one profile transition
     // (ActiveProfileProvider.transition), so a source search built or admitted in between is
     // refused instead of mixing this profile's id with the previous one's add-ons or account.
-    fun selectProfile(profileIndex: Int) = ActiveProfileProvider.changing { selectProfileNow(profileIndex) }
+    // Fork (W2): through the router; the default is the line above exactly, tvOS starts a barrier select.
+    fun selectProfile(profileIndex: Int) = ProfileIdentityRouterProvider.router.selectProfile(profileIndex, ::selectProfileNow)
 
     private fun selectProfileNow(profileIndex: Int) {
         activeProfileIndex = profileIndex
@@ -149,13 +169,48 @@ object ProfileRepository {
             .onFailure { log.e(it) { "Profile-select fan-out failed for profile $profileIndex" } }
     }
 
-    suspend fun pushProfiles(profiles: List<ProfilePushPayload>) {
+    /**
+     * Fork (scope identity, W2, 8.0.2): the barrier's select. The state lines of [selectProfileNow],
+     * a best-effort persist, then the checked fan-out; returns the must-succeed steps that failed.
+     */
+    internal fun applySelectionChecked(profileIndex: Int): List<String> {
+        activeProfileIndex = profileIndex
+        val selectedProfile = _state.value.profiles.find { it.profileIndex == profileIndex }
+        _state.value = _state.value.copy(
+            activeProfile = selectedProfile,
+            hasEverSelectedProfile = selectedProfile != null || _state.value.hasEverSelectedProfile,
+        )
+        runCatching { persist() }
+            .onFailure { log.e(it) { "Failed to persist profile selection $profileIndex" } }
+        return ProfileLifecycleProvider.coordinator.onProfileSelectedChecked(profileIndex)
+    }
+
+    /** Fork (W2, 5.2): the active profile was removed remotely; the slot number stays. */
+    internal fun applyActiveRemoved() {
+        _state.value = _state.value.copy(activeProfile = null)
+    }
+
+    /** Fork (W2, launch restore): whose profile cache is on disk, if any. */
+    internal fun cachedPayloadUserId(): String? = decodeStoredPayload()?.userId
+
+    /** Fork (W2, DEBUG knob 0.5): rewrites the cached payload's owner. */
+    internal fun debugRewriteCachedOwner(userId: String) {
+        val stored = decodeStoredPayload() ?: return
+        ProfileStorage.savePayload(json.encodeToString(stored.copy(userId = userId)))
+    }
+
+    suspend fun pushProfiles(
+        profiles: List<ProfilePushPayload>,
+        token: AccountToken? = IdentityGate.currentAccountToken(),
+    ) {
         if (AuthRepository.state.value.isAnonymous) {
-            applyPayloadsLocally(profiles)
+            // Fork (W2, 5.4): applied only for the account the edit was made under.
+            IdentityGate.commitAccount(token, "pushProfiles") { applyPayloadsLocally(profiles) }
             return
         }
         val ticket = AuthRepository.sessionTicket()
         try {
+            if (IdentityGate.checkAccount(token, "pushProfiles") !is Verdict.Commit) return
             val params = buildJsonObject {
                 put("p_client_max_profiles", MAX_PROFILES)
                 put("p_profiles", json.encodeToJsonElement(profiles))
@@ -176,6 +231,7 @@ object ProfileRepository {
         avatarUrl: String? = null,
         usesPrimaryAddons: Boolean = false,
     ) {
+        val token = IdentityGate.currentAccountToken()
         val existing = _state.value.profiles
         val nextIndex = ((1..MAX_PROFILES).toSet() - existing.map { it.profileIndex }.toSet()).minOrNull() ?: return
 
@@ -198,7 +254,7 @@ object ProfileRepository {
             avatarUrl = avatarUrl,
         )
 
-        pushProfiles(allPayloads)
+        pushProfiles(allPayloads, token)
     }
 
     suspend fun updateProfile(
@@ -209,6 +265,7 @@ object ProfileRepository {
         avatarUrl: String? = null,
         usesPrimaryAddons: Boolean = false,
     ) {
+        val token = IdentityGate.currentAccountToken()
         val allPayloads = _state.value.profiles.map { profile ->
             if (profile.profileIndex == profileIndex) {
                 ProfilePushPayload(
@@ -232,22 +289,32 @@ object ProfileRepository {
             }
         }
 
-        pushProfiles(allPayloads)
+        pushProfiles(allPayloads, token)
     }
 
     suspend fun deleteProfile(profileIndex: Int) {
+        val token = IdentityGate.currentAccountToken()
+        val router = ProfileIdentityRouterProvider.router
         if (AuthRepository.state.value.isAnonymous) {
             val remaining = _state.value.profiles.filter { it.profileIndex != profileIndex }
-            ProfilePinCacheStorage.removePayload(profileIndex)
-            _state.value = _state.value.copy(
-                profiles = remaining,
-                activeProfile = if (_state.value.activeProfile?.profileIndex == profileIndex) remaining.firstOrNull() else _state.value.activeProfile,
-            )
-            if (_state.value.activeProfile != null) {
-                activeProfileIndex = _state.value.activeProfile!!.profileIndex
+            // Fork (W2, 5.3): the local filter and the PIN removal only for the account it was asked under.
+            val filtered = IdentityGate.commitAccount(token, "guestDelete") {
+                ProfilePinCacheStorage.removePayload(profileIndex)
+                _state.value = _state.value.copy(
+                    profiles = remaining,
+                    activeProfile = if (_state.value.activeProfile?.profileIndex == profileIndex) {
+                        router.onActiveSlotMissing(profileIndex, remaining, token)
+                    } else {
+                        _state.value.activeProfile
+                    },
+                )
+                if (_state.value.activeProfile != null) {
+                    activeProfileIndex = _state.value.activeProfile!!.profileIndex
+                }
+                persist()
             }
-            persist()
-            removeDeletedProfileTrackerData(profileIndex)
+            if (filtered is CommitResult.Rejected) return
+            router.afterProfileDeleted(profileIndex, remaining, token)
             return
         }
         val ticket = AuthRepository.sessionTicket()
@@ -258,8 +325,9 @@ object ProfileRepository {
             }
             SupabaseProvider.client.postgrest.rpc("sync_delete_profile_data", params)
             // Only after the server delete succeeded: a failed RPC leaves the profile alive, and
-            // wiping its local tracker credentials then would silently disconnect it.
-            removeDeletedProfileTrackerData(profileIndex)
+            // wiping its local tracker credentials then would silently disconnect it. Fork (W2):
+            // the router also moves the active profile when it was the one deleted (5.3).
+            router.afterProfileDeleted(profileIndex, _state.value.profiles.filter { it.profileIndex != profileIndex }, token)
             pullProfiles()
         } catch (e: Throwable) {
             if (AuthRepository.reportSessionError(ticket, e, "Profile delete")) return
@@ -400,7 +468,8 @@ object ProfileRepository {
         _state.value = _state.value.copy(
             profiles = profiles,
             isLoaded = true,
-            activeProfile = profiles.find { it.profileIndex == activeProfileIndex } ?: profiles.firstOrNull(),
+            activeProfile = profiles.find { it.profileIndex == activeProfileIndex }
+                ?: ProfileIdentityRouterProvider.router.onActiveSlotMissing(activeProfileIndex, profiles, IdentityGate.currentAccountToken()),
         )
         if (_state.value.activeProfile != null) {
             activeProfileIndex = _state.value.activeProfile!!.profileIndex
