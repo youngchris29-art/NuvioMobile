@@ -65,7 +65,15 @@ class AuthSessionDriverTest {
         /** Every account shown while the durable wipe marker was still set (round 7). */
         val accountsShownWithMarkerSet = mutableListOf<String>()
 
+        /** W2: the two identity hooks with the publishes, in order (kept out of [log], whose exact contents other tests pin). */
+        val hooks = mutableListOf<String>()
+        var ticketNow: () -> Long = { -1 }
+
+        override fun serialChanging() { hooks += "serialChanging ticket=${ticketNow()}" }
+        override fun chainEnded() { hooks += "chainEnded" }
+
         override fun publish(state: AuthState) {
+            hooks += "publish:${describe(state)}"
             published = state
             log += "publish:${describe(state)}"
             if (state is AuthState.Authenticated && !state.isAnonymous) {
@@ -225,6 +233,25 @@ class AuthSessionDriverTest {
             AuthState.Unauthenticated -> "Unauthenticated"
             is AuthState.Authenticated -> if (state.isAnonymous) "Guest(${state.userId})" else "Account(${state.userId})"
         }
+    }
+
+    /** W2 (4.5): serialChanging runs before the ticket moves and before the publish; chainEnded once, last. */
+    @Test
+    fun identityHooksBracketTheChain() = runTest {
+        val rig = Rig(this)
+        rig.effects.ticketNow = { rig.driver.currentTicket().serial }
+        rig.effects.hooks.clear()
+        val serialBefore = rig.driver.currentTicket().serial
+        rig.signedIn("A", "a1")
+        val hooks = rig.effects.hooks
+        val changing = hooks.indexOfFirst { it.startsWith("serialChanging") }
+        val publish = hooks.indexOf("publish:Account(A)")
+        assertTrue(changing >= 0 && changing < publish, "$hooks")
+        assertEquals("serialChanging ticket=$serialBefore", hooks[changing], "the ticket had not moved yet")
+        assertEquals("chainEnded", hooks.last(), "$hooks")
+        assertTrue(rig.driver.currentTicket().serial != serialBefore)
+        // A chainEnded follows every serial change and the publish (each chain ends once).
+        assertTrue(hooks.subList(changing, hooks.size).count { it == "chainEnded" } >= 1, "$hooks")
     }
 
     // ── Review findings, driven end to end ───────────────────────────────────────────────────────
