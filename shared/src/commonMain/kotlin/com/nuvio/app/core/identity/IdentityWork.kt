@@ -2,7 +2,10 @@ package com.nuvio.app.core.identity
 
 import co.touchlab.kermit.Logger
 import kotlinx.coroutines.CoroutineScope
+import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
@@ -18,38 +21,45 @@ import kotlin.coroutines.CoroutineContext
  *
  * Design: docs/batch-scope-identity-spec.md, sections 4.3, 4.3a and 5.11 point 5 (revision 9).
  *
- * ---- Registry state (revision 10) ----
- *   jobs             Job → (name, WorkClass)          leaf    IdentityLocks.registry
- *   awaited          the drain in progress:           commit
+ * ---- Registry state (revision 12) ----
+ *   jobs             Job → (name, WorkClass,              leaf    IdentityLocks.registry
+ *                    cancelRequested)
+ *   awaited          the drain in progress:               commit
  *                    (transitionId, teardownRequired, ackMatched)
- *   effectsInFlight  reducing sections whose revoke    commit
- *                    or cancels have not finished
- *   changes          wake-up counter for the drain    lock-free (StateFlow.update)
- *   (no awaiting marker: rule A. Work that requests a transition does not wait for it.)
+ *   effectsInFlight  reducing sections whose revoke or     commit
+ *                    cancel dispatch has not finished
+ *   changes          wake-up counter for the drain        lock-free (StateFlow.update)
+ *   (no awaiting marker, rule A: work that requests a transition does not wait for it.)
  *
  * ---- Operations (lock; what it is atomic with) ----
- *   admit (launch, launchAccount)  commit, registry inside. The verdict (phase, epoch, account,
- *                                  serial, recovery) and the insert are one commit section, and the
- *                                  drain decision is a commit section too: a drain sees the job, or
- *                                  the job was refused (R3/R5/R7 once the phase left Draining).
- *   complete (invokeOnCompletion)  registry only (never commit: a canceller may hold a store
- *                                  lock), then signal outside. Only lowers a count.
- *   begin (beginTransition)        commit: B1/B21 and `awaited` in one section.
- *   drain decision (tryEndDrain)   commit, registry inside for the counts: DrainDecision and the
- *                                  DrainEnded reduce in one section; null while effectsInFlight > 0
- *                                  (deadline included).
- *   effects in flight              raised in the reducing section of every step carrying a Revoke or
- *                                  a CancelJobs (commit, same section as the reduce, empty snapshot
- *                                  included); cleared by IdentityEffects.run after the revoke
- *                                  returned and the cancels were issued (commit), then signal.
- *   cancel snapshot                inside the reducing section (commit, registry inside); issued
- *                                  after the lock, before effects-in-flight is cleared.
- *   apply gate (B6)                the runtime reads effectsInFlight in the ApplyGate reducing
- *                                  section (commit, under the apply lock): raised → EndPreempted.
- *   teardown ack (recordTeardown)  commit: counts only for `awaited.transitionId`.
- *   pre-emption wake               B10 makes the op Preempted and raises effects-in-flight; the
- *                                  drain cannot end (nor an account kind apply, B5) until the
- *                                  window's revoke returned and its cancels were issued.
+ *   admit (launch, launchAccount)   commit, registry inside: the verdict and the insert are one
+ *                                   commit section; a drain decision (also a commit section) sees
+ *                                   the job, or the job was refused. The LAZY job starts after.
+ *   admit a follow-up (rule D,      the same: one commit section decides, runs the caller's block,
+ *   commitWithFollowUp,             creates the LAZY follow-up and registers it (RemoteSend work of
+ *   commitPersistedWithFollowUp)    the token's class); it starts after the section, so no drain
+ *                                   can end between the local commit and the admission.
+ *   complete (invokeOnCompletion)   registry only (never commit: a canceller may hold a store lock),
+ *                                   then signal outside. Only lowers a count.
+ *   begin (beginTransition)         commit: B1/B20a/B21 and `awaited` in one section.
+ *   drain decision (tryEndDrain)    commit, registry inside for the counts (cancel-requested jobs
+ *                                   excluded, rule F): DrainDecision and the DrainEnded reduce in
+ *                                   one section; null while effectsInFlight > 0, deadline included.
+ *   cancel snapshot (rule F)        inside the reducing section (commit, registry inside): each job
+ *                                   the policy cancels is marked cancelRequested there, so no later
+ *                                   drain counts it.
+ *   cancel dispatch (rule F)        after the lock, in IdentityEffects.run: one task per job on
+ *                                   Dispatchers.Default calls job.cancel(); never on the transition
+ *                                   or auth-lane thread. effectsInFlight clears once every job of
+ *                                   the snapshot is dispatched (and the step's revoke returned).
+ *   effects in flight               raised in the reducing section of every step carrying a Revoke
+ *                                   or a CancelJobs (empty snapshot included); cleared as above.
+ *   apply gate (B6)                 the runtime reads effectsInFlight in the ApplyGate reducing
+ *                                   section (commit, under the apply lock): raised → EndPreempted.
+ *   teardown ack (recordTeardown)   commit: counts only for `awaited.transitionId`.
+ *   pre-emption wake                B10 makes the op Preempted and raises effects-in-flight; the
+ *                                   drain cannot end (nor an account kind apply, B5) until the
+ *                                   window's revoke returned and its cancels were dispatched.
  */
 
 /**
@@ -64,7 +74,13 @@ internal class IdentityJobElement(val token: IdentityToken?, val name: String) :
 object IdentityWork {
     private val log = Logger.withTag("Identity")
 
-    private class Entry(val name: String, val cls: WorkClass)
+    private class Entry(val name: String, val cls: WorkClass) {
+        /** Rule F: a cancel was requested (marked in a reducing section); no drain counts this job. */
+        var cancelRequested = false
+    }
+
+    /** Rule F: where cancels run, one task per job, never on a transition or auth-lane thread. */
+    private val cancelScope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("IdentityWork"))
 
     /** The drain in progress: the Begin it belongs to, and whether its teardown was acknowledged. */
     private class Awaited(val transitionId: Long) {
@@ -119,14 +135,33 @@ object IdentityWork {
             val (v, cls) = decide()
             verdict = v
             if (v != Verdict.Commit || cls == null) return@withCommit null
-            val job = scope.launch(element, start = CoroutineStart.LAZY, block = block)
-            IdentityLocks.withRegistry { jobs[job] = Entry(name, cls) }
-            job
+            registerLocked(name, scope, element, cls, block)
         }
         if (job == null) {
             log.i { "[Identity] work refused $name ${(verdict as? Verdict.Reject)?.reason}" }
             return null
         }
+        return startAdmitted(job)
+    }
+
+    /**
+     * Under the commit lock: create the LAZY job and register it. The caller must call
+     * [startAdmitted] after its section (every path: a job registered here is always started).
+     */
+    internal fun registerLocked(
+        name: String,
+        scope: CoroutineScope,
+        element: IdentityJobElement,
+        cls: WorkClass,
+        block: suspend CoroutineScope.() -> Unit,
+    ): Job {
+        val job = scope.launch(element, start = CoroutineStart.LAZY, block = block)
+        IdentityLocks.withRegistry { jobs[job] = Entry(element.name, cls) }
+        return job
+    }
+
+    /** Outside the lock: removal on completion, then start (a job cancel-requested meanwhile just completes). */
+    internal fun startAdmitted(job: Job): Job {
         job.invokeOnCompletion {
             IdentityLocks.inCompletionHandler {
                 IdentityLocks.withRegistry { jobs.remove(job) }
@@ -141,8 +176,8 @@ object IdentityWork {
      * B1 and the awaited teardown id in one section (4.3a point 4). Returns the Begin's reduced
      * step; the drain awaits its op's transitionId only if the Begin was accepted.
      */
-    internal fun beginTransition(kind: TransitionKind): Reduced = IdentityLocks.withCommit {
-        val reduced = IdentityRuntime.reduceStep(BarrierEvent.Begin(kind))
+    internal fun beginTransition(kind: TransitionKind, removal: PendingRemoval? = null): Reduced = IdentityLocks.withCommit {
+        val reduced = IdentityRuntime.reduceStep(BarrierEvent.Begin(kind, removal))
         val op = reduced.state.drained
         if (op != null && reduced.effects.any { it is BarrierEffect.AwaitDrain }) awaited = Awaited(op.transitionId)
         reduced
@@ -202,8 +237,8 @@ object IdentityWork {
         val now = deadline || op.stage == DrainedStage.Preempted
         val view = IdentityLocks.withRegistry {
             DrainView(
-                profileJobs = jobs.count { (_, e) -> e.cls is WorkClass.Profile },
-                accountJobs = jobs.count { (_, e) -> e.cls is WorkClass.Account },
+                profileJobs = jobs.count { (_, e) -> !e.cancelRequested && e.cls is WorkClass.Profile },
+                accountJobs = jobs.count { (_, e) -> !e.cancelRequested && e.cls is WorkClass.Account },
                 ackMatched = wait.ackMatched,
             )
         }
@@ -225,11 +260,15 @@ object IdentityWork {
 
     /**
      * Under the commit lock (called from the reducing section): the jobs a CancelJobs for [kind]
-     * cancels, per CancelPolicy.
+     * cancels, per CancelPolicy. Rule F: each is marked cancel-requested here (skipped if it already
+     * was), so from this section on no drain counts it.
      */
     internal fun cancelSnapshotLocked(kind: TransitionKind, logNames: Boolean): List<CancelTarget> =
         IdentityLocks.withRegistry {
-            jobs.filter { (_, e) -> CancelPolicy.cancels(kind, e.cls) }.map { (job, e) -> CancelTarget(job, e.name, logNames) }
+            jobs.filter { (_, e) -> !e.cancelRequested && CancelPolicy.cancels(kind, e.cls) }.map { (job, e) ->
+                e.cancelRequested = true
+                CancelTarget(job, e.name, logNames)
+            }
         }
 
     /** Under the commit lock (the reducing section): a step carrying a Revoke or a CancelJobs. */
@@ -246,11 +285,21 @@ object IdentityWork {
         bump()
     }
 
-    /** Outside every lock: cancels a reducing section's snapshot (never joins). */
+    /**
+     * Outside every lock (rule F): dispatches each cancel as its own task on Dispatchers.Default and
+     * returns at once; never calls Job.cancel() on this (transition or auth-lane) thread, so an
+     * inline cancellation cleanup cannot stall it. "Issued" = marked (in the reducing section) and
+     * dispatched. If a dispatch itself throws, the job is cancelled here as the last resort.
+     */
     internal fun cancelTargets(targets: List<CancelTarget>) {
-        targets.forEach {
-            it.job.cancel()
-            if (it.logName) log.w { "[Identity] drain cancelled ${it.name}" }
+        targets.forEach { target ->
+            if (target.logName) log.w { "[Identity] drain cancelled ${target.name}" }
+            try {
+                cancelScope.launch { target.job.cancel() }
+            } catch (t: Throwable) {
+                log.e(t) { "[Identity] cancel dispatch failed for ${target.name}; cancelling inline" }
+                target.job.cancel()
+            }
         }
     }
 
@@ -270,6 +319,9 @@ object IdentityWork {
     private fun bump() {
         changes.update { it + 1 }
     }
+
+    /** Tests only: whether [job] was marked cancel-requested (false once it left the registry). */
+    internal fun isCancelRequested(job: Job): Boolean = IdentityLocks.withRegistry { jobs[job]?.cancelRequested == true }
 
     /** Tests only: the registered jobs of the profile (true) or account (false) class. */
     internal fun jobsOf(profile: Boolean): List<Job> = IdentityLocks.withRegistry {

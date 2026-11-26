@@ -172,7 +172,7 @@ internal object IdentityRuntime {
     fun reduceStep(event: BarrierEvent): Reduced = IdentityLocks.withCommit {
         var filled = event.withSlot(activeSlot())
         if (filled is BarrierEvent.ApplyGate) filled = filled.copy(effectsBusy = IdentityWork.effectsInFlightLocked() > 0)
-        val step = BarrierModel.reduce(model, filled)
+        val step = BarrierModel.reduce(model, filled, authSerial())
         model = step.state
         step.published?.let { _state.value = it }
         val toCancel = step.effects.filterIsInstance<BarrierEffect.CancelJobs>()

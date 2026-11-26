@@ -1,6 +1,8 @@
 package com.nuvio.app.core.identity
 
 import co.touchlab.kermit.Logger
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.StateFlow
 import kotlin.concurrent.Volatile
 
@@ -21,6 +23,9 @@ sealed interface PersistedResult<out T> {
     data object Parked : PersistedResult<Nothing>
     data class Dropped(val reason: DropReason) : PersistedResult<Nothing>
 }
+
+/** Rule D: the remote follow-up of a committed local write, admitted in the commit's own section. */
+class FollowUp(val name: String, val scope: CoroutineScope, val block: suspend CoroutineScope.() -> Unit)
 
 object IdentityGate {
     private val log = Logger.withTag("Identity")
@@ -112,6 +117,81 @@ object IdentityGate {
                 PersistedResult.Recorded(block(IdentityToken(model.scope, model.epoch, IdentityRuntime.authSerial())))
             ClaimVerdict.Park -> PersistedResult.Parked
             is ClaimVerdict.Drop -> PersistedResult.Dropped(verdict.reason)
+        }
+    }
+
+    /** Tests only: runs between a follow-up's admission section and its start (rule D interleavings). */
+    internal var afterFollowUpAdmitted: () -> Unit = {}
+
+    /**
+     * Rule D: one commit section decides, runs [block], then creates (LAZY) and registers the
+     * follow-up as RemoteSend work of the token's class; the job starts after the section, so a
+     * drain that begins afterwards counts it and no drain can end between the local commit and the
+     * admission. Refused: neither runs. [block] throws: the exception propagates, nothing is
+     * admitted. [followUp] returns null: nothing is admitted.
+     */
+    fun <T> commitWithFollowUp(
+        token: IdentityToken?,
+        kind: CommitKind,
+        site: String,
+        block: () -> T,
+        followUp: (T) -> FollowUp?,
+    ): CommitResult<T> {
+        var verdict: Verdict = Verdict.Commit
+        var admitted: Job? = null
+        val result = IdentityLocks.withCommit {
+            verdict = decideLocked(token, kind)
+            when (val v = verdict) {
+                Verdict.Commit -> {
+                    val value = block()
+                    followUp(value)?.let { admitted = admitFollowUpLocked(token!!, it) }
+                    CommitResult.Committed(value)
+                }
+                is Verdict.Reject -> CommitResult.Rejected(v.reason)
+            }
+        }
+        admitted?.let { startFollowUp(it) } // first: nothing after the section may leave it unstarted
+        logVerdict(verdict, site)
+        return result
+    }
+
+    /** Rule D for the persisted claim (3.3): decision, token, local write and follow-up admission in one section. */
+    fun <T> commitPersistedWithFollowUp(
+        sessionAccountKey: String?,
+        sessionSlot: Int,
+        site: String,
+        block: (IdentityToken) -> T,
+        followUp: (T, IdentityToken) -> FollowUp?,
+    ): PersistedResult<T> {
+        var admitted: Job? = null
+        val result = IdentityLocks.withCommit {
+            val model = IdentityRuntime.snapshot()
+            when (val verdict = PersistedClaimDecision.decide(sessionAccountKey, sessionSlot, model.phase, model.scope)) {
+                ClaimVerdict.Record -> {
+                    val token = IdentityToken(model.scope, model.epoch, IdentityRuntime.authSerial())
+                    val value = block(token)
+                    followUp(value, token)?.let { admitted = admitFollowUpLocked(token, it) }
+                    PersistedResult.Recorded(value)
+                }
+                ClaimVerdict.Park -> PersistedResult.Parked
+                is ClaimVerdict.Drop -> PersistedResult.Dropped(verdict.reason)
+            }
+        }
+        admitted?.let { startFollowUp(it) } // first: nothing after the section may leave it unstarted
+        if (result !is PersistedResult.Recorded) log.i { "[Identity] persisted claim $site: ${result::class.simpleName}" }
+        return result
+    }
+
+    private fun admitFollowUpLocked(token: IdentityToken, followUp: FollowUp): Job =
+        IdentityWork.registerLocked(
+            followUp.name, followUp.scope, IdentityJobElement(token, followUp.name), WorkClass.Profile(token.scope), followUp.block,
+        )
+
+    private fun startFollowUp(job: Job) {
+        try {
+            afterFollowUpAdmitted()
+        } finally {
+            IdentityWork.startAdmitted(job) // always started: a LAZY job is never left unstarted
         }
     }
 

@@ -93,6 +93,8 @@ object IdentityBarrier {
     private class Request(
         val kind: TransitionKind,
         val body: Body,
+        /** Rule E: the pending removal a SlotRemoved request was scheduled for. */
+        val removal: PendingRemoval? = null,
         val done: CompletableDeferred<Outcome> = CompletableDeferred(),
     )
 
@@ -104,7 +106,8 @@ object IdentityBarrier {
     /** One request, start to end, on the single lane coroutine. */
     private suspend fun process(request: Request) {
         try {
-            request.done.complete(withContext(IdentityLaneElement()) { execute(request.kind, request.body) })
+            if (request.removal != null) IdentityLocks.withCommit { if (queuedRemoval == request.removal) queuedRemoval = null }
+            request.done.complete(withContext(IdentityLaneElement()) { execute(request.kind, request.body, request.removal) })
         } catch (t: Throwable) {
             if (t is CancellationException && !currentCoroutineContext().isActive) {
                 request.done.cancel()
@@ -170,24 +173,48 @@ object IdentityBarrier {
             },
         ).result
 
-    /** Fire-and-forget; revalidated at apply (5.2). */
+    /**
+     * Fire-and-forget (rule E): the barrier model records the removal (B23) and schedules it at the
+     * tail of the lane at the first Open where it can still apply; revalidated at apply (5.2).
+     */
     fun requestSlotRemoved(slot: Int, token: AccountToken) {
-        // Enqueued now, in call order (no launch); not awaited.
+        checkNotInCompletionHandler()
+        IdentityEffects.run(IdentityRuntime.reduceStep(BarrierEvent.SlotRemovalRequested(slot, token)))
+    }
+
+    /** The removal last enqueued and not yet taken by the lane (dedupe; under the commit lock). */
+    private var queuedRemoval: PendingRemoval? = null
+
+    /** Rule E's ScheduleSlotRemoval effect: one request at the tail of the lane, not twice for the same removal. */
+    internal fun scheduleSlotRemoval(removal: PendingRemoval) {
+        val fresh = IdentityLocks.withCommit {
+            if (queuedRemoval == removal) false else { queuedRemoval = removal; true }
+        }
+        if (!fresh) return
+        val token = AccountToken(removal.account, removal.serial)
         enqueue(
-                TransitionKind.SlotRemoved,
-                Body.Profile {
-                    val still = IdentityGate.commitAccount(token, "slotRemoved") {
-                        !profileOps.isListed(slot) && IdentityRuntime.activeSlot() == slot
-                    }
-                    if (still is CommitResult.Committed && still.value) {
-                        profileOps.applyActiveRemoved()
-                        ProfileApply.Applied
-                    } else {
-                        log.i { "[Identity] slot removed: no longer applies, nothing applied" }
-                        ProfileApply.NothingDone // a no-op slot removal is Done (5.2 step 3)
-                    }
-                },
-            )
+            TransitionKind.SlotRemoved,
+            Body.Profile {
+                val still = IdentityGate.commitAccount(token, "slotRemoved") {
+                    !profileOps.isListed(removal.slot) && IdentityRuntime.activeSlot() == removal.slot
+                }
+                if (still is CommitResult.Committed && still.value) {
+                    profileOps.applyActiveRemoved()
+                    ProfileApply.Applied
+                } else {
+                    log.i { "[Identity] slot removed: no longer applies, nothing applied" }
+                    ProfileApply.NothingDone // a no-op slot removal is Done (5.2 step 3)
+                }
+            },
+            removal,
+        )
+    }
+
+    /** Rule F: the DEBUG check also covers the barrier entry points (no barrier call from a completion handler). */
+    private fun checkNotInCompletionHandler() {
+        if (IdentityLocks.strictLockOrder && IdentityThreadDepth.handler() > 0) {
+            error("[Identity] barrier request from a completion handler (rule F)")
+        }
     }
 
     /** Never refuses; returns [block]'s result (a thrown error as a failure). */
@@ -223,6 +250,7 @@ object IdentityBarrier {
     private class Outcome(val result: TransitionResult, val accountResult: Result<Unit>? = null)
 
     private suspend fun run(kind: TransitionKind, body: Body): Outcome {
+        checkNotInCompletionHandler()
         // Enqueued first, exactly once, before any suspension point (a caller cancelled at the
         // await below leaves its request accepted).
         val done = enqueue(kind, body)
@@ -251,19 +279,24 @@ object IdentityBarrier {
     }
 
     /** Synchronous: the request is accepted (its place in the FIFO taken) before this returns. */
-    private fun enqueue(kind: TransitionKind, body: Body): CompletableDeferred<Outcome> {
-        val request = Request(kind, body)
+    private fun enqueue(kind: TransitionKind, body: Body, removal: PendingRemoval? = null): CompletableDeferred<Outcome> {
+        val request = Request(kind, body, removal)
         val sent = lane.trySend(request).isSuccess
         consumer.start()
         if (!sent) request.done.completeExceptionally(IllegalStateException("identity lane closed")) // unlimited, never closed
         return request.done
     }
 
-    private suspend fun execute(kind: TransitionKind, body: Body): Outcome {
+    private suspend fun execute(kind: TransitionKind, body: Body, removal: PendingRemoval? = null): Outcome {
         var began = false
         var finished = false
         try {
-            val begin = when (val b = begin(kind)) {
+            // Rule E: a scheduled removal that is no longer the pending one (overwritten by a newer
+            // request, or dropped on an identity change) runs nothing.
+            if (removal != null && IdentityRuntime.snapshot().pendingRemoval != removal) {
+                return Outcome(TransitionResult.Done(IdentityRuntime.state.value))
+            }
+            val begin = when (val b = begin(kind, removal)) {
                 is BeginOutcome.Began -> b.step
                 is BeginOutcome.Refused -> return Outcome(TransitionResult.Failed(b.why, IdentityRuntime.state.value))
             }
@@ -345,14 +378,14 @@ object IdentityBarrier {
      * profile kind is refused in Recovery. Profile kinds give up at the deadline; account kinds
      * keep waiting.
      */
-    private suspend fun begin(kind: TransitionKind): BeginOutcome {
+    private suspend fun begin(kind: TransitionKind, removal: PendingRemoval?): BeginOutcome {
         var waited = 0L
         while (true) {
             val free = withTimeoutOrNull(drainDeadlineMs) {
                 IdentityRuntime.state.first { it.phase.isFreeForBegin() }
             }
             if (free != null) {
-                val step = IdentityWork.beginTransition(kind)
+                val step = IdentityWork.beginTransition(kind, removal)
                 if (step.state.drained?.kind == kind && step.effects.any { it is BarrierEffect.AwaitDrain }) {
                     return BeginOutcome.Began(step)
                 }
@@ -416,6 +449,7 @@ object IdentityBarrier {
     /** Tests only. */
     internal fun resetForTest() {
         drainDeadlineMs = 2_000
+        IdentityLocks.withCommit { queuedRemoval = null }
         debugHoldMs = { 0 }
         profileOps = UninstalledProfileOps
         beforeApplyLock = {}

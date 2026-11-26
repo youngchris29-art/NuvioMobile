@@ -311,7 +311,7 @@ class IdentityBarrierDriverTest {
         delay(50)
         assertTrue(job.isActive, "account work must survive a profile switch")
         val result = IdentityBarrier.accountReset(TransitionKind.SignOut) {
-            log.add("block cancelled=${job.isCancelled}")
+            log.add("block cancelled=${job.isCancelled || IdentityWork.isCancelRequested(job)}") // rule F: marked and dispatched
             Result.success(Unit)
         }
         assertTrue(result.isSuccess)
@@ -405,7 +405,7 @@ class IdentityBarrierDriverTest {
         assertNotNull(IdentityWork.launch(IdentityGate.currentToken(), "short", work) { delay(150) })
         val signOut = async {
             IdentityBarrier.accountReset(TransitionKind.SignOut) {
-                log.add("block stuck cancelled=${stuck.isCancelled}")
+                log.add("block stuck cancelled=${stuck.isCancelled || IdentityWork.isCancelRequested(stuck)}") // rule F: issued = marked + dispatched
                 Result.success(Unit)
             }
         }

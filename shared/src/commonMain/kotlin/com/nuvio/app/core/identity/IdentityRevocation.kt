@@ -46,6 +46,7 @@ internal object IdentityEffects {
                     is BarrierEffect.CancelJobs -> Unit // the snapshot below, taken in the reducing section
                     BarrierEffect.SignalPreempted -> Unit // the wake comes from cancelTargets below
                     is BarrierEffect.Log -> log.i { "[Identity] ${effect.line}" }
+                    is BarrierEffect.ScheduleSlotRemoval -> IdentityBarrier.scheduleSlotRemoval(effect.removal) // rule E
                     is BarrierEffect.AwaitDrain, BarrierEffect.RunApply, BarrierEffect.Proceed,
                     BarrierEffect.EndPreempted, BarrierEffect.EndFailed -> Unit
                 }

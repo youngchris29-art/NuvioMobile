@@ -61,6 +61,11 @@ class IdentityWorkTest {
         }
     }
 
+    /** Rule F: cancels run on a real Default thread; wait for them in real time. */
+    private suspend fun awaitCancelled(job: kotlinx.coroutines.Job) {
+        withContext(Dispatchers.Default) { eventually { job.isCancelled } }
+    }
+
     private suspend fun drain(id: Long, teardownRequired: Boolean = false, deadlineMs: Long = 2_000): DrainEnd =
         outcome(IdentityWork.awaitDrained(epoch, id, deadlineMs, teardownRequired))
 
@@ -79,8 +84,7 @@ class IdentityWorkTest {
         val job = assertNotNull(launchWork("stuck") { awaitCancellation() })
         assertEquals(DrainEnd.JobsDeadline, drain(begin()))
         assertEquals(2_000, currentTime)
-        runCurrent()
-        assertTrue(job.isCancelled) // B3's CancelJobs, snapshot taken in the reducing section
+        awaitCancelled(job) // B3's CancelJobs: marked in the reducing section, cancel dispatched to Default (rule F)
     }
 
     @Test
@@ -203,8 +207,7 @@ class IdentityWorkTest {
         val before = currentTime
         outcome(assertNotNull(IdentityWork.tryEndDrain(id, deadline = true))) // B3 cancels it
         assertEquals(before, currentTime)
-        runCurrent()
-        assertTrue(job.isCancelled)
+        awaitCancelled(job)
         assertFalse(job.isCompleted) // still in its cleanup; nobody waited for it
     }
 
@@ -219,9 +222,8 @@ class IdentityWorkTest {
         val account = assertNotNull(IdentityWork.launchAccount(IdentityGate.currentAccountToken(), "push", backgroundScope) { awaitCancellation() })
         val id = begin()
         assertEquals(DrainEnd.JobsDeadline, outcome(assertNotNull(IdentityWork.tryEndDrain(id, deadline = true))))
-        runCurrent()
-        assertTrue(older.isCancelled)
-        assertTrue(newer.isCancelled)
+        awaitCancelled(older)
+        awaitCancelled(newer)
         assertTrue(account.isActive) // account work belongs to the account
     }
 
@@ -247,8 +249,7 @@ class IdentityWorkTest {
         runCurrent()
         assertTrue(job.isActive)
         IdentityRuntime.reduce(BarrierEvent.WindowOpened(TransitionKind.AccountWipe))
-        runCurrent()
-        assertTrue(job.isCancelled)
+        awaitCancelled(job)
         assertNull(IdentityWork.launchAccount(accountToken, "push2", backgroundScope) { })
     }
 

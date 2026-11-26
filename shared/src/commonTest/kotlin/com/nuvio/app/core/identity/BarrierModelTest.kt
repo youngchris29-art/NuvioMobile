@@ -527,6 +527,69 @@ class BarrierModelTest {
         assertEquals(IdentityPhase.Open, last.state.phase)
     }
 
+    // ---- revision 12, rule E: the pending slot removal ----
+
+    private fun request(account: AccountKey = accountA) = BarrierEvent.SlotRemovalRequested(1, AccountToken(account, 0))
+
+    @Test
+    fun b23SchedulesAtOnceWhenOpenAndWaitsOtherwise() {
+        val open = run(open(), request()).single()
+        assertEquals(PendingRemoval(1, accountA, 0), open.state.pendingRemoval)
+        assertTrue(open.effects.any { it is BarrierEffect.ScheduleSlotRemoval })
+        assertNull(open.published) // not published state
+        val held = run(open(), WindowOpened(AccountWipe), request()).last()
+        assertEquals(PendingRemoval(1, accountA, 0), held.state.pendingRemoval)
+        assertFalse(held.effects.any { it is BarrierEffect.ScheduleSlotRemoval })
+        // A newer request overwrites; another account's request is ignored.
+        val newer = run(open(), WindowOpened(AccountWipe), request(), BarrierEvent.SlotRemovalRequested(2, AccountToken(accountA, 0))).last()
+        assertEquals(2, newer.state.pendingRemoval?.slot)
+        val other = run(open(), request(accountB)).single()
+        assertNull(other.state.pendingRemoval)
+    }
+
+    @Test
+    fun settleToOpenSchedulesAMatchingRemovalAndDropsAStaleOne() {
+        val matching = run(open(), WindowOpened(AccountWipe), request(), WindowClosed(1)).last()
+        assertTrue(matching.effects.contains(BarrierEffect.ScheduleSlotRemoval(PendingRemoval(1, accountA, 0))))
+        val stale = run(open(), WindowOpened(AccountPublished), request(), WindowAccount(accountB), WindowClosed(1)).last()
+        assertNull(stale.state.pendingRemoval)
+        assertFalse(stale.effects.any { it is BarrierEffect.ScheduleSlotRemoval })
+        // The serial counts too when the runtime passes it.
+        val s = run(open(), WindowOpened(AccountWipe), request()).last().state
+        val newSession = BarrierModel.reduce(s, WindowClosed(1), authSerial = 5)
+        assertNull(newSession.state.pendingRemoval)
+    }
+
+    @Test
+    fun b1ForTheScheduledRemovalClearsItOnly() {
+        val removal = PendingRemoval(1, accountA, 0)
+        val cleared = run(open(), request(), Begin(TransitionKind.SlotRemoved, removal)).last()
+        assertNull(cleared.state.pendingRemoval)
+        val older = run(open(), request(), Begin(TransitionKind.SlotRemoved, PendingRemoval(3, accountA, 0))).last()
+        assertEquals(removal, older.state.pendingRemoval) // a newer request is not cleared by an older one's Begin
+        val refused = run(open(), WindowOpened(AccountWipe), request(), Begin(TransitionKind.SlotRemoved, removal)).last()
+        assertEquals(removal, refused.state.pendingRemoval) // a refused Begin (B13) leaves it for the next Open
+    }
+
+    /** Rule E with every recovery reason: a settle into Recovery keeps a matching removal (no schedule) and drops a stale one. */
+    @Test
+    fun pendingRemovalAcrossRecovery() {
+        RecoveryReason.entries.forEach { reason ->
+            val kept = run(open(), WindowOpened(AccountWipe), request(), BarrierEvent.RecoveryRequired(reason), WindowClosed(1)).last()
+            assertIs<IdentityPhase.Recovery>(kept.state.phase)
+            assertEquals(PendingRemoval(1, accountA, 0), kept.state.pendingRemoval, "$reason")
+            assertFalse(kept.effects.any { it is BarrierEffect.ScheduleSlotRemoval })
+            val dropped = run(open(), WindowOpened(AccountPublished), request(), BarrierEvent.RecoveryRequired(reason), WindowAccount(accountB), WindowClosed(1)).last()
+            assertNull(dropped.state.pendingRemoval, "$reason")
+        }
+        // FailedApply cleared by a later select: the removal is scheduled at that Open.
+        val s = run(inFailedApply(), WindowOpened(AccountWipe), request(), WindowClosed(1)).last().state
+        assertEquals(RecoveryReason.FailedApply, s.recovery)
+        val select = run(s, Begin(ProfileSelect), DrainEnded(DrainEnd.Settled), ApplyGate(), ApplyFinished(2)).last()
+        assertEquals(IdentityPhase.Open, select.state.phase)
+        assertTrue(select.effects.contains(BarrierEffect.ScheduleSlotRemoval(PendingRemoval(1, accountA, 0))))
+    }
+
     // ---- invariants checked on every step ----
 
     private fun checkStepInvariants(before: BarrierState, event: BarrierEvent, step: BarrierStep) {
@@ -575,6 +638,17 @@ class BarrierModelTest {
         if (event is DrainEnded && event.how == DrainEnd.TeardownUnconfirmed && before.drained?.kind?.isProfileKind == true) {
             assertFalse(RunApply in step.effects, "RunApply after TeardownUnconfirmed for a profile kind")
         }
+        // Rule E: a schedule only at Open, only for a removal that matches the published account;
+        // after a hold is released the removal never names another account.
+        step.effects.filterIsInstance<BarrierEffect.ScheduleSlotRemoval>().forEach {
+            assertIs<IdentityPhase.Open>(after.phase, "scheduled outside Open on $event")
+            assertEquals(after.pendingRemoval, it.removal)
+            assertEquals(after.latestAccount, it.removal.account)
+        }
+        val freed = before.drained != null || before.window != null
+        if (freed && after.drained == null && after.window == null) {
+            after.pendingRemoval?.let { assertEquals(after.latestAccount, it.account, "stale removal kept on $event") }
+        }
         // Nothing commits and no account work passes while recovery holds (rule B).
         if (after.recovery != null) {
             val token = IdentityToken(after.scope, after.epoch, 1)
@@ -607,6 +681,8 @@ class BarrierModelTest {
         val slot: Int,
         val windowSinceBegin: Boolean,
         val recovery: RecoveryReason?,
+        /** Rule E: the pending removal's account (slot 1, serial 0), or null. Finer than {matches, stale}. */
+        val pending: AccountKey?,
     )
 
     private fun alpha(s: BarrierState) = Abs(
@@ -617,6 +693,7 @@ class BarrierModelTest {
         slot = s.scope.slot,
         windowSinceBegin = s.drained != null && s.windowsOpened != s.drained.windowsAtBegin,
         recovery = s.recovery,
+        pending = s.pendingRemoval?.account,
     )
 
     private fun concrete(a: Abs) = BarrierState(
@@ -629,6 +706,7 @@ class BarrierModelTest {
         latestAccount = a.latest,
         version = 100,
         recovery = a.recovery,
+        pendingRemoval = a.pending?.let { PendingRemoval(1, it, 0) },
     )
 
     private val accounts = listOf(AccountKey.None, accountA, accountB)
@@ -644,12 +722,37 @@ class BarrierModelTest {
         accounts.forEach { add(WindowAccount(it)) }
         RecoveryReason.entries.forEach { add(BarrierEvent.RecoveryRequired(it)) }
         add(BarrierEvent.WipeSucceeded)
+        accounts.forEach {
+            add(BarrierEvent.SlotRemovalRequested(1, AccountToken(it, 0)))
+            add(Begin(TransitionKind.SlotRemoved, PendingRemoval(1, it, 0)))
+        }
     }
 
     private data class Expect(val after: Abs, val controls: Set<String>, val bump: Boolean)
 
-    /** The oracle over α, written independently of BarrierModel: event first, then the row. */
+    /** Rule E on top of the hold rows: B23, B1's clear, and the drop/schedule when a hold is released. */
     private fun oracle(a: Abs, e: BarrierEvent): Expect {
+        if (e is BarrierEvent.SlotRemovalRequested) {
+            if (e.token.account != a.latest) return Expect(a, emptySet(), false)
+            val open = a.drained == null && a.window == null && a.recovery == null
+            return Expect(a.copy(pending = e.token.account), if (open) setOf("Schedule") else emptySet(), false)
+        }
+        var x = holdOracle(a.copy(pending = null), e).let { it.copy(after = it.after.copy(pending = a.pending)) }
+        if (e is Begin && e.kind == TransitionKind.SlotRemoved && x.controls.contains("AwaitDrain") && e.removal?.account == a.pending) {
+            x = x.copy(after = x.after.copy(pending = null))
+        }
+        val wasHeld = a.drained != null || a.window != null
+        val freeNow = x.after.drained == null && x.after.window == null
+        val p = x.after.pending
+        if (p != null && wasHeld && freeNow) {
+            x = if (p != x.after.latest) x.copy(after = x.after.copy(pending = null))
+            else if (x.after.recovery == null) x.copy(controls = x.controls + "Schedule") else x
+        }
+        return x
+    }
+
+    /** The oracle over α for the holds, written independently of BarrierModel: event first, then the row. */
+    private fun holdOracle(a: Abs, e: BarrierEvent): Expect {
         val same = Expect(a, emptySet(), bump = false)
         val d = a.drained
         val profileKinds = setOf(ProfileSelect, ActiveProfileDelete, TransitionKind.SlotRemoved)
@@ -737,6 +840,7 @@ class BarrierModelTest {
                 Expect(a.copy(recovery = stronger(e.reason)), emptySet(), false)
             } else same
             BarrierEvent.WipeSucceeded -> if (a.window != null) Expect(a.copy(recovery = null), emptySet(), false) else same
+            is BarrierEvent.SlotRemovalRequested -> error("handled by oracle()")
         }
     }
 
@@ -750,12 +854,13 @@ class BarrierModelTest {
             EndPreempted -> "EndPreempted"
             EndFailed -> "EndFailed"
             SignalPreempted -> "SignalPreempted"
+            is BarrierEffect.ScheduleSlotRemoval -> "Schedule"
             is BarrierEffect.Log -> null
         }
     }.toSet()
 
     private fun reachable(): Set<Abs> {
-        val start = accounts.flatMap { acc -> slots.map { Abs(null, null, acc, acc, it, false, null) } }
+        val start = accounts.flatMap { acc -> slots.map { Abs(null, null, acc, acc, it, false, null, null) } }
         val seen = start.toMutableSet()
         val queue = ArrayDeque(start)
         while (queue.isNotEmpty()) {
@@ -771,10 +876,12 @@ class BarrierModelTest {
     @Test
     fun exhaustive() {
         val states = reachable()
-        assertTrue(states.size in 10..10_000, "reachable abstract states: ${states.size}")
+        assertTrue(states.size in 10..50_000, "reachable abstract states: ${states.size}")
         RecoveryReason.entries.forEach { r ->
             assertTrue(states.any { it.recovery == r && it.drained == null && it.window == null }, "Recovery($r) not reached")
+            assertTrue(states.any { it.recovery == r && it.pending != null }, "pending removal with Recovery($r) not reached")
         }
+        assertTrue(states.any { it.pending != null && it.pending != it.latest }, "stale pending removal not reached")
         println("BarrierModelTest.exhaustive: ${states.size} reachable abstract states x ${alphabet.size} events")
         var pairs = 0
         for (a in states) for (e in alphabet) {

@@ -39,6 +39,8 @@ internal data class BarrierState(
     val version: Long,
     /** Hold 3 (revision 10, rule B): recovery required. */
     val recovery: RecoveryReason? = null,
+    /** Rule E (revision 12): a slot removal the barrier still owes; not a hold, not published. */
+    val pendingRemoval: PendingRemoval? = null,
 ) {
     val phase: IdentityPhase
         get() = when {
@@ -82,6 +84,9 @@ internal data class BarrierState(
  * acknowledged (or no revoker required). TeardownUnconfirmed: the revoker returned false, the
  * revoker is missing while required, or teardownDone did not arrive by the deadline.
  */
+/** Rule E: the slot removal requested under this account token (account and serial). */
+internal data class PendingRemoval(val slot: Int, val account: AccountKey, val serial: Long)
+
 internal enum class DrainEnd { Settled, JobsDeadline, TeardownUnconfirmed, Preempted }
 
 /** Marks a finishing event whose slot the runtime fills under the commit lock ([withSlot]). */
@@ -89,7 +94,11 @@ internal const val SLOT_UNSET: Int = Int.MIN_VALUE
 
 internal sealed interface BarrierEvent {
     /** Drained kinds only. */
-    data class Begin(val kind: TransitionKind) : BarrierEvent
+    /**
+     * [removal] (rule E): the pending removal a SlotRemoved request was scheduled for; B1 clears
+     * the field only if it still holds that removal (a newer request overwrote it otherwise).
+     */
+    data class Begin(val kind: TransitionKind, val removal: PendingRemoval? = null) : BarrierEvent
 
     /**
      * [slotAfter] is a W1 addition to the spec's signature: rows B4 and B6's pre-emption settle
@@ -123,6 +132,9 @@ internal sealed interface BarrierEvent {
 
     /** Revision 10, rule B: the account wipe completed (inside a window). */
     data object WipeSucceeded : BarrierEvent
+
+    /** Rule E, row B23: `requestSlotRemoved(slot, token)`; a newer request overwrites an older one. */
+    data class SlotRemovalRequested(val slot: Int, val token: AccountToken) : BarrierEvent
 }
 
 /** Fills the slot of every finishing event with [slot] (read by the runtime under the commit lock, 4.1). */
@@ -134,7 +146,7 @@ internal fun BarrierEvent.withSlot(slot: Int): BarrierEvent = when (this) {
     is BarrierEvent.Abandoned -> copy(slotAfter = slot)
     is BarrierEvent.WindowClosed -> copy(slotAfter = slot)
     is BarrierEvent.Begin, is BarrierEvent.WindowOpened, is BarrierEvent.WindowAccount,
-    is BarrierEvent.RecoveryRequired, BarrierEvent.WipeSucceeded -> this
+    is BarrierEvent.RecoveryRequired, BarrierEvent.WipeSucceeded, is BarrierEvent.SlotRemovalRequested -> this
 }
 
 internal sealed interface BarrierEffect {
@@ -160,6 +172,9 @@ internal sealed interface BarrierEffect {
     data object EndFailed : BarrierEffect
     data object SignalPreempted : BarrierEffect
     data class Log(val line: String) : BarrierEffect
+
+    /** Rule E: enqueue one SlotRemoved request for [removal] at the tail of the lane. */
+    data class ScheduleSlotRemoval(val removal: PendingRemoval) : BarrierEffect
 }
 
 internal data class BarrierStep(
@@ -170,8 +185,16 @@ internal data class BarrierStep(
 
 internal object BarrierModel {
 
-    fun reduce(state: BarrierState, event: BarrierEvent): BarrierStep {
-        val (after, effects) = transition(state, event)
+    /**
+     * [authSerial] is the live auth serial (the runtime passes it; pure tests may omit it, and then
+     * a pending removal is matched on the account only).
+     */
+    fun reduce(state: BarrierState, event: BarrierEvent, authSerial: Long? = null): BarrierStep {
+        if (event is BarrierEvent.SlotRemovalRequested && authSerial != null && event.token.authSerial != authSerial) {
+            return BarrierStep(state, listOf(BarrierEffect.Log("slot removal for another session ignored")), null)
+        }
+        val (reduced, baseEffects) = transition(state, event)
+        val (after, effects) = pendingRemovalAfter(state, reduced, baseEffects, authSerial)
         val before = state.toPublic()
         val next = after.toPublic()
         return if (next != before) {
@@ -179,6 +202,30 @@ internal object BarrierModel {
         } else {
             BarrierStep(after.copy(version = state.version), effects, null)
         }
+    }
+
+    /**
+     * Rule E: at every step that leaves the barrier free (Open or Recovery) after a hold, a pending
+     * removal for another account or serial is dropped; one that still matches is scheduled if the
+     * state is Open (in Recovery it waits for the next Open).
+     */
+    private fun pendingRemovalAfter(
+        before: BarrierState,
+        after: BarrierState,
+        effects: List<BarrierEffect>,
+        authSerial: Long?,
+    ): Pair<BarrierState, List<BarrierEffect>> {
+        val pending = after.pendingRemoval ?: return after to effects
+        val freedNow = !before.phase.isFree() && after.phase.isFree()
+        if (!freedNow) return after to effects
+        val matches = pending.account == after.latestAccount && (authSerial == null || authSerial == pending.serial)
+        if (!matches) return after.copy(pendingRemoval = null) to effects + BarrierEffect.Log("pending slot removal dropped: identity changed")
+        return if (after.phase is IdentityPhase.Open) after to effects + BarrierEffect.ScheduleSlotRemoval(pending) else after to effects
+    }
+
+    private fun IdentityPhase.isFree(): Boolean = when (this) {
+        IdentityPhase.Open, is IdentityPhase.Recovery -> true
+        is IdentityPhase.Draining, is IdentityPhase.Closed, is IdentityPhase.Applying -> false
     }
 
     private fun transition(s: BarrierState, event: BarrierEvent): Pair<BarrierState, List<BarrierEffect>> {
@@ -192,9 +239,11 @@ internal object BarrierModel {
                     s to listOf(BarrierEffect.Log("begin refused: recovery required (${s.recovery})"), BarrierEffect.EndFailed)
                 else -> { // B1; B20a / B21 from Recovery (the phase then reads Closed)
                     val id = s.transitionsBegun + 1
+                    val clearsRemoval = event.kind == TransitionKind.SlotRemoved && event.removal != null && event.removal == s.pendingRemoval
                     val next = s.copy(
                         transitionsBegun = id,
                         drained = DrainedOp(event.kind, DrainedStage.Draining, s.windowsOpened, transitionId = id),
+                        pendingRemoval = if (clearsRemoval) null else s.pendingRemoval,
                     )
                     next to listOf(BarrierEffect.Revoke(next.toPublic()), BarrierEffect.AwaitDrain(id))
                 }
@@ -296,6 +345,18 @@ internal object BarrierModel {
                 s.copy(recovery = s.recovery.atLeast(event.reason)) to listOf(BarrierEffect.Log("recovery required: ${event.reason}"))
             } else {
                 outOfOrder(s, event)
+            }
+
+            is BarrierEvent.SlotRemovalRequested -> {
+                // B23: any phase; scheduled at once when Open. A request for another account than
+                // the published one can never apply and is ignored.
+                if (event.token.account != s.latestAccount) {
+                    unchanged(s, "slot removal for another account ignored")
+                } else {
+                    val removal = PendingRemoval(event.slot, event.token.account, event.token.authSerial)
+                    val next = s.copy(pendingRemoval = removal)
+                    next to if (s.phase is IdentityPhase.Open) listOf(BarrierEffect.ScheduleSlotRemoval(removal)) else emptyList()
+                }
             }
 
             BarrierEvent.WipeSucceeded -> if (s.window != null) {
