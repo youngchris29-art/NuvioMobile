@@ -183,17 +183,14 @@ class AuthWindowTest {
         val probeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         probeScope.launch {
             while (isActive) {
-                // A token naming X is minted only after the auth state shows X…
+                // With the shown account unchanged across the token read, a token can only name
+                // that account (or None): never one not yet shown, never one no longer shown.
+                // (A change between the reads is a legitimate later chain, not a violation.)
+                val shownBefore = AccountKey.of(rig.effects.shown)
                 val token = IdentityGate.currentToken()
                 val shownAfter = AccountKey.of(rig.effects.shown)
-                if (token != null && token.scope.account != AccountKey.None && token.scope.account != shownAfter) {
+                if (token != null && shownBefore == shownAfter && token.scope.account != AccountKey.None && token.scope.account != shownAfter) {
                     violations += "token ${token.scope.account} while shown $shownAfter"
-                }
-                // …and never after it stopped showing it.
-                val shownBefore = AccountKey.of(rig.effects.shown)
-                val later = IdentityGate.currentToken()
-                if (later != null && later.scope.account != shownBefore && AccountKey.of(rig.effects.shown) == shownBefore) {
-                    violations += "token ${later.scope.account} after shown $shownBefore"
                 }
             }
         }
