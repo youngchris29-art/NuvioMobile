@@ -55,10 +55,12 @@ class BarrierModelTest {
     fun b1BeginDrains() {
         val s = open()
         val step = run(s, Begin(ProfileSelect)).single()
-        assertEquals(DrainedOp(ProfileSelect, DrainedStage.Draining, s.windowsOpened), step.state.drained)
+        assertEquals(DrainedOp(ProfileSelect, DrainedStage.Draining, s.windowsOpened, transitionId = 1), step.state.drained)
+        assertEquals(1, step.state.transitionsBegun)
+        assertEquals(1, step.published?.transitionId)
         assertIs<IdentityPhase.Draining>(step.state.phase)
         assertTrue(step.hasType<BarrierEffect.Revoke>())
-        assertTrue(step.has(BarrierEffect.AwaitDrain(s.epoch)))
+        assertTrue(step.has(BarrierEffect.AwaitDrain(1)))
         assertEquals(ProfileSelect, step.published?.kind)
     }
 
@@ -66,14 +68,14 @@ class BarrierModelTest {
     fun b2SettledApplies() {
         val step = run(open(), Begin(ProfileSelect), DrainEnded(DrainEnd.Settled)).last()
         assertEquals(DrainedStage.Applying, step.state.drained?.stage)
-        assertEquals(listOf(CancelJobs(IdentityEpoch(4), false), RunApply), step.effects)
+        assertEquals(listOf(CancelJobs(ProfileSelect, false), RunApply), step.effects)
     }
 
     @Test
     fun b3JobsDeadlineCancelsLoudlyAndApplies() {
         val step = run(open(), Begin(ProfileSelect), DrainEnded(DrainEnd.JobsDeadline)).last()
         assertEquals(DrainedStage.Applying, step.state.drained?.stage)
-        assertTrue(step.has(CancelJobs(IdentityEpoch(4), true)))
+        assertTrue(step.has(CancelJobs(ProfileSelect, true)))
         assertTrue(step.has(RunApply))
         assertTrue(step.hasType<BarrierEffect.Log>())
     }
@@ -99,7 +101,7 @@ class BarrierModelTest {
             val step = run(open(), Begin(kind), DrainEnded(DrainEnd.TeardownUnconfirmed)).last()
             assertEquals(DrainedStage.Applying, step.state.drained?.stage)
             assertTrue(step.has(RunApply))
-            assertTrue(step.has(CancelJobs(IdentityEpoch(4), true)))
+            assertTrue(step.has(CancelJobs(kind, true)))
         }
     }
 
@@ -176,7 +178,7 @@ class BarrierModelTest {
             assertNull(last.state.drained)
             assertEquals(IdentityPhase.Open, last.state.phase)
             assertEquals(IdentityEpoch(5), last.state.epoch, "prefix $prefix")
-            assertTrue(last.has(CancelJobs(IdentityEpoch(4), true)))
+            assertTrue(last.effects.any { it is CancelJobs && it.logNames && it.kind == prefix.filterIsInstance<Begin>().single().kind })
         }
     }
 
@@ -186,7 +188,7 @@ class BarrierModelTest {
         assertEquals(AccountPublished, fromOpen.state.window)
         assertEquals(1, fromOpen.state.windowsOpened)
         assertTrue(fromOpen.hasType<BarrierEffect.Revoke>())
-        assertTrue(fromOpen.has(CancelJobs(IdentityEpoch(4), false)))
+        assertTrue(fromOpen.has(CancelJobs(AccountPublished, false)))
         assertFalse(fromOpen.has(SignalPreempted))
 
         val draining = run(open(), Begin(ProfileSelect), WindowOpened(AccountWipe)).last()
@@ -277,20 +279,28 @@ class BarrierModelTest {
         assertEquals(IdentityState(s.scope, s.epoch, IdentityPhase.Open, null), steps[1].published)
     }
 
-    /**
-     * Spec 3.4 names this B1→B10→B3a→B12. After B10 the stage is Preempted, so the
-     * TeardownUnconfirmed drain end is handled by B4 (EndPreempted), not B3a: B3a cannot see an
-     * open window. Asserted as the rows actually yield: no apply, Closed until B12, one bump.
-     */
+    /** Revision 8: B1→B10→DrainEnded(TeardownUnconfirmed) hits B4 (the op is Preempted), Closed until B12, one bump. */
     @Test
-    fun teardownUnconfirmedInsideWindowSettlesAtClose() {
+    fun teardownUnconfirmedAfterWindowIsPreempted() {
         val s = open()
         val steps = run(s, Begin(ProfileSelect), WindowOpened(AccountWipe), DrainEnded(DrainEnd.TeardownUnconfirmed), WindowClosed(1))
-        assertTrue(steps[2].has(EndPreempted))
-        assertFalse(steps.any { it.has(RunApply) })
+        assertEquals(listOf<BarrierEffect>(EndPreempted), steps[2].effects)
+        assertFalse(steps.any { it.has(RunApply) || it.has(EndFailed) })
         assertIs<IdentityPhase.Closed>(steps[2].state.phase)
         assertEquals(IdentityPhase.Open, steps[3].state.phase)
         assertEquals(s.epoch.next(), steps[3].state.epoch)
+    }
+
+    @Test
+    fun transitionIdIncrementsPerBegin() {
+        val steps = run(open(), Begin(ProfileSelect), DrainEnded(DrainEnd.TeardownUnconfirmed), Begin(ProfileSelect))
+        val first = steps[0].state.drained!!.transitionId
+        val second = steps[2].state.drained!!.transitionId
+        assertEquals(steps[0].state.epoch, steps[2].state.epoch) // B3a kept the epoch
+        assertTrue(second != first)
+        assertEquals(first + 1, second)
+        assertEquals(0, steps[1].published?.transitionId) // Open carries no id
+        assertEquals(second, steps[2].published?.transitionId)
     }
 
     @Test
@@ -368,6 +378,15 @@ class BarrierModelTest {
         assertEquals(after.phase is IdentityPhase.Open, after.drained == null && after.window == null)
         if (before.drained?.stage == DrainedStage.Preempted) assertTrue(after.drained?.stage != DrainedStage.Draining)
         if (Proceed in step.effects) assertIs<ApplyGate>(event)
+        // Revision 8: CancelJobs names the window kind at B10, else the drained op's kind; B3a cancels nothing.
+        step.effects.filterIsInstance<CancelJobs>().forEach {
+            val expected = if (event is WindowOpened) event.kind else before.drained?.kind
+            assertEquals(expected, it.kind, "CancelJobs kind on $event")
+        }
+        if (b3aNoWindow) assertTrue(step.effects.none { it is CancelJobs })
+        step.state.drained?.let { op ->
+            if (before.drained == null) assertEquals(before.transitionsBegun + 1, op.transitionId) else assertEquals(before.drained.transitionId, op.transitionId)
+        }
         if (b3aNoWindow || (event is DrainEnded && event.how == DrainEnd.TeardownUnconfirmed && before.drained?.kind?.isProfileKind == true)) {
             assertFalse(RunApply in step.effects, "RunApply after TeardownUnconfirmed for a profile kind")
         }
@@ -406,9 +425,10 @@ class BarrierModelTest {
     private fun concrete(a: Abs) = BarrierState(
         epoch = IdentityEpoch(10),
         scope = IdentityScope(a.scopeAccount, a.slot),
-        drained = a.drained?.let { DrainedOp(it.kind, it.stage, windowsAtBegin = 3, gated = it.gated) },
+        drained = a.drained?.let { DrainedOp(it.kind, it.stage, windowsAtBegin = 3, transitionId = 7, gated = it.gated) },
         window = a.window,
         windowsOpened = if (a.drained != null && a.windowSinceBegin) 4 else 3,
+        transitionsBegun = 7,
         latestAccount = a.latest,
         version = 100,
     )

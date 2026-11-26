@@ -31,23 +31,26 @@ internal object IdentityEffects {
     private val log = Logger.withTag("Identity")
 
     /**
-     * Runs [step]'s Revoke (synchronously), CancelJobs, SignalPreempted and Log effects in order.
-     * The control effects (RunApply, Proceed, EndPreempted, EndFailed, AwaitDrain) are left to the
-     * caller. Returns the revoke result: false when the revoker returned false, threw, or is
-     * missing while required; true when the step had no Revoke.
+     * Runs a reducing section's side effects after the commit lock was released: Revoke
+     * (synchronously), the cancellation snapshot, SignalPreempted and Log, in order, then the
+     * afterAccountOpen launch. The control effects (RunApply, Proceed, EndPreempted, EndFailed,
+     * AwaitDrain) are left to the caller. Returns the revoke result: false when the revoker
+     * returned false, threw, or is missing while required; true when the step had no Revoke.
      */
-    fun run(step: BarrierStep): Boolean {
+    fun run(reduced: Reduced): Boolean {
         var ok = true
-        for (effect in step.effects) {
+        for (effect in reduced.effects) {
             when (effect) {
                 is BarrierEffect.Revoke -> ok = revoke(effect.state) && ok
-                is BarrierEffect.CancelJobs -> IdentityWork.cancel(effect.epoch, effect.logNames)
-                BarrierEffect.SignalPreempted -> IdentityWork.signalPreempted(step.state.epoch)
+                is BarrierEffect.CancelJobs -> Unit // the snapshot below, taken in the reducing section
+                BarrierEffect.SignalPreempted -> IdentityWork.signalPreempted()
                 is BarrierEffect.Log -> log.i { "[Identity] ${effect.line}" }
                 is BarrierEffect.AwaitDrain, BarrierEffect.RunApply, BarrierEffect.Proceed,
                 BarrierEffect.EndPreempted, BarrierEffect.EndFailed -> Unit
             }
         }
+        IdentityWork.cancelTargets(reduced.toCancel)
+        if (reduced.accountOpened) IdentityImmediate.launchAfterAccountOpen()
         return ok
     }
 

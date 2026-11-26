@@ -98,6 +98,8 @@ data class IdentityState(
     val phase: IdentityPhase,
     /** Non-null exactly while phase != Open. */
     val kind: TransitionKind?,
+    /** Revision 8: the id of the drained transition in progress (0 when none); Swift echoes it in teardownDone. */
+    val transitionId: Long = 0,
 ) {
     val transitioning: Boolean get() = phase !is IdentityPhase.Open
 }

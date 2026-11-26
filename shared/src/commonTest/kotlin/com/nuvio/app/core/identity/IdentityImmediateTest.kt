@@ -108,16 +108,26 @@ class IdentityImmediateTest {
         }
     }
 
+    /** Revision 8 (W1 review #4): the hook waits for the drained hold, then fires exactly once at B7. */
     @Test
-    fun windowOpenedDuringASignOutDoesNotRunTheHookUntilTheDrainedHoldEnds() {
-        var ran = 0
-        IdentityImmediate.afterAccountOpen = { ran++ }
-        IdentityRuntime.reduce(BarrierEvent.Begin(TransitionKind.SignOut))
-        IdentityRuntime.reduce(BarrierEvent.DrainEnded(DrainEnd.Settled))
-        IdentityImmediate.publishAuth(AuthState.Unauthenticated) { }
-        IdentityImmediate.chainEnded()
-        assertIs<IdentityPhase.Applying>(IdentityGate.state.value.phase)
-        assertEquals(0, ran)
+    fun windowOpenedDuringASignOutRunsTheHookWhenTheDrainedHoldEnds() = runTest {
+        withContext(Dispatchers.Default) {
+            val ran = MutableStateFlow(0)
+            IdentityImmediate.afterAccountOpen = { ran.value += 1 }
+            IdentityRuntime.reduce(BarrierEvent.Begin(TransitionKind.SignOut))
+            IdentityRuntime.reduce(BarrierEvent.DrainEnded(DrainEnd.Settled))
+            IdentityImmediate.publishAuth(AuthState.Unauthenticated) { }
+            IdentityImmediate.chainEnded()
+            assertIs<IdentityPhase.Applying>(IdentityGate.state.value.phase)
+            kotlinx.coroutines.delay(100)
+            assertEquals(0, ran.value)
+            IdentityRuntime.reduce(BarrierEvent.ApplyFinished(1)) // B7: the final Open
+            assertIs<IdentityPhase.Open>(IdentityGate.state.value.phase)
+            assertEquals(AccountKey.None, IdentityGate.state.value.scope.account)
+            eventually { ran.value == 1 }
+            kotlinx.coroutines.delay(100)
+            assertEquals(1, ran.value)
+        }
     }
 
     /** No token for account B exists before the auth state shows B, and none for A after it stopped being A. */

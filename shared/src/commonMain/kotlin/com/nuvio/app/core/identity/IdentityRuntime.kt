@@ -85,19 +85,39 @@ internal object IdentityRuntime {
     @Volatile
     var activeSlot: () -> Int = { ActiveProfileProvider.activeProfileId }
 
+    /** The account of the last Open period; a settle to Open with another account fires afterAccountOpen (4.5, revision 8). */
+    private var lastOpenAccount: AccountKey = model.scope.account
+
     /**
      * Reduces AND publishes under the commit lock, so the StateFlow sees states in reduction order
-     * and a delayed publish can never overwrite a later one. Returns the effects to run after the
-     * lock is released (cancellation and drain signals never run under it).
+     * and a delayed publish can never overwrite a later one. Returns the effects; the job
+     * cancellation and the afterAccountOpen launch run after the lock is released.
+     * (Tests use this; the driver and the auth windows go through [reduceStep] + IdentityEffects.)
      */
-    fun reduce(event: BarrierEvent): List<BarrierEffect> = reduceStep(event).effects
+    fun reduce(event: BarrierEvent): List<BarrierEffect> {
+        val reduced = reduceStep(event)
+        IdentityEffects.run(reduced)
+        return reduced.step.effects
+    }
 
-    /** [reduce], returning the whole step (the effect runner needs the epoch it ran at). */
-    fun reduceStep(event: BarrierEvent): BarrierStep = IdentityLocks.withCommit {
+    /**
+     * One reducing section: the reduce, the publish, the cancellation snapshot of every
+     * CancelJobs effect (4.3a point 5) and the account-open check, all under the commit lock.
+     * Reentrant: IdentityWork calls it inside its own commit section (tryEndDrain, beginTransition).
+     */
+    fun reduceStep(event: BarrierEvent): Reduced = IdentityLocks.withCommit {
         val step = BarrierModel.reduce(model, event.withSlot(activeSlot()))
         model = step.state
         step.published?.let { _state.value = it }
-        step
+        val toCancel = step.effects.filterIsInstance<BarrierEffect.CancelJobs>()
+            .flatMap { IdentityWork.cancelSnapshotLocked(it.kind, it.logNames) }
+        var accountOpened = false
+        val published = step.published
+        if (published != null && published.phase is IdentityPhase.Open) {
+            if (published.scope.account != lastOpenAccount) accountOpened = true
+            lastOpenAccount = published.scope.account
+        }
+        Reduced(step, toCancel, accountOpened)
     }
 
     fun snapshot(): BarrierState = IdentityLocks.withCommit { model }
@@ -108,6 +128,7 @@ internal object IdentityRuntime {
             if (model.phase !is IdentityPhase.Open || model.version != 0L) return@withCommit
             model = model.copy(scope = model.scope.copy(slot = slot))
             _state.value = model.toPublic()
+            lastOpenAccount = model.scope.account
         }
     }
 
@@ -116,6 +137,7 @@ internal object IdentityRuntime {
         IdentityLocks.withCommit {
             model = BarrierState.initial(slot)
             _state.value = model.toPublic()
+            lastOpenAccount = model.scope.account
         }
         authSerial = { serial }
         this.activeSlot = activeSlot ?: { slot }
@@ -126,6 +148,20 @@ internal object IdentityRuntime {
         IdentityLocks.withCommit {
             model = state
             _state.value = state.toPublic()
+            lastOpenAccount = state.scope.account
         }
     }
 }
+
+/** One reducing section's output: the step, the jobs to cancel after the lock, and whether an account change reached Open. */
+internal class Reduced(
+    val step: BarrierStep,
+    val toCancel: List<CancelTarget>,
+    val accountOpened: Boolean,
+) {
+    val state: BarrierState get() = step.state
+    val effects: List<BarrierEffect> get() = step.effects
+}
+
+/** A job picked for cancellation inside a reducing section. */
+internal class CancelTarget(val job: kotlinx.coroutines.Job, val name: String, val logName: Boolean)

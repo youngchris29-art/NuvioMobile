@@ -17,6 +17,8 @@ internal data class DrainedOp(
     val kind: TransitionKind,
     val stage: DrainedStage,
     val windowsAtBegin: Long,
+    /** Revision 8: the Begin's id; Swift echoes it in teardownDone. */
+    val transitionId: Long,
     val gated: Boolean = false,
 )
 
@@ -30,6 +32,8 @@ internal data class BarrierState(
     val window: TransitionKind?,
     /** Counts every WindowOpened; the interleaving rule compares it. */
     val windowsOpened: Long,
+    /** Revision 8: counts every accepted Begin; the next Begin's transitionId. */
+    val transitionsBegun: Long,
     /** The account in AuthRepository.state (written inside the window, 4.5). */
     val latestAccount: AccountKey,
     val version: Long,
@@ -45,7 +49,8 @@ internal data class BarrierState(
     /** The public kind: `drained?.kind ?: window`. */
     val kind: TransitionKind? get() = drained?.kind ?: window
 
-    fun toPublic(): IdentityState = IdentityState(scope = scope, epoch = epoch, phase = phase, kind = kind)
+    fun toPublic(): IdentityState =
+        IdentityState(scope = scope, epoch = epoch, phase = phase, kind = kind, transitionId = drained?.transitionId ?: 0)
 
     companion object {
         fun initial(slot: Int): BarrierState = BarrierState(
@@ -54,6 +59,7 @@ internal data class BarrierState(
             drained = null,
             window = null,
             windowsOpened = 0,
+            transitionsBegun = 0,
             latestAccount = AccountKey.None,
             version = 0,
         )
@@ -107,8 +113,14 @@ internal fun BarrierEvent.withSlot(slot: Int): BarrierEvent = when (this) {
 internal sealed interface BarrierEffect {
     /** Synchronous Swift revocation (4.6). */
     data class Revoke(val state: IdentityState) : BarrierEffect
-    data class AwaitDrain(val epoch: IdentityEpoch) : BarrierEffect
-    data class CancelJobs(val epoch: IdentityEpoch, val logNames: Boolean) : BarrierEffect
+    /** Revision 8: keyed by the Begin, not the epoch. */
+    data class AwaitDrain(val transitionId: Long) : BarrierEffect
+
+    /**
+     * Revision 8: cancels by class per CancelPolicy for [kind] (4.3a); the runtime takes the job
+     * snapshot inside the reducing section.
+     */
+    data class CancelJobs(val kind: TransitionKind, val logNames: Boolean) : BarrierEffect
     data object RunApply : BarrierEffect
 
     /** ApplyGate passed. */
@@ -143,15 +155,18 @@ internal object BarrierModel {
     }
 
     private fun transition(s: BarrierState, event: BarrierEvent): Pair<BarrierState, List<BarrierEffect>> {
-        val e = s.epoch
         val drained = s.drained
         return when (event) {
             is BarrierEvent.Begin -> when {
                 !event.kind.drains -> unchanged(s, "wrong lane: begin ${event.kind}") // B16
                 drained != null || s.window != null -> unchanged(s, "begin refused: held") // B13
                 else -> { // B1
-                    val next = s.copy(drained = DrainedOp(event.kind, DrainedStage.Draining, s.windowsOpened))
-                    next to listOf(BarrierEffect.Revoke(next.toPublic()), BarrierEffect.AwaitDrain(e))
+                    val id = s.transitionsBegun + 1
+                    val next = s.copy(
+                        transitionsBegun = id,
+                        drained = DrainedOp(event.kind, DrainedStage.Draining, s.windowsOpened, transitionId = id),
+                    )
+                    next to listOf(BarrierEffect.Revoke(next.toPublic()), BarrierEffect.AwaitDrain(id))
                 }
             }
 
@@ -192,7 +207,7 @@ internal object BarrierModel {
             is BarrierEvent.Abandoned -> if (drained != null) {
                 // B9
                 s.release(event.slotAfter) to listOf(
-                    BarrierEffect.CancelJobs(e, logNames = true),
+                    BarrierEffect.CancelJobs(drained.kind, logNames = true),
                     BarrierEffect.Log("abandoned ${drained.kind} at ${drained.stage}"),
                 )
             } else {
@@ -214,7 +229,7 @@ internal object BarrierModel {
                         if (phaseBefore is IdentityPhase.Open || phaseBefore is IdentityPhase.Draining) {
                             add(BarrierEffect.Revoke(next.toPublic()))
                         }
-                        add(BarrierEffect.CancelJobs(e, logNames = false))
+                        add(BarrierEffect.CancelJobs(event.kind, logNames = false))
                         if (preempts) add(BarrierEffect.SignalPreempted)
                     }
                     next to effects
@@ -240,21 +255,21 @@ internal object BarrierModel {
         drained: DrainedOp,
         event: BarrierEvent.DrainEnded,
     ): Pair<BarrierState, List<BarrierEffect>> {
-        val e = s.epoch
+        val k = drained.kind
         val applying = s.copy(drained = drained.copy(stage = DrainedStage.Applying))
         return when (event.how) {
             DrainEnd.Settled -> // B2
-                applying to listOf(BarrierEffect.CancelJobs(e, logNames = false), BarrierEffect.RunApply)
+                applying to listOf(BarrierEffect.CancelJobs(k, logNames = false), BarrierEffect.RunApply)
             DrainEnd.JobsDeadline -> // B3 (decision F)
                 applying to listOf(
-                    BarrierEffect.CancelJobs(e, logNames = true),
+                    BarrierEffect.CancelJobs(k, logNames = true),
                     BarrierEffect.Log("drain deadline: jobs still running, cancelled"),
                     BarrierEffect.RunApply,
                 )
             DrainEnd.TeardownUnconfirmed -> if (drained.kind.isProfileKind) {
-                // B3a (revision 7): released at once; with no window open, Open with the same
-                // epoch and scope (nothing changed, no bump, no cancellation). A window open here
-                // would settle at B12; in this state it cannot be (B10 makes Draining Preempted).
+                // B3a (revisions 7-8): released at once, Open with the same epoch and scope
+                // (nothing changed: no bump, no cancellation). Draining implies no window is open
+                // (B10 turns Draining into Preempted), so there is no window branch.
                 s.copy(drained = null) to listOf(
                     BarrierEffect.Log("teardown unconfirmed: ${drained.kind} failed closed"),
                     BarrierEffect.EndFailed,
@@ -262,7 +277,7 @@ internal object BarrierModel {
             } else {
                 // B3b: account kinds proceed closed.
                 applying to listOf(
-                    BarrierEffect.CancelJobs(e, logNames = true),
+                    BarrierEffect.CancelJobs(k, logNames = true),
                     BarrierEffect.Log("teardown unconfirmed: ${drained.kind} proceeds closed"),
                     BarrierEffect.RunApply,
                 )

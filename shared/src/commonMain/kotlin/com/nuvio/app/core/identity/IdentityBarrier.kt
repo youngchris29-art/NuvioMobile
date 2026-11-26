@@ -71,17 +71,37 @@ object IdentityBarrier {
     /** Tests only: runs on the apply dispatcher after DrainEnded and before the apply lock. */
     internal var beforeApplyLock: () -> Unit = {}
 
-    suspend fun selectProfile(slot: Int): TransitionResult =
-        run(TransitionKind.ProfileSelect, Body.Profile { profileOps.applySelection(slot) }).result
+    suspend fun selectProfile(slot: Int): TransitionResult {
+        // The account the select was requested under. A select queued behind an account change
+        // (a window that ended before its Begin, so B6 cannot see it) must not switch the new
+        // account's slot: rechecked under the apply lock, like the delete and slot-removed paths.
+        val requestedUnder = IdentityRuntime.snapshot().latestAccount
+        return run(
+            TransitionKind.ProfileSelect,
+            Body.Profile {
+                val stillApplies = IdentityLocks.withCommit { IdentityRuntime.snapshot().latestAccount == requestedUnder }
+                if (!stillApplies) {
+                    log.i { "[Identity] select of slot $slot: account changed while queued, nothing applied" }
+                    return@Profile
+                }
+                profileOps.applySelection(slot)
+            },
+        ).result
+    }
 
     /** After a successful server delete (or the guest filter) of the ACTIVE profile: select [nextSlot], or show the picker if null. */
     suspend fun deleteActiveProfile(slot: Int, nextSlot: Int?, token: AccountToken): TransitionResult =
         run(
             TransitionKind.ActiveProfileDelete,
             Body.Profile {
-                // Under the apply lock (Codex r1 #6): refused → no-op.
-                if (IdentityGate.checkAccount(token, "deleteActiveProfile") != Verdict.Commit) {
-                    log.i { "[Identity] active delete of slot $slot: account changed, nothing applied" }
+                // Under the apply lock, in one commit read (5.3 step 4, revision 8): the account
+                // token holds AND the deleted slot is still the active one. A select that ran while
+                // this delete waited makes it a no-op (Done, nothing applied).
+                val stillApplies = IdentityLocks.withCommit {
+                    IdentityGate.decideAccountLocked(token) == Verdict.Commit && IdentityRuntime.activeSlot() == slot
+                }
+                if (!stillApplies) {
+                    log.i { "[Identity] active delete of slot $slot: account changed or slot no longer active, nothing applied" }
                     return@Profile
                 }
                 if (nextSlot != null) profileOps.applySelection(nextSlot) else profileOps.applyActiveRemoved()
@@ -114,9 +134,12 @@ object IdentityBarrier {
         return outcome.accountResult ?: Result.failure(IllegalStateException((outcome.result as? TransitionResult.Failed)?.error ?: "no result"))
     }
 
-    /** Swift reports that the shell and the root deep-link cover unmounted for [epoch] (4.6). */
-    fun teardownDone(epoch: Long) {
-        IdentityWork.recordTeardown(epoch)
+    /**
+     * Swift reports that the shell and the root deep-link cover unmounted after the revoke of
+     * [transitionId] (the `IdentityState.transitionId` it was revoked with; 4.6, revision 8).
+     */
+    fun teardownDone(transitionId: Long) {
+        IdentityWork.recordTeardown(transitionId)
     }
 
     private sealed interface Body {
@@ -141,18 +164,18 @@ object IdentityBarrier {
             )
             began = true
             val epoch = begin.state.epoch
-            IdentityWork.beginDrain(epoch)
+            val transitionId = begin.state.drained!!.transitionId
             val ok = IdentityEffects.run(begin)
 
-            // Revision 7: a profile kind whose revoke failed skips the drain.
-            val how = if (kind.isProfileKind && !ok) {
-                DrainEnd.TeardownUnconfirmed
+            // Revision 7: a profile kind whose revoke failed skips the drain. Revision 8: the
+            // drain's end is decided and reduced by IdentityWork in one section (4.3a).
+            val drained = if (kind.isProfileKind && !ok) {
+                IdentityWork.endDrainUnconfirmed(transitionId)
             } else {
                 val hold = debugHoldMs()
                 if (hold > 0) delay(hold)
-                IdentityWork.awaitDrained(epoch, drainDeadlineMs, teardownRequired = ok && IdentityRevocation.required)
+                IdentityWork.awaitDrained(epoch, transitionId, drainDeadlineMs, teardownRequired = ok && IdentityRevocation.required)
             }
-            val drained = IdentityRuntime.reduceStep(BarrierEvent.DrainEnded(how))
             IdentityEffects.run(drained)
             val effects = drained.effects
             when {
@@ -165,8 +188,8 @@ object IdentityBarrier {
                     return Outcome(TransitionResult.Failed("teardown unconfirmed", awaitFinal()))
                 }
                 BarrierEffect.RunApply !in effects -> {
-                    log.e { "[Identity] $kind: no apply after DrainEnded($how)" }
-                    return Outcome(TransitionResult.Failed("out of order after DrainEnded($how)", IdentityRuntime.state.value))
+                    log.e { "[Identity] $kind: no apply after its drain ended (transition $transitionId)" }
+                    return Outcome(TransitionResult.Failed("out of order after the drain", IdentityRuntime.state.value))
                 }
             }
 
@@ -208,14 +231,14 @@ object IdentityBarrier {
     }
 
     /** Waits (bounded) for no window, then Begin. Profile kinds give up at the deadline; account kinds keep waiting. */
-    private suspend fun begin(kind: TransitionKind): BarrierStep? {
+    private suspend fun begin(kind: TransitionKind): Reduced? {
         var waited = 0L
         while (true) {
             val open = withTimeoutOrNull(drainDeadlineMs) {
                 IdentityRuntime.state.first { it.phase is IdentityPhase.Open }
             }
             if (open != null) {
-                val step = IdentityRuntime.reduceStep(BarrierEvent.Begin(kind))
+                val step = IdentityWork.beginTransition(kind)
                 if (step.state.drained?.kind == kind && step.effects.any { it is BarrierEffect.AwaitDrain }) return step
                 IdentityEffects.run(step) // B13: a window opened in between; wait again
                 continue

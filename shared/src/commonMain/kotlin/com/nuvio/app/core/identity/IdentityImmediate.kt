@@ -25,7 +25,7 @@ internal object IdentityImmediate {
     @Volatile
     var onAccountPublished: (AccountKey) -> Unit = {}
 
-    /** Revision 7: run after a window that changed the account reaches Open (5.7). */
+    /** Run after any settle to Open with a changed account (5.7; revision 8: fired from IdentityRuntime). */
     @Volatile
     var afterAccountOpen: () -> Unit = {}
 
@@ -60,19 +60,22 @@ internal object IdentityImmediate {
 
     /** Called by the auth driver when a top-level step chain returns (also when it threw). */
     fun chainEnded() {
-        val before = IdentityRuntime.snapshot()
-        if (before.window == null) return
-        val step = IdentityRuntime.reduceStep(BarrierEvent.WindowClosed(SLOT_UNSET))
-        IdentityEffects.run(step)
-        val after = step.state
-        if (after.phase is IdentityPhase.Open && after.scope.account != before.scope.account) {
-            val hook = afterAccountOpen
-            afterOpenScope.launch {
-                try {
-                    hook()
-                } catch (t: Throwable) {
-                    log.e(t) { "[Identity] afterAccountOpen threw" }
-                }
+        if (IdentityRuntime.snapshot().window == null) return
+        IdentityEffects.run(IdentityRuntime.reduceStep(BarrierEvent.WindowClosed(SLOT_UNSET)))
+    }
+
+    /**
+     * Revision 8: IdentityRuntime detects every settle to Open whose account differs from the last
+     * Open period's (B12 here, or B7 when a drained account transition outlives its window) and the
+     * effect runner calls this after the lock: [afterAccountOpen] on Default, fire-and-forget.
+     */
+    internal fun launchAfterAccountOpen() {
+        val hook = afterAccountOpen
+        afterOpenScope.launch {
+            try {
+                hook()
+            } catch (t: Throwable) {
+                log.e(t) { "[Identity] afterAccountOpen threw" }
             }
         }
     }
@@ -87,5 +90,6 @@ internal object IdentityImmediate {
     internal fun resetForTest() {
         onAccountPublished = {}
         afterAccountOpen = {}
+        afterOpenScope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("IdentityImmediate"))
     }
 }

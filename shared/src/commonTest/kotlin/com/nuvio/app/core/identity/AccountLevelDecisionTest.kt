@@ -22,7 +22,7 @@ class AccountLevelDecisionTest {
     @Test
     fun everyCombination() {
         val drainedAxis: List<DrainedOp?> = listOf<DrainedOp?>(null) +
-            drainedKinds.flatMap { k -> DrainedStage.entries.map { DrainedOp(k, it, windowsAtBegin = 0) } }
+            drainedKinds.flatMap { k -> DrainedStage.entries.map { DrainedOp(k, it, windowsAtBegin = 0, transitionId = 1) } }
         val windows = listOf(null, TransitionKind.AccountWipe, TransitionKind.AccountPublished)
         var count = 0
         for (drained in drainedAxis) for (window in windows) for (rel in AccountRel.entries) {
@@ -39,7 +39,7 @@ class AccountLevelDecisionTest {
 
     @Test
     fun profileApplyWithWindowRefuses() {
-        val drained = DrainedOp(TransitionKind.ActiveProfileDelete, DrainedStage.Applying, 0, gated = true)
+        val drained = DrainedOp(TransitionKind.ActiveProfileDelete, DrainedStage.Applying, 0, transitionId = 1, gated = true)
         assertEquals(
             Verdict.Reject(RejectReason.WritesClosed),
             CommitDecision.decideAccountLevel(AccountToken(accountA, 1), drained, TransitionKind.AccountWipe, accountA, 1),
@@ -49,7 +49,7 @@ class AccountLevelDecisionTest {
     @Test
     fun profileBarrierDoesNotRefuseAccountWork() {
         DrainedStage.entries.forEach { stage ->
-            val drained = DrainedOp(TransitionKind.ProfileSelect, stage, 0)
+            val drained = DrainedOp(TransitionKind.ProfileSelect, stage, 0, transitionId = 1)
             assertEquals(Verdict.Commit, CommitDecision.decideAccountLevel(AccountToken(accountA, 1), drained, null, accountA, 1))
         }
     }

@@ -44,7 +44,7 @@ class TeardownWaitTest {
             swift.launch {
                 delay(200)
                 log.add("teardown done")
-                IdentityBarrier.teardownDone(state.epoch.value)
+                IdentityBarrier.teardownDone(state.transitionId)
             }
         }
         assertIs<TransitionResult.Done>(IdentityBarrier.selectProfile(2))
@@ -82,11 +82,11 @@ class TeardownWaitTest {
     fun lateAckOfAFailedAttemptDoesNotSatisfyTheRetry() = real {
         // A presented player that never disappears: the select fails closed at the same epoch.
         assertIs<TransitionResult.Failed>(IdentityBarrier.selectProfile(2))
-        IdentityBarrier.teardownDone(1) // late, for the failed attempt
+        IdentityBarrier.teardownDone(1) // late, for the failed attempt (transition 1): ignored
         // The retry runs at the same epoch; without its own acknowledgement it fails too.
         assertIs<TransitionResult.Failed>(IdentityBarrier.selectProfile(2))
         assertEquals(0, log.count("apply 2"))
-        revoker.onRevoke = { state -> swift.launch { delay(100); IdentityBarrier.teardownDone(state.epoch.value) } }
+        revoker.onRevoke = { state -> swift.launch { delay(100); IdentityBarrier.teardownDone(state.transitionId) } }
         assertIs<TransitionResult.Done>(IdentityBarrier.selectProfile(2))
         assertEquals(2L, IdentityGate.state.value.epoch.value)
     }

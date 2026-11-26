@@ -19,11 +19,12 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/** Spec 4.3 (revision 7), on virtual time except the atomicity stress test. */
+/** Spec 4.3 and 4.3a (revision 8), on virtual time except the two race tests. */
 @OptIn(ExperimentalCoroutinesApi::class)
 class IdentityWorkTest {
 
@@ -39,9 +40,29 @@ class IdentityWorkTest {
 
     private fun token() = assertNotNull(IdentityGate.currentToken())
 
-    private fun begin() {
-        IdentityRuntime.reduce(BarrierEvent.Begin(TransitionKind.ProfileSelect))
+    /** B1 through the registry (sets the awaited id); returns the Begin's transition id. */
+    private fun begin(kind: TransitionKind = TransitionKind.ProfileSelect): Long {
+        val reduced = IdentityWork.beginTransition(kind)
+        IdentityEffects.run(reduced)
+        return assertNotNull(reduced.state.drained).transitionId
     }
+
+    /** What a drain end's effects say it was (B2, B3, B3a/B3b, B4/B5). */
+    private fun outcome(reduced: Reduced): DrainEnd {
+        IdentityEffects.run(reduced)
+        val effects = reduced.effects
+        return when {
+            BarrierEffect.EndPreempted in effects -> DrainEnd.Preempted
+            BarrierEffect.EndFailed in effects -> DrainEnd.TeardownUnconfirmed
+            effects.any { it is BarrierEffect.Log && "teardown unconfirmed" in it.line } -> DrainEnd.TeardownUnconfirmed
+            effects.any { it is BarrierEffect.CancelJobs && it.logNames } -> DrainEnd.JobsDeadline
+            BarrierEffect.RunApply in effects -> DrainEnd.Settled
+            else -> error("no drain end in $effects")
+        }
+    }
+
+    private suspend fun drain(id: Long, teardownRequired: Boolean = false, deadlineMs: Long = 2_000): DrainEnd =
+        outcome(IdentityWork.awaitDrained(epoch, id, deadlineMs, teardownRequired))
 
     private fun TestScope.launchWork(name: String, kind: CommitKind = CommitKind.Start, block: suspend CoroutineScope.() -> Unit) =
         IdentityWork.launch(token(), name, backgroundScope, kind, block)
@@ -49,65 +70,84 @@ class IdentityWorkTest {
     @Test
     fun jobFinishingInTimeSettles() = runTest {
         assertNotNull(launchWork("short") { delay(500) })
-        begin()
-        assertEquals(DrainEnd.Settled, IdentityWork.awaitDrained(epoch, 2_000, teardownRequired = false))
+        assertEquals(DrainEnd.Settled, drain(begin()))
         assertEquals(500, currentTime)
     }
 
     @Test
     fun jobNeverEndingHitsDeadlineAt2000ms() = runTest {
         val job = assertNotNull(launchWork("stuck") { awaitCancellation() })
-        begin()
-        assertEquals(DrainEnd.JobsDeadline, IdentityWork.awaitDrained(epoch, 2_000, teardownRequired = false))
+        assertEquals(DrainEnd.JobsDeadline, drain(begin()))
         assertEquals(2_000, currentTime)
-        assertTrue(job.isActive)
-        IdentityWork.cancel(epoch, logNames = true)
         runCurrent()
-        assertTrue(job.isCancelled)
+        assertTrue(job.isCancelled) // B3's CancelJobs, snapshot taken in the reducing section
     }
 
     @Test
     fun teardownMissingIsTeardownUnconfirmed() = runTest {
-        begin()
-        assertEquals(DrainEnd.TeardownUnconfirmed, IdentityWork.awaitDrained(epoch, 2_000, teardownRequired = true))
+        assertEquals(DrainEnd.TeardownUnconfirmed, drain(begin(), teardownRequired = true))
         assertEquals(2_000, currentTime)
     }
 
     @Test
     fun teardownArrivingSettles() = runTest {
-        begin()
-        backgroundScope.launch { delay(300); IdentityBarrier.teardownDone(epoch.value) }
-        assertEquals(DrainEnd.Settled, IdentityWork.awaitDrained(epoch, 2_000, teardownRequired = true))
+        val id = begin()
+        backgroundScope.launch { delay(300); IdentityBarrier.teardownDone(id) }
+        assertEquals(DrainEnd.Settled, drain(id, teardownRequired = true))
         assertEquals(300, currentTime)
     }
 
     @Test
-    fun staleTeardownAckIsForgottenAtBegin() = runTest {
-        // Revision 7: a B3a failure keeps the epoch, so a retry runs at the same epoch.
-        IdentityBarrier.teardownDone(epoch.value)
-        IdentityWork.beginDrain(epoch)
-        begin()
-        assertEquals(DrainEnd.TeardownUnconfirmed, IdentityWork.awaitDrained(epoch, 2_000, teardownRequired = true))
+    fun staleAckFromFailedAttemptIgnored() = runTest {
+        val first = begin()
+        // Attempt 1 fails closed (B3a): same epoch, nothing changed.
+        assertEquals(DrainEnd.TeardownUnconfirmed, outcome(IdentityWork.endDrainUnconfirmed(first)))
+        assertEquals(epoch, IdentityGate.currentEpoch())
+        val second = begin()
+        assertTrue(second != first)
+        backgroundScope.launch {
+            delay(100); IdentityBarrier.teardownDone(first) // late, AFTER attempt 2's Begin
+            delay(400); IdentityBarrier.teardownDone(second)
+        }
+        assertEquals(DrainEnd.Settled, drain(second, teardownRequired = true))
+        assertEquals(500, currentTime) // the late ack did not settle it at 100 ms
+    }
+
+    @Test
+    fun ackBeforeDrainIgnored() = runTest {
+        IdentityBarrier.teardownDone(1) // nothing awaited yet
+        val id = begin()
+        assertEquals(1, id)
+        assertEquals(DrainEnd.TeardownUnconfirmed, drain(id, teardownRequired = true))
     }
 
     @Test
     fun teardownWinsOverJobs() = runTest {
         assertNotNull(launchWork("stuck") { awaitCancellation() })
-        begin()
-        assertEquals(DrainEnd.TeardownUnconfirmed, IdentityWork.awaitDrained(epoch, 2_000, teardownRequired = true))
+        assertEquals(DrainEnd.TeardownUnconfirmed, drain(begin(), teardownRequired = true))
     }
 
     @Test
     fun deadlineIsTotalNotPerJob() = runTest {
         assertNotNull(launchWork("first") { delay(1_500) })
-        begin()
+        val id = begin()
         backgroundScope.launch {
             delay(1_000)
             // The send that finishes a committed write, launched mid-drain.
             assertNotNull(IdentityWork.launch(IdentityToken(IdentityScope(accountA, 1), epoch, 5), "second", backgroundScope, CommitKind.RemoteSend) { delay(1_500) })
         }
-        assertEquals(DrainEnd.JobsDeadline, IdentityWork.awaitDrained(epoch, 2_000, teardownRequired = false))
+        assertEquals(DrainEnd.JobsDeadline, drain(id))
         assertEquals(2_000, currentTime)
+    }
+
+    @Test
+    fun deadlineCallNeverNull() = runTest {
+        assertNotNull(launchWork("stuck") { awaitCancellation() })
+        val id = begin()
+        assertNull(IdentityWork.tryEndDrain(id, deadline = false))
+        assertEquals(DrainEnd.JobsDeadline, outcome(assertNotNull(IdentityWork.tryEndDrain(id, deadline = true))))
+        // A deadline call for an id that is not awaited still reduces (B15 logs it), never null.
+        assertNotNull(IdentityWork.tryEndDrain(99, deadline = true))
     }
 
     @Test
@@ -121,19 +161,19 @@ class IdentityWorkTest {
     @Test
     fun remoteSendAllowedWhileDraining() = runTest {
         val t = token()
-        begin()
+        val id = begin()
         val job = assertNotNull(IdentityWork.launch(t, "send", backgroundScope, CommitKind.RemoteSend) { delay(100) })
-        assertEquals(listOf(job), IdentityWork.jobsFor(epoch))
-        assertEquals(DrainEnd.Settled, IdentityWork.awaitDrained(epoch, 2_000, teardownRequired = false))
+        assertEquals(listOf(job), IdentityWork.jobsOf(profile = true))
+        assertEquals(DrainEnd.Settled, drain(id))
         assertEquals(100, currentTime)
-        assertTrue(IdentityWork.jobsFor(epoch).isEmpty())
+        assertTrue(IdentityWork.jobsOf(profile = true).isEmpty())
     }
 
     @Test
     fun staleTokenRefused() = runTest {
         val t = token()
-        begin()
-        IdentityRuntime.reduce(BarrierEvent.DrainEnded(DrainEnd.Settled))
+        val id = begin()
+        outcome(assertNotNull(IdentityWork.tryEndDrain(id, deadline = false)))
         IdentityRuntime.reduce(BarrierEvent.ApplyGate())
         IdentityRuntime.reduce(BarrierEvent.ApplyFinished(1))
         assertNull(IdentityWork.launch(t, "old", backgroundScope, CommitKind.RemoteSend) { })
@@ -143,9 +183,9 @@ class IdentityWorkTest {
     @Test
     fun preemptEndsDrain() = runTest {
         assertNotNull(launchWork("stuck") { awaitCancellation() })
-        begin()
-        backgroundScope.launch { delay(300); IdentityWork.signalPreempted(epoch) }
-        assertEquals(DrainEnd.Preempted, IdentityWork.awaitDrained(epoch, 2_000, teardownRequired = true))
+        val id = begin()
+        backgroundScope.launch { delay(300); IdentityRuntime.reduce(BarrierEvent.WindowOpened(TransitionKind.AccountWipe)) }
+        assertEquals(DrainEnd.Preempted, drain(id, teardownRequired = true))
         assertEquals(300, currentTime)
     }
 
@@ -159,9 +199,9 @@ class IdentityWorkTest {
             }
         })
         runCurrent()
-        begin()
+        val id = begin()
         val before = currentTime
-        IdentityWork.cancel(epoch, logNames = false)
+        outcome(assertNotNull(IdentityWork.tryEndDrain(id, deadline = true))) // B3 cancels it
         assertEquals(before, currentTime)
         runCurrent()
         assertTrue(job.isCancelled)
@@ -172,25 +212,64 @@ class IdentityWorkTest {
     fun awaitingBarrierJobNotWaitedButCancelled() = runTest {
         val job = assertNotNull(launchWork("caller") { awaitCancellation() })
         IdentityWork.markAwaitingBarrier(job)
-        begin()
-        assertEquals(DrainEnd.Settled, IdentityWork.awaitDrained(epoch, 2_000, teardownRequired = false))
+        assertEquals(DrainEnd.Settled, drain(begin()))
         assertEquals(0, currentTime)
-        IdentityWork.cancel(epoch, logNames = true)
         runCurrent()
-        assertTrue(job.isCancelled)
+        assertTrue(job.isCancelled) // B2's CancelJobs includes awaiting-barrier jobs
     }
 
     @Test
-    fun accountWorkRegistersUnderTheCurrentEpochAndStopsAtAWindow() = runTest {
+    fun profileSwitchCancelsEveryProfileJob() = runTest {
+        val older = assertNotNull(launchWork("older") { awaitCancellation() })
+        // A first switch that fails closed leaves the epoch; a second admission later still counts.
+        val first = begin()
+        outcome(IdentityWork.endDrainUnconfirmed(first))
+        IdentityRuntime.setForTest(IdentityRuntime.snapshot().copy(epoch = IdentityEpoch(4)))
+        val newer = assertNotNull(IdentityWork.launch(assertNotNull(IdentityGate.currentToken()), "newer", backgroundScope) { awaitCancellation() })
+        val account = assertNotNull(IdentityWork.launchAccount(IdentityGate.currentAccountToken(), "push", backgroundScope) { awaitCancellation() })
+        val id = begin()
+        assertEquals(DrainEnd.JobsDeadline, outcome(assertNotNull(IdentityWork.tryEndDrain(id, deadline = true))))
+        runCurrent()
+        assertTrue(older.isCancelled)
+        assertTrue(newer.isCancelled)
+        assertTrue(account.isActive) // account work belongs to the account
+    }
+
+    @Test
+    fun failedSwitchCancelsNothing() = runTest {
+        val job = assertNotNull(launchWork("save") { awaitCancellation() })
+        val account = assertNotNull(IdentityWork.launchAccount(IdentityGate.currentAccountToken(), "push", backgroundScope) { awaitCancellation() })
+        val reduced = IdentityWork.endDrainUnconfirmed(begin())
+        assertTrue(reduced.toCancel.isEmpty())
+        outcome(reduced)
+        runCurrent()
+        assertTrue(job.isActive)
+        assertTrue(account.isActive)
+    }
+
+    @Test
+    fun accountWorkSurvivesAProfileSwitchAndDiesAtAWindow() = runTest {
         val accountToken = assertNotNull(IdentityGate.currentAccountToken())
-        begin() // a profile drain does not refuse account work
+        val id = begin() // a profile drain does not refuse account work
         val job = assertNotNull(IdentityWork.launchAccount(accountToken, "push", backgroundScope) { awaitCancellation() })
-        assertEquals(listOf(job), IdentityWork.jobsFor(epoch))
+        assertEquals(listOf(job), IdentityWork.jobsOf(profile = false))
+        assertEquals(DrainEnd.Settled, drain(id)) // a profile drain does not wait for account work
+        runCurrent()
+        assertTrue(job.isActive)
         IdentityRuntime.reduce(BarrierEvent.WindowOpened(TransitionKind.AccountWipe))
+        runCurrent()
+        assertTrue(job.isCancelled)
         assertNull(IdentityWork.launchAccount(accountToken, "push2", backgroundScope) { })
     }
 
-    /** Start check and registration are one step: a job admitted before Begin is in the drain's snapshot. */
+    @Test
+    fun accountDrainWaitsForAccountWork() = runTest {
+        assertNotNull(IdentityWork.launchAccount(IdentityGate.currentAccountToken(), "push", backgroundScope) { delay(700) })
+        assertEquals(DrainEnd.Settled, drain(begin(TransitionKind.SignOut)))
+        assertEquals(700, currentTime)
+    }
+
+    /** Start check and registration are one step: a job admitted before Begin is waited for and cancelled by its drain. */
     @Test
     fun registrationAtomicWithBegin() = runTest {
         withContext(Dispatchers.Default) {
@@ -200,17 +279,57 @@ class IdentityWorkTest {
                 reset()
                 val t = token()
                 val launched = async(Dispatchers.Default) { IdentityWork.launch(t, "race", scope) { awaitCancellation() } }
-                val drained = async(Dispatchers.Default) { begin(); IdentityWork.jobsFor(epoch) }
+                val began = async(Dispatchers.Default) { begin() }
                 val job = launched.await()
-                val snapshot = drained.await()
+                val id = began.await()
                 if (job != null) {
                     admitted++
-                    assertTrue(job in snapshot, "admitted job missing from the drain's snapshot")
+                    // Admitted before Begin: the drain cannot settle while it runs.
+                    assertNull(IdentityWork.tryEndDrain(id, deadline = false), "a drain settled past an admitted job")
                 }
             }
             scope.cancel()
-            // Both orders must have occurred at least once for the test to mean anything; log the split.
             println("registrationAtomicWithBegin: $admitted of 1000 admitted before Begin")
+        }
+    }
+
+    /**
+     * 4.3a point 2: a RemoteSend admission races the drain's end. Either it registers first and the
+     * drain does not settle until it ends, or it is refused; never registered-then-cancelled with
+     * the apply run.
+     */
+    @Test
+    fun admissionRaceWithDrainEnd() = runTest {
+        withContext(Dispatchers.Default) {
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            var admitted = 0
+            var refused = 0
+            repeat(1_000) {
+                reset()
+                val t = token()
+                val id = begin()
+                val launched = async(Dispatchers.Default) {
+                    IdentityWork.launch(t, "send", scope, CommitKind.RemoteSend) { awaitCancellation() }
+                }
+                val ended = async(Dispatchers.Default) { IdentityWork.tryEndDrain(id, deadline = false) }
+                val job = launched.await()
+                val end = ended.await()
+                if (job != null) {
+                    admitted++
+                    if (end != null) {
+                        // The drain ended first; then the admission could only have been refused.
+                        error("admitted after the drain ended")
+                    }
+                    assertIs<IdentityPhase.Draining>(IdentityGate.state.value.phase)
+                } else {
+                    refused++
+                    assertNotNull(end, "refused but the drain did not end")
+                    assertTrue(BarrierEffect.RunApply in end.effects)
+                    assertTrue(end.toCancel.isEmpty())
+                }
+            }
+            scope.cancel()
+            println("admissionRaceWithDrainEnd: $admitted admitted, $refused refused")
         }
     }
 }

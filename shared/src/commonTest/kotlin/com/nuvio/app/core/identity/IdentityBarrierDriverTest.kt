@@ -65,6 +65,7 @@ class IdentityBarrierDriverTest {
         // Every Begin saw the previous transition finished: consecutive epochs, all Draining.
         assertEquals((1L..5L).toList(), revoker.states.map { it.epoch.value })
         assertTrue(revoker.states.all { it.phase is IdentityPhase.Draining })
+        assertEquals((1L..5L).toList(), revoker.states.map { it.transitionId })
         assertEquals(6L, epoch())
     }
 
@@ -113,7 +114,7 @@ class IdentityBarrierDriverTest {
         assertEquals(0, log.count("apply 2"))
 
         // A second select whose teardown is acknowledged succeeds.
-        revoker.onRevoke = { IdentityBarrier.teardownDone(it.epoch.value) }
+        revoker.onRevoke = { IdentityBarrier.teardownDone(it.transitionId) }
         val done = assertIs<TransitionResult.Done>(IdentityBarrier.selectProfile(2))
         assertEquals(IdentityScope(accountA, 2), done.final.scope)
         assertEquals(2L, done.final.epoch.value)
@@ -261,5 +262,75 @@ class IdentityBarrierDriverTest {
         IdentityBarrier.requestSlotRemoved(1, assertNotNull(IdentityGate.currentAccountToken()))
         eventually { epoch() == 3L }
         assertEquals(listOf("removed"), log.all())
+    }
+
+    @Test
+    fun queuedDeleteAfterOtherSelectAppliesNothing() = real {
+        IdentityBarrier.debugHoldMs = { 100 }
+        val token = assertNotNull(IdentityGate.currentAccountToken())
+        val select = async { IdentityBarrier.selectProfile(2) }
+        eventually { IdentityGate.state.value.transitioning }
+        // The delete of slot 1 (the active slot when it was requested) queues behind the select.
+        val delete = async { IdentityBarrier.deleteActiveProfile(1, nextSlot = 3, token = token) }
+        assertIs<TransitionResult.Done>(select.await())
+        assertIs<TransitionResult.Done>(delete.await())
+        assertEquals(listOf("apply 2"), log.all())
+        assertEquals(2, ops.active)
+        assertEquals(IdentityScope(accountA, 2), IdentityGate.state.value.scope)
+    }
+
+    @Test
+    fun accountJobSurvivesProfileSwitchDiesAtAccountReset() = real {
+        var push: kotlinx.coroutines.Job? = null
+        ops.onApply = {
+            // Admitted during the select's apply: account work is allowed through a profile barrier.
+            push = IdentityWork.launchAccount(IdentityGate.currentAccountToken(), "push", work) { awaitCancellation() }
+        }
+        assertIs<TransitionResult.Done>(IdentityBarrier.selectProfile(2))
+        val job = assertNotNull(push)
+        delay(50)
+        assertTrue(job.isActive, "account work must survive a profile switch")
+        val result = IdentityBarrier.accountReset(TransitionKind.SignOut) {
+            log.add("block cancelled=${job.isCancelled}")
+            Result.success(Unit)
+        }
+        assertTrue(result.isSuccess)
+        assertEquals("block cancelled=true", log.all().last())
+    }
+
+    @Test
+    fun afterAccountOpenFiresOnDriverSettle() = real {
+        val ran = kotlinx.coroutines.flow.MutableStateFlow(0)
+        IdentityImmediate.afterAccountOpen = { ran.value += 1 }
+        val result = IdentityBarrier.accountReset(TransitionKind.SignOut) {
+            // The auth chain inside the hold: wipe, publish None, chain end (B12: drained still Applying).
+            IdentityImmediate.accountWipe { log.add("wipe") }
+            IdentityImmediate.publishAuth(com.nuvio.app.core.auth.AuthState.Unauthenticated) { log.add("write") }
+            IdentityImmediate.chainEnded()
+            delay(50)
+            log.add("hook before settle=${ran.value}")
+            Result.success(Unit)
+        }
+        assertTrue(result.isSuccess)
+        eventually { ran.value == 1 }
+        assertEquals("hook before settle=0", log.all().last())
+        assertEquals(IdentityScope(AccountKey.None, 1), IdentityGate.state.value.scope)
+        // A same-account settle does not fire it.
+        assertIs<TransitionResult.Done>(IdentityBarrier.selectProfile(2))
+        delay(100)
+        assertEquals(1, ran.value)
+    }
+
+    @Test
+    fun queuedSelectAcrossAnAccountChangeAppliesNothing() = real {
+        // A window holds the lane's Begin; it changes the account before the queued select begins.
+        IdentityImmediate.serialChanging()
+        val select = async { IdentityBarrier.selectProfile(2) }
+        delay(100)
+        IdentityImmediate.publishAuth(com.nuvio.app.core.auth.AuthState.Authenticated("user-b", null, isAnonymous = false)) { }
+        IdentityImmediate.chainEnded()
+        assertIs<TransitionResult.Done>(select.await())
+        assertEquals(emptyList(), log.all())
+        assertEquals(IdentityScope(accountB, 1), IdentityGate.state.value.scope)
     }
 }
