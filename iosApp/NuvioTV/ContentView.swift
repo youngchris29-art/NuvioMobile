@@ -132,7 +132,10 @@ struct ContentView: View {
         print("[ProfileSelect] auto-enter profile \(profile.profileIndex)")
         // Scope identity W2 (8.0.3): the same sequence as a picker tap; entered only once the
         // barrier opened on this profile.
-        Task { await profiles.selectAndEnter(profile) { final in enterProfile(final) } }
+        // Review r1 #4: bound to the account the auth state names now; the remembered profile came
+        // from that account's profile cache (the account hook loaded it before the gate turned .main).
+        let bound = (AuthRepository.shared.state.value_ as? AuthState).flatMap { AccountKeyCompanion.shared.of(state: $0).storageKey() }
+        Task { await profiles.selectAndEnter(profile, boundAccount: bound) { final in enterProfile(final) } }
     }
 
     /// The `enter` closure of `selectAndEnter` (synchronous on Main). `reseedNow()` before

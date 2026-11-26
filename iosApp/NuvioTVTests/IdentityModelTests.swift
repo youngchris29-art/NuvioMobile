@@ -178,11 +178,11 @@ final class SelectAndEnterSequenceTests: XCTestCase {
         ports.current = IdentityFixture.state(slot: 1, epoch: 1)
     }
 
-    private func run(slot: Int32 = 2) async -> (entered: Bool, coverDuringEnter: Bool?) {
+    private func run(slot: Int32 = 2, bound: String? = "guest:g") async -> (entered: Bool, coverDuringEnter: Bool?) {
         var coverDuringEnter: Bool?
         var coverDuringSelect = false
         ports.duringSelect = { coverDuringSelect = self.cover.visible }
-        let entered = await ProfilesViewModel.selectAndEnter(slot: slot, identity: model, ports: ports) { _ in
+        let entered = await ProfilesViewModel.selectAndEnter(slot: slot, boundAccount: bound, identity: model, ports: ports) { _ in
             coverDuringEnter = self.cover.visible
         }
         XCTAssertTrue(coverDuringSelect, "the cover shows at the tap")
@@ -246,7 +246,7 @@ final class SelectAndEnterSequenceTests: XCTestCase {
     }
 
     /// An account restore's gate can turn .main while its window (still naming None) is closing:
-    /// the tap account is read once the window closed, so the select is entered.
+    /// auto-enter is bound to the restored account (the auth state's), so it waits and enters.
     func testTapDuringAClosingWindowReadsTheAccountAfterIt() async {
         let restored = IdentityFixture.state(slot: 1, epoch: 1)
         ports.current = IdentityFixture.state(account: AccountKeyNone.shared, phase: IdentityPhaseClosed(from: IdentityEpoch(value: 0)),
@@ -263,14 +263,65 @@ final class SelectAndEnterSequenceTests: XCTestCase {
         XCTAssertTrue(outcome.entered)
     }
 
+    /// Review r1 #4: a tap on A's profile as a transition to B starts never selects in B.
+    func testTapUnderAnotherAccountGoesBackToThePicker() async {
+        ports.current = IdentityFixture.state(account: IdentityFixture.guest, phase: IdentityPhaseClosed(from: IdentityEpoch(value: 1)),
+                                              kind: .accountpublished)
+        let ports = self.ports!
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            ports.current = IdentityFixture.state(account: IdentityFixture.other, slot: 1, epoch: 2)
+        }
+        var selected = false
+        ports.result = { selected = true; return TransitionResultRequested.shared }
+        let entered = await ProfilesViewModel.selectAndEnter(slot: 2, boundAccount: "guest:g", identity: model, ports: ports) { _ in }
+        XCTAssertFalse(entered)
+        XCTAssertFalse(selected, "the barrier must not be asked to select in B")
+        XCTAssertEqual(root.recoveries, 1)
+        XCTAssertFalse(cover.visible)
+    }
+
+    func testUnboundTapNeverSelects() async {
+        var selected = false
+        ports.result = { selected = true; return TransitionResultRequested.shared }
+        let entered = await ProfilesViewModel.selectAndEnter(slot: 2, boundAccount: nil, identity: model, ports: ports) { _ in }
+        XCTAssertFalse(entered)
+        XCTAssertFalse(selected)
+    }
+
     func testFailBeforeBeginKnob() async {
         ports.failBeforeBegin = true
         ports.result = { XCTFail("the barrier must not be called"); return TransitionResultRequested.shared }
         ports.duringSelect = {}
-        let entered = await ProfilesViewModel.selectAndEnter(slot: 2, identity: model, ports: ports) { _ in }
+        let entered = await ProfilesViewModel.selectAndEnter(slot: 2, boundAccount: "guest:g", identity: model, ports: ports) { _ in }
         XCTAssertFalse(entered)
         XCTAssertEqual(root.recoveries, 1)
         XCTAssertFalse(cover.visible)
+    }
+}
+
+/// Scope identity W2 review r1 #4: every case of the tap binding.
+final class TapBindingRuleTests: XCTestCase {
+    func testEveryCase() {
+        let open = IdentityPhaseOpen.shared
+        let closed = IdentityPhaseClosed(from: IdentityEpoch(value: 1))
+        for bound in [nil, "guest:g", "account:b"] as [String?] {
+            for account in [IdentityFixture.guest, IdentityFixture.other, AccountKeyNone.shared] as [AccountKey] {
+                for phase in [open, closed] as [IdentityPhase] {
+                    let state = IdentityFixture.state(account: account, phase: phase)
+                    let key = account.storageKey() ?? "none"
+                    let expected: TapBinding = bound == nil ? .backToPicker : (phase is IdentityPhaseOpen ? (key == bound ? .proceed : .backToPicker) : .wait)
+                    XCTAssertEqual(TapBindingRule.decide(bound: bound, current: state), expected, "\(String(describing: bound)) \(key) \(phase)")
+                }
+            }
+            XCTAssertEqual(TapBindingRule.decide(bound: bound, current: nil), bound == nil ? .backToPicker : .wait)
+        }
+    }
+
+    func testPickerBindingOnlyUnderAnOpenIdentity() {
+        XCTAssertEqual(TapBindingRule.pickerBinding(IdentityFixture.state()), "guest:g")
+        XCTAssertNil(TapBindingRule.pickerBinding(IdentityFixture.draining(.signout)))
+        XCTAssertNil(TapBindingRule.pickerBinding(nil))
     }
 }
 

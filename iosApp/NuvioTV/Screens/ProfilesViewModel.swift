@@ -79,28 +79,35 @@ final class ProfilesViewModel: ObservableObject {
     /// clears it in one `defer`, its last statement, after `enter` ran or the picker was chosen.
     /// Breadcrumbs bracket every Kotlin call (kept out of `#if DEBUG`: testers' console logs are
     /// the only diagnostic for a crash we cannot reproduce).
-    func selectAndEnter(_ profile: NuvioProfile, enter: @escaping (IdentityState) -> Void) async {
+    /// `boundAccount`: the account key the tap belongs to (TapBindingRule).
+    func selectAndEnter(_ profile: NuvioProfile, boundAccount: String?, enter: @escaping (IdentityState) -> Void) async {
         print("[ProfileSelect] selecting profile \(profile.profileIndex)")
-        let entered = await Self.selectAndEnter(slot: profile.profileIndex, identity: IdentityModel.shared,
-                                                ports: selectPorts, enter: enter)
+        let entered = await Self.selectAndEnter(slot: profile.profileIndex, boundAccount: boundAccount,
+                                                identity: IdentityModel.shared, ports: selectPorts, enter: enter)
         print("[ProfileSelect] select finished — entered=\(entered)")
     }
 
     /// The sequence itself, testable with a fake barrier. Returns whether the profile was entered.
     @discardableResult
     static func selectAndEnter(slot: Int32,
+                               boundAccount: String?,
                                identity: IdentityModel,
                                ports: ProfileSelectPorts,
                                enter: (IdentityState) -> Void) async -> Bool {
-        // 1. Tap (Main). The cover goes up first; the account is read once no window holds, since
-        // a window's state still names the previous account (an account restore's gate can turn
-        // .main a moment before its chain ends). Bounded: 2 s, then the select's own checks decide.
+        // 1. Tap (Main). The cover goes up first. Review r1 #4: the tap belongs to the identity it
+        // was made under (TapBindingRule); while a window holds, wait (bounded 2 s) and decide
+        // again; an identity that moved to another account sends the user back to the picker.
         identity.localSelectInFlight = true
-        for _ in 0..<40 where !(ports.currentState()?.phase is IdentityPhaseOpen) {
-            try? await Task.sleep(nanoseconds: 50_000_000)
-        }
-        let accountAtTap = ports.currentState()?.scope.account
         defer { identity.localSelectInFlight = false } // 4: the last statement, whatever happened
+        var binding = TapBindingRule.decide(bound: boundAccount, current: ports.currentState())
+        for _ in 0..<40 where binding == .wait {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            binding = TapBindingRule.decide(bound: boundAccount, current: ports.currentState())
+        }
+        guard binding == .proceed, let accountAtTap = ports.currentState()?.scope.account else {
+            print("[ProfileSelect] not entered: the tap's identity is not the open one (\(binding))")
+            return false
+        }
         // 2. The barrier (Main suspended; nothing on screen changes).
         let result: TransitionResult?
         if ports.failBeforeBegin {

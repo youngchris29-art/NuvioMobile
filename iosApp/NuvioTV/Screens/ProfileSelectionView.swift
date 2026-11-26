@@ -176,7 +176,7 @@ struct ProfileSelectionView: View {
                     model.verifyPin(prompt.profile, pin: pin) { result in
                         if result?.unlocked == true {
                             pinPrompt = nil
-                            perform(prompt.action, on: prompt.profile)
+                            perform(prompt.action, on: prompt.profile, boundAccount: prompt.boundAccount)
                         } else {
                             done(pinErrorMessage(result))
                         }
@@ -192,23 +192,26 @@ struct ProfileSelectionView: View {
         enum Action { case select, edit, delete }
         let profile: NuvioProfile
         let action: Action
+        /// Review r1 #4: the identity the picker showed this profile under (TapBindingRule).
+        let boundAccount: String?
         var id: String { "\(profile.profileIndex)-\(action)" }
     }
 
     private func requirePin(for profile: NuvioProfile, action: PinPrompt.Action) {
+        let bound = TapBindingRule.pickerBinding(IdentityModel.shared.currentState())
         if profile.pinEnabled {
-            pinPrompt = PinPrompt(profile: profile, action: action)
+            pinPrompt = PinPrompt(profile: profile, action: action, boundAccount: bound)
         } else {
-            perform(action, on: profile)
+            perform(action, on: profile, boundAccount: bound)
         }
     }
 
-    private func perform(_ action: PinPrompt.Action, on profile: NuvioProfile) {
+    private func perform(_ action: PinPrompt.Action, on profile: NuvioProfile, boundAccount: String?) {
         switch action {
         case .select:
             guard !model.isSwitching else { return }
             let enter = onSelected
-            Task { await model.selectAndEnter(profile, enter: enter) }
+            Task { await model.selectAndEnter(profile, boundAccount: boundAccount, enter: enter) }
         case .edit:
             editing = ProfileEditTarget(profile: profile)
         case .delete:
