@@ -9,6 +9,11 @@ import SwiftUI
 /// `DeveloperSettingsPane`. Value rows are `focusable: true` so this pushed pane has a focusable
 /// row (BUG-47) and each row can describe itself in the explainer. Returns ROWS ONLY.
 struct AboutSettingsPane: View {
+    /// GitHub #34: drives the Clear Cache confirmation alert.
+    @State private var confirmingClearCache = false
+    /// GitHub #34: idle (no subtitle) or cleared ("Cache cleared"). Reset when the section leaves.
+    @State private var cleared = false
+
     var body: some View {
         SettingsSection(String(localized: "About")) {
             SettingsValueRow(
@@ -62,7 +67,31 @@ struct AboutSettingsPane: View {
                 descriptionID: .aboutFonts,
                 focusable: true
             )
+            // GitHub #34: frees the storage used by saved artwork (both artwork disk caches and the
+            // failed-artwork list) through `ArtworkStore.diskCacheClearer`. Nothing else is removed.
+            SettingsDestructiveRow(
+                title: String(localized: "Clear Cache"),
+                subtitle: cleared ? String(localized: "Cache cleared") : "",
+                systemImage: "trash",
+                descriptionID: .aboutClearCache
+            ) {
+                confirmingClearCache = true
+            }
+            .accessibilityIdentifier("settings_about_clear_cache")
         }
+        .onDisappear { cleared = false }
+        .alert("Clear Cache?", isPresented: $confirmingClearCache) {
+            Button("Clear", role: .destructive) { clearNow() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Posters and artwork saved on this Apple TV are deleted and download again when needed. Your account, profiles, settings, add-ons and watch progress are not affected.")
+        }
+    }
+
+    /// The whole confirm action: one synchronous clear, then the row reads "Cache cleared".
+    private func clearNow() {
+        ClearCacheAction.run(ArtworkStore.diskCacheClearer)
+        cleared = true
     }
 
     /// The tip jar, as shown in the row.

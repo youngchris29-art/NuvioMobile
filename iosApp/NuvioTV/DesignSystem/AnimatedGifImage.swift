@@ -318,6 +318,12 @@ private enum AnimatedGifCache {
     }
 }
 
+/// GitHub #34: the GIF disk cache, reachable from `CachedAsyncImage.swift` without widening the
+/// decoder's private session.
+enum AnimatedGifStore {
+    nonisolated static var diskCache: URLCache { AnimatedGifDecoder.diskCache }
+}
+
 /// Fetch + decode pipeline for animated GIFs, with in-flight de-duplication per URL (mirrors
 /// `ArtworkStore.fetch`'s `inflight` dictionary shape).
 ///
@@ -354,6 +360,10 @@ private enum AnimatedGifDecoder {
         config.requestCachePolicy = .returnCacheDataElseLoad
         return URLSession(configuration: config)
     }()
+
+    /// GitHub #34: the session's disk cache, for Settings › About › Clear Cache
+    /// (`ArtworkStore.diskCacheClearer`). The session above always sets `urlCache`.
+    nonisolated static var diskCache: URLCache { session.configuration.urlCache! }
 
     @MainActor private static var inflight: [URL: Task<UIImage?, Never>] = [:]
 

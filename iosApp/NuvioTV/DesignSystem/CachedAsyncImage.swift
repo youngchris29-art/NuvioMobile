@@ -282,6 +282,33 @@ struct ArtworkPrefetchItem {
     let decode: ArtworkDecodeRequest
 }
 
+/// The definitively-failed artwork URLs, with the time each failed (`ArtworkStore.failures`). A
+/// type of its own so the Clear Cache orchestrator and its tests can inject a fresh one. Main-actor
+/// (the target default), like the dictionary it replaces.
+final class ArtworkFailureMemo {
+    private var failedAt: [URL: Date] = [:]
+
+    /// True while `url` failed less than `ttl` ago; an expired entry is dropped on the way out.
+    func hasFailed(_ url: URL, now: Date = Date(), ttl: TimeInterval) -> Bool {
+        guard let at = failedAt[url] else { return false }
+        if now.timeIntervalSince(at) > ttl {
+            failedAt[url] = nil
+            return false
+        }
+        return true
+    }
+
+    /// Records a failure. The set is size-bounded: at 512 entries it starts over.
+    func noteFailure(_ url: URL, now: Date = Date()) {
+        if failedAt.count >= 512 { failedAt.removeAll() }
+        failedAt[url] = now
+    }
+
+    func removeAll() { failedAt.removeAll() }
+
+    var count: Int { failedAt.count }
+}
+
 enum ArtworkStore {
     /// beta.19-rc1 verdict (I1, BUG-134): two byte-sized pools replace the old single
     /// 400-item / 128 MB cache. `small` holds poster-size decodes (under `largePoolThreshold`
@@ -452,24 +479,36 @@ enum ArtworkStore {
     /// beta.19-rc1 verdict (I1): the same memo now also covers an upgraded `large`/`original` URL that
     /// 404'd, so a title whose larger file is missing costs one quick 404 and is skipped for ten
     /// minutes after that (see `ImageFallbackPlan.recordFailureIfNeeded`).
-    @MainActor private static var failedURLs: [URL: Date] = [:]
+    ///
+    /// Callers that empty it: `HomeViewModel` (profile change), `LibraryProviderRows`, and the
+    /// Clear Cache button (`ArtworkDiskCacheClearer.clear()`).
+    ///
+    /// GitHub #34 (Clear Cache): the list lives in `ArtworkFailureMemo` so it can be injected, and
+    /// Settings › About › Clear Cache empties it through `diskCacheClearer` along with both artwork
+    /// disk caches. The three statics below forward to it with unchanged signatures.
+    @MainActor static let failures = ArtworkFailureMemo()
     static let failedURLTTL: TimeInterval = 10 * 60
 
     @MainActor static func hasFailed(_ url: URL, now: Date = Date()) -> Bool {
-        guard let at = failedURLs[url] else { return false }
-        if now.timeIntervalSince(at) > failedURLTTL {
-            failedURLs[url] = nil
-            return false
-        }
-        return true
+        failures.hasFailed(url, now: now, ttl: failedURLTTL)
     }
 
     @MainActor static func noteFailure(_ url: URL, now: Date = Date()) {
-        if failedURLs.count >= 512 { failedURLs.removeAll() }
-        failedURLs[url] = now
+        failures.noteFailure(url, now: now)
     }
 
-    @MainActor static func clearFailedURLs() { failedURLs.removeAll() }
+    @MainActor static func clearFailedURLs() { failures.removeAll() }
+
+    /// GitHub #34: the one production wiring of the Clear Cache orchestrator — this store's own
+    /// artwork `URLCache`, the GIF session's `URLCache` and the failed-URL memo. Nothing else
+    /// (not `URLCache.shared`, not the decoded-image pools) is reachable through it.
+    @MainActor static var diskCacheClearer: ArtworkDiskCacheClearer {
+        ArtworkDiskCacheClearer(
+            artworkCache: session.configuration.urlCache!,
+            gifCache: AnimatedGifStore.diskCache,
+            failures: failures
+        )
+    }
 
     /// Only outcomes that will not change on a retry count: a 4xx answer, a non-image body, an
     /// oversized or undecodable payload. Timeouts, connectivity errors, 5xx/408/429 and
@@ -777,6 +816,7 @@ enum ArtworkStore {
                     }
                 }
                 data = fetchedData
+                ArtworkProbe.noteFetched(url)
             }
             guard data.count <= maxDownloadBytes else {
                 throw URLError(.dataLengthExceedsMaximum)
@@ -1222,6 +1262,66 @@ nonisolated enum ArtworkProbe {
     nonisolated static func logPools(warning: Bool = false) {
         guard enabled else { return }
         NSLog("%@", poolsLine(warning: warning))
+    }
+
+    // MARK: Clear Cache (GitHub #34)
+
+    /// The last artwork URLs `fetch` completed over the network, newest last. Kept only while the
+    /// probe is enabled, so the clear line can sample how many still have a cached response.
+    @MainActor private static var recentFetches: [URL] = []
+    private static let recentFetchLimit = 20
+
+    @MainActor
+    static func noteFetched(_ url: URL) {
+        guard enabled else { return }
+        recentFetches.removeAll { $0 == url }
+        recentFetches.append(url)
+        if recentFetches.count > recentFetchLimit { recentFetches.removeFirst(recentFetches.count - recentFetchLimit) }
+    }
+
+    /// What the clear line reports from before the clear.
+    struct ClearSnapshot {
+        let diskBytes: Int
+        let gifBytes: Int
+        let sampleCached: Int
+        let sampleTotal: Int
+        let failed: Int
+        let start: UInt64
+    }
+
+    /// nil while the probe is off, so a normal clear costs nothing extra.
+    @MainActor
+    static func beginClear(artworkCache: URLCache, gifCache: URLCache, failures: ArtworkFailureMemo) -> ClearSnapshot? {
+        guard enabled else { return nil }
+        let sample = sampleCached(in: artworkCache)
+        return ClearSnapshot(diskBytes: artworkCache.currentDiskUsage, gifBytes: gifCache.currentDiskUsage,
+                             sampleCached: sample.cached, sampleTotal: sample.total,
+                             failed: failures.count, start: DispatchTime.now().uptimeNanoseconds)
+    }
+
+    /// One line per clear. Every value is diagnostic. The "after" readings are taken as `clear()`
+    /// returns, but the system releases the disk storage asynchronously a little later, so
+    /// `disk_after`/`gif_after` may not show the drop yet. `sample_after` can stay non-zero because
+    /// each cache's in-memory response store is not purged by the clear, and a request in flight may
+    /// store a response right after it.
+    ///
+    ///     [ArtworkStore] artwork_clear ms=<n> disk_before=<n> disk_after=<n> gif_before=<n> gif_after=<n> sample_before=<k>/<m> sample_after=<k>/<m> failed_before=<n>
+    @MainActor
+    static func endClear(_ before: ClearSnapshot?, artworkCache: URLCache, gifCache: URLCache) {
+        guard let before else { return }
+        let ms = Int((DispatchTime.now().uptimeNanoseconds - before.start) / 1_000_000)
+        let after = sampleCached(in: artworkCache)
+        let line = "[ArtworkStore] artwork_clear ms=\(ms) disk_before=\(before.diskBytes) disk_after=\(artworkCache.currentDiskUsage) "
+            + "gif_before=\(before.gifBytes) gif_after=\(gifCache.currentDiskUsage) "
+            + "sample_before=\(before.sampleCached)/\(before.sampleTotal) sample_after=\(after.cached)/\(after.total) "
+            + "failed_before=\(before.failed)"
+        NSLog("%@", line)
+    }
+
+    @MainActor
+    private static func sampleCached(in cache: URLCache) -> (cached: Int, total: Int) {
+        let cached = recentFetches.filter { cache.cachedResponse(for: URLRequest(url: $0)) != nil }.count
+        return (cached, recentFetches.count)
     }
 
     @MainActor

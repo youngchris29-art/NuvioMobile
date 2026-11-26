@@ -10737,6 +10737,40 @@
         }
       }
     },
+    "Cache cleared": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cache geleert"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Caché borrada"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cache vidé"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cache svuotata"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đã xóa bộ nhớ đệm"
+          }
+        }
+      }
+    },
     "Cached Sources Only": {
       "localizations": {
         "de": {
@@ -12815,6 +12849,74 @@
           "stringUnit": {
             "state": "translated",
             "value": "Xóa tất cả bộ lọc"
+          }
+        }
+      }
+    },
+    "Clear Cache": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cache leeren"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Borrar caché"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vider le cache"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Svuota cache"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Xóa bộ nhớ đệm"
+          }
+        }
+      }
+    },
+    "Clear Cache?": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cache leeren?"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Borrar caché?"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vider le cache ?"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Svuotare la cache?"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Xóa bộ nhớ đệm?"
           }
         }
       }
@@ -21771,6 +21873,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Thời gian khung hình mỗi bước tiêu điểm trên các hàng bộ sưu tập; cần khởi chạy lại để đổi nhánh A/B"
+          }
+        }
+      }
+    },
+    "Frees the storage used by posters and artwork saved on this Apple TV. They download again when needed. Nothing else is removed.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gibt den Speicher frei, den auf diesem Apple TV gespeicherte Poster und Bilder belegen. Sie werden bei Bedarf neu geladen. Sonst wird nichts entfernt."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Libera el espacio que ocupan los pósteres e imágenes guardados en este Apple TV. Se descargan de nuevo cuando hagan falta. No se elimina nada más."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Libère l'espace occupé par les affiches et images enregistrées sur cet Apple TV. Elles sont retéléchargées au besoin. Rien d'autre n'est supprimé."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Libera lo spazio occupato da locandine e immagini salvate su questa Apple TV. Vengono riscaricate quando servono. Nient'altro viene rimosso."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Giải phóng dung lượng do áp phích và hình ảnh đã lưu trên Apple TV này chiếm. Chúng sẽ được tải lại khi cần. Không xóa gì khác."
           }
         }
       }
@@ -36994,6 +37130,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Poster"
+          }
+        }
+      }
+    },
+    "Posters and artwork saved on this Apple TV are deleted and download again when needed. Your account, profiles, settings, add-ons and watch progress are not affected.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Auf diesem Apple TV gespeicherte Poster und Bilder werden gelöscht und bei Bedarf neu geladen. Konto, Profile, Einstellungen, Add-ons und Wiedergabefortschritt bleiben unverändert."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Se eliminan los pósteres e imágenes guardados en este Apple TV y se descargan de nuevo cuando hagan falta. Tu cuenta, perfiles, ajustes, complementos y progreso no cambian."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Les affiches et images enregistrées sur cet Apple TV sont supprimées et retéléchargées au besoin. Votre compte, vos profils, réglages, extensions et votre progression ne changent pas."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Locandine e immagini salvate su questa Apple TV vengono eliminate e riscaricate quando servono. Account, profili, impostazioni, componenti aggiuntivi e progressi restano invariati."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Áp phích và hình ảnh đã lưu trên Apple TV này sẽ bị xóa và được tải lại khi cần. Tài khoản, hồ sơ, cài đặt, tiện ích và tiến độ xem không bị ảnh hưởng."
           }
         }
       }

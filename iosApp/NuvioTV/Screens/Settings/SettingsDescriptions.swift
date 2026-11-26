@@ -226,6 +226,7 @@ enum SettingsDescriptionID: String, CaseIterable {
     case aboutSource = "about.source"
     case aboutSupport = "about.support"
     case aboutFonts = "about.fonts"
+    case aboutClearCache = "about.clearCache"
 
     // MARK: Developer
     case devHeroPaint = "dev.heroPaint"
@@ -459,6 +460,7 @@ enum SettingsDescriptions {
         case .aboutSource: return LocalizedStringResource("Where the source code for this app is published.")
         case .aboutSupport: return LocalizedStringResource("NuvioTV is free, and every feature is in every build. If you’d like to leave a tip for the work on this app, scan the code with your phone. Tips are optional and go to this app’s developer, not the Nuvio team.")
         case .aboutFonts: return LocalizedStringResource("The Open Sans typeface is bundled with the app and used under the SIL Open Font License 1.1.")
+        case .aboutClearCache: return LocalizedStringResource("Frees the storage used by posters and artwork saved on this Apple TV. They download again when needed. Nothing else is removed.")
 
         // Developer
         case .devHeroPaint: return LocalizedStringResource("Records how the Home hero artwork is drawn so a problem can be photographed. Turn it on only when asked, then relaunch.")
