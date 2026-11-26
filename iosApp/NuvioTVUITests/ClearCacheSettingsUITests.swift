@@ -6,18 +6,16 @@ import XCTest
 /// which button holds the initial focus (an owner question, not an assertion). Cancel closes it with
 /// focus back on the row and no subtitle; Clear makes the row read "Cache cleared" with focus on
 /// the row; a repeat Clear and a later Cancel keep that; leaving the pane resets it; a re-entry
-/// clears again; then, back on Home, the hero backdrop, a poster and the seeded collection's tile
-/// cover have all drawn.
+/// clears again. Back on Home after the clear, the hero backdrop and at least one poster have drawn.
 ///
-/// Collection: one pinned folder seeded through the DEBUG `-debug.collectionsSeedJsonB64` knob (the
-/// `CollectionHeaderUITests` mechanism). The knob replaces the profile's collections and the app has
-/// no read-out, so the leg first proves a disposable baseline in an unseeded launch (signed-out
-/// guest, no collection on Home) and refuses to seed otherwise; a teardown block registered before
-/// the seed restores that empty baseline and asserts Home shows no collection. "Drawn" is read
-/// from DEBUG signals: `debug_hero … pbd=1` (the presented hero backdrop bitmap) and, under
-/// `-debug.cardGeometryProbe YES`, an `artwork_drawn` element inside a `poster_artwork` /
-/// `folder_artwork` box (`CachedAsyncImage` publishes it once a decoded image is on screen). The
-/// artwork comes from the same image hosts the fixture's Home already loads from.
+/// "Drawn" is read from DEBUG signals: `debug_hero … pbd=1` (the presented hero backdrop bitmap)
+/// and, under `-debug.cardGeometryProbe YES`, an `artwork_drawn` element inside a `poster_artwork`
+/// box (`CachedAsyncImage` publishes it once a decoded image is on screen).
+///
+/// The leg writes no persistent profile data: it seeds nothing. A collection row on the fixture's
+/// Home is neither required nor forbidden. A collection cover redrawing after a clear is checked on
+/// the device pass instead, because seeding collections replaces the profile's saved list and cannot
+/// be undone exactly.
 ///
 /// The fixture profile is the signed-out local guest "Chris"; nothing here signs in. Every Select is
 /// pressed only once focus is verified on the intended element. House rule: this file owns its helpers.
@@ -27,41 +25,20 @@ final class ClearCacheSettingsUITests: XCTestCase {
     private static let rowID = "settings_about_clear_cache"
     private static let clearedText = "Cache cleared"
     private static let alertTitle = "Clear Cache?"
-    /// One pinned collection with one folder whose tile cover is its backdrop.
-    private static let collectionSeed = """
-    [{"id":"zzclearcache-collection","title":"ZZClearCache","pinToTop":true,"showAllTab":false,"folders":[{"id":"zzclearcache-folder","title":"ZZClearCacheFolder","hideTitle":false,"heroBackdropUrl":"https://images.metahub.space/background/medium/tt0111161/img","sources":[{"provider":"addon","addonId":"com.linvo.cinemeta","type":"movie","catalogId":"top"}]}]}]
-    """
-
     override func setUp() {
         super.setUp()
         continueAfterFailure = false
     }
 
     func testClearCacheRowAlertFocusAndFeedback() throws {
-        // 0. The seed REPLACES and persists the active profile's collections, and the app offers no
-        // way to read them out first. So the leg seeds only a verified disposable baseline: an
-        // unseeded launch must show the signed-out guest and no collection on Home. Anything else
-        // fails here, before any seed launch.
-        let baseline = verifyDisposableBaseline()
-        guard baseline.ok else {
-            XCTFail("refusing to seed collections: this profile has its own, or is not the signed-out fixture guest — \(baseline.why)")
-            return
-        }
-        // Registered before the seed is applied, so it also runs on every failure path: put the
-        // verified-empty baseline back, then check Home shows no collection.
-        addTeardownBlock { [weak self] in self?.restoreBaseline() }
-
-        // 1. Launch with the seeded collection, pick the profile, and see Home draw: the hero
-        // backdrop, a poster and the collection tile's cover (so the seed is known to be live).
+        // 1. Launch, pick the profile, and see Home draw its hero backdrop and a poster.
         let app = launch(["-debug.artworkProbe", "YES", "-debug.cardGeometryProbe", "YES",
-                          "-inline_trailers_enabled", "NO",
-                          "-debug.collectionsSeedJsonB64", Data(Self.collectionSeed.utf8).base64EncodedString()])
+                          "-inline_trailers_enabled", "NO"])
         XCTAssertTrue(waitUntil(timeout: 60) { self.heroBackdropDrawn(app) }, "Home never drew its hero backdrop: \(heroProbe(app))")
         shot(app, "cc1_home")
-        let before = scanHomeArt(app)
+        let before = scanForPoster(app)
         shot(app, "cc1_home_rows")
-        XCTAssertTrue(before.poster, "before the clear no poster drew on Home (scanned \(before.presses) rows)")
-        XCTAssertTrue(before.collection, "before the clear the seeded collection tile's cover never drew (scanned \(before.presses) rows) — \(artDump(app))")
+        XCTAssertTrue(before.poster, "before the clear no poster drew on Home (scanned \(before.presses) rows) — \(artDump(app))")
 
         // 2. Settings › About.
         try openAboutPane(app)
@@ -132,10 +109,9 @@ final class ClearCacheSettingsUITests: XCTestCase {
         XCTAssertTrue(waitUntil(timeout: 30) { self.heroBackdropDrawn(app) },
                       "after the clear the hero backdrop did not draw: \(heroProbe(app))")
         shot(app, "cc8_home_hero_after_clear")
-        let after = scanHomeArt(app)
+        let after = scanForPoster(app)
         shot(app, "cc8_home_rows_after_clear")
-        XCTAssertTrue(after.poster, "after the clear no poster drew on Home (scanned \(after.presses) rows)")
-        XCTAssertTrue(after.collection, "after the clear the collection tile's cover did not draw (scanned \(after.presses) rows)")
+        XCTAssertTrue(after.poster, "after the clear no poster drew on Home (scanned \(after.presses) rows) — \(artDump(app))")
         XCTAssertEqual(app.state, .runningForeground, "the app is not running after returning Home")
     }
 
@@ -249,8 +225,8 @@ final class ClearCacheSettingsUITests: XCTestCase {
     }
 
     /// Whether some `artwork_drawn` element belongs to some `box` element, from one snapshot: its
-    /// centre lies inside the box and it is at most four times the box's area (a `.fill` image
-    /// overflows its tile before the clip, so plain containment is too strict; the area cap keeps a
+    /// centre lies inside the box and it is at most four times the box's area (a `.fill` image can
+    /// overflow its box before the clip, so plain containment is too strict; the area cap keeps a
     /// full-screen backdrop behind the rows from counting).
     private func drawnInside(_ box: String, in root: XCUIElementSnapshot) -> Bool {
         var boxes: [CGRect] = []
@@ -269,37 +245,21 @@ final class ClearCacheSettingsUITests: XCTestCase {
         }
     }
 
-    /// Presses Down (up to 12 rows, each waiting at most 4 s for art to land) until a drawn poster
-    /// and a drawn collection tile cover have both been seen.
-    private func scanHomeArt(_ app: XCUIApplication) -> (poster: Bool, collection: Bool, presses: Int) {
-        var poster = false
-        var collection = false
-        var folderSeenDump: String?
-        func look() {
-            guard let root = try? app.snapshot() else { return }
-            poster = poster || drawnInside("poster_artwork", in: root)
-            collection = collection || drawnInside("folder_artwork", in: root)
-            if !collection, folderSeenDump == nil, app.descendants(matching: .any)["folder_artwork"].firstMatch.exists {
-                folderSeenDump = artDump(app)
-            }
+    /// Looks for a drawn poster, pressing Down (up to 12 rows, each waiting at most 4 s for art to
+    /// land) until one is seen.
+    private func scanForPoster(_ app: XCUIApplication) -> (poster: Bool, presses: Int) {
+        func look() -> Bool {
+            guard let root = try? app.snapshot() else { return false }
+            return drawnInside("poster_artwork", in: root)
         }
-        defer {
-            if !collection, let folderSeenDump {
-                let note = XCTAttachment(string: folderSeenDump)
-                note.name = "folder_box_seen_without_drawn_art"
-                note.lifetime = .keepAlways
-                add(note)
-                NSLog("[ClearCacheUITest] folder box seen without drawn art: %@", folderSeenDump)
-            }
-        }
-        look()
+        var poster = look()
         var presses = 0
-        while !(poster && collection) && presses < 12 {
+        while !poster && presses < 12 {
             remote.press(.down)
             presses += 1
-            _ = waitUntil(timeout: 4) { look(); return poster && collection }
+            poster = waitUntil(timeout: 4) { look() }
         }
-        return (poster, collection, presses)
+        return (poster, presses)
     }
 
     /// For failure messages: the frames of every artwork box and drawn marker on screen.
@@ -307,7 +267,7 @@ final class ClearCacheSettingsUITests: XCTestCase {
         guard let root = try? app.snapshot() else { return "<no snapshot>" }
         var out: [String] = []
         func walk(_ node: XCUIElementSnapshot) {
-            if ["folder_artwork", "folder_card", "poster_artwork", "artwork_drawn"].contains(node.identifier) {
+            if ["poster_artwork", "artwork_drawn"].contains(node.identifier) {
                 let f = node.frame
                 out.append("\(node.identifier)@\(Int(f.minX)),\(Int(f.minY)),\(Int(f.width))x\(Int(f.height))")
             }
@@ -315,67 +275,6 @@ final class ClearCacheSettingsUITests: XCTestCase {
         }
         walk(root)
         return out.joined(separator: " ")
-    }
-
-    /// Any collection tile on Home, from one snapshot (needs `-debug.cardGeometryProbe YES`).
-    private func homeShowsCollection(_ app: XCUIApplication) -> Bool {
-        app.descendants(matching: .any).matching(identifier: "folder_card").firstMatch.exists
-            || app.descendants(matching: .any).matching(identifier: "folder_artwork").firstMatch.exists
-    }
-
-    /// Walks every Home row (Down until the focused row stops changing, at most 15 presses) and
-    /// reports whether a collection tile showed anywhere. The walk ends on the last row.
-    private func homeHasAnyCollection(_ app: XCUIApplication) -> (found: Bool, presses: Int) {
-        var found = homeShowsCollection(app)
-        var presses = 0
-        var lastFocus = focusedLabels(app)
-        var unchanged = 0
-        while !found && presses < 15 && unchanged < 2 {
-            remote.press(.down)
-            presses += 1
-            _ = waitUntil(timeout: 2) { self.homeShowsCollection(app) }
-            found = homeShowsCollection(app)
-            let focus = focusedLabels(app)
-            unchanged = focus == lastFocus ? unchanged + 1 : 0
-            lastFocus = focus
-        }
-        return (found, presses)
-    }
-
-    /// An unseeded launch: the active profile must be the signed-out guest (Settings › Account &
-    /// Profiles offers "Sign In to Nuvio", shown only to a guest) and Home must show no collection.
-    private func verifyDisposableBaseline() -> (ok: Bool, why: String) {
-        let app = launch(["-debug.cardGeometryProbe", "YES", "-inline_trailers_enabled", "NO"])
-        defer { app.terminate() }
-        guard waitUntil(timeout: 60, { self.heroBackdropDrawn(app) }) else {
-            return (false, "Home never drew on the unseeded launch: \(heroProbe(app))")
-        }
-        let scan = homeHasAnyCollection(app)
-        shot(app, "cc0_baseline_home_end")
-        if scan.found { return (false, "Home already shows a collection (row \(scan.presses))") }
-        do {
-            try openSettingsRoot(app)
-            try selectCategory(app, "accountProfiles", labelPrefix: "Account")
-        } catch {
-            return (false, "could not open Settings › Account & Profiles: \(error)")
-        }
-        let signIn = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "label BEGINSWITH %@", "Sign In to Nuvio")).firstMatch
-        let guest = signIn.waitForExistence(timeout: 5)
-        shot(app, "cc0_baseline_account")
-        if !guest { return (false, "Account & Profiles shows no Sign In row, so this is not a guest session") }
-        return (true, "")
-    }
-
-    /// Puts back the verified-empty baseline (an empty seed), then asserts Home shows no collection.
-    private func restoreBaseline() {
-        let app = launch(["-debug.cardGeometryProbe", "YES", "-inline_trailers_enabled", "NO",
-                          "-debug.collectionsSeedJsonB64", Data("[]".utf8).base64EncodedString()])
-        defer { app.terminate() }
-        XCTAssertTrue(waitUntil(timeout: 60) { self.heroBackdropDrawn(app) }, "restore: Home never drew: \(heroProbe(app))")
-        let scan = homeHasAnyCollection(app)
-        shot(app, "cc9_restored_home_end")
-        XCTAssertFalse(scan.found, "restore: Home still shows a collection after the empty seed (row \(scan.presses))")
     }
 
     // MARK: - The explainer walk
