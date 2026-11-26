@@ -10,7 +10,10 @@ import XCTest
 /// cover have all drawn.
 ///
 /// Collection: one pinned folder seeded through the DEBUG `-debug.collectionsSeedJsonB64` knob (the
-/// `CollectionHeaderUITests` mechanism) and removed with `"[]"` when the test ends. "Drawn" is read
+/// `CollectionHeaderUITests` mechanism). The knob replaces the profile's collections and the app has
+/// no read-out, so the leg first proves a disposable baseline in an unseeded launch (signed-out
+/// guest, no collection on Home) and refuses to seed otherwise; a teardown block registered before
+/// the seed restores that empty baseline and asserts Home shows no collection. "Drawn" is read
 /// from DEBUG signals: `debug_hero … pbd=1` (the presented hero backdrop bitmap) and, under
 /// `-debug.cardGeometryProbe YES`, an `artwork_drawn` element inside a `poster_artwork` /
 /// `folder_artwork` box (`CachedAsyncImage` publishes it once a decoded image is on screen). The
@@ -35,9 +38,21 @@ final class ClearCacheSettingsUITests: XCTestCase {
     }
 
     func testClearCacheRowAlertFocusAndFeedback() throws {
+        // 0. The seed REPLACES and persists the active profile's collections, and the app offers no
+        // way to read them out first. So the leg seeds only a verified disposable baseline: an
+        // unseeded launch must show the signed-out guest and no collection on Home. Anything else
+        // fails here, before any seed launch.
+        let baseline = verifyDisposableBaseline()
+        guard baseline.ok else {
+            XCTFail("refusing to seed collections: this profile has its own, or is not the signed-out fixture guest — \(baseline.why)")
+            return
+        }
+        // Registered before the seed is applied, so it also runs on every failure path: put the
+        // verified-empty baseline back, then check Home shows no collection.
+        addTeardownBlock { [weak self] in self?.restoreBaseline() }
+
         // 1. Launch with the seeded collection, pick the profile, and see Home draw: the hero
         // backdrop, a poster and the collection tile's cover (so the seed is known to be live).
-        addTeardownBlock { [weak self] in self?.clearSeed() }
         let app = launch(["-debug.artworkProbe", "YES", "-debug.cardGeometryProbe", "YES",
                           "-inline_trailers_enabled", "NO",
                           "-debug.collectionsSeedJsonB64", Data(Self.collectionSeed.utf8).base64EncodedString()])
@@ -159,6 +174,12 @@ final class ClearCacheSettingsUITests: XCTestCase {
 
     /// Settings tab, root list, then the About category, each Select only on verified focus.
     private func openAboutPane(_ app: XCUIApplication) throws {
+        try openSettingsRoot(app)
+        try selectAboutCategory(app)
+    }
+
+    /// Settings tab, then the root list.
+    private func openSettingsRoot(_ app: XCUIApplication) throws {
         try selectTab(app, "Settings")
         remote.press(.down)
         pause(1)
@@ -168,17 +189,21 @@ final class ClearCacheSettingsUITests: XCTestCase {
             pause(1.2)
         }
         XCTAssertTrue(rootPresent(app), "the Settings root list never appeared")
-        try selectAboutCategory(app)
     }
 
     private func selectAboutCategory(_ app: XCUIApplication) throws {
-        var onAbout = focusedRootIsAbout(app)
-        for _ in 0..<16 where !onAbout { remote.press(.down); pause(0.6); onAbout = focusedRootIsAbout(app) }
-        for _ in 0..<16 where !onAbout { remote.press(.up); pause(0.6); onAbout = focusedRootIsAbout(app) }
-        try selectIfFocused(app, "settings_category_about") { focusedRootIsAbout(app) }
-        pause(1.5)
-        XCTAssertTrue(app.descendants(matching: .any)["settings_pane_about"].waitForExistence(timeout: 4),
-                      "the About pane did not push")
+        try selectCategory(app, "about", labelPrefix: "About")
+    }
+
+    /// Moves to the root row `settings_category_<category>` and opens its pane.
+    private func selectCategory(_ app: XCUIApplication, _ category: String, labelPrefix: String) throws {
+        func on() -> Bool { focusedRootIs(app, category: category, labelPrefix: labelPrefix) }
+        var onRow = on()
+        for _ in 0..<16 where !onRow { remote.press(.down); pause(0.6); onRow = on() }
+        for _ in 0..<16 where !onRow { remote.press(.up); pause(0.6); onRow = on() }
+        try selectIfFocused(app, "settings_category_\(category)") { on() }
+        XCTAssertTrue(app.descendants(matching: .any)["settings_pane_\(category)"].waitForExistence(timeout: 5),
+                      "the \(labelPrefix) pane did not push")
     }
 
     private func rootPresent(_ app: XCUIApplication) -> Bool {
@@ -187,8 +212,8 @@ final class ClearCacheSettingsUITests: XCTestCase {
                 .matching(NSPredicate(format: "identifier BEGINSWITH 'settings_category_'")).firstMatch.exists
     }
 
-    /// The focused root row is About: by identifier inside the focused subtree, or by its label.
-    private func focusedRootIsAbout(_ app: XCUIApplication) -> Bool {
+    /// The focused root row is `category`: by identifier inside the focused subtree, or by its label.
+    private func focusedRootIs(_ app: XCUIApplication, category: String, labelPrefix: String) -> Bool {
         guard let root = try? app.snapshot() else { return false }
         var focused: [XCUIElementSnapshot] = []
         func walk(_ node: XCUIElementSnapshot) {
@@ -196,10 +221,10 @@ final class ClearCacheSettingsUITests: XCTestCase {
             node.children.forEach(walk)
         }
         walk(root)
-        func hasAboutID(_ node: XCUIElementSnapshot) -> Bool {
-            node.identifier == "settings_category_about" || node.children.contains(where: hasAboutID)
+        func hasID(_ node: XCUIElementSnapshot) -> Bool {
+            node.identifier == "settings_category_\(category)" || node.children.contains(where: hasID)
         }
-        return focused.contains { hasAboutID($0) || $0.label.hasPrefix("About") }
+        return focused.contains { hasID($0) || $0.label.hasPrefix(labelPrefix) }
     }
 
     /// Menu back out of Settings to the tab bar, then the Home tab.
@@ -292,22 +317,65 @@ final class ClearCacheSettingsUITests: XCTestCase {
         return out.joined(separator: " ")
     }
 
-    /// Removes the seeded collection: relaunch with an empty seed and let Home apply it.
-    private func clearSeed() {
-        let app = XCUIApplication()
-        app.launchArguments = ["-debug.collectionsSeedJsonB64", Data("[]".utf8).base64EncodedString()]
-        app.launch()
-        let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
-        if chris.waitForExistence(timeout: 60) {
-            DetailEntryRoute.selectChrisTile(self, app, timeout: 5)
-            _ = waitUntil(timeout: 60) { app.descendants(matching: .any)["debug_hero"].firstMatch.exists }
+    /// Any collection tile on Home, from one snapshot (needs `-debug.cardGeometryProbe YES`).
+    private func homeShowsCollection(_ app: XCUIApplication) -> Bool {
+        app.descendants(matching: .any).matching(identifier: "folder_card").firstMatch.exists
+            || app.descendants(matching: .any).matching(identifier: "folder_artwork").firstMatch.exists
+    }
+
+    /// Walks every Home row (Down until the focused row stops changing, at most 15 presses) and
+    /// reports whether a collection tile showed anywhere. The walk ends on the last row.
+    private func homeHasAnyCollection(_ app: XCUIApplication) -> (found: Bool, presses: Int) {
+        var found = homeShowsCollection(app)
+        var presses = 0
+        var lastFocus = focusedLabels(app)
+        var unchanged = 0
+        while !found && presses < 15 && unchanged < 2 {
+            remote.press(.down)
+            presses += 1
+            _ = waitUntil(timeout: 2) { self.homeShowsCollection(app) }
+            found = homeShowsCollection(app)
+            let focus = focusedLabels(app)
+            unchanged = focus == lastFocus ? unchanged + 1 : 0
+            lastFocus = focus
         }
-        // The seed is applied by the Home pipeline; wait (bounded) until no seeded tile remains.
-        _ = waitUntil(timeout: 20) {
-            !app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "ZZClearCache")).firstMatch.exists
-                && !app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "ZZClearCache")).firstMatch.exists
+        return (found, presses)
+    }
+
+    /// An unseeded launch: the active profile must be the signed-out guest (Settings › Account &
+    /// Profiles offers "Sign In to Nuvio", shown only to a guest) and Home must show no collection.
+    private func verifyDisposableBaseline() -> (ok: Bool, why: String) {
+        let app = launch(["-debug.cardGeometryProbe", "YES", "-inline_trailers_enabled", "NO"])
+        defer { app.terminate() }
+        guard waitUntil(timeout: 60, { self.heroBackdropDrawn(app) }) else {
+            return (false, "Home never drew on the unseeded launch: \(heroProbe(app))")
         }
-        app.terminate()
+        let scan = homeHasAnyCollection(app)
+        shot(app, "cc0_baseline_home_end")
+        if scan.found { return (false, "Home already shows a collection (row \(scan.presses))") }
+        do {
+            try openSettingsRoot(app)
+            try selectCategory(app, "accountProfiles", labelPrefix: "Account")
+        } catch {
+            return (false, "could not open Settings › Account & Profiles: \(error)")
+        }
+        let signIn = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label BEGINSWITH %@", "Sign In to Nuvio")).firstMatch
+        let guest = signIn.waitForExistence(timeout: 5)
+        shot(app, "cc0_baseline_account")
+        if !guest { return (false, "Account & Profiles shows no Sign In row, so this is not a guest session") }
+        return (true, "")
+    }
+
+    /// Puts back the verified-empty baseline (an empty seed), then asserts Home shows no collection.
+    private func restoreBaseline() {
+        let app = launch(["-debug.cardGeometryProbe", "YES", "-inline_trailers_enabled", "NO",
+                          "-debug.collectionsSeedJsonB64", Data("[]".utf8).base64EncodedString()])
+        defer { app.terminate() }
+        XCTAssertTrue(waitUntil(timeout: 60) { self.heroBackdropDrawn(app) }, "restore: Home never drew: \(heroProbe(app))")
+        let scan = homeHasAnyCollection(app)
+        shot(app, "cc9_restored_home_end")
+        XCTAssertFalse(scan.found, "restore: Home still shows a collection after the empty seed (row \(scan.presses))")
     }
 
     // MARK: - The explainer walk
