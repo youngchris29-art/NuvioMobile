@@ -84,7 +84,7 @@ class IdentityImmediateTest {
     /** Review r2-1: a throwing hook leaves the window on the account auth still shows. */
     @Test
     fun throwingHookRecordsNoAccount() {
-        IdentityImmediate.onAccountPublished = { error("ensureLoaded failed") }
+        IdentityImmediate.onAccountPublished = { if (it == accountB) error("ensureLoaded failed") }
         var written = false
         kotlin.test.assertFailsWith<IllegalStateException> {
             IdentityImmediate.publishAuth(AuthState.Authenticated("user-b", null, isAnonymous = false)) { written = true }
@@ -95,6 +95,46 @@ class IdentityImmediateTest {
         IdentityImmediate.chainEnded()
         assertEquals(IdentityScope(accountA, 1), IdentityGate.state.value.scope)
         assertEquals(accountA, assertNotNull(IdentityGate.currentToken()).scope.account)
+    }
+
+    /** Review r3-3: the hook loads B's state, then throws; the gate reopens on A only after A was reloaded. */
+    @Test
+    fun hookThatMutatesThenThrowsIsRecoveredBeforeTheGateOpens() {
+        var loaded: AccountKey = accountA
+        IdentityImmediate.onAccountPublished = { a ->
+            loaded = a
+            if (a == accountB) error("fan-out failed after ensureLoaded(B)")
+        }
+        kotlin.test.assertFailsWith<IllegalStateException> {
+            IdentityImmediate.publishAuth(AuthState.Authenticated("user-b", null, isAnonymous = false)) { }
+        }
+        assertEquals(accountB, loaded) // mutated before throwing
+        assertNull(IdentityGate.currentToken()) // the window holds
+        IdentityImmediate.chainEnded()
+        assertEquals(accountA, loaded) // recovered under the same window
+        assertEquals(IdentityScope(accountA, 1), IdentityGate.state.value.scope)
+        assertEquals(accountA, assertNotNull(IdentityGate.currentToken()).scope.account)
+    }
+
+    /** Review r3-3: recovery fails too: the gate opens signed out, never on A or B; the next publish of A recovers. */
+    @Test
+    fun secondFailureOpensTheGateSignedOut() {
+        val tokenA = assertNotNull(IdentityGate.currentToken())
+        IdentityImmediate.onAccountPublished = { error("everything fails") }
+        kotlin.test.assertFailsWith<IllegalStateException> {
+            IdentityImmediate.publishAuth(AuthState.Authenticated("user-b", null, isAnonymous = false)) { }
+        }
+        IdentityImmediate.chainEnded()
+        assertIs<IdentityPhase.Open>(IdentityGate.state.value.phase) // P3: the window closed
+        assertEquals(AccountKey.None, IdentityGate.state.value.scope.account)
+        assertEquals(Verdict.Reject(RejectReason.AccountChanged), IdentityGate.check(tokenA, CommitKind.LocalWrite))
+        // The auth state still shows A: its next publish is an identity change again and runs the hook.
+        var ranFor: AccountKey? = null
+        IdentityImmediate.onAccountPublished = { ranFor = it }
+        IdentityImmediate.publishAuth(AuthState.Authenticated("user-a", null, isAnonymous = false)) { }
+        IdentityImmediate.chainEnded()
+        assertEquals(accountA, ranFor)
+        assertEquals(accountA, IdentityGate.state.value.scope.account)
     }
 
     @Test

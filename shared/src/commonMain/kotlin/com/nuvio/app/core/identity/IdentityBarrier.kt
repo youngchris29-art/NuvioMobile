@@ -6,18 +6,18 @@ import com.nuvio.app.core.profile.ActiveProfileProvider
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.async
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -56,11 +56,50 @@ private object UninstalledProfileOps : IdentityProfileOps {
 
 object IdentityBarrier {
     private val log = Logger.withTag("Identity")
-    private val lane = Mutex()
 
     /** The lane's own scope: a cancelled caller stops waiting, the transition continues (P3). */
-    internal var scope: CoroutineScope =
+    private val scope: CoroutineScope =
         CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("IdentityBarrier"))
+
+    /**
+     * The lane (review r3-2): a FIFO queue, filled synchronously at call time, consumed by ONE
+     * coroutine. Order is the order of the calls by construction, never the dispatcher's start order;
+     * an accepted request runs whatever happens to its caller.
+     */
+    private val lane = Channel<Request>(Channel.UNLIMITED)
+
+    private class Request(
+        val kind: TransitionKind,
+        val body: Body,
+        /** The registered job marked awaiting at call time, unmarked when this request ends. */
+        val marked: Job?,
+        val done: CompletableDeferred<Outcome> = CompletableDeferred(),
+    )
+
+    /** The single lane coroutine; started by the first request. */
+    private val consumer: Job = scope.launch(start = CoroutineStart.LAZY) {
+        for (request in lane) process(request)
+    }
+
+    /**
+     * One request, start to end, on the single lane coroutine. The awaiting marker is cleared in
+     * this same finally, before the loop takes the next request (review r3-1): the next drain on the
+     * lane always counts the job again.
+     */
+    private suspend fun process(request: Request) {
+        try {
+            request.done.complete(execute(request.kind, request.body))
+        } catch (t: Throwable) {
+            if (t is CancellationException && !currentCoroutineContext().isActive) {
+                request.done.cancel()
+                throw t
+            }
+            log.e(t) { "[Identity] ${request.kind} threw out of the lane" }
+            request.done.completeExceptionally(t)
+        } finally {
+            request.marked?.let(IdentityWork::unmarkAwaitingBarrier)
+        }
+    }
     internal var applyDispatcher: CoroutineDispatcher = Dispatchers.Main
 
     /** Decision F. Also bounds the wait for an open window before Begin and before the result. */
@@ -119,8 +158,8 @@ object IdentityBarrier {
 
     /** Fire-and-forget; revalidated at apply (5.2). */
     fun requestSlotRemoved(slot: Int, token: AccountToken) {
-        scope.launch {
-            run(
+        // Enqueued now, in call order (no launch); not awaited.
+        enqueue(
                 TransitionKind.SlotRemoved,
                 Body.Profile {
                     val still = IdentityGate.commitAccount(token, "slotRemoved") {
@@ -133,8 +172,8 @@ object IdentityBarrier {
                     }
                     true // a no-op slot removal is Done (5.2 step 3)
                 },
+                marked = null,
             )
-        }
     }
 
     /** Never refuses; returns [block]'s result (a thrown error as a failure). */
@@ -162,17 +201,24 @@ object IdentityBarrier {
 
     private suspend fun run(kind: TransitionKind, body: Body): Outcome {
         // A registered job (or a child/withContext of one: the element names the registered job,
-        // review r2-3) that calls a transition is not waited for by drains while it waits. Marked
-        // now, before it queues on the lane; unmarked in the lane's finally of this transition
-        // (review r2-2), even if the caller stopped waiting: ATOMIC start guarantees the finally.
+        // review r2-3) that awaits a transition is not waited for by drains while it waits: marked
+        // here, at call time, and unmarked by the lane when this request ends (process's finally).
         val marked = currentCoroutineContext()[IdentityJobElement]?.let(IdentityWork::markAwaitingBarrier)
-        return scope.async(start = CoroutineStart.ATOMIC) {
-            try {
-                lane.withLock { execute(kind, body) }
-            } finally {
-                marked?.let(IdentityWork::unmarkAwaitingBarrier)
-            }
-        }.await()
+        // Mark and enqueue are both non-suspending: no cancellation point between them.
+        return enqueue(kind, body, marked).await()
+    }
+
+    /** Synchronous: the request is accepted (its place in the FIFO taken) before this returns. */
+    private fun enqueue(kind: TransitionKind, body: Body, marked: Job?): CompletableDeferred<Outcome> {
+        val request = Request(kind, body, marked)
+        val sent = lane.trySend(request).isSuccess
+        consumer.start()
+        if (!sent) {
+            // Unlimited and never closed: cannot happen. Fail the request without leaking the mark.
+            marked?.let(IdentityWork::unmarkAwaitingBarrier)
+            request.done.completeExceptionally(IllegalStateException("identity lane closed"))
+        }
+        return request.done
     }
 
     private suspend fun execute(kind: TransitionKind, body: Body): Outcome {

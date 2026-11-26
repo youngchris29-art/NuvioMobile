@@ -29,6 +29,19 @@ internal object IdentityImmediate {
     @Volatile
     var afterAccountOpen: () -> Unit = {}
 
+    /**
+     * Review r3-3: the recovery run, under the same window and the apply lock, when a publish's hook
+     * or auth write threw part-way (it may have loaded [failed]'s profiles). [shown] is the account
+     * AuthRepository.state still shows. Default: re-run the publish hook for [shown], which reloads
+     * its profiles, resets add-ons and fans out (5.7). W2 may install a stronger recovery.
+     */
+    @Volatile
+    var recoverAfterFailedPublish: (failed: AccountKey, shown: AccountKey) -> Unit = { _, shown -> onAccountPublished(shown) }
+
+    /** Set when a publish in the open window threw; read and cleared by [chainEnded]. Auth lane only. */
+    @Volatile
+    private var failedPublish: AccountKey? = null
+
     /** Where [afterAccountOpen] is launched: Default, fire-and-forget, outside every lock. */
     internal var afterOpenScope: CoroutineScope =
         CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("IdentityImmediate"))
@@ -48,8 +61,16 @@ internal object IdentityImmediate {
             return
         }
         openIfNeeded(TransitionKind.AccountPublished)
-        IdentityLocks.withApply { ActiveProfileProvider.changing { onAccountPublished(account) } }
-        write()
+        try {
+            IdentityLocks.withApply { ActiveProfileProvider.changing { onAccountPublished(account) } }
+            write()
+        } catch (t: Throwable) {
+            // The hook may have mutated profile state for [account] before it threw: chainEnded
+            // must recover before the gate opens (review r3-3).
+            failedPublish = account
+            throw t
+        }
+        failedPublish = null
         // Review r2-1: the window's account is recorded only after the hook and the auth write
         // succeeded. If either throws, the window still holds (no token exists) and chainEnded
         // settles it on the account AuthRepository.state still shows.
@@ -63,8 +84,37 @@ internal object IdentityImmediate {
 
     /** Called by the auth driver when a top-level step chain returns (also when it threw). */
     fun chainEnded() {
-        if (IdentityRuntime.snapshot().window == null) return
+        val model = IdentityRuntime.snapshot()
+        if (model.window == null) return
+        val failed = failedPublish
+        if (failed != null) {
+            failedPublish = null
+            recover(failed, model.latestAccount)
+        }
         IdentityEffects.run(IdentityRuntime.reduceStep(BarrierEvent.WindowClosed(SLOT_UNSET)))
+    }
+
+    /**
+     * The gate never opens on an account whose hook failed part-way (review r3-3). Recovery runs
+     * once, inside the still-open window; if it succeeds the window settles on [shown] with its
+     * state reloaded; if it also throws, the window settles on AccountKey.None (fail closed: every
+     * token for [shown] or [failed] is refused, R4, and the next publish of [shown] opens a window
+     * and runs the hook again, since None differs from it). Either way the window closes in this
+     * same chainEnded, so P3 holds.
+     */
+    private fun recover(failed: AccountKey, shown: AccountKey) {
+        val recovered = try {
+            IdentityLocks.withApply { ActiveProfileProvider.changing { recoverAfterFailedPublish(failed, shown) } }
+            true
+        } catch (t: Throwable) {
+            log.e(t) { "[Identity] recovery after a failed publish threw; the gate opens signed out" }
+            false
+        }
+        if (recovered) {
+            log.w { "[Identity] publish failed part-way; recovered the shown account before reopening" }
+        } else {
+            IdentityEffects.run(IdentityRuntime.reduceStep(BarrierEvent.WindowAccount(AccountKey.None)))
+        }
     }
 
     /**
@@ -93,6 +143,8 @@ internal object IdentityImmediate {
     internal fun resetForTest() {
         onAccountPublished = {}
         afterAccountOpen = {}
+        recoverAfterFailedPublish = { _, shown -> onAccountPublished(shown) }
+        failedPublish = null
         afterOpenScope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("IdentityImmediate"))
     }
 }

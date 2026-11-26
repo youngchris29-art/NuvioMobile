@@ -415,4 +415,59 @@ class IdentityBarrierDriverTest {
         auth.join()
         assertTrue(log.all().contains("block stuck cancelled=true"), "${log.all()}")
     }
+
+    /** Review r3-2: requests run in call order, even when both are queued before the lane starts either. */
+    @Test
+    fun requestsRunInCallOrderByConstruction() = real {
+        repeat(20) { round ->
+            val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+            val holder = async { IdentityBarrier.accountReset(TransitionKind.ServerSwitch) { gate.await(); Result.success(Unit) } }
+            eventually { IdentityGate.state.value.kind == TransitionKind.ServerSwitch }
+            // Both calls take their place in the queue synchronously, in this order.
+            val a = async(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) { IdentityBarrier.selectProfile(2) }
+            val b = async(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) { IdentityBarrier.selectProfile(3) }
+            gate.complete(Unit)
+            holder.await(); a.await(); b.await()
+            assertEquals(3, ops.active, "round $round: ${log.all()}")
+        }
+        assertEquals((1..20).flatMap { listOf("apply 2", "apply 3") }, log.all())
+    }
+
+    /**
+     * Review r3-1: an account job awaits a select while a sign-out is queued behind it. The marker
+     * ends with the select's request, before the lane takes the sign-out, so the sign-out's drain
+     * waits for the job's remaining work.
+     */
+    @Test
+    fun queuedSignOutAtTheMarkerBoundaryWaitsForTheJob() = real {
+        IdentityBarrier.debugHoldMs = { 100 }
+        IdentityBarrier.drainDeadlineMs = 2_000
+        val selected = kotlinx.coroutines.CompletableDeferred<Unit>()
+        assertNotNull(IdentityWork.launchAccount(IdentityGate.currentAccountToken(), "push", work) {
+            IdentityBarrier.selectProfile(2)
+            selected.complete(Unit)
+            delay(300)
+            log.add("push end")
+        })
+        eventually { IdentityGate.state.value.kind == TransitionKind.ProfileSelect }
+        // Queued while the select (and the job's marker) is in progress.
+        val signOut = async { IdentityBarrier.accountReset(TransitionKind.SignOut) { log.add("block"); Result.success(Unit) } }
+        assertTrue(signOut.await().isSuccess)
+        assertEquals(listOf("apply 2", "push end", "block"), log.all())
+    }
+
+    /** An in-job request neither deadlocks nor leaves the job exempt: the marker is gone after it. */
+    @Test
+    fun inJobRequestLeavesNoMarker() = real {
+        var element: IdentityJobElement? = null
+        val job = assertNotNull(IdentityWork.launch(IdentityGate.currentToken(), "caller", work) {
+            element = coroutineContext[IdentityJobElement]
+            IdentityBarrier.accountReset(TransitionKind.SignOut) { Result.success(Unit) }
+        })
+        job.join() // cancelled by the sign-out's own drain end (B2), after which the request still ran
+        eventually { !IdentityGate.state.value.transitioning }
+        assertTrue(!IdentityWork.isAwaiting(job))
+        assertNotNull(element)
+        assertEquals(2L, epoch())
+    }
 }
