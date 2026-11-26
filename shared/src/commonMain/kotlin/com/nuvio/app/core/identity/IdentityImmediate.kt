@@ -48,7 +48,7 @@ internal object IdentityImmediate {
 
     /** Wraps AuthRepository.RealAuthEffects.wipeAccountData. */
     fun accountWipe(wipe: () -> Unit) {
-        openIfNeeded(TransitionKind.AccountWipe)
+        openOrRetarget(WindowCause.Wipe) // the wipe cover is up before the wipe body runs (P13a)
         try {
             IdentityLocks.withApply { ActiveProfileProvider.changing { IdentityLocks.inWindowBody { wipe() } } }
         } catch (t: Throwable) {
@@ -68,7 +68,7 @@ internal object IdentityImmediate {
             write()
             return
         }
-        openIfNeeded(TransitionKind.AccountPublished)
+        openOrRetarget(WindowCause.Publish)
         try {
             IdentityLocks.withApply { ActiveProfileProvider.changing { IdentityLocks.inWindowBody { onAccountPublished(account) } } }
             IdentityLocks.inWindowBody { write() }
@@ -87,7 +87,7 @@ internal object IdentityImmediate {
 
     /** Called by the auth driver before it updates its ticket whenever a reduction changes the live serial. */
     fun serialChanging() {
-        openIfNeeded(TransitionKind.AccountWipe)
+        openOrRetarget(WindowCause.SerialChange)
     }
 
     /** Called by the auth driver when a top-level step chain returns (also when it threw). */
@@ -141,10 +141,19 @@ internal object IdentityImmediate {
         }
     }
 
-    /** Opens a window of [kind] unless one is open; runs its revoke synchronously (result ignored: windows proceed closed). */
-    private fun openIfNeeded(kind: TransitionKind) {
-        if (IdentityRuntime.snapshot().window != null) return
-        IdentityEffects.run(IdentityRuntime.reduceStep(BarrierEvent.WindowOpened(kind)))
+    /**
+     * Opens a window of the kind WindowKindRule gives [cause], or retargets the open one (publish →
+     * wipe); either revokes synchronously (result ignored: windows proceed closed). Auth lane only.
+     */
+    private fun openOrRetarget(cause: WindowCause) {
+        val model = IdentityRuntime.snapshot()
+        val open = model.window
+        if (open == null) {
+            IdentityEffects.run(IdentityRuntime.reduceStep(BarrierEvent.WindowOpened(WindowKindRule.opening(cause, model.latestAccount))))
+            return
+        }
+        val kind = WindowKindRule.within(open, cause, model.latestAccount)
+        if (kind != open) IdentityEffects.run(IdentityRuntime.reduceStep(BarrierEvent.WindowKindChanged(kind)))
     }
 
     /** Tests only. */

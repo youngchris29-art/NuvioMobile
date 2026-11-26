@@ -125,6 +125,9 @@ internal sealed interface BarrierEvent {
     /** Immediate kinds only. */
     data class WindowOpened(val kind: TransitionKind) : BarrierEvent
     data class WindowAccount(val account: AccountKey) : BarrierEvent
+
+    /** W2: the open window becomes [kind] (publish → wipe, WindowKindRule); revoked again so Swift shows its cover. */
+    data class WindowKindChanged(val kind: TransitionKind) : BarrierEvent
     data class WindowClosed(val slotAfter: Int) : BarrierEvent
 
     /** Revision 10, rule B: a publish and its recovery failed, or a wipe threw (inside a window). */
@@ -145,7 +148,7 @@ internal fun BarrierEvent.withSlot(slot: Int): BarrierEvent = when (this) {
     is BarrierEvent.ApplyThrew -> copy(slotAfter = slot)
     is BarrierEvent.Abandoned -> copy(slotAfter = slot)
     is BarrierEvent.WindowClosed -> copy(slotAfter = slot)
-    is BarrierEvent.Begin, is BarrierEvent.WindowOpened, is BarrierEvent.WindowAccount,
+    is BarrierEvent.Begin, is BarrierEvent.WindowOpened, is BarrierEvent.WindowAccount, is BarrierEvent.WindowKindChanged,
     is BarrierEvent.RecoveryRequired, BarrierEvent.WipeSucceeded, is BarrierEvent.SlotRemovalRequested -> this
 }
 
@@ -338,6 +341,13 @@ internal object BarrierModel {
                 s.copy(latestAccount = event.account, recovery = recovery) to emptyList()
             } else {
                 outOfOrder(s, event)
+            }
+
+            is BarrierEvent.WindowKindChanged -> when {
+                s.window == null -> outOfOrder(s, event)
+                event.kind.drains -> unchanged(s, "wrong lane: window kind ${event.kind}")
+                event.kind == s.window -> s to emptyList()
+                else -> s.copy(window = event.kind).let { next -> next to listOf(BarrierEffect.Revoke(next.toPublic())) }
             }
 
             is BarrierEvent.RecoveryRequired -> if (s.window != null) {

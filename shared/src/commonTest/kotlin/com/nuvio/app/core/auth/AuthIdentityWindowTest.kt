@@ -167,7 +167,10 @@ class AuthWindowTest {
         val tail = log.all().dropWhile { !it.startsWith("wipe") }
         assertTrue(tail.first().endsWith("gate=closed"), "$tail")
         assertTrue(tail.any { it == "publish None gate=closed" }, "$tail")
-        assertEquals(1, revoker.states.size - revokesBefore, "one window from the wipe to the publish")
+        // One window from the wipe to the publish (revoked at its open and, if it opened as a
+        // publish window on the serial change, once more when the wipe retargeted it).
+        val kinds = revoker.states.drop(revokesBefore).map { it.kind }
+        assertTrue(kinds.size in 1..2 && kinds.last() == TransitionKind.AccountWipe, "$kinds")
         assertEquals(epochBefore.next(), IdentityGate.state.value.epoch, "one bump")
         assertEquals(IdentityPhase.Open, IdentityGate.state.value.phase)
         assertEquals(AuthState.Unauthenticated, rig.effects.shown)
@@ -202,6 +205,29 @@ class AuthWindowTest {
         }
         probeScope.cancel()
         assertEquals(emptyList(), violations)
+    }
+
+    /** W2 fix round: a sign-in from Welcome never reports the wipe kind (no "Signing out…"). */
+    @Test
+    fun signInNeverReportsTheWipeKind() = runTest {
+        val rig = Rig(this, log)
+        rig.signedIn("A", "A-1")
+        assertTrue(revoker.states.isNotEmpty())
+        assertTrue(revoker.states.none { it.kind == TransitionKind.AccountWipe }, "${revoker.states.map { it.kind }}")
+    }
+
+    /** …and a lost session shows the wipe kind before its wipe body runs. */
+    @Test
+    fun lostSessionReportsTheWipeKindBeforeTheWipe() = runTest {
+        val rig = Rig(this, log)
+        rig.signedIn("A", "A-1")
+        val before = revoker.states.size
+        assertTrue(rig.driver.reportSessionError(rig.driver.currentTicket(), SessionErrorKind.DeletedAccount))
+        runCurrent()
+        val kinds = revoker.states.drop(before).map { it.kind }
+        assertEquals(TransitionKind.AccountWipe, kinds.last(), "$kinds")
+        val all = log.all()
+        assertTrue(all.indexOf("revoke AccountWipe") in 0 until all.indexOfFirst { it.startsWith("wipe gate=") }, "$all")
     }
 
     @Test

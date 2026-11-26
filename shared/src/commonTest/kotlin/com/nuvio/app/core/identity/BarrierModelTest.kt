@@ -720,6 +720,7 @@ class BarrierModelTest {
             add(ApplyFinished(s)); add(ApplyFinished(s, applied = false)); add(ApplyThrew(s, "e")); add(Abandoned(s)); add(WindowClosed(s))
         }
         accounts.forEach { add(WindowAccount(it)) }
+        TransitionKind.entries.forEach { add(BarrierEvent.WindowKindChanged(it)) }
         RecoveryReason.entries.forEach { add(BarrierEvent.RecoveryRequired(it)) }
         add(BarrierEvent.WipeSucceeded)
         accounts.forEach {
@@ -836,6 +837,9 @@ class BarrierModelTest {
             } else {
                 Expect(a.copy(window = null), emptySet(), false)
             }
+            is BarrierEvent.WindowKindChanged -> if (a.window != null && e.kind in windowKinds && e.kind != a.window) {
+                Expect(a.copy(window = e.kind), setOf("Revoke"), false)
+            } else same
             is BarrierEvent.RecoveryRequired -> if (a.window != null) {
                 Expect(a.copy(recovery = stronger(e.reason)), emptySet(), false)
             } else same
