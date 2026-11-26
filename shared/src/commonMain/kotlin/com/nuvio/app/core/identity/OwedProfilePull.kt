@@ -35,24 +35,39 @@ internal object OwedProfilePull {
     /** Re-issues the pull (tests replace it). */
     var pull: () -> Unit = { scope.launch { ProfileRepository.pullProfiles() } }
 
-    /** A pull for [account] was asked for while no account token could be minted. */
+    /** Tests only: runs in [wake] before the lock is taken (an interleaving seam). */
+    internal var beforeLockForTest: () -> Unit = {}
+
+    /**
+     * A pull for [account] was asked for while no account token could be minted. The debt is
+     * recorded and decided in one section, against the identity state current in that section.
+     */
     fun owe(account: AccountKey) {
         if (account == AccountKey.None) return
-        synchronized(lock) {
-            owed = account
-            if (watcher == null) watcher = scope.launch { IdentityGate.state.collect { evaluate(it) } }
-        }
-        // The window may have closed before the watcher saw it: decide on the current state too.
-        evaluate(IdentityGate.state.value)
-    }
-
-    private fun evaluate(state: IdentityState) {
         val action = synchronized(lock) {
-            OwedPullRule.decide(owed, state.phase is IdentityPhase.Open, state.scope.account).also {
-                if (it != OwedPullAction.Keep) owed = null // taken once, under the lock: never twice
-            }
+            owed = account
+            if (watcher == null) watcher = scope.launch { IdentityGate.state.collect { wake() } }
+            decideLocked()
         }
         if (action == OwedPullAction.Pull) pull()
+    }
+
+    /**
+     * Review r2 #2: an emission only wakes this; the decision always reads the CURRENT identity
+     * state inside the lock that records the debt, so a stale emission (A open) can never consume
+     * a debt recorded after it (B, inside B's window).
+     */
+    internal fun wake() {
+        beforeLockForTest()
+        val action = synchronized(lock) { decideLocked() }
+        if (action == OwedPullAction.Pull) pull()
+    }
+
+    private fun decideLocked(): OwedPullAction {
+        val state = IdentityGate.state.value
+        return OwedPullRule.decide(owed, state.phase is IdentityPhase.Open, state.scope.account).also {
+            if (it != OwedPullAction.Keep) owed = null // taken once, under the lock: never twice
+        }
     }
 
     /** Tests only. */
@@ -63,5 +78,6 @@ internal object OwedProfilePull {
             owed = null
         }
         pull = { scope.launch { ProfileRepository.pullProfiles() } }
+        beforeLockForTest = {}
     }
 }

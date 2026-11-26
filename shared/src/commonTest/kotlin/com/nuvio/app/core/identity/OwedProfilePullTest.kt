@@ -4,6 +4,7 @@ import com.nuvio.app.core.auth.AuthState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 import kotlin.concurrent.Volatile
@@ -70,6 +71,35 @@ class OwedProfilePullTest {
         IdentityImmediate.chainEnded()
         delay(300)
         assertEquals(0, pulls)
+    }
+
+    /** Review r2 #2: a wake-up that saw A open, delayed past B's debt, keeps B's debt. */
+    @Test
+    fun staleWakeUpKeepsALaterDebt() = real {
+        signInWindow("user-a")
+        IdentityImmediate.chainEnded() // Open on A
+        val paused = kotlinx.coroutines.flow.MutableStateFlow(false)
+        val release = kotlinx.coroutines.flow.MutableStateFlow(false)
+        var once = true
+        OwedProfilePull.beforeLockForTest = {
+            if (once) {
+                once = false
+                paused.value = true
+                spinUntil(5_000) { release.value }
+            }
+        }
+        val stale = CoroutineScope(Dispatchers.Default).launch { OwedProfilePull.wake() } // woken by A's Open
+        eventually { paused.value }
+        IdentityRuntime.authSerial = { 1 }
+        signInWindow("user-b") // B's window holds
+        OwedProfilePull.owe(accountB)
+        release.value = true
+        stale.join()
+        assertEquals(0, pulls)
+        IdentityImmediate.chainEnded() // B opens
+        eventually { pulls == 1 }
+        delay(200)
+        assertEquals(1, pulls, "B's debt survived the stale wake-up and was served once")
     }
 
     @Test
