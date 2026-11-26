@@ -50,7 +50,7 @@ internal object IdentityImmediate {
     fun accountWipe(wipe: () -> Unit) {
         openIfNeeded(TransitionKind.AccountWipe)
         try {
-            IdentityLocks.withApply { ActiveProfileProvider.changing { wipe() } }
+            IdentityLocks.withApply { ActiveProfileProvider.changing { IdentityLocks.inWindowBody { wipe() } } }
         } catch (t: Throwable) {
             // Rule B: a part-wiped store is a recovery state, cleared only by a completed wipe.
             IdentityEffects.run(IdentityRuntime.reduceStep(BarrierEvent.RecoveryRequired(RecoveryReason.FailedWipe)))
@@ -70,8 +70,8 @@ internal object IdentityImmediate {
         }
         openIfNeeded(TransitionKind.AccountPublished)
         try {
-            IdentityLocks.withApply { ActiveProfileProvider.changing { onAccountPublished(account) } }
-            write()
+            IdentityLocks.withApply { ActiveProfileProvider.changing { IdentityLocks.inWindowBody { onAccountPublished(account) } } }
+            IdentityLocks.inWindowBody { write() }
         } catch (t: Throwable) {
             // The hook may have mutated profile state for [account] before it threw: chainEnded
             // must recover before the gate opens (review r3-3).
@@ -112,7 +112,7 @@ internal object IdentityImmediate {
      */
     private fun recover(failed: AccountKey, shown: AccountKey) {
         val recovered = try {
-            IdentityLocks.withApply { ActiveProfileProvider.changing { recoverAfterFailedPublish(failed, shown) } }
+            IdentityLocks.withApply { ActiveProfileProvider.changing { IdentityLocks.inWindowBody { recoverAfterFailedPublish(failed, shown) } } }
             true
         } catch (t: Throwable) {
             log.e(t) { "[Identity] recovery after a failed publish threw; recovery required" }

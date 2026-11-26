@@ -32,6 +32,9 @@ internal expect object IdentityThreadDepth {
     /** Inside IdentityWork's own invokeOnCompletion handler. */
     fun handler(): Int
     fun setHandler(value: Int)
+    /** Inside a synchronous auth-window body (hook, recovery, wipe) on this thread (rule A, source 3). */
+    fun inWindowBody(): Int
+    fun setInWindowBody(value: Int)
 }
 
 internal object IdentityLocks {
@@ -109,6 +112,19 @@ internal object IdentityLocks {
             }
         }
     }
+
+    /** Marks this thread as inside a synchronous auth-window body for [block] (rule A, source 3). */
+    fun <T> inWindowBody(block: () -> T): T {
+        IdentityThreadDepth.setInWindowBody(IdentityThreadDepth.inWindowBody() + 1)
+        try {
+            return block()
+        } finally {
+            IdentityThreadDepth.setInWindowBody(IdentityThreadDepth.inWindowBody() - 1)
+        }
+    }
+
+    /** Whether this thread is inside a window body. */
+    val windowBodyDepth: Int get() = IdentityThreadDepth.inWindowBody()
 
     /** Marks this thread as inside IdentityWork's completion handler for [block]. */
     fun <T> inCompletionHandler(block: () -> T): T {

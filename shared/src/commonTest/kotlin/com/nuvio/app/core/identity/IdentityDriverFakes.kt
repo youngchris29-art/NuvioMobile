@@ -26,10 +26,14 @@ internal class FakeProfileOps(private val log: EventLog) : IdentityProfileOps {
 
     val active: Int get() = synchronized(lock) { activeSlot }
 
+    /** Runs after the slot was changed (a body that mutates, then throws). */
+    var afterMutation: (Int) -> Unit = {}
+
     override fun applySelection(slot: Int) {
         onApply(slot)
         synchronized(lock) { activeSlot = slot }
         log.add("apply $slot")
+        afterMutation(slot)
     }
 
     override fun applyActiveRemoved() {

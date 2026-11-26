@@ -104,7 +104,12 @@ internal sealed interface BarrierEvent {
      * still in flight, which ends the transition EndPreempted.
      */
     data class ApplyGate(val slotAfter: Int = SLOT_UNSET, val effectsBusy: Boolean = false) : BarrierEvent
-    data class ApplyFinished(val slotAfter: Int) : BarrierEvent
+    /**
+     * [applied] = false for a profile body that completed without applying anything (a queued
+     * select whose session changed, a no-op delete or slot removal): it releases the hold but does
+     * not clear FailedApply, since the state the failed apply left behind was not replaced.
+     */
+    data class ApplyFinished(val slotAfter: Int, val applied: Boolean = true) : BarrierEvent
     data class ApplyThrew(val slotAfter: Int, val error: String) : BarrierEvent
     data class Abandoned(val slotAfter: Int) : BarrierEvent
 
@@ -182,10 +187,10 @@ internal object BarrierModel {
             is BarrierEvent.Begin -> when {
                 !event.kind.drains -> unchanged(s, "wrong lane: begin ${event.kind}") // B16
                 drained != null || s.window != null -> unchanged(s, "begin refused: held") // B13
-                // B20: recovery holds; a profile transition cannot begin.
-                s.recovery != null && event.kind.isProfileKind ->
+                // B20: FailedPublish / FailedWipe refuse a profile Begin; FailedApply allows it (B20a).
+                (s.recovery == RecoveryReason.FailedPublish || s.recovery == RecoveryReason.FailedWipe) && event.kind.isProfileKind ->
                     s to listOf(BarrierEffect.Log("begin refused: recovery required (${s.recovery})"), BarrierEffect.EndFailed)
-                else -> { // B1, or B21 from Recovery (account kinds)
+                else -> { // B1; B20a / B21 from Recovery (the phase then reads Closed)
                     val id = s.transitionsBegun + 1
                     val next = s.copy(
                         transitionsBegun = id,
@@ -218,18 +223,35 @@ internal object BarrierModel {
             }
 
             is BarrierEvent.ApplyFinished -> if (drained.mayFinish()) {
-                s.release(event.slotAfter) to emptyList() // B7
+                // B7; a completed profile apply that applied clears FailedApply (rule B′).
+                val clears = drained!!.kind.isProfileKind && event.applied && s.recovery == RecoveryReason.FailedApply
+                val recovery = if (clears) null else s.recovery
+                s.copy(recovery = recovery).release(event.slotAfter, before = s) to emptyList()
             } else {
                 outOfOrder(s, event)
             }
 
             is BarrierEvent.ApplyThrew -> if (drained.mayFinish()) {
-                s.release(event.slotAfter) to listOf(BarrierEffect.Log("apply threw: ${event.error}")) // B8
+                val log = BarrierEffect.Log("apply threw: ${event.error}")
+                if (drained!!.kind.isProfileKind) {
+                    // B8p (rule B′): the profile body may have mutated state; no settle, Recovery(FailedApply).
+                    s.copy(drained = null, recovery = s.recovery.atLeast(RecoveryReason.FailedApply)) to listOf(log)
+                } else {
+                    s.release(event.slotAfter) to listOf(log) // B8: an account block is not a body with a reason
+                }
             } else {
                 outOfOrder(s, event)
             }
 
-            is BarrierEvent.Abandoned -> if (drained != null) {
+            is BarrierEvent.Abandoned -> if (drained != null && drained.kind.isProfileKind &&
+                drained.stage == DrainedStage.Applying && drained.gated
+            ) {
+                // B9 during a gated profile apply (rule B′): the body may have run part-way.
+                s.copy(drained = null, recovery = s.recovery.atLeast(RecoveryReason.FailedApply)) to listOf(
+                    BarrierEffect.CancelJobs(drained.kind, logNames = true),
+                    BarrierEffect.Log("abandoned ${drained.kind} during its apply: recovery required"),
+                )
+            } else if (drained != null) {
                 // B9
                 s.release(event.slotAfter) to listOf(
                     BarrierEffect.CancelJobs(drained.kind, logNames = true),
@@ -262,17 +284,16 @@ internal object BarrierModel {
             }
 
             is BarrierEvent.WindowAccount -> if (s.window != null) {
-                // B11; B18: a successful publish clears FailedPublish (never FailedWipe).
-                val recovery = if (s.recovery == RecoveryReason.FailedPublish) null else s.recovery
+                // B11; B18: a successful publish clears FailedPublish and FailedApply (never FailedWipe).
+                val recovery = if (s.recovery == RecoveryReason.FailedWipe) s.recovery else null
                 s.copy(latestAccount = event.account, recovery = recovery) to emptyList()
             } else {
                 outOfOrder(s, event)
             }
 
             is BarrierEvent.RecoveryRequired -> if (s.window != null) {
-                // B17; FailedWipe is never downgraded to FailedPublish.
-                val recovery = if (s.recovery == RecoveryReason.FailedWipe) s.recovery else event.reason
-                s.copy(recovery = recovery) to listOf(BarrierEffect.Log("recovery required: ${event.reason}"))
+                // B17: never downgrades (FailedWipe > FailedPublish > FailedApply).
+                s.copy(recovery = s.recovery.atLeast(event.reason)) to listOf(BarrierEffect.Log("recovery required: ${event.reason}"))
             } else {
                 outOfOrder(s, event)
             }
@@ -310,7 +331,8 @@ internal object BarrierModel {
             DrainEnd.TeardownUnconfirmed -> if (drained.kind.isProfileKind) {
                 // B3a (revisions 7-8): released at once, Open with the same epoch and scope
                 // (nothing changed: no bump, no cancellation). Draining implies no window is open
-                // (B10 turns Draining into Preempted), so there is no window branch.
+                // (B10 turns Draining into Preempted), so there is no window branch. Rule B′: the
+                // recovery value is kept (Recovery again if one was set, e.g. B20a from FailedApply).
                 s.copy(drained = null) to listOf(
                     BarrierEffect.Log("teardown unconfirmed: ${drained.kind} failed closed"),
                     BarrierEffect.EndFailed,
@@ -332,8 +354,9 @@ internal object BarrierModel {
     private fun DrainedOp?.mayFinish(): Boolean =
         this != null && stage == DrainedStage.Applying && (kind.isAccountKind || gated)
 
-    /** Drops the drained hold and settles if that released the last hold. */
-    private fun BarrierState.release(slotAfter: Int): BarrierState = copy(drained = null).settle(this, slotAfter)
+    /** Drops the drained hold and settles if that released the last hold. [before] is the phase reference. */
+    private fun BarrierState.release(slotAfter: Int, before: BarrierState = this): BarrierState =
+        copy(drained = null).settle(before, slotAfter)
 
     /** settle(s): if all three holds are now null and the phase before was not Open, bump once. */
     private fun BarrierState.settle(before: BarrierState, slotAfter: Int): BarrierState {

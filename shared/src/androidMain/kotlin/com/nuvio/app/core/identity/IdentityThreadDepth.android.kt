@@ -6,6 +6,7 @@ internal actual object IdentityThreadDepth {
     private val applyDepth = ThreadLocal.withInitial { 0 }
     private val registryDepth = ThreadLocal.withInitial { 0 }
     private val handlerDepth = ThreadLocal.withInitial { 0 }
+    private val windowBodyDepth = ThreadLocal.withInitial { 0 }
 
     actual fun commit(): Int = commitDepth.get()
     actual fun setCommit(value: Int) = commitDepth.set(value)
@@ -15,4 +16,6 @@ internal actual object IdentityThreadDepth {
     actual fun setRegistry(value: Int) = registryDepth.set(value)
     actual fun handler(): Int = handlerDepth.get()
     actual fun setHandler(value: Int) = handlerDepth.set(value)
+    actual fun inWindowBody(): Int = windowBodyDepth.get()
+    actual fun setInWindowBody(value: Int) = windowBodyDepth.set(value)
 }

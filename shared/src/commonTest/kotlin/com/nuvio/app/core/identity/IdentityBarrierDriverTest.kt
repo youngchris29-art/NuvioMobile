@@ -10,6 +10,9 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
+import kotlin.test.assertNull
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
@@ -90,14 +93,42 @@ class IdentityBarrierDriverTest {
         assertEquals(2L, epoch())
     }
 
+    /** Rule B′ (review r5-1): the apply changes the active slot, then throws: Recovery(FailedApply), no token, Failed. */
     @Test
-    fun applyThrowsStillOpensAndBumps() = real {
-        ops.onApply = { error("apply failed") }
+    fun throwAfterSlotMutationEntersRecovery() = real {
+        ops.afterMutation = { error("fan-out failed after the slot write") }
         val result = assertIs<TransitionResult.Failed>(IdentityBarrier.selectProfile(2))
-        assertTrue("apply failed" in result.error)
-        assertEquals(IdentityPhase.Open, result.final.phase)
-        assertEquals(2L, result.final.epoch.value)
-        assertEquals(1, result.final.scope.slot)
+        assertTrue("fan-out failed" in result.error)
+        assertEquals(IdentityPhase.Recovery(IdentityEpoch(1)), result.final.phase)
+        assertEquals(RecoveryReason.FailedApply, result.final.recovery)
+        assertEquals(2, ops.active) // the body did mutate
+        assertNull(IdentityGate.currentToken())
+        assertNull(IdentityGate.currentAccountToken())
+    }
+
+    /** Re-read finding: a queued select that applies nothing (its session changed) does not clear FailedApply. */
+    @Test
+    fun noOpSelectDoesNotClearFailedApply() = real {
+        ops.afterMutation = { if (it == 2) error("fan-out failed") }
+        assertIs<TransitionResult.Failed>(IdentityBarrier.selectProfile(2))
+        IdentityImmediate.serialChanging()
+        val queued = async { IdentityBarrier.selectProfile(3) }
+        delay(50)
+        IdentityRuntime.authSerial = { 2 } // the session changed while the select waited
+        IdentityImmediate.chainEnded()
+        assertIs<TransitionResult.Preempted>(queued.await())
+        assertEquals(RecoveryReason.FailedApply, IdentityGate.state.value.recovery)
+        assertNull(IdentityGate.currentToken())
+    }
+
+    @Test
+    fun selectFromFailedApplyClears() = real {
+        ops.afterMutation = { if (it == 2) error("fan-out failed") }
+        assertIs<TransitionResult.Failed>(IdentityBarrier.selectProfile(2))
+        assertIs<IdentityPhase.Recovery>(IdentityGate.state.value.phase)
+        val done = assertIs<TransitionResult.Done>(IdentityBarrier.selectProfile(3)) // B20a, then B7 clears
+        assertEquals(IdentityState(IdentityScope(accountA, 3), IdentityEpoch(2), IdentityPhase.Open, null), done.final)
+        assertEquals(accountA, assertNotNull(IdentityGate.currentToken()).scope.account)
     }
 
     @Test
@@ -520,5 +551,68 @@ class IdentityBarrierDriverTest {
         auth.join()
         val all = log.all()
         assertTrue(all.indexOf("window revoke end") in 0 until all.indexOf("block"), "$all")
+    }
+
+    /**
+     * Rule A, source 2 (review r5-2): a server-switch block reuses an operation that calls
+     * accountReset. It returns TransitionNotAwaited, the outer reset completes, the nested one runs
+     * after it, and a later select is not stuck.
+     */
+    @Test
+    fun nestedRequestFromLaneBodyIsNotAwaited() = real {
+        kotlinx.coroutines.withTimeout(5_000) {
+            val outer = IdentityBarrier.accountReset(TransitionKind.ServerSwitch) {
+                val nested = IdentityBarrier.accountReset(TransitionKind.SignOut) { log.add("nested block"); Result.success(Unit) }
+                log.add("nested returned ${nested.exceptionOrNull() is TransitionNotAwaited}")
+                // A withContext inside the block (like the apply dispatcher) still carries the lane element.
+                withContext(Dispatchers.Default) {
+                    log.add("inner select ${IdentityBarrier.selectProfile(3) == TransitionResult.Requested}")
+                }
+                log.add("outer block")
+                Result.success(Unit)
+            }
+            assertTrue(outer.isSuccess)
+            eventually { log.count("nested block") == 1 && log.count("apply 3") == 1 }
+            assertEquals(listOf("nested returned true", "inner select true", "outer block", "nested block", "apply 3"), log.all())
+            assertIs<TransitionResult.Done>(IdentityBarrier.selectProfile(2))
+        }
+    }
+
+    /** Rule A, source 3: a window body requests a select: Requested at once; it runs after the window closes. */
+    @Test
+    fun requestFromWindowBodyIsNotAwaited() = real {
+        var returned: TransitionResult? = null
+        IdentityImmediate.onAccountPublished = {
+            // Unconfined runs the call inline on this (window-body) thread until it would suspend.
+            CoroutineScope(Dispatchers.Unconfined).launch { returned = IdentityBarrier.selectProfile(2) }
+            log.add("hook returned ${returned == TransitionResult.Requested}")
+        }
+        // Same account and serial, so the queued select still applies once the window closes.
+        IdentityImmediate.serialChanging()
+        IdentityImmediate.publishAuth(com.nuvio.app.core.auth.AuthState.Authenticated("user-a", null, isAnonymous = false)) { }
+        assertEquals(0, log.count("apply 2")) // not before the window closes
+        IdentityImmediate.chainEnded()
+        eventually { log.count("apply 2") == 1 }
+        assertEquals(listOf("hook returned true", "apply 2"), log.all())
+    }
+
+    /** Rule A: no false positive for an ordinary caller, even while ANOTHER thread is in a window body (per-thread depth). */
+    @Test
+    fun ordinaryCallerAwaitsWhileAnotherThreadIsInAWindowBody() = real {
+        val inBody = kotlinx.coroutines.flow.MutableStateFlow(false)
+        val release = kotlinx.coroutines.flow.MutableStateFlow(false)
+        val auth = launch(Dispatchers.Default) {
+            IdentityLocks.inWindowBody {
+                assertEquals(IdentityBarrier.NotAwaitedSource.WindowBody, IdentityBarrier.mustNotAwait(kotlin.coroutines.EmptyCoroutineContext))
+                inBody.value = true
+                while (!release.value) { /* hold this thread inside the body */ }
+            }
+        }
+        inBody.first { it }
+        val elsewhere = withContext(Dispatchers.Default) { IdentityBarrier.mustNotAwait(currentCoroutineContext()) }
+        release.value = true
+        auth.join()
+        assertNull(elsewhere)
+        assertNull(IdentityBarrier.mustNotAwait(currentCoroutineContext()))
     }
 }

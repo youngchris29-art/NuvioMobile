@@ -35,7 +35,7 @@ class AccountLevelDecisionTest {
             assertEquals(oracle(drained, window, recovery, rel), actual, "$drained $window $recovery $rel")
             count++
         }
-        assertEquals(19 * 3 * 3 * 3, count)
+        assertEquals(19 * 3 * 4 * 3, count)
     }
 
     @Test

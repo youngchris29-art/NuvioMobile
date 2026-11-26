@@ -1,6 +1,7 @@
 package com.nuvio.app.core.identity
 
 import co.touchlab.kermit.Logger
+import com.nuvio.app.core.build.AppBuildConfig
 import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import com.nuvio.app.core.profile.ActiveProfileProvider
 import kotlinx.coroutines.CancellationException
@@ -20,6 +21,8 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.AbstractCoroutineContextElement
+import kotlin.coroutines.CoroutineContext
 
 /*
  * The barrier driver (fork-only): one lane serializes every drained transition. It feeds events
@@ -42,7 +45,16 @@ sealed interface TransitionResult {
     data object Requested : TransitionResult
 }
 
-/** `accountReset` requested from inside registered work: enqueued, not awaited (rule A). */
+/**
+ * Rule A, source 2 (revision 11): the lane consumer runs every request inside this element, so an
+ * apply body, an account block and any `withContext` inside them carry it; a barrier request made
+ * there is enqueued and not awaited (the lane cannot wait on itself).
+ */
+internal class IdentityLaneElement : AbstractCoroutineContextElement(Key) {
+    companion object Key : CoroutineContext.Key<IdentityLaneElement>
+}
+
+/** `accountReset` requested where it must not await (rule A): enqueued, not awaited. */
 class TransitionNotAwaited(kind: TransitionKind) :
     IllegalStateException("$kind requested from registered work: enqueued, not awaited")
 
@@ -92,7 +104,7 @@ object IdentityBarrier {
     /** One request, start to end, on the single lane coroutine. */
     private suspend fun process(request: Request) {
         try {
-            request.done.complete(execute(request.kind, request.body))
+            request.done.complete(withContext(IdentityLaneElement()) { execute(request.kind, request.body) })
         } catch (t: Throwable) {
             if (t is CancellationException && !currentCoroutineContext().isActive) {
                 request.done.cancel()
@@ -130,10 +142,10 @@ object IdentityBarrier {
                 }
                 if (!stillApplies) {
                     log.i { "[Identity] select of slot $slot: session changed while queued, nothing applied" }
-                    return@Profile false
+                    return@Profile ProfileApply.NothingPreempted
                 }
                 profileOps.applySelection(slot)
-                true
+                ProfileApply.Applied
             },
         ).result
     }
@@ -151,10 +163,10 @@ object IdentityBarrier {
                 }
                 if (!stillApplies) {
                     log.i { "[Identity] active delete of slot $slot: account changed or slot no longer active, nothing applied" }
-                    return@Profile true // a no-op delete is Done (5.3 step 4)
+                    return@Profile ProfileApply.NothingDone // a no-op delete is Done (5.3 step 4)
                 }
                 if (nextSlot != null) profileOps.applySelection(nextSlot) else profileOps.applyActiveRemoved()
-                true
+                ProfileApply.Applied
             },
         ).result
 
@@ -169,10 +181,11 @@ object IdentityBarrier {
                     }
                     if (still is CommitResult.Committed && still.value) {
                         profileOps.applyActiveRemoved()
+                        ProfileApply.Applied
                     } else {
                         log.i { "[Identity] slot removed: no longer applies, nothing applied" }
+                        ProfileApply.NothingDone // a no-op slot removal is Done (5.2 step 3)
                     }
-                    true // a no-op slot removal is Done (5.2 step 3)
                 },
             )
     }
@@ -194,19 +207,47 @@ object IdentityBarrier {
     }
 
     private sealed interface Body {
-        /** Returns false when the body applied nothing and the result is Preempted (a queued select, revision 9). */
-        fun interface Profile : Body { fun apply(): Boolean }
+        fun interface Profile : Body { fun apply(): ProfileApply }
         class Account(val block: suspend () -> Result<Unit>) : Body
+    }
+
+    /** What a profile body did: only [Applied] clears FailedApply (B7). */
+    private enum class ProfileApply {
+        Applied,
+        /** Nothing applied; the result is Done (a no-op delete or slot removal). */
+        NothingDone,
+        /** Nothing applied; the result is Preempted (a queued select whose session changed, revision 9). */
+        NothingPreempted,
     }
 
     private class Outcome(val result: TransitionResult, val accountResult: Result<Unit>? = null)
 
     private suspend fun run(kind: TransitionKind, body: Body): Outcome {
+        // Enqueued first, exactly once, before any suspension point (a caller cancelled at the
+        // await below leaves its request accepted).
         val done = enqueue(kind, body)
-        // Rule A: from registered work (the element is inherited by children), never await: the
-        // job is drained and cancelled like any other, so nothing needs exempting.
-        if (currentCoroutineContext()[IdentityJobElement] != null) return Outcome(TransitionResult.Requested)
+        val source = mustNotAwait(currentCoroutineContext())
+        if (source != null) {
+            if (source != NotAwaitedSource.RegisteredWork && AppBuildConfig.IS_DEBUG_BUILD) {
+                log.e { "[Identity] $kind requested from the ${source.name} (not awaited): move the code after it into the block" }
+            }
+            return Outcome(TransitionResult.Requested)
+        }
         return done.await()
+    }
+
+    internal enum class NotAwaitedSource { RegisteredWork, LaneBody, WindowBody }
+
+    /**
+     * Rule A, the one "must not await" predicate (revision 11): registered work (source 1), a lane
+     * body (source 2), or this thread inside a synchronous window body (source 3, per thread).
+     * Null for an ordinary caller: Swift on main, no element, not in a window body.
+     */
+    internal fun mustNotAwait(context: CoroutineContext): NotAwaitedSource? = when {
+        context[IdentityJobElement] != null -> NotAwaitedSource.RegisteredWork
+        context[IdentityLaneElement] != null -> NotAwaitedSource.LaneBody
+        IdentityLocks.windowBodyDepth > 0 -> NotAwaitedSource.WindowBody
+        else -> null
     }
 
     /** Synchronous: the request is accepted (its place in the FIFO taken) before this returns. */
@@ -337,8 +378,13 @@ object IdentityBarrier {
             when {
                 BarrierEffect.Proceed in gate.effects -> try {
                     val applied = ActiveProfileProvider.changing { body.apply() }
-                    IdentityEffects.run(IdentityRuntime.reduceStep(BarrierEvent.ApplyFinished(SLOT_UNSET)))
-                    if (applied) null else PREEMPTED
+                    IdentityEffects.run(
+                        IdentityRuntime.reduceStep(BarrierEvent.ApplyFinished(SLOT_UNSET, applied = applied == ProfileApply.Applied)),
+                    )
+                    when (applied) {
+                        ProfileApply.Applied, ProfileApply.NothingDone -> null
+                        ProfileApply.NothingPreempted -> PREEMPTED
+                    }
                 } catch (t: Throwable) {
                     val error = t.message ?: t::class.simpleName ?: "error"
                     IdentityEffects.run(IdentityRuntime.reduceStep(BarrierEvent.ApplyThrew(SLOT_UNSET, error)))

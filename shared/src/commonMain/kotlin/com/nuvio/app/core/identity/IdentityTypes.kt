@@ -73,8 +73,22 @@ sealed interface IdentityPhase {
     data class Recovery(val from: IdentityEpoch) : IdentityPhase
 }
 
-/** Why the barrier is in [IdentityPhase.Recovery] (revision 10, rule B). */
-enum class RecoveryReason { FailedPublish, FailedWipe }
+/**
+ * Why the barrier is in [IdentityPhase.Recovery] (rules B and B′). Declared in precedence order,
+ * lowest first: an entry never downgrades an existing reason (B17).
+ */
+enum class RecoveryReason {
+    /** A profile apply threw (B8p), or was abandoned after its gate. Cleared by a completed profile apply, a publish or a wipe. */
+    FailedApply,
+    /** A publish and its in-window recovery both threw. Cleared by a publish or a wipe. */
+    FailedPublish,
+    /** A wipe body threw. Cleared by a completed wipe only. */
+    FailedWipe,
+}
+
+/** The stronger of two reasons (rule B′ precedence: FailedWipe > FailedPublish > FailedApply). */
+internal fun RecoveryReason?.atLeast(other: RecoveryReason): RecoveryReason =
+    if (this == null || this.ordinal < other.ordinal) other else this
 
 enum class CommitKind { LocalWrite, RemoteSend, Publish, Start }
 
