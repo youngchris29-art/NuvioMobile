@@ -7,6 +7,9 @@ import com.nuvio.app.core.i18n.resourceString
 import co.touchlab.kermit.Logger
 import com.nuvio.app.core.network.SupabaseProvider
 import com.nuvio.app.core.account.AccountDataCleanerProvider
+import com.nuvio.app.core.identity.IdentityBarrier
+import com.nuvio.app.core.identity.IdentityImmediate
+import com.nuvio.app.core.identity.TransitionKind
 import io.github.jan.supabase.auth.auth
 import io.github.jan.supabase.auth.providers.builtin.Email
 import io.github.jan.supabase.auth.exception.AuthRestException
@@ -20,6 +23,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.withContext
 
 private const val KEY_SIGNED_OUT_NOTICE = AuthMarkerKeys.SIGNED_OUT_NOTICE
 private const val SIGNED_OUT_NOTICE_FALLBACK = "You have been signed out of Nuvio. Please sign in again."
@@ -78,9 +82,9 @@ object AuthRepository {
      * session here; on this fork the wipe is what erases per-profile payloads, sync cursors,
      * provider credentials and Trakt/Simkl tokens — nothing from server A may sync into server B.
      */
-    internal suspend fun prepareForServerSwitch(): Result<Unit> {
+    internal suspend fun prepareForServerSwitch(): Result<Unit> = withContext(Dispatchers.Default) {
         _error.value = null
-        return driver.prepareForServerSwitch()
+        driver.prepareForServerSwitch()
             .onFailure { e -> log.e(e) { "Server-switch preparation did not complete cleanly" } }
     }
 
@@ -112,12 +116,13 @@ object AuthRepository {
     }
 
     /** QR sign-in (TvLoginRepository.exchange): imports the approved session under the lane. */
-    internal suspend fun importTvLoginSession(accessToken: String, refreshToken: String) {
+    // Fork (W2, 8.0.5): every Swift-started auth call hops to Default first, so its window bodies run off Main.
+    internal suspend fun importTvLoginSession(accessToken: String, refreshToken: String) = withContext(Dispatchers.Default) {
         driver.importTvLoginTokens(accessToken, refreshToken).getOrThrow()
     }
 
     /** QR sign-in scaffolding: an anonymous library session, started under the lane. */
-    internal suspend fun ensureTvLoginScaffold() {
+    internal suspend fun ensureTvLoginScaffold() = withContext(Dispatchers.Default) {
         driver.ensureTvLoginScaffold().getOrThrow()
     }
 
@@ -127,39 +132,51 @@ object AuthRepository {
         driver.chooseGuest(Uuid.random().toString())
     }
 
-    suspend fun signUpWithEmail(email: String, password: String): Result<Unit> {
+    suspend fun signUpWithEmail(email: String, password: String): Result<Unit> = withContext(Dispatchers.Default) {
         _error.value = null
-        return driver.signUpWithEmail(email, password).onFailure { e ->
+        driver.signUpWithEmail(email, password).onFailure { e ->
             log.e(e) { "Email sign-up failed" }
             _error.value = e.safeAuthErrorDescription()
                 ?: resourceString("Sign-up failed", StringKey.auth_sign_up_failed)
         }
     }
 
-    suspend fun signInWithEmail(email: String, password: String): Result<Unit> {
+    suspend fun signInWithEmail(email: String, password: String): Result<Unit> = withContext(Dispatchers.Default) {
         _error.value = null
-        return driver.signInWithEmail(email, password).onFailure { e ->
+        driver.signInWithEmail(email, password).onFailure { e ->
             log.e(e) { "Email sign-in failed" }
             _error.value = e.safeAuthErrorDescription()
                 ?: resourceString("Sign-in failed", StringKey.auth_sign_in_failed)
         }
     }
 
-    suspend fun signOut(): Result<Unit> {
+    // Fork (W2, 5.5): a draining barrier begins before the reset, so the gate closes before the
+    // wipe or the gate flip.
+    suspend fun signOut(): Result<Unit> = withContext(Dispatchers.Default) {
         _error.value = null
-        return driver.signOut().onFailure { failure ->
+        IdentityBarrier.accountReset(TransitionKind.SignOut) { driver.signOut() }.onFailure { failure ->
             log.e(failure) { "Sign-out did not complete cleanly; all local cleanup steps were attempted" }
             _error.value = failure.message
                 ?: resourceString("Sign out failed", StringKey.auth_sign_out_failed)
         }
     }
 
-    suspend fun deleteAccount(): Result<Unit> {
+    suspend fun deleteAccount(): Result<Unit> = withContext(Dispatchers.Default) {
         _error.value = null
-        return driver.deleteAccount().onFailure { e ->
+        IdentityBarrier.accountReset(TransitionKind.DeleteAccount) { driver.deleteAccount() }.onFailure { e ->
             log.e(e) { "Account deletion failed" }
             _error.value = e.message ?: resourceString("Account deletion failed", StringKey.auth_account_deletion_failed)
         }
+    }
+
+    /**
+     * Fork (scope identity, W2, rule B): re-publishes the auth state on screen through the identity
+     * window, inside the auth lane, and ends the chain. Swift calls it while the barrier is in
+     * Recovery(FailedPublish); a successful publish clears it (B18).
+     */
+    suspend fun retryIdentityRecovery(): Result<Unit> = withContext(Dispatchers.Default) {
+        driver.inChain { RealAuthEffects.publish(_state.value) }
+            .onFailure { e -> log.e(e) { "Identity recovery retry failed" } }
     }
 
     fun clearError() {
@@ -173,8 +190,12 @@ object AuthRepository {
     /** One body per model output (spec 3d and 5d); no decisions here. */
     private object RealAuthEffects : AuthEffects {
         override fun publish(state: AuthState) {
-            _state.value = state
+            IdentityImmediate.publishAuth(state) { _state.value = state }
         }
+
+        override fun serialChanging() = IdentityImmediate.serialChanging()
+
+        override fun chainEnded() = IdentityImmediate.chainEnded()
 
         override fun persistOwner(userId: String?) {
             check(AuthStorage.saveAccountOwner(userId)) { "account owner was not durably written" }
@@ -208,7 +229,7 @@ object AuthRepository {
         }
 
         // Fork: through the AccountDataCleanerProvider seam (the one AccountDataStores registry).
-        override fun wipeAccountData() = AccountDataCleanerProvider.cleaner.wipe()
+        override fun wipeAccountData() = IdentityImmediate.accountWipe { AccountDataCleanerProvider.cleaner.wipe() }
 
         override suspend fun clearSupabaseSession() = SupabaseProvider.client.auth.clearSession()
 

@@ -69,6 +69,15 @@ internal interface AuthEffects {
     suspend fun deleteAccountRemote()
     suspend fun importTvLoginTokens(accessToken: String, refreshToken: String)
     suspend fun ensureTvLoginScaffold()
+
+    /**
+     * Fork (scope identity, W2, 4.5): a reduction is about to change the live serial; called
+     * before the ticket changes, so the identity gate closes first.
+     */
+    fun serialChanging() {}
+
+    /** Fork (W2, 4.5): the outermost step chain returned (also when it threw). */
+    fun chainEnded() {}
 }
 
 /** What a [AuthSessionDriver.Lane.send] did: `cleared` for a session error, the first output failure. */
@@ -131,6 +140,9 @@ internal class AuthSessionDriver(
     private var statusFlow: StateFlow<SessionStatus>? = null
     private var lastFed: SessionStatus? = null
     private var watchdogJob: Job? = null
+
+    /** Fork (W2): how deep the current step chain is (lane only); the outermost end calls chainEnded. */
+    private var depth = 0
 
     fun currentTicket(): AuthTicket = ticket
 
@@ -306,6 +318,24 @@ internal class AuthSessionDriver(
 
     fun chooseGuest(guestId: String): Job = launchExclusive { send(AuthEvent.GuestChosen(guestId)) }
 
+    /**
+     * Fork (scope identity, W2, rule B): runs [block] under the lane as one step chain, so a
+     * publish it makes is one identity window that ends with the chain.
+     */
+    suspend fun inChain(block: () -> Unit): Result<Unit> = command {
+        exclusive { chain { block() } }
+    }
+
+    private suspend fun <T> chain(block: suspend () -> T): T {
+        depth++
+        try {
+            return block()
+        } finally {
+            depth--
+            if (depth == 0) effects.chainEnded()
+        }
+    }
+
     // ── Steps ────────────────────────────────────────────────────────────────────────────────────
 
     /** Feeds a status value to the reducer and remembers it as observed. Only reconcile() calls it. */
@@ -324,9 +354,14 @@ internal class AuthSessionDriver(
         if (current !== lastFed) feed(current)
     }
 
-    private suspend fun step(event: AuthEvent): Sent {
+    private suspend fun step(event: AuthEvent): Sent = chain { stepNow(event) }
+
+    private suspend fun stepNow(event: AuthEvent): Sent {
         effects.trace(describeEvent(event))
+        val oldSerial = state.live.serial
         val result = reduce(state, event)
+        // Fork (W2, 4.5): compared before the state is replaced; the gate closes before the ticket moves.
+        if (result.state.live.serial != oldSerial) effects.serialChanging()
         state = result.state
         ticket = AuthTicket(result.state.live.serial)
         var failure: Throwable? = null

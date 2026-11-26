@@ -5,6 +5,8 @@ import com.nuvio.app.core.auth.AuthRepository
 import com.nuvio.app.core.auth.TvLoginRepository
 import com.nuvio.app.core.build.FeaturePolicyProvider
 import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
+import com.nuvio.app.core.identity.IdentityBarrier
+import com.nuvio.app.core.identity.TransitionKind
 import com.nuvio.app.core.network.NetworkStatusRepository
 import com.nuvio.app.core.network.ServerAuthRequirement
 import com.nuvio.app.core.network.ServerConfiguration
@@ -152,45 +154,55 @@ object ServerConnectionController {
         scope.launch {
             _state.update { it.copy(isSwitching = true, failure = null, switchFailure = null) }
             try {
-                // Fork: stop everything that holds the OLD client before the session/data wipe —
-                // an in-flight QR poll or account-scoped sync coroutine would otherwise keep
-                // talking to (or pushing server-A data through) a client that is about to close.
-                // The wipe runs BEFORE save() on purpose: persisting the new server first would
-                // risk cross-server contamination if the wipe then failed (old session + new
-                // active server on next launch). The trade-off — a save() disk failure after the
-                // wipe leaves the user signed out on the old server — is the safe side; callers
-                // pre-flight the deterministic save preconditions (see connectDiscovered).
-                TvLoginRepository.cancel()
-                SyncManager.cancelAccountSync()
-                if (AuthRepository.prepareForServerSwitch().isFailure) {
-                    _state.update {
-                        it.copy(isSwitching = false, switchFailure = ServerSwitchFailure.SessionClear)
-                    }
-                    return@launch
-                }
-                if (!save()) {
-                    _state.update { it.copy(isSwitching = false, switchFailure = ServerSwitchFailure.Save) }
-                    return@launch
-                }
-                SupabaseProvider.reset()
-                AuthRepository.reinitialize()
-                // Fork: re-arm settings-push observation — the wipe's clearAccountState() cancelled
-                // it (idempotent; the tvOS cleaner also re-arms, composeApp's does not).
-                ProfileSettingsSync.startObserving()
-                NetworkStatusRepository.requestRefresh(force = true)
-                _state.value = ServerConnectionUiState(
-                    activeServer = ServerConfigurationRepository.active.value,
-                    switchGeneration = _state.value.switchGeneration + 1,
-                )
-                log.i { "Switched server → ${ServerConfigurationRepository.active.value.displayHost}" }
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Throwable) {
-                log.e(error) { "Server switch failed during restart" }
-                _state.update { it.copy(isSwitching = false, switchFailure = ServerSwitchFailure.Restart) }
+                // Fork (scope identity, W2, 5.5): the whole switch is one drained account
+                // transition; prepareForServerSwitch inside it is not wrapped again (a nested
+                // reset would wait on the lane it runs in). Failures are recorded in the state
+                // and the block returns, so the barrier always reaches Open.
+                IdentityBarrier.accountReset(TransitionKind.ServerSwitch) { runSwitch(save); Result.success(Unit) }
             } finally {
                 synchronized(switchAdmissionLock) { switchAdmitted = false }
             }
+        }
+    }
+
+    private suspend fun runSwitch(save: () -> Boolean) {
+        try {
+            // Fork: stop everything that holds the OLD client before the session/data wipe —
+            // an in-flight QR poll or account-scoped sync coroutine would otherwise keep
+            // talking to (or pushing server-A data through) a client that is about to close.
+            // The wipe runs BEFORE save() on purpose: persisting the new server first would
+            // risk cross-server contamination if the wipe then failed (old session + new
+            // active server on next launch). The trade-off — a save() disk failure after the
+            // wipe leaves the user signed out on the old server — is the safe side; callers
+            // pre-flight the deterministic save preconditions (see connectDiscovered).
+            TvLoginRepository.cancel()
+            SyncManager.cancelAccountSync()
+            if (AuthRepository.prepareForServerSwitch().isFailure) {
+                _state.update {
+                    it.copy(isSwitching = false, switchFailure = ServerSwitchFailure.SessionClear)
+                }
+                return
+            }
+            if (!save()) {
+                _state.update { it.copy(isSwitching = false, switchFailure = ServerSwitchFailure.Save) }
+                return
+            }
+            SupabaseProvider.reset()
+            AuthRepository.reinitialize()
+            // Fork: re-arm settings-push observation — the wipe's clearAccountState() cancelled
+            // it (idempotent; the tvOS cleaner also re-arms, composeApp's does not).
+            ProfileSettingsSync.startObserving()
+            NetworkStatusRepository.requestRefresh(force = true)
+            _state.value = ServerConnectionUiState(
+                activeServer = ServerConfigurationRepository.active.value,
+                switchGeneration = _state.value.switchGeneration + 1,
+            )
+            log.i { "Switched server → ${ServerConfigurationRepository.active.value.displayHost}" }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            log.e(error) { "Server switch failed during restart" }
+            _state.update { it.copy(isSwitching = false, switchFailure = ServerSwitchFailure.Restart) }
         }
     }
 }
