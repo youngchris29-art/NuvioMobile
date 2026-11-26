@@ -47093,6 +47093,7 @@
         }
       }
     },
+    "Signing out…": {},
     "Signs you in to, or out of, your Nuvio account. Signing in syncs your library and watch progress across devices. Either way, the local data on this Apple TV is cleared first.": {
       "localizations": {
         "de": {
@@ -50782,6 +50783,7 @@
         }
       }
     },
+    "Switching profile…": {},
     "Switching resumes from your last saved position.": {
       "localizations": {
         "de": {

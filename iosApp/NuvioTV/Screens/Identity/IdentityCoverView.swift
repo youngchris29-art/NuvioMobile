@@ -3,9 +3,9 @@ import SwiftUI
 /// The identity cover's content (spec 8.2): the app background, a spinner and one line. Focusable,
 /// with Menu swallowed, so nothing underneath can be reached while it is up.
 ///
-/// Departure (W2): the spec's two new strings ("Switching profile…", "Signing out…") are not added
-/// (no new user-visible string in W2); the cover reuses the catalog's existing "Switching…" and
-/// "Loading…" keys until the two strings are approved.
+/// The two strings are decision E's: "Switching profile…" for the profile kinds and the local
+/// select, "Signing out…" for sign-out, delete account, server switch and a wipe window. A publish
+/// window (sign-in, launch restore, an accept) shows no cover at all (spec 4.6).
 struct IdentityCoverView: View {
     let kind: IdentityCoverKind
     #if DEBUG
@@ -18,7 +18,7 @@ struct IdentityCoverView: View {
             VStack(spacing: Theme.Spacing.lg) {
                 ProgressView()
                     .tint(Theme.Palette.accent)
-                Text(kind == .switching ? "Switching…" : "Loading…")
+                Text(kind == .switching ? "Switching profile…" : "Signing out…")
                     .font(Theme.Font.body)
                     .foregroundStyle(Theme.Palette.textSecondary)
             }
