@@ -124,7 +124,19 @@ object AddonRepository {
      * Fork (W2 review r1): the generation (= [profileEpoch]) of the bootstrap that holds the
      * reservation, null when none does. Under [profileLock]; cleared by every reset.
      */
-    private var bootstrapHolder: Long? = null
+    private var bootstrapHolder: BootstrapKey? = null
+
+    /** Review r3: the key whose bootstrap (or server pull) completed, null after a reset. Under [profileLock]. */
+    private var bootstrapCompletedFor: BootstrapKey? = null
+
+    /** Under [profileLock]: the key of the identity open now (its epoch) and this repository's profile generation. */
+    private fun currentBootstrapKeyLocked(): BootstrapKey =
+        BootstrapKey(IdentityGate.currentEpoch().value, profileEpoch.value)
+
+    /** Review r3: a server pull published this profile's list; initialize() for the same key skips, as before. */
+    private fun markBootstrapCompletedByPull() {
+        synchronized(profileLock) { bootstrapCompletedFor = currentBootstrapKeyLocked() }
+    }
 
     /** Tests only: the profile id writes go to. */
     internal val currentProfileIdForTest: Int get() = synchronized(profileLock) { currentProfileId }
@@ -138,11 +150,12 @@ object AddonRepository {
         // Review r1 #1: the slot comes from the router (the barrier's on tvOS, the active profile elsewhere).
         val target = resolveEffectiveProfileId(ProfileIdentityRouterProvider.router.slotOf(token))
         val reserved = synchronized(profileLock) {
-            when (val r = AddonBootstrapRule.reserve(bootstrap.initialized, profileEpoch.value)) {
+            val current = BootstrapKey(token.epoch.value, profileEpoch.value)
+            when (val r = AddonBootstrapRule.reserve(bootstrapCompletedFor, bootstrapHolder, current)) {
                 BootstrapReserve.Skip -> null
-                is BootstrapReserve.Reserve -> r.generation.also {
+                is BootstrapReserve.Reserve -> r.key.also {
                     bootstrap.begin()
-                    bootstrapHolder = it
+                    bootstrapHolder = it // replaces a stale reservation: its end will touch nothing
                 }
             }
         } ?: return
@@ -154,19 +167,20 @@ object AddonRepository {
         afterLocalReadForTest()
         synchronized(profileLock) {
             val committed = IdentityGate.commit(token, CommitKind.Publish, site = "addonBootstrap") {
-                AddonBootstrapRule.end(reserved, profileEpoch.value, bootstrapHolder, tokenHolds = true).also { end ->
+                AddonBootstrapRule.end(reserved, currentBootstrapKeyLocked(), bootstrapHolder, bootstrapCompletedFor, tokenHolds = true).also { end ->
                     if (end == BootstrapEnd.Publish) {
                         bootstrapHolder = null
+                        bootstrapCompletedFor = reserved
                         currentProfileId = target
                         publishBootstrap(storedUrls, enabledByUrl)
                     }
                 }
             }
             val end = (committed as? CommitResult.Committed)?.value
-                ?: AddonBootstrapRule.end(reserved, profileEpoch.value, bootstrapHolder, tokenHolds = false)
-            if (end == BootstrapEnd.Release) {
+                ?: AddonBootstrapRule.end(reserved, currentBootstrapKeyLocked(), bootstrapHolder, bootstrapCompletedFor, tokenHolds = false)
+            if (end is BootstrapEnd.Release) {
                 bootstrapHolder = null
-                bootstrap.reset()
+                if (end.resetMirror) bootstrap.reset()
             }
             if (end != BootstrapEnd.Publish) log.i { "initialize() — identity or profile changed during bootstrap ($end); nothing published" }
         }
@@ -222,6 +236,7 @@ object AddonRepository {
             profileEpoch.update { it + 1 }
             currentProfileId = effectiveProfileId
             bootstrapHolder = null
+            bootstrapCompletedFor = null
             bootstrap.reset()
             pulledFromServer = false
             _serverPullSettled.value = false
@@ -238,6 +253,7 @@ object AddonRepository {
             profileEpoch.update { it + 1 }
             currentProfileId = 1
             bootstrapHolder = null
+            bootstrapCompletedFor = null
             bootstrap.reset()
             pulledFromServer = false
             _serverPullSettled.value = false
@@ -339,6 +355,7 @@ object AddonRepository {
                         }
                         pulledFromServer = true
                         bootstrap.complete()
+                        markBootstrapCompletedByPull()
                         return
                     }
                 }
@@ -375,6 +392,7 @@ object AddonRepository {
                 }
                 pulledFromServer = true
                 bootstrap.complete()
+                markBootstrapCompletedByPull()
                 log.i { "pullFromServer() — applied ${urls.size} addons to state" }
             }.onFailure { e ->
                 // runCatching captures cancellation too; without this rethrow the outer handler

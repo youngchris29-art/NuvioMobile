@@ -3,6 +3,7 @@ package com.nuvio.app.core.identity
 import com.nuvio.app.core.profile.ActiveProfileIdProvider
 import com.nuvio.app.core.profile.ActiveProfileProvider
 import com.nuvio.app.features.addons.AddonBootstrapRule
+import com.nuvio.app.features.addons.BootstrapKey
 import com.nuvio.app.features.addons.AddonRepository
 import com.nuvio.app.features.addons.AddonStorage
 import com.nuvio.app.features.addons.BootstrapEnd
@@ -25,23 +26,126 @@ import kotlin.test.assertTrue
 private fun real(block: suspend CoroutineScope.() -> Unit) = runTest { withContext(Dispatchers.Default) { block() } }
 
 class AddonBootstrapRuleTest {
+    private val k = { id: Long, gen: Long -> BootstrapKey(id, gen) }
+
     @Test
-    fun reserve() {
-        assertEquals(BootstrapReserve.Skip, AddonBootstrapRule.reserve(initialized = true, generation = 4))
-        assertEquals(BootstrapReserve.Reserve(4), AddonBootstrapRule.reserve(initialized = false, generation = 4))
+    fun reserveEveryCase() {
+        val current = k(2, 1)
+        val keys = listOf(null, k(1, 1), current, k(2, 0))
+        for (completed in keys) for (holder in keys) {
+            val expected = if (completed == current || holder == current) BootstrapReserve.Skip else BootstrapReserve.Reserve(current)
+            assertEquals(expected, AddonBootstrapRule.reserve(completed, holder, current), "completed=$completed holder=$holder")
+        }
     }
 
     @Test
     fun endEveryCase() {
-        val g = 4L
-        for (holder in listOf(null, g, 9L)) for (current in listOf(g, 9L)) for (token in listOf(true, false)) {
+        val reserved = k(2, 1)
+        val keys = listOf(null, reserved, k(3, 1), k(3, 2))
+        for (holder in keys) for (current in listOf(reserved, k(3, 1), k(3, 2))) for (completed in keys) for (token in listOf(true, false)) {
             val expected = when {
-                holder != g -> BootstrapEnd.Nothing
-                current == g && token -> BootstrapEnd.Publish
-                else -> BootstrapEnd.Release
+                holder != reserved -> BootstrapEnd.Nothing
+                current == reserved && token -> BootstrapEnd.Publish
+                else -> BootstrapEnd.Release(resetMirror = completed?.profileGeneration != current.profileGeneration)
             }
-            assertEquals(expected, AddonBootstrapRule.end(g, current, holder, token), "holder=$holder current=$current token=$token")
+            assertEquals(expected, AddonBootstrapRule.end(reserved, current, holder, completed, token), "holder=$holder current=$current completed=$completed token=$token")
         }
+    }
+
+    /** The rule's state as AddonRepository holds it, plus the bootstraps still running and the current key. */
+    private data class Model(val completed: BootstrapKey?, val holder: BootstrapKey?, val inFlight: Set<BootstrapKey>, val current: BootstrapKey)
+
+    private fun events(m: Model): List<Pair<String, Model>> = buildList {
+        // initialize(): reserve under the current key.
+        when (val r = AddonBootstrapRule.reserve(m.completed, m.holder, m.current)) {
+            BootstrapReserve.Skip -> add("initialize (skip)" to m)
+            is BootstrapReserve.Reserve -> add("initialize" to m.copy(holder = r.key, inFlight = m.inFlight + r.key))
+        }
+        // A running bootstrap ends: its token holds only if its key is still the current one
+        // (publish accepted), else it is rejected (publish rejected / release).
+        for (r in m.inFlight) {
+            val next = when (AddonBootstrapRule.end(r, m.current, m.holder, m.completed, tokenHolds = r == m.current)) {
+                BootstrapEnd.Publish -> m.copy(completed = r, holder = null)
+                is BootstrapEnd.Release -> m.copy(holder = null)
+                BootstrapEnd.Nothing -> m
+            }
+            add("end $r" to next.copy(inFlight = next.inFlight - r))
+        }
+        val c = m.current
+        // A same-slot select: the identity moves, onProfileChanged keeps the list (early return).
+        add("transition same slot" to m.copy(current = BootstrapKey(c.identityEpoch + 1, c.profileGeneration)))
+        // Another slot: onProfileChanged bumps the generation and resets.
+        add("transition other slot" to m.copy(current = BootstrapKey(c.identityEpoch + 1, c.profileGeneration + 1), completed = null, holder = null))
+        // An account wipe: clearLocalState resets; the account change moves the identity too.
+        add("reset" to m.copy(current = BootstrapKey(c.identityEpoch + 1, c.profileGeneration + 1), completed = null, holder = null))
+    }
+
+    private fun live(m: Model): Boolean =
+        m.completed == m.current ||
+            (m.holder == m.current && m.current in m.inFlight) ||
+            AddonBootstrapRule.reserve(m.completed, m.holder, m.current) is BootstrapReserve.Reserve
+
+    /** Liveness over every state reachable in 7 events from a fresh repository, every event in each. */
+    @Test
+    fun livenessOverTheFullEnumeration() {
+        var frontier = setOf(Model(null, null, emptySet(), BootstrapKey(0, 0)))
+        val seen = frontier.toMutableSet()
+        repeat(7) {
+            val next = mutableSetOf<Model>()
+            for (m in frontier) for ((event, after) in events(m)) {
+                assertTrue(live(after), "not live after '$event' from $m: $after")
+                // No state where the only reservation is one that will be rejected.
+                if (after.holder != null && after.holder != after.current) {
+                    assertTrue(AddonBootstrapRule.reserve(after.completed, after.holder, after.current) is BootstrapReserve.Reserve || after.completed == after.current, "stale holder blocks: $after")
+                }
+                if (seen.add(after)) next += after
+            }
+            frontier = next
+        }
+        assertTrue(seen.size > 50, "the enumeration reached ${seen.size} states")
+    }
+}
+
+/** r3: hook load for slot 1 in flight → select slot 1 → Home initialize() before the stale load resumes. */
+class SameSlotBootstrapInterleavingTest {
+    private val log = EventLog()
+    private val paused = MutableStateFlow(false)
+    private val release = MutableStateFlow(false)
+
+    @BeforeTest fun setUp() {
+        installDriverFakes(log)
+        ProfileIdentityRouterProvider.router = BarrierProfileIdentityRouter(FakeRouterPorts(EventLog()))
+        AddonRepository.clearLocalState()
+        var once = true
+        AddonRepository.afterLocalReadForTest = {
+            if (once) {
+                once = false
+                paused.value = true
+                spinUntil(5_000) { release.value }
+            }
+        }
+    }
+
+    @AfterTest fun tearDown() {
+        AddonRepository.afterLocalReadForTest = {}
+        AddonRepository.clearLocalState()
+        ProfileIdentityRouterProvider.router = DefaultProfileIdentityRouter
+        resetIdentityForTest()
+    }
+
+    @Test
+    fun theNewIdentityBootstrapsAndTheStaleOneChangesNothing() = real {
+        val hook = CoroutineScope(Dispatchers.Default).launch { AddonRepository.initialize() } // the account-open hook, slot 1
+        eventually { paused.value }
+        assertIs<TransitionResult.Done>(IdentityBarrier.selectProfile(1)) // the same slot: a new identity epoch
+        AddonRepository.onProfileChanged(1) // the fan-out's addons step (same profile: no reset)
+        AddonRepository.initialize() // Home
+        assertTrue(AddonRepository.initializedState.value, "the new identity's bootstrap ran and published")
+        assertTrue(AddonRepository.uiState.value.isInitialized)
+        release.value = true
+        hook.join()
+        assertTrue(AddonRepository.initializedState.value, "the stale load's end did not disturb the new bootstrap")
+        assertEquals(1, AddonRepository.currentProfileIdForTest)
     }
 }
 
