@@ -92,9 +92,14 @@ final class ProfilesViewModel: ObservableObject {
                                identity: IdentityModel,
                                ports: ProfileSelectPorts,
                                enter: (IdentityState) -> Void) async -> Bool {
-        // 1. Tap (Main).
-        let accountAtTap = ports.currentState()?.scope.account
+        // 1. Tap (Main). The cover goes up first; the account is read once no window holds, since
+        // a window's state still names the previous account (an account restore's gate can turn
+        // .main a moment before its chain ends). Bounded: 2 s, then the select's own checks decide.
         identity.localSelectInFlight = true
+        for _ in 0..<40 where !(ports.currentState()?.phase is IdentityPhaseOpen) {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        let accountAtTap = ports.currentState()?.scope.account
         defer { identity.localSelectInFlight = false } // 4: the last statement, whatever happened
         // 2. The barrier (Main suspended; nothing on screen changes).
         let result: TransitionResult?

@@ -245,6 +245,24 @@ final class SelectAndEnterSequenceTests: XCTestCase {
         XCTAssertEqual(ports.impossible.count, 1)
     }
 
+    /// An account restore's gate can turn .main while its window (still naming None) is closing:
+    /// the tap account is read once the window closed, so the select is entered.
+    func testTapDuringAClosingWindowReadsTheAccountAfterIt() async {
+        let restored = IdentityFixture.state(slot: 1, epoch: 1)
+        ports.current = IdentityFixture.state(account: AccountKeyNone.shared, phase: IdentityPhaseClosed(from: IdentityEpoch(value: 0)),
+                                              kind: .accountpublished)
+        let ports = self.ports!
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            ports.current = restored
+        }
+        let final = IdentityFixture.state(slot: 2, epoch: 2)
+        ports.currentAfterSelect = final
+        ports.result = { TransitionResultDone(final: final) }
+        let outcome = await run()
+        XCTAssertTrue(outcome.entered)
+    }
+
     func testFailBeforeBeginKnob() async {
         ports.failBeforeBegin = true
         ports.result = { XCTFail("the barrier must not be called"); return TransitionResultRequested.shared }
