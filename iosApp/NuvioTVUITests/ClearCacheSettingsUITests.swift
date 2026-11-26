@@ -6,8 +6,15 @@ import XCTest
 /// which button holds the initial focus (an owner question, not an assertion). Cancel closes it with
 /// focus back on the row and no subtitle; Clear makes the row read "Cache cleared" with focus on
 /// the row; a repeat Clear and a later Cancel keep that; leaving the pane resets it; a re-entry
-/// clears again; then Home still draws its hero and a poster row (a collection tile is recorded,
-/// since the fixture guest's Home has none).
+/// clears again; then, back on Home, the hero backdrop, a poster and the seeded collection's tile
+/// cover have all drawn.
+///
+/// Collection: one pinned folder seeded through the DEBUG `-debug.collectionsSeedJsonB64` knob (the
+/// `CollectionHeaderUITests` mechanism) and removed with `"[]"` when the test ends. "Drawn" is read
+/// from DEBUG signals: `debug_hero … pbd=1` (the presented hero backdrop bitmap) and, under
+/// `-debug.cardGeometryProbe YES`, an `artwork_drawn` element inside a `poster_artwork` /
+/// `folder_artwork` box (`CachedAsyncImage` publishes it once a decoded image is on screen). The
+/// artwork comes from the same image hosts the fixture's Home already loads from.
 ///
 /// The fixture profile is the signed-out local guest "Chris"; nothing here signs in. Every Select is
 /// pressed only once focus is verified on the intended element. House rule: this file owns its helpers.
@@ -17,6 +24,10 @@ final class ClearCacheSettingsUITests: XCTestCase {
     private static let rowID = "settings_about_clear_cache"
     private static let clearedText = "Cache cleared"
     private static let alertTitle = "Clear Cache?"
+    /// One pinned collection with one folder whose tile cover is its backdrop.
+    private static let collectionSeed = """
+    [{"id":"zzclearcache-collection","title":"ZZClearCache","pinToTop":true,"showAllTab":false,"folders":[{"id":"zzclearcache-folder","title":"ZZClearCacheFolder","hideTitle":false,"heroBackdropUrl":"https://images.metahub.space/background/medium/tt0111161/img","sources":[{"provider":"addon","addonId":"com.linvo.cinemeta","type":"movie","catalogId":"top"}]}]}]
+    """
 
     override func setUp() {
         super.setUp()
@@ -24,10 +35,18 @@ final class ClearCacheSettingsUITests: XCTestCase {
     }
 
     func testClearCacheRowAlertFocusAndFeedback() throws {
-        // 1. Launch, pick the profile, let Home draw art.
-        let app = launch(["-debug.artworkProbe", "YES", "-debug.cardGeometryProbe", "YES"])
-        XCTAssertTrue(waitUntil(timeout: 30) { self.heroExists(app) }, "Home never showed its hero")
+        // 1. Launch with the seeded collection, pick the profile, and see Home draw: the hero
+        // backdrop, a poster and the collection tile's cover (so the seed is known to be live).
+        addTeardownBlock { [weak self] in self?.clearSeed() }
+        let app = launch(["-debug.artworkProbe", "YES", "-debug.cardGeometryProbe", "YES",
+                          "-inline_trailers_enabled", "NO",
+                          "-debug.collectionsSeedJsonB64", Data(Self.collectionSeed.utf8).base64EncodedString()])
+        XCTAssertTrue(waitUntil(timeout: 60) { self.heroBackdropDrawn(app) }, "Home never drew its hero backdrop: \(heroProbe(app))")
         shot(app, "cc1_home")
+        let before = scanHomeArt(app)
+        shot(app, "cc1_home_rows")
+        XCTAssertTrue(before.poster, "before the clear no poster drew on Home (scanned \(before.presses) rows)")
+        XCTAssertTrue(before.collection, "before the clear the seeded collection tile's cover never drew (scanned \(before.presses) rows) — \(artDump(app))")
 
         // 2. Settings › About.
         try openAboutPane(app)
@@ -95,18 +114,13 @@ final class ClearCacheSettingsUITests: XCTestCase {
         shot(app, "cc8_reentry_cleared")
 
         try goHome(app)
-        XCTAssertTrue(waitUntil(timeout: 30) { self.heroExists(app) }, "after the clear Home lacks its hero")
+        XCTAssertTrue(waitUntil(timeout: 30) { self.heroBackdropDrawn(app) },
+                      "after the clear the hero backdrop did not draw: \(heroProbe(app))")
         shot(app, "cc8_home_hero_after_clear")
-        let scan = scanHomeRows(app)
+        let after = scanHomeArt(app)
         shot(app, "cc8_home_rows_after_clear")
-        XCTAssertTrue(scan.row, "after the clear Home shows no poster row (scanned \(scan.presses) rows down)")
-        // The fixture guest's Home has no collection row (seen 2026-11-25: the last row is Featured -
-        // Series), so a collection tile is recorded here, not asserted. A fixture with collections
-        // makes this line read collection=true.
-        let collectionNote = XCTAttachment(string: "home_collection_tile_seen=\(scan.collection) rows_scanned=\(scan.presses)")
-        collectionNote.name = "cc8_home_collection_tile"
-        collectionNote.lifetime = .keepAlways
-        add(collectionNote)
+        XCTAssertTrue(after.poster, "after the clear no poster drew on Home (scanned \(after.presses) rows)")
+        XCTAssertTrue(after.collection, "after the clear the collection tile's cover did not draw (scanned \(after.presses) rows)")
         XCTAssertEqual(app.state, .runningForeground, "the app is not running after returning Home")
     }
 
@@ -119,7 +133,8 @@ final class ClearCacheSettingsUITests: XCTestCase {
         let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
         XCTAssertTrue(chris.waitForExistence(timeout: 90), "the profile picker never appeared")
         DetailEntryRoute.selectChrisTile(self, app, timeout: 5)
-        pause(8)
+        XCTAssertTrue(waitUntil(timeout: 60) { app.descendants(matching: .any)["debug_hero"].firstMatch.exists },
+                      "Home never appeared after the profile pick")
         return app
     }
 
@@ -194,41 +209,105 @@ final class ClearCacheSettingsUITests: XCTestCase {
             pause(1.2)
         }
         try selectTab(app, "Home")
-        pause(3)
     }
 
     // MARK: - Home
 
-    /// With `-debug.cardGeometryProbe YES` every poster card publishes `poster_card`.
-    private func homeHasArt(_ app: XCUIApplication) -> Bool {
-        app.descendants(matching: .any).matching(identifier: "poster_card").firstMatch.exists
-            || app.descendants(matching: .any).matching(identifier: "landscape_card").firstMatch.exists
+    private func heroProbe(_ app: XCUIApplication) -> String {
+        let probe = app.descendants(matching: .any)["debug_hero"].firstMatch
+        return probe.exists ? probe.label : "<no debug_hero>"
     }
 
-    private func heroExists(_ app: XCUIApplication) -> Bool {
-        app.descendants(matching: .any).matching(identifier: "hero_info").firstMatch.exists
-            || app.descendants(matching: .any).matching(identifier: "debug_heroText").firstMatch.exists
-            || app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Go to")).firstMatch.exists
+    /// The hero's presented backdrop is a decoded bitmap (`pbd=1`).
+    private func heroBackdropDrawn(_ app: XCUIApplication) -> Bool {
+        heroProbe(app).split(separator: " ").contains("pbd=1")
     }
 
-    /// The rows sit below the hero and are only in the tree once scrolled near: presses Down (up to
-    /// 12 rows) until a poster row and a collection tile have both been seen.
-    private func scanHomeRows(_ app: XCUIApplication) -> (row: Bool, collection: Bool, presses: Int) {
-        var row = homeHasArt(app)
-        var collection = collectionTileExists(app)
+    /// Whether some `artwork_drawn` element belongs to some `box` element, from one snapshot: its
+    /// centre lies inside the box and it is at most four times the box's area (a `.fill` image
+    /// overflows its tile before the clip, so plain containment is too strict; the area cap keeps a
+    /// full-screen backdrop behind the rows from counting).
+    private func drawnInside(_ box: String, in root: XCUIElementSnapshot) -> Bool {
+        var boxes: [CGRect] = []
+        var drawn: [CGRect] = []
+        func walk(_ node: XCUIElementSnapshot) {
+            if node.identifier == box, node.frame.width > 1, node.frame.height > 1 { boxes.append(node.frame) }
+            if node.identifier == "artwork_drawn", node.frame.width > 1, node.frame.height > 1 { drawn.append(node.frame) }
+            node.children.forEach(walk)
+        }
+        walk(root)
+        return drawn.contains { d in
+            boxes.contains { b in
+                b.insetBy(dx: -2, dy: -2).contains(CGPoint(x: d.midX, y: d.midY))
+                    && d.width * d.height <= 4 * b.width * b.height
+            }
+        }
+    }
+
+    /// Presses Down (up to 12 rows, each waiting at most 4 s for art to land) until a drawn poster
+    /// and a drawn collection tile cover have both been seen.
+    private func scanHomeArt(_ app: XCUIApplication) -> (poster: Bool, collection: Bool, presses: Int) {
+        var poster = false
+        var collection = false
+        var folderSeenDump: String?
+        func look() {
+            guard let root = try? app.snapshot() else { return }
+            poster = poster || drawnInside("poster_artwork", in: root)
+            collection = collection || drawnInside("folder_artwork", in: root)
+            if !collection, folderSeenDump == nil, app.descendants(matching: .any)["folder_artwork"].firstMatch.exists {
+                folderSeenDump = artDump(app)
+            }
+        }
+        defer {
+            if !collection, let folderSeenDump {
+                let note = XCTAttachment(string: folderSeenDump)
+                note.name = "folder_box_seen_without_drawn_art"
+                note.lifetime = .keepAlways
+                add(note)
+                NSLog("[ClearCacheUITest] folder box seen without drawn art: %@", folderSeenDump)
+            }
+        }
+        look()
         var presses = 0
-        while !(row && collection) && presses < 12 {
+        while !(poster && collection) && presses < 12 {
             remote.press(.down)
             presses += 1
-            _ = waitUntil(timeout: 2) { self.homeHasArt(app) || self.collectionTileExists(app) }
-            row = row || homeHasArt(app)
-            collection = collection || collectionTileExists(app)
+            _ = waitUntil(timeout: 4) { look(); return poster && collection }
         }
-        return (row, collection, presses)
+        return (poster, collection, presses)
     }
 
-    private func collectionTileExists(_ app: XCUIApplication) -> Bool {
-        app.descendants(matching: .any).matching(identifier: "folder_card").firstMatch.exists
+    /// For failure messages: the frames of every artwork box and drawn marker on screen.
+    private func artDump(_ app: XCUIApplication) -> String {
+        guard let root = try? app.snapshot() else { return "<no snapshot>" }
+        var out: [String] = []
+        func walk(_ node: XCUIElementSnapshot) {
+            if ["folder_artwork", "folder_card", "poster_artwork", "artwork_drawn"].contains(node.identifier) {
+                let f = node.frame
+                out.append("\(node.identifier)@\(Int(f.minX)),\(Int(f.minY)),\(Int(f.width))x\(Int(f.height))")
+            }
+            node.children.forEach(walk)
+        }
+        walk(root)
+        return out.joined(separator: " ")
+    }
+
+    /// Removes the seeded collection: relaunch with an empty seed and let Home apply it.
+    private func clearSeed() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-debug.collectionsSeedJsonB64", Data("[]".utf8).base64EncodedString()]
+        app.launch()
+        let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
+        if chris.waitForExistence(timeout: 60) {
+            DetailEntryRoute.selectChrisTile(self, app, timeout: 5)
+            _ = waitUntil(timeout: 60) { app.descendants(matching: .any)["debug_hero"].firstMatch.exists }
+        }
+        // The seed is applied by the Home pipeline; wait (bounded) until no seeded tile remains.
+        _ = waitUntil(timeout: 20) {
+            !app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "ZZClearCache")).firstMatch.exists
+                && !app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "ZZClearCache")).firstMatch.exists
+        }
+        app.terminate()
     }
 
     // MARK: - The explainer walk

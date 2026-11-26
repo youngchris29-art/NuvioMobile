@@ -199,6 +199,20 @@ struct CachedAsyncImage<Failure: View>: View {
                 ShimmerView()
             }
         }
+        #if DEBUG
+        // Harness signal: once a decoded image is on screen, an invisible `artwork_drawn` element
+        // covers it, so a UI test can tell drawn art from a shimmer or a failure surface (its frame
+        // lies inside the card's `poster_artwork` / `folder_artwork` box). Armed only by
+        // `-debug.cardGeometryProbe YES`, DEBUG only; identifier-only, no hit testing.
+        .overlay {
+            if DebugAXIdentifier.armed, loader.image != nil {
+                Color.clear
+                    .allowsHitTesting(false)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityIdentifier("artwork_drawn")
+            }
+        }
+        #endif
         .onAppear { loader.load(chain) }
         .onDisappear {
             // beta.19-rc1 verdict (I1): only the Detail backdrop opts in. The image reloads on the
