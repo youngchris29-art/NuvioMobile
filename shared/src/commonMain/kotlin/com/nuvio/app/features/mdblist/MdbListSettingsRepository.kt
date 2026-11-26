@@ -9,6 +9,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.atomicfu.locks.SynchronizedObject
+import kotlinx.atomicfu.locks.synchronized
 
 /**
  * Upstream 3f0d07be: ratings go through the connected MDBList account; the personal API key is an
@@ -28,152 +30,130 @@ object MdbListSettingsRepository {
     private val _uiState = MutableStateFlow(MdbListSettings())
     val uiState: StateFlow<MdbListSettings> = _uiState.asStateFlow()
 
+    /**
+     * Scope identity W2 fix round: the profile fan-out now loads this repository on
+     * Dispatchers.Default (inside the identity barrier's apply), while the Settings setters run on
+     * the main thread and the account observer on Default. One lock owns every read and write of
+     * [local] and [hasLoaded] and every publication, so the published value always follows the
+     * state's own order and no thread reads a half-loaded profile. Storage writes happen inside it
+     * too (short, leaf: nothing here takes another lock while holding it).
+     */
+    private val lock = SynchronizedObject()
     private var hasLoaded = false
     private var observingAccount = false
-
-    private var enabled = false
-    private var apiKey = ""
-    private var useImdb = true
-    private var useTmdb = true
-    private var useTomatoes = true
-    private var useMetacritic = true
-    private var useTrakt = true
-    private var useLetterboxd = true
-    private var useAudience = true
-    private var useMal = true
+    private var local = MdbListSettings()
 
     fun ensureLoaded() {
         MdbListTracker.ensureLoaded()
         observeAccount()
-        if (hasLoaded) return
-        loadFromDisk()
+        synchronized(lock) { if (!hasLoaded) loadFromDiskLocked() }
     }
 
     fun onProfileChanged() {
         observeAccount()
-        loadFromDisk()
+        synchronized(lock) { loadFromDiskLocked() }
     }
 
     fun snapshot(): MdbListSettings {
         ensureLoaded()
-        return localSettings().withActiveAccount()
+        return synchronized(lock) { local.withActiveAccount() }
     }
 
     /** Upstream 3f0d07be: no key needed — the connected account can supply ratings. */
     fun setEnabled(value: Boolean) {
         ensureLoaded()
-        if (enabled == value) return
-        enabled = value
-        publish()
-        MdbListSettingsStorage.saveEnabled(value)
+        synchronized(lock) {
+            if (local.enabled == value) return
+            local = local.copy(enabled = value)
+            publishLocked()
+            MdbListSettingsStorage.saveEnabled(value)
+        }
     }
 
     fun setApiKey(value: String) {
         ensureLoaded()
         val normalized = value.trim()
-        if (apiKey == normalized) return
-        apiKey = normalized
-        // Upstream 3f0d07be: clearing the override falls back to the account; it no longer
-        // turns ratings off.
-        publish()
-        MdbListSettingsStorage.saveApiKey(normalized)
+        synchronized(lock) {
+            if (local.apiKey == normalized) return
+            // Upstream 3f0d07be: clearing the override falls back to the account; it no longer
+            // turns ratings off.
+            local = local.copy(apiKey = normalized)
+            publishLocked()
+            MdbListSettingsStorage.saveApiKey(normalized)
+        }
         MdbListMetadataService.clearCache()
     }
 
     fun setProviderEnabled(providerId: String, value: Boolean) {
         ensureLoaded()
-        when (providerId) {
-            MdbListMetadataService.PROVIDER_IMDB -> if (useImdb != value) {
-                useImdb = value
-                MdbListSettingsStorage.saveUseImdb(value)
-            } else return
-            MdbListMetadataService.PROVIDER_TMDB -> if (useTmdb != value) {
-                useTmdb = value
-                MdbListSettingsStorage.saveUseTmdb(value)
-            } else return
-            MdbListMetadataService.PROVIDER_TOMATOES -> if (useTomatoes != value) {
-                useTomatoes = value
-                MdbListSettingsStorage.saveUseTomatoes(value)
-            } else return
-            MdbListMetadataService.PROVIDER_METACRITIC -> if (useMetacritic != value) {
-                useMetacritic = value
-                MdbListSettingsStorage.saveUseMetacritic(value)
-            } else return
-            MdbListMetadataService.PROVIDER_TRAKT -> if (useTrakt != value) {
-                useTrakt = value
-                MdbListSettingsStorage.saveUseTrakt(value)
-            } else return
-            MdbListMetadataService.PROVIDER_LETTERBOXD -> if (useLetterboxd != value) {
-                useLetterboxd = value
-                MdbListSettingsStorage.saveUseLetterboxd(value)
-            } else return
-            MdbListMetadataService.PROVIDER_AUDIENCE -> if (useAudience != value) {
-                useAudience = value
-                MdbListSettingsStorage.saveUseAudience(value)
-            } else return
-            MdbListMetadataService.PROVIDER_MAL -> if (useMal != value) {
-                useMal = value
-                MdbListSettingsStorage.saveUseMal(value)
-            } else return
-            else -> return
+        synchronized(lock) {
+            val l = local
+            local = when (providerId) {
+                MdbListMetadataService.PROVIDER_IMDB -> if (l.useImdb != value) l.copy(useImdb = value).also { MdbListSettingsStorage.saveUseImdb(value) } else return
+                MdbListMetadataService.PROVIDER_TMDB -> if (l.useTmdb != value) l.copy(useTmdb = value).also { MdbListSettingsStorage.saveUseTmdb(value) } else return
+                MdbListMetadataService.PROVIDER_TOMATOES -> if (l.useTomatoes != value) l.copy(useTomatoes = value).also { MdbListSettingsStorage.saveUseTomatoes(value) } else return
+                MdbListMetadataService.PROVIDER_METACRITIC -> if (l.useMetacritic != value) l.copy(useMetacritic = value).also { MdbListSettingsStorage.saveUseMetacritic(value) } else return
+                MdbListMetadataService.PROVIDER_TRAKT -> if (l.useTrakt != value) l.copy(useTrakt = value).also { MdbListSettingsStorage.saveUseTrakt(value) } else return
+                MdbListMetadataService.PROVIDER_LETTERBOXD -> if (l.useLetterboxd != value) l.copy(useLetterboxd = value).also { MdbListSettingsStorage.saveUseLetterboxd(value) } else return
+                MdbListMetadataService.PROVIDER_AUDIENCE -> if (l.useAudience != value) l.copy(useAudience = value).also { MdbListSettingsStorage.saveUseAudience(value) } else return
+                MdbListMetadataService.PROVIDER_MAL -> if (l.useMal != value) l.copy(useMal = value).also { MdbListSettingsStorage.saveUseMal(value) } else return
+                else -> return
+            }
+            // Upstream 647e4c09: no cache clear — the ratings cache holds every provider and filters
+            // per request, so a provider toggle needs no refetch.
+            publishLocked()
         }
-        // Upstream 647e4c09: no cache clear — the ratings cache holds every provider and filters
-        // per request, so a provider toggle needs no refetch.
-        publish()
     }
 
-    private fun loadFromDisk() {
+    private fun loadFromDiskLocked() {
         hasLoaded = true
-        apiKey = MdbListSettingsStorage.loadApiKey().orEmpty().trim()
-        enabled = MdbListSettingsStorage.loadEnabled() ?: false
-        useImdb = MdbListSettingsStorage.loadUseImdb() ?: true
-        useTmdb = MdbListSettingsStorage.loadUseTmdb() ?: true
-        useTomatoes = MdbListSettingsStorage.loadUseTomatoes() ?: true
-        useMetacritic = MdbListSettingsStorage.loadUseMetacritic() ?: true
-        useTrakt = MdbListSettingsStorage.loadUseTrakt() ?: true
-        useLetterboxd = MdbListSettingsStorage.loadUseLetterboxd() ?: true
-        useAudience = MdbListSettingsStorage.loadUseAudience() ?: true
-        useMal = MdbListSettingsStorage.loadUseMal() ?: true
-        publish()
+        local = MdbListSettings(
+            apiKey = MdbListSettingsStorage.loadApiKey().orEmpty().trim(),
+            enabled = MdbListSettingsStorage.loadEnabled() ?: false,
+            useImdb = MdbListSettingsStorage.loadUseImdb() ?: true,
+            useTmdb = MdbListSettingsStorage.loadUseTmdb() ?: true,
+            useTomatoes = MdbListSettingsStorage.loadUseTomatoes() ?: true,
+            useMetacritic = MdbListSettingsStorage.loadUseMetacritic() ?: true,
+            useTrakt = MdbListSettingsStorage.loadUseTrakt() ?: true,
+            useLetterboxd = MdbListSettingsStorage.loadUseLetterboxd() ?: true,
+            useAudience = MdbListSettingsStorage.loadUseAudience() ?: true,
+            useMal = MdbListSettingsStorage.loadUseMal() ?: true,
+        )
+        publishLocked()
     }
 
-    private fun publish() {
-        _uiState.value = localSettings().withActiveAccount()
+    private fun publishLocked() {
+        _uiState.value = local.withActiveAccount()
     }
 
     /**
      * Fork: re-publish when the MDBList account connects, disconnects or switches profile. Started
      * from [ensureLoaded] / [onProfileChanged] (not the object initialiser) so merely referencing this object never
-     * initialises [MdbListTracker].
+     * initialises [MdbListTracker]. W2 fix round: on Default, under [lock] like every other
+     * publication (it no longer relies on the main thread for ordering).
      */
     private fun observeAccount() {
-        if (observingAccount) return
-        observingAccount = true
-        // Main dispatcher: every read/write of the unsynchronized settings fields (setters and
-        // loadFromDisk run on main) stays on one thread, so an emission can't publish stale state.
-        scope.launch(Dispatchers.Main) {
+        synchronized(lock) {
+            if (observingAccount) return
+            observingAccount = true
+        }
+        scope.launch {
             // No drop(1): a state change between ensureLoaded() and subscription must not be lost,
             // and an unchanged re-publish is a no-op (StateFlow equality).
             MdbListTracker.auth.state.collect {
-                if (hasLoaded) _uiState.value = localSettings().withActiveAccount()
+                synchronized(lock) { if (hasLoaded) publishLocked() }
             }
+        }
+    }
+
+    /** Tests only: forget the loaded state (the observer keeps running). */
+    internal fun resetForTest() {
+        synchronized(lock) {
+            hasLoaded = false
+            local = MdbListSettings()
         }
     }
 
     private fun MdbListSettings.withActiveAccount(): MdbListSettings =
         withAccount(MdbListTracker.auth.state.value, ProfileRepository.activeProfileId)
-
-    private fun localSettings(): MdbListSettings =
-        MdbListSettings(
-            enabled = enabled,
-            apiKey = apiKey,
-            useImdb = useImdb,
-            useTmdb = useTmdb,
-            useTomatoes = useTomatoes,
-            useMetacritic = useMetacritic,
-            useTrakt = useTrakt,
-            useLetterboxd = useLetterboxd,
-            useAudience = useAudience,
-            useMal = useMal,
-        )
 }
