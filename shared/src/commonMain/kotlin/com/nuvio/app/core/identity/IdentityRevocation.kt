@@ -39,17 +39,23 @@ internal object IdentityEffects {
      */
     fun run(reduced: Reduced): Boolean {
         var ok = true
-        for (effect in reduced.effects) {
-            when (effect) {
-                is BarrierEffect.Revoke -> ok = revoke(effect.state) && ok
-                is BarrierEffect.CancelJobs -> Unit // the snapshot below, taken in the reducing section
-                BarrierEffect.SignalPreempted -> IdentityWork.signalPreempted()
-                is BarrierEffect.Log -> log.i { "[Identity] ${effect.line}" }
-                is BarrierEffect.AwaitDrain, BarrierEffect.RunApply, BarrierEffect.Proceed,
-                BarrierEffect.EndPreempted, BarrierEffect.EndFailed -> Unit
+        try {
+            for (effect in reduced.effects) {
+                when (effect) {
+                    is BarrierEffect.Revoke -> ok = revoke(effect.state) && ok
+                    is BarrierEffect.CancelJobs -> Unit // the snapshot below, taken in the reducing section
+                    BarrierEffect.SignalPreempted -> Unit // the wake comes from cancelTargets below
+                    is BarrierEffect.Log -> log.i { "[Identity] ${effect.line}" }
+                    is BarrierEffect.AwaitDrain, BarrierEffect.RunApply, BarrierEffect.Proceed,
+                    BarrierEffect.EndPreempted, BarrierEffect.EndFailed -> Unit
+                }
             }
+        } finally {
+            // Review r2-4: the window's cancels are issued, and its pending mark cleared, before the
+            // pre-emption can end a drain; the wake follows the cancels, never precedes them.
+            IdentityWork.cancelTargets(reduced.toCancel)
+            if (reduced.effects.any { it == BarrierEffect.SignalPreempted }) IdentityWork.signalPreempted()
         }
-        IdentityWork.cancelTargets(reduced.toCancel)
         if (reduced.accountOpened) IdentityImmediate.launchAfterAccountOpen()
         return ok
     }

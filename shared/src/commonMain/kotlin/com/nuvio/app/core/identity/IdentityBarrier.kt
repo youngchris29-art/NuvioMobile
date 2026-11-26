@@ -6,8 +6,8 @@ import com.nuvio.app.core.profile.ActiveProfileProvider
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
@@ -72,19 +72,27 @@ object IdentityBarrier {
     internal var beforeApplyLock: () -> Unit = {}
 
     suspend fun selectProfile(slot: Int): TransitionResult {
-        // The account the select was requested under. A select queued behind an account change
-        // (a window that ended before its Begin, so B6 cannot see it) must not switch the new
-        // account's slot: rechecked under the apply lock, like the delete and slot-removed paths.
-        val requestedUnder = IdentityRuntime.snapshot().latestAccount
+        // The account token (account AND auth serial) the select was requested under. A select
+        // queued behind an account change or a same-account session replacement (a window that
+        // ended before its Begin, so B6 cannot see it) must not switch the new session's slot:
+        // rechecked under the apply lock against the full token (review r2-5). Nothing applied →
+        // Preempted (revision 9).
+        val requestedUnder = IdentityLocks.withCommit {
+            AccountToken(IdentityRuntime.snapshot().latestAccount, IdentityRuntime.authSerial())
+        }
         return run(
             TransitionKind.ProfileSelect,
             Body.Profile {
-                val stillApplies = IdentityLocks.withCommit { IdentityRuntime.snapshot().latestAccount == requestedUnder }
+                val stillApplies = IdentityLocks.withCommit {
+                    IdentityRuntime.snapshot().latestAccount == requestedUnder.account &&
+                        IdentityRuntime.authSerial() == requestedUnder.authSerial
+                }
                 if (!stillApplies) {
-                    log.i { "[Identity] select of slot $slot: account changed while queued, nothing applied" }
-                    return@Profile
+                    log.i { "[Identity] select of slot $slot: session changed while queued, nothing applied" }
+                    return@Profile false
                 }
                 profileOps.applySelection(slot)
+                true
             },
         ).result
     }
@@ -102,9 +110,10 @@ object IdentityBarrier {
                 }
                 if (!stillApplies) {
                     log.i { "[Identity] active delete of slot $slot: account changed or slot no longer active, nothing applied" }
-                    return@Profile
+                    return@Profile true // a no-op delete is Done (5.3 step 4)
                 }
                 if (nextSlot != null) profileOps.applySelection(nextSlot) else profileOps.applyActiveRemoved()
+                true
             },
         ).result
 
@@ -122,6 +131,7 @@ object IdentityBarrier {
                     } else {
                         log.i { "[Identity] slot removed: no longer applies, nothing applied" }
                     }
+                    true // a no-op slot removal is Done (5.2 step 3)
                 },
             )
         }
@@ -143,16 +153,26 @@ object IdentityBarrier {
     }
 
     private sealed interface Body {
-        fun interface Profile : Body { fun apply() }
+        /** Returns false when the body applied nothing and the result is Preempted (a queued select, revision 9). */
+        fun interface Profile : Body { fun apply(): Boolean }
         class Account(val block: suspend () -> Result<Unit>) : Body
     }
 
     private class Outcome(val result: TransitionResult, val accountResult: Result<Unit>? = null)
 
     private suspend fun run(kind: TransitionKind, body: Body): Outcome {
-        val context = currentCoroutineContext()
-        if (context[IdentityJobElement] != null) context[Job]?.let(IdentityWork::markAwaitingBarrier)
-        return scope.async { lane.withLock { execute(kind, body) } }.await()
+        // A registered job (or a child/withContext of one: the element names the registered job,
+        // review r2-3) that calls a transition is not waited for by drains while it waits. Marked
+        // now, before it queues on the lane; unmarked in the lane's finally of this transition
+        // (review r2-2), even if the caller stopped waiting: ATOMIC start guarantees the finally.
+        val marked = currentCoroutineContext()[IdentityJobElement]?.let(IdentityWork::markAwaitingBarrier)
+        return scope.async(start = CoroutineStart.ATOMIC) {
+            try {
+                lane.withLock { execute(kind, body) }
+            } finally {
+                marked?.let(IdentityWork::unmarkAwaitingBarrier)
+            }
+        }.await()
     }
 
     private suspend fun execute(kind: TransitionKind, body: Body): Outcome {
@@ -260,9 +280,9 @@ object IdentityBarrier {
             IdentityEffects.run(gate)
             when {
                 BarrierEffect.Proceed in gate.effects -> try {
-                    ActiveProfileProvider.changing { body.apply() }
+                    val applied = ActiveProfileProvider.changing { body.apply() }
                     IdentityEffects.run(IdentityRuntime.reduceStep(BarrierEvent.ApplyFinished(SLOT_UNSET)))
-                    null
+                    if (applied) null else PREEMPTED
                 } catch (t: Throwable) {
                     val error = t.message ?: t::class.simpleName ?: "error"
                     IdentityEffects.run(IdentityRuntime.reduceStep(BarrierEvent.ApplyThrew(SLOT_UNSET, error)))

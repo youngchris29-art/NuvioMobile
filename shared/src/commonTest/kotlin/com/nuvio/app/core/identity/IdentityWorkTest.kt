@@ -210,8 +210,15 @@ class IdentityWorkTest {
 
     @Test
     fun awaitingBarrierJobNotWaitedButCancelled() = runTest {
-        val job = assertNotNull(launchWork("caller") { awaitCancellation() })
-        IdentityWork.markAwaitingBarrier(job)
+        val job = assertNotNull(launchWork("caller") {
+            // A child context still names the registered job (review r2-3).
+            withContext(Dispatchers.Unconfined) {
+                assertNotNull(IdentityWork.markAwaitingBarrier(assertNotNull(coroutineContext[IdentityJobElement])))
+            }
+            awaitCancellation()
+        })
+        runCurrent()
+        assertTrue(IdentityWork.isAwaiting(job))
         assertEquals(DrainEnd.Settled, drain(begin()))
         assertEquals(0, currentTime)
         runCurrent()
@@ -331,5 +338,56 @@ class IdentityWorkTest {
             scope.cancel()
             println("admissionRaceWithDrainEnd: $admitted admitted, $refused refused")
         }
+    }
+
+    /** Review r2-2: the marker is scoped; once unmarked, the job counts for the next drain again. */
+    @Test
+    fun unmarkedJobIsWaitedForAgain() = runTest {
+        var element: IdentityJobElement? = null
+        assertNotNull(launchWork("caller") { element = coroutineContext[IdentityJobElement]; delay(800) })
+        runCurrent()
+        val job = assertNotNull(IdentityWork.markAwaitingBarrier(assertNotNull(element)))
+        IdentityWork.unmarkAwaitingBarrier(job)
+        assertFalse(IdentityWork.isAwaiting(job))
+        assertEquals(DrainEnd.Settled, drain(begin()))
+        assertEquals(800, currentTime)
+    }
+
+    /**
+     * 5.11 point 5 (revision 9): a canceller holding a store lock runs the completion handler inline
+     * (Unconfined) while another thread holds commit and wants that store lock. Removal takes only
+     * the registry leaf, so this cannot deadlock.
+     */
+    @Test
+    fun cancelInsideStoreLockDoesNotDeadlock() = runTest {
+        withContext(Dispatchers.Default) {
+            val storeLock = kotlinx.atomicfu.locks.SynchronizedObject()
+            val inline = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+            kotlinx.coroutines.withTimeout(30_000) {
+                repeat(1_000) {
+                    val job = assertNotNull(IdentityWork.launch(token(), "push", inline) { awaitCancellation() })
+                    val canceller = async(Dispatchers.Default) {
+                        kotlinx.atomicfu.locks.synchronized(storeLock) { job.cancel() }
+                    }
+                    val committer = async(Dispatchers.Default) {
+                        IdentityLocks.withCommit { kotlinx.atomicfu.locks.synchronized(storeLock) { } }
+                    }
+                    canceller.await()
+                    committer.await()
+                    assertTrue(job.isCancelled)
+                }
+            }
+            inline.cancel()
+            assertTrue(IdentityWork.jobsOf(profile = true).isEmpty())
+        }
+    }
+
+    @Test
+    fun lockOrderChecksAroundTheLeaf() {
+        kotlin.test.assertFailsWith<IllegalStateException> { IdentityLocks.withRegistry { IdentityLocks.withCommit { } } }
+        kotlin.test.assertFailsWith<IllegalStateException> { IdentityLocks.withRegistry { IdentityLocks.withRegistry { } } }
+        kotlin.test.assertFailsWith<IllegalStateException> { IdentityLocks.inCompletionHandler { IdentityLocks.withCommit { } } }
+        // commit → registry is the allowed order
+        assertEquals(1, IdentityLocks.withCommit { IdentityLocks.withRegistry { IdentityLocks.commitDepth } })
     }
 }

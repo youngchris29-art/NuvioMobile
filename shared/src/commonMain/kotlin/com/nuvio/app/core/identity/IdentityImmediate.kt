@@ -48,9 +48,12 @@ internal object IdentityImmediate {
             return
         }
         openIfNeeded(TransitionKind.AccountPublished)
-        IdentityEffects.run(IdentityRuntime.reduceStep(BarrierEvent.WindowAccount(account)))
         IdentityLocks.withApply { ActiveProfileProvider.changing { onAccountPublished(account) } }
         write()
+        // Review r2-1: the window's account is recorded only after the hook and the auth write
+        // succeeded. If either throws, the window still holds (no token exists) and chainEnded
+        // settles it on the account AuthRepository.state still shows.
+        IdentityEffects.run(IdentityRuntime.reduceStep(BarrierEvent.WindowAccount(account)))
     }
 
     /** Called by the auth driver before it updates its ticket whenever a reduction changes the live serial. */

@@ -21,12 +21,17 @@ import kotlin.concurrent.Volatile
  * Design: docs/batch-scope-identity-spec.md, sections 2, 4.1, 5.11, 5.12.
  */
 
-/** Per-thread nesting depths of the two locks (platform thread-locals). */
+/** Per-thread nesting depths of the identity locks (platform thread-locals). */
 internal expect object IdentityThreadDepth {
     fun commit(): Int
     fun setCommit(value: Int)
     fun apply(): Int
     fun setApply(value: Int)
+    fun registry(): Int
+    fun setRegistry(value: Int)
+    /** Inside IdentityWork's own invokeOnCompletion handler. */
+    fun handler(): Int
+    fun setHandler(value: Int)
 }
 
 internal object IdentityLocks {
@@ -37,8 +42,15 @@ internal object IdentityLocks {
     val apply = SynchronizedObject()
 
     /**
-     * 5.11 point 1: requesting [apply] on a thread inside [commit] is a lock-order bug. Checked
-     * in debug builds (tests set it).
+     * Revision 9 (5.11 point 5): the leaf guarding IdentityWork's job set. Nothing is ever taken
+     * while holding it; job removal (from any thread, inside any store lock) takes only it.
+     */
+    val registry = SynchronizedObject()
+
+    /**
+     * 5.11: lock-order checks, in debug builds (tests set it): apply requested inside commit; any
+     * identity lock requested inside the registry leaf; commit requested from IdentityWork's
+     * completion handler.
      */
     @Volatile
     var strictLockOrder: Boolean = AppBuildConfig.IS_DEBUG_BUILD
@@ -49,16 +61,29 @@ internal object IdentityLocks {
     /** How deep this thread is inside [withCommit]. */
     val commitDepth: Int get() = IdentityThreadDepth.commit()
 
-    fun <T> withCommit(block: () -> T): T = synchronized(commit) {
-        IdentityThreadDepth.setCommit(IdentityThreadDepth.commit() + 1)
-        try {
-            block()
-        } finally {
-            IdentityThreadDepth.setCommit(IdentityThreadDepth.commit() - 1)
+    private fun checkNotUnderLeaf(name: String) {
+        if (strictLockOrder && IdentityThreadDepth.registry() > 0) {
+            error("[Identity] $name lock requested inside the registry leaf (lock order, 5.11)")
+        }
+    }
+
+    fun <T> withCommit(block: () -> T): T {
+        checkNotUnderLeaf("commit")
+        if (strictLockOrder && IdentityThreadDepth.handler() > 0) {
+            error("[Identity] commit lock requested from a completion handler (5.11 point 5)")
+        }
+        return synchronized(commit) {
+            IdentityThreadDepth.setCommit(IdentityThreadDepth.commit() + 1)
+            try {
+                block()
+            } finally {
+                IdentityThreadDepth.setCommit(IdentityThreadDepth.commit() - 1)
+            }
         }
     }
 
     fun <T> withApply(block: () -> T): T {
+        checkNotUnderLeaf("apply")
         if (strictLockOrder && IdentityThreadDepth.commit() > 0) {
             error("[Identity] apply lock requested inside the commit lock (lock order, 5.11)")
         }
@@ -69,6 +94,29 @@ internal object IdentityLocks {
             } finally {
                 IdentityThreadDepth.setApply(IdentityThreadDepth.apply() - 1)
             }
+        }
+    }
+
+    /** The leaf: [block] must take no lock and call nothing that might. */
+    fun <T> withRegistry(block: () -> T): T {
+        checkNotUnderLeaf("registry")
+        return synchronized(registry) {
+            IdentityThreadDepth.setRegistry(IdentityThreadDepth.registry() + 1)
+            try {
+                block()
+            } finally {
+                IdentityThreadDepth.setRegistry(IdentityThreadDepth.registry() - 1)
+            }
+        }
+    }
+
+    /** Marks this thread as inside IdentityWork's completion handler for [block]. */
+    fun <T> inCompletionHandler(block: () -> T): T {
+        IdentityThreadDepth.setHandler(IdentityThreadDepth.handler() + 1)
+        try {
+            return block()
+        } finally {
+            IdentityThreadDepth.setHandler(IdentityThreadDepth.handler() - 1)
         }
     }
 }
@@ -111,6 +159,8 @@ internal object IdentityRuntime {
         step.published?.let { _state.value = it }
         val toCancel = step.effects.filterIsInstance<BarrierEffect.CancelJobs>()
             .flatMap { IdentityWork.cancelSnapshotLocked(it.kind, it.logNames) }
+        // Finding r2-4: until this snapshot's cancels are issued, no drain may end (by construction).
+        if (toCancel.isNotEmpty()) IdentityWork.cancellationPendingLocked()
         var accountOpened = false
         val published = step.published
         if (published != null && published.phase is IdentityPhase.Open) {

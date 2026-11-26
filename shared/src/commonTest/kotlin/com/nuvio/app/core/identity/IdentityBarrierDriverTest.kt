@@ -329,8 +329,90 @@ class IdentityBarrierDriverTest {
         delay(100)
         IdentityImmediate.publishAuth(com.nuvio.app.core.auth.AuthState.Authenticated("user-b", null, isAnonymous = false)) { }
         IdentityImmediate.chainEnded()
-        assertIs<TransitionResult.Done>(select.await())
+        assertIs<TransitionResult.Preempted>(select.await()) // revision 9: nothing applied
         assertEquals(emptyList(), log.all())
         assertEquals(IdentityScope(accountB, 1), IdentityGate.state.value.scope)
+    }
+
+    /** Review r2-5: same account, new session (serial): the queued select applies nothing. */
+    @Test
+    fun queuedSelectAcrossASameAccountSessionReplacementAppliesNothing() = real {
+        IdentityImmediate.serialChanging()
+        val select = async { IdentityBarrier.selectProfile(2) }
+        delay(100)
+        IdentityRuntime.authSerial = { 2 } // the replaced session, same account A
+        IdentityImmediate.publishAuth(com.nuvio.app.core.auth.AuthState.Authenticated("user-a", null, isAnonymous = false)) { }
+        IdentityImmediate.chainEnded()
+        assertIs<TransitionResult.Preempted>(select.await())
+        assertEquals(emptyList(), log.all())
+        assertEquals(IdentityScope(accountA, 1), IdentityGate.state.value.scope)
+        // A select requested under the new session applies.
+        assertIs<TransitionResult.Done>(IdentityBarrier.selectProfile(2))
+        assertEquals(listOf("apply 2"), log.all())
+    }
+
+    /** Review r2-3: a registered job that calls the barrier from a child context is not waited for. */
+    @Test
+    fun nestedCallerInsideRegisteredWorkIsNotWaitedFor() = real {
+        val token = IdentityGate.currentToken()
+        val result = kotlinx.coroutines.CompletableDeferred<TransitionResult>()
+        assertNotNull(IdentityWork.launch(token, "caller", work) {
+            withContext(Dispatchers.Default) {
+                val child = async { IdentityBarrier.selectProfile(2) }
+                result.complete(child.await())
+            }
+        })
+        val start = kotlin.time.TimeSource.Monotonic.markNow()
+        eventually { log.count("apply 2") == 1 }
+        assertTrue(start.elapsedNow().inWholeMilliseconds < 400, "the drain waited for the caller's parent job")
+    }
+
+    /** Review r2-2: account work that awaited a profile switch and survived counts for the next account drain. */
+    @Test
+    fun survivingAccountJobIsDrainedByALaterSignOut() = real {
+        assertNotNull(IdentityWork.launchAccount(IdentityGate.currentAccountToken(), "push", work) {
+            assertIs<TransitionResult.Done>(IdentityBarrier.selectProfile(2))
+            delay(250)
+            log.add("push end")
+        })
+        eventually { log.count("apply 2") == 1 }
+        eventually { !IdentityGate.state.value.transitioning }
+        val result = IdentityBarrier.accountReset(TransitionKind.SignOut) { log.add("block"); Result.success(Unit) }
+        assertTrue(result.isSuccess)
+        assertEquals(listOf("apply 2", "push end", "block"), log.all())
+    }
+
+    /**
+     * Review r2-4: a window pre-empts a sign-out drain; its cancels are issued before the driver may
+     * apply, even when another job's completion wakes the drain loop first.
+     */
+    @Test
+    fun windowCancelsAreIssuedBeforeAPreemptedSignOutApplies() = real {
+        val revoker = RecordingRevoker(log)
+        revoker.onRevoke = { state ->
+            if (state.phase is IdentityPhase.Closed) {
+                val t = kotlin.time.TimeSource.Monotonic.markNow()
+                while (t.elapsedNow().inWholeMilliseconds < 300) { /* the window's slow main-thread revoke */ }
+            }
+        }
+        IdentityRevocation.revoker = revoker
+        IdentityBarrier.drainDeadlineMs = 2_000
+        val stuck = assertNotNull(IdentityWork.launch(IdentityGate.currentToken(), "stuck", work) { awaitCancellation() })
+        assertNotNull(IdentityWork.launch(IdentityGate.currentToken(), "short", work) { delay(150) })
+        val signOut = async {
+            IdentityBarrier.accountReset(TransitionKind.SignOut) {
+                log.add("block stuck cancelled=${stuck.isCancelled}")
+                Result.success(Unit)
+            }
+        }
+        eventually { IdentityGate.state.value.phase is IdentityPhase.Draining }
+        val auth = launch(Dispatchers.Default) {
+            delay(50)
+            IdentityImmediate.serialChanging() // B10: pre-empts; the "short" job completes during the slow revoke
+            IdentityImmediate.chainEnded()
+        }
+        assertTrue(signOut.await().isSuccess)
+        auth.join()
+        assertTrue(log.all().contains("block stuck cancelled=true"), "${log.all()}")
     }
 }

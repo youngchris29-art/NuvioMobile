@@ -81,6 +81,31 @@ class IdentityImmediateTest {
         assertEquals(IdentityEpoch(2), fresh.epoch)
     }
 
+    /** Review r2-1: a throwing hook leaves the window on the account auth still shows. */
+    @Test
+    fun throwingHookRecordsNoAccount() {
+        IdentityImmediate.onAccountPublished = { error("ensureLoaded failed") }
+        var written = false
+        kotlin.test.assertFailsWith<IllegalStateException> {
+            IdentityImmediate.publishAuth(AuthState.Authenticated("user-b", null, isAnonymous = false)) { written = true }
+        }
+        assertTrue(!written)
+        assertNull(IdentityGate.currentToken())
+        assertEquals(accountA, IdentityRuntime.snapshot().latestAccount)
+        IdentityImmediate.chainEnded()
+        assertEquals(IdentityScope(accountA, 1), IdentityGate.state.value.scope)
+        assertEquals(accountA, assertNotNull(IdentityGate.currentToken()).scope.account)
+    }
+
+    @Test
+    fun throwingWriteRecordsNoAccount() {
+        kotlin.test.assertFailsWith<IllegalStateException> {
+            IdentityImmediate.publishAuth(AuthState.Authenticated("user-b", null, isAnonymous = false)) { error("write failed") }
+        }
+        IdentityImmediate.chainEnded()
+        assertEquals(accountA, IdentityGate.state.value.scope.account)
+    }
+
     @Test
     fun chainEndedWithoutAWindowDoesNothing() {
         val before = IdentityGate.state.value
