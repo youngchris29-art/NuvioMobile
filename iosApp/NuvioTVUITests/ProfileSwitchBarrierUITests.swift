@@ -58,7 +58,7 @@ final class ProfileSwitchBarrierUITests: XCTestCase {
     }
 
     private func tile(_ app: XCUIApplication, _ name: String) -> XCUIElement {
-        app.buttons.matching(NSPredicate(format: "label == %@", name)).firstMatch
+        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", name)).firstMatch
     }
 
     private func moveFocus(_ direction: XCUIRemote.Button, until element: XCUIElement, max: Int = 8) -> Bool {
@@ -166,7 +166,8 @@ final class ProfileSwitchBarrierUITests: XCTestCase {
         guard target.waitForExistence(timeout: 5) else { return }
         XCTAssertTrue(moveFocus(.right, until: target, max: 8) || moveFocus(.left, until: target, max: 8))
         remote.press(.select, forDuration: 1.5) // the context menu
-        let delete = app.buttons["Delete Profile"]
+        // tvOS context-menu items are not always Buttons in the tree: match any element by label.
+        let delete = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Delete Profile")).firstMatch
         XCTAssertTrue(delete.waitForExistence(timeout: 5), "no Delete Profile in the context menu")
         _ = moveFocus(.down, until: delete, max: 4)
         remote.press(.select)

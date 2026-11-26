@@ -48,7 +48,7 @@ final class DeepLinkGateTeardownUITests: XCTestCase {
     }
 
     private func tile(_ app: XCUIApplication, _ name: String) -> XCUIElement {
-        app.buttons.matching(NSPredicate(format: "label == %@", name)).firstMatch
+        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", name)).firstMatch
     }
 
     func testSignOutTearsTheDeepLinkCoverDown() {

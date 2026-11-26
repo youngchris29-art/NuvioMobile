@@ -281,8 +281,10 @@ struct ContentView: View {
         .onChange(of: identity.revision) { _, _ in
             if let state = identity.state { applyIdentity(state) }
         }
-        .onChange(of: identity.accountKey) { _, _ in
-            if auth.gate == .main { autoEnterLatch.apply(.accountChangedWhileMain) }
+        .onChange(of: identity.accountKey) { oldKey, _ in
+            // From one identity to another while signed in; the launch restore (none → the
+            // restored account) is not a change of account and must not consume FEAT-65.
+            if auth.gate == .main, oldKey != "none" { autoEnterLatch.apply(.accountChangedWhileMain) }
         }
         .onChange(of: auth.gate) { oldGate, newGate in
             autoEnterLatch.apply(.gate(from: oldGate, to: newGate))
