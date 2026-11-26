@@ -6,6 +6,7 @@ import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import com.nuvio.app.core.identity.CommitKind
 import com.nuvio.app.core.identity.CommitResult
 import com.nuvio.app.core.identity.IdentityGate
+import com.nuvio.app.core.identity.ProfileIdentityRouterProvider
 import co.touchlab.kermit.Logger
 import com.nuvio.app.core.i18n.StringKey
 import com.nuvio.app.core.i18n.resourceString
@@ -119,29 +120,55 @@ object AddonRepository {
     /** Fork (W2, 8.0.4) tests only: runs after initialize()'s storage read, before its publication. */
     internal var afterLocalReadForTest: () -> Unit = {}
 
-    fun initialize() {
-        // Fork (scope identity, W2, 8.0.4): the bootstrap belongs to one identity. No token (a
-        // barrier or window is closed) → nothing starts; the next caller initializes under the
-        // then-current token. The publication commits only if that token still holds (P5).
-        val token = IdentityGate.currentToken() ?: return
-        val effectiveProfileId = resolveEffectiveProfileId(token.scope.slot)
-        if (bootstrap.initialized) return
-        bootstrap.begin()
-        currentProfileId = effectiveProfileId
-        log.d { "initialize() — loading local addons for profile $currentProfileId" }
+    /**
+     * Fork (W2 review r1): the generation (= [profileEpoch]) of the bootstrap that holds the
+     * reservation, null when none does. Under [profileLock]; cleared by every reset.
+     */
+    private var bootstrapHolder: Long? = null
 
-        val storedUrls = dedupeManifestUrls(AddonStorage.loadInstalledAddonUrls(currentProfileId))
-        val enabledByUrl = loadLocalEnabledStates()
+    /** Tests only: the profile id writes go to. */
+    internal val currentProfileIdForTest: Int get() = synchronized(profileLock) { currentProfileId }
+
+    fun initialize() {
+        // Fork (scope identity, W2, 8.0.4 + review r1): the bootstrap belongs to one identity and
+        // one profile generation. No token (a barrier or window is closed) → nothing starts. The
+        // reservation, the profile id and the publication are decided by AddonBootstrapRule under
+        // profileLock; nothing shared is written before that decision (P5).
+        val token = IdentityGate.currentToken() ?: return
+        // Review r1 #1: the slot comes from the router (the barrier's on tvOS, the active profile elsewhere).
+        val target = resolveEffectiveProfileId(ProfileIdentityRouterProvider.router.slotOf(token))
+        val reserved = synchronized(profileLock) {
+            when (val r = AddonBootstrapRule.reserve(bootstrap.initialized, profileEpoch.value)) {
+                BootstrapReserve.Skip -> null
+                is BootstrapReserve.Reserve -> r.generation.also {
+                    bootstrap.begin()
+                    bootstrapHolder = it
+                }
+            }
+        } ?: return
+        log.d { "initialize() — loading local addons for profile $target" }
+
+        val storedUrls = dedupeManifestUrls(AddonStorage.loadInstalledAddonUrls(target))
+        val enabledByUrl = AddonStorage.loadAddonEnabledStates(target).mapKeys { (url, _) -> ensureManifestSuffix(url) }
         log.d { "initialize() — local addon count: ${storedUrls.size}" }
         afterLocalReadForTest()
-        val published = synchronized(profileLock) {
-            IdentityGate.commit(token, CommitKind.Publish, site = "addonBootstrap") {
-                publishBootstrap(storedUrls, enabledByUrl)
+        synchronized(profileLock) {
+            val committed = IdentityGate.commit(token, CommitKind.Publish, site = "addonBootstrap") {
+                AddonBootstrapRule.end(reserved, profileEpoch.value, bootstrapHolder, tokenHolds = true).also { end ->
+                    if (end == BootstrapEnd.Publish) {
+                        bootstrapHolder = null
+                        currentProfileId = target
+                        publishBootstrap(storedUrls, enabledByUrl)
+                    }
+                }
             }
-        }
-        if (published is CommitResult.Rejected) {
-            log.i { "initialize() — identity changed during bootstrap (${published.reason}); nothing published" }
-            bootstrap.reset()
+            val end = (committed as? CommitResult.Committed)?.value
+                ?: AddonBootstrapRule.end(reserved, profileEpoch.value, bootstrapHolder, tokenHolds = false)
+            if (end == BootstrapEnd.Release) {
+                bootstrapHolder = null
+                bootstrap.reset()
+            }
+            if (end != BootstrapEnd.Publish) log.i { "initialize() — identity or profile changed during bootstrap ($end); nothing published" }
         }
     }
 
@@ -194,6 +221,7 @@ object AddonRepository {
             // Races item 3: the bump comes before the reset writes the state.
             profileEpoch.update { it + 1 }
             currentProfileId = effectiveProfileId
+            bootstrapHolder = null
             bootstrap.reset()
             pulledFromServer = false
             _serverPullSettled.value = false
@@ -209,6 +237,7 @@ object AddonRepository {
             }
             profileEpoch.update { it + 1 }
             currentProfileId = 1
+            bootstrapHolder = null
             bootstrap.reset()
             pulledFromServer = false
             _serverPullSettled.value = false
