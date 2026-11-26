@@ -30,6 +30,10 @@ final class AuthViewModel: ObservableObject {
     @Published private(set) var accountEmail: String?
     @Published private(set) var isAnonymous = true
 
+    /// Scope identity W2 (8.2): told first when the user starts a sign-in or guest start (guest,
+    /// email sign-in/up, QR), so the FEAT-65 auto-enter never runs for that session.
+    var onUserStartedSignIn: () -> Void = {}
+
     private var stateWatcher: FlowWatcher?
     private var errorWatcher: FlowWatcher?
     private var noticeWatcher: FlowWatcher?
@@ -51,8 +55,8 @@ final class AuthViewModel: ObservableObject {
                 self.isAnonymous = authed.isAnonymous
                 self.accountEmail = authed.email
                 if !authed.isAnonymous {
-                    // Real account: key the profile cache to this user and refresh from the cloud.
-                    ProfileRepository.shared.ensureLoaded(userId: authed.userId)
+                    // Real account: refresh the profiles from the cloud. Scope identity W2: the
+                    // cache was keyed to this user inside the account's publish (Kotlin, 5.7).
                     ProfileRepository.shared.pullProfiles { _ in }
                     if !wasRealAccount {
                         // Register this device/session with the account (once per sign-in
@@ -94,10 +98,12 @@ final class AuthViewModel: ObservableObject {
 
     /// Local guest mode — random UUID in NSUserDefaults, no network (the pre-cloud default).
     func continueAsGuest() {
+        onUserStartedSignIn()
         AuthRepository.shared.signInAnonymously()
     }
 
     func signIn(email: String, password: String) {
+        onUserStartedSignIn()
         clearError()
         isBusy = true
         AuthRepository.shared.signInWithEmail(email: email, password: password) { [weak self] _, _ in
@@ -108,6 +114,7 @@ final class AuthViewModel: ObservableObject {
     }
 
     func signUp(email: String, password: String) {
+        onUserStartedSignIn()
         clearError()
         isBusy = true
         AuthRepository.shared.signUpWithEmail(email: email, password: password) { [weak self] _, _ in

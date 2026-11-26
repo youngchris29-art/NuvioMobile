@@ -30,6 +30,18 @@ struct ContentView: View {
     @State private var home = HomeViewModel()
     @StateObject private var topShelf = TopShelfUpdater()
     @State private var entered = false
+    /// Scope identity W2 (8.2): the one owner of the identity cover and the shell revocation.
+    @ObservedObject private var identity = IdentityModel.shared
+    /// The identity (scope and epoch) the entered profile was entered under; `EnteredScopeRule`
+    /// compares every later state with it.
+    @State private var enteredIdentity: IdentityState?
+    /// FEAT-65's once-per-process latch (8.2). Process-wide in effect: `ContentView` is the root and
+    /// its `@State` lives for the process (the `.id()` rebuild below sits under it).
+    @State private var autoEnterLatch = ProfileAutoEnterLatch()
+    #if DEBUG
+    /// `-debug.signOutAfterSec <s>` (W2 UI leg): one sign-out that many seconds after `entered`.
+    @State private var debugSignOutConsumed = false
+    #endif
     @State private var selectedTab = 0
     /// Which Settings pane is open (the Settings `NavigationStack` path; empty = the category
     /// root). Owned HERE, above the `.id(...)` rebuild boundary, for exactly the reason
@@ -101,12 +113,6 @@ struct ContentView: View {
     @State private var debugDeepLinkConsumed = false
     #endif
     @Environment(\.scenePhase) private var scenePhase
-    /// FEAT-65: the "Open Last Profile at Launch" decision runs at most once per PROCESS, at the
-    /// first time the auth gate turns `.main` (a restored session at cold launch). A `static`, not
-    /// `@State`: nothing about the view's identity may re-arm it. Also consumed by any visit to the
-    /// Welcome gate, so a sign-out → sign-in (or a first sign-in after a signed-out cold launch)
-    /// always shows the picker instead of jumping into whatever profile payload is on disk.
-    @MainActor private static var profileAutoEnterConsumed = false
 
     /// FEAT-65 (Steven, beta.19-rc3 follow-up 2026-10-08): skip the "Who's watching?" picker and
     /// enter the profile used last, when Settings › Account & Profiles › Open Last Profile at
@@ -118,21 +124,59 @@ struct ContentView: View {
     /// already consumed.
     private func autoEnterRememberedProfileIfNeeded() {
         guard !entered else { return }
-        let consumed = Self.profileAutoEnterConsumed
-        Self.profileAutoEnterConsumed = true
-        // Idempotent; loads a guest's cached payload synchronously so the decision reads it (the
-        // picker's own `onAppear` calls it too).
+        let consumed = !autoEnterLatch.mayAutoEnter
+        autoEnterLatch.apply(.autoEnterRan)
+        // Idempotent (the picker's own `onAppear` calls it too).
         profiles.start()
         guard let profile = profiles.rememberedStartupProfile(alreadyFiredThisLaunch: consumed) else { return }
         print("[ProfileSelect] auto-enter profile \(profile.profileIndex)")
-        profiles.select(profile)
+        // Scope identity W2 (8.0.3): the same sequence as a picker tap; entered only once the
+        // barrier opened on this profile.
+        Task { await profiles.selectAndEnter(profile) { final in enterProfile(final) } }
+    }
+
+    /// The `enter` closure of `selectAndEnter` (synchronous on Main). `reseedNow()` before
+    /// `entered = true`: the chosen profile's theme must be applied while only the picker is
+    /// mounted, or MainTabView mounts under the boot-time theme and the async watcher delivery
+    /// remounts the whole shell ~70ms later (see AppThemeModel.reseedNow).
+    private func enterProfile(_ final: IdentityState) {
         appTheme.reseedNow()
+        enteredIdentity = final
+        identity.isEntered = true
         entered = true
+    }
+
+    /// Leaves the entered profile: the shell and the root deep-link cover unmount.
+    private func leaveProfile() {
+        entered = false
+        deepLink = nil
+        enteredIdentity = nil
+        identity.isEntered = false
+    }
+
+    /// Scope identity W2 (8.2, 5.10): run synchronously by the revoker before any drain, apply,
+    /// wipe or publish, and again on every later state.
+    private func applyIdentity(_ state: IdentityState) {
+        if EnteredScopeRule.shouldLeave(entered: enteredIdentity, state: state,
+                                        localSelectInFlight: identity.localSelectInFlight) {
+            print("[Identity] leaving the entered profile (\(state.kind.map { "\($0)" } ?? "open"))")
+            leaveProfile()
+        }
+        if state.transitioning { deepLink = nil }
+    }
+
+    /// What the root shows: the auth gate, unless the barrier is in Recovery (decision AA).
+    private var shownGate: AuthViewModel.Gate {
+        switch identity.recoveryScreen {
+        case .splash: return .loading
+        case .welcome: return .welcome
+        case .none: return auth.gate
+        }
     }
 
     var body: some View {
         Group {
-            switch auth.gate {
+            switch shownGate {
             case .loading:
                 ZStack {
                     Theme.Palette.background.ignoresSafeArea()
@@ -148,7 +192,7 @@ struct ContentView: View {
                         // H-1B-ii: handed down (not re-created) so the theme `.id()` rebuild of
                         // this Group cannot re-create Home's data pipeline.
                         home: home,
-                        onSwitchProfile: { entered = false },
+                        onSwitchProfile: { leaveProfile() },
                         selectedTab: $selectedTab,
                         settingsPath: $settingsPath,
                         settingsLastCategory: $settingsLastCategory,
@@ -164,15 +208,17 @@ struct ContentView: View {
                     // FEAT-64: once a profile is entered, like Library/Detail's own
                     // `WatchedRepository.ensureLoaded()` (never before the profile is known).
                     .onAppear { WatchedBadgeIndex.shared.start() }
+                    // Scope identity W2 (4.6): the barrier applies a profile only after the shell unmounted.
+                    .onAppear { identity.surfaceAppeared(.shell) }
+                    .onDisappear { identity.surfaceDisappeared(.shell) }
                 } else {
-                    // `reseedNow()` BEFORE `entered = true`: the chosen profile's theme must be
-                    // applied while only this picker is mounted, or MainTabView mounts under the
-                    // boot-time theme and the async watcher delivery remounts the whole shell
-                    // ~70ms later (see AppThemeModel.reseedNow).
-                    ProfileSelectionView(model: profiles, onSelected: { appTheme.reseedNow(); entered = true })
+                    // Scope identity W2: entered only from `selectAndEnter` (see `enterProfile`).
+                    ProfileSelectionView(model: profiles, onSelected: { final in enterProfile(final) })
                 }
             }
         }
+        // Scope identity W2 (P9): nothing under the cover takes input while it is up.
+        .disabled(identity.coverVisible)
         .environment(\.posterStyle, posterStyle.style)
         .environment(\.cardDepthStyle, cardDepth.style)
         // FEAT-64: the watched tick's one index (`WatchedBadgeIndex`), read per card by
@@ -208,6 +254,10 @@ struct ContentView: View {
         // boundary, so a mode or font change costs the user nothing but the rebuild.
         .id("\(appTheme.paletteKey)|\(navigationStyle)|\(railVisibility)|\(NavigationChrome.railPosition(raw: railPosition).rawValue)|\(uiFont)|\(discoverPlacementRaw)|\(discoverPlacementRevision)")
         .onAppear {
+            // Scope identity W2: before auth starts, so the first publish already finds them.
+            identity.onRevoke = { state in applyIdentity(state) }
+            auth.onUserStartedSignIn = { autoEnterLatch.apply(.userStartedSignIn) }
+            identity.start()
             auth.start()
             posterStyle.start()
             cardDepth.start()
@@ -227,12 +277,19 @@ struct ContentView: View {
             print("[ExtPlayerProbe] availablePlayers = \(players.map { "\($0.id):\($0.name)" })")
             #endif
         }
-        .onChange(of: auth.gate) { _, newGate in
-            if newGate == .welcome { Self.profileAutoEnterConsumed = true }
+        // Scope identity W2: every later identity state, and an account change while signed in.
+        .onChange(of: identity.revision) { _, _ in
+            if let state = identity.state { applyIdentity(state) }
+        }
+        .onChange(of: identity.accountKey) { _, _ in
+            if auth.gate == .main { autoEnterLatch.apply(.accountChangedWhileMain) }
+        }
+        .onChange(of: auth.gate) { oldGate, newGate in
+            autoEnterLatch.apply(.gate(from: oldGate, to: newGate))
             if newGate == .main { autoEnterRememberedProfileIfNeeded() }
             // Signing out (or a remote session invalidation) tears the shell down to the gate.
             if newGate != .main {
-                entered = false
+                leaveProfile()
                 // Empty the Top Shelf now; don't rely on the wipe's emission racing `stop()`.
                 topShelf.clearForSignOut()
                 // H-1B-ii: hard teardown of Home's (profile-scoped) watchers. `home` now outlives
@@ -246,6 +303,7 @@ struct ContentView: View {
         // Top Shelf snapshot mirrors the active profile's continue watching; only meaningful
         // once a profile is entered (data is profile-scoped).
         .onChange(of: entered) { _, isEntered in
+            identity.isEntered = isEntered && auth.gate == .main
             if isEntered {
                 topShelf.start()
                 if let url = pendingDeepLinkURL {
@@ -300,20 +358,37 @@ struct ContentView: View {
             handleDeepLink(url)
         }
         #endif
+        #if DEBUG
+        // `-debug.signOutAfterSec <s>` (W2's DeepLinkGateTeardownUITests): one sign-out that many
+        // seconds after a profile is entered, so a leg can watch the gate tear the deep-link cover down.
+        .task(id: entered) {
+            let seconds = UserDefaults.standard.integer(forKey: "debug.signOutAfterSec")
+            guard entered, seconds > 0, !debugSignOutConsumed else { return }
+            debugSignOutConsumed = true
+            try? await Task.sleep(nanoseconds: UInt64(seconds) * 1_000_000_000)
+            print("[Identity] debug: signing out after \(seconds) s")
+            auth.signOut()
+        }
+        #endif
         .fullScreenCover(item: $deepLink) { link in
-            switch link {
-            case .resume(let type, let videoId, let title, let parentMetaId, let season, let episode):
-                StreamPickerView(
-                    type: type,
-                    videoId: videoId,
-                    title: title,
-                    parentMetaId: parentMetaId,
-                    season: season,
-                    episode: episode
-                )
-            case .title(let preview):
-                DeepLinkTitleView(preview: preview)
+            Group {
+                switch link {
+                case .resume(let type, let videoId, let title, let parentMetaId, let season, let episode):
+                    StreamPickerView(
+                        type: type,
+                        videoId: videoId,
+                        title: title,
+                        parentMetaId: parentMetaId,
+                        season: season,
+                        episode: episode
+                    )
+                case .title(let preview):
+                    DeepLinkTitleView(preview: preview)
+                }
             }
+            // Scope identity W2 (4.6): the barrier applies a profile only after this cover unmounted.
+            .onAppear { identity.surfaceAppeared(.deepLinkCover) }
+            .onDisappear { identity.surfaceDisappeared(.deepLinkCover) }
         }
         .onChange(of: scenePhase) { _, newPhase in
             // Foreground/background sync lifecycle (mirrors mobile's AppVisibility collector in
@@ -323,6 +398,7 @@ struct ContentView: View {
             // during app-switcher overlays — restarting the loop is cheap, churn is not.
             switch newPhase {
             case .active:
+                identity.returnedToForeground() // rule B: a Recovery retry on every return
                 guard auth.gate == .main, entered else { return }
                 // No force: the 2-minute activity-pull freshness gate inside SyncManager decides.
                 SyncManager.shared.requestForegroundPull(

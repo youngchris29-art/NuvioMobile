@@ -71,6 +71,9 @@ struct NuvioTVApp: App {
         // Wire the shared provider seams for tvOS (profiles, sync platform "tv", account-data
         // cleaner, sync-backend load). The phone app does this in composeApp's App() (which tvOS
         // never runs). Runs once, before any repository is accessed.
+        // Scope identity W2 (4.6): the synchronous revoker, before the barrier can first run and
+        // before auth starts (ContentView.onAppear); the installer marks it required.
+        IdentityRevocation.shared.revoker = IdentityRevokerImpl()
         TvOsProviderInstallerKt.installTvOsSharedProviders()
 
         // ui-legs (2026-10-22): `-debug.tmdbEnabledOverride YES|NO` (DEBUG only) sets TMDB

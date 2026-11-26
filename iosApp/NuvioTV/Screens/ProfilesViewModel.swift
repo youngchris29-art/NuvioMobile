@@ -28,9 +28,17 @@ final class ProfilesViewModel: ObservableObject {
     private var avatarsWatcher: FlowWatcher?
     private var authWatcher: FlowWatcher?
 
+    /// Scope identity W2: true for the whole select (`IdentityModel.localSelectInFlight`, owned by
+    /// `selectAndEnter`); the picker's tiles ignore taps meanwhile.
+    var isSwitching: Bool { IdentityModel.shared.localSelectInFlight }
+
+    /// What `selectAndEnter` calls (real by default; `SelectAndEnterSequenceTests` installs fakes).
+    var selectPorts: ProfileSelectPorts = LiveProfileSelectPorts()
+
     func start() {
         guard watcher == nil else { return }
-        ProfileRepository.shared.loadCachedProfiles()
+        // Scope identity W2: the cached payload is restored at launch only for its own trusted owner
+        // (TvOsProviderInstaller's boot decision) and by the account's publish; never here (P6).
         watcher = FlowWatcherKt.watch(ProfileRepository.shared.state) { [weak self] emitted in
             guard let self, let state = emitted as? ProfileState else { return }
             // Written only on change: ContentView observes this model at the app root, and the
@@ -66,21 +74,63 @@ final class ProfilesViewModel: ObservableObject {
 
     // MARK: - Actions
 
-    /// Breadcrumbs bracket every Kotlin call: a throw crossing back into Swift here aborts the
-    /// process rather than surfacing as a catchable error, so the last line printed names the stage
-    /// that took the app down. Kept out of `#if DEBUG` on purpose — testers run release builds, and
-    /// their console log is the only diagnostic we get for a crash we cannot reproduce locally.
-    func select(_ profile: NuvioProfile) {
+    /// Scope identity W2 (spec 8.0.3): the one select sequence (picker tap and auto-enter). It owns
+    /// `IdentityModel.localSelectInFlight` for the whole operation (the cover shows at once) and
+    /// clears it in one `defer`, its last statement, after `enter` ran or the picker was chosen.
+    /// Breadcrumbs bracket every Kotlin call (kept out of `#if DEBUG`: testers' console logs are
+    /// the only diagnostic for a crash we cannot reproduce).
+    func selectAndEnter(_ profile: NuvioProfile, enter: @escaping (IdentityState) -> Void) async {
         print("[ProfileSelect] selecting profile \(profile.profileIndex)")
-        ProfileRepository.shared.selectProfile(profileIndex: profile.profileIndex)
-        print("[ProfileSelect] selectProfile returned — requesting full pull")
-        // Full cloud pull for the selected profile (addons first, then the rest in parallel).
-        // Self-guarding: no-op in guest mode / signed out, so the local-only flow is unchanged.
-        SyncManager.shared.pullAllForProfile(profileId: profile.profileIndex)
-        // Periodic activity polling (library + watch progress) for the session. Self-guarding the
-        // same way; a profile switch re-targets the loop, sign-out cancels it via cancelAccountSync.
-        SyncManager.shared.startPeriodicNuvioSyncPull(profileId: profile.profileIndex)
-        print("[ProfileSelect] full pull requested — tap complete")
+        let entered = await Self.selectAndEnter(slot: profile.profileIndex, identity: IdentityModel.shared,
+                                                ports: selectPorts, enter: enter)
+        print("[ProfileSelect] select finished — entered=\(entered)")
+    }
+
+    /// The sequence itself, testable with a fake barrier. Returns whether the profile was entered.
+    @discardableResult
+    static func selectAndEnter(slot: Int32,
+                               identity: IdentityModel,
+                               ports: ProfileSelectPorts,
+                               enter: (IdentityState) -> Void) async -> Bool {
+        // 1. Tap (Main).
+        let accountAtTap = ports.currentState()?.scope.account
+        identity.localSelectInFlight = true
+        defer { identity.localSelectInFlight = false } // 4: the last statement, whatever happened
+        // 2. The barrier (Main suspended; nothing on screen changes).
+        let result: TransitionResult?
+        if ports.failBeforeBegin {
+            print("[ProfileSelect] debug: failing the select before Begin")
+            result = nil
+        } else {
+            result = try? await ports.select(slot: slot)
+        }
+        // 3. Branch on the result.
+        guard let done = result as? TransitionResultDone else {
+            if result is TransitionResultRequested {
+                // Swift tasks carry neither the job nor the lane element (rule A): impossible here.
+                ports.reportImpossible("selectProfile returned Requested to Swift")
+            }
+            print("[ProfileSelect] not entered: \(result.map { String(describing: $0) } ?? "no result")")
+            return false // 4b: the cover hides while not entered → recoverToRoot
+        }
+        let final = done.final
+        guard final.phase is IdentityPhaseOpen,
+              final.scope.slot == slot,
+              IdentityValues.same(final.scope.account, accountAtTap),
+              IdentityValues.same(final, ports.currentState()) else {
+            print("[ProfileSelect] not entered: the identity moved on (\(final))")
+            return false
+        }
+        // Full cloud pull and periodic polling for the selected profile (self-guarding: no-ops for
+        // guests and signed-out sessions).
+        ports.startSync(slot: final.scope.slot)
+        guard IdentityValues.same(final, ports.currentState()) else {
+            print("[ProfileSelect] not entered: a transition completed during the sync start")
+            return false
+        }
+        identity.isEntered = true
+        enter(final) // 4a: ContentView's closure, synchronous on Main
+        return true
     }
 
     /// FEAT-65: the profile to enter without the picker at cold launch, or nil to show the picker.
@@ -179,6 +229,44 @@ final class ProfilesViewModel: ObservableObject {
         watcher?.cancel()
         avatarsWatcher?.cancel()
         authWatcher?.cancel()
+    }
+}
+
+/// What `ProfilesViewModel.selectAndEnter` needs from Kotlin and the debug knobs.
+@MainActor
+protocol ProfileSelectPorts {
+    func select(slot: Int32) async throws -> TransitionResult
+    func currentState() -> IdentityState?
+    func startSync(slot: Int32)
+    var failBeforeBegin: Bool { get }
+    func reportImpossible(_ message: String)
+}
+
+@MainActor
+struct LiveProfileSelectPorts: ProfileSelectPorts {
+    func select(slot: Int32) async throws -> TransitionResult {
+        try await IdentityBarrier.shared.selectProfile(slot: slot)
+    }
+
+    func currentState() -> IdentityState? {
+        IdentityGate.shared.state.value_ as? IdentityState
+    }
+
+    func startSync(slot: Int32) {
+        SyncManager.shared.pullAllForProfile(profileId: slot)
+        SyncManager.shared.startPeriodicNuvioSyncPull(profileId: slot)
+    }
+
+    var failBeforeBegin: Bool {
+        #if DEBUG
+        UserDefaults.standard.integer(forKey: "debug.identityFailBeforeBegin") == 1
+        #else
+        false
+        #endif
+    }
+
+    func reportImpossible(_ message: String) {
+        assertionFailure(message)
     }
 }
 

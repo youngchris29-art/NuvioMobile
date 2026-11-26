@@ -205,7 +205,7 @@ struct WelcomeView: View {
         .fullScreenCover(item: $sheet) { mode in
             switch mode {
             case .qr:
-                QrSignInView()
+                QrSignInView(onStart: model.onUserStartedSignIn)
             case .server:
                 ServerConnectionView()
             case .signIn, .signUp:

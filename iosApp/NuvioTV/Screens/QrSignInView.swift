@@ -66,6 +66,8 @@ final class QrSignInViewModel: ObservableObject {
 }
 
 struct QrSignInView: View {
+    /// Scope identity W2: the user started a QR sign-in (consumes the FEAT-65 auto-enter latch).
+    var onStart: () -> Void = {}
     @StateObject private var model = QrSignInViewModel()
     @Environment(\.dismiss) private var dismiss
 
@@ -79,7 +81,10 @@ struct QrSignInView: View {
             }
             .padding(Theme.Spacing.screen)
         }
-        .onAppear { model.start() }
+        .onAppear {
+            onStart()
+            model.start()
+        }
         .onDisappear { model.stop() }
         .onChange(of: model.state?.completed ?? false) { _, completed in
             // Session imported — the auth collector flips the app past Welcome; close this cover.

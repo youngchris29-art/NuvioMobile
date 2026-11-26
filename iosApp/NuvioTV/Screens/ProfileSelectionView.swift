@@ -41,7 +41,9 @@ struct ProfileAvatar: View {
 /// Long-press a profile to edit/delete; the trailing tile adds a new profile.
 struct ProfileSelectionView: View {
     @ObservedObject var model: ProfilesViewModel
-    var onSelected: () -> Void
+    /// Scope identity W2 (8.0.3): called by `selectAndEnter` with the identity entered, only after the
+    /// barrier opened on this profile.
+    var onSelected: (IdentityState) -> Void
 
     @State private var editing: ProfileEditTarget?
     @State private var pinPrompt: PinPrompt?
@@ -204,8 +206,9 @@ struct ProfileSelectionView: View {
     private func perform(_ action: PinPrompt.Action, on profile: NuvioProfile) {
         switch action {
         case .select:
-            model.select(profile)
-            onSelected()
+            guard !model.isSwitching else { return }
+            let enter = onSelected
+            Task { await model.selectAndEnter(profile, enter: enter) }
         case .edit:
             editing = ProfileEditTarget(profile: profile)
         case .delete:
