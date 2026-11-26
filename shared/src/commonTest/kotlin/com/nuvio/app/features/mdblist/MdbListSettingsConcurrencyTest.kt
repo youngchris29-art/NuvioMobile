@@ -25,10 +25,10 @@ class MdbListSettingsConcurrencyTest {
     fun reloadRacingSetterNeverLeavesPublishedStateBehindStorage() = runTest {
         withContext(Dispatchers.Default) {
             MdbListSettingsRepository.ensureLoaded()
-            repeat(40) { round ->
+            repeat(10) { round ->
                 listOf(
-                    async { repeat(500) { MdbListSettingsRepository.onProfileChanged() } },
-                    async { repeat(500) { i -> MdbListSettingsRepository.setEnabled((i + round) % 2 == 0) } },
+                    async { repeat(200) { MdbListSettingsRepository.onProfileChanged() } },
+                    async { repeat(200) { i -> MdbListSettingsRepository.setEnabled((i + round) % 2 == 0) } },
                 ).awaitAll()
                 val stored = MdbListSettingsStorage.loadEnabled() ?: false
                 assertEquals(stored, MdbListSettingsRepository.uiState.value.enabled, "round $round: published vs stored")

@@ -247,7 +247,8 @@ class IdentityBarrierDriverTest {
         val select = async { IdentityBarrier.selectProfile(2) }
         delay(150)
         assertEquals(0, log.count("apply 2"))
-        assertEquals(TransitionKind.AccountWipe, IdentityGate.state.value.kind)
+        // W2 fix round (WindowKindRule): a serial change opens a publish window.
+        assertEquals(TransitionKind.AccountPublished, IdentityGate.state.value.kind)
         IdentityImmediate.chainEnded()
         assertIs<TransitionResult.Done>(select.await())
         assertEquals(3L, epoch()) // the window's period, then the select's
