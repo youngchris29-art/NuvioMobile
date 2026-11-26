@@ -70,6 +70,27 @@ final class CoverOwnershipTests: XCTestCase {
         XCTAssertEqual(root.recoveries, 0)
     }
 
+    /// Review r2 #3: a failed server switch from Welcome keeps its screen (and its error).
+    func testFailedServerSwitchKeepsItsScreen() {
+        model.serverSwitchFailed = { true }
+        model.setState(IdentityFixture.draining(.serverswitch))
+        XCTAssertTrue(cover.visible)
+        model.setState(IdentityFixture.state(account: AccountKeyNone.shared, epoch: 2))
+        XCTAssertFalse(cover.visible)
+        XCTAssertEqual(root.recoveries, 0)
+    }
+
+    func testSucceededServerSwitchAndSignOutDismiss() {
+        model.serverSwitchFailed = { false }
+        model.setState(IdentityFixture.draining(.serverswitch))
+        model.setState(IdentityFixture.state(account: AccountKeyNone.shared, epoch: 2))
+        XCTAssertEqual(root.recoveries, 1)
+        model.serverSwitchFailed = { true } // a stale failure never keeps a sign-out's presentations
+        model.setState(IdentityFixture.draining(.signout, epoch: 2))
+        model.setState(IdentityFixture.state(account: AccountKeyNone.shared, epoch: 3))
+        XCTAssertEqual(root.recoveries, 2)
+    }
+
     func testAccountPublishedWindowHasNoCover() {
         model.setState(IdentityFixture.state(phase: IdentityPhaseClosed(from: IdentityEpoch(value: 1)), kind: .accountpublished))
         XCTAssertFalse(model.coverVisible)
@@ -289,6 +310,20 @@ final class SelectAndEnterSequenceTests: XCTestCase {
         XCTAssertFalse(selected)
     }
 
+    /// Review r2 #1: after a failed apply the picker's retry reaches the barrier and enters (B20a).
+    func testTapAfterAFailedApplyReachesTheBarrierAndEnters() async {
+        ports.current = IdentityFixture.state(slot: 2, epoch: 1, phase: IdentityPhaseRecovery(from: IdentityEpoch(value: 1)), recovery: .failedapply)
+        let bound = TapBindingRule.pickerBinding(ports.current)
+        XCTAssertEqual(bound, "guest:g")
+        let final = IdentityFixture.state(slot: 3, epoch: 2)
+        ports.currentAfterSelect = final
+        var selected = false
+        ports.result = { selected = true; return TransitionResultDone(final: final) }
+        let outcome = await run(slot: 3, bound: bound)
+        XCTAssertTrue(selected)
+        XCTAssertTrue(outcome.entered)
+    }
+
     func testFailBeforeBeginKnob() async {
         ports.failBeforeBegin = true
         ports.result = { XCTFail("the barrier must not be called"); return TransitionResultRequested.shared }
@@ -302,26 +337,60 @@ final class SelectAndEnterSequenceTests: XCTestCase {
 
 /// Scope identity W2 review r1 #4: every case of the tap binding.
 final class TapBindingRuleTests: XCTestCase {
+    private static func recovery(_ reason: RecoveryReason) -> (IdentityPhase, RecoveryReason?) {
+        (IdentityPhaseRecovery(from: IdentityEpoch(value: 1)), reason)
+    }
+
+    /// Every phase (Open, Recovery × reason, the three holding phases) × account × binding.
     func testEveryCase() {
-        let open = IdentityPhaseOpen.shared
-        let closed = IdentityPhaseClosed(from: IdentityEpoch(value: 1))
+        let phases: [(IdentityPhase, RecoveryReason?, TapPhase)] = [
+            (IdentityPhaseOpen.shared, nil, .open),
+            (IdentityPhaseRecovery(from: IdentityEpoch(value: 1)), .failedapply, .failedApply),
+            (IdentityPhaseRecovery(from: IdentityEpoch(value: 1)), .failedpublish, .recoveryNotSelectable),
+            (IdentityPhaseRecovery(from: IdentityEpoch(value: 1)), .failedwipe, .recoveryNotSelectable),
+            (IdentityPhaseClosed(from: IdentityEpoch(value: 1)), nil, .holding),
+            (IdentityPhaseDraining(from: IdentityEpoch(value: 1)), nil, .holding),
+            (IdentityPhaseApplying(from: IdentityEpoch(value: 1)), nil, .holding),
+        ]
         for bound in [nil, "guest:g", "account:b"] as [String?] {
             for account in [IdentityFixture.guest, IdentityFixture.other, AccountKeyNone.shared] as [AccountKey] {
-                for phase in [open, closed] as [IdentityPhase] {
-                    let state = IdentityFixture.state(account: account, phase: phase)
+                for (phase, reason, tapPhase) in phases {
+                    let state = IdentityFixture.state(account: account, phase: phase, recovery: reason)
+                    XCTAssertEqual(TapPhase.of(state), tapPhase)
                     let key = account.storageKey() ?? "none"
-                    let expected: TapBinding = bound == nil ? .backToPicker : (phase is IdentityPhaseOpen ? (key == bound ? .proceed : .backToPicker) : .wait)
-                    XCTAssertEqual(TapBindingRule.decide(bound: bound, current: state), expected, "\(String(describing: bound)) \(key) \(phase)")
+                    let expected: TapBinding
+                    if bound == nil { expected = .backToPicker }
+                    else {
+                        switch tapPhase {
+                        case .holding: expected = .wait
+                        case .recoveryNotSelectable: expected = .backToPicker
+                        case .open, .failedApply: expected = key == bound ? .proceed : .backToPicker
+                        }
+                    }
+                    XCTAssertEqual(TapBindingRule.decide(bound: bound, current: state), expected, "\(String(describing: bound)) \(key) \(tapPhase)")
+                    let picker: String? = (tapPhase == .open || tapPhase == .failedApply) ? key : nil
+                    XCTAssertEqual(TapBindingRule.pickerBinding(state), picker)
                 }
             }
             XCTAssertEqual(TapBindingRule.decide(bound: bound, current: nil), bound == nil ? .backToPicker : .wait)
         }
-    }
-
-    func testPickerBindingOnlyUnderAnOpenIdentity() {
-        XCTAssertEqual(TapBindingRule.pickerBinding(IdentityFixture.state()), "guest:g")
-        XCTAssertNil(TapBindingRule.pickerBinding(IdentityFixture.draining(.signout)))
         XCTAssertNil(TapBindingRule.pickerBinding(nil))
+    }
+}
+
+/// Review r2 #3: the cover exit's dismissal.
+final class CoverExitRuleTests: XCTestCase {
+    func testEveryCase() {
+        let kinds: [TransitionKind?] = [nil, .profileselect, .activeprofiledelete, .slotremoved, .signout, .deleteaccount, .serverswitch, .accountwipe]
+        for kind in kinds {
+            for failed in [false, true] {
+                for entered in [false, true] {
+                    let expected = !entered && !(kind == .serverswitch && failed)
+                    XCTAssertEqual(CoverExitRule.dismissPresented(endedKind: kind, serverSwitchFailed: failed, entered: entered), expected,
+                                   "\(String(describing: kind)) failed=\(failed) entered=\(entered)")
+                }
+            }
+        }
     }
 }
 

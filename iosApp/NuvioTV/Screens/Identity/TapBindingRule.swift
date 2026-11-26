@@ -9,7 +9,7 @@ import SharedCore
 /// (its profile cache is that account's). nil means the picker was shown while no identity was open,
 /// so what it listed cannot be trusted: never enter.
 enum TapBinding: Equatable {
-    /// The identity is open on the bound account: run the select.
+    /// The identity is open (or recovering from a failed apply) on the bound account: run the select.
     case proceed
     /// A window or drained transition holds: wait and decide again.
     case wait
@@ -17,11 +17,34 @@ enum TapBinding: Equatable {
     case backToPicker
 }
 
+/// The barrier phase as the tap rule sees it: total over IdentityPhase and the recovery reason.
+enum TapPhase: Equatable {
+    case open
+    /// Recovery(FailedApply): the picker is on screen and a profile select is the retry (B20a).
+    case failedApply
+    /// Recovery(FailedPublish / FailedWipe): splash or Welcome; cleared only by a publish or a wipe.
+    case recoveryNotSelectable
+    /// A window or drained transition holds.
+    case holding
+
+    static func of(_ state: IdentityState) -> TapPhase {
+        if state.phase is IdentityPhaseOpen { return .open }
+        if state.phase is IdentityPhaseRecovery {
+            return state.recovery == .failedapply ? .failedApply : .recoveryNotSelectable
+        }
+        return .holding
+    }
+}
+
 nonisolated enum TapBindingRule {
     static func decide(bound: String?, current: IdentityState?) -> TapBinding {
         guard let bound else { return .backToPicker }
-        guard let current, current.phase is IdentityPhaseOpen else { return .wait }
-        return accountKey(current) == bound ? .proceed : .backToPicker
+        guard let current else { return .wait }
+        switch TapPhase.of(current) {
+        case .holding: return .wait
+        case .recoveryNotSelectable: return .backToPicker
+        case .open, .failedApply: return accountKey(current) == bound ? .proceed : .backToPicker
+        }
     }
 
     /// The account key of [state] ("none" for no account).
@@ -29,9 +52,13 @@ nonisolated enum TapBindingRule {
         state.scope.account.storageKey() ?? "none"
     }
 
-    /// The key a picker tap binds to: the open identity's account, nil while none is open.
+    /// The key a picker tap binds to: the account of an identity whose picker can be used (open,
+    /// or recovering from a failed profile apply), nil otherwise.
     static func pickerBinding(_ state: IdentityState?) -> String? {
-        guard let state, state.phase is IdentityPhaseOpen else { return nil }
-        return accountKey(state)
+        guard let state else { return nil }
+        switch TapPhase.of(state) {
+        case .open, .failedApply: return accountKey(state)
+        case .holding, .recoveryNotSelectable: return nil
+        }
     }
 }

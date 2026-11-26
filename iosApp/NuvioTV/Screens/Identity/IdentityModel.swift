@@ -139,8 +139,16 @@ final class IdentityModel: ObservableObject {
         }
     }
 
+    /// The transition kind the visible cover is covering (the last one seen while it was up).
+    private var coveredKind: TransitionKind?
+    /// Whether the last server switch failed (its screen shows the error); replaced in tests.
+    var serverSwitchFailed: () -> Bool = {
+        (ServerConnectionController.shared.state.value_ as? ServerConnectionUiState)?.switchFailure != nil
+    }
+
     private func coverInputsChanged() {
         let wanted = Self.coverKind(state: state, localSelectInFlight: localSelectInFlight)
+        if wanted != nil, let state, state.transitioning, let kind = state.kind { coveredKind = kind }
         guard wanted != coverKind else { return }
         let wasVisible = coverKind != nil
         if let wanted {
@@ -148,8 +156,15 @@ final class IdentityModel: ObservableObject {
         } else {
             coverKind = nil
             cover.hide()
-            // P13(c): every cover exit leaves the user on a focusable screen.
-            if wasVisible && !isEntered { root.recoverToRoot() }
+            let ended = coveredKind
+            coveredKind = nil
+            // P13(c): every cover exit leaves the user on a focusable screen (review r2 #3: the
+            // decision is CoverExitRule's, from what ended and how).
+            if wasVisible && CoverExitRule.dismissPresented(endedKind: ended,
+                                                             serverSwitchFailed: ended == .serverswitch && serverSwitchFailed(),
+                                                             entered: isEntered) {
+                root.recoverToRoot()
+            }
         }
     }
 
@@ -229,6 +244,22 @@ final class IdentityModel: ObservableObject {
 
     /// The state after a retry: the gate's in the app, the last known in tests.
     var currentStateForRetry: () -> IdentityState? = { IdentityGate.shared.state.value_ as? IdentityState }
+}
+
+/// Review r2 #3: whether the cover's exit dismisses what is presented over the root. Pure.
+///
+/// Entered: never (the shell stays). A failed server switch: never (ServerConnectionView, presented
+/// from Welcome or pushed from Settings, keeps its error so the user can correct it in place).
+/// Every other exit while not entered dismisses, so the picker or Welcome is the front, focusable
+/// screen: a profile select or delete or slot removal (players or covers left from the shell), a
+/// sign-out or delete account (the gate is Welcome), a lost session's wipe, a successful server
+/// switch (its own screen would dismiss itself too).
+nonisolated enum CoverExitRule {
+    static func dismissPresented(endedKind: TransitionKind?, serverSwitchFailed: Bool, entered: Bool) -> Bool {
+        if entered { return false }
+        if endedKind == .serverswitch && serverSwitchFailed { return false }
+        return true
+    }
 }
 
 /// The real root recovery: dismiss whatever is presented over the main window's root.
