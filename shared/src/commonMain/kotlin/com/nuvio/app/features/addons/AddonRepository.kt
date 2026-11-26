@@ -3,6 +3,9 @@ package com.nuvio.app.features.addons
 import com.nuvio.app.core.auth.AuthRepository
 import com.nuvio.app.core.auth.AuthState
 import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
+import com.nuvio.app.core.identity.CommitKind
+import com.nuvio.app.core.identity.CommitResult
+import com.nuvio.app.core.identity.IdentityGate
 import co.touchlab.kermit.Logger
 import com.nuvio.app.core.i18n.StringKey
 import com.nuvio.app.core.i18n.resourceString
@@ -113,8 +116,15 @@ object AddonRepository {
     private val _serverPullSettled = MutableStateFlow(false)
     val serverPullSettled: StateFlow<Boolean> = _serverPullSettled.asStateFlow()
 
+    /** Fork (W2, 8.0.4) tests only: runs after initialize()'s storage read, before its publication. */
+    internal var afterLocalReadForTest: () -> Unit = {}
+
     fun initialize() {
-        val effectiveProfileId = resolveEffectiveProfileId(AddonProfileProvider.context.activeProfileId)
+        // Fork (scope identity, W2, 8.0.4): the bootstrap belongs to one identity. No token (a
+        // barrier or window is closed) → nothing starts; the next caller initializes under the
+        // then-current token. The publication commits only if that token still holds (P5).
+        val token = IdentityGate.currentToken() ?: return
+        val effectiveProfileId = resolveEffectiveProfileId(token.scope.slot)
         if (bootstrap.initialized) return
         bootstrap.begin()
         currentProfileId = effectiveProfileId
@@ -123,6 +133,20 @@ object AddonRepository {
         val storedUrls = dedupeManifestUrls(AddonStorage.loadInstalledAddonUrls(currentProfileId))
         val enabledByUrl = loadLocalEnabledStates()
         log.d { "initialize() — local addon count: ${storedUrls.size}" }
+        afterLocalReadForTest()
+        val published = synchronized(profileLock) {
+            IdentityGate.commit(token, CommitKind.Publish, site = "addonBootstrap") {
+                publishBootstrap(storedUrls, enabledByUrl)
+            }
+        }
+        if (published is CommitResult.Rejected) {
+            log.i { "initialize() — identity changed during bootstrap (${published.reason}); nothing published" }
+            bootstrap.reset()
+        }
+    }
+
+    /** The local list's publication and the bootstrap's completion (under the commit lock). */
+    private fun publishBootstrap(storedUrls: List<String>, enabledByUrl: Map<String, Boolean>) {
         if (storedUrls.isEmpty()) {
             // Nothing stored locally, but bootstrap HAS run: publish that fact so watchers can tell
             // this settled empty state from the initial one they saw before initialize().
