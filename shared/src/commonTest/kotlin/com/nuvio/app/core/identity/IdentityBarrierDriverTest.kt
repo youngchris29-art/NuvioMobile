@@ -257,8 +257,11 @@ class IdentityBarrierDriverTest {
 
     @Test
     fun revokeRunsBeforeDrainAndApply() = real {
-        IdentityRevocation.revoker = RecordingRevoker(log)
-        assertNotNull(IdentityWork.launch(IdentityGate.currentToken(), "save", work) { delay(100); log.add("job end") })
+        // Ordering, not timing: the job ends only once the revoke has run, so "revoke" before
+        // "job end" is given; the property tested is that the apply waits for the job (drain).
+        val revoked = kotlinx.coroutines.CompletableDeferred<Unit>()
+        IdentityRevocation.revoker = RecordingRevoker(log).also { it.onRevoke = { revoked.complete(Unit) } }
+        assertNotNull(IdentityWork.launch(IdentityGate.currentToken(), "save", work) { revoked.await(); delay(50); log.add("job end") })
         assertIs<TransitionResult.Done>(IdentityBarrier.selectProfile(2))
         assertEquals(listOf("revoke ProfileSelect", "job end", "apply 2"), log.all())
     }
