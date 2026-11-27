@@ -140,7 +140,8 @@ class IdentityBarrierDriverTest {
         val start = TimeSource.Monotonic.markNow()
         val failed = assertIs<TransitionResult.Failed>(IdentityBarrier.selectProfile(2))
         val elapsed = start.elapsedNow().inWholeMilliseconds
-        assertTrue(elapsed in 2_000..3_500, "failed after $elapsed ms")
+        // Lower bound only: the property is "not before the deadline"; an upper bound is a machine-speed margin.
+        assertTrue(elapsed >= 2_000, "failed after $elapsed ms, before the deadline")
         assertEquals(IdentityState(IdentityScope(accountA, 1), IdentityEpoch(1), IdentityPhase.Open, null), failed.final)
         assertEquals(0, log.count("apply 2"))
 
@@ -153,14 +154,15 @@ class IdentityBarrierDriverTest {
 
     @Test
     fun revokerFalseFailsSelectAtOnce() = real {
-        IdentityBarrier.drainDeadlineMs = 2_000
+        // No wall-clock margin: with a drain deadline no test outlives, returning at all proves
+        // the select skipped the drain (a select that drained would never return here).
+        IdentityBarrier.drainDeadlineMs = 600_000
         val revoker = RecordingRevoker(log).also { it.result = false }
         IdentityRevocation.revoker = revoker
         IdentityRevocation.required = true
-        assertNotNull(IdentityWork.launch(IdentityGate.currentToken(), "stuck", work) { awaitCancellation() })
-        val start = TimeSource.Monotonic.markNow()
+        val stuck = assertNotNull(IdentityWork.launch(IdentityGate.currentToken(), "stuck", work) { awaitCancellation() })
         val failed = assertIs<TransitionResult.Failed>(IdentityBarrier.selectProfile(2))
-        assertTrue(start.elapsedNow().inWholeMilliseconds < 1_000, "did not fail at once")
+        assertTrue(stuck.isActive, "the stuck job was never drained")
         assertEquals(IdentityEpoch(1), failed.final.epoch)
         assertEquals(IdentityPhase.Open, failed.final.phase)
         assertEquals(0, log.count("apply 2"))
@@ -168,11 +170,10 @@ class IdentityBarrierDriverTest {
 
     @Test
     fun missingRequiredRevokerFailsSelect() = real {
-        IdentityBarrier.drainDeadlineMs = 2_000
+        // As above: a drain deadline no test outlives; returning proves no drain wait.
+        IdentityBarrier.drainDeadlineMs = 600_000
         IdentityRevocation.required = true
-        val start = TimeSource.Monotonic.markNow()
         val failed = assertIs<TransitionResult.Failed>(IdentityBarrier.selectProfile(2))
-        assertTrue(start.elapsedNow().inWholeMilliseconds < 1_000)
         assertEquals(IdentityEpoch(1), failed.final.epoch)
         assertEquals(0, log.count("apply 2"))
     }

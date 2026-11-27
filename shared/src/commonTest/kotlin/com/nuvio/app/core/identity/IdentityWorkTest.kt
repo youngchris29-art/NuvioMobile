@@ -14,6 +14,7 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withContext
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -195,20 +196,28 @@ class IdentityWorkTest {
 
     @Test
     fun cancelDoesNotJoin() = runTest {
+        // Ordering, not timing: the cleanup blocks on a latch only this test releases, so the
+        // job can complete only after the assertions below have run.
+        val cleanupStarted = CompletableDeferred<Unit>()
+        val releaseCleanup = CompletableDeferred<Unit>()
         val job = assertNotNull(launchWork("slow-cleanup") {
             try {
                 awaitCancellation()
             } finally {
-                withContext(NonCancellable) { delay(10_000) }
+                withContext(NonCancellable) {
+                    cleanupStarted.complete(Unit)
+                    releaseCleanup.await()
+                }
             }
         })
         runCurrent()
         val id = begin()
-        val before = currentTime
-        outcome(assertNotNull(IdentityWork.tryEndDrain(id, deadline = true))) // B3 cancels it
-        assertEquals(before, currentTime)
-        awaitCancelled(job)
-        assertFalse(job.isCompleted) // still in its cleanup; nobody waited for it
+        outcome(assertNotNull(IdentityWork.tryEndDrain(id, deadline = true))) // B3 cancels it, returns
+        cleanupStarted.await() // the dispatched cancel reached the job: it is inside its cleanup
+        assertTrue(job.isCancelled)
+        assertFalse(job.isCompleted, "tryEndDrain returned while the job was still in its cleanup: nobody joined it")
+        releaseCleanup.complete(Unit)
+        job.join()
     }
 
     @Test

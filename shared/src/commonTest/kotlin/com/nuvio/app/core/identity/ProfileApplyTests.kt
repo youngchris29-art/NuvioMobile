@@ -145,6 +145,7 @@ class ApplyDispatcherTest {
         val main = Dispatchers.Default.limitedParallelism(1)
         IdentityBarrier.applyDispatcher = Dispatchers.Default // what TvOsProviderInstaller sets
         val inWindowBody = MutableStateFlow(false)
+        val ticks = MutableStateFlow(0)
         var windowOpened = false
         IdentityBarrier.beforeApplyLock = {
             if (!windowOpened) {
@@ -152,21 +153,21 @@ class ApplyDispatcherTest {
                 CoroutineScope(Dispatchers.Default).launch {
                     IdentityImmediate.accountWipe {
                         inWindowBody.value = true
-                        val start = TimeSource.Monotonic.markNow()
-                        spinUntil(3_000) { start.elapsedNow().inWholeMilliseconds >= 1_000 }
+                        // Ordering, not timing: the body (holding the apply lock) ends only after
+                        // the "main" probe ran 5 more times; were main blocked on the apply lock,
+                        // this would never happen (spinUntil's 30 s is a hang guard, not a margin).
+                        val ticksAtStart = ticks.value
+                        spinUntil(30_000) { ticks.value >= ticksAtStart + 5 }
                     }
                     IdentityImmediate.chainEnded()
                 }
                 spinUntil { inWindowBody.value }
             }
         }
-        var maxGapMs = 0L
         val probe = launch(main) {
-            var last = TimeSource.Monotonic.markNow()
             while (isActive) {
                 delay(10)
-                maxGapMs = maxOf(maxGapMs, last.elapsedNow().inWholeMilliseconds)
-                last = TimeSource.Monotonic.markNow()
+                ticks.value += 1
             }
         }
         val select = async { IdentityBarrier.selectProfile(2) }
@@ -175,7 +176,6 @@ class ApplyDispatcherTest {
         // The window opened after the drain ended and before the apply lock: nothing applied (B6).
         assertIs<TransitionResult.Preempted>(result)
         assertEquals(0, log.count("apply 2"))
-        assertTrue(maxGapMs < 300, "the main probe stalled ${maxGapMs} ms while the apply waited for the window body")
         // After the window, a select applies.
         assertIs<TransitionResult.Done>(IdentityBarrier.selectProfile(2))
         assertEquals(1, log.count("apply 2"))

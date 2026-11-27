@@ -267,17 +267,18 @@ class IdentityRulesDefTest {
 
     @Test
     fun cancelRequestedJobNotCounted() = real {
-        IdentityBarrier.drainDeadlineMs = 2_000
-        // A job whose cleanup takes long, cancelled by a window.
-        assertNotNull(IdentityWork.launch(IdentityGate.currentToken(), "slow-cleanup", work) {
-            try { awaitCancellation() } finally { withContext(NonCancellable) { delay(5_000) } }
+        // Ordering, not timing: the cleanup never finishes until released after the select, and
+        // the drain deadline outlives any test, so a drain that counted the job would never end.
+        IdentityBarrier.drainDeadlineMs = 600_000
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val slow = assertNotNull(IdentityWork.launch(IdentityGate.currentToken(), "slow-cleanup", work) {
+            try { awaitCancellation() } finally { withContext(NonCancellable) { release.await() } }
         })
         IdentityImmediate.serialChanging()
         IdentityImmediate.chainEnded()
-        // A later select's drain does not wait for the cancel-requested job.
-        val start = TimeSource.Monotonic.markNow()
         assertIs<TransitionResult.Done>(IdentityBarrier.selectProfile(2))
-        assertTrue(start.elapsedNow().inWholeMilliseconds < 1_000, "the drain waited for a cancel-requested job")
+        assertTrue(!slow.isCompleted, "the select finished while the cancel-requested job was still in its cleanup")
+        release.complete(Unit)
     }
 
     @Test
