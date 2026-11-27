@@ -69,6 +69,12 @@ data class ProfileState(
  * Row identity at admission is the full row (every field, so an empty `updatedAt` cannot make two
  * different rows look alike) plus that token.
  */
+/** Audit #1/#2: a PIN check of a displayed row. [result] null: refused (the identity moved), not a wrong PIN. */
+class PinCheck(val result: PinVerifyResult?, val row: DisplayedProfile?) {
+    val refused: Boolean get() = result == null
+    val unlocked: Boolean get() = result?.unlocked == true
+}
+
 class DisplayedProfile internal constructor(
     val profile: NuvioProfile,
     val listToken: com.nuvio.app.core.identity.AccountToken?,

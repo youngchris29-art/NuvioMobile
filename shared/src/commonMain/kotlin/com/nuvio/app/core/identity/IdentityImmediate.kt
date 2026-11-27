@@ -25,6 +25,15 @@ internal object IdentityImmediate {
     @Volatile
     var onAccountPublished: (AccountKey) -> Unit = {}
 
+    /**
+     * Audit #3: run (synchronously, outside every lock) after any settle to Open under a new account
+     * token, account or serial: tvOS re-stamps the displayed profile list (one place,
+     * ProfileRepository.stampListForToken), so a same-account session change never leaves the list
+     * under the old serial.
+     */
+    @Volatile
+    var onAccountTokenSettled: (AccountToken) -> Unit = {}
+
     /** Run after any settle to Open with a changed account (5.7; revision 8: fired from IdentityRuntime). */
     @Volatile
     var afterAccountOpen: () -> Unit = {}
@@ -160,6 +169,7 @@ internal object IdentityImmediate {
     /** Tests only. */
     internal fun resetForTest() {
         onAccountPublished = {}
+        onAccountTokenSettled = {}
         afterAccountOpen = {}
         recoverAfterFailedPublish = { _, shown -> onAccountPublished(shown) }
         failedPublish = null

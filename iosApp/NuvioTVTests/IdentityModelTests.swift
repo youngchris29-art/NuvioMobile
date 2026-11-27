@@ -173,6 +173,37 @@ final class CoverOwnershipTests: XCTestCase {
         XCTAssertEqual(retries, IdentityModel.maxRecoveryRetries)
     }
 
+    /// Audit #7: a retry still awaiting when recovery cleared and came back never clears or
+    /// restarts the newer loop: at most one retry runs at a time.
+    func testASupersededRetryNeverStartsASecondLoop() async {
+        let recovering = IdentityFixture.state(phase: IdentityPhaseRecovery(from: IdentityEpoch(value: 1)), recovery: .failedpublish)
+        let cleared = IdentityFixture.state(epoch: 2)
+        var running = 0
+        var maxRunning = 0
+        var calls = 0
+        model.retrySpacingNanoseconds = 1_000_000
+        model.currentStateForRetry = { recovering }
+        model.retryRecovery = { [weak self] in
+            calls += 1
+            running += 1
+            maxRunning = max(maxRunning, running)
+            if calls == 1 {
+                // While the first retry runs: recovery clears, then fails again (a new loop).
+                self?.model.setState(cleared)
+                self?.model.setState(recovering)
+            } else {
+                try? await Task.sleep(nanoseconds: 20_000_000)
+            }
+            running -= 1
+        }
+        model.setState(recovering)
+        for _ in 0..<400 where model.recoveryScreen != .welcome {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertEqual(model.recoveryScreen, .welcome)
+        XCTAssertEqual(maxRunning, 1, "one retry loop at a time")
+    }
+
     func testFailedWipeGoesStraightToWelcomeAndApplyHasNoScreen() {
         model.setState(IdentityFixture.state(phase: IdentityPhaseRecovery(from: IdentityEpoch(value: 1)), recovery: .failedwipe))
         XCTAssertEqual(model.recoveryScreen, .welcome)

@@ -143,12 +143,34 @@ class SelectAdmissionDriverTest {
         assertEquals(emptyList(), log.all())
     }
 
-    /** Review r6: row identity survives an empty `updatedAt` (the full row is compared). */
+    /** Audit #1: a replaced row (another id in the same slot) is refused, whatever its revision. */
     @Test
     fun emptyRevisionStillDetectsAReplacedRow() = real {
         val shown = assertNotNullToken()
-        val displayed = NuvioProfile(profileIndex = 2, name = "Old", updatedAt = "")
-        ops.rowContent = mapOf(2 to displayed.copy(name = "New")) // same slot, same (empty) revision, another row
+        val displayed = NuvioProfile(id = "row-a", profileIndex = 2, name = "Old", updatedAt = "")
+        ops.rowContent = mapOf(2 to displayed.copy(id = "row-b")) // same slot, same (empty) revision, another row
+        val result = assertIs<TransitionResult.Preempted>(IdentityBarrier.selectProfile(SelectRequest(2, shown, SelectOrigin.PickerTap, displayed)))
+        assertEquals(SelectRejection.RowChanged, result.rejection)
+    }
+
+    /**
+     * Audit #1: the PIN verify's own refresh changes the server row's revision and lock-out
+     * fields; the consent key (slot, id, PIN on/off) is unchanged, so the select is admitted.
+     */
+    @Test
+    fun verifyRefreshOfTheSameRowIsAdmitted() = real {
+        val shown = assertNotNullToken()
+        val displayed = NuvioProfile(id = "row-a", profileIndex = 2, name = "Kid", pinEnabled = true, updatedAt = "t1")
+        ops.rowContent = mapOf(2 to displayed.copy(updatedAt = "t2", pinLockedUntil = "2026-11-26T10:00:00Z", name = "Kid (renamed)"))
+        assertIs<TransitionResult.Done>(IdentityBarrier.selectProfile(SelectRequest(2, shown, SelectOrigin.PickerTap, displayed)))
+    }
+
+    /** Audit #1 (keeps r5 #3): PIN turned on between the tap and admission is refused. */
+    @Test
+    fun pinEnabledSinceTheTapIsRefused() = real {
+        val shown = assertNotNullToken()
+        val displayed = NuvioProfile(id = "row-a", profileIndex = 2, name = "Kid", pinEnabled = false, updatedAt = "t1")
+        ops.rowContent = mapOf(2 to displayed.copy(pinEnabled = true))
         val result = assertIs<TransitionResult.Preempted>(IdentityBarrier.selectProfile(SelectRequest(2, shown, SelectOrigin.PickerTap, displayed)))
         assertEquals(SelectRejection.RowChanged, result.rejection)
     }

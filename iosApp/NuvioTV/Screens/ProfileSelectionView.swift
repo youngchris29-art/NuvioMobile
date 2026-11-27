@@ -174,12 +174,16 @@ struct ProfileSelectionView: View {
                 subtitle: prompt.action == .select ? nil : String(localized: "This profile is locked."),
                 onCancel: { pinPrompt = nil },
                 onSubmit: { pin, done in
-                    model.verifyPin(prompt.row, pin: pin) { result in
-                        if result?.unlocked == true {
+                    model.verifyPin(prompt.row, pin: pin) { check in
+                        if check?.unlocked == true {
                             pinPrompt = nil
-                            perform(prompt.action, on: prompt.row)
+                            perform(prompt.action, on: check?.row ?? prompt.row)
+                        } else if check == nil || check?.refused == true {
+                            // Audit #2: the identity moved under the prompt; not a wrong PIN.
+                            // The prompt closes onto the picker, which shows the current list.
+                            pinPrompt = nil
                         } else {
-                            done(pinErrorMessage(result))
+                            done(pinErrorMessage(check?.result))
                         }
                     }
                 }
@@ -210,7 +214,14 @@ struct ProfileSelectionView: View {
         case .select:
             guard !model.isSwitching else { return }
             let enter = onSelected
-            Task { await model.selectAndEnter(row, origin: .pickertap, enter: enter) }
+            Task {
+                let entered = await model.selectAndEnter(row, origin: .pickertap, enter: enter)
+                // Audit #1: a rejection is never silent. Locked since the tap: ask for the PIN;
+                // every other rejection leaves the picker showing the current list.
+                if !entered, let locked = model.newlyLockedRow(after: row) {
+                    pinPrompt = PinPrompt(row: locked, action: .select)
+                }
+            }
         case .edit:
             editing = ProfileEditTarget(row: row)
         case .delete:
@@ -541,11 +552,13 @@ struct ProfileEditView: View {
                             }
                         }
                     } else {
-                        model.verifyPin(row, pin: pin) { result in
-                            if result?.unlocked == true {
+                        model.verifyPin(row, pin: pin) { check in
+                            if check?.unlocked == true {
                                 pinFlow = .enterNew(current: pin)
+                            } else if check == nil || check?.refused == true {
+                                pinFlow = nil
                             } else {
-                                done(pinErrorMessage(result))
+                                done(pinErrorMessage(check?.result))
                             }
                         }
                     }

@@ -78,6 +78,8 @@ final class IdentityModel: ObservableObject {
     private var mounted: Set<IdentityTeardownSurface> { Set(mountCounts.filter { $0.value > 0 }.keys) }
     private var awaitingTeardown: (id: Int64, waiting: Set<IdentityTeardownSurface>)?
     private var retryTask: Task<Void, Never>?
+    /// Audit #7: the generation of the one live retry loop; a cancelled loop's tail never clears or restarts a newer one.
+    private var retryGeneration = 0
     private(set) var recoveryRetries = 0
     /// Sends `teardownDone`; replaced in tests.
     var sendTeardown: (Int64) -> Void = { IdentityBarrier.shared.teardownDone(transitionId: $0) }
@@ -225,18 +227,23 @@ final class IdentityModel: ObservableObject {
             recoveryRetries = 0
             retryTask?.cancel()
             retryTask = nil
+            retryGeneration += 1
         }
         if screen != recoveryScreen { recoveryScreen = screen }
     }
 
     private func scheduleRetry() {
         guard retryTask == nil else { return }
+        retryGeneration += 1
+        let generation = retryGeneration
         retryTask = Task { [weak self] in
             guard let self else { return }
             try? await Task.sleep(nanoseconds: self.retrySpacingNanoseconds)
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, generation == self.retryGeneration else { return }
             self.recoveryRetries += 1
             await self.retryRecovery()
+            // Cancelled or superseded while the retry ran: the newer loop owns retryTask.
+            guard !Task.isCancelled, generation == self.retryGeneration else { return }
             self.retryTask = nil
             self.setState(self.currentStateForRetry())
         }

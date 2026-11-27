@@ -86,11 +86,24 @@ final class ProfilesViewModel: ObservableObject {
     /// Breadcrumbs bracket every Kotlin call (kept out of `#if DEBUG`: testers' console logs are
     /// the only diagnostic for a crash we cannot reproduce).
     /// Review r6: the displayed row builds its own request (its list's token and the full row).
-    func selectAndEnter(_ row: DisplayedProfile, origin: SelectOrigin, enter: @escaping (IdentityState) -> Void) async {
+    @discardableResult
+    func selectAndEnter(_ row: DisplayedProfile, origin: SelectOrigin, enter: @escaping (IdentityState) -> Void) async -> Bool {
         print("[ProfileSelect] selecting profile \(row.profile.profileIndex)")
         let entered = await Self.selectAndEnter(request: row.selectRequest(origin: origin),
                                                 identity: IdentityModel.shared, ports: selectPorts, enter: enter)
         print("[ProfileSelect] select finished — entered=\(entered)")
+        return entered
+    }
+
+    /// Audit #1: after a select that was not entered, the row now on screen for the same slot of
+    /// the same list when it turned PIN-locked since the tap (the picker re-asks for the PIN).
+    func newlyLockedRow(after tapped: DisplayedProfile) -> DisplayedProfile? {
+        guard !tapped.profile.pinEnabled,
+              let current = snapshot?.displayedRow(slot: tapped.profile.profileIndex),
+              current.listToken == tapped.listToken,
+              current.profile.id == tapped.profile.id,
+              current.profile.pinEnabled else { return nil }
+        return current
     }
 
     /// The sequence itself, testable with a fake barrier. Returns whether the profile was entered.
@@ -223,9 +236,11 @@ final class ProfilesViewModel: ObservableObject {
     // MARK: - PIN (cloud accounts only; RPCs verify/set/clear server-side)
 
     /// Verifies a profile PIN. Falls back to the shared local cache when offline.
-    func verifyPin(_ row: DisplayedProfile, pin: String, completion: @escaping (PinVerifyResult?) -> Void) {
-        ProfileRepository.shared.verifyPin(row: row, pin: pin) { result, _ in
-            DispatchQueue.main.async { completion(result) }
+    /// Audit #1/#2: a refused check (identity moved) is `refused`, never a wrong PIN; an unlocked
+    /// check hands back the refreshed row of the same list, which the select then uses.
+    func verifyPin(_ row: DisplayedProfile, pin: String, completion: @escaping (PinCheck?) -> Void) {
+        ProfileRepository.shared.verifyPin(row: row, pin: pin) { check, _ in
+            DispatchQueue.main.async { completion(check) }
         }
     }
 

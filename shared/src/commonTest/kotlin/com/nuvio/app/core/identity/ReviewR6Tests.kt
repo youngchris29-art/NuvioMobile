@@ -97,14 +97,51 @@ class ProvisionalPublishRuleTest {
     private val account = AuthState.Authenticated("A", null, isAnonymous = false)
     private val guest = AuthState.Authenticated("g", null, isAnonymous = true)
 
-    /** watchdog × published × pending (a pending publish exists exactly in Recovery(FailedPublish)). */
+    private enum class Want { Welcome, Hold }
+
+    /**
+     * Audit #8: an oracle written from the requirements, not from the rule's formula. Each row:
+     * what the screen must do, and why. R1: an owed publish (Recovery(FailedPublish)) is never
+     * superseded by the watchdog or the Initializing screen; its retry owns what shows. R2: a
+     * stuck Loading with nothing owed falls to Welcome after the watchdog. R3: a published
+     * session (account or guest) is never replaced by Welcome from the watchdog.
+     */
     @Test
-    fun everyCase() {
-        for (published in listOf(AuthState.Loading, AuthState.Unauthenticated, account, guest)) for (pending in listOf(null, account, guest)) {
-            assertEquals(published == AuthState.Loading && pending == null, ProvisionalPublishRule.watchdogShowsWelcome(published, pending), "$published $pending")
-            for (liveIsGuest in listOf(false, true)) for (fired in listOf(false, true)) {
-                assertEquals(!liveIsGuest && !fired && pending == null, ProvisionalPublishRule.initializingShowsLoading(liveIsGuest, fired, pending))
-            }
+    fun watchdogOracle() {
+        val rows = listOf(
+            Triple(AuthState.Loading, null, Want.Welcome),           // R2
+            Triple(AuthState.Loading, account, Want.Hold),           // R1: the owed account publish
+            Triple(AuthState.Loading, guest, Want.Hold),             // R1: the owed guest publish
+            Triple(AuthState.Unauthenticated, null, Want.Hold),      // already at Welcome: nothing to supersede
+            Triple(AuthState.Unauthenticated, account, Want.Hold),   // R1
+            Triple(account, null, Want.Hold),                        // R3
+            Triple(account, guest, Want.Hold),                       // R1 + R3
+            Triple(guest, null, Want.Hold),                          // R3
+            Triple(guest, account, Want.Hold),                       // R1 + R3
+        )
+        for ((published, pending, want) in rows) {
+            assertEquals(want == Want.Welcome, ProvisionalPublishRule.watchdogShowsWelcome(published, pending), "$published pending=$pending")
+        }
+    }
+
+    /**
+     * Initializing shows Loading only for a real account whose watchdog has not fired and with
+     * nothing owed. R4: a guest boots straight to its profile (no Loading). R5: once the watchdog
+     * fired, Loading never returns. R1: an owed publish holds the recovery screen, not Loading.
+     */
+    @Test
+    fun initializingOracle() {
+        data class Row(val liveIsGuest: Boolean, val fired: Boolean, val pending: AuthState.Authenticated?, val loading: Boolean)
+        val rows = listOf(
+            Row(liveIsGuest = false, fired = false, pending = null, loading = true),
+            Row(liveIsGuest = true, fired = false, pending = null, loading = false),     // R4
+            Row(liveIsGuest = false, fired = true, pending = null, loading = false),     // R5
+            Row(liveIsGuest = false, fired = false, pending = account, loading = false), // R1
+            Row(liveIsGuest = true, fired = false, pending = guest, loading = false),    // R1 + R4
+            Row(liveIsGuest = false, fired = true, pending = guest, loading = false),    // R1 + R5
+        )
+        for (r in rows) {
+            assertEquals(r.loading, ProvisionalPublishRule.initializingShowsLoading(r.liveIsGuest, r.fired, r.pending), "$r")
         }
     }
 }

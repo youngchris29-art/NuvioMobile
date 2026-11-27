@@ -152,6 +152,9 @@ internal object IdentityRuntime {
     /** The account of the last Open period; a settle to Open with another account fires afterAccountOpen (4.5, revision 8). */
     private var lastOpenAccount: AccountKey = model.scope.account
 
+    /** Audit #3: the account token of the last Open period (account and serial). */
+    private var lastOpenToken: AccountToken? = null
+
     /**
      * Reduces AND publishes under the commit lock, so the StateFlow sees states in reduction order
      * and a delayed publish can never overwrite a later one. Returns the effects; the job
@@ -183,12 +186,16 @@ internal object IdentityRuntime {
         val inFlight = step.effects.any { it is BarrierEffect.Revoke || it is BarrierEffect.CancelJobs }
         if (inFlight) IdentityWork.raiseEffectsInFlightLocked()
         var accountOpened = false
+        var tokenSettled: AccountToken? = null
         val published = step.published
         if (published != null && published.phase is IdentityPhase.Open) {
             if (published.scope.account != lastOpenAccount) accountOpened = true
             lastOpenAccount = published.scope.account
+            val token = AccountToken(step.state.latestAccount, authSerial())
+            if (token != lastOpenToken) tokenSettled = token
+            lastOpenToken = token
         }
-        Reduced(step, toCancel, accountOpened, inFlight)
+        Reduced(step, toCancel, accountOpened, inFlight, tokenSettled)
     }
 
     fun snapshot(): BarrierState = IdentityLocks.withCommit { model }
@@ -209,6 +216,7 @@ internal object IdentityRuntime {
             model = BarrierState.initial(slot)
             _state.value = model.toPublic()
             lastOpenAccount = model.scope.account
+            lastOpenToken = null
         }
         authSerial = { serial }
         this.activeSlot = activeSlot ?: { slot }
@@ -231,6 +239,8 @@ internal class Reduced(
     val accountOpened: Boolean,
     /** This section raised effects-in-flight; IdentityEffects.run must clear it exactly once. */
     val inFlight: Boolean = false,
+    /** Audit #3: a settle to Open under a new account token (account or serial). */
+    val tokenSettled: AccountToken? = null,
 ) {
     val state: BarrierState get() = step.state
     val effects: List<BarrierEffect> get() = step.effects

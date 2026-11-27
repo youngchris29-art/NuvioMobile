@@ -196,8 +196,17 @@ object AuthRepository {
      * after this request, so a request can still leave with credentials the reducer has not yet
      * seen. It never leaves for an account change or reset the app has already processed.
      */
-    internal suspend fun <T> dispatchUnderSession(token: AccountToken?, site: String, request: suspend () -> T): T? =
-        driver.exclusive { if (IdentityGate.checkAccount(token, site) is Verdict.Commit) request() else null }
+    internal suspend fun <T> dispatchUnderSession(
+        token: AccountToken?,
+        site: String,
+        readOnly: Boolean = false,
+        request: suspend () -> T,
+    ): T? = driver.exclusive {
+        // Audit #2: a read-only picker request (PIN verification) uses admission's check, which
+        // holds in Recovery(FailedApply); every write uses the account-level check.
+        val holds = if (readOnly) IdentityGate.holdsForSelection(token) else IdentityGate.checkAccount(token, site) is Verdict.Commit
+        if (holds) request() else null
+    }
 
     fun clearError() {
         _error.value = null

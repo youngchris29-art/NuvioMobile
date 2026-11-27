@@ -411,12 +411,13 @@ internal class AuthSessionDriver(
             wipeRan -> AuthEvent.WipeFinished(wipeOk)
             else -> null
         }
+        // Fork (W2 review r5 #1, audit #5): the reducer learns the publish did not complete BEFORE
+        // the follow-up runs, so a publish the follow-up makes supersedes it in order.
+        failedPublish?.let { step(AuthEvent.PublishFailed(it, if (lastShown == it) shownBefore else lastShown)) }
         if (followUp != null) {
             val next = step(followUp)
             if (failure == null) failure = next.failure
         }
-        // Fork (W2 review r5 #1): the reducer learns the publish did not complete.
-        failedPublish?.let { step(AuthEvent.PublishFailed(it, if (lastShown == it) shownBefore else lastShown)) }
         return Sent(result.cleared, failure)
     }
 

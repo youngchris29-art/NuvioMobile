@@ -211,10 +211,10 @@ object ServerConnectionController {
             // it (idempotent; the tvOS cleaner also re-arms, composeApp's does not).
             ProfileSettingsSync.startObserving()
             NetworkStatusRepository.requestRefresh(force = true)
-            _state.value = ServerConnectionUiState(
+            _state.update { s -> ServerConnectionUiState(
                 activeServer = ServerConfigurationRepository.active.value,
-                switchGeneration = _state.value.switchGeneration + 1,
-            )
+                switchGeneration = s.switchGeneration + 1,
+            ) }
             log.i { "Switched server → ${ServerConfigurationRepository.active.value.displayHost}" }
         } catch (error: CancellationException) {
             throw error

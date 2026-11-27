@@ -63,6 +63,9 @@ private class IdentityWiredEffects(val flow: MutableStateFlow<SessionStatus>, va
     @Volatile var shown: AuthState = AuthState.Loading
     var ticket: () -> Long = { 0 }
     var publishFails = false
+    /** Audit #5: fail only the publishes this picks. */
+    var failPublish: (AuthState) -> Boolean = { false }
+    val traces = mutableListOf<String>()
     var serialChanges = 0
     var chainEnds = 0
 
@@ -70,7 +73,7 @@ private class IdentityWiredEffects(val flow: MutableStateFlow<SessionStatus>, va
 
     override fun publish(state: AuthState) {
         IdentityImmediate.publishAuth(state) {
-            if (publishFails) error("publish write failed")
+            if (publishFails || failPublish(state)) error("publish write failed")
             shown = state
         }
         log.add("publish ${AccountKey.of(state)} gate=${gate()}")
@@ -103,7 +106,7 @@ private class IdentityWiredEffects(val flow: MutableStateFlow<SessionStatus>, va
     override suspend fun kickSessionRefresh() {}
     override suspend fun checkUser(accessToken: String): String? = accessToken.removePrefix("at-").substringBefore('-')
     override fun log(message: String) {}
-    override fun trace(line: String) {}
+    override fun trace(line: String) { traces += line }
     override suspend fun signInWithEmail(email: String, password: String) {}
     override suspend fun signUpWithEmail(email: String, password: String) {}
     override suspend fun signOutRemote() {
@@ -421,6 +424,43 @@ class AuthBarrierOrderTest {
             assertEquals(AccountKey.Account("A"), IdentityGate.state.value.scope.account)
             assertNotNull(IdentityGate.currentToken())
             assertFalse(effects.publishFails)
+        }
+    }
+}
+
+/**
+ * Audit #5: a step's failed publish is fed to the reducer before the step's follow-up, so a later
+ * successful publish of the follow-up supersedes it (no stale owed publish, no stale Recovery).
+ */
+class PublishFailedOrderTest {
+    @BeforeTest fun setUp() { resetIdentityForTest(); IdentityRevocation.revoker = RecordingRevoker(EventLog()) }
+    @AfterTest fun tearDown() = resetIdentityForTest()
+
+    @Test
+    fun aLaterSuccessfulPublishSupersedesTheFailedOne() = runTest {
+        for (owner in listOf(null, "A")) {
+            resetIdentityForTest(); IdentityRevocation.revoker = RecordingRevoker(EventLog())
+            val flow = MutableStateFlow<SessionStatus>(SessionStatus.Initializing)
+            val effects = IdentityWiredEffects(flow, EventLog())
+            val driver = AuthSessionDriver(effects, backgroundScope, restoreTimeout = 1.hours)
+            effects.ticket = { driver.currentTicket().serial }
+            IdentityRuntime.authSerial = { driver.currentTicket().serial }
+            driver.start(AuthEvent.Boot(guestId = null, owner = owner, notice = false, wipePending = false), { flow })
+            runCurrent()
+            flow.value = authenticated("A", "A-1")
+            runCurrent()
+            assertEquals(AccountKey.Account("A"), AccountKey.of(effects.shown), "owner=$owner")
+            // A session claiming A whose server user is B: the validation step publishes Welcome
+            // (fails here), then accepts B; its gates' follow-ups publish B in the same chain.
+            effects.failPublish = { it == AuthState.Unauthenticated }
+            flow.value = authenticated("A", "B-2")
+            runCurrent()
+            effects.failPublish = { false }
+            val model = driver.modelStateForTest
+            assertEquals(AccountKey.Account("B"), AccountKey.of(effects.shown), "owner=$owner: B shown")
+            assertEquals(null, model.pendingPublish, "owner=$owner: nothing owed after B's publish (${effects.traces.takeLast(12)})")
+            assertEquals(AccountKey.Account("B"), AccountKey.of(model.published), "owner=$owner")
+            assertEquals(null, IdentityGate.state.value.recovery, "owner=$owner")
         }
     }
 }

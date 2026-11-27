@@ -62,6 +62,7 @@ internal object IdentityEffects {
             }
         }
         if (reduced.accountOpened) IdentityImmediate.launchAfterAccountOpen()
+        reduced.tokenSettled?.let { IdentityImmediate.onAccountTokenSettled(it) }
         return ok
     }
 

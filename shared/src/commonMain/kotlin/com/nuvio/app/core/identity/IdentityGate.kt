@@ -60,6 +60,19 @@ object IdentityGate {
         if (closed) null else AccountToken(model.latestAccount, IdentityRuntime.authSerial())
     }
 
+    /**
+     * Audit #2: whether [token] is the current account token for a read-only picker action (PIN
+     * verification): the same check admission makes, so it also holds in Recovery(FailedApply),
+     * where the picker is on screen and a select is the retry (B20a). No window, no drained
+     * transition, no other recovery reason.
+     */
+    fun holdsForSelection(token: AccountToken?): Boolean = token != null && IdentityLocks.withCommit {
+        val model = IdentityRuntime.snapshot()
+        model.window == null && model.drained == null &&
+            (model.recovery == null || model.recovery == RecoveryReason.FailedApply) &&
+            token == AccountToken(model.latestAccount, IdentityRuntime.authSerial())
+    }
+
     fun currentEpoch(): IdentityEpoch = IdentityRuntime.snapshot().epoch
 
     /** Null token → Reject(WritesClosed). */

@@ -203,7 +203,7 @@ internal class BarrierProfileIdentityRouter(
 internal object IdentityAccountHooks {
     var ensureLoaded: (String) -> Unit = { ProfileRepository.ensureLoaded(it) }
     /** Review r5: the list now in memory belongs to the account being published (its token). */
-    var stampList: (AccountToken) -> Unit = { ProfileRepository.stampListToken(it) }
+    var stampList: (AccountToken) -> Unit = { ProfileRepository.stampListForToken(it) }
     var resetAddons: () -> Unit = { AddonRepository.clearLocalState() }
     var fanOut: (Int) -> List<String> = { ProfileLifecycleProvider.coordinator.onProfileSelectedChecked(it) }
     var activeSlot: () -> Int = { ProfileRepository.activeProfileId }
@@ -228,7 +228,7 @@ internal object IdentityAccountHooks {
     /** Tests only. */
     internal fun resetForTest() {
         ensureLoaded = { ProfileRepository.ensureLoaded(it) }
-        stampList = { ProfileRepository.stampListToken(it) }
+        stampList = { ProfileRepository.stampListForToken(it) }
         resetAddons = { AddonRepository.clearLocalState() }
         fanOut = { ProfileLifecycleProvider.coordinator.onProfileSelectedChecked(it) }
         activeSlot = { ProfileRepository.activeProfileId }

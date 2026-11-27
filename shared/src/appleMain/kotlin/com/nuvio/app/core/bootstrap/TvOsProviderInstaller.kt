@@ -251,6 +251,8 @@ private fun installIdentityBarrier() {
     // 8.0.5: apply bodies run off Main, so Main never waits for the apply lock after boot.
     IdentityBarrier.applyDispatcher = Dispatchers.Default
     IdentityImmediate.onAccountPublished = IdentityAccountHooks::accountPublished
+    // Audit #3: every settle under a new account token re-stamps the displayed list (one place).
+    IdentityImmediate.onAccountTokenSettled = { ProfileRepository.stampListIfCurrent(it) }
     IdentityImmediate.afterAccountOpen = { AddonRepository.initialize() }
     // Swift installs the revoker in NuvioTVApp.init; without one a profile transition fails closed.
     IdentityRevocation.required = true

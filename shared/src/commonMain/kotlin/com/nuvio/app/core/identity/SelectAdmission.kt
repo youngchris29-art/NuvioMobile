@@ -30,6 +30,21 @@ sealed interface Admission {
     data class Reject(val why: SelectRejection) : Admission
 }
 
+/**
+ * Audit #1: what makes a user's consent to enter a row stale. The slot and the profile's identity
+ * (`id`) say which profile it is; `pinEnabled` says whether its lock was checked. Everything else
+ * (name, avatar, `updatedAt`, `pinLockedUntil`) may change, including through the verify RPC's own
+ * refresh, without invalidating the consent. Rows of different lists are told apart by the list
+ * token (SelectRequest.displayedUnder, bound to the row by DisplayedProfile), never by row content.
+ */
+object ConsentKey {
+    fun same(current: com.nuvio.app.features.profiles.NuvioProfile, displayed: com.nuvio.app.features.profiles.NuvioProfile?): Boolean =
+        displayed != null &&
+            current.profileIndex == displayed.profileIndex &&
+            current.id == displayed.id &&
+            current.pinEnabled == displayed.pinEnabled
+}
+
 object SelectAdmission {
     const val NONE_REMAIN = -1
 
@@ -52,7 +67,7 @@ object SelectAdmission {
                     Admission.Admit(listed.map { it.profileIndex }.filter { it != deleting }.minOrNull() ?: NONE_REMAIN)
                 }
             row == null -> Admission.Reject(SelectRejection.SlotGone)
-            row != request.row -> Admission.Reject(SelectRejection.RowChanged)
+            !ConsentKey.same(row, request.row) -> Admission.Reject(SelectRejection.RowChanged)
             else -> Admission.Admit(request.slot)
         }
     }

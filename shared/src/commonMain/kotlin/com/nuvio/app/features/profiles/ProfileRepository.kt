@@ -29,6 +29,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
@@ -70,7 +71,7 @@ object ProfileRepository {
     fun setRememberLastProfileEnabled(enabled: Boolean) {
         if (_state.value.rememberLastProfileEnabled == enabled) return
 
-        _state.value = _state.value.copy(rememberLastProfileEnabled = enabled)
+        _state.update { s -> s.copy(rememberLastProfileEnabled = enabled) }
         persist()
     }
 
@@ -111,7 +112,7 @@ object ProfileRepository {
     suspend fun pullProfiles() {
         if (AuthRepository.state.value.isAnonymous) {
             if (!_state.value.isLoaded) {
-                _state.value = _state.value.copy(isLoaded = true)
+                _state.update { s -> s.copy(isLoaded = true) }
             }
             return
         }
@@ -132,13 +133,13 @@ object ProfileRepository {
             // after the commit).
             router.publishPulledProfiles(profiles, accountToken) {
                 val missing = activeProfileIndex.takeIf { slot -> profiles.none { it.profileIndex == slot } }
-                _state.value = _state.value.copy(
+                _state.update { s -> s.copy(
                     profiles = profiles.sortedBy { it.profileIndex },
                     isLoaded = true,
                     activeProfile = profiles.find { it.profileIndex == activeProfileIndex }
                         ?: router.onActiveSlotMissing(activeProfileIndex, profiles, accountToken),
                     listToken = accountToken,
-                )
+                ) }
                 if (_state.value.activeProfile != null) {
                     activeProfileIndex = _state.value.activeProfile!!.profileIndex
                 }
@@ -149,7 +150,7 @@ object ProfileRepository {
             if (AuthRepository.reportSessionError(ticket, e, "Profile pull")) return
             log.e(e) { "Failed to pull profiles" }
             if (!_state.value.isLoaded) {
-                _state.value = _state.value.copy(isLoaded = true)
+                _state.update { s -> s.copy(isLoaded = true) }
             }
         }
     }
@@ -163,10 +164,10 @@ object ProfileRepository {
     private fun selectProfileNow(profileIndex: Int) {
         activeProfileIndex = profileIndex
         val selectedProfile = _state.value.profiles.find { it.profileIndex == profileIndex }
-        _state.value = _state.value.copy(
+        _state.update { s -> s.copy(
             activeProfile = selectedProfile,
-            hasEverSelectedProfile = selectedProfile != null || _state.value.hasEverSelectedProfile,
-        )
+            hasEverSelectedProfile = selectedProfile != null || s.hasEverSelectedProfile,
+        ) }
         // Persistence and the repository fan-out are best-effort side effects of a selection that
         // has already happened. Both run on the caller's thread — on tvOS that is the Swift main
         // thread, where an escaped Kotlin exception aborts the process instead of surfacing as a
@@ -191,10 +192,10 @@ object ProfileRepository {
     internal fun writeSelection(profileIndex: Int) {
         activeProfileIndex = profileIndex
         val selectedProfile = _state.value.profiles.find { it.profileIndex == profileIndex }
-        _state.value = _state.value.copy(
+        _state.update { s -> s.copy(
             activeProfile = selectedProfile,
-            hasEverSelectedProfile = selectedProfile != null || _state.value.hasEverSelectedProfile,
-        )
+            hasEverSelectedProfile = selectedProfile != null || s.hasEverSelectedProfile,
+        ) }
     }
 
     /** After [writeSelection], outside the commit section: a best-effort persist, then the checked fan-out. */
@@ -204,14 +205,31 @@ object ProfileRepository {
         return ProfileLifecycleProvider.coordinator.onProfileSelectedChecked(profileIndex)
     }
 
-    /** Fork (W2 review r5): the account token the list in memory belongs to (the account hook stamps it after ensureLoaded). */
-    internal fun stampListToken(token: AccountToken) {
-        _state.value = _state.value.copy(listToken = token)
+    /**
+     * Fork (W2 review r5, audit #3): the ONE place the displayed list's token is maintained. Called
+     * by the account hook (inside the publish window, after ensureLoaded) and after every settle to
+     * Open under a new account token (IdentityImmediate.onAccountTokenSettled), so a same-account
+     * session change re-stamps the list too. Stamps only a list that belongs to the token's account
+     * (the owner it was loaded for); an atomic update, never carrying a stale list.
+     */
+    internal fun stampListForToken(token: AccountToken) {
+        val owner = when (val account = token.account) {
+            is AccountKey.Account -> account.userId
+            is AccountKey.Guest -> account.guestId
+            AccountKey.None -> null
+        }
+        if (owner == null || loadedCacheForUserId != owner) return
+        _state.update { s -> s.copy(listToken = token) }
+    }
+
+    /** The settle callback: applied only while [token] is still current (a later settle wins). */
+    internal fun stampListIfCurrent(token: AccountToken) {
+        IdentityGate.commitAccount(token, "stampList") { stampListForToken(token) }
     }
 
     /** Fork (W2, 5.2): the active profile was removed remotely; the slot number stays. */
     internal fun applyActiveRemoved() {
-        _state.value = _state.value.copy(activeProfile = null)
+        _state.update { s -> s.copy(activeProfile = null) }
     }
 
     /** Fork (W2, launch restore): whose profile cache is on disk, if any. */
@@ -368,6 +386,9 @@ object ProfileRepository {
      */
     suspend fun deleteProfile(row: DisplayedProfile) = deleteProfileUnder(row.profile.profileIndex, row.listToken)
 
+    /** Tests only: replaces the verify RPC and its refresh (audit #1/#2); runs under the read-only dispatch. */
+    internal var verifyRpcForTest: (suspend (Int, String) -> PinVerifyResult)? = null
+
     /** Tests only: replaces the delete RPC (r6 #1 binding tests). */
     internal var deleteRpcForTest: (suspend (Int) -> Unit)? = null
 
@@ -393,15 +414,15 @@ object ProfileRepository {
             val filtered = IdentityGate.commitAccount(token, "guestDelete") {
                 val remaining = _state.value.profiles.filter { it.profileIndex != profileIndex }
                 ProfilePinCacheStorage.removePayload(profileIndex)
-                _state.value = _state.value.copy(
+                _state.update { s -> s.copy(
                     profiles = remaining,
-                    activeProfile = if (_state.value.activeProfile?.profileIndex == profileIndex) {
+                    activeProfile = if (s.activeProfile?.profileIndex == profileIndex) {
                         router.onActiveSlotMissing(profileIndex, remaining, token)
                     } else {
-                        _state.value.activeProfile
+                        s.activeProfile
                     },
                     listToken = token,
-                )
+                ) }
                 if (_state.value.activeProfile != null) {
                     activeProfileIndex = _state.value.activeProfile!!.profileIndex
                 }
@@ -459,15 +480,34 @@ object ProfileRepository {
         }
     }
 
-    suspend fun verifyPin(profileIndex: Int, pin: String): PinVerifyResult = verifyPinUnder(profileIndex, pin, null)
+    suspend fun verifyPin(profileIndex: Int, pin: String): PinVerifyResult =
+        verifyPinUnder(profileIndex, pin, null) ?: PinVerifyResult(unlocked = false)
 
-    /** Fork (W2 review r6 #1): the displayed row, verified only while the token of its list holds. */
-    suspend fun verifyPin(row: DisplayedProfile, pin: String): PinVerifyResult =
-        if (IdentityGate.checkAccount(row.listToken, "verifyPin") !is Verdict.Commit) PinVerifyResult(unlocked = false)
-        else verifyPinUnder(row.profile.profileIndex, pin, row.listToken)
+    /**
+     * Fork (W2 review r6 #1, audit #1/#2): the displayed row, verified while the token of its list
+     * holds for a picker action (Open, or Recovery(FailedApply): the same check admission makes).
+     * A refusal is its own outcome ([PinCheck.refused]), never "incorrect PIN". On success the row
+     * handed back is the refreshed row of the same list token (the verify's own refresh never
+     * makes the select that follows stale), or the displayed row if the list moved on.
+     */
+    suspend fun verifyPin(row: DisplayedProfile, pin: String): PinCheck {
+        if (!IdentityGate.holdsForSelection(row.listToken)) return PinCheck(null, null)
+        val result = verifyPinUnder(row.profile.profileIndex, pin, row.listToken) ?: return PinCheck(null, null)
+        val refreshed = if (result.unlocked) {
+            _state.value.displayedRow(row.profile.profileIndex)?.takeIf { it.listToken == row.listToken } ?: row
+        } else {
+            null
+        }
+        return PinCheck(result, refreshed)
+    }
 
-    /** [token] null: the legacy (composeApp) call, unbound; else the RPC runs under [dispatchUnderSession]. */
-    private suspend fun verifyPinUnder(profileIndex: Int, pin: String, token: AccountToken?): PinVerifyResult {
+    /** [token] null: the legacy (composeApp) call, unbound; else the RPC is read-only-bound to it. null: refused. */
+    private suspend fun verifyPinUnder(profileIndex: Int, pin: String, token: AccountToken?): PinVerifyResult? {
+        verifyRpcForTest?.let { rpc ->
+            val result = AuthRepository.dispatchUnderSession(token, "verifyPin", readOnly = true) { rpc(profileIndex, pin) } ?: return null
+            if (result.unlocked) rememberVerifiedPinUnder(token, profileIndex, pin)
+            return result
+        }
         if (AuthRepository.state.value !is AuthState.Authenticated) {
             return verifyPinLocally(profileIndex, pin)
         }
@@ -477,19 +517,36 @@ object ProfileRepository {
                 put("p_profile_id", profileIndex)
                 put("p_pin", pin)
             }
-            val result = rpcBound(token, "verifyPin") { SupabaseProvider.client.postgrest.rpc("verify_profile_pin", params) }
-                ?: return PinVerifyResult(unlocked = false)
+            val result = (if (token == null) SupabaseProvider.client.postgrest.rpc("verify_profile_pin", params)
+            else AuthRepository.dispatchUnderSession(token, "verifyPin", readOnly = true) {
+                SupabaseProvider.client.postgrest.rpc("verify_profile_pin", params)
+            }) ?: return null
             result.decodeSingle<PinVerifyResult>().also { verifyResult ->
                 if (verifyResult.unlocked) {
                     // Upstream 5327166f: refresh the cached profile before remembering the PIN so
                     // a server-side profile change since the last pull isn't cached against.
                     pullProfiles()
-                    rememberVerifiedPin(profileIndex = profileIndex, pin = pin)
+                    rememberVerifiedPinUnder(token, profileIndex, pin)
                 }
             }
         }.getOrElse { e ->
             log.e(e) { "Failed to verify pin" }
             verifyPinLocally(profileIndex, pin)
+        }
+    }
+
+    /**
+     * Audit #6: the offline PIN cache (keyed by slot only, as at base; the account wipe clears it,
+     * AccountDataStores "ProfilePinCacheStorage") is written only while [token] is the current
+     * account token and the list in memory is that token's, inside its commit section.
+     */
+    private fun rememberVerifiedPinUnder(token: AccountToken?, profileIndex: Int, pin: String) {
+        if (token == null) {
+            rememberVerifiedPin(profileIndex = profileIndex, pin = pin)
+            return
+        }
+        IdentityGate.commitAccount(token, "rememberPin") {
+            if (_state.value.listToken == token) rememberVerifiedPin(profileIndex = profileIndex, pin = pin)
         }
     }
 
@@ -513,7 +570,7 @@ object ProfileRepository {
             rpcBound(token, "setPin") { SupabaseProvider.client.postgrest.rpc("set_profile_pin", params) }
                 ?: return PinVerifyResult(unlocked = false)
             pullProfiles()
-            rememberVerifiedPin(profileIndex = profileIndex, pin = pin)
+            rememberVerifiedPinUnder(token, profileIndex, pin)
             PinVerifyResult(unlocked = true)
         }.onFailure { e ->
             log.e(e) { "Failed to set pin" }
@@ -593,13 +650,13 @@ object ProfileRepository {
                 usesPrimaryPlugins = p.usesPrimaryPlugins,
             )
         }.sortedBy { it.profileIndex }
-        _state.value = _state.value.copy(
+        _state.update { s -> s.copy(
             profiles = profiles,
             isLoaded = true,
             activeProfile = profiles.find { it.profileIndex == activeProfileIndex }
                 ?: ProfileIdentityRouterProvider.router.onActiveSlotMissing(activeProfileIndex, profiles, IdentityGate.currentAccountToken()),
             listToken = token,
-        )
+        ) }
         if (_state.value.activeProfile != null) {
             activeProfileIndex = _state.value.activeProfile!!.profileIndex
         }
@@ -713,6 +770,12 @@ object ProfileRepository {
 
     /** Tests only: puts a list (with its token) in memory. */
     internal fun setStateForTest(state: ProfileState) {
+        _state.value = state
+    }
+
+    /** Tests only: a list in memory loaded for [owner] (what ensureLoaded records). */
+    internal fun setStateForTest(state: ProfileState, owner: String?) {
+        loadedCacheForUserId = owner
         _state.value = state
     }
 
