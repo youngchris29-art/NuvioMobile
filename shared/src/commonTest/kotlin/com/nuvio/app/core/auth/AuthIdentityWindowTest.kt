@@ -27,6 +27,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
@@ -40,6 +41,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.hours
+import kotlin.time.Duration.Companion.seconds
 
 /*
  * W2 (spec 4.5, 5.5-5.7): the real auth driver with effects wired to the identity core the way
@@ -261,10 +263,10 @@ class FailedPublishRetryTest {
 
     @AfterTest fun tearDown() = resetIdentityForTest()
 
-    private class Rig(scope: TestScope, log: EventLog) {
+    private class Rig(scope: TestScope, log: EventLog, timeout: kotlin.time.Duration = 1.hours) {
         val flow = MutableStateFlow<SessionStatus>(SessionStatus.Initializing)
         val effects = IdentityWiredEffects(flow, log)
-        val driver = AuthSessionDriver(effects, scope.backgroundScope, restoreTimeout = 1.hours)
+        val driver = AuthSessionDriver(effects, scope.backgroundScope, restoreTimeout = timeout)
 
         init {
             effects.ticket = { driver.currentTicket().serial }
@@ -272,6 +274,30 @@ class FailedPublishRetryTest {
             driver.start(AuthEvent.Boot(guestId = null, owner = null, notice = false, wipePending = false), { flow })
             scope.runCurrent()
         }
+    }
+
+    /**
+     * r6 #3: the real 10 s restore watchdog fires while the retries (every 5 s, up to 6) still run;
+     * it must not supersede the owed publish. The fourth retry (t = 20 s) succeeds.
+     */
+    @Test
+    fun watchdogDoesNotSupersedeTheOwedPublish() = runTest {
+        var failures = 4
+        failingHook { failures-- > 0 }
+        val rig = Rig(this, log, timeout = 10.seconds)
+        rig.flow.value = authenticated("A", "A-1")
+        runCurrent() // the restore publish fails (failure 1)
+        for (retryAt in 1..3) {
+            advanceTimeBy(5_000); runCurrent()
+            assertTrue(rig.driver.retryPendingPublish().isSuccess)
+            assertEquals(RecoveryReason.FailedPublish, IdentityGate.state.value.recovery, "retry $retryAt at ${retryAt * 5} s")
+            assertTrue(rig.effects.shown != AuthState.Unauthenticated, "the watchdog did not publish Welcome over the owed publish")
+        }
+        assertTrue(rig.driver.modelStateForTest.watchdogFired, "the 10 s watchdog has fired by now")
+        advanceTimeBy(5_000); runCurrent()
+        assertTrue(rig.driver.retryPendingPublish().isSuccess) // t = 20 s: succeeds
+        assertEquals(AccountKey.Account("A"), AccountKey.of(rig.effects.shown))
+        assertEquals(null, IdentityGate.state.value.recovery)
     }
 
     /** A required fan-out step throws for account A (the hook); recovery restores None without throwing. */

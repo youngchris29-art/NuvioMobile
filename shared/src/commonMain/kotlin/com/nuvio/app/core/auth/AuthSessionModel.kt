@@ -278,6 +278,20 @@ internal fun reduce(state: AuthModelState, event: AuthEvent): AuthStep {
     return AuthStep(b.state.copy(nextSerial = b.nextSerial), b.outputs.toList(), b.cleared)
 }
 
+/**
+ * Fork (scope identity W2, review r6 #3): the two provisional publishes (the restore watchdog's
+ * Welcome and a library re-initialisation's Loading) never supersede a failed identity publish
+ * still owed (AuthModelState.pendingPublish): its retries are running. Every definitive publish
+ * (a reset, a lost or replaced session, another account, a guest start) still supersedes it.
+ */
+internal object ProvisionalPublishRule {
+    fun watchdogShowsWelcome(published: AuthState, pendingPublish: AuthState?): Boolean =
+        published == AuthState.Loading && pendingPublish == null
+
+    fun initializingShowsLoading(liveIsGuest: Boolean, watchdogFired: Boolean, pendingPublish: AuthState?): Boolean =
+        !liveIsGuest && !watchdogFired && pendingPublish == null
+}
+
 /** What a boot makes of a guest id found on disk (round 8). */
 internal data class BootResolution(val trustedGuestId: String?, val clearStaleGuestId: Boolean)
 
@@ -629,7 +643,9 @@ private class StepBuilder(var state: AuthModelState) {
 
             Snap.Initializing -> {
                 // Fork rule: never re-enter Loading once the restore watchdog has fired.
-                if (state.live !is Guest && !state.watchdogFired) publishIfChanged(AuthState.Loading)
+                if (ProvisionalPublishRule.initializingShowsLoading(state.live is Guest, state.watchdogFired, state.pendingPublish)) {
+                    publishIfChanged(AuthState.Loading)
+                }
             }
 
             // Upstream daa966d36 (I1): the session is still stored and the library retries.
@@ -672,8 +688,9 @@ private class StepBuilder(var state: AuthModelState) {
 
             AuthEvent.WatchdogFired -> {
                 state = state.copy(watchdogFired = true)
-                // Decision Q: a restore still pending after the timeout shows Welcome.
-                if (state.published == AuthState.Loading) publish(AuthState.Unauthenticated)
+                // Decision Q: a restore still pending after the timeout shows Welcome. Fork (W2
+                // review r6 #3): never over a failed identity publish still owed (its retries run).
+                if (ProvisionalPublishRule.watchdogShowsWelcome(state.published, state.pendingPublish)) publish(AuthState.Unauthenticated)
             }
 
             is AuthEvent.ValidationFinished -> {
