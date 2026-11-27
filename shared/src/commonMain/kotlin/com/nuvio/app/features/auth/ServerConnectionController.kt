@@ -31,6 +31,15 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
+/** Review r6 #5 (pure): the UI state after a server switch's barrier result. */
+internal object ServerSwitchOutcome {
+    fun after(barrierSucceeded: Boolean, state: ServerConnectionUiState): ServerConnectionUiState = when {
+        barrierSucceeded -> state // runSwitch recorded success or its own failure
+        !state.isSwitching -> state // runSwitch already reported (its failure paths clear isSwitching)
+        else -> state.copy(isSwitching = false, switchFailure = state.switchFailure ?: ServerSwitchFailure.Restart)
+    }
+}
+
 enum class ServerSwitchFailure {
     SessionClear,
     Save,
@@ -158,7 +167,16 @@ object ServerConnectionController {
                 // transition; prepareForServerSwitch inside it is not wrapped again (a nested
                 // reset would wait on the lane it runs in). Failures are recorded in the state
                 // and the block returns, so the barrier always reaches Open.
-                IdentityBarrier.accountReset(TransitionKind.ServerSwitch) { runSwitch(save); Result.success(Unit) }
+                // Review r6 #5: every result is handled. A failure means the switch never ran (or the
+                // lane failed before it finished): clear the busy state and report it.
+                val outcome = try {
+                    IdentityBarrier.accountReset(TransitionKind.ServerSwitch) { runSwitch(save); Result.success(Unit) }
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Throwable) {
+                    Result.failure(error)
+                }
+                _state.update { ServerSwitchOutcome.after(outcome.isSuccess, it) }
             } finally {
                 synchronized(switchAdmissionLock) { switchAdmitted = false }
             }
