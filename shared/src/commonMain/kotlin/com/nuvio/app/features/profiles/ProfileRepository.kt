@@ -548,12 +548,14 @@ object ProfileRepository {
         row: DisplayedProfile,
         expected: NuvioProfile,
         readOnly: Boolean,
+        onAccountHeld: () -> Unit = {},
         write: (NuvioProfile) -> Unit,
     ): DisplayedProfile? {
         val token = row.listToken ?: return null
         return IdentityLocks.withCommit {
             val holds = if (readOnly) IdentityGate.holdsForSelection(token) else IdentityGate.checkAccount(token, "pinFinish") is Verdict.Commit
             if (!holds) return@withCommit null
+            onAccountHeld()
             val snapshot = _state.value
             if (RowAdmission.decide(expected, token, snapshot.listToken, snapshot.profiles) != null) {
                 log.w { "PIN operation on profile ${row.profile.profileIndex} not adopted: the row changed" }
@@ -659,14 +661,16 @@ object ProfileRepository {
         if (row.listToken == null) return PinCheck(PinVerifyResult(unlocked = false), null)
         val result = clearPinUnder(row.profile.profileIndex, currentPin, row.listToken, row.profile)
         if (!result.unlocked) return PinCheck(result, null)
-        return PinCheck(result, finishPinOperation(row, expected = row.profile.copy(pinEnabled = false), readOnly = false) {})
+        // P3: the slot's cache entry is removed inside the section, under this account's token, even
+        // when the row is not adopted (a removal never grants an offline unlock).
+        return PinCheck(result, finishPinOperation(row, expected = row.profile.copy(pinEnabled = false), readOnly = false,
+            onAccountHeld = { ProfilePinCacheStorage.removePayload(row.profile.profileIndex) }) {})
     }
 
     private suspend fun clearPinUnder(profileIndex: Int, currentPin: String?, token: AccountToken?, displayed: NuvioProfile? = null): PinVerifyResult {
         pinWriteRpcForTest?.let { rpc ->
             rpcBound(token, "clearPin", displayed) { rpc("clearPin") }
                 ?: return PinVerifyResult(unlocked = false, message = resourceString("Couldn't remove PIN lock. Try again.", StringKey.profile_pin_clear_failed))
-            ProfilePinCacheStorage.removePayload(profileIndex)
             return PinVerifyResult(unlocked = true)
         }
         if (AuthRepository.state.value !is AuthState.Authenticated) {
@@ -682,7 +686,8 @@ object ProfileRepository {
             rpcBound(token, "clearPin", displayed) { SupabaseProvider.client.postgrest.rpc("clear_profile_pin", params) }
                 ?: return PinVerifyResult(unlocked = false, message = resourceString("Couldn't remove PIN lock. Try again.", StringKey.profile_pin_clear_failed))
             pullProfiles()
-            ProfilePinCacheStorage.removePayload(profileIndex)
+            // The row caller removes the cache entry inside finishPinOperation; the legacy call as at base.
+            if (token == null) ProfilePinCacheStorage.removePayload(profileIndex)
             PinVerifyResult(unlocked = true)
         }.onFailure { e ->
             log.e(e) { "Failed to clear pin" }

@@ -160,6 +160,26 @@ class PinVerifyRowTest {
         }
     }
 
+    /** P3: a PIN removal clears the slot's cache entry only while its account holds, inside the section. */
+    @Test
+    fun aPinRemovalClearsTheCacheOnlyForItsAccount() = real {
+        try {
+            ProfilePinCacheStorage.savePayload(2, "entry")
+            ProfileRepository.pinWriteRpcForTest = {
+                // Another account opens between the RPC and the section (its own slot-2 entry).
+                IdentityRuntime.setForTest(BarrierState.initial(1).copy(scope = IdentityScope(accountB, 1), latestAccount = accountB))
+            }
+            ProfileRepository.clearPin(ProfileRepository.state.value.displayedRow(2)!!, "1234")
+            assertEquals("entry", ProfilePinCacheStorage.loadPayload(2), "the other account's entry is kept")
+            IdentityRuntime.setForTest(BarrierState.initial(1).copy(scope = IdentityScope(accountA, 1), latestAccount = accountA))
+            ProfileRepository.pinWriteRpcForTest = {}
+            ProfileRepository.clearPin(ProfileRepository.state.value.displayedRow(2)!!, "1234")
+            assertEquals(null, ProfilePinCacheStorage.loadPayload(2), "removed for its own account")
+        } finally {
+            ProfileRepository.pinWriteRpcForTest = null
+        }
+    }
+
     /** Audit #2: in Recovery(FailedApply) the picker is the front; a PIN check still runs (read-only). */
     @Test
     fun failedApplyStillVerifies() = real {
