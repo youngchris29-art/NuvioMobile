@@ -117,8 +117,8 @@ class CloudLibraryStore(
 object CloudLibraryRepository {
     private val log = Logger.withTag("CloudLib")
     private val defaultScope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("CloudLibraryRepository"))
-    /** The initial-load retry (r3 #2) runs apart from the refresh jobs; clear() cancels it. */
-    private val retryScope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("CloudLibraryRetry"))
+    /** Review r4 B: the one permanent auto-load observer (installed on first use). */
+    private val observerScope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("CloudLibraryObserver"))
     /** Where refresh jobs run (tests use a paused dispatcher to cancel a job before its body). */
     internal var scope: CoroutineScope = defaultScope
     private val store = CloudLibraryStore(
@@ -150,11 +150,26 @@ object CloudLibraryRepository {
     private val marker = CloudRefreshMarker()
     private val stateLock = kotlinx.atomicfu.locks.SynchronizedObject()
 
-    /** Review r3 #2: a listing was asked for (ensureLoaded/refresh) since the last clear. */
-    private var loadWanted = false
-    /** Review r3 #2: the one retry of an abandoned initial load was used (reset by a publish). */
-    private var initialRetryUsed = false
-    private var retryJob: kotlinx.coroutines.Job? = null
+    /**
+     * Review r4 B: a listing was asked for (ensureLoaded/refresh) since the last clear. With
+     * [endedTicks] and the gate's state flow it drives the auto-load observer. Under [stateLock].
+     */
+    private var wanted = false
+    private var observerInstalled = false
+
+    /** Review r4 B: bumped when a refresh ends without publishing (an identity-driven end). */
+    private val endedTicks = MutableStateFlow(0L)
+
+    /**
+     * Review r4 A: what this repository's lookups found, each with the profile scope it was found
+     * under, so a resolve can accept a lookup's target without trusting the caller's values; the
+     * last [MAX_FOUND] targets, cleared by clear() and disable. Under [stateLock].
+     */
+    private class FoundTarget(val scope: IdentityScope, val target: CloudLibraryPlaybackTarget)
+    private val foundTargets = LinkedHashMap<String, FoundTarget>()
+    private const val MAX_FOUND = 16
+
+    private fun targetKey(item: CloudLibraryItem, file: CloudLibraryFile) = "${item.stableKey}|${file.stableKey}"
 
     /** The profile's Debrid settings, read on a call (a seam: tests flip them at the switch). */
     internal interface Settings {
@@ -203,6 +218,9 @@ object CloudLibraryRepository {
     /** Where the `[CloudLib]` lines go (tests read them). */
     internal var logSink: (String) -> Unit = { line -> log.i { line } }
 
+    /** Tests only: runs in the auto-load observer right before its token capture. */
+    internal var beforeAutoCaptureForTest: () -> Unit = {}
+
     /** Tests only: runs right before every provider call, after its credentials were read. */
     internal var beforeStoreCallForTest: () -> Unit = {}
 
@@ -213,6 +231,7 @@ object CloudLibraryRepository {
         debugHoldMs = null
         logSink = { line -> log.i { line } }
         beforeStoreCallForTest = {}
+        beforeAutoCaptureForTest = {}
         scope.coroutineContext[kotlinx.coroutines.Job]?.children?.forEach { it.cancel() }
         scope = defaultScope
         clear()
@@ -290,41 +309,16 @@ object CloudLibraryRepository {
      * launch; takes only [stateLock], never the identity commit lock.
      */
     private fun abandonRefresh(owner: CloudRefreshMarker.Owner) {
-        val retry = kotlinx.atomicfu.locks.synchronized(stateLock) {
+        val ended = kotlinx.atomicfu.locks.synchronized(stateLock) {
             if (!marker.abandon(owner)) return@synchronized false
             _uiState.update { current ->
                 current.copy(isRefreshing = false, providers = current.providers.map { it.copy(isLoading = false) })
             }
-            // Review r3 #2: an abandoned INITIAL load of a listing someone asked for gets one
-            // retry; a second abandon in a row ends in the loaded-and-empty state (Refresh shown),
-            // never an endless spinner and never a loop.
-            if (_uiState.value.isLoaded || !loadWanted) return@synchronized false
-            if (!initialRetryUsed) {
-                initialRetryUsed = true
-                true
-            } else {
-                _uiState.update { it.copy(isLoaded = true) }
-                false
-            }
+            true
         }
-        if (retry) scheduleInitialRetry()
-    }
-
-    /**
-     * Review r3 #2: waits for the identity gate's state flow to show Open again, then runs
-     * ensureLoaded() once, which captures the THEN-current token (never the abandoned one).
-     * Cancelled by clear() (a switch or a wipe); one at a time. Never takes a lock while waiting.
-     */
-    private fun scheduleInitialRetry() {
-        val job = retryScope.launch {
-            IdentityGate.state.first { it.phase is IdentityPhase.Open }
-            logSink("[CloudLib] initial load retry")
-            ensureLoaded()
-        }
-        kotlinx.atomicfu.locks.synchronized(stateLock) {
-            retryJob?.cancel()
-            retryJob = job
-        }
+        // Review r4 B: the observer re-evaluates (a wanted, unloaded listing loads again on the
+        // then-current token once the gate is Open). Bumped outside the lock.
+        if (ended) endedTicks.update { it + 1 }
     }
 
     /**
@@ -345,12 +339,26 @@ object CloudLibraryRepository {
     private fun writeListingLocked(call: CloudCall, credentials: List<DebridServiceCredential>, listing: CloudLibraryUiState) {
         loadedConnectionKeys = keysOf(credentials)
         listingScope = call.token.scope
-        initialRetryUsed = false
         _uiState.value = listing
     }
 
-    /** Review r3 #1: how long a superseded lookup waits for the refresh that superseded it. */
-    internal var supersededLookupWaitMs: Long = 20_000L
+    /**
+     * Review r4 B: a provider fetch never throws past here. A throw (other than cancellation) is
+     * published as base publishes a failed provider: a loaded provider state carrying the error
+     * message, which both apps render with their retry. Not an abandonment.
+     */
+    private suspend fun fetch(credentials: List<DebridServiceCredential>): CloudLibraryUiState = try {
+        backend.refresh(credentials)
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Throwable) {
+        CloudLibraryUiState(
+            isLoaded = true,
+            providers = credentials
+                .filter { it.provider.supports(DebridProviderCapability.CloudLibrary) }
+                .map { CloudLibraryProviderState(provider = it.provider, errorMessage = e.message) },
+        )
+    }
 
     /**
      * DEBUG hold (9.1.3): with the knob set, waits that long NON-cancellably and then makes the
@@ -371,13 +379,49 @@ object CloudLibraryRepository {
     private fun writeDisabled() = kotlinx.atomicfu.locks.synchronized(stateLock) {
         loadedConnectionKeys = emptyList()
         listingScope = null
+        foundTargets.clear()
         marker.reset()
         _uiState.value = CloudLibraryUiState(isLoaded = true, isEnabled = false)
     }
 
     fun ensureLoaded() {
-        val call = beginCall("cloudEnsureLoaded") ?: return
-        kotlinx.atomicfu.locks.synchronized(stateLock) { loadWanted = true }
+        // Review r4 B: wanted is set even when the capture below is refused (the gate closed); the
+        // observer serves it on the next Open. Not identity-dependent state.
+        want()
+        ensureLoadedWith(beginCall("cloudEnsureLoaded") ?: return)
+    }
+
+    /**
+     * Review r4 B: one permanent, level-triggered observer of the gate's state flow and of
+     * [endedTicks]. Whenever the gate is Open and a wanted listing is neither loaded nor being
+     * refreshed, it calls the load on the then-current token. Nothing is consumed: a capture the
+     * gate refuses (it closed again in between) is served by the next Open emission. It never sets
+     * [wanted], so after clear() nothing is loaded until someone asks again.
+     */
+    private fun want() {
+        val install = kotlinx.atomicfu.locks.synchronized(stateLock) {
+            wanted = true
+            (!observerInstalled).also { observerInstalled = true }
+        }
+        if (!install) return
+        observerScope.launch {
+            kotlinx.coroutines.flow.combine(IdentityGate.state, endedTicks) { state, _ -> state }.collect { state ->
+                if (state.phase !is IdentityPhase.Open || !autoLoadNeeded()) return@collect
+                beforeAutoCaptureForTest()
+                // A refused capture means the gate closed after this emission. Its next Open is a new
+                // emission: every return to Open bumps the epoch (BarrierModel.settle), so the state
+                // differs and the flow cannot conflate it away.
+                val call = beginCall("cloudAutoLoad") ?: return@collect
+                // Re-checked after the capture: a clear() in between leaves nothing wanted.
+                if (autoLoadNeeded()) ensureLoadedWith(call)
+            }
+        }
+    }
+
+    private fun autoLoadNeeded(): Boolean =
+        kotlinx.atomicfu.locks.synchronized(stateLock) { wanted && !_uiState.value.isLoaded && !marker.isRefreshing }
+
+    private fun ensureLoadedWith(call: CloudCall) {
         settings.load()
         if (!settings.enabled()) {
             publish(call, "cloudDisabled") { writeDisabled() }
@@ -393,8 +437,8 @@ object CloudLibraryRepository {
     }
 
     fun refresh() {
+        want()
         val call = beginCall("cloudRefresh") ?: return
-        kotlinx.atomicfu.locks.synchronized(stateLock) { loadWanted = true }
         refreshWith(call)
     }
 
@@ -409,7 +453,7 @@ object CloudLibraryRepository {
         val credentials = admitted.credentials
         val job = IdentityWork.launch(call.token, "cloudRefresh", scope) {
             beforeStoreCallForTest()
-            val refreshed = backend.refresh(credentials)
+            val refreshed = fetch(credentials)
             debugHold(call, "cloudRefresh") {
                 publish(call, "cloudRefresh") { publishListing(call, owner, credentials, refreshed) }
             }
@@ -499,6 +543,14 @@ object CloudLibraryRepository {
         // call's profile (the passed item and file are only keys) and admits the credentials.
         val admitted = admitWork(call, "cloudResolveAdmit") { listedTarget(call, item, file) }
         val target = admitted?.value ?: return CloudLibraryPlaybackResult.Failed()
+        // Review r4 A: a target whose provider is no longer configured on this profile (key
+        // disconnected after the lookup) gets the existing missing-credentials answer, no request.
+        if (admitted.credentials.none { it.provider.id.equals(target.item.providerId, ignoreCase = true) }) {
+            return when (val r = publish(call, "cloudResolveMissing") { CloudLibraryPlaybackResult.MissingCredentials }) {
+                is CommitResult.Committed -> r.value
+                is CommitResult.Rejected -> CloudLibraryPlaybackResult.Failed()
+            }
+        }
         beforeStoreCallForTest()
         val result = backend.resolvePlayback(target.item, target.file, admitted.credentials)
         return when (val r = debugHold(call, "cloudResolve") {
@@ -539,13 +591,16 @@ object CloudLibraryRepository {
      * read at call time. The tvOS barrier advances the token and clears Cloud on every switch.
      */
     private fun listedTargetLocked(call: CloudCall, item: CloudLibraryItem, file: CloudLibraryFile): CloudLibraryPlaybackTarget? {
-        if (listingScope != call.token.scope) return null
-        val listedItem = _uiState.value.providers
-            .firstOrNull { it.providerId == item.providerId }
-            ?.items?.firstOrNull { it.stableKey == item.stableKey }
-            ?: return null
-        val listedFile = listedItem.files.firstOrNull { it.stableKey == file.stableKey } ?: return null
-        return CloudLibraryPlaybackTarget(item = listedItem, file = listedFile)
+        // Review r4 A: the published listing for the call's profile, else a target a lookup of this
+        // profile found (its own fetch); the recorded or listed values, never the caller's.
+        if (listingScope == call.token.scope) {
+            val listedItem = _uiState.value.providers
+                .firstOrNull { it.providerId == item.providerId }
+                ?.items?.firstOrNull { it.stableKey == item.stableKey }
+            val listedFile = listedItem?.files?.firstOrNull { it.stableKey == file.stableKey }
+            if (listedItem != null && listedFile != null) return CloudLibraryPlaybackTarget(item = listedItem, file = listedFile)
+        }
+        return foundTargets[targetKey(item, file)]?.takeIf { it.scope == call.token.scope }?.target
     }
 
     /** W3b (9.1.4): the profile fan-out and the account wipe empty the Cloud state (gate closed). */
@@ -554,10 +609,8 @@ object CloudLibraryRepository {
             loadedConnectionKeys = emptyList()
             listingScope = null
             marker.reset()
-            loadWanted = false
-            initialRetryUsed = false
-            retryJob?.cancel()
-            retryJob = null
+            wanted = false
+            foundTargets.clear()
             _uiState.value = CloudLibraryUiState()
         }
     }
@@ -589,63 +642,36 @@ object CloudLibraryRepository {
         // its completion.
         try {
             beforeStoreCallForTest()
-            val refreshed = backend.refresh(credentials)
-            val published = when (val r = debugHold(call, "cloudRefreshNow") {
+            val refreshed = fetch(credentials)
+            // Review r4 A: the lookup answers from ITS OWN fetch (as at base), inside its own final
+            // admission: its token still holds, so the fetch was made for this profile with the
+            // credentials admitted for this call. Publishing stays owner-only (a superseded lookup
+            // publishes nothing); the target it found is recorded under the call's scope, so the
+            // resolve that follows can accept it.
+            return when (val r = debugHold(call, "cloudRefreshNow") {
                 publish(call, "cloudRefreshNow") {
-                    if (publishListing(call, owner, credentials, refreshed)) {
-                        refreshed.findPlaybackTargetForProgress(contentId = contentId, videoId = videoId)?.let { CloudLookupStep.Found(it) }
-                            ?: CloudLookupStep.NotFound
-                    } else {
-                        null // superseded: decided below, after the newer refresh settled
-                    }
+                    publishListing(call, owner, credentials, refreshed)
+                    // Cloud turned off for this profile while the fetch ran: no target.
+                    if (!settings.enabled()) null
+                    else refreshed.findPlaybackTargetForProgress(contentId = contentId, videoId = videoId)
+                        ?.also { recordFound(call, it) }
                 }
             }) {
-                is CommitResult.Committed -> r.value
-                is CommitResult.Rejected -> return CloudLookupStep.Refused(CloudLookupStep.Stage.Commit)
+                is CommitResult.Committed -> r.value?.let { CloudLookupStep.Found(it) } ?: CloudLookupStep.NotFound
+                is CommitResult.Rejected -> CloudLookupStep.Refused(CloudLookupStep.Stage.Commit)
             }
-            return published ?: afterSuperseded(call, owner, credentials, refreshed, contentId, videoId)
         } finally {
             abandonRefresh(owner)
         }
     }
 
-    /**
-     * Review r3 #1: a lookup whose fetch was superseded never reports a premature miss. It waits
-     * (bounded, outside every lock) for the refresh that superseded it to settle, then, inside one
-     * admission of its own token:
-     * - a newer listing was published: it answers from that listing (published for this profile);
-     * - the newer refresh was abandoned and nothing newer published or started: its own admitted
-     *   fetch is published (a fresh owner, so a later refresh still wins) and it answers from it;
-     * - another refresh is in flight, the wait timed out, Cloud was cleared or disabled: NotFound.
-     * A target is only ever returned from a listing published for the call's profile.
-     */
-    private suspend fun afterSuperseded(
-        call: CloudCall,
-        owner: CloudRefreshMarker.Owner,
-        credentials: List<DebridServiceCredential>,
-        fetched: CloudLibraryUiState,
-        contentId: String,
-        videoId: String,
-    ): CloudLookupStep {
-        if (!marker.awaitIdle(supersededLookupWaitMs)) return CloudLookupStep.NotFound
-        return when (val r = publish(call, "cloudLookupAfterSuperseded") {
-            kotlinx.atomicfu.locks.synchronized(stateLock) {
-                when {
-                    marker.publishedSince(owner) ->
-                        if (listingScope != call.token.scope) null
-                        else _uiState.value.findPlaybackTargetForProgress(contentId = contentId, videoId = videoId)
-                    marker.isRefreshing || !_uiState.value.isEnabled -> null
-                    else -> {
-                        val fresh = marker.start()
-                        marker.publish(fresh)
-                        writeListingLocked(call, credentials, fetched)
-                        fetched.findPlaybackTargetForProgress(contentId = contentId, videoId = videoId)
-                    }
-                }
-            }
-        }) {
-            is CommitResult.Committed -> r.value?.let { CloudLookupStep.Found(it) } ?: CloudLookupStep.NotFound
-            is CommitResult.Rejected -> CloudLookupStep.Refused(CloudLookupStep.Stage.Commit)
+    /** Inside the lookup's final admission: the target, recorded for the call's profile (bounded). */
+    private fun recordFound(call: CloudCall, target: CloudLibraryPlaybackTarget) {
+        kotlinx.atomicfu.locks.synchronized(stateLock) {
+            val key = targetKey(target.item, target.file)
+            foundTargets.remove(key)
+            foundTargets[key] = FoundTarget(call.token.scope, target)
+            while (foundTargets.size > MAX_FOUND) foundTargets.remove(foundTargets.keys.first())
         }
     }
 

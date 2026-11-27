@@ -83,7 +83,7 @@ final class CloudLibraryViewModel: ObservableObject {
     }
 
     /// Review r3 #2: placeholders only while nothing is loaded. Once the repository reports loaded
-    /// (a listing, or the loaded-and-empty state after an abandoned load and its one retry), a
+    /// (a listing, including a provider's failure state), a
     /// missing provider shows no spinner, so the screen never spins with nothing in flight. Pure.
     nonisolated static func displayedProviders(listed: [CloudLibraryProviderState],
                                                configured: [DebridProvider],

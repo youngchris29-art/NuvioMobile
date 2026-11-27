@@ -340,63 +340,94 @@ class CloudPublishGateTest {
         assertFalse(state().isRefreshing)
     }
 
-    // Review r3 #1: a superseded lookup never reports a premature miss.
-
     private val listingWithFile = CloudLibraryUiState(isLoaded = true, providers = listOf(CloudLibraryProviderState(DebridProviders.Torbox, items = listOf(itemA))))
+    private val torboxError = CloudLibraryUiState(isLoaded = true, providers = listOf(CloudLibraryProviderState(DebridProviders.Torbox, errorMessage = "Torbox is down")))
+    private val foundA = CloudLibraryPlaybackTargetLookupResult.Found(CloudLibraryPlaybackTarget(itemA, fileA))
+    private suspend fun lookupA() = CloudLibraryRepository.findPlaybackTargetForProgressResult(itemA.stableKey, itemA.playbackVideoId(fileA))
+
+    // Review r4 A: a lookup answers from its own fetch; publishing stays owner-only.
 
     @Test
-    fun r3_supersededLookupAnswersFromTheNewerPublishedListing() = real {
+    fun r4_supersededLookupAnswersFromItsOwnFetchAtOnce() = real {
         val first = CompletableDeferred<Unit>()
-        val second = CompletableDeferred<Unit>()
-        backend.perCall += listOf(first, second)
-        backend.perCallListing += listOf(listingWithFile, listingWithFile)
-        val lookup = async { CloudLibraryRepository.findPlaybackTargetForProgressResult(itemA.stableKey, itemA.playbackVideoId(fileA)) }
+        backend.perCall += listOf(first, CompletableDeferred()) // the newer refresh stays pending
+        backend.perCallListing += listOf(listingWithFile)
+        val lookup = async { lookupA() }
         eventually { backend.started.value == 1 }
         CloudLibraryRepository.refresh() // supersedes the lookup's refresh
         eventually { backend.started.value == 2 }
-        first.complete(Unit) // the lookup's fetch finishes first, while the newer one is pending
-        delay(150)
-        assertFalse(lookup.isCompleted, "it waits for the newer refresh instead of reporting a miss")
-        second.complete(Unit)
-        assertEquals(CloudLibraryPlaybackTargetLookupResult.Found(CloudLibraryPlaybackTarget(itemA, fileA)), lookup.await())
+        first.complete(Unit)
+        assertEquals(foundA, lookup.await(), "no waiting, no premature miss")
+        assertTrue(state().isRefreshing, "the newer refresh still owns the marker")
+        assertFalse(state().providers.any { it.items.isNotEmpty() }, "the superseded lookup published nothing")
     }
 
     @Test
-    fun r3_supersededLookupPublishesItsOwnFetchWhenTheNewerIsAbandoned() = real {
+    fun r4_olderLookupSucceedsWhileANewerRefreshPublishesAProviderError() = real {
         val first = CompletableDeferred<Unit>()
         val second = CompletableDeferred<Unit>()
         backend.perCall += listOf(first, second)
-        backend.perCallListing += listOf(listingWithFile, CloudLibraryUiState(isLoaded = true))
-        val lookup = async { CloudLibraryRepository.findPlaybackTargetForProgressResult(itemA.stableKey, itemA.playbackVideoId(fileA)) }
-        eventually { backend.started.value == 1 }
-        val newer = async { CloudLibraryRepository.findPlaybackTargetForProgressResult("torbox:Torrent:other", "x") }
-        eventually { backend.started.value == 2 }
-        first.complete(Unit)
-        delay(150)
-        newer.cancel() // the newer refresh is abandoned
-        assertEquals(CloudLibraryPlaybackTargetLookupResult.Found(CloudLibraryPlaybackTarget(itemA, fileA)), lookup.await())
-        assertEquals(listingWithFile.providers, state().providers, "its own admitted fetch was published")
-        assertFalse(state().isRefreshing)
-    }
-
-    @Test
-    fun r3_theWaitIsBounded() = real {
-        CloudLibraryRepository.supersededLookupWaitMs = 200
-        val first = CompletableDeferred<Unit>()
-        backend.perCall += listOf(first, CompletableDeferred()) // the newer one never finishes
-        backend.perCallListing += listOf(listingWithFile)
-        val lookup = async { CloudLibraryRepository.findPlaybackTargetForProgressResult(itemA.stableKey, itemA.playbackVideoId(fileA)) }
+        backend.perCallListing += listOf(listingWithFile, torboxError)
+        val lookup = async { lookupA() }
         eventually { backend.started.value == 1 }
         CloudLibraryRepository.refresh()
         eventually { backend.started.value == 2 }
+        second.complete(Unit) // the newer one publishes the error state first
+        eventually { state() == torboxError }
         first.complete(Unit)
-        assertEquals(CloudLibraryPlaybackTargetLookupResult.NotFound, lookup.await())
+        assertEquals(foundA, lookup.await())
+        assertEquals(torboxError, state(), "the superseded lookup did not overwrite the newer listing")
     }
 
-    // Review r3 #2: an abandoned initial load is retried once when the gate reopens, never in a loop.
+    @Test
+    fun r4_aLookupFoundTargetResolvesThroughTheRecord() = real {
+        val first = CompletableDeferred<Unit>()
+        backend.perCall += listOf(first, CompletableDeferred())
+        backend.perCallListing += listOf(listingWithFile)
+        val lookup = async { lookupA() }
+        eventually { backend.started.value == 1 }
+        CloudLibraryRepository.refresh() // supersede: the lookup's listing is never published
+        eventually { backend.started.value == 2 }
+        first.complete(Unit)
+        assertEquals(foundA, lookup.await())
+        val result = CloudLibraryRepository.resolvePlayback(itemA, fileA.copy(playbackUrl = "https://example.invalid/forged"))
+        assertEquals(CloudLibraryPlaybackResult.Success(url = "https://example.invalid/stream"), result)
+        assertEquals(listOf(fileA), backend.resolvedFiles, "the recorded file, not the caller's")
+    }
 
     @Test
-    fun r3_abandonedInitialRefreshLoadsWhenTheGateReopens() = real {
+    fun r4_keyDisconnectedBetweenLookupAndResolve() = real {
+        backend.perCallListing += listOf(listingWithFile)
+        assertEquals(foundA, lookupA())
+        settings.credentials[1] = emptyList() // Torbox disconnected on this profile
+        assertEquals(CloudLibraryPlaybackResult.MissingCredentials, CloudLibraryRepository.resolvePlayback(itemA, fileA))
+        assertEquals(emptyList(), backend.resolvedFiles, "the existing missing-credentials answer, no request")
+    }
+
+    @Test
+    fun r4_keyReplacedBetweenLookupAndResolveBehavesAsAtBase() = real {
+        backend.perCallListing += listOf(listingWithFile)
+        assertEquals(foundA, lookupA())
+        val replaced = DebridServiceCredential(DebridProviders.Torbox, "new-key-of-a")
+        settings.credentials[1] = listOf(replaced) // same profile, new key: not an identity change
+        assertTrue(CloudLibraryRepository.resolvePlayback(itemA, fileA) is CloudLibraryPlaybackResult.Success)
+        assertEquals(listOf(replaced), backend.handed.last())
+    }
+
+    @Test
+    fun r4_disabledBetweenLookupAndResolve() = real {
+        backend.perCallListing += listOf(listingWithFile)
+        assertEquals(foundA, lookupA())
+        settings.enabled[1] = false
+        val result = CloudLibraryRepository.resolvePlayback(itemA, fileA)
+        assertTrue(result is CloudLibraryPlaybackResult.Failed && result.message != null, "the existing disabled answer")
+        assertEquals(emptyList(), backend.resolvedFiles)
+    }
+
+    // Review r4 B: the level-triggered observer serves a wanted, unloaded listing.
+
+    @Test
+    fun r4_abandonedInitialRefreshLoadsWhenTheGateReopens() = real {
         backend.perCall += CompletableDeferred() // the initial refresh never answers
         CloudLibraryRepository.ensureLoaded()
         eventually { backend.started.value == 1 }
@@ -405,7 +436,7 @@ class CloudPublishGateTest {
         CloudLibraryRepository.cancelJobsForTest() // the drain cancels the refresh
         eventually { !state().isRefreshing }
         delay(200)
-        assertEquals(1, backend.started.value, "no retry while the gate is closed")
+        assertEquals(1, backend.started.value, "nothing while the gate is closed")
         assertFalse(state().isLoaded)
         com.nuvio.app.core.identity.IdentityImmediate.chainEnded() // Open again
         eventually { state().isLoaded && backend.started.value == 2 }
@@ -413,30 +444,166 @@ class CloudPublishGateTest {
     }
 
     @Test
-    fun r3_noRetryStormWhenTheRetryIsAbandonedToo() = real {
-        backend.perCall += listOf(CompletableDeferred(), CompletableDeferred())
+    fun r4_aRefusedFinalCommitAfterTheGateReopenedReloads() = real {
+        backend.gate = CompletableDeferred()
         CloudLibraryRepository.ensureLoaded()
-        eventually { backend.started.value == 1 }
-        CloudLibraryRepository.cancelJobsForTest()
-        eventually { backend.started.value == 2 } // the one retry (the gate is open)
-        CloudLibraryRepository.cancelJobsForTest()
-        eventually { !state().isRefreshing }
-        delay(300)
-        assertEquals(2, backend.started.value, "no third attempt")
-        assertTrue(state().isLoaded, "the loaded-and-empty state: Refresh is shown, no spinner")
+        backend.entered.await()
+        IdentityRuntime.authSerial = { 2 } // the gate stays Open; the job's token is stale
+        backend.gate!!.complete(Unit) // its final commit is refused; no gate emission follows
+        eventually { state().isLoaded && backend.started.value == 2 }
     }
-
-    // The refresh matrix (r3): the cells no other test covers.
 
     @Test
-    fun matrix_plainRefreshThatThrowsRetriesOnceThenShowsLoaded() = real {
+    fun r4_aFirstCallWhileTheGateIsClosedIsServedOnOpen() = real {
+        com.nuvio.app.core.identity.IdentityImmediate.serialChanging()
+        CloudLibraryRepository.ensureLoaded() // refused at the start, but wanted
+        delay(150)
+        assertEquals(0, backend.started.value)
+        com.nuvio.app.core.identity.IdentityImmediate.chainEnded()
+        eventually { state().isLoaded && backend.started.value == 1 }
+    }
+
+    @Test
+    fun r4_theGateClosingBetweenAnOpenEmissionAndTheCaptureIsPickedUpLater() = real {
+        backend.perCall += CompletableDeferred()
+        CloudLibraryRepository.ensureLoaded()
+        eventually { backend.started.value == 1 }
+        var closedOnce = false
+        CloudLibraryRepository.beforeAutoCaptureForTest = {
+            if (!closedOnce) { closedOnce = true; com.nuvio.app.core.identity.IdentityImmediate.serialChanging() }
+        }
+        IdentityRuntime.authSerial = { 2 }
+        CloudLibraryRepository.cancelJobsForTest() // the tick re-runs the observer; it closes the gate before capturing
+        eventually { closedOnce }
+        delay(150)
+        assertEquals(1, backend.started.value, "the capture was refused")
+        com.nuvio.app.core.identity.IdentityImmediate.chainEnded()
+        eventually { state().isLoaded && backend.started.value == 2 }
+    }
+
+    /** Every return to Open is a new state (the epoch bumps), so a reopened gate always re-runs the observer. */
+    @Test
+    fun r4_everyReopenedGateIsADistinctState() {
+        val before = IdentityRuntime.state.value
+        com.nuvio.app.core.identity.IdentityImmediate.serialChanging()
+        com.nuvio.app.core.identity.IdentityImmediate.chainEnded()
+        val after = IdentityRuntime.state.value
+        assertTrue(after.phase is com.nuvio.app.core.identity.IdentityPhase.Open)
+        assertNotEquals(before, after)
+    }
+
+    @Test
+    fun r4_aRecordedTargetOfAnotherProfileIsRefused() = real {
+        backend.perCallListing += listOf(listingWithFile)
+        assertEquals(foundA, lookupA()) // fetched and recorded under A
+        // B opens with the same provider, and nothing cleared Cloud in between (worst case):
+        IdentityRuntime.setForTest(BarrierState.initial(2).copy(scope = IdentityScope(guest, 2), latestAccount = guest, epoch = IdentityEpoch(2)))
+        settings.profile = 2
+        settings.credentials[2] = listOf(DebridServiceCredential(DebridProviders.Torbox, "key-of-b"))
+        CloudLibraryRepository.setStateForTest(CloudLibraryUiState()) // no listing for B
+        assertEquals(CloudLibraryPlaybackResult.Failed(), CloudLibraryRepository.resolvePlayback(itemA, fileA))
+        assertEquals(emptyList(), backend.resolvedFiles)
+    }
+
+    @Test
+    fun r4_clearRacingTheObserverLoadsNothing() = real {
+        backend.perCall += CompletableDeferred()
+        CloudLibraryRepository.ensureLoaded()
+        eventually { backend.started.value == 1 }
+        CloudLibraryRepository.beforeAutoCaptureForTest = { CloudLibraryRepository.clear() }
+        CloudLibraryRepository.cancelJobsForTest()
+        delay(300)
+        assertEquals(1, backend.started.value, "nothing is wanted after the clear")
+        assertEquals(CloudLibraryUiState(), state())
+    }
+
+    @Test
+    fun r4_aFailingFetchPublishesBasesFailureStateAndNoStorm() = real {
         backend.throwAll = true
         CloudLibraryRepository.ensureLoaded()
-        eventually { backend.started.value == 2 && !state().isRefreshing && state().isLoaded }
-        delay(200)
-        assertEquals(2, backend.started.value, "one retry, no storm")
-        assertTrue(state().providers.isEmpty())
+        eventually { state().isLoaded }
+        delay(300)
+        assertEquals(1, backend.started.value, "a failure is published, not retried")
+        assertEquals(listOf("provider failed"), state().providers.map { it.errorMessage })
+        assertFalse(state().isRefreshing)
     }
+
+    /** Mobile renders what base rendered: a thrown fetch has the shape base's store gives a failed provider. */
+    @Test
+    fun r4_theFailureStateIsBasesProviderFailureShape() = real {
+        val failing = object : CloudLibraryProviderApi {
+            override val provider = DebridProviders.Torbox
+            override suspend fun listItems(apiKey: String): Result<List<CloudLibraryItem>> = Result.failure(IllegalStateException("provider failed"))
+            override suspend fun resolvePlayback(apiKey: String, item: CloudLibraryItem, file: CloudLibraryFile): CloudLibraryPlaybackResult = CloudLibraryPlaybackResult.Failed()
+        }
+        val base = CloudLibraryStore(credentialsProvider = { listOf(keyA) }, providerApis = listOf(failing)).refresh()
+        backend.throwAll = true
+        CloudLibraryRepository.ensureLoaded()
+        eventually { state().isLoaded }
+        assertEquals(base, state())
+    }
+
+    // The refresh matrix: lookup cells.
+
+    @Test
+    fun matrix_lookupThatThrowsAnswersNotFoundAndPublishesTheFailure() = real {
+        backend.throwAll = true
+        assertEquals(CloudLibraryPlaybackTargetLookupResult.NotFound, lookupA())
+        assertEquals(listOf("provider failed"), state().providers.map { it.errorMessage })
+        assertFalse(state().isRefreshing)
+    }
+
+    @Test
+    fun matrix_lookupCancelledDuringItsFetchLeavesNoMarker() = real {
+        backend.gate = CompletableDeferred()
+        val lookup = async { lookupA() }
+        backend.entered.await()
+        lookup.cancel()
+        eventually { !state().isRefreshing }
+        assertFalse(state().isLoaded)
+    }
+
+    @Test
+    fun matrix_lookupDuringClearAnswersNotFound() = real {
+        backend.gate = CompletableDeferred()
+        backend.perCallListing += listOf(listingWithFile)
+        val lookup = async { lookupA() }
+        backend.entered.await()
+        switchToB() // a switch: the fan-out clears Cloud
+        CloudLibraryRepository.clear()
+        backend.gate!!.complete(Unit)
+        assertEquals(CloudLibraryPlaybackTargetLookupResult.NotFound, lookup.await())
+        assertEquals(CloudLibraryUiState(), state())
+    }
+
+    @Test
+    fun matrix_lookupDuringDisableAnswersNotFound() = real {
+        backend.gate = CompletableDeferred()
+        backend.perCallListing += listOf(listingWithFile)
+        val lookup = async { lookupA() }
+        backend.entered.await()
+        settings.enabled[1] = false
+        CloudLibraryRepository.ensureLoaded() // writes the disabled state
+        backend.gate!!.complete(Unit)
+        assertEquals(CloudLibraryPlaybackTargetLookupResult.NotFound, lookup.await())
+        assertEquals(CloudLibraryUiState(isLoaded = true, isEnabled = false), state())
+    }
+
+    @Test
+    fun matrix_lookupSupersededByALookupAnswersFromItsOwnFetch() = real {
+        val first = CompletableDeferred<Unit>()
+        backend.perCall += listOf(first, CompletableDeferred())
+        backend.perCallListing += listOf(listingWithFile)
+        val older = async { lookupA() }
+        eventually { backend.started.value == 1 }
+        val newer = async { CloudLibraryRepository.findPlaybackTargetForProgressResult("torbox:Torrent:other", "x") }
+        eventually { backend.started.value == 2 }
+        first.complete(Unit)
+        assertEquals(foundA, older.await())
+        newer.cancel()
+    }
+
+    // The refresh matrix: plain-refresh cells.
 
     @Test
     fun matrix_plainRefreshSupersededByALookupNeverOverwritesIt() = real {
