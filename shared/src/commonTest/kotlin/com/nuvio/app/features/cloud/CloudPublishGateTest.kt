@@ -42,6 +42,7 @@ private val keyB = DebridServiceCredential(DebridProviders.Premiumize, "key-of-b
 private val fileA = CloudLibraryFile(id = "f1", name = "a.mkv")
 private val itemA = CloudLibraryItem(providerId = DebridProviders.TORBOX_ID, providerName = "Torbox", id = "1", type = CloudLibraryItemType.Torrent, name = "A item", files = listOf(fileA))
 private val listingA = CloudLibraryUiState(isLoaded = true, providers = listOf(CloudLibraryProviderState(DebridProviders.Torbox, items = listOf(itemA))))
+private val scopeA = IdentityScope(guest, 1)
 private val MARKER = CloudLibraryUiState(isLoaded = true, providers = listOf(CloudLibraryProviderState(DebridProviders.Premiumize)))
 
 /** Per-profile Debrid settings; [profile] flips at the switch. */
@@ -63,16 +64,24 @@ private class FakeBackend : CloudLibraryRepository.Backend {
     var listing: CloudLibraryUiState = listingA
     var gate: CompletableDeferred<Unit>? = null
     var entered = CompletableDeferred<Unit>()
+    /** Per-call gates (call i waits on perCall[i]) and how many refresh calls have started. */
+    val perCall = mutableListOf<CompletableDeferred<Unit>>()
+    val started = MutableStateFlow(0)
 
     override suspend fun refresh(credentials: List<DebridServiceCredential>): CloudLibraryUiState {
         handed += credentials
+        val index = started.value
+        started.update { it + 1 }
         entered.complete(Unit)
-        gate?.await()
+        perCall.getOrNull(index)?.await() ?: gate?.await()
         return listing
     }
 
+    val resolvedFiles = mutableListOf<CloudLibraryFile>()
+
     override suspend fun resolvePlayback(item: CloudLibraryItem, file: CloudLibraryFile, credentials: List<DebridServiceCredential>): CloudLibraryPlaybackResult {
         handed += credentials
+        resolvedFiles += file
         entered.complete(Unit)
         gate?.await()
         return CloudLibraryPlaybackResult.Success(url = "https://example.invalid/stream")
@@ -164,7 +173,7 @@ class CloudPublishGateTest {
 
     @Test
     fun wf_cachedTargetOfTheOldProfileNeverReturned() = real {
-        CloudLibraryRepository.setStateForTest(listingA)
+        CloudLibraryRepository.setStateForTest(listingA, scopeA)
         settings.afterCredentialsRead = {
             settings.afterCredentialsRead = {}
             IdentityRuntime.setForTest(BarrierState.initial(2).copy(scope = IdentityScope(guest, 2), latestAccount = guest, epoch = IdentityEpoch(2)))
@@ -190,11 +199,12 @@ class CloudPublishGateTest {
 
     @Test
     fun wi_noUrlStoredWhenTheResolveIsRefused() = real {
+        CloudLibraryRepository.setStateForTest(listingA, scopeA)
         backend.gate = CompletableDeferred()
         val resolve = async { CloudLibraryRepository.resolvePlayback(itemA, fileA) }
         backend.entered.await()
         switchToB()
-        CloudLibraryRepository.setStateForTest(listingA) // A's listing back in memory: no URL may join it
+        CloudLibraryRepository.setStateForTest(listingA, scopeA) // A's listing back in memory: no URL may join it
         backend.gate!!.complete(Unit)
         assertEquals(CloudLibraryPlaybackResult.Failed(), resolve.await())
         assertEquals(listingA, state())
@@ -228,6 +238,95 @@ class CloudPublishGateTest {
         assertEquals(1, lineCount("refused site=cloudRefresh stage=commit"))
         assertEquals(1, lineCount("stale publish refused"))
         assertEquals(MARKER, state())
+    }
+
+    // Review r1 #1: the refreshing marker never outlives the refresh that set it.
+
+    @Test
+    fun r1_sameAccountSerialChangeDuringARefreshLeavesNoMarker() = real {
+        backend.gate = CompletableDeferred()
+        CloudLibraryRepository.refresh()
+        backend.entered.await()
+        assertTrue(state().isRefreshing)
+        IdentityRuntime.authSerial = { 2 } // the session changes; same account and profile, no fan-out
+        backend.gate!!.complete(Unit)
+        eventually { lineCount("refused site=cloudRefresh stage=commit") == 1 }
+        eventually { !state().isRefreshing }
+        CloudLibraryRepository.ensureLoaded() // the gate reopened: the listing loads again
+        eventually { backend.started.value == 2 }
+    }
+
+    @Test
+    fun r1_aCancelledRefreshLeavesNoMarker() = real {
+        backend.gate = CompletableDeferred()
+        CloudLibraryRepository.refresh()
+        backend.entered.await()
+        CloudLibraryRepository.cancelJobsForTest()
+        eventually { !state().isRefreshing }
+    }
+
+    @Test
+    fun r1_anOlderRefreshNeverClearsANewerMarker() = real {
+        val first = CompletableDeferred<Unit>()
+        val second = CompletableDeferred<Unit>()
+        backend.perCall += first
+        backend.perCall += second
+        CloudLibraryRepository.refresh()
+        eventually { backend.started.value == 1 }
+        IdentityRuntime.authSerial = { 2 }
+        CloudLibraryRepository.refresh() // a newer refresh, under the new session
+        eventually { backend.started.value == 2 }
+        first.complete(Unit) // the older one ends refused
+        eventually { lineCount("refused site=cloudRefresh stage=commit") == 1 }
+        delay(100)
+        assertTrue(state().isRefreshing, "the newer refresh still owns the marker")
+        second.complete(Unit)
+        eventually { !state().isRefreshing && state().providers == listingA.providers }
+    }
+
+    // Review r1 #2: no provider call is made with credentials read after the identity moved.
+
+    @Test
+    fun r2_switchBetweenCaptureAndCredentialReadSendsNothing() = real {
+        CloudLibraryRepository.setStateForTest(listingA, scopeA)
+        settings.afterCredentialsRead = { settings.afterCredentialsRead = {}; switchToB() }
+        assertEquals(CloudLibraryPlaybackResult.Failed(), CloudLibraryRepository.resolvePlayback(itemA, fileA))
+        assertEquals(emptyList(), backend.handed, "no provider request")
+    }
+
+    // Review r1 #3: a target cannot be resolved under an identity it was not found under.
+
+    @Test
+    fun r3_lookupUnderAThenResolveUnderBIsRefused() = real {
+        val resolvedA = itemA.copy(files = listOf(fileA.copy(playbackUrl = "https://example.invalid/a")))
+        val listing = CloudLibraryUiState(isLoaded = true, providers = listOf(CloudLibraryProviderState(DebridProviders.Torbox, items = listOf(resolvedA))))
+        CloudLibraryRepository.setStateForTest(listing, scopeA)
+        val lookup = CloudLibraryRepository.findPlaybackTargetForProgressResult(resolvedA.stableKey, resolvedA.playbackVideoId(fileA))
+        val target = (lookup as CloudLibraryPlaybackTargetLookupResult.Found).target
+        // B opens; even with A's listing still in memory (no fan-out) and B holding the same provider:
+        IdentityRuntime.setForTest(BarrierState.initial(2).copy(scope = IdentityScope(guest, 2), latestAccount = guest, epoch = IdentityEpoch(2)))
+        settings.profile = 2
+        settings.credentials[2] = listOf(DebridServiceCredential(DebridProviders.Torbox, "key-of-b"))
+        assertEquals(CloudLibraryPlaybackResult.Failed(), CloudLibraryRepository.resolvePlayback(target.item, target.file))
+        assertEquals(emptyList(), backend.handed)
+    }
+
+    @Test
+    fun r3_listedItemOfAResolvedAfterTheSwitchIsRefused() = real {
+        CloudLibraryRepository.setStateForTest(listingA, scopeA)
+        val shown = state().providers.single().items.single() // what the tvOS Library row holds
+        switchToB()
+        assertEquals(CloudLibraryPlaybackResult.Failed(), CloudLibraryRepository.resolvePlayback(shown, shown.files.single()))
+        assertEquals(emptyList(), backend.handed)
+    }
+
+    @Test
+    fun r3_aResolveUsesTheListedValuesNotTheCallers() = real {
+        CloudLibraryRepository.setStateForTest(listingA, scopeA)
+        val forged = fileA.copy(playbackUrl = "https://example.invalid/forged")
+        val result = CloudLibraryRepository.resolvePlayback(itemA, forged)
+        assertEquals(CloudLibraryPlaybackResult.Success(url = "https://example.invalid/stream"), result, "the provider resolved the listed file")
+        assertEquals(listOf(fileA), backend.resolvedFiles, "the provider got the listed file, not the caller's")
     }
 
     @Test

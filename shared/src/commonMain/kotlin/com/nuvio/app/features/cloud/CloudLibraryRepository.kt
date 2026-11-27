@@ -5,6 +5,8 @@ import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import com.nuvio.app.core.identity.CommitKind
 import com.nuvio.app.core.identity.CommitResult
 import com.nuvio.app.core.identity.IdentityGate
+import com.nuvio.app.core.identity.IdentityLocks
+import com.nuvio.app.core.identity.IdentityScope
 import com.nuvio.app.core.identity.IdentityToken
 import com.nuvio.app.core.identity.IdentityWork
 import com.nuvio.app.features.debrid.DebridProvider
@@ -125,6 +127,22 @@ object CloudLibraryRepository {
     private var loadedConnectionKeys: List<CloudConnectionKey> = emptyList()
     val uiState = _uiState.asStateFlow()
 
+    /**
+     * Review r1 #3: the profile the listing in memory was published for. A resolve acts only on an
+     * item and file found in that listing while the call's identity is that profile; the item and
+     * file a caller passes are keys, never trusted values. Written with the listing; under the
+     * commit lock.
+     */
+    private var listingScope: IdentityScope? = null
+
+    /**
+     * Review r1 #1: who owns the `isRefreshing` marker. A refresh that set it is the only one that
+     * may clear it, and only while it is still the owner (a newer refresh, or a clear, replaced
+     * it). Under the commit lock.
+     */
+    private var refreshOwner = 0L
+    private var nextRefreshOwner = 0L
+
     /** The profile's Debrid settings, read on a call (a seam: tests flip them at the switch). */
     internal interface Settings {
         fun load()
@@ -186,9 +204,12 @@ object CloudLibraryRepository {
         clear()
     }
 
-    /** Tests only: a state in memory (another profile's listing). */
-    internal fun setStateForTest(state: CloudLibraryUiState) {
-        _uiState.value = state
+    /** Tests only: a state in memory, published for [scope] (null: nobody's). */
+    internal fun setStateForTest(state: CloudLibraryUiState, scope: IdentityScope? = null) {
+        IdentityLocks.withCommit {
+            listingScope = scope
+            _uiState.value = state
+        }
     }
 
     /** Tests only: cancels the refresh jobs (what a drain does to a profile job). */
@@ -220,6 +241,61 @@ object CloudLibraryRepository {
         }
 
     /**
+     * Review r1 #2: credentials a provider call may use, only ever built inside an admission. The
+     * credentials are read after the capture and then admitted by a commit of the call's token
+     * ([admitWork]): the epoch only grows, so a token that still holds at that commit held at the
+     * read too, so the settings read were the call's profile's. No provider call takes anything else.
+     */
+    private class Admitted<T>(val credentials: List<DebridServiceCredential>, val value: T)
+
+    /** Admits provider work: the credentials read on the call and [block]'s value, in one commit. */
+    private fun <T> admitWork(call: CloudCall, site: String, block: () -> T): Admitted<T>? {
+        val credentials = call.credentials()
+        return when (val r = publish(call, site) { block() }) {
+            is CommitResult.Committed -> Admitted(credentials, r.value)
+            is CommitResult.Rejected -> null
+        }
+    }
+
+    /** Inside an admission: marks the listing refreshing and returns this refresh's owner id. */
+    private fun markRefreshing(): Long {
+        val owner = ++nextRefreshOwner
+        refreshOwner = owner
+        _uiState.update { current ->
+            current.copy(
+                isEnabled = true,
+                isRefreshing = true,
+                providers = current.providers.map { it.copy(isLoading = true, errorMessage = null) },
+            )
+        }
+        return owner
+    }
+
+    /**
+     * Review r1 #1: a refresh that ends without publishing (cancelled, its final commit refused, or
+     * it threw) clears the marker it set, and nothing else: only while it is still the owner, so
+     * a newer refresh's marker or a cleared state is never touched. No token check by design: the
+     * owner id can only match the state this refresh marked.
+     */
+    private fun releaseRefreshing(owner: Long) {
+        IdentityLocks.withCommit {
+            if (refreshOwner != owner) return@withCommit
+            refreshOwner = 0L
+            _uiState.update { current ->
+                current.copy(isRefreshing = false, providers = current.providers.map { it.copy(isLoading = false) })
+            }
+        }
+    }
+
+    /** Inside the final commit: the listing is published for the call's profile. */
+    private fun publishListing(call: CloudCall, owner: Long, credentials: List<DebridServiceCredential>, listing: CloudLibraryUiState) {
+        loadedConnectionKeys = keysOf(credentials)
+        listingScope = call.token.scope
+        if (refreshOwner == owner) refreshOwner = 0L
+        _uiState.value = listing
+    }
+
+    /**
      * DEBUG hold (9.1.3): with the knob set, waits that long NON-cancellably and then makes the
      * commit attempt anyway, so a drain that cancelled the job still sees the stale attempt refused.
      */
@@ -237,6 +313,8 @@ object CloudLibraryRepository {
 
     private fun writeDisabled() {
         loadedConnectionKeys = emptyList()
+        listingScope = null
+        refreshOwner = 0L
         _uiState.value = CloudLibraryUiState(isLoaded = true, isEnabled = false)
     }
 
@@ -248,7 +326,9 @@ object CloudLibraryRepository {
             return
         }
         val current = _uiState.value
-        if (current.isRefreshing) return
+        // Review r1 #1: a marker with no live owner (never left by the cleanup below, but a
+        // recovery when the gate reopens costs nothing) does not block the refresh.
+        if (current.isRefreshing && refreshOwner != 0L) return
         val connectedKeys = keysOf(call.credentials())
         if (!current.isLoaded || connectedKeys != loadedConnectionKeys) {
             refreshWith(call)
@@ -266,36 +346,22 @@ object CloudLibraryRepository {
             publish(call, "cloudRefreshDisabled") { writeDisabled() }
             return
         }
-        val credentials = call.credentials()
-        val started = publish(call, "cloudRefreshStart") {
-            _uiState.update { current ->
-                current.copy(
-                    isEnabled = true,
-                    isRefreshing = true,
-                    providers = current.providers.map { it.copy(isLoading = true, errorMessage = null) },
-                )
-            }
-        }
-        if (started is CommitResult.Rejected) return
+        val admitted = admitWork(call, "cloudRefreshStart") { markRefreshing() } ?: return
+        val owner = admitted.value
+        val credentials = admitted.credentials
         val job = IdentityWork.launch(call.token, "cloudRefresh", scope) {
-            beforeStoreCallForTest()
-            val refreshed = backend.refresh(credentials)
-            debugHold(call, "cloudRefresh") {
-                publish(call, "cloudRefresh") {
-                    loadedConnectionKeys = keysOf(credentials)
-                    _uiState.value = refreshed
+            try {
+                beforeStoreCallForTest()
+                val refreshed = backend.refresh(credentials)
+                debugHold(call, "cloudRefresh") {
+                    publish(call, "cloudRefresh") { publishListing(call, owner, credentials, refreshed) }
                 }
+            } finally {
+                releaseRefreshing(owner) // a no-op after a publish (the owner was reset there)
             }
         }
-        if (job == null) {
-            // The launch was refused after the start committed: undo the refreshing state while
-            // the call's identity still holds (if it moved, the fan-out's clear() already did).
-            publish(call, "cloudRefreshAbort") {
-                _uiState.update { current ->
-                    current.copy(isRefreshing = false, providers = current.providers.map { it.copy(isLoading = false) })
-                }
-            }
-        }
+        // The launch was refused after the start committed: the marker goes with it.
+        if (job == null) releaseRefreshing(owner)
     }
 
     suspend fun findPlaybackTargetForProgress(
@@ -343,7 +409,9 @@ object CloudLibraryRepository {
         }
 
         when (val cached = publish(call, "cloudCachedFound") {
-            _uiState.value.findPlaybackTargetForProgress(contentId = contentId, videoId = videoId)
+            // Review r1 #3: only a listing published for the call's profile answers from the cache.
+            if (listingScope != call.token.scope) null
+            else _uiState.value.findPlaybackTargetForProgress(contentId = contentId, videoId = videoId)
         }) {
             is CommitResult.Rejected -> return CloudLibraryPlaybackTargetLookupResult.NotFound
             is CommitResult.Committed -> cached.value?.let { target -> return CloudLibraryPlaybackTargetLookupResult.Found(target) }
@@ -370,13 +438,16 @@ object CloudLibraryRepository {
                 is CommitResult.Rejected -> CloudLibraryPlaybackResult.Failed()
             }
         }
-        val credentials = call.credentials()
+        // Review r1 #2/#3: one admission reads the target from the listing published for the
+        // call's profile (the passed item and file are only keys) and admits the credentials.
+        val admitted = admitWork(call, "cloudResolveAdmit") { listedTarget(call, item, file) }
+        val target = admitted?.value ?: return CloudLibraryPlaybackResult.Failed()
         beforeStoreCallForTest()
-        val result = backend.resolvePlayback(item, file, credentials)
+        val result = backend.resolvePlayback(target.item, target.file, admitted.credentials)
         return when (val r = debugHold(call, "cloudResolve") {
             publish(call, "cloudResolve") {
                 if (result is CloudLibraryPlaybackResult.Success) {
-                    rememberResolvedPlaybackUrl(item = item, file = file, url = result.url)
+                    rememberResolvedPlaybackUrl(item = target.item, file = target.file, url = result.url)
                 }
                 result
             }
@@ -396,10 +467,28 @@ object CloudLibraryRepository {
         }
     }
 
+    /**
+     * Inside an admission: the item and file as listed for the call's profile, or null when the
+     * listing belongs to another profile (or none) or does not hold them.
+     */
+    private fun listedTarget(call: CloudCall, item: CloudLibraryItem, file: CloudLibraryFile): CloudLibraryPlaybackTarget? {
+        if (listingScope != call.token.scope) return null
+        val listedItem = _uiState.value.providers
+            .firstOrNull { it.providerId == item.providerId }
+            ?.items?.firstOrNull { it.stableKey == item.stableKey }
+            ?: return null
+        val listedFile = listedItem.files.firstOrNull { it.stableKey == file.stableKey } ?: return null
+        return CloudLibraryPlaybackTarget(item = listedItem, file = listedFile)
+    }
+
     /** W3b (9.1.4): the profile fan-out and the account wipe empty the Cloud state (gate closed). */
     fun clear() {
-        loadedConnectionKeys = emptyList()
-        _uiState.value = CloudLibraryUiState()
+        IdentityLocks.withCommit {
+            loadedConnectionKeys = emptyList()
+            listingScope = null
+            refreshOwner = 0L
+            _uiState.value = CloudLibraryUiState()
+        }
     }
 
     /** Under the call's commit (callers): the resolved URL joins the listing. */
@@ -419,28 +508,24 @@ object CloudLibraryRepository {
     }
 
     private suspend fun refreshNow(call: CloudCall, contentId: String, videoId: String): CloudLookupStep {
-        val started = publish(call, "cloudRefreshNowStart") {
-            _uiState.update { current ->
-                current.copy(
-                    isEnabled = true,
-                    isRefreshing = true,
-                    providers = current.providers.map { it.copy(isLoading = true, errorMessage = null) },
-                )
+        val admitted = admitWork(call, "cloudRefreshNowStart") { markRefreshing() }
+            ?: return CloudLookupStep.Refused(CloudLookupStep.Stage.Start)
+        val owner = admitted.value
+        val credentials = admitted.credentials
+        try {
+            beforeStoreCallForTest()
+            val refreshed = backend.refresh(credentials)
+            return when (val r = debugHold(call, "cloudRefreshNow") {
+                publish(call, "cloudRefreshNow") {
+                    publishListing(call, owner, credentials, refreshed)
+                    refreshed.findPlaybackTargetForProgress(contentId = contentId, videoId = videoId)
+                }
+            }) {
+                is CommitResult.Committed -> r.value?.let { CloudLookupStep.Found(it) } ?: CloudLookupStep.NotFound
+                is CommitResult.Rejected -> CloudLookupStep.Refused(CloudLookupStep.Stage.Commit)
             }
-        }
-        if (started is CommitResult.Rejected) return CloudLookupStep.Refused(CloudLookupStep.Stage.Start)
-        val credentials = call.credentials()
-        beforeStoreCallForTest()
-        val refreshed = backend.refresh(credentials)
-        return when (val r = debugHold(call, "cloudRefreshNow") {
-            publish(call, "cloudRefreshNow") {
-                loadedConnectionKeys = keysOf(credentials)
-                _uiState.value = refreshed
-                refreshed.findPlaybackTargetForProgress(contentId = contentId, videoId = videoId)
-            }
-        }) {
-            is CommitResult.Committed -> r.value?.let { CloudLookupStep.Found(it) } ?: CloudLookupStep.NotFound
-            is CommitResult.Rejected -> CloudLookupStep.Refused(CloudLookupStep.Stage.Commit)
+        } finally {
+            releaseRefreshing(owner)
         }
     }
 
