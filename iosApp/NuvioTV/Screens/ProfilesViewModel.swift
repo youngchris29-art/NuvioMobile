@@ -245,16 +245,17 @@ final class ProfilesViewModel: ObservableObject {
     }
 
     /// Sets (or changes, when `currentPin` is provided) a profile's 4-digit PIN.
-    func setPin(_ row: DisplayedProfile, pin: String, currentPin: String?, completion: @escaping (PinVerifyResult?) -> Void) {
-        ProfileRepository.shared.setPin(row: row, pin: pin, currentPin: currentPin) { result, _ in
-            DispatchQueue.main.async { completion(result) }
+    /// Review r8: the check carries the row after the operation (the editor's new authorisation).
+    func setPin(_ row: DisplayedProfile, pin: String, currentPin: String?, completion: @escaping (PinCheck?) -> Void) {
+        ProfileRepository.shared.setPin(row: row, pin: pin, currentPin: currentPin) { check, _ in
+            DispatchQueue.main.async { completion(check) }
         }
     }
 
     /// Removes a profile's PIN lock (requires the current PIN).
-    func clearPin(_ row: DisplayedProfile, currentPin: String?, completion: @escaping (PinVerifyResult?) -> Void) {
-        ProfileRepository.shared.clearPin(row: row, currentPin: currentPin) { result, _ in
-            DispatchQueue.main.async { completion(result) }
+    func clearPin(_ row: DisplayedProfile, currentPin: String?, completion: @escaping (PinCheck?) -> Void) {
+        ProfileRepository.shared.clearPin(row: row, currentPin: currentPin) { check, _ in
+            DispatchQueue.main.async { completion(check) }
         }
     }
 

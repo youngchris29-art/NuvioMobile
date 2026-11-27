@@ -293,20 +293,44 @@ struct ProfileEditTarget: Identifiable {
     var profile: NuvioProfile? { row?.profile }
     var id: Int { profile.map { Int($0.profileIndex) } ?? -1 }
 
-    /// Review r7 #3: the edited row in [rows], found by its list's account token AND profile id
-    /// (plus slot), never by slot alone. nil: the profile is gone, replaced, or the account moved:
-    /// the editor closes and its Save and PIN actions refuse. Pure.
-    func liveRow(in rows: [DisplayedProfile]) -> DisplayedProfile? {
-        guard let original = row else { return nil }
-        return rows.first {
-            $0.profile.profileIndex == original.profile.profileIndex &&
-                $0.profile.id == original.profile.id &&
-                $0.listToken == original.listToken
-        }
+}
+
+/// Review r8 #2: the editor's authorisation is the row AS OPENED (list token, slot, id, lock state).
+/// Every editor action is admitted against that row, never a re-fetched one. Pure.
+enum EditorAuthorisationRule {
+    /// The editor's own PIN set/remove, if one ran.
+    enum OwnPinOperation: Equatable {
+        case none
+        case inFlight
+        /// Succeeded; the row after it as the repository admitted it (nil: not adoptable).
+        case succeeded(DisplayedProfile?)
+        case failed
     }
 
-    /// Editing an existing profile whose row is no longer on screen (see [liveRow]).
-    func isStale(in rows: [DisplayedProfile]) -> Bool { row != nil && liveRow(in: rows) == nil }
+    enum Decision: Equatable {
+        case keep
+        case update(DisplayedProfile)
+        case dismiss
+    }
+
+    static func decide(authorised: DisplayedProfile, live rows: [DisplayedProfile], own: OwnPinOperation) -> Decision {
+        switch own {
+        case .inFlight:
+            return .keep // the operation's own refresh lands first; its result decides
+        case .succeeded(let after):
+            guard let after else { return .dismiss }
+            return after == authorised ? .keep : .update(after)
+        case .none, .failed:
+            let live = rows.first {
+                $0.profile.profileIndex == authorised.profile.profileIndex &&
+                    $0.profile.id == authorised.profile.id &&
+                    $0.listToken == authorised.listToken
+            }
+            // Gone, replaced, of another list, or locked/unlocked elsewhere: the editor closes.
+            guard let live, live.profile.pinEnabled == authorised.profile.pinEnabled else { return .dismiss }
+            return .keep
+        }
+    }
 }
 
 /// Add / edit form: name, avatar (cloud catalog picker when available, else color palette), and —
@@ -320,6 +344,9 @@ struct ProfileEditView: View {
     @State private var colorHex: String
     @State private var avatarId: String?
     @State private var pinFlow: PinFlow?
+    /// Review r8 #2: the row as opened (nil: a new profile), updated only by the editor's own PIN result.
+    @State private var authorised: DisplayedProfile?
+    @State private var ownPin: EditorAuthorisationRule.OwnPinOperation = .none
 
     /// A custom avatar URL set elsewhere (e.g. on mobile); preserved unless a catalog avatar or
     /// the color tile is picked here.
@@ -336,14 +363,29 @@ struct ProfileEditView: View {
         _name = State(initialValue: target.profile?.name ?? "")
         _colorHex = State(initialValue: target.profile?.avatarColorHex ?? "#E53935")
         _avatarId = State(initialValue: target.profile?.avatarId)
+        _authorised = State(initialValue: target.row)
         originalCustomAvatarUrl = target.profile?.avatarId == nil ? target.profile?.avatarUrl : nil
     }
 
     /// Live row of the profile being edited (PIN state refreshes after set/clear → pullProfiles);
     /// a row of the current snapshot, so it carries that snapshot's token.
-    private var liveRow: DisplayedProfile? { target.liveRow(in: model.rows) }
+    /// Review r8 #2: what the editor shows and acts on is its authorisation, never a re-fetched row.
+    private var liveProfile: NuvioProfile? { authorised?.profile }
 
-    private var liveProfile: NuvioProfile? { liveRow?.profile }
+    private func applyAuthorisation() {
+        guard let opened = authorised else { return }
+        switch EditorAuthorisationRule.decide(authorised: opened, live: model.rows, own: ownPin) {
+        case .keep:
+            break
+        case .update(let row):
+            authorised = row
+        case .dismiss:
+            pinFlow = nil
+            dismiss()
+        }
+        if case .succeeded = ownPin { ownPin = .none }
+        if ownPin == .failed { ownPin = .none }
+    }
 
     private var selectedCatalogItem: AvatarCatalogItem? {
         model.avatars.first { $0.id == avatarId }
@@ -509,7 +551,7 @@ struct ProfileEditView: View {
                     .accessibilityIdentifier("profileEdit.save")
                     .focusRow()
 
-                    if let row = target.row, model.profiles.count > 1 {
+                    if let row = authorised, model.profiles.count > 1 {
                         Button(role: .destructive) {
                             model.deleteProfile(row) { dismiss() }
                         } label: {
@@ -529,11 +571,8 @@ struct ProfileEditView: View {
         }
         // Review r7 #3: an account-published transition shows no cover (4.6), so nothing else closes
         // an editor whose row went away or now belongs to another account's list.
-        .onChange(of: target.isStale(in: model.rows)) { _, stale in
-            guard stale else { return }
-            pinFlow = nil
-            dismiss()
-        }
+        .onChange(of: model.rows) { _, _ in applyAuthorisation() }
+        .onChange(of: ownPin) { _, _ in applyAuthorisation() }
     }
 
     // MARK: - PIN flows
@@ -561,13 +600,16 @@ struct ProfileEditView: View {
                 subtitle: remove ? String(localized: "Confirm the PIN to remove the lock.") : String(localized: "Confirm the PIN before choosing a new one."),
                 onCancel: { pinFlow = nil },
                 onSubmit: { pin, done in
-                    guard let row = liveRow else { pinFlow = nil; return }
+                    guard let row = authorised else { pinFlow = nil; return }
                     if remove {
-                        model.clearPin(row, currentPin: pin) { result in
-                            if result?.unlocked == true {
+                        ownPin = .inFlight
+                        model.clearPin(row, currentPin: pin) { check in
+                            if check?.unlocked == true {
                                 pinFlow = nil
+                                ownPin = .succeeded(check?.row)
                             } else {
-                                done(pinErrorMessage(result))
+                                ownPin = .failed
+                                done(pinErrorMessage(check?.result))
                             }
                         }
                     } else {
@@ -589,12 +631,15 @@ struct ProfileEditView: View {
                 subtitle: String(localized: "This profile will require the PIN to open."),
                 onCancel: { pinFlow = nil },
                 onSubmit: { pin, done in
-                    guard let row = liveRow else { pinFlow = nil; return }
-                    model.setPin(row, pin: pin, currentPin: current) { result in
-                        if result?.unlocked == true {
+                    guard let row = authorised else { pinFlow = nil; return }
+                    ownPin = .inFlight
+                    model.setPin(row, pin: pin, currentPin: current) { check in
+                        if check?.unlocked == true {
                             pinFlow = nil
+                            ownPin = .succeeded(check?.row)
                         } else {
-                            done(pinErrorMessage(result))
+                            ownPin = .failed
+                            done(pinErrorMessage(check?.result))
                         }
                     }
                 }
@@ -618,11 +663,9 @@ struct ProfileEditView: View {
             finalAvatarUrl = originalCustomAvatarUrl
         }
 
-        if target.row != nil && liveRow == nil {
-            dismiss() // review r7 #3: the edited row is gone, replaced or of another account
-            return
-        }
-        if let row = liveRow {
+        // Review r8 #2: Save is admitted against the authorisation (the row as opened, or as the
+        // editor's own PIN operation returned it); the repository refuses it if the list moved on.
+        if let row = authorised {
             model.updateProfile(
                 row,
                 name: finalName,

@@ -13,6 +13,7 @@ import com.nuvio.app.core.identity.AccountToken
 import com.nuvio.app.core.identity.OwedProfilePull
 import com.nuvio.app.core.identity.CommitResult
 import com.nuvio.app.core.identity.IdentityGate
+import com.nuvio.app.core.identity.IdentityLocks
 import com.nuvio.app.core.identity.ProfileIdentityRouterProvider
 import com.nuvio.app.core.identity.RowAdmission
 import com.nuvio.app.core.identity.RowRejection
@@ -504,8 +505,17 @@ object ProfileRepository {
         }
     }
 
-    suspend fun verifyPin(profileIndex: Int, pin: String): PinVerifyResult =
-        verifyPinUnder(profileIndex, pin, null) ?: PinVerifyResult(unlocked = false)
+    suspend fun verifyPin(profileIndex: Int, pin: String): PinVerifyResult {
+        // Legacy (composeApp) call, unbound: as at base, an online unlock caches the PIN for the slot.
+        val outcome = verifyPinUnder(profileIndex, pin, null) ?: return PinVerifyResult(unlocked = false)
+        if (outcome.result.unlocked && outcome.online) {
+            _state.value.profiles.find { it.profileIndex == profileIndex }?.let { rememberVerifiedPin(it, pin) }
+        }
+        return outcome.result
+    }
+
+    /** A PIN RPC's answer and whether it came from the server (only a server unlock is cached). */
+    private class PinOutcome(val result: PinVerifyResult, val online: Boolean)
 
     /**
      * Fork (W2 review r6 #1, audit #1/#2): the displayed row, verified while the token of its list
@@ -516,24 +526,60 @@ object ProfileRepository {
      */
     suspend fun verifyPin(row: DisplayedProfile, pin: String): PinCheck {
         if (!IdentityGate.holdsForSelection(row.listToken)) return PinCheck(null, null)
-        val result = verifyPinUnder(row.profile.profileIndex, pin, row.listToken) ?: return PinCheck(null, null)
-        if (!result.unlocked) return PinCheck(result, null)
-        // Review r7: the check authorises the row it verified and nothing else. A replaced row (another
-        // id in the slot), a changed lock or another list: refused; the picker shows the current row.
-        if (rowRejection(row.profile, row.listToken) != null) return PinCheck(null, null)
-        val refreshed = _state.value.displayedRow(row.profile.profileIndex)?.takeIf { it.listToken == row.listToken } ?: row
-        return PinCheck(result, refreshed)
+        val outcome = verifyPinUnder(row.profile.profileIndex, pin, row.listToken) ?: return PinCheck(null, null)
+        if (!outcome.result.unlocked) return PinCheck(outcome.result, null)
+        // Review r8: everything after the RPC is one section (finishPinOperation).
+        val adopted = finishPinOperation(row, expected = row.profile, readOnly = true) { current ->
+            if (outcome.online) rememberVerifiedPin(current, pin)
+        } ?: return PinCheck(null, null)
+        return PinCheck(outcome.result, adopted)
     }
 
+    /**
+     * Review r8: the post-RPC half of every row PIN operation (verify, set, remove), as ONE commit
+     * section. It checks the token ([readOnly]: admission's check, which holds in
+     * Recovery(FailedApply); else the account-level check), runs RowAdmission for the row the RPC
+     * was made for with its [expected] state after the operation against the current list, and
+     * builds the returned row and runs [write] (the PIN cache) from that same snapshot. A refused
+     * operation writes nothing and returns null. In Recovery(FailedApply) a verify is adopted but
+     * [write] is skipped (rule B: nothing writes while recovery holds).
+     */
+    private fun finishPinOperation(
+        row: DisplayedProfile,
+        expected: NuvioProfile,
+        readOnly: Boolean,
+        write: (NuvioProfile) -> Unit,
+    ): DisplayedProfile? {
+        val token = row.listToken ?: return null
+        return IdentityLocks.withCommit {
+            val holds = if (readOnly) IdentityGate.holdsForSelection(token) else IdentityGate.checkAccount(token, "pinFinish") is Verdict.Commit
+            if (!holds) return@withCommit null
+            val snapshot = _state.value
+            if (RowAdmission.decide(expected, token, snapshot.listToken, snapshot.profiles) != null) {
+                log.w { "PIN operation on profile ${row.profile.profileIndex} not adopted: the row changed" }
+                return@withCommit null
+            }
+            afterPinAdmissionForTest()
+            val current = snapshot.displayedRow(row.profile.profileIndex) ?: return@withCommit null
+            if (IdentityGate.checkAccount(token, "pinCache") is Verdict.Commit) write(current.profile)
+            current
+        }
+    }
+
+    /** Tests only: runs inside finishPinOperation right after admission (review r8 snapshot test). */
+    internal var afterPinAdmissionForTest: () -> Unit = {}
+
+    /** Tests only: replaces the PIN set/clear RPC and its refresh (review r8). */
+    internal var pinWriteRpcForTest: (suspend (String) -> Unit)? = null
+
     /** [token] null: the legacy (composeApp) call, unbound; else the RPC is read-only-bound to it. null: refused. */
-    private suspend fun verifyPinUnder(profileIndex: Int, pin: String, token: AccountToken?): PinVerifyResult? {
+    private suspend fun verifyPinUnder(profileIndex: Int, pin: String, token: AccountToken?): PinOutcome? {
         verifyRpcForTest?.let { rpc ->
             val result = AuthRepository.dispatchUnderSession(token, "verifyPin", readOnly = true) { rpc(profileIndex, pin) } ?: return null
-            if (result.unlocked) rememberVerifiedPinUnder(token, profileIndex, pin)
-            return result
+            return PinOutcome(result, online = true)
         }
         if (AuthRepository.state.value !is AuthState.Authenticated) {
-            return verifyPinLocally(profileIndex, pin)
+            return PinOutcome(verifyPinLocally(profileIndex, pin), online = false)
         }
 
         return runCatching {
@@ -545,42 +591,42 @@ object ProfileRepository {
             else AuthRepository.dispatchUnderSession(token, "verifyPin", readOnly = true) {
                 SupabaseProvider.client.postgrest.rpc("verify_profile_pin", params)
             }) ?: return null
-            result.decodeSingle<PinVerifyResult>().also { verifyResult ->
-                if (verifyResult.unlocked) {
-                    // Upstream 5327166f: refresh the cached profile before remembering the PIN so
-                    // a server-side profile change since the last pull isn't cached against.
-                    pullProfiles()
-                    rememberVerifiedPinUnder(token, profileIndex, pin)
-                }
-            }
+            val verifyResult = result.decodeSingle<PinVerifyResult>()
+            // Upstream 5327166f: refresh the cached profile before remembering the PIN so a
+            // server-side profile change since the last pull isn't cached against. The caller
+            // caches (review r8: inside the section that admits the verified row).
+            if (verifyResult.unlocked) pullProfiles()
+            PinOutcome(verifyResult, online = true)
         }.getOrElse { e ->
             log.e(e) { "Failed to verify pin" }
-            verifyPinLocally(profileIndex, pin)
-        }
-    }
-
-    /**
-     * Audit #6: the offline PIN cache (keyed by slot only, as at base; the account wipe clears it,
-     * AccountDataStores "ProfilePinCacheStorage") is written only while [token] is the current
-     * account token and the list in memory is that token's, inside its commit section.
-     */
-    private fun rememberVerifiedPinUnder(token: AccountToken?, profileIndex: Int, pin: String) {
-        if (token == null) {
-            rememberVerifiedPin(profileIndex = profileIndex, pin = pin)
-            return
-        }
-        IdentityGate.commitAccount(token, "rememberPin") {
-            if (_state.value.listToken == token) rememberVerifiedPin(profileIndex = profileIndex, pin = pin)
+            PinOutcome(verifyPinLocally(profileIndex, pin), online = false)
         }
     }
 
     suspend fun setPin(profileIndex: Int, pin: String, currentPin: String? = null): PinVerifyResult = setPinUnder(profileIndex, pin, currentPin, null)
 
     /** Fork (W2 review r6 #1): the displayed row, under the token of its list. */
-    suspend fun setPin(row: DisplayedProfile, pin: String, currentPin: String? = null): PinVerifyResult =
-        if (row.listToken == null) PinVerifyResult(unlocked = false) else setPinUnder(row.profile.profileIndex, pin, currentPin, row.listToken, row.profile)
+    /**
+     * Review r8: the displayed row, under the token of its list. On success the returned row is the
+     * row after the operation, from the section that admitted it (the editor's new authorisation);
+     * a result that unlocked with no row: the server changed the PIN but the row could not be
+     * adopted (replaced meanwhile, or the refresh failed), so nothing was cached.
+     */
+    suspend fun setPin(row: DisplayedProfile, pin: String, currentPin: String? = null): PinCheck {
+        if (row.listToken == null) return PinCheck(PinVerifyResult(unlocked = false), null)
+        val result = setPinUnder(row.profile.profileIndex, pin, currentPin, row.listToken, row.profile)
+        if (!result.unlocked) return PinCheck(result, null)
+        return PinCheck(result, finishPinOperation(row, expected = row.profile.copy(pinEnabled = true), readOnly = false) { current ->
+            rememberVerifiedPin(current, pin)
+        })
+    }
 
     private suspend fun setPinUnder(profileIndex: Int, pin: String, currentPin: String?, token: AccountToken?, displayed: NuvioProfile? = null): PinVerifyResult {
+        pinWriteRpcForTest?.let { rpc ->
+            rpcBound(token, "setPin", displayed) { rpc("setPin") }
+                ?: return PinVerifyResult(unlocked = false, message = resourceString("Couldn't set PIN. Try again.", StringKey.profile_pin_set_failed))
+            return PinVerifyResult(unlocked = true)
+        }
         if (AuthRepository.state.value !is AuthState.Authenticated) {
             return PinVerifyResult(unlocked = false, message = resourceString("Connect to the internet to set a PIN.", StringKey.profile_pin_set_requires_internet))
         }
@@ -595,7 +641,8 @@ object ProfileRepository {
             rpcBound(token, "setPin", displayed) { SupabaseProvider.client.postgrest.rpc("set_profile_pin", params) }
                 ?: return PinVerifyResult(unlocked = false, message = resourceString("Couldn't set PIN. Try again.", StringKey.profile_pin_set_failed))
             pullProfiles()
-            rememberVerifiedPinUnder(token, profileIndex, pin)
+            // Review r8: the row caller caches inside finishPinOperation; the legacy call as at base.
+            if (token == null) _state.value.profiles.find { it.profileIndex == profileIndex }?.let { rememberVerifiedPin(it, pin) }
             PinVerifyResult(unlocked = true)
         }.onFailure { e ->
             log.e(e) { "Failed to set pin" }
@@ -607,10 +654,21 @@ object ProfileRepository {
     suspend fun clearPin(profileIndex: Int, currentPin: String? = null): PinVerifyResult = clearPinUnder(profileIndex, currentPin, null)
 
     /** Fork (W2 review r6 #1): the displayed row, under the token of its list. */
-    suspend fun clearPin(row: DisplayedProfile, currentPin: String? = null): PinVerifyResult =
-        if (row.listToken == null) PinVerifyResult(unlocked = false) else clearPinUnder(row.profile.profileIndex, currentPin, row.listToken, row.profile)
+    /** Review r8: as [setPin]; the cache entry of the slot is removed whatever happens after the RPC. */
+    suspend fun clearPin(row: DisplayedProfile, currentPin: String? = null): PinCheck {
+        if (row.listToken == null) return PinCheck(PinVerifyResult(unlocked = false), null)
+        val result = clearPinUnder(row.profile.profileIndex, currentPin, row.listToken, row.profile)
+        if (!result.unlocked) return PinCheck(result, null)
+        return PinCheck(result, finishPinOperation(row, expected = row.profile.copy(pinEnabled = false), readOnly = false) {})
+    }
 
     private suspend fun clearPinUnder(profileIndex: Int, currentPin: String?, token: AccountToken?, displayed: NuvioProfile? = null): PinVerifyResult {
+        pinWriteRpcForTest?.let { rpc ->
+            rpcBound(token, "clearPin", displayed) { rpc("clearPin") }
+                ?: return PinVerifyResult(unlocked = false, message = resourceString("Couldn't remove PIN lock. Try again.", StringKey.profile_pin_clear_failed))
+            ProfilePinCacheStorage.removePayload(profileIndex)
+            return PinVerifyResult(unlocked = true)
+        }
         if (AuthRepository.state.value !is AuthState.Authenticated) {
             return PinVerifyResult(unlocked = false, message = resourceString("Connect to the internet to remove the PIN lock.", StringKey.profile_pin_clear_requires_internet))
         }
@@ -716,15 +774,15 @@ object ProfileRepository {
         syncPinCache(profiles)
     }
 
-    private fun rememberVerifiedPin(profileIndex: Int, pin: String) {
-        val profile = _state.value.profiles.find { it.profileIndex == profileIndex }
+    /** Review r8: caches [pin] for [profile] (its slot and revision), the row the caller admitted. */
+    private fun rememberVerifiedPin(profile: NuvioProfile, pin: String) {
         val salt = generateProfilePinSalt()
         val payload = CachedProfilePinPayload(
             salt = salt,
-            digest = hashProfilePin(profileIndex = profileIndex, salt = salt, pin = pin),
-            profileUpdatedAt = profile?.updatedAt.orEmpty(),
+            digest = hashProfilePin(profileIndex = profile.profileIndex, salt = salt, pin = pin),
+            profileUpdatedAt = profile.updatedAt,
         )
-        ProfilePinCacheStorage.savePayload(profileIndex, json.encodeToString(payload))
+        ProfilePinCacheStorage.savePayload(profile.profileIndex, json.encodeToString(payload))
     }
 
     private fun verifyPinLocally(profileIndex: Int, pin: String): PinVerifyResult {

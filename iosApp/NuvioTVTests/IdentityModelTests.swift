@@ -471,12 +471,15 @@ final class IdentityRevokerTests: XCTestCase {
     }
 }
 
-/// Review r7 #3: the profile editor is bound to its list's account token and the profile id.
-final class ProfileEditTargetBindingTests: XCTestCase {
-    private func profile(_ slot: Int32, id: String) -> NuvioProfile {
-        NuvioProfile(id: id, userId: "u", profileIndex: slot, name: "P\(slot)", avatarColorHex: "#E53935",
+/// Review r8 #2: the editor's authorisation (the row as opened) against the live rows and its own PIN result.
+final class EditorAuthorisationRuleTests: XCTestCase {
+    private let tokenA = AccountToken(account: AccountKeyAccount(userId: "a"), authSerial: 1)
+    private let tokenB = AccountToken(account: AccountKeyAccount(userId: "b"), authSerial: 2)
+
+    private func profile(_ slot: Int32, id: String, pin: Bool = false, name: String = "P") -> NuvioProfile {
+        NuvioProfile(id: id, userId: "u", profileIndex: slot, name: name, avatarColorHex: "#E53935",
                      avatarId: nil, avatarUrl: nil, usesPrimaryAddons: false, usesPrimaryPlugins: false,
-                     pinEnabled: false, pinLockedUntil: nil, createdAt: "", updatedAt: "")
+                     pinEnabled: pin, pinLockedUntil: nil, createdAt: "", updatedAt: "")
     }
 
     private func rows(_ profiles: [NuvioProfile], _ token: AccountToken) -> [DisplayedProfile] {
@@ -484,27 +487,33 @@ final class ProfileEditTargetBindingTests: XCTestCase {
                      rememberLastProfileEnabled: false, listToken: token).displayed
     }
 
-    func testTheEditorFollowsOnlyItsOwnRow() {
-        let tokenA = AccountToken(account: AccountKeyAccount(userId: "a"), authSerial: 1)
-        let tokenB = AccountToken(account: AccountKeyAccount(userId: "b"), authSerial: 2)
-        let shown = rows([profile(1, id: "a1"), profile(2, id: "a2")], tokenA)
-        let target = ProfileEditTarget(row: shown[1])
-        XCTAssertEqual(target.liveRow(in: shown)?.profile.id, "a2")
-        XCTAssertFalse(target.isStale(in: shown))
-        // The same list refreshed (renamed): still the row.
-        let renamed = rows([profile(1, id: "a1"), profile(2, id: "a2")], tokenA)
-        XCTAssertNotNil(target.liveRow(in: renamed))
-        // Another account's list, same slot: never adopted.
-        let other = rows([profile(1, id: "b1"), profile(2, id: "b2")], tokenB)
-        XCTAssertNil(target.liveRow(in: other))
-        XCTAssertTrue(target.isStale(in: other))
-        // Same account, the slot now holds another profile: never adopted.
+    private typealias Rule = EditorAuthorisationRule
+
+    func testEveryCase() {
+        let opened = rows([profile(1, id: "a1"), profile(2, id: "a2")], tokenA)[1]
+        let same = rows([profile(1, id: "a1"), profile(2, id: "a2", name: "Renamed")], tokenA)
+        let locked = rows([profile(1, id: "a1"), profile(2, id: "a2", pin: true)], tokenA)
         let replaced = rows([profile(1, id: "a1"), profile(2, id: "a9")], tokenA)
-        XCTAssertNil(target.liveRow(in: replaced))
-        // Same account and id, a new session serial (re-stamped list): the old token no longer matches.
-        let restamped = rows([profile(1, id: "a1"), profile(2, id: "a2")], AccountToken(account: AccountKeyAccount(userId: "a"), authSerial: 3))
-        XCTAssertNil(target.liveRow(in: restamped))
-        // A new-profile editor is never stale.
-        XCTAssertFalse(ProfileEditTarget(row: nil).isStale(in: other))
+        let gone = rows([profile(1, id: "a1")], tokenA)
+        let otherAccount = rows([profile(1, id: "b1"), profile(2, id: "b2")], tokenB)
+        let restamped = rows([profile(1, id: "a1"), profile(2, id: "a2")],
+                             AccountToken(account: AccountKeyAccount(userId: "a"), authSerial: 3))
+        for own in [Rule.OwnPinOperation.none, .failed] {
+            XCTAssertEqual(Rule.decide(authorised: opened, live: same, own: own), .keep, "renamed elsewhere: same row, same lock")
+            XCTAssertEqual(Rule.decide(authorised: opened, live: locked, own: own), .dismiss, "locked elsewhere: never adopted")
+            XCTAssertEqual(Rule.decide(authorised: opened, live: replaced, own: own), .dismiss)
+            XCTAssertEqual(Rule.decide(authorised: opened, live: gone, own: own), .dismiss)
+            XCTAssertEqual(Rule.decide(authorised: opened, live: otherAccount, own: own), .dismiss)
+            XCTAssertEqual(Rule.decide(authorised: opened, live: restamped, own: own), .dismiss)
+        }
+        // The editor's own PIN set: its refresh lands while the operation is in flight (kept), then
+        // the operation's returned row becomes the authorisation.
+        XCTAssertEqual(Rule.decide(authorised: opened, live: locked, own: .inFlight), .keep)
+        XCTAssertEqual(Rule.decide(authorised: opened, live: locked, own: .succeeded(locked[1])), .update(locked[1]))
+        XCTAssertEqual(Rule.decide(authorised: locked[1], live: locked, own: .none), .keep, "after the update, the locked row is the editor's")
+        // Succeeded but not adoptable (replaced meanwhile, or the refresh failed): the editor closes.
+        XCTAssertEqual(Rule.decide(authorised: opened, live: replaced, own: .succeeded(nil)), .dismiss)
+        // Succeeded with the row unchanged (a PIN change keeps the lock on).
+        XCTAssertEqual(Rule.decide(authorised: locked[1], live: locked, own: .succeeded(locked[1])), .keep)
     }
 }

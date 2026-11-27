@@ -81,6 +81,85 @@ class PinVerifyRowTest {
         assertEquals(null, check.row)
     }
 
+    private fun replaceSlot(slot: Int, with: NuvioProfile) {
+        val s = ProfileRepository.state.value
+        ProfileRepository.setStateForTest(s.copy(profiles = (s.profiles.filter { it.profileIndex != slot } + with).sortedBy { it.profileIndex }))
+    }
+
+    /** An offline verification (no server): the cached digest decides. */
+    private suspend fun offlineVerify(slot: Int, pin: String): Boolean {
+        val saved = ProfileRepository.verifyRpcForTest
+        ProfileRepository.verifyRpcForTest = null
+        try {
+            return ProfileRepository.verifyPin(ProfileRepository.state.value.displayedRow(slot)!!, pin).unlocked
+        } finally {
+            ProfileRepository.verifyRpcForTest = saved
+        }
+    }
+
+    /** Review r8 #1: a replacement during the refresh caches nothing; offline, the old PIN never opens it. */
+    @Test
+    fun aReplacementDuringTheRefreshCachesNothing() = real {
+        ProfilePinCacheStorage.removePayload(2)
+        ProfileRepository.verifyRpcForTest = { _, _ ->
+            replaceSlot(2, NuvioProfile(id = "other", profileIndex = 2, name = "Other", pinEnabled = true, updatedAt = "tB"))
+            PinVerifyResult(unlocked = true)
+        }
+        assertTrue(ProfileRepository.verifyPin(ProfileRepository.state.value.displayedRow(2)!!, "1234").refused)
+        assertFalse(offlineVerify(2, "1234"), "the old PIN must not unlock the replacement offline")
+    }
+
+    /** Positive control: an adopted verify caches the PIN for the verified row (offline unlock works). */
+    @Test
+    fun anAdoptedVerifyCachesThePin() = real {
+        ProfilePinCacheStorage.removePayload(2)
+        assertTrue(ProfileRepository.verifyPin(ProfileRepository.state.value.displayedRow(2)!!, "1234").unlocked)
+        assertTrue(offlineVerify(2, "1234"))
+        assertFalse(offlineVerify(2, "9999"))
+    }
+
+    /** Review r8 #3: the returned row is built from the snapshot admission checked, in the same section. */
+    @Test
+    fun theReturnedRowComesFromTheAdmittedSnapshot() = real {
+        ProfileRepository.afterPinAdmissionForTest = {
+            replaceSlot(2, NuvioProfile(id = "other", profileIndex = 2, name = "Other", pinEnabled = true))
+        }
+        try {
+            val check = ProfileRepository.verifyPin(ProfileRepository.state.value.displayedRow(2)!!, "1234")
+            assertEquals("kid", check.row?.profile?.id)
+        } finally {
+            ProfileRepository.afterPinAdmissionForTest = {}
+        }
+    }
+
+    /** Review r8: a PIN set adopts the row after it (lock on) and caches; a replacement adopts nothing. */
+    @Test
+    fun aPinSetAdoptsTheRowAfterItOrNothing() = real {
+        ProfilePinCacheStorage.removePayload(3)
+        replaceSlot(3, NuvioProfile(id = "three", profileIndex = 3, name = "Three", pinEnabled = false, updatedAt = "t1"))
+        ProfileRepository.pinWriteRpcForTest = {
+            replaceSlot(3, NuvioProfile(id = "three", profileIndex = 3, name = "Three", pinEnabled = true, updatedAt = "t2"))
+        }
+        try {
+            val check = ProfileRepository.setPin(ProfileRepository.state.value.displayedRow(3)!!, "1111")
+            assertTrue(check.unlocked)
+            assertEquals(true, check.row?.profile?.pinEnabled)
+            assertEquals("three", check.row?.profile?.id)
+            assertTrue(offlineVerify(3, "1111"))
+            // Set again while another profile replaces slot 3 during the refresh.
+            ProfilePinCacheStorage.removePayload(3)
+            ProfileRepository.pinWriteRpcForTest = {
+                replaceSlot(3, NuvioProfile(id = "new", profileIndex = 3, name = "New", pinEnabled = true, updatedAt = "t3"))
+            }
+            val replaced = ProfileRepository.setPin(ProfileRepository.state.value.displayedRow(3)!!, "2222")
+            assertEquals(null, replaced.row)
+            assertFalse(offlineVerify(3, "2222"))
+        } finally {
+            ProfileRepository.pinWriteRpcForTest = null
+            ProfilePinCacheStorage.removePayload(3)
+        }
+    }
+
     /** Audit #2: in Recovery(FailedApply) the picker is the front; a PIN check still runs (read-only). */
     @Test
     fun failedApplyStillVerifies() = real {
