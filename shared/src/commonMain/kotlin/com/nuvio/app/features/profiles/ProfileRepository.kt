@@ -567,8 +567,9 @@ object ProfileRepository {
                 put("p_pin", pin)
                 currentPin?.let { put("p_current_pin", it) }
             }
+            // Audit #2: refused (the identity moved): the existing failure message, never "Incorrect PIN".
             rpcBound(token, "setPin") { SupabaseProvider.client.postgrest.rpc("set_profile_pin", params) }
-                ?: return PinVerifyResult(unlocked = false)
+                ?: return PinVerifyResult(unlocked = false, message = resourceString("Couldn't set PIN. Try again.", StringKey.profile_pin_set_failed))
             pullProfiles()
             rememberVerifiedPinUnder(token, profileIndex, pin)
             PinVerifyResult(unlocked = true)
@@ -595,8 +596,9 @@ object ProfileRepository {
                 put("p_profile_id", profileIndex)
                 currentPin?.let { put("p_current_pin", it) }
             }
+            // Audit #2: refused (the identity moved): the existing failure message, never "Incorrect PIN".
             rpcBound(token, "clearPin") { SupabaseProvider.client.postgrest.rpc("clear_profile_pin", params) }
-                ?: return PinVerifyResult(unlocked = false)
+                ?: return PinVerifyResult(unlocked = false, message = resourceString("Couldn't remove PIN lock. Try again.", StringKey.profile_pin_clear_failed))
             pullProfiles()
             ProfilePinCacheStorage.removePayload(profileIndex)
             PinVerifyResult(unlocked = true)
