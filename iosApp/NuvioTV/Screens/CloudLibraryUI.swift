@@ -21,6 +21,12 @@ final class CloudLibraryViewModel: ObservableObject {
 
     private var watcher: FlowWatcher?
 
+    /// W3b (spec 9.1.4, BUG-257): the profile's Cloud-capable providers, read from the repository on
+    /// the call's identity at `start()` and on every listing emission, so the chips show at Library
+    /// open, before a listing is published.
+    @Published private(set) var configured: [DebridProvider] = []
+    private let configuredProviders: () -> [DebridProvider]
+
     #if DEBUG
     /// Pre-cut follow-ups GC: `-debug.libraryCloudFixture YES` gives the Library one synthetic
     /// connected provider with two items, so the source chips draw on the simulator (no debrid key
@@ -28,8 +34,14 @@ final class CloudLibraryViewModel: ObservableObject {
     /// `ensureLoaded`, and Refresh and play are no-ops.
     let isFixture: Bool
 
-    init(isFixture: Bool = CloudLibraryDebugFixture.isOn) {
+    init(isFixture: Bool = CloudLibraryDebugFixture.isOn,
+         configuredProviders: @escaping () -> [DebridProvider] = { CloudLibraryRepository.shared.configuredProviders() }) {
         self.isFixture = isFixture
+        self.configuredProviders = configuredProviders
+    }
+    #else
+    init(configuredProviders: @escaping () -> [DebridProvider] = { CloudLibraryRepository.shared.configuredProviders() }) {
+        self.configuredProviders = configuredProviders
     }
     #endif
 
@@ -40,10 +52,12 @@ final class CloudLibraryViewModel: ObservableObject {
             return
         }
         #endif
+        configured = configuredProviders()
         guard watcher == nil else { return }
         watcher = FlowWatcherKt.watch(CloudLibraryRepository.shared.uiState) { [weak self] emitted in
             guard let self, let value = emitted as? CloudLibraryUiState else { return }
             self.state = value
+            self.configured = self.configuredProviders()
         }
         CloudLibraryRepository.shared.ensureLoaded()
     }
@@ -62,8 +76,22 @@ final class CloudLibraryViewModel: ObservableObject {
 
     deinit { watcher?.cancel() }
 
-    var providers: [CloudLibraryProviderState] { state?.providers ?? [] }
-    var hasConnectedProvider: Bool { state?.hasConnectedProvider ?? false }
+    /// The listing's providers, plus a loading section for each configured provider the listing does
+    /// not carry yet (W3b: the existing loading style until its listing is published).
+    var providers: [CloudLibraryProviderState] {
+        let listed = state?.providers ?? []
+        let pending = configured
+            .filter { provider in !listed.contains { $0.providerId == provider.id } }
+            .map { CloudLibraryProviderState(provider: $0, isLoading: true, errorMessage: nil, items: []) }
+        return listed + pending
+    }
+
+    var hasConnectedProvider: Bool {
+        #if DEBUG
+        if isFixture { return state?.hasConnectedProvider ?? false }
+        #endif
+        return !configured.isEmpty
+    }
     var isRefreshing: Bool { state?.isRefreshing ?? false }
 
     func play(item: CloudLibraryItem, file: CloudLibraryFile) {
