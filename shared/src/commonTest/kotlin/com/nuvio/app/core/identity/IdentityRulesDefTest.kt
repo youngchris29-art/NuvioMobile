@@ -271,9 +271,13 @@ class IdentityRulesDefTest {
         // the drain deadline outlives any test, so a drain that counted the job would never end.
         IdentityBarrier.drainDeadlineMs = 600_000
         val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val entered = kotlinx.coroutines.CompletableDeferred<Unit>()
         val slow = assertNotNull(IdentityWork.launch(IdentityGate.currentToken(), "slow-cleanup", work) {
-            try { awaitCancellation() } finally { withContext(NonCancellable) { release.await() } }
+            try { entered.complete(Unit); awaitCancellation() } finally { withContext(NonCancellable) { release.await() } }
         })
+        // Ordering: the body is in its try before the cancel, else a job cancelled before its body
+        // ran would complete at once and never reach the cleanup (a 1-in-5 flake, W3b r2 gate).
+        entered.await()
         IdentityImmediate.serialChanging()
         IdentityImmediate.chainEnded()
         assertIs<TransitionResult.Done>(IdentityBarrier.selectProfile(2))
