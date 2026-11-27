@@ -31,6 +31,8 @@ class RowBoundDeleteTest {
         ProfileIdentityRouterProvider.router = BarrierProfileIdentityRouter(FakeRouterPorts(EventLog()))
         ProfileRepository.isGuestForTest = false
         ProfileRepository.deleteRpcForTest = { rpcs += it }
+        // Review r7: the row rule checks the row against the list in memory, so A's list is loaded.
+        ProfileRepository.setStateForTest(ProfileState(profiles = listOf(NuvioProfile(profileIndex = 1), NuvioProfile(profileIndex = 2)), isLoaded = true, listToken = AccountToken(accountA, 1)), "user-a")
     }
 
     @AfterTest fun tearDown() {
