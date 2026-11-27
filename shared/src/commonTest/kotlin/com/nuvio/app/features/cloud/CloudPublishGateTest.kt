@@ -66,6 +66,8 @@ private class FakeBackend : CloudLibraryRepository.Backend {
     var entered = CompletableDeferred<Unit>()
     /** Per-call gates (call i waits on perCall[i]) and how many refresh calls have started. */
     val perCall = mutableListOf<CompletableDeferred<Unit>>()
+    /** Per-call listings (call i returns perCallListing[i]); else [listing]. */
+    val perCallListing = mutableListOf<CloudLibraryUiState>()
     val started = MutableStateFlow(0)
 
     override suspend fun refresh(credentials: List<DebridServiceCredential>): CloudLibraryUiState {
@@ -74,7 +76,7 @@ private class FakeBackend : CloudLibraryRepository.Backend {
         started.update { it + 1 }
         entered.complete(Unit)
         perCall.getOrNull(index)?.await() ?: gate?.await()
-        return listing
+        return perCallListing.getOrNull(index) ?: listing
     }
 
     val resolvedFiles = mutableListOf<CloudLibraryFile>()
@@ -282,6 +284,57 @@ class CloudPublishGateTest {
         assertTrue(state().isRefreshing, "the newer refresh still owns the marker")
         second.complete(Unit)
         eventually { !state().isRefreshing && state().providers == listingA.providers }
+    }
+
+    // Review r2 #1/#2: the marker is owned by CloudRefreshMarker; abandon runs on job completion.
+
+    @Test
+    fun r2_cancelBetweenRegistrationAndBodyEntryLeavesNoMarker() = runTest {
+        // A paused dispatcher: the registered job is started but its body never runs.
+        CloudLibraryRepository.scope = CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.test.StandardTestDispatcher(testScheduler))
+        CloudLibraryRepository.refresh()
+        assertTrue(state().isRefreshing)
+        CloudLibraryRepository.cancelJobsForTest()
+        testScheduler.runCurrent() // the cancelled job completes without entering its body
+        assertFalse(state().isRefreshing, "the job's completion abandoned its marker")
+        assertEquals(0, backend.started.value, "the body never ran")
+    }
+
+    private val listing1 = CloudLibraryUiState(isLoaded = true, providers = listOf(CloudLibraryProviderState(DebridProviders.Torbox, items = listOf(itemA.copy(name = "first")))))
+    private val listing2 = CloudLibraryUiState(isLoaded = true, providers = listOf(CloudLibraryProviderState(DebridProviders.Torbox, items = listOf(itemA.copy(name = "second")))))
+
+    private suspend fun twoRefreshes(): Pair<CompletableDeferred<Unit>, CompletableDeferred<Unit>> {
+        val first = CompletableDeferred<Unit>()
+        val second = CompletableDeferred<Unit>()
+        backend.perCall += listOf(first, second)
+        backend.perCallListing += listOf(listing1, listing2)
+        CloudLibraryRepository.refresh()
+        eventually { backend.started.value == 1 }
+        CloudLibraryRepository.refresh() // same identity: supersedes the first
+        eventually { backend.started.value == 2 }
+        return first to second
+    }
+
+    @Test
+    fun r2_olderFinishesFirstUnderOneIdentity() = real {
+        val (first, second) = twoRefreshes()
+        first.complete(Unit)
+        delay(150)
+        assertTrue(state().isRefreshing, "the older result never hides the newer loading state")
+        assertFalse(state().providers.any { p -> p.items.any { it.name == "first" } }, "and is never written")
+        second.complete(Unit)
+        eventually { !state().isRefreshing && state().providers == listing2.providers }
+    }
+
+    @Test
+    fun r2_newerFinishesFirstUnderOneIdentity() = real {
+        val (first, second) = twoRefreshes()
+        second.complete(Unit)
+        eventually { !state().isRefreshing && state().providers == listing2.providers }
+        first.complete(Unit)
+        delay(150)
+        assertEquals(listing2.providers, state().providers, "the older result never overwrites the newer listing")
+        assertFalse(state().isRefreshing)
     }
 
     // Review r1 #2: no provider call is made with credentials read after the identity moved.

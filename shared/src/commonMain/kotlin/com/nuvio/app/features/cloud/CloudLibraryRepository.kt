@@ -5,7 +5,6 @@ import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import com.nuvio.app.core.identity.CommitKind
 import com.nuvio.app.core.identity.CommitResult
 import com.nuvio.app.core.identity.IdentityGate
-import com.nuvio.app.core.identity.IdentityLocks
 import com.nuvio.app.core.identity.IdentityScope
 import com.nuvio.app.core.identity.IdentityToken
 import com.nuvio.app.core.identity.IdentityWork
@@ -115,7 +114,9 @@ class CloudLibraryStore(
  */
 object CloudLibraryRepository {
     private val log = Logger.withTag("CloudLib")
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("CloudLibraryRepository"))
+    private val defaultScope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("CloudLibraryRepository"))
+    /** Where refresh jobs run (tests use a paused dispatcher to cancel a job before its body). */
+    internal var scope: CoroutineScope = defaultScope
     private val store = CloudLibraryStore(
         credentialsProvider = {
             DebridSettingsRepository.ensureLoaded()
@@ -136,12 +137,14 @@ object CloudLibraryRepository {
     private var listingScope: IdentityScope? = null
 
     /**
-     * Review r1 #1: who owns the `isRefreshing` marker. A refresh that set it is the only one that
-     * may clear it, and only while it is still the owner (a newer refresh, or a clear, replaced
-     * it). Under the commit lock.
+     * Review r2 #1/#2: the refreshing marker (CloudRefreshMarker) and the `_uiState` writes it
+     * drives, under [stateLock], a LEAF lock: taken inside identity commits, and alone (never the
+     * commit lock) from a refresh job's completion handler. So a job that ends without publishing,
+     * even one cancelled before its body ran, clears its own marker without entering the gate; it
+     * can only clear the marker it owns, never write a listing.
      */
-    private var refreshOwner = 0L
-    private var nextRefreshOwner = 0L
+    private val marker = CloudRefreshMarker()
+    private val stateLock = kotlinx.atomicfu.locks.SynchronizedObject()
 
     /** The profile's Debrid settings, read on a call (a seam: tests flip them at the switch). */
     internal interface Settings {
@@ -201,12 +204,13 @@ object CloudLibraryRepository {
         logSink = { line -> log.i { line } }
         beforeStoreCallForTest = {}
         scope.coroutineContext[kotlinx.coroutines.Job]?.children?.forEach { it.cancel() }
+        scope = defaultScope
         clear()
     }
 
     /** Tests only: a state in memory, published for [scope] (null: nobody's). */
     internal fun setStateForTest(state: CloudLibraryUiState, scope: IdentityScope? = null) {
-        IdentityLocks.withCommit {
+        kotlinx.atomicfu.locks.synchronized(stateLock) {
             listingScope = scope
             _uiState.value = state
         }
@@ -257,10 +261,9 @@ object CloudLibraryRepository {
         }
     }
 
-    /** Inside an admission: marks the listing refreshing and returns this refresh's owner id. */
-    private fun markRefreshing(): Long {
-        val owner = ++nextRefreshOwner
-        refreshOwner = owner
+    /** Inside an admission: a new marker owner (it supersedes any earlier one) and the loading state. */
+    private fun markRefreshing(): CloudRefreshMarker.Owner = kotlinx.atomicfu.locks.synchronized(stateLock) {
+        val owner = marker.start()
         _uiState.update { current ->
             current.copy(
                 isEnabled = true,
@@ -268,31 +271,38 @@ object CloudLibraryRepository {
                 providers = current.providers.map { it.copy(isLoading = true, errorMessage = null) },
             )
         }
-        return owner
+        owner
     }
 
     /**
-     * Review r1 #1: a refresh that ends without publishing (cancelled, its final commit refused, or
-     * it threw) clears the marker it set, and nothing else: only while it is still the owner, so
-     * a newer refresh's marker or a cleared state is never touched. No token check by design: the
-     * owner id can only match the state this refresh marked.
+     * A refresh that ended without publishing: clears the loading state only if [owner] still holds
+     * the marker. Called from a job's completion (any end, body run or not) and after a refused
+     * launch; takes only [stateLock], never the identity commit lock.
      */
-    private fun releaseRefreshing(owner: Long) {
-        IdentityLocks.withCommit {
-            if (refreshOwner != owner) return@withCommit
-            refreshOwner = 0L
+    private fun abandonRefresh(owner: CloudRefreshMarker.Owner) {
+        kotlinx.atomicfu.locks.synchronized(stateLock) {
+            if (!marker.abandon(owner)) return@synchronized
             _uiState.update { current ->
                 current.copy(isRefreshing = false, providers = current.providers.map { it.copy(isLoading = false) })
             }
         }
     }
 
-    /** Inside the final commit: the listing is published for the call's profile. */
-    private fun publishListing(call: CloudCall, owner: Long, credentials: List<DebridServiceCredential>, listing: CloudLibraryUiState) {
+    /**
+     * Inside the final commit: the listing is written only when [owner] is the current marker
+     * owner. Returns whether it was written (a superseded refresh publishes nothing).
+     */
+    private fun publishListing(
+        call: CloudCall,
+        owner: CloudRefreshMarker.Owner,
+        credentials: List<DebridServiceCredential>,
+        listing: CloudLibraryUiState,
+    ): Boolean = kotlinx.atomicfu.locks.synchronized(stateLock) {
+        if (!marker.publish(owner)) return@synchronized false
         loadedConnectionKeys = keysOf(credentials)
         listingScope = call.token.scope
-        if (refreshOwner == owner) refreshOwner = 0L
         _uiState.value = listing
+        true
     }
 
     /**
@@ -311,10 +321,10 @@ object CloudLibraryRepository {
         }
     }
 
-    private fun writeDisabled() {
+    private fun writeDisabled() = kotlinx.atomicfu.locks.synchronized(stateLock) {
         loadedConnectionKeys = emptyList()
         listingScope = null
-        refreshOwner = 0L
+        marker.reset()
         _uiState.value = CloudLibraryUiState(isLoaded = true, isEnabled = false)
     }
 
@@ -325,10 +335,9 @@ object CloudLibraryRepository {
             publish(call, "cloudDisabled") { writeDisabled() }
             return
         }
-        val current = _uiState.value
-        // Review r1 #1: a marker with no live owner (never left by the cleanup below, but a
-        // recovery when the gate reopens costs nothing) does not block the refresh.
-        if (current.isRefreshing && refreshOwner != 0L) return
+        // Review r2: the marker, not the published flag, says whether a refresh is under way.
+        val (current, refreshing) = kotlinx.atomicfu.locks.synchronized(stateLock) { _uiState.value to marker.isRefreshing }
+        if (refreshing) return
         val connectedKeys = keysOf(call.credentials())
         if (!current.isLoaded || connectedKeys != loadedConnectionKeys) {
             refreshWith(call)
@@ -350,18 +359,15 @@ object CloudLibraryRepository {
         val owner = admitted.value
         val credentials = admitted.credentials
         val job = IdentityWork.launch(call.token, "cloudRefresh", scope) {
-            try {
-                beforeStoreCallForTest()
-                val refreshed = backend.refresh(credentials)
-                debugHold(call, "cloudRefresh") {
-                    publish(call, "cloudRefresh") { publishListing(call, owner, credentials, refreshed) }
-                }
-            } finally {
-                releaseRefreshing(owner) // a no-op after a publish (the owner was reset there)
+            beforeStoreCallForTest()
+            val refreshed = backend.refresh(credentials)
+            debugHold(call, "cloudRefresh") {
+                publish(call, "cloudRefresh") { publishListing(call, owner, credentials, refreshed) }
             }
         }
-        // The launch was refused after the start committed: the marker goes with it.
-        if (job == null) releaseRefreshing(owner)
+        // Review r2 #1: abandon on job COMPLETION (cancelled before or after its body, refused,
+        // thrown or done; a no-op after a publish). A refused launch abandons at once.
+        if (job == null) abandonRefresh(owner) else job.invokeOnCompletion { abandonRefresh(owner) }
     }
 
     suspend fun findPlaybackTargetForProgress(
@@ -410,8 +416,10 @@ object CloudLibraryRepository {
 
         when (val cached = publish(call, "cloudCachedFound") {
             // Review r1 #3: only a listing published for the call's profile answers from the cache.
-            if (listingScope != call.token.scope) null
-            else _uiState.value.findPlaybackTargetForProgress(contentId = contentId, videoId = videoId)
+            kotlinx.atomicfu.locks.synchronized(stateLock) {
+                if (listingScope != call.token.scope) null
+                else _uiState.value.findPlaybackTargetForProgress(contentId = contentId, videoId = videoId)
+            }
         }) {
             is CommitResult.Rejected -> return CloudLibraryPlaybackTargetLookupResult.NotFound
             is CommitResult.Committed -> cached.value?.let { target -> return CloudLibraryPlaybackTargetLookupResult.Found(target) }
@@ -471,7 +479,17 @@ object CloudLibraryRepository {
      * Inside an admission: the item and file as listed for the call's profile, or null when the
      * listing belongs to another profile (or none) or does not hold them.
      */
-    private fun listedTarget(call: CloudCall, item: CloudLibraryItem, file: CloudLibraryFile): CloudLibraryPlaybackTarget? {
+    private fun listedTarget(call: CloudCall, item: CloudLibraryItem, file: CloudLibraryFile): CloudLibraryPlaybackTarget? =
+        kotlinx.atomicfu.locks.synchronized(stateLock) { listedTargetLocked(call, item, file) }
+
+    /**
+     * Known limit (review r2 #3, declined: same as base on mobile): composeApp's default profile
+     * router switches profiles without moving the identity scope or epoch and does not clear Cloud,
+     * so on the mobile app this check (and admitWork) cannot see a profile switch; at 867aba698 the
+     * repository had no identity check at all and resolved any passed item with the credentials
+     * read at call time. The tvOS barrier advances the token and clears Cloud on every switch.
+     */
+    private fun listedTargetLocked(call: CloudCall, item: CloudLibraryItem, file: CloudLibraryFile): CloudLibraryPlaybackTarget? {
         if (listingScope != call.token.scope) return null
         val listedItem = _uiState.value.providers
             .firstOrNull { it.providerId == item.providerId }
@@ -483,10 +501,10 @@ object CloudLibraryRepository {
 
     /** W3b (9.1.4): the profile fan-out and the account wipe empty the Cloud state (gate closed). */
     fun clear() {
-        IdentityLocks.withCommit {
+        kotlinx.atomicfu.locks.synchronized(stateLock) {
             loadedConnectionKeys = emptyList()
             listingScope = null
-            refreshOwner = 0L
+            marker.reset()
             _uiState.value = CloudLibraryUiState()
         }
     }
@@ -498,12 +516,14 @@ object CloudLibraryRepository {
         url: String,
     ) {
         if (url.isBlank()) return
-        _uiState.update { current ->
-            current.withResolvedPlaybackUrl(
-                item = item,
-                file = file,
-                url = url,
-            )
+        kotlinx.atomicfu.locks.synchronized(stateLock) {
+            _uiState.update { current ->
+                current.withResolvedPlaybackUrl(
+                    item = item,
+                    file = file,
+                    url = url,
+                )
+            }
         }
     }
 
@@ -512,20 +532,30 @@ object CloudLibraryRepository {
             ?: return CloudLookupStep.Refused(CloudLookupStep.Stage.Start)
         val owner = admitted.value
         val credentials = admitted.credentials
+        // Runs in the caller's coroutine (no registered job): the body always runs, so `finally` is
+        // its completion.
         try {
             beforeStoreCallForTest()
             val refreshed = backend.refresh(credentials)
             return when (val r = debugHold(call, "cloudRefreshNow") {
                 publish(call, "cloudRefreshNow") {
-                    publishListing(call, owner, credentials, refreshed)
-                    refreshed.findPlaybackTargetForProgress(contentId = contentId, videoId = videoId)
+                    if (publishListing(call, owner, credentials, refreshed)) {
+                        refreshed.findPlaybackTargetForProgress(contentId = contentId, videoId = videoId)
+                    } else {
+                        // Superseded by a newer refresh: it wrote nothing, so it answers only from
+                        // the listing in memory (the one a resolve will act on), for this profile.
+                        kotlinx.atomicfu.locks.synchronized(stateLock) {
+                            if (listingScope != call.token.scope) null
+                            else _uiState.value.findPlaybackTargetForProgress(contentId = contentId, videoId = videoId)
+                        }
+                    }
                 }
             }) {
                 is CommitResult.Committed -> r.value?.let { CloudLookupStep.Found(it) } ?: CloudLookupStep.NotFound
                 is CommitResult.Rejected -> CloudLookupStep.Refused(CloudLookupStep.Stage.Commit)
             }
         } finally {
-            releaseRefreshing(owner)
+            abandonRefresh(owner)
         }
     }
 
