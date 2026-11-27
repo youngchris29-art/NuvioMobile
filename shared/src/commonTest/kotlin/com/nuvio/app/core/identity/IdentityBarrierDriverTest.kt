@@ -266,11 +266,23 @@ class IdentityBarrierDriverTest {
     @Test
     fun deleteActiveProfileRechecksTheAccount() = real {
         val stale = AccountToken(accountA, authSerial = 99)
-        assertIs<TransitionResult.Done>(IdentityBarrier.deleteActiveProfile(1, nextSlot = 2, token = stale))
-        assertEquals(0, log.count("apply 2"))
+        val rejected = assertIs<TransitionResult.Preempted>(IdentityBarrier.deleteActiveProfile(1, token = stale))
+        assertEquals(SelectRejection.AccountChanged, rejected.rejection)
+        assertEquals(emptyList(), log.all())
+        // Rule G: no profile remains in the current list → active removed.
+        ops.listed = setOf(1)
         val token = assertNotNull(IdentityGate.currentAccountToken())
-        assertIs<TransitionResult.Done>(IdentityBarrier.deleteActiveProfile(1, nextSlot = null, token = token))
+        assertIs<TransitionResult.Done>(IdentityBarrier.deleteActiveProfile(1, token = token))
         assertEquals(listOf("removed"), log.all())
+    }
+
+    /** Rule G (P19): the fallback comes from the list current at admission, not the caller's. */
+    @Test
+    fun deleteFallbackUsesCurrentList() = real {
+        val token = assertNotNull(IdentityGate.currentAccountToken())
+        IdentityBarrier.beforeApplyLock = { ops.listed = setOf(1, 4, 5) } // a pull republished the list while the delete waited
+        assertIs<TransitionResult.Done>(IdentityBarrier.deleteActiveProfile(1, token = token))
+        assertEquals(listOf("apply 4"), log.all())
     }
 
     @Test
@@ -293,9 +305,9 @@ class IdentityBarrierDriverTest {
         val select = async { IdentityBarrier.selectProfile(2) }
         eventually { IdentityGate.state.value.transitioning }
         // The delete of slot 1 (the active slot when it was requested) queues behind the select.
-        val delete = async { IdentityBarrier.deleteActiveProfile(1, nextSlot = 3, token = token) }
+        val delete = async { IdentityBarrier.deleteActiveProfile(1, token = token) }
         assertIs<TransitionResult.Done>(select.await())
-        assertIs<TransitionResult.Done>(delete.await())
+        assertEquals(SelectRejection.SlotGone, assertIs<TransitionResult.Preempted>(delete.await()).rejection)
         assertEquals(listOf("apply 2"), log.all())
         assertEquals(2, ops.active)
         assertEquals(IdentityScope(accountA, 2), IdentityGate.state.value.scope)

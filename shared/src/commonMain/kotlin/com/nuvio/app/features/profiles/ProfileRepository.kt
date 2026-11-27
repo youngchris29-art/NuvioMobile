@@ -182,12 +182,22 @@ object ProfileRepository {
      * a best-effort persist, then the checked fan-out; returns the must-succeed steps that failed.
      */
     internal fun applySelectionChecked(profileIndex: Int): List<String> {
+        writeSelection(profileIndex)
+        return afterSelectionChecked(profileIndex)
+    }
+
+    /** Rule G: the slot and active-profile state write only (one state write, run inside the admission's commit section). */
+    internal fun writeSelection(profileIndex: Int) {
         activeProfileIndex = profileIndex
         val selectedProfile = _state.value.profiles.find { it.profileIndex == profileIndex }
         _state.value = _state.value.copy(
             activeProfile = selectedProfile,
             hasEverSelectedProfile = selectedProfile != null || _state.value.hasEverSelectedProfile,
         )
+    }
+
+    /** After [writeSelection], outside the commit section: a best-effort persist, then the checked fan-out. */
+    internal fun afterSelectionChecked(profileIndex: Int): List<String> {
         runCatching { persist() }
             .onFailure { log.e(it) { "Failed to persist profile selection $profileIndex" } }
         return ProfileLifecycleProvider.coordinator.onProfileSelectedChecked(profileIndex)

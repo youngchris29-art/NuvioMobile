@@ -66,7 +66,13 @@ final class FakeSelectPorts: ProfileSelectPorts {
     private(set) var impossible: [String] = []
     var failBeforeBegin = false
 
-    func select(slot: Int32) async throws -> TransitionResult {
+    private(set) var requests: [SelectRequest] = []
+    var token: AccountToken? = AccountToken(account: IdentityFixture.guest, authSerial: 1)
+
+    func selectionToken() -> AccountToken? { token }
+
+    func select(request: SelectRequest) async throws -> TransitionResult {
+        requests.append(request)
         duringSelect()
         if let after = currentAfterSelect { current = after }
         return try result()

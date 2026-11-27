@@ -21,7 +21,8 @@ internal class EventLog {
 internal class FakeProfileOps(private val log: EventLog) : IdentityProfileOps {
     private val lock = SynchronizedObject()
     private var activeSlot = 1
-    var listed: Set<Int> = setOf(1, 2, 3)
+    @kotlin.concurrent.Volatile
+    var listed: Set<Int> = (1..6).toSet()
     var onApply: (Int) -> Unit = {}
 
     val active: Int get() = synchronized(lock) { activeSlot }
@@ -29,9 +30,15 @@ internal class FakeProfileOps(private val log: EventLog) : IdentityProfileOps {
     /** Runs after the slot was changed (a body that mutates, then throws). */
     var afterMutation: (Int) -> Unit = {}
 
-    override fun applySelection(slot: Int) {
-        onApply(slot)
+    override fun listedSlots(): List<Int> = listed.sorted()
+
+    /** Inside the admission's commit section: the slot only (no hooks: they may need the commit lock). */
+    override fun writeSelection(slot: Int) {
         synchronized(lock) { activeSlot = slot }
+    }
+
+    override fun fanOut(slot: Int) {
+        onApply(slot)
         log.add("apply $slot")
         afterMutation(slot)
     }
@@ -40,7 +47,13 @@ internal class FakeProfileOps(private val log: EventLog) : IdentityProfileOps {
         log.add("removed")
     }
 
-    override fun isListed(slot: Int): Boolean = slot in listed
+    /** Runs inside isListed (the SlotRemoved recheck), for interleaving tests. */
+    var onIsListed: (Int) -> Unit = {}
+
+    override fun isListed(slot: Int): Boolean {
+        onIsListed(slot)
+        return slot in listed
+    }
 }
 
 /** A revoker that records each call and returns [result]; [onRevoke] runs inside the call. */

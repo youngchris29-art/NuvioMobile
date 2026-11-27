@@ -47,8 +47,8 @@ internal class FakeRouterPorts(private val log: EventLog) : BarrierRouterPorts {
         log.add("request removal $slot")
     }
 
-    override suspend fun deleteActiveProfile(slot: Int, nextSlot: Int?, token: AccountToken): TransitionResult {
-        log.add("delete active $slot next $nextSlot")
+    override suspend fun deleteActiveProfile(slot: Int, token: AccountToken): TransitionResult {
+        log.add("delete active $slot")
         return deleteResult()
     }
 
@@ -249,7 +249,7 @@ class TvOsProfileIdentityRouterTest {
     fun deleteOfTheActiveProfileRemovesTrackersThenMovesTheProfile() = real {
         ports.active = 2
         router.afterProfileDeleted(2, listOf(NuvioProfile(profileIndex = 3), NuvioProfile(profileIndex = 1)), tokenA())
-        assertEquals(listOf("trackers 2", "delete active 2 next 1"), log.all())
+        assertEquals(listOf("trackers 2", "delete active 2"), log.all())
     }
 
     @Test
@@ -310,7 +310,7 @@ class DeleteTrackerRemovalIndependentTest {
     @AfterTest fun tearDown() = resetIdentityForTest()
 
     private fun assertTrackersFirst() {
-        assertEquals(listOf("trackers 2", "delete active 2 next 1"), log.all())
+        assertEquals(listOf("trackers 2", "delete active 2"), log.all())
     }
 
     @Test

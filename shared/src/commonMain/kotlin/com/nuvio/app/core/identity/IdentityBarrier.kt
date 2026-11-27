@@ -34,8 +34,11 @@ import kotlin.coroutines.CoroutineContext
 
 sealed interface TransitionResult {
     data class Done(val final: IdentityState) : TransitionResult
-    /** Apply skipped: an auth window opened since the transition began. */
-    data class Preempted(val final: IdentityState) : TransitionResult
+    /**
+     * Apply skipped: an auth window opened since the transition began, or (rule G) admission
+     * rejected the select ([rejection] says why: the account changed, the slot is gone).
+     */
+    data class Preempted(val final: IdentityState, val rejection: SelectRejection? = null) : TransitionResult
     data class Failed(val error: String, val final: IdentityState) : TransitionResult
 
     /**
@@ -64,14 +67,21 @@ class TransitionNotAwaited(kind: TransitionKind) :
  * implementation in [IdentityBarrier.profileOps].
  */
 internal interface IdentityProfileOps {
-    fun applySelection(slot: Int)
+    /** The published profile list's slots (read inside the admission's commit section, rule G). */
+    fun listedSlots(): List<Int>
+    /** The slot and active-profile state write; a single state write, legal inside a commit section. */
+    fun writeSelection(slot: Int)
+    /** Everything after the write (persist, the checked fan-out); throws if a must-succeed step failed. */
+    fun fanOut(slot: Int)
     fun applyActiveRemoved()
     /** Whether ProfileRepository.state still lists [slot] (SlotRemoved revalidation, 5.2). */
     fun isListed(slot: Int): Boolean
 }
 
 private object UninstalledProfileOps : IdentityProfileOps {
-    override fun applySelection(slot: Int) = error("IdentityBarrier.profileOps not installed")
+    override fun listedSlots(): List<Int> = error("IdentityBarrier.profileOps not installed")
+    override fun writeSelection(slot: Int) = error("IdentityBarrier.profileOps not installed")
+    override fun fanOut(slot: Int) = error("IdentityBarrier.profileOps not installed")
     override fun applyActiveRemoved() = error("IdentityBarrier.profileOps not installed")
     override fun isListed(slot: Int): Boolean = error("IdentityBarrier.profileOps not installed")
 }
@@ -127,51 +137,53 @@ object IdentityBarrier {
     /** Tests only: runs on the apply dispatcher after DrainEnded and before the apply lock. */
     internal var beforeApplyLock: () -> Unit = {}
 
-    suspend fun selectProfile(slot: Int): TransitionResult {
-        // The account token (account AND auth serial) the select was requested under. A select
-        // queued behind an account change or a same-account session replacement (a window that
-        // ended before its Begin, so B6 cannot see it) must not switch the new session's slot:
-        // rechecked under the apply lock against the full token (review r2-5). Nothing applied →
-        // Preempted (revision 9).
-        val requestedUnder = IdentityLocks.withCommit {
-            AccountToken(IdentityRuntime.snapshot().latestAccount, IdentityRuntime.authSerial())
-        }
-        return run(
-            TransitionKind.ProfileSelect,
-            Body.Profile {
-                val stillApplies = IdentityLocks.withCommit {
-                    IdentityRuntime.snapshot().latestAccount == requestedUnder.account &&
-                        IdentityRuntime.authSerial() == requestedUnder.authSerial
-                }
-                if (!stillApplies) {
-                    log.i { "[Identity] select of slot $slot: session changed while queued, nothing applied" }
-                    return@Profile ProfileApply.NothingPreempted
-                }
-                profileOps.applySelection(slot)
-                ProfileApply.Applied
-            },
-        ).result
+    /**
+     * Tests and internal callers: a select displayed under the account token current now (what
+     * the slot-only API captured before rule G).
+     */
+    internal suspend fun selectProfile(slot: Int): TransitionResult {
+        val now = IdentityLocks.withCommit { AccountToken(IdentityRuntime.snapshot().latestAccount, IdentityRuntime.authSerial()) }
+        return selectProfile(SelectRequest(slot, now, SelectOrigin.PickerTap))
     }
 
-    /** After a successful server delete (or the guest filter) of the ACTIVE profile: select [nextSlot], or show the picker if null. */
-    suspend fun deleteActiveProfile(slot: Int, nextSlot: Int?, token: AccountToken): TransitionResult =
+    /** Rule G (31.1): admitted in one commit section of the apply against the current token and list. */
+    suspend fun selectProfile(request: SelectRequest): TransitionResult =
+        run(TransitionKind.ProfileSelect, Body.Profile { admitAndApply(request, deleting = null) }).result
+
+    /** After a successful server delete (or the guest filter) of the ACTIVE profile: its fallback is chosen in the admission section. */
+    suspend fun deleteActiveProfile(slot: Int, token: AccountToken): TransitionResult =
         run(
             TransitionKind.ActiveProfileDelete,
-            Body.Profile {
-                // Under the apply lock, in one commit read (5.3 step 4, revision 8): the account
-                // token holds AND the deleted slot is still the active one. A select that ran while
-                // this delete waited makes it a no-op (Done, nothing applied).
-                val stillApplies = IdentityLocks.withCommit {
-                    IdentityGate.decideAccountLocked(token) == Verdict.Commit && IdentityRuntime.activeSlot() == slot
-                }
-                if (!stillApplies) {
-                    log.i { "[Identity] active delete of slot $slot: account changed or slot no longer active, nothing applied" }
-                    return@Profile ProfileApply.NothingDone // a no-op delete is Done (5.3 step 4)
-                }
-                if (nextSlot != null) profileOps.applySelection(nextSlot) else profileOps.applyActiveRemoved()
-                ProfileApply.Applied
-            },
+            Body.Profile { admitAndApply(SelectRequest(slot, token, SelectOrigin.DeleteFallback), deleting = slot) },
         ).result
+
+    /**
+     * Rule G: ONE commit section reads the barrier's current account token (minted here even in
+     * Recovery(FailedApply), so the retry B20a allows is reachable), reads the published list,
+     * decides with SelectAdmission and, on Admit, writes the slot. The fan-out follows, still
+     * under the apply lock. pullProfiles publishes under the same lock, so a list is either the
+     * one admission reads or is published after the write (then rule E handles a removal).
+     */
+    private fun admitAndApply(request: SelectRequest, deleting: Int?): ProfileApply {
+        val admission = IdentityLocks.withCommit {
+            val current = AccountToken(IdentityRuntime.snapshot().latestAccount, IdentityRuntime.authSerial())
+            SelectAdmission.decide(request, gated = true, current, profileOps.listedSlots(), deleting, IdentityRuntime.activeSlot()).also {
+                if (it is Admission.Admit) {
+                    if (it.slot == SelectAdmission.NONE_REMAIN) profileOps.applyActiveRemoved() else profileOps.writeSelection(it.slot)
+                }
+            }
+        }
+        return when (admission) {
+            is Admission.Reject -> {
+                log.i { "[Identity] ${request.origin} of slot ${request.slot}: ${admission.why}, nothing applied" }
+                ProfileApply.Rejected(admission.why)
+            }
+            is Admission.Admit -> {
+                if (admission.slot != SelectAdmission.NONE_REMAIN) profileOps.fanOut(admission.slot)
+                ProfileApply.Applied
+            }
+        }
+    }
 
     /**
      * Fire-and-forget (rule E): the barrier model records the removal (B23) and schedules it at the
@@ -195,11 +207,14 @@ object IdentityBarrier {
         enqueue(
             TransitionKind.SlotRemoved,
             Body.Profile {
+                // Rule G / B23 (31.1): the recheck and the write in ONE section, so a pull cannot
+                // relist the slot between them.
                 val still = IdentityGate.commitAccount(token, "slotRemoved") {
-                    !profileOps.isListed(removal.slot) && IdentityRuntime.activeSlot() == removal.slot
+                    (!profileOps.isListed(removal.slot) && IdentityRuntime.activeSlot() == removal.slot).also {
+                        if (it) profileOps.applyActiveRemoved()
+                    }
                 }
                 if (still is CommitResult.Committed && still.value) {
-                    profileOps.applyActiveRemoved()
                     ProfileApply.Applied
                 } else {
                     log.i { "[Identity] slot removed: no longer applies, nothing applied" }
@@ -239,12 +254,12 @@ object IdentityBarrier {
     }
 
     /** What a profile body did: only [Applied] clears FailedApply (B7). */
-    private enum class ProfileApply {
-        Applied,
-        /** Nothing applied; the result is Done (a no-op delete or slot removal). */
-        NothingDone,
-        /** Nothing applied; the result is Preempted (a queued select whose session changed, revision 9). */
-        NothingPreempted,
+    private sealed interface ProfileApply {
+        data object Applied : ProfileApply
+        /** Nothing applied; the result is Done (a no-op slot removal). */
+        data object NothingDone : ProfileApply
+        /** Nothing applied; admission rejected it (rule G); the result is Preempted with the reason. */
+        data class Rejected(val why: SelectRejection) : ProfileApply
     }
 
     private class Outcome(val result: TransitionResult, val accountResult: Result<Unit>? = null)
@@ -338,9 +353,9 @@ object IdentityBarrier {
                     val final = awaitFinal()
                     Outcome(
                         when (applied) {
-                            null -> TransitionResult.Done(final)
-                            PREEMPTED -> TransitionResult.Preempted(final)
-                            else -> TransitionResult.Failed(applied, final)
+                            is ApplyEnd.Done -> TransitionResult.Done(final)
+                            is ApplyEnd.Preempted -> TransitionResult.Preempted(final, applied.rejection)
+                            is ApplyEnd.Failed -> TransitionResult.Failed(applied.error, final)
                         },
                     )
                 }
@@ -402,8 +417,14 @@ object IdentityBarrier {
         }
     }
 
-    /** Runs a profile apply body; null = applied, [PREEMPTED], or the error. */
-    private suspend fun applyProfile(body: Body.Profile): String? = withContext(applyDispatcher) {
+    private sealed interface ApplyEnd {
+        data object Done : ApplyEnd
+        data class Preempted(val rejection: SelectRejection?) : ApplyEnd
+        data class Failed(val error: String) : ApplyEnd
+    }
+
+    /** Runs a profile apply body. */
+    private suspend fun applyProfile(body: Body.Profile): ApplyEnd = withContext(applyDispatcher) {
         beforeApplyLock()
         IdentityLocks.withApply {
             val gate = IdentityRuntime.reduceStep(BarrierEvent.ApplyGate())
@@ -415,19 +436,19 @@ object IdentityBarrier {
                         IdentityRuntime.reduceStep(BarrierEvent.ApplyFinished(SLOT_UNSET, applied = applied == ProfileApply.Applied)),
                     )
                     when (applied) {
-                        ProfileApply.Applied, ProfileApply.NothingDone -> null
-                        ProfileApply.NothingPreempted -> PREEMPTED
+                        ProfileApply.Applied, ProfileApply.NothingDone -> ApplyEnd.Done
+                        is ProfileApply.Rejected -> ApplyEnd.Preempted(applied.why)
                     }
                 } catch (t: Throwable) {
                     val error = t.message ?: t::class.simpleName ?: "error"
                     IdentityEffects.run(IdentityRuntime.reduceStep(BarrierEvent.ApplyThrew(SLOT_UNSET, error)))
-                    error
+                    ApplyEnd.Failed(error)
                 }
-                BarrierEffect.EndPreempted in gate.effects -> PREEMPTED
+                BarrierEffect.EndPreempted in gate.effects -> ApplyEnd.Preempted(null)
                 else -> {
                     // Out of order: release the hold (B9).
                     IdentityEffects.run(IdentityRuntime.reduceStep(BarrierEvent.Abandoned(SLOT_UNSET)))
-                    "out of order at ApplyGate"
+                    ApplyEnd.Failed("out of order at ApplyGate")
                 }
             }
         }
@@ -444,7 +465,6 @@ object IdentityBarrier {
         is IdentityPhase.Draining, is IdentityPhase.Closed, is IdentityPhase.Applying -> false
     }
 
-    private const val PREEMPTED = "\u0000preempted"
 
     /** Tests only. */
     internal fun resetForTest() {

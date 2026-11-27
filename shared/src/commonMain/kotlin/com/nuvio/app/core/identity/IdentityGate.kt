@@ -60,6 +60,19 @@ object IdentityGate {
         if (closed) null else AccountToken(model.latestAccount, IdentityRuntime.authSerial())
     }
 
+    /**
+     * Rule G (31.1): the token a picker row is displayed and PIN-checked under, passed in a
+     * SelectRequest. Minted while Open and in Recovery(FailedApply) (the picker is on screen and a
+     * select is the retry, B20a); null while a window or drained transition holds or in the other
+     * recovery reasons. Departure: the spec names currentAccountToken(), which is null in Recovery.
+     */
+    fun selectionToken(): AccountToken? = IdentityLocks.withCommit {
+        val model = IdentityRuntime.snapshot()
+        val usable = model.window == null && model.drained == null &&
+            (model.recovery == null || model.recovery == RecoveryReason.FailedApply)
+        if (usable) AccountToken(model.latestAccount, IdentityRuntime.authSerial()) else null
+    }
+
     fun currentEpoch(): IdentityEpoch = IdentityRuntime.snapshot().epoch
 
     /** Null token → Reject(WritesClosed). */

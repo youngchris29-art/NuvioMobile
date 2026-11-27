@@ -176,7 +176,7 @@ struct ProfileSelectionView: View {
                     model.verifyPin(prompt.profile, pin: pin) { result in
                         if result?.unlocked == true {
                             pinPrompt = nil
-                            perform(prompt.action, on: prompt.profile, boundAccount: prompt.boundAccount)
+                            perform(prompt.action, on: prompt.profile, displayedUnder: prompt.displayedUnder)
                         } else {
                             done(pinErrorMessage(result))
                         }
@@ -192,26 +192,28 @@ struct ProfileSelectionView: View {
         enum Action { case select, edit, delete }
         let profile: NuvioProfile
         let action: Action
-        /// Review r1 #4: the identity the picker showed this profile under (TapBindingRule).
-        let boundAccount: String?
+        /// Rule G: the account token the picker showed (and PIN-checks) this profile under.
+        let displayedUnder: AccountToken?
         var id: String { "\(profile.profileIndex)-\(action)" }
     }
 
     private func requirePin(for profile: NuvioProfile, action: PinPrompt.Action) {
-        let bound = TapBindingRule.pickerBinding(IdentityModel.shared.currentState())
+        let shownUnder = IdentityGate.shared.selectionToken()
         if profile.pinEnabled {
-            pinPrompt = PinPrompt(profile: profile, action: action, boundAccount: bound)
+            pinPrompt = PinPrompt(profile: profile, action: action, displayedUnder: shownUnder)
         } else {
-            perform(action, on: profile, boundAccount: bound)
+            perform(action, on: profile, displayedUnder: shownUnder)
         }
     }
 
-    private func perform(_ action: PinPrompt.Action, on profile: NuvioProfile, boundAccount: String?) {
+    private func perform(_ action: PinPrompt.Action, on profile: NuvioProfile, displayedUnder: AccountToken?) {
         switch action {
         case .select:
             guard !model.isSwitching else { return }
             let enter = onSelected
-            Task { await model.selectAndEnter(profile, boundAccount: boundAccount, enter: enter) }
+            // No token (no identity the picker can be used under): the tap binds to nothing → picker.
+            let bound = displayedUnder.map { $0.account.storageKey() ?? "none" }
+            Task { await model.selectAndEnter(profile, boundAccount: bound, displayedUnder: displayedUnder, origin: .pickertap, enter: enter) }
         case .edit:
             editing = ProfileEditTarget(profile: profile)
         case .delete:

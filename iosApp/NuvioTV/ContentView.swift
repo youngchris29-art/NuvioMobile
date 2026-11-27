@@ -135,7 +135,7 @@ struct ContentView: View {
         // Review r1 #4: bound to the account the auth state names now; the remembered profile came
         // from that account's profile cache (the account hook loaded it before the gate turned .main).
         let bound = (AuthRepository.shared.state.value_ as? AuthState).flatMap { AccountKeyCompanion.shared.of(state: $0).storageKey() }
-        Task { await profiles.selectAndEnter(profile, boundAccount: bound) { final in enterProfile(final) } }
+        Task { await profiles.selectAndEnter(profile, boundAccount: bound, displayedUnder: nil, origin: .autoenter) { final in enterProfile(final) } }
     }
 
     /// The `enter` closure of `selectAndEnter` (synchronous on Main). `reseedNow()` before

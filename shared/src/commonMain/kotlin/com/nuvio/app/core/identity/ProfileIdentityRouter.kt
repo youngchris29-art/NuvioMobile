@@ -98,8 +98,12 @@ class CheckedFanOut(private val report: (name: String, bestEffort: Boolean, erro
 
 /** The barrier's profile mutations over the real ProfileRepository (installed by tvOS). */
 internal object ProfileRepositoryOps : IdentityProfileOps {
-    override fun applySelection(slot: Int) {
-        val failed = ProfileRepository.applySelectionChecked(slot)
+    override fun listedSlots(): List<Int> = ProfileRepository.state.value.profiles.map { it.profileIndex }
+
+    override fun writeSelection(slot: Int) = ProfileRepository.writeSelection(slot)
+
+    override fun fanOut(slot: Int) {
+        val failed = ProfileRepository.afterSelectionChecked(slot)
         if (failed.isNotEmpty()) throw FanOutFailed(failed)
     }
 
@@ -113,7 +117,7 @@ internal interface BarrierRouterPorts {
     /** Fire-and-forget select (no sync caller remains on tvOS; kept so P2 holds for any). */
     fun launchSelect(slot: Int)
     fun requestSlotRemoved(slot: Int, token: AccountToken)
-    suspend fun deleteActiveProfile(slot: Int, nextSlot: Int?, token: AccountToken): TransitionResult
+    suspend fun deleteActiveProfile(slot: Int, token: AccountToken): TransitionResult
     fun activeSlot(): Int
     fun removeTrackers(slot: Int)
 }
@@ -122,13 +126,15 @@ internal object RealBarrierRouterPorts : BarrierRouterPorts {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("ProfileIdentityRouter"))
 
     override fun launchSelect(slot: Int) {
-        scope.launch { IdentityBarrier.selectProfile(slot) }
+        // Rule G: origin Restore, displayed under the account token read at the call (none → nothing).
+        val token = IdentityGate.currentAccountToken() ?: return
+        scope.launch { IdentityBarrier.selectProfile(SelectRequest(slot, token, SelectOrigin.Restore)) }
     }
 
     override fun requestSlotRemoved(slot: Int, token: AccountToken) = IdentityBarrier.requestSlotRemoved(slot, token)
 
-    override suspend fun deleteActiveProfile(slot: Int, nextSlot: Int?, token: AccountToken): TransitionResult =
-        IdentityBarrier.deleteActiveProfile(slot, nextSlot, token)
+    override suspend fun deleteActiveProfile(slot: Int, token: AccountToken): TransitionResult =
+        IdentityBarrier.deleteActiveProfile(slot, token)
 
     override fun activeSlot(): Int = ProfileRepository.activeProfileId
 
@@ -178,7 +184,8 @@ internal class BarrierProfileIdentityRouter(
         }
         if (ports.activeSlot() != slot) return
         val result = try {
-            ports.deleteActiveProfile(slot, remaining.minOfOrNull { it.profileIndex }, token)
+            // Rule G: the fallback is chosen from the current list inside the admission section.
+            ports.deleteActiveProfile(slot, token)
         } catch (error: CancellationException) {
             throw error
         } catch (error: Throwable) {

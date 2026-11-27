@@ -232,7 +232,7 @@ final class SelectAndEnterSequenceTests: XCTestCase {
     }
 
     func testPreempted() async {
-        ports.result = { TransitionResultPreempted(final: IdentityFixture.state(slot: 1, epoch: 1)) }
+        ports.result = { TransitionResultPreempted(final: IdentityFixture.state(slot: 1, epoch: 1), rejection: nil) }
         await assertNotEntered()
     }
 
@@ -300,6 +300,16 @@ final class SelectAndEnterSequenceTests: XCTestCase {
         XCTAssertFalse(selected, "the barrier must not be asked to select in B")
         XCTAssertEqual(root.recoveries, 1)
         XCTAssertFalse(cover.visible)
+    }
+
+    /** Rule G: a barrier rejection (the account changed or the slot left the list) is not entered. */
+    func testAdmissionRejectionGoesBackToThePicker() async {
+        ports.result = { TransitionResultPreempted(final: IdentityFixture.state(slot: 1, epoch: 1), rejection: .slotgone) }
+        let outcome = await run()
+        XCTAssertFalse(outcome.entered)
+        XCTAssertEqual(root.recoveries, 1)
+        XCTAssertEqual(ports.requests.first?.slot, 2)
+        XCTAssertEqual(ports.requests.first?.origin, .pickertap)
     }
 
     func testUnboundTapNeverSelects() async {

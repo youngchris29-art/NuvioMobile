@@ -79,11 +79,14 @@ final class ProfilesViewModel: ObservableObject {
     /// clears it in one `defer`, its last statement, after `enter` ran or the picker was chosen.
     /// Breadcrumbs bracket every Kotlin call (kept out of `#if DEBUG`: testers' console logs are
     /// the only diagnostic for a crash we cannot reproduce).
-    /// `boundAccount`: the account key the tap belongs to (TapBindingRule).
-    func selectAndEnter(_ profile: NuvioProfile, boundAccount: String?, enter: @escaping (IdentityState) -> Void) async {
+    /// `boundAccount`: the account key the tap belongs to (TapBindingRule, the early UX answer).
+    /// `displayedUnder`: rule G's token the picker row was shown and PIN-checked under (nil for
+    /// auto-enter, which reads it once the identity is open on its bound account).
+    func selectAndEnter(_ profile: NuvioProfile, boundAccount: String?, displayedUnder: AccountToken?, origin: SelectOrigin,
+                        enter: @escaping (IdentityState) -> Void) async {
         print("[ProfileSelect] selecting profile \(profile.profileIndex)")
-        let entered = await Self.selectAndEnter(slot: profile.profileIndex, boundAccount: boundAccount,
-                                                identity: IdentityModel.shared, ports: selectPorts, enter: enter)
+        let entered = await Self.selectAndEnter(slot: profile.profileIndex, boundAccount: boundAccount, displayedUnder: displayedUnder,
+                                                origin: origin, identity: IdentityModel.shared, ports: selectPorts, enter: enter)
         print("[ProfileSelect] select finished — entered=\(entered)")
     }
 
@@ -91,6 +94,8 @@ final class ProfilesViewModel: ObservableObject {
     @discardableResult
     static func selectAndEnter(slot: Int32,
                                boundAccount: String?,
+                               displayedUnder: AccountToken? = nil,
+                               origin: SelectOrigin = .pickertap,
                                identity: IdentityModel,
                                ports: ProfileSelectPorts,
                                enter: (IdentityState) -> Void) async -> Bool {
@@ -104,7 +109,9 @@ final class ProfilesViewModel: ObservableObject {
             try? await Task.sleep(nanoseconds: 50_000_000)
             binding = TapBindingRule.decide(bound: boundAccount, current: ports.currentState())
         }
-        guard binding == .proceed, let accountAtTap = ports.currentState()?.scope.account else {
+        guard binding == .proceed, let accountAtTap = ports.currentState()?.scope.account,
+              let token = displayedUnder ?? ports.selectionToken(),
+              token.account.storageKey() ?? "none" == boundAccount else {
             print("[ProfileSelect] not entered: the tap's identity is not the open one (\(binding))")
             return false
         }
@@ -114,7 +121,8 @@ final class ProfilesViewModel: ObservableObject {
             print("[ProfileSelect] debug: failing the select before Begin")
             result = nil
         } else {
-            result = try? await ports.select(slot: slot)
+            // Rule G: the barrier admits it against the current token and list (the guarantee).
+            result = try? await ports.select(request: SelectRequest(slot: slot, displayedUnder: token, origin: origin))
         }
         // 3. Branch on the result.
         guard let done = result as? TransitionResultDone else {
@@ -247,8 +255,9 @@ final class ProfilesViewModel: ObservableObject {
 /// What `ProfilesViewModel.selectAndEnter` needs from Kotlin and the debug knobs.
 @MainActor
 protocol ProfileSelectPorts {
-    func select(slot: Int32) async throws -> TransitionResult
+    func select(request: SelectRequest) async throws -> TransitionResult
     func currentState() -> IdentityState?
+    func selectionToken() -> AccountToken?
     func startSync(slot: Int32)
     var failBeforeBegin: Bool { get }
     func reportImpossible(_ message: String)
@@ -256,12 +265,16 @@ protocol ProfileSelectPorts {
 
 @MainActor
 struct LiveProfileSelectPorts: ProfileSelectPorts {
-    func select(slot: Int32) async throws -> TransitionResult {
-        try await IdentityBarrier.shared.selectProfile(slot: slot)
+    func select(request: SelectRequest) async throws -> TransitionResult {
+        try await IdentityBarrier.shared.selectProfile(request: request)
     }
 
     func currentState() -> IdentityState? {
         IdentityGate.shared.state.value_ as? IdentityState
+    }
+
+    func selectionToken() -> AccountToken? {
+        IdentityGate.shared.selectionToken()
     }
 
     func startSync(slot: Int32) {
