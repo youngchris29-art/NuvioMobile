@@ -53,6 +53,8 @@ import com.nuvio.app.features.mdblist.MdbListSettingsRepository
 import com.nuvio.app.features.mdblist.MdbListTracker
 import com.nuvio.app.features.notifications.EpisodeReleaseNotificationsRepository
 import com.nuvio.app.features.player.PlayerLaunchStore
+import com.nuvio.app.features.player.PlayerStreamsRepository
+import com.nuvio.app.features.cloud.CloudLibraryRepository
 import com.nuvio.app.features.player.PlayerSettingsRepository
 import com.nuvio.app.features.player.SubtitleRepository
 import com.nuvio.app.features.profiles.AvatarRepository
@@ -258,6 +260,8 @@ private fun installIdentityBarrier() {
     IdentityRevocation.required = true
     if (AppBuildConfig.IS_DEBUG_BUILD) {
         IdentityBarrier.debugHoldMs = { NSUserDefaults.standardUserDefaults.integerForKey("debug.identityHoldMs") }
+        // W3b (8.5, 9.1.3): `-debug.cloudRefreshHoldMs <ms>`; Release and composeApp leave it null.
+        CloudLibraryRepository.debugHoldMs = NSUserDefaults.standardUserDefaults.integerForKey("debug.cloudRefreshHoldMs").takeIf { it > 0 }
     }
 }
 
@@ -360,6 +364,9 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
         StreamBadgeSettingsRepository.clearLocalState()
         CatalogRepository.clear()
         StreamsRepository.clear()
+        // W3b (9.1.4): the Cloud listing and the player's stream lists belong to the account too.
+        CloudLibraryRepository.clear()
+        PlayerStreamsRepository.clearAll()
         // W4: the shared source searches hold the old account's results (and debrid key hash).
         StreamSearchSessions.clear()
         MetaDetailsRepository.clear()
@@ -405,6 +412,9 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
                 defaults.removeObjectForKey(keyString)
             }
         }
+        // W3b (9.1.4): the Debrid settings in memory are reloaded from the now-empty store, so no
+        // key of the old account survives in memory after the sweep.
+        DebridSettingsRepository.onProfileChanged()
 
         // 3) File-backed payload stores (PayloadFileStore) — the defaults-key removals above only
         // cover values left behind by pre-migration builds.
@@ -447,8 +457,11 @@ object TvOsExtraLifecycleHooks {
     var onClearLocalState: () -> Unit = {}
 }
 
-private object TvOsProfileLifecycleCoordinator : ProfileLifecycleCoordinator {
+internal object TvOsProfileLifecycleCoordinator : ProfileLifecycleCoordinator {
     private val log = Logger.withTag("TvOsProfileLifecycle")
+
+    /** Tests only (W3b FanOutAdditionsTest): replaces every step's body; receives the step name. */
+    internal var stepBodyForTest: ((String) -> Unit)? = null
 
     /**
      * The fan-out, step by step; a throw degrades that repository instead of killing the app.
@@ -471,7 +484,9 @@ private object TvOsProfileLifecycleCoordinator : ProfileLifecycleCoordinator {
         val fanOut = CheckedFanOut { name, bestEffort, error ->
             log.e(error) { "Profile-select step '$name' failed${if (bestEffort) " (best-effort)" else ""}; continuing with the remaining steps" }
         }
-        fun step(name: String, bestEffort: Boolean = false, block: () -> Unit) = fanOut.step(name, bestEffort, block)
+        fun step(name: String, bestEffort: Boolean = false, block: () -> Unit) = fanOut.step(name, bestEffort) {
+            stepBodyForTest?.invoke(name) ?: block()
+        }
         // BUG-25: this list must mirror composeApp's ProfileLifecycleCoordinatorAdapter for every
         // repository tvOS uses — it had drifted to an early subset, so profile-scoped settings
         // repos NOT listed here (poster style being the reported one) kept the state loaded at
@@ -538,6 +553,20 @@ private object TvOsProfileLifecycleCoordinator : ProfileLifecycleCoordinator {
         // out of its adapter) — without this a guest profile switch (no cloud pull) would keep
         // the previous profile's keys in memory.
         step("debridSettings") { DebridSettingsRepository.onProfileChanged() }
+        // W3b (9.1.4, S9/S27/S28): profile-scoped in-memory state the list above did not empty. All
+        // must-succeed (8.0.2): a profile must never open on the previous profile's listing,
+        // streams, player stream lists, searches, details, subtitles or launch payloads.
+        step("cloudLibrary") { CloudLibraryRepository.clear() }
+        step("streams") { StreamsRepository.clear() }
+        step("playerStreams") { PlayerStreamsRepository.clearAll() }
+        step("streamSearchSessions") { StreamSearchSessions.clear() }
+        step("metaDetails") { MetaDetailsRepository.clear() }
+        step("subtitles") { SubtitleRepository.clear() }
+        step("launchStores") {
+            PlayerLaunchStore.clear()
+            StreamLaunchStore.clear()
+            StreamContextStore.clear()
+        }
         // Upstream 1854dfc3 (upstream fans this out from ProfileRepository; tvOS owns its fan-out
         // here). MUST be last: it re-baselines the settings/credential observers from the
         // repositories every step above just reloaded, so an incoming profile's values are not
