@@ -292,6 +292,21 @@ struct ProfileEditTarget: Identifiable {
     let row: DisplayedProfile?
     var profile: NuvioProfile? { row?.profile }
     var id: Int { profile.map { Int($0.profileIndex) } ?? -1 }
+
+    /// Review r7 #3: the edited row in [rows], found by its list's account token AND profile id
+    /// (plus slot), never by slot alone. nil: the profile is gone, replaced, or the account moved:
+    /// the editor closes and its Save and PIN actions refuse. Pure.
+    func liveRow(in rows: [DisplayedProfile]) -> DisplayedProfile? {
+        guard let original = row else { return nil }
+        return rows.first {
+            $0.profile.profileIndex == original.profile.profileIndex &&
+                $0.profile.id == original.profile.id &&
+                $0.listToken == original.listToken
+        }
+    }
+
+    /// Editing an existing profile whose row is no longer on screen (see [liveRow]).
+    func isStale(in rows: [DisplayedProfile]) -> Bool { row != nil && liveRow(in: rows) == nil }
 }
 
 /// Add / edit form: name, avatar (cloud catalog picker when available, else color palette), and —
@@ -326,10 +341,7 @@ struct ProfileEditView: View {
 
     /// Live row of the profile being edited (PIN state refreshes after set/clear → pullProfiles);
     /// a row of the current snapshot, so it carries that snapshot's token.
-    private var liveRow: DisplayedProfile? {
-        guard let index = target.profile?.profileIndex else { return nil }
-        return model.rows.first { $0.profile.profileIndex == index }
-    }
+    private var liveRow: DisplayedProfile? { target.liveRow(in: model.rows) }
 
     private var liveProfile: NuvioProfile? { liveRow?.profile }
 
@@ -515,6 +527,13 @@ struct ProfileEditView: View {
         .fullScreenCover(item: $pinFlow) { flow in
             pinFlowView(flow)
         }
+        // Review r7 #3: an account-published transition shows no cover (4.6), so nothing else closes
+        // an editor whose row went away or now belongs to another account's list.
+        .onChange(of: target.isStale(in: model.rows)) { _, stale in
+            guard stale else { return }
+            pinFlow = nil
+            dismiss()
+        }
     }
 
     // MARK: - PIN flows
@@ -599,7 +618,11 @@ struct ProfileEditView: View {
             finalAvatarUrl = originalCustomAvatarUrl
         }
 
-        if let row = liveRow ?? target.row {
+        if target.row != nil && liveRow == nil {
+            dismiss() // review r7 #3: the edited row is gone, replaced or of another account
+            return
+        }
+        if let row = liveRow {
             model.updateProfile(
                 row,
                 name: finalName,

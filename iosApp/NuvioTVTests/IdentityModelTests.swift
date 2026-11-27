@@ -470,3 +470,41 @@ final class IdentityRevokerTests: XCTestCase {
         XCTAssertFalse(revoker.revoke(state: IdentityFixture.draining(.profileselect)))
     }
 }
+
+/// Review r7 #3: the profile editor is bound to its list's account token and the profile id.
+final class ProfileEditTargetBindingTests: XCTestCase {
+    private func profile(_ slot: Int32, id: String) -> NuvioProfile {
+        NuvioProfile(id: id, userId: "u", profileIndex: slot, name: "P\(slot)", avatarColorHex: "#E53935",
+                     avatarId: nil, avatarUrl: nil, usesPrimaryAddons: false, usesPrimaryPlugins: false,
+                     pinEnabled: false, pinLockedUntil: nil, createdAt: "", updatedAt: "")
+    }
+
+    private func rows(_ profiles: [NuvioProfile], _ token: AccountToken) -> [DisplayedProfile] {
+        ProfileState(profiles: profiles, activeProfile: nil, isLoaded: true, hasEverSelectedProfile: false,
+                     rememberLastProfileEnabled: false, listToken: token).displayed
+    }
+
+    func testTheEditorFollowsOnlyItsOwnRow() {
+        let tokenA = AccountToken(account: AccountKeyAccount(userId: "a"), authSerial: 1)
+        let tokenB = AccountToken(account: AccountKeyAccount(userId: "b"), authSerial: 2)
+        let shown = rows([profile(1, id: "a1"), profile(2, id: "a2")], tokenA)
+        let target = ProfileEditTarget(row: shown[1])
+        XCTAssertEqual(target.liveRow(in: shown)?.profile.id, "a2")
+        XCTAssertFalse(target.isStale(in: shown))
+        // The same list refreshed (renamed): still the row.
+        let renamed = rows([profile(1, id: "a1"), profile(2, id: "a2")], tokenA)
+        XCTAssertNotNil(target.liveRow(in: renamed))
+        // Another account's list, same slot: never adopted.
+        let other = rows([profile(1, id: "b1"), profile(2, id: "b2")], tokenB)
+        XCTAssertNil(target.liveRow(in: other))
+        XCTAssertTrue(target.isStale(in: other))
+        // Same account, the slot now holds another profile: never adopted.
+        let replaced = rows([profile(1, id: "a1"), profile(2, id: "a9")], tokenA)
+        XCTAssertNil(target.liveRow(in: replaced))
+        // Same account and id, a new session serial (re-stamped list): the old token no longer matches.
+        let restamped = rows([profile(1, id: "a1"), profile(2, id: "a2")], AccountToken(account: AccountKeyAccount(userId: "a"), authSerial: 3))
+        XCTAssertNil(target.liveRow(in: restamped))
+        // A new-profile editor is never stale.
+        XCTAssertFalse(ProfileEditTarget(row: nil).isStale(in: other))
+    }
+}

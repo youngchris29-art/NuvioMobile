@@ -152,9 +152,6 @@ internal object IdentityRuntime {
     /** The account of the last Open period; a settle to Open with another account fires afterAccountOpen (4.5, revision 8). */
     private var lastOpenAccount: AccountKey = model.scope.account
 
-    /** Audit #3: the account token of the last Open period (account and serial). */
-    private var lastOpenToken: AccountToken? = null
-
     /**
      * Reduces AND publishes under the commit lock, so the StateFlow sees states in reduction order
      * and a delayed publish can never overwrite a later one. Returns the effects; the job
@@ -191,9 +188,10 @@ internal object IdentityRuntime {
         if (published != null && published.phase is IdentityPhase.Open) {
             if (published.scope.account != lastOpenAccount) accountOpened = true
             lastOpenAccount = published.scope.account
-            val token = AccountToken(step.state.latestAccount, authSerial())
-            if (token != lastOpenToken) tokenSettled = token
-            lastOpenToken = token
+            // Review r7 #5: no latch. Every publication of Open hands its token to the restamp, which
+            // re-derives staleness from the list itself (a no-op when the list already carries it),
+            // so a restamp refused by an operation that then failed is redone at the next Open.
+            tokenSettled = AccountToken(step.state.latestAccount, authSerial())
         }
         Reduced(step, toCancel, accountOpened, inFlight, tokenSettled)
     }
@@ -216,7 +214,6 @@ internal object IdentityRuntime {
             model = BarrierState.initial(slot)
             _state.value = model.toPublic()
             lastOpenAccount = model.scope.account
-            lastOpenToken = null
         }
         authSerial = { serial }
         this.activeSlot = activeSlot ?: { slot }
@@ -239,7 +236,7 @@ internal class Reduced(
     val accountOpened: Boolean,
     /** This section raised effects-in-flight; IdentityEffects.run must clear it exactly once. */
     val inFlight: Boolean = false,
-    /** Audit #3: a settle to Open under a new account token (account or serial). */
+    /** Audit #3, review r7 #5: the account token of a publication of Open (every one). */
     val tokenSettled: AccountToken? = null,
 ) {
     val state: BarrierState get() = step.state

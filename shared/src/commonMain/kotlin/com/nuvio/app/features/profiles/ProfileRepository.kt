@@ -14,6 +14,8 @@ import com.nuvio.app.core.identity.OwedProfilePull
 import com.nuvio.app.core.identity.CommitResult
 import com.nuvio.app.core.identity.IdentityGate
 import com.nuvio.app.core.identity.ProfileIdentityRouterProvider
+import com.nuvio.app.core.identity.RowAdmission
+import com.nuvio.app.core.identity.RowRejection
 import com.nuvio.app.core.identity.Verdict
 import com.nuvio.app.core.i18n.StringKey
 import com.nuvio.app.core.i18n.resourceString
@@ -219,7 +221,7 @@ object ProfileRepository {
             AccountKey.None -> null
         }
         if (owner == null || loadedCacheForUserId != owner) return
-        _state.update { s -> s.copy(listToken = token) }
+        _state.update { s -> if (s.listToken == token) s else s.copy(listToken = token) }
     }
 
     /** The settle callback: applied only while [token] is still current (a later settle wins). */
@@ -267,10 +269,10 @@ object ProfileRepository {
                     put("p_profiles", json.encodeToJsonElement(payloads))
                     putSyncOriginClientId()
                 }
-                SupabaseProvider.client.postgrest.rpc("sync_push_profiles", params)
+                pushRpcForTest?.invoke(payloads) ?: SupabaseProvider.client.postgrest.rpc("sync_push_profiles", params)
                 true
             }
-            if (sent == true) pullProfiles()
+            if (sent == true && pushRpcForTest == null) pullProfiles()
         } catch (e: Throwable) {
             if (AuthRepository.reportSessionError(ticket, e, "Profile push")) return
             log.e(e) { "Failed to push profiles" }
@@ -349,7 +351,19 @@ object ProfileRepository {
         usesPrimaryAddons: Boolean = false,
     ) {
         val token = row.listToken ?: return
-        updateProfileUnder(token, row.profile.profileIndex, name, avatarColorHex, avatarId, avatarUrl, usesPrimaryAddons)
+        updateProfileUnder(token, row.profile.profileIndex, name, avatarColorHex, avatarId, avatarUrl, usesPrimaryAddons, row.profile)
+    }
+
+    /**
+     * Review r7: the row rule (RowAdmission) against the list in memory. Called inside the section
+     * that acts, after that section checked [token] is the current account token; the list must
+     * be that token's list, and the row in the slot the same profile with the same lock state.
+     */
+    private fun rowRejection(displayed: NuvioProfile, token: AccountToken?): RowRejection? {
+        val s = _state.value
+        return RowAdmission.decide(displayed, token, s.listToken, s.profiles)?.also {
+            log.w { "Profile ${displayed.profileIndex} action refused: $it" }
+        }
     }
 
     private suspend fun updateProfileUnder(
@@ -360,8 +374,11 @@ object ProfileRepository {
         avatarId: String?,
         avatarUrl: String?,
         usesPrimaryAddons: Boolean,
+        displayed: NuvioProfile? = null,
     ) = pushProfilesBuilt(token) { current ->
         if (current.none { it.profileIndex == profileIndex }) return@pushProfilesBuilt null // deleted meanwhile
+        // Review r7: inside the section that writes (guest commit / signed-in lane), before the push.
+        if (displayed != null && rowRejection(displayed, token) != null) return@pushProfilesBuilt null
         current.map { profile ->
             if (profile.profileIndex == profileIndex) {
                 ProfilePushPayload(
@@ -384,10 +401,13 @@ object ProfileRepository {
      * Fork (W2 review r6 #1): tvOS deletes the displayed row, under the token of the list it came
      * from (a row of A's list can never delete in B, however late the PIN check completes).
      */
-    suspend fun deleteProfile(row: DisplayedProfile) = deleteProfileUnder(row.profile.profileIndex, row.listToken)
+    suspend fun deleteProfile(row: DisplayedProfile) = deleteProfileUnder(row.profile.profileIndex, row.listToken, row.profile)
 
     /** Tests only: replaces the verify RPC and its refresh (audit #1/#2); runs under the read-only dispatch. */
     internal var verifyRpcForTest: (suspend (Int, String) -> PinVerifyResult)? = null
+
+    /** Tests only: replaces the profile push RPC (review r7 row-rule tests). */
+    internal var pushRpcForTest: (suspend (List<ProfilePushPayload>) -> Unit)? = null
 
     /** Tests only: replaces the delete RPC (r6 #1 binding tests). */
     internal var deleteRpcForTest: (suspend (Int) -> Unit)? = null
@@ -398,7 +418,7 @@ object ProfileRepository {
     /** Tests only: whether the session is a guest's, instead of AuthRepository.state (no auth in unit tests). */
     internal var isGuestForTest: Boolean? = null
 
-    private suspend fun deleteProfileUnder(profileIndex: Int, token: AccountToken?) {
+    private suspend fun deleteProfileUnder(profileIndex: Int, token: AccountToken?, displayed: NuvioProfile? = null) {
         // Fork (W2 review r5 #4): no delete without the account it is for. A window holds (or
         // recovery): refuse before any RPC, so a delete never succeeds remotely while its local
         // tracker cleanup is refused. The user retries from the picker.
@@ -412,6 +432,8 @@ object ProfileRepository {
             // Fork (W2, 5.3; review r6 #2): the remaining list is computed from the CURRENT list
             // inside the commit section, and that same result drives the cleanup.
             val filtered = IdentityGate.commitAccount(token, "guestDelete") {
+                // Review r7: the row rule inside the section, before anything is written.
+                if (displayed != null && rowRejection(displayed, token) != null) return@commitAccount null
                 val remaining = _state.value.profiles.filter { it.profileIndex != profileIndex }
                 ProfilePinCacheStorage.removePayload(profileIndex)
                 _state.update { s -> s.copy(
@@ -429,12 +451,14 @@ object ProfileRepository {
                 persist()
                 remaining
             }
-            if (filtered is CommitResult.Committed) router.afterProfileDeleted(profileIndex, filtered.value, token)
+            if (filtered is CommitResult.Committed) filtered.value?.let { router.afterProfileDeleted(profileIndex, it, token) }
             return
         }
         val ticket = AuthRepository.sessionTicket()
         try {
             val sent = AuthRepository.dispatchUnderSession(token, "deleteProfile") {
+                // Review r7: the row rule with the lane and the account check held, before the RPC.
+                if (displayed != null && rowRejection(displayed, token) != null) return@dispatchUnderSession false
                 val params = buildJsonObject {
                     put("p_profile_id", profileIndex)
                     putSyncOriginClientId()
@@ -493,11 +517,11 @@ object ProfileRepository {
     suspend fun verifyPin(row: DisplayedProfile, pin: String): PinCheck {
         if (!IdentityGate.holdsForSelection(row.listToken)) return PinCheck(null, null)
         val result = verifyPinUnder(row.profile.profileIndex, pin, row.listToken) ?: return PinCheck(null, null)
-        val refreshed = if (result.unlocked) {
-            _state.value.displayedRow(row.profile.profileIndex)?.takeIf { it.listToken == row.listToken } ?: row
-        } else {
-            null
-        }
+        if (!result.unlocked) return PinCheck(result, null)
+        // Review r7: the check authorises the row it verified and nothing else. A replaced row (another
+        // id in the slot), a changed lock or another list: refused; the picker shows the current row.
+        if (rowRejection(row.profile, row.listToken) != null) return PinCheck(null, null)
+        val refreshed = _state.value.displayedRow(row.profile.profileIndex)?.takeIf { it.listToken == row.listToken } ?: row
         return PinCheck(result, refreshed)
     }
 
@@ -554,9 +578,9 @@ object ProfileRepository {
 
     /** Fork (W2 review r6 #1): the displayed row, under the token of its list. */
     suspend fun setPin(row: DisplayedProfile, pin: String, currentPin: String? = null): PinVerifyResult =
-        if (row.listToken == null) PinVerifyResult(unlocked = false) else setPinUnder(row.profile.profileIndex, pin, currentPin, row.listToken)
+        if (row.listToken == null) PinVerifyResult(unlocked = false) else setPinUnder(row.profile.profileIndex, pin, currentPin, row.listToken, row.profile)
 
-    private suspend fun setPinUnder(profileIndex: Int, pin: String, currentPin: String?, token: AccountToken?): PinVerifyResult {
+    private suspend fun setPinUnder(profileIndex: Int, pin: String, currentPin: String?, token: AccountToken?, displayed: NuvioProfile? = null): PinVerifyResult {
         if (AuthRepository.state.value !is AuthState.Authenticated) {
             return PinVerifyResult(unlocked = false, message = resourceString("Connect to the internet to set a PIN.", StringKey.profile_pin_set_requires_internet))
         }
@@ -568,7 +592,7 @@ object ProfileRepository {
                 currentPin?.let { put("p_current_pin", it) }
             }
             // Audit #2: refused (the identity moved): the existing failure message, never "Incorrect PIN".
-            rpcBound(token, "setPin") { SupabaseProvider.client.postgrest.rpc("set_profile_pin", params) }
+            rpcBound(token, "setPin", displayed) { SupabaseProvider.client.postgrest.rpc("set_profile_pin", params) }
                 ?: return PinVerifyResult(unlocked = false, message = resourceString("Couldn't set PIN. Try again.", StringKey.profile_pin_set_failed))
             pullProfiles()
             rememberVerifiedPinUnder(token, profileIndex, pin)
@@ -584,9 +608,9 @@ object ProfileRepository {
 
     /** Fork (W2 review r6 #1): the displayed row, under the token of its list. */
     suspend fun clearPin(row: DisplayedProfile, currentPin: String? = null): PinVerifyResult =
-        if (row.listToken == null) PinVerifyResult(unlocked = false) else clearPinUnder(row.profile.profileIndex, currentPin, row.listToken)
+        if (row.listToken == null) PinVerifyResult(unlocked = false) else clearPinUnder(row.profile.profileIndex, currentPin, row.listToken, row.profile)
 
-    private suspend fun clearPinUnder(profileIndex: Int, currentPin: String?, token: AccountToken?): PinVerifyResult {
+    private suspend fun clearPinUnder(profileIndex: Int, currentPin: String?, token: AccountToken?, displayed: NuvioProfile? = null): PinVerifyResult {
         if (AuthRepository.state.value !is AuthState.Authenticated) {
             return PinVerifyResult(unlocked = false, message = resourceString("Connect to the internet to remove the PIN lock.", StringKey.profile_pin_clear_requires_internet))
         }
@@ -597,7 +621,7 @@ object ProfileRepository {
                 currentPin?.let { put("p_current_pin", it) }
             }
             // Audit #2: refused (the identity moved): the existing failure message, never "Incorrect PIN".
-            rpcBound(token, "clearPin") { SupabaseProvider.client.postgrest.rpc("clear_profile_pin", params) }
+            rpcBound(token, "clearPin", displayed) { SupabaseProvider.client.postgrest.rpc("clear_profile_pin", params) }
                 ?: return PinVerifyResult(unlocked = false, message = resourceString("Couldn't remove PIN lock. Try again.", StringKey.profile_pin_clear_failed))
             pullProfiles()
             ProfilePinCacheStorage.removePayload(profileIndex)
@@ -634,8 +658,11 @@ object ProfileRepository {
     }
 
     /** [token] null: unbound legacy call; else [call] only under the held session while [token] holds (null result: refused). */
-    private suspend fun <T> rpcBound(token: AccountToken?, site: String, call: suspend () -> T): T? =
-        if (token == null) call() else AuthRepository.dispatchUnderSession(token, site) { call() }
+    /** [displayed] non-null: the row rule runs inside the dispatch section, before the RPC (review r7). */
+    private suspend fun <T> rpcBound(token: AccountToken?, site: String, displayed: NuvioProfile? = null, call: suspend () -> T): T? =
+        if (token == null) call() else AuthRepository.dispatchUnderSession(token, site) {
+            if (displayed != null && rowRejection(displayed, token) != null) null else call()
+        }
 
     private fun applyPayloadsLocally(payloads: List<ProfilePushPayload>, token: AccountToken?) {
         val authState = AuthRepository.state.value as? AuthState.Authenticated ?: return

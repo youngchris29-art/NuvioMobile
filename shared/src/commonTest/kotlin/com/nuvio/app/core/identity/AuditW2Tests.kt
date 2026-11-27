@@ -65,6 +65,22 @@ class PinVerifyRowTest {
         assertEquals(Admission.Admit(2), SelectAdmission.decide(shown.selectRequest(SelectOrigin.PickerTap)!!, true, token, listed, null, 1))
     }
 
+    /** Review r7 #1: the slot's profile was replaced between the verify and its refresh: the check authorises nothing. */
+    @Test
+    fun aReplacedRowIsNotAuthorisedByTheCheck() = real {
+        ProfileRepository.verifyRpcForTest = { _, _ ->
+            rpcCalls++
+            val s = ProfileRepository.state.value
+            ProfileRepository.setStateForTest(s.copy(profiles = s.profiles.map {
+                if (it.profileIndex == 2) NuvioProfile(id = "other", profileIndex = 2, name = "Other", pinEnabled = true) else it
+            }))
+            PinVerifyResult(unlocked = true)
+        }
+        val check = ProfileRepository.verifyPin(ProfileRepository.state.value.displayedRow(2)!!, "1234")
+        assertTrue(check.refused, "refused, not unlocked")
+        assertEquals(null, check.row)
+    }
+
     /** Audit #2: in Recovery(FailedApply) the picker is the front; a PIN check still runs (read-only). */
     @Test
     fun failedApplyStillVerifies() = real {
@@ -127,6 +143,24 @@ class ListTokenWalkTest {
         }
     }
 
+    /** Review r7 #5: a restamp refused by an operation that then fails is redone at the next Open. */
+    @Test
+    fun aRefusedRestampIsRedoneAtTheNextOpen() {
+        var first = true
+        IdentityImmediate.onAccountTokenSettled = { t ->
+            if (first) {
+                first = false
+                IdentityImmediate.serialChanging() // an account operation begins before the stamp's section
+            }
+            ProfileRepository.stampListIfCurrent(t)
+        }
+        serial = 2; IdentityImmediate.serialChanging(); IdentityImmediate.chainEnded()
+        assertEquals(AccountToken(accountA, 1), ProfileRepository.state.value.listToken, "the stamp was refused by the window")
+        IdentityImmediate.chainEnded() // the operation fails: no account or serial change
+        assertInvariant("next Open")
+        assertEquals(AccountToken(accountA, 2), ProfileRepository.state.value.listToken)
+    }
+
     @Test
     fun everySettleLeavesACurrentOrEmptyList() {
         assertInvariant("start")
@@ -161,5 +195,80 @@ class ListTokenWalkTest {
         pulled("g", 1)
         serial = 8; IdentityImmediate.serialChanging(); IdentityImmediate.chainEnded()
         assertInvariant("guest serial 8")
+    }
+}
+
+/** Review r7 #2: delete and edit admit the displayed row (id and lock state) inside the section that acts. */
+class RowActionAdmissionTest {
+    private val token = AccountToken(accountA, 1)
+    private val deletes = mutableListOf<Int>()
+    private val pushes = mutableListOf<List<com.nuvio.app.features.profiles.ProfilePushPayload>>()
+    private val a2 = NuvioProfile(id = "a2", profileIndex = 2, name = "A2")
+
+    @BeforeTest fun setUp() {
+        resetIdentityForTest(serial = 1)
+        IdentityRuntime.setForTest(BarrierState.initial(1).copy(scope = IdentityScope(accountA, 1), latestAccount = accountA))
+        ProfileIdentityRouterProvider.router = BarrierProfileIdentityRouter(FakeRouterPorts(EventLog()))
+        ProfileRepository.isGuestForTest = false
+        ProfileRepository.deleteRpcForTest = { deletes += it }
+        ProfileRepository.pushRpcForTest = { pushes += it }
+        ProfileRepository.setStateForTest(ProfileState(profiles = listOf(NuvioProfile(id = "a1", profileIndex = 1), a2), isLoaded = true, listToken = token), "user-a")
+    }
+
+    @AfterTest fun tearDown() {
+        ProfileRepository.deleteRpcForTest = null
+        ProfileRepository.pushRpcForTest = null
+        ProfileRepository.isGuestForTest = null
+        resetProfilesForTest()
+        resetIdentityForTest()
+    }
+
+    private fun replaceSlot2(with: NuvioProfile) {
+        val s = ProfileRepository.state.value
+        ProfileRepository.setStateForTest(s.copy(profiles = s.profiles.map { if (it.profileIndex == 2) with else it }))
+    }
+
+    @Test
+    fun aStaleActionForAReplacedRowChangesNothing() = real {
+        val shown = ProfileRepository.state.value.displayedRow(2)!!
+        replaceSlot2(NuvioProfile(id = "b2", profileIndex = 2, name = "B2"))
+        ProfileRepository.deleteProfile(shown)
+        ProfileRepository.updateProfile(shown, name = "Renamed", avatarColorHex = "#000000")
+        assertEquals(emptyList(), deletes)
+        assertEquals(emptyList(), pushes)
+        assertEquals("b2", ProfileRepository.state.value.profiles.first { it.profileIndex == 2 }.id)
+    }
+
+    @Test
+    fun aNewlyLockedRowIsNotActedOn() = real {
+        val shown = ProfileRepository.state.value.displayedRow(2)!!
+        replaceSlot2(a2.copy(pinEnabled = true))
+        ProfileRepository.deleteProfile(shown)
+        ProfileRepository.updateProfile(shown, name = "Renamed", avatarColorHex = "#000000")
+        assertEquals(emptyList(), deletes)
+        assertEquals(emptyList(), pushes)
+    }
+
+    @Test
+    fun theSameRowIsActedOn() = real {
+        val shown = ProfileRepository.state.value.displayedRow(2)!!
+        replaceSlot2(a2.copy(name = "A2 renamed elsewhere", updatedAt = "t9")) // same profile, same lock
+        ProfileRepository.updateProfile(shown, name = "Renamed", avatarColorHex = "#000000")
+        assertEquals(listOf("Renamed"), pushes.single().filter { it.profileIndex == 2 }.map { it.name })
+        ProfileRepository.deleteProfile(shown)
+        assertEquals(listOf(2), deletes)
+    }
+
+    /** The rule itself: every reason. */
+    @Test
+    fun ruleTable() {
+        val listed = listOf(a2)
+        assertEquals(null, RowAdmission.decide(a2, token, token, listed))
+        assertEquals(RowRejection.AccountChanged, RowAdmission.decide(a2, token, AccountToken(accountA, 2), listed))
+        assertEquals(RowRejection.AccountChanged, RowAdmission.decide(a2, null, token, listed))
+        assertEquals(RowRejection.SlotGone, RowAdmission.decide(a2, token, token, emptyList()))
+        assertEquals(RowRejection.RowReplaced, RowAdmission.decide(a2, token, token, listOf(a2.copy(id = "b2"))))
+        assertEquals(RowRejection.LockChanged, RowAdmission.decide(a2, token, token, listOf(a2.copy(pinEnabled = true))))
+        assertEquals(null, RowAdmission.decide(a2, token, token, listOf(a2.copy(name = "x", updatedAt = "t2", pinLockedUntil = "z"))))
     }
 }

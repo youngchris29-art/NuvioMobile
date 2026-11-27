@@ -30,19 +30,29 @@ sealed interface Admission {
     data class Reject(val why: SelectRejection) : Admission
 }
 
+/** Why a row action was refused (review r7). */
+enum class RowRejection { AccountChanged, SlotGone, RowReplaced, LockChanged }
+
 /**
- * Audit #1: what makes a user's consent to enter a row stale. The slot and the profile's identity
- * (`id`) say which profile it is; `pinEnabled` says whether its lock was checked. Everything else
- * (name, avatar, `updatedAt`, `pinLockedUntil`) may change, including through the verify RPC's own
- * refresh, without invalidating the consent. Rows of different lists are told apart by the list
- * token (SelectRequest.displayedUnder, bound to the row by DisplayedProfile), never by row content.
+ * Review r7: THE rule for every action on a displayed row (select, auto-entry, edit/save, delete,
+ * PIN set, PIN remove, adopting a PIN check's refreshed row). Called inside the section that acts
+ * (the commit section, or the auth lane with the account check held), with the current account
+ * token and the current list. A row is the same row when its list's token is current, its slot is
+ * listed, the profile in that slot has the same id, and its lock state is unchanged. Pure.
  */
-object ConsentKey {
-    fun same(current: com.nuvio.app.features.profiles.NuvioProfile, displayed: com.nuvio.app.features.profiles.NuvioProfile?): Boolean =
-        displayed != null &&
-            current.profileIndex == displayed.profileIndex &&
-            current.id == displayed.id &&
-            current.pinEnabled == displayed.pinEnabled
+object RowAdmission {
+    fun decide(
+        displayed: com.nuvio.app.features.profiles.NuvioProfile,
+        displayedUnder: AccountToken?,
+        current: AccountToken?,
+        listed: List<com.nuvio.app.features.profiles.NuvioProfile>,
+    ): RowRejection? {
+        if (displayedUnder == null || current != displayedUnder) return RowRejection.AccountChanged
+        val row = listed.firstOrNull { it.profileIndex == displayed.profileIndex } ?: return RowRejection.SlotGone
+        if (row.id != displayed.id) return RowRejection.RowReplaced
+        if (row.pinEnabled != displayed.pinEnabled) return RowRejection.LockChanged
+        return null
+    }
 }
 
 object SelectAdmission {
@@ -67,8 +77,13 @@ object SelectAdmission {
                     Admission.Admit(listed.map { it.profileIndex }.filter { it != deleting }.minOrNull() ?: NONE_REMAIN)
                 }
             row == null -> Admission.Reject(SelectRejection.SlotGone)
-            !ConsentKey.same(row, request.row) -> Admission.Reject(SelectRejection.RowChanged)
-            else -> Admission.Admit(request.slot)
+            request.row == null -> Admission.Reject(SelectRejection.RowChanged)
+            else -> when (RowAdmission.decide(request.row, request.displayedUnder, current, listed)) {
+                null -> Admission.Admit(request.slot)
+                RowRejection.AccountChanged -> Admission.Reject(SelectRejection.AccountChanged)
+                RowRejection.SlotGone -> Admission.Reject(SelectRejection.SlotGone)
+                RowRejection.RowReplaced, RowRejection.LockChanged -> Admission.Reject(SelectRejection.RowChanged)
+            }
         }
     }
 }
