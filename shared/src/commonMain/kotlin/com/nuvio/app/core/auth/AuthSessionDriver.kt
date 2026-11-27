@@ -144,6 +144,9 @@ internal class AuthSessionDriver(
     /** Fork (W2): how deep the current step chain is (lane only); the outermost end calls chainEnded. */
     private var depth = 0
 
+    /** Fork (W2 review r5 #1): what the last completed Publish output showed (lane only). */
+    private var lastShown: AuthState = AuthState.Loading
+
     fun currentTicket(): AuthTicket = ticket
 
     /** For tests: the model state after the last step. */
@@ -326,6 +329,16 @@ internal class AuthSessionDriver(
         exclusive { chain { block() } }
     }
 
+    /**
+     * Fork (W2 review r5 #1): identity recovery's retry. A failed publish's target is published
+     * again through the reducer; with none pending, what is shown is re-published (one window).
+     */
+    suspend fun retryPendingPublish(): Result<Unit> = command {
+        exclusive {
+            if (state.pendingPublish != null) send(AuthEvent.RetryPendingPublish) else chain { effects.publish(lastShown) }
+        }
+    }
+
     private suspend fun <T> chain(block: suspend () -> T): T {
         depth++
         try {
@@ -369,6 +382,8 @@ internal class AuthSessionDriver(
         var wipeOk = true
         var gate: AuthOutput? = null
         var gateOk = true
+        var failedPublish: AuthState? = null
+        val shownBefore = lastShown
         withContext(NonCancellable) {
             for (output in result.outputs) {
                 if (output.isGate) gate = output
@@ -376,7 +391,9 @@ internal class AuthSessionDriver(
                 describeOutput(output)?.let(effects::trace)
                 try {
                     run(output)
+                    if (output is AuthOutput.Publish) lastShown = output.state
                 } catch (e: Throwable) {
+                    if (output is AuthOutput.Publish) failedPublish = output.state
                     // I3: a failing output never skips the ones after it. A gate is always the
                     // step's last output (the reducer guarantees it), so nothing follows it here.
                     effects.log("Auth output $output failed: $e")
@@ -398,6 +415,8 @@ internal class AuthSessionDriver(
             val next = step(followUp)
             if (failure == null) failure = next.failure
         }
+        // Fork (W2 review r5 #1): the reducer learns the publish did not complete.
+        failedPublish?.let { step(AuthEvent.PublishFailed(it, if (lastShown == it) shownBefore else lastShown)) }
         return Sent(result.cleared, failure)
     }
 

@@ -249,6 +249,79 @@ class AuthWindowTest {
     }
 }
 
+/** W2 review r5 #1: a failed account publish is retried as its TARGET until it completes. */
+@OptIn(ExperimentalCoroutinesApi::class)
+class FailedPublishRetryTest {
+    private val log = EventLog()
+
+    @BeforeTest fun setUp() {
+        resetIdentityForTest()
+        IdentityRevocation.revoker = RecordingRevoker(log)
+    }
+
+    @AfterTest fun tearDown() = resetIdentityForTest()
+
+    private class Rig(scope: TestScope, log: EventLog) {
+        val flow = MutableStateFlow<SessionStatus>(SessionStatus.Initializing)
+        val effects = IdentityWiredEffects(flow, log)
+        val driver = AuthSessionDriver(effects, scope.backgroundScope, restoreTimeout = 1.hours)
+
+        init {
+            effects.ticket = { driver.currentTicket().serial }
+            IdentityRuntime.authSerial = { driver.currentTicket().serial }
+            driver.start(AuthEvent.Boot(guestId = null, owner = null, notice = false, wipePending = false), { flow })
+            scope.runCurrent()
+        }
+    }
+
+    /** A required fan-out step throws for account A (the hook); recovery restores None without throwing. */
+    private fun failingHook(failures: () -> Boolean) {
+        IdentityImmediate.onAccountPublished = { account -> if (account is AccountKey.Account && failures()) error("fan-out step failed") }
+    }
+
+    @Test
+    fun restoreOfAThatFailsIsRetriedAsA() = runTest {
+        var failing = true
+        failingHook { failing }
+        val rig = Rig(this, log)
+        rig.flow.value = authenticated("A", "A-1")
+        runCurrent()
+        // Recovery holds; A is not shown and the reducer does not claim it was.
+        assertEquals(RecoveryReason.FailedPublish, IdentityGate.state.value.recovery)
+        assertTrue(AccountKey.of(rig.effects.shown) != AccountKey.Account("A"))
+        assertEquals(rig.effects.shown, rig.driver.modelStateForTest.published, "published = what a completed publish showed")
+        assertEquals(AuthState.Authenticated("A", "A@example.test", false), rig.driver.modelStateForTest.pendingPublish)
+
+        failing = false
+        assertTrue(rig.driver.retryPendingPublish().isSuccess)
+        assertEquals(AccountKey.Account("A"), AccountKey.of(rig.effects.shown))
+        assertEquals(IdentityPhase.Open, IdentityGate.state.value.phase)
+        assertEquals(AccountKey.Account("A"), IdentityGate.state.value.scope.account)
+        assertEquals(null, rig.driver.modelStateForTest.pendingPublish)
+    }
+
+    @Test
+    fun givingUpAfterSixLeavesTheReducerConsistentForAManualSignIn() = runTest {
+        var failing = true
+        failingHook { failing }
+        val rig = Rig(this, log)
+        rig.flow.value = authenticated("A", "A-1")
+        runCurrent()
+        repeat(6) { assertTrue(rig.driver.retryPendingPublish().isSuccess) } // each publish fails again
+        assertEquals(RecoveryReason.FailedPublish, IdentityGate.state.value.recovery)
+        // What the reducer believes is shown is what is shown (Welcome follows on the Swift side).
+        assertEquals(rig.effects.shown, rig.driver.modelStateForTest.published)
+
+        // A later manual sign-in (a new session for A) is published normally.
+        failing = false
+        rig.flow.value = authenticated("A", "A-2")
+        runCurrent()
+        assertEquals(AccountKey.Account("A"), AccountKey.of(rig.effects.shown))
+        assertEquals(IdentityPhase.Open, IdentityGate.state.value.phase)
+        assertEquals(null, IdentityGate.state.value.recovery)
+    }
+}
+
 /** W2 (5.5): a deliberate sign-out through the real driver and the real barrier. */
 class AuthBarrierOrderTest {
     private val log = EventLog()

@@ -94,7 +94,10 @@ class IdentityImmediateTest {
         assertEquals(accountA, IdentityRuntime.snapshot().latestAccount)
         IdentityImmediate.chainEnded()
         assertEquals(IdentityScope(accountA, 1), IdentityGate.state.value.scope)
-        assertEquals(accountA, assertNotNull(IdentityGate.currentToken()).scope.account)
+        // W2 review r5 #1: the intended publish (B) did not happen, so recovery holds (no token for
+        // A or B) until it is retried successfully or superseded.
+        assertEquals(RecoveryReason.FailedPublish, IdentityGate.state.value.recovery)
+        assertNull(IdentityGate.currentToken())
     }
 
     /** Review r3-3: the hook loads B's state, then throws; the gate reopens on A only after A was reloaded. */
@@ -113,7 +116,13 @@ class IdentityImmediateTest {
         IdentityImmediate.chainEnded()
         assertEquals(accountA, loaded) // recovered under the same window
         assertEquals(IdentityScope(accountA, 1), IdentityGate.state.value.scope)
-        assertEquals(accountA, assertNotNull(IdentityGate.currentToken()).scope.account)
+        // W2 review r5 #1: memory is A's again, but the gate stays closed until B's publish succeeds.
+        assertEquals(RecoveryReason.FailedPublish, IdentityGate.state.value.recovery)
+        assertNull(IdentityGate.currentToken())
+        IdentityImmediate.onAccountPublished = { loaded = it }
+        IdentityImmediate.publishAuth(AuthState.Authenticated("user-b", null, isAnonymous = false)) { }
+        IdentityImmediate.chainEnded()
+        assertEquals(accountB, assertNotNull(IdentityGate.currentToken()).scope.account)
     }
 
     /** Rule B (review r4-1): publish and recovery both fail: Recovery, no token, every commit and launch refused. */

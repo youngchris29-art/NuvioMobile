@@ -35,6 +35,8 @@ internal fun describeEvent(event: AuthEvent): String = when (event) {
     is AuthEvent.WipeFinished -> "wipe finished ok=${event.ok}"
     is AuthEvent.GatePassed -> "gate passed ${describeGate(event.output)}"
     is AuthEvent.GateFailed -> "gate failed ${describeGate(event.output)}"
+    is AuthEvent.PublishFailed -> "publish failed"
+    AuthEvent.RetryPendingPublish -> "retry pending publish"
     Snap.Initializing -> "status Initializing"
     Snap.RefreshFailure -> "status RefreshFailure"
     is Snap.NotAuthenticated -> "status NotAuthenticated cleared=${event.cleared}"

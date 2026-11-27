@@ -118,11 +118,12 @@ internal object IdentityImmediate {
             log.e(t) { "[Identity] recovery after a failed publish threw; recovery required" }
             false
         }
-        if (recovered) {
-            log.w { "[Identity] publish failed part-way; recovered the shown account before reopening" }
-        } else {
-            IdentityEffects.run(IdentityRuntime.reduceStep(BarrierEvent.RecoveryRequired(RecoveryReason.FailedPublish)))
-        }
+        // W2 review r5 #1: the cleanup above only undoes the failed account's half-loaded memory.
+        // The intended publish did not happen (the auth reducer keeps it as its pending target), so
+        // the barrier stays in Recovery(FailedPublish) until that publish succeeds (the retry), or
+        // another publish or a wipe supersedes it; it never reopens on the old account meanwhile.
+        if (recovered) log.w { "[Identity] publish failed part-way; shown account restored, recovery required until the publish succeeds" }
+        IdentityEffects.run(IdentityRuntime.reduceStep(BarrierEvent.RecoveryRequired(RecoveryReason.FailedPublish)))
     }
 
     /**

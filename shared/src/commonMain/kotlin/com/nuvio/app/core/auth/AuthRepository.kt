@@ -175,7 +175,8 @@ object AuthRepository {
      * Recovery(FailedPublish); a successful publish clears it (B18).
      */
     suspend fun retryIdentityRecovery(): Result<Unit> = withContext(Dispatchers.Default) {
-        driver.inChain { RealAuthEffects.publish(_state.value) }
+        // W2 review r5 #1: the failed publish's TARGET (held by the reducer), not what is shown.
+        driver.retryPendingPublish()
             .onFailure { e -> log.e(e) { "Identity recovery retry failed" } }
     }
 

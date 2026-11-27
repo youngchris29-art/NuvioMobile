@@ -92,6 +92,16 @@ internal sealed interface AuthEvent {
      */
     data class GatePassed(val output: AuthOutput) : AuthEvent
     data class GateFailed(val output: AuthOutput) : AuthEvent
+
+    /**
+     * Fork (W2 review r5 #1): fed by the driver when a Publish output threw: [target] was not
+     * shown; [shown] is what the last completed publish showed. "Published" is only ever a
+     * publish that completed.
+     */
+    data class PublishFailed(val target: AuthState, val shown: AuthState) : AuthEvent
+
+    /** Fork (W2 review r5 #1): identity recovery retries the failed publish's target. */
+    data object RetryPendingPublish : AuthEvent
 }
 
 /** A library status, read fresh under the lane (see AuthSessionDriver.snapshotOf). */
@@ -225,6 +235,12 @@ internal data class AuthModelState(
     val watchdogFired: Boolean,
     /** A gate output whose outcome is awaited; nothing else happens until it is known. */
     val pendingGate: PendingGate? = null,
+    /**
+     * Fork (scope identity W2, review r5 #1): a publish whose effect failed (the identity hook or
+     * the write threw). [published] went back to what is really shown; this is the target that
+     * RetryPendingPublish publishes again. Any other publish supersedes it.
+     */
+    val pendingPublish: AuthState? = null,
 ) {
     companion object {
         /** Before the first Boot. Serial 0 is never live after a Boot. */
@@ -302,7 +318,7 @@ private class StepBuilder(var state: AuthModelState) {
     }
 
     private fun publish(target: AuthState) {
-        state = state.copy(published = target)
+        state = state.copy(published = target, pendingPublish = null)
         emit(AuthOutput.Publish(target))
     }
 
@@ -602,6 +618,10 @@ private class StepBuilder(var state: AuthModelState) {
             }
 
             is AuthEvent.WipeFinished -> wipeFinished(event.ok)
+
+            is AuthEvent.PublishFailed -> state = state.copy(published = event.shown, pendingPublish = event.target)
+
+            AuthEvent.RetryPendingPublish -> state.pendingPublish?.let { publish(it) }
 
             is AuthEvent.GatePassed -> gatePassed(event.output)
 
