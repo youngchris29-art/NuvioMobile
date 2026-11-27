@@ -22,10 +22,13 @@ class SelectAdmissionTest {
 
     /**
      * gated {yes, no} × current {null, same, other account, same account other serial} × slotListed
-     * {yes, no} × origin {PickerTap, AutoEnter, Restore, DeleteFallback} × deletingIsActive {yes, no}
-     * = 128 combinations; for the three non-delete origins `deleting` is null (impossible to be
-     * active), so their 48 "deletingIsActive = yes" combinations are classified impossible and must
-     * get the same verdict as with it null; 80 reachable cases are asserted against the oracle.
+     * {yes, no} × rowSame {yes, no} × origin {PickerTap, AutoEnter, Restore, DeleteFallback} ×
+     * deletingIsActive {yes, no} = 256 combinations. Classified impossible (asserted to get the
+     * verdict of their reachable twin): a non-delete origin with deletingIsActive = yes (`deleting`
+     * is null for them); a row that "changed" while the slot is not listed (no row to compare);
+     * DeleteFallback with rowSame = no (it carries no row). Reachable: 3 non-delete origins × 2 × 4
+     * × 3 (listed+same, listed+changed, unlisted) = 72, plus DeleteFallback 2 × 4 × 2 × 2 = 32: 104;
+     * impossible 152.
      */
     @Test
     fun everyCombination() {
@@ -34,19 +37,25 @@ class SelectAdmissionTest {
         var reachable = 0
         var impossible = 0
         for (gated in listOf(true, false)) for (current in currents) for (slotListed in listOf(true, false))
-            for (origin in SelectOrigin.entries) for (deletingIsActive in listOf(true, false)) {
+            for (rowSame in listOf(true, false)) for (origin in SelectOrigin.entries) for (deletingIsActive in listOf(true, false)) {
                 total++
                 val slot = 2
-                val listed = if (slotListed) listOf(1, 2, 3) else listOf(1, 3)
-                val request = SelectRequest(slot, shown, origin)
                 val isDelete = origin == SelectOrigin.DeleteFallback
+                val row = ListedRow(2, pinEnabled = !rowSame, revision = if (rowSame) "r1" else "r2")
+                val listed = listOf(ListedRow(1, false, "a"), ListedRow(3, false, "c")) + (if (slotListed) listOf(row) else emptyList())
+                val request = SelectRequest(slot, shown, origin, pinEnabled = false, rowRevision = "r1")
                 val deleting = if (isDelete) 1 else null
                 val activeSlot = if (deletingIsActive) 1 else 3
                 val verdict = SelectAdmission.decide(request, gated, current, listed, deleting, activeSlot)
-                if (!isDelete && deletingIsActive) {
+                val twin = when {
+                    !isDelete && deletingIsActive -> SelectAdmission.decide(request, gated, current, listed, null, 3)
+                    !isDelete && !slotListed && !rowSame -> SelectAdmission.decide(request, gated, current, listed.filter { it.slot != 2 }, deleting, activeSlot)
+                    isDelete && !rowSame -> SelectAdmission.decide(request, gated, current, listed.map { if (it.slot == 2) ListedRow(2, false, "r1") else it }, deleting, activeSlot)
+                    else -> null
+                }
+                if (twin != null) {
                     impossible++
-                    // The decision ignores `deleting`/the active slot for these origins.
-                    assertEquals(SelectAdmission.decide(request, gated, current, listed, null, 3), verdict)
+                    assertEquals(twin, verdict, "impossible case gated=$gated current=$current listed=$slotListed same=$rowSame origin=$origin")
                     continue
                 }
                 reachable++
@@ -54,22 +63,23 @@ class SelectAdmissionTest {
                     !gated -> Admission.Reject(SelectRejection.Phase)
                     current != shown -> Admission.Reject(SelectRejection.AccountChanged)
                     isDelete && !deletingIsActive -> Admission.Reject(SelectRejection.SlotGone)
-                    isDelete -> Admission.Admit(listed.filter { it != 1 }.min())
+                    isDelete -> Admission.Admit(listed.map { it.slot }.filter { it != 1 }.min())
                     !slotListed -> Admission.Reject(SelectRejection.SlotGone)
+                    !rowSame -> Admission.Reject(SelectRejection.RowChanged)
                     else -> Admission.Admit(slot)
                 }
-                assertEquals(expected, verdict, "gated=$gated current=$current listed=$slotListed origin=$origin active=$deletingIsActive")
+                assertEquals(expected, verdict, "gated=$gated current=$current listed=$slotListed same=$rowSame origin=$origin active=$deletingIsActive")
             }
-        assertEquals(128, total)
-        assertEquals(80, reachable)
-        assertEquals(48, impossible)
+        assertEquals(256, total)
+        assertEquals(104, reachable)
+        assertEquals(152, impossible)
     }
 
     @Test
     fun deleteFallbackWithNothingLeftRemovesTheActiveProfile() {
         assertEquals(
             Admission.Admit(SelectAdmission.NONE_REMAIN),
-            SelectAdmission.decide(SelectRequest(0, shown, SelectOrigin.DeleteFallback), true, shown, listOf(1), deleting = 1, activeSlot = 1),
+            SelectAdmission.decide(SelectRequest(0, shown, SelectOrigin.DeleteFallback), true, shown, listOf(ListedRow(1, false, "")), deleting = 1, activeSlot = 1),
         )
     }
 }
@@ -101,6 +111,33 @@ class SelectAdmissionDriverTest {
         assertEquals(SelectRejection.SlotGone, result.rejection)
         assertEquals(emptyList(), log.all())
         assertEquals(1, ops.active)
+    }
+
+    /** Review r5 #2: a row of A's list, tapped after B opened (B's list not yet shown), is never admitted into B. */
+    @Test
+    fun staleRowOfAnotherAccountTappedAfterItOpened() = real {
+        val listOfA = assertNotNullToken() // the token A's list was stamped with
+        IdentityRuntime.authSerial = { 2 }
+        IdentityImmediate.serialChanging()
+        IdentityImmediate.publishAuth(com.nuvio.app.core.auth.AuthState.Authenticated("user-b", null, isAnonymous = false)) {}
+        IdentityImmediate.chainEnded() // B is open; slot 2 exists in B (PIN-protected, say)
+        ops.rowStamps = mapOf(2 to (true to "b2"))
+        val result = assertIs<TransitionResult.Preempted>(IdentityBarrier.selectProfile(SelectRequest(2, listOfA, SelectOrigin.PickerTap)))
+        assertEquals(SelectRejection.AccountChanged, result.rejection)
+        assertEquals(emptyList(), log.all())
+    }
+
+    /** Review r5 #3: a PIN enabled (by a pull) between the tap and admission is enforced: back to the picker. */
+    @Test
+    fun pinEnabledBetweenTapAndAdmission() = real {
+        val shown = assertNotNullToken()
+        ops.rowStamps = mapOf(2 to (false to "r1"))
+        IdentityBarrier.beforeApplyLock = { ops.rowStamps = mapOf(2 to (true to "r2")) }
+        val result = assertIs<TransitionResult.Preempted>(
+            IdentityBarrier.selectProfile(SelectRequest(2, shown, SelectOrigin.PickerTap, pinEnabled = false, rowRevision = "r1")),
+        )
+        assertEquals(SelectRejection.RowChanged, result.rejection)
+        assertEquals(emptyList(), log.all())
     }
 
     /** B23 in one section: a relist cannot be published between the recheck and the write. */

@@ -46,6 +46,12 @@ data class ProfileState(
     val isLoaded: Boolean = false,
     val hasEverSelectedProfile: Boolean = false,
     val rememberLastProfileEnabled: Boolean = false,
+    /**
+     * Fork (scope identity W2, review r5): the account token this list belongs to, stamped where
+     * the list is published (the account hook, a pull, a guest edit). A picker row carries it into
+     * its SelectRequest, so a row of A's list can never be admitted under B. Null: not stamped.
+     */
+    val listToken: com.nuvio.app.core.identity.AccountToken? = null,
 )
 
 @Serializable

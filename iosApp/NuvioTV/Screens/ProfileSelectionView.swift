@@ -198,7 +198,8 @@ struct ProfileSelectionView: View {
     }
 
     private func requirePin(for profile: NuvioProfile, action: PinPrompt.Action) {
-        let shownUnder = IdentityGate.shared.selectionToken()
+        // Review r5: the token of the list this row was rendered from (Kotlin stamps it with the list).
+        let shownUnder = model.listToken
         if profile.pinEnabled {
             pinPrompt = PinPrompt(profile: profile, action: action, displayedUnder: shownUnder)
         } else {
@@ -211,9 +212,8 @@ struct ProfileSelectionView: View {
         case .select:
             guard !model.isSwitching else { return }
             let enter = onSelected
-            // No token (no identity the picker can be used under): the tap binds to nothing → picker.
-            let bound = displayedUnder.map { $0.account.storageKey() ?? "none" }
-            Task { await model.selectAndEnter(profile, boundAccount: bound, displayedUnder: displayedUnder, origin: .pickertap, enter: enter) }
+            // No list token: the tap binds to nothing → picker.
+            Task { await model.selectAndEnter(profile, displayedUnder: displayedUnder, origin: .pickertap, enter: enter) }
         case .edit:
             editing = ProfileEditTarget(profile: profile)
         case .delete:

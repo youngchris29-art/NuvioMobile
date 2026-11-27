@@ -23,6 +23,9 @@ final class ProfilesViewModel: ObservableObject {
     /// FEAT-65: the shared `rememberLastProfileEnabled` flag ("Open Last Profile at Launch"),
     /// mirrored from the same `ProfileRepository.state` watcher as the profiles.
     @Published private(set) var rememberLastProfile = false
+    /// Review r5: the account token the displayed list belongs to (ProfileState.listToken), from the
+    /// same emission as `profiles`; every picker row's SelectRequest carries it.
+    @Published private(set) var listToken: AccountToken?
 
     private var watcher: FlowWatcher?
     private var avatarsWatcher: FlowWatcher?
@@ -45,6 +48,7 @@ final class ProfilesViewModel: ObservableObject {
             // periodic sync re-emits unchanged state. NuvioProfile is a Kotlin data class
             // (`isEqual` = structural), so `!=` compares contents.
             if self.profiles != state.profiles { self.profiles = state.profiles }
+            if !IdentityValues.same(self.listToken, state.listToken) { self.listToken = state.listToken }
             if self.activeProfile != state.activeProfile { self.activeProfile = state.activeProfile }
             if self.rememberLastProfile != state.rememberLastProfileEnabled {
                 self.rememberLastProfile = state.rememberLastProfileEnabled
@@ -79,23 +83,24 @@ final class ProfilesViewModel: ObservableObject {
     /// clears it in one `defer`, its last statement, after `enter` ran or the picker was chosen.
     /// Breadcrumbs bracket every Kotlin call (kept out of `#if DEBUG`: testers' console logs are
     /// the only diagnostic for a crash we cannot reproduce).
-    /// `boundAccount`: the account key the tap belongs to (TapBindingRule, the early UX answer).
-    /// `displayedUnder`: rule G's token the picker row was shown and PIN-checked under (nil for
-    /// auto-enter, which reads it once the identity is open on its bound account).
-    func selectAndEnter(_ profile: NuvioProfile, boundAccount: String?, displayedUnder: AccountToken?, origin: SelectOrigin,
+    /// `displayedUnder`: the list token the row came from (review r5: produced by Kotlin with the
+    /// list, never read at tap time); the row's lock state and revision travel with it.
+    func selectAndEnter(_ profile: NuvioProfile, displayedUnder: AccountToken?, origin: SelectOrigin,
                         enter: @escaping (IdentityState) -> Void) async {
         print("[ProfileSelect] selecting profile \(profile.profileIndex)")
-        let entered = await Self.selectAndEnter(slot: profile.profileIndex, boundAccount: boundAccount, displayedUnder: displayedUnder,
-                                                origin: origin, identity: IdentityModel.shared, ports: selectPorts, enter: enter)
+        let entered = await Self.selectAndEnter(slot: profile.profileIndex, displayedUnder: displayedUnder, origin: origin,
+                                                pinEnabled: profile.pinEnabled, rowRevision: profile.updatedAt,
+                                                identity: IdentityModel.shared, ports: selectPorts, enter: enter)
         print("[ProfileSelect] select finished — entered=\(entered)")
     }
 
     /// The sequence itself, testable with a fake barrier. Returns whether the profile was entered.
     @discardableResult
     static func selectAndEnter(slot: Int32,
-                               boundAccount: String?,
-                               displayedUnder: AccountToken? = nil,
+                               displayedUnder: AccountToken?,
                                origin: SelectOrigin = .pickertap,
+                               pinEnabled: Bool = false,
+                               rowRevision: String = "",
                                identity: IdentityModel,
                                ports: ProfileSelectPorts,
                                enter: (IdentityState) -> Void) async -> Bool {
@@ -104,14 +109,14 @@ final class ProfilesViewModel: ObservableObject {
         // again; an identity that moved to another account sends the user back to the picker.
         identity.localSelectInFlight = true
         defer { identity.localSelectInFlight = false } // 4: the last statement, whatever happened
+        // The tap binds to the account of the list the row was displayed from (nil: never enter).
+        let boundAccount = displayedUnder.map { $0.account.storageKey() ?? "none" }
         var binding = TapBindingRule.decide(bound: boundAccount, current: ports.currentState())
         for _ in 0..<40 where binding == .wait {
             try? await Task.sleep(nanoseconds: 50_000_000)
             binding = TapBindingRule.decide(bound: boundAccount, current: ports.currentState())
         }
-        guard binding == .proceed, let accountAtTap = ports.currentState()?.scope.account,
-              let token = displayedUnder ?? ports.selectionToken(),
-              token.account.storageKey() ?? "none" == boundAccount else {
+        guard binding == .proceed, let accountAtTap = ports.currentState()?.scope.account, let token = displayedUnder else {
             print("[ProfileSelect] not entered: the tap's identity is not the open one (\(binding))")
             return false
         }
@@ -122,7 +127,8 @@ final class ProfilesViewModel: ObservableObject {
             result = nil
         } else {
             // Rule G: the barrier admits it against the current token and list (the guarantee).
-            result = try? await ports.select(request: SelectRequest(slot: slot, displayedUnder: token, origin: origin))
+            result = try? await ports.select(request: SelectRequest(slot: slot, displayedUnder: token, origin: origin,
+                                                                     pinEnabled: pinEnabled, rowRevision: rowRevision))
         }
         // 3. Branch on the result.
         guard let done = result as? TransitionResultDone else {
@@ -257,7 +263,6 @@ final class ProfilesViewModel: ObservableObject {
 protocol ProfileSelectPorts {
     func select(request: SelectRequest) async throws -> TransitionResult
     func currentState() -> IdentityState?
-    func selectionToken() -> AccountToken?
     func startSync(slot: Int32)
     var failBeforeBegin: Bool { get }
     func reportImpossible(_ message: String)
@@ -271,10 +276,6 @@ struct LiveProfileSelectPorts: ProfileSelectPorts {
 
     func currentState() -> IdentityState? {
         IdentityGate.shared.state.value_ as? IdentityState
-    }
-
-    func selectionToken() -> AccountToken? {
-        IdentityGate.shared.selectionToken()
     }
 
     func startSync(slot: Int32) {

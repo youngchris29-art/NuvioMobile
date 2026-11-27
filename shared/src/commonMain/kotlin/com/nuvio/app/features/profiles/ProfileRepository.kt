@@ -137,6 +137,7 @@ object ProfileRepository {
                     isLoaded = true,
                     activeProfile = profiles.find { it.profileIndex == activeProfileIndex }
                         ?: router.onActiveSlotMissing(activeProfileIndex, profiles, accountToken),
+                    listToken = accountToken,
                 )
                 if (_state.value.activeProfile != null) {
                     activeProfileIndex = _state.value.activeProfile!!.profileIndex
@@ -203,6 +204,11 @@ object ProfileRepository {
         return ProfileLifecycleProvider.coordinator.onProfileSelectedChecked(profileIndex)
     }
 
+    /** Fork (W2 review r5): the account token the list in memory belongs to (the account hook stamps it after ensureLoaded). */
+    internal fun stampListToken(token: AccountToken) {
+        _state.value = _state.value.copy(listToken = token)
+    }
+
     /** Fork (W2, 5.2): the active profile was removed remotely; the slot number stays. */
     internal fun applyActiveRemoved() {
         _state.value = _state.value.copy(activeProfile = null)
@@ -223,7 +229,7 @@ object ProfileRepository {
     ) {
         if (AuthRepository.state.value.isAnonymous) {
             // Fork (W2, 5.4): applied only for the account the edit was made under.
-            IdentityGate.commitAccount(token, "pushProfiles") { applyPayloadsLocally(profiles) }
+            IdentityGate.commitAccount(token, "pushProfiles") { applyPayloadsLocally(profiles, token) }
             return
         }
         val ticket = AuthRepository.sessionTicket()
@@ -325,6 +331,7 @@ object ProfileRepository {
                     } else {
                         _state.value.activeProfile
                     },
+                    listToken = token,
                 )
                 if (_state.value.activeProfile != null) {
                     activeProfileIndex = _state.value.activeProfile!!.profileIndex
@@ -468,7 +475,7 @@ object ProfileRepository {
         }
     }
 
-    private fun applyPayloadsLocally(payloads: List<ProfilePushPayload>) {
+    private fun applyPayloadsLocally(payloads: List<ProfilePushPayload>, token: AccountToken?) {
         val authState = AuthRepository.state.value as? AuthState.Authenticated ?: return
         val profiles = payloads.map { p ->
             NuvioProfile(
@@ -488,6 +495,7 @@ object ProfileRepository {
             isLoaded = true,
             activeProfile = profiles.find { it.profileIndex == activeProfileIndex }
                 ?: ProfileIdentityRouterProvider.router.onActiveSlotMissing(activeProfileIndex, profiles, IdentityGate.currentAccountToken()),
+            listToken = token,
         )
         if (_state.value.activeProfile != null) {
             activeProfileIndex = _state.value.activeProfile!!.profileIndex

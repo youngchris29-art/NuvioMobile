@@ -199,11 +199,11 @@ final class SelectAndEnterSequenceTests: XCTestCase {
         ports.current = IdentityFixture.state(slot: 1, epoch: 1)
     }
 
-    private func run(slot: Int32 = 2, bound: String? = "guest:g") async -> (entered: Bool, coverDuringEnter: Bool?) {
+    private func run(slot: Int32 = 2, bound: AccountToken? = IdentityFixture.token) async -> (entered: Bool, coverDuringEnter: Bool?) {
         var coverDuringEnter: Bool?
         var coverDuringSelect = false
         ports.duringSelect = { coverDuringSelect = self.cover.visible }
-        let entered = await ProfilesViewModel.selectAndEnter(slot: slot, boundAccount: bound, identity: model, ports: ports) { _ in
+        let entered = await ProfilesViewModel.selectAndEnter(slot: slot, displayedUnder: bound, identity: model, ports: ports) { _ in
             coverDuringEnter = self.cover.visible
         }
         XCTAssertTrue(coverDuringSelect, "the cover shows at the tap")
@@ -295,7 +295,7 @@ final class SelectAndEnterSequenceTests: XCTestCase {
         }
         var selected = false
         ports.result = { selected = true; return TransitionResultRequested.shared }
-        let entered = await ProfilesViewModel.selectAndEnter(slot: 2, boundAccount: "guest:g", identity: model, ports: ports) { _ in }
+        let entered = await ProfilesViewModel.selectAndEnter(slot: 2, displayedUnder: IdentityFixture.token, identity: model, ports: ports) { _ in }
         XCTAssertFalse(entered)
         XCTAssertFalse(selected, "the barrier must not be asked to select in B")
         XCTAssertEqual(root.recoveries, 1)
@@ -315,7 +315,7 @@ final class SelectAndEnterSequenceTests: XCTestCase {
     func testUnboundTapNeverSelects() async {
         var selected = false
         ports.result = { selected = true; return TransitionResultRequested.shared }
-        let entered = await ProfilesViewModel.selectAndEnter(slot: 2, boundAccount: nil, identity: model, ports: ports) { _ in }
+        let entered = await ProfilesViewModel.selectAndEnter(slot: 2, displayedUnder: nil, identity: model, ports: ports) { _ in }
         XCTAssertFalse(entered)
         XCTAssertFalse(selected)
     }
@@ -323,8 +323,7 @@ final class SelectAndEnterSequenceTests: XCTestCase {
     /// Review r2 #1: after a failed apply the picker's retry reaches the barrier and enters (B20a).
     func testTapAfterAFailedApplyReachesTheBarrierAndEnters() async {
         ports.current = IdentityFixture.state(slot: 2, epoch: 1, phase: IdentityPhaseRecovery(from: IdentityEpoch(value: 1)), recovery: .failedapply)
-        let bound = TapBindingRule.pickerBinding(ports.current)
-        XCTAssertEqual(bound, "guest:g")
+        let bound: AccountToken? = IdentityFixture.token // the list (stamped before the failed apply) is still current
         let final = IdentityFixture.state(slot: 3, epoch: 2)
         ports.currentAfterSelect = final
         var selected = false
@@ -338,7 +337,7 @@ final class SelectAndEnterSequenceTests: XCTestCase {
         ports.failBeforeBegin = true
         ports.result = { XCTFail("the barrier must not be called"); return TransitionResultRequested.shared }
         ports.duringSelect = {}
-        let entered = await ProfilesViewModel.selectAndEnter(slot: 2, boundAccount: "guest:g", identity: model, ports: ports) { _ in }
+        let entered = await ProfilesViewModel.selectAndEnter(slot: 2, displayedUnder: IdentityFixture.token, identity: model, ports: ports) { _ in }
         XCTAssertFalse(entered)
         XCTAssertEqual(root.recoveries, 1)
         XCTAssertFalse(cover.visible)

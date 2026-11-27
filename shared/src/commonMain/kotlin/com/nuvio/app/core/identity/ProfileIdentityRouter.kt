@@ -89,7 +89,8 @@ class CheckedFanOut(private val report: (name: String, bestEffort: Boolean, erro
 
 /** The barrier's profile mutations over the real ProfileRepository (installed by tvOS). */
 internal object ProfileRepositoryOps : IdentityProfileOps {
-    override fun listedSlots(): List<Int> = ProfileRepository.state.value.profiles.map { it.profileIndex }
+    override fun listedRows(): List<ListedRow> =
+        ProfileRepository.state.value.profiles.map { ListedRow(it.profileIndex, it.pinEnabled, it.updatedAt) }
 
     override fun writeSelection(slot: Int) = ProfileRepository.writeSelection(slot)
 
@@ -117,9 +118,12 @@ internal object RealBarrierRouterPorts : BarrierRouterPorts {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("ProfileIdentityRouter"))
 
     override fun launchSelect(slot: Int) {
-        // Rule G: origin Restore, displayed under the account token read at the call (none → nothing).
-        val token = IdentityGate.currentAccountToken() ?: return
-        scope.launch { IdentityBarrier.selectProfile(SelectRequest(slot, token, SelectOrigin.Restore)) }
+        // Rule G (r5): origin Restore; the row and its list token as they are in memory now. A
+        // list not stamped for the current account, or a changed row, is refused at admission.
+        val state = ProfileRepository.state.value
+        val token = state.listToken ?: return
+        val row = state.profiles.firstOrNull { it.profileIndex == slot } ?: return
+        scope.launch { IdentityBarrier.selectProfile(SelectRequest(slot, token, SelectOrigin.Restore, row.pinEnabled, row.updatedAt)) }
     }
 
     override fun requestSlotRemoved(slot: Int, token: AccountToken) = IdentityBarrier.requestSlotRemoved(slot, token)
@@ -201,20 +205,23 @@ internal class BarrierProfileIdentityRouter(
  */
 internal object IdentityAccountHooks {
     var ensureLoaded: (String) -> Unit = { ProfileRepository.ensureLoaded(it) }
+    /** Review r5: the list now in memory belongs to the account being published (its token). */
+    var stampList: (AccountToken) -> Unit = { ProfileRepository.stampListToken(it) }
     var resetAddons: () -> Unit = { AddonRepository.clearLocalState() }
     var fanOut: (Int) -> List<String> = { ProfileLifecycleProvider.coordinator.onProfileSelectedChecked(it) }
     var activeSlot: () -> Int = { ProfileRepository.activeProfileId }
 
     fun accountPublished(account: AccountKey) {
         when (account) {
-            is AccountKey.Account -> loadAndFanOut(account.userId)
-            is AccountKey.Guest -> loadAndFanOut(account.guestId)
+            is AccountKey.Account -> loadAndFanOut(account, account.userId)
+            is AccountKey.Guest -> loadAndFanOut(account, account.guestId)
             AccountKey.None -> resetAddons()
         }
     }
 
-    private fun loadAndFanOut(ownerId: String) {
+    private fun loadAndFanOut(account: AccountKey, ownerId: String) {
         ensureLoaded(ownerId)
+        stampList(AccountToken(account, IdentityRuntime.authSerial()))
         resetAddons()
         val failed = fanOut(activeSlot())
         // Rule B: a must-succeed step failed, so the hook throws and the window recovers.
@@ -224,6 +231,7 @@ internal object IdentityAccountHooks {
     /** Tests only. */
     internal fun resetForTest() {
         ensureLoaded = { ProfileRepository.ensureLoaded(it) }
+        stampList = { ProfileRepository.stampListToken(it) }
         resetAddons = { AddonRepository.clearLocalState() }
         fanOut = { ProfileLifecycleProvider.coordinator.onProfileSelectedChecked(it) }
         activeSlot = { ProfileRepository.activeProfileId }

@@ -6,6 +6,7 @@ import SharedCore
 enum IdentityFixture {
     static let guest: AccountKey = AccountKeyGuest(guestId: "g")
     static let other: AccountKey = AccountKeyAccount(userId: "b")
+    static let token = AccountToken(account: guest, authSerial: 1)
 
     static func state(account: AccountKey = guest,
                       slot: Int32 = 1,
@@ -67,9 +68,6 @@ final class FakeSelectPorts: ProfileSelectPorts {
     var failBeforeBegin = false
 
     private(set) var requests: [SelectRequest] = []
-    var token: AccountToken? = AccountToken(account: IdentityFixture.guest, authSerial: 1)
-
-    func selectionToken() -> AccountToken? { token }
 
     func select(request: SelectRequest) async throws -> TransitionResult {
         requests.append(request)

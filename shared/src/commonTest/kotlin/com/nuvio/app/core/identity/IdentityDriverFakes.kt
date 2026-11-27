@@ -30,7 +30,14 @@ internal class FakeProfileOps(private val log: EventLog) : IdentityProfileOps {
     /** Runs after the slot was changed (a body that mutates, then throws). */
     var afterMutation: (Int) -> Unit = {}
 
-    override fun listedSlots(): List<Int> = listed.sorted()
+    /** Review r5: rows' lock state and revision, per slot (default unlocked, revision ""). */
+    @kotlin.concurrent.Volatile
+    var rowStamps: Map<Int, Pair<Boolean, String>> = emptyMap()
+
+    override fun listedRows(): List<ListedRow> = listed.sorted().map { slot ->
+        val (pin, revision) = rowStamps[slot] ?: (false to "")
+        ListedRow(slot, pin, revision)
+    }
 
     /** Inside the admission's commit section: the slot only (no hooks: they may need the commit lock). */
     override fun writeSelection(slot: Int) {

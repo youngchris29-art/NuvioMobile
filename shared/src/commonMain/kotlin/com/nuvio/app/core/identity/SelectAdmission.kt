@@ -8,10 +8,25 @@ package com.nuvio.app.core.identity
  */
 enum class SelectOrigin { PickerTap, AutoEnter, Restore, DeleteFallback }
 
-/** [slot] is ignored for [SelectOrigin.DeleteFallback], which chooses its own fallback from the current list. */
-data class SelectRequest(val slot: Int, val displayedUnder: AccountToken, val origin: SelectOrigin)
+/**
+ * The row as it was displayed: [displayedUnder] is the account token of the list it came from
+ * (ProfileState.listToken, never read at tap time), [pinEnabled] and [rowRevision] (the profile's
+ * `updatedAt`) what the PIN check was made against. [slot], [pinEnabled] and [rowRevision] are
+ * ignored for [SelectOrigin.DeleteFallback], which chooses its own fallback from the current list.
+ */
+data class SelectRequest(
+    val slot: Int,
+    val displayedUnder: AccountToken,
+    val origin: SelectOrigin,
+    val pinEnabled: Boolean = false,
+    val rowRevision: String = "",
+)
 
-enum class SelectRejection { AccountChanged, SlotGone, Phase }
+/** What admission needs of a listed row to tell that a change matters (review r5 #3). */
+data class ListedRow(val slot: Int, val pinEnabled: Boolean, val revision: String)
+
+/** RowChanged (review r5): the row's lock state or revision changed since it was displayed and PIN-checked. */
+enum class SelectRejection { AccountChanged, SlotGone, RowChanged, Phase }
 
 sealed interface Admission {
     /** [slot] = -1: no profile remains, apply "active removed" (DeleteFallback only). */
@@ -26,19 +41,23 @@ object SelectAdmission {
         request: SelectRequest,
         gated: Boolean,
         current: AccountToken?,
-        listed: List<Int>,
+        listed: List<ListedRow>,
         deleting: Int?,
         activeSlot: Int,
-    ): Admission = when {
-        !gated -> Admission.Reject(SelectRejection.Phase)
-        current == null || current != request.displayedUnder -> Admission.Reject(SelectRejection.AccountChanged)
-        request.origin == SelectOrigin.DeleteFallback ->
-            if (deleting == null || activeSlot != deleting) {
-                Admission.Reject(SelectRejection.SlotGone) // the user moved on while the delete waited
-            } else {
-                Admission.Admit(listed.filter { it != deleting }.minOrNull() ?: NONE_REMAIN)
-            }
-        request.slot !in listed -> Admission.Reject(SelectRejection.SlotGone)
-        else -> Admission.Admit(request.slot)
+    ): Admission {
+        val row = listed.firstOrNull { it.slot == request.slot }
+        return when {
+            !gated -> Admission.Reject(SelectRejection.Phase)
+            current == null || current != request.displayedUnder -> Admission.Reject(SelectRejection.AccountChanged)
+            request.origin == SelectOrigin.DeleteFallback ->
+                if (deleting == null || activeSlot != deleting) {
+                    Admission.Reject(SelectRejection.SlotGone) // the user moved on while the delete waited
+                } else {
+                    Admission.Admit(listed.map { it.slot }.filter { it != deleting }.minOrNull() ?: NONE_REMAIN)
+                }
+            row == null -> Admission.Reject(SelectRejection.SlotGone)
+            row.pinEnabled != request.pinEnabled || row.revision != request.rowRevision -> Admission.Reject(SelectRejection.RowChanged)
+            else -> Admission.Admit(request.slot)
+        }
     }
 }
