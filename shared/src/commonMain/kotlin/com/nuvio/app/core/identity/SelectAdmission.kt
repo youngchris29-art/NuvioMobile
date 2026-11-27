@@ -10,20 +10,16 @@ enum class SelectOrigin { PickerTap, AutoEnter, Restore, DeleteFallback }
 
 /**
  * The row as it was displayed: [displayedUnder] is the account token of the list it came from
- * (ProfileState.listToken, never read at tap time), [pinEnabled] and [rowRevision] (the profile's
- * `updatedAt`) what the PIN check was made against. [slot], [pinEnabled] and [rowRevision] are
- * ignored for [SelectOrigin.DeleteFallback], which chooses its own fallback from the current list.
+ * (built by DisplayedProfile.selectRequest, never assembled at tap time) and [row] the full row the
+ * PIN check was made against. [slot] and [row] are ignored for [SelectOrigin.DeleteFallback].
  */
 data class SelectRequest(
     val slot: Int,
     val displayedUnder: AccountToken,
     val origin: SelectOrigin,
-    val pinEnabled: Boolean = false,
-    val rowRevision: String = "",
+    /** The row as displayed (review r6: the full row, so identity survives an empty `updatedAt`). */
+    val row: com.nuvio.app.features.profiles.NuvioProfile? = null,
 )
-
-/** What admission needs of a listed row to tell that a change matters (review r5 #3). */
-data class ListedRow(val slot: Int, val pinEnabled: Boolean, val revision: String)
 
 /** RowChanged (review r5): the row's lock state or revision changed since it was displayed and PIN-checked. */
 enum class SelectRejection { AccountChanged, SlotGone, RowChanged, Phase }
@@ -41,11 +37,11 @@ object SelectAdmission {
         request: SelectRequest,
         gated: Boolean,
         current: AccountToken?,
-        listed: List<ListedRow>,
+        listed: List<com.nuvio.app.features.profiles.NuvioProfile>,
         deleting: Int?,
         activeSlot: Int,
     ): Admission {
-        val row = listed.firstOrNull { it.slot == request.slot }
+        val row = listed.firstOrNull { it.profileIndex == request.slot }
         return when {
             !gated -> Admission.Reject(SelectRejection.Phase)
             current == null || current != request.displayedUnder -> Admission.Reject(SelectRejection.AccountChanged)
@@ -53,10 +49,10 @@ object SelectAdmission {
                 if (deleting == null || activeSlot != deleting) {
                     Admission.Reject(SelectRejection.SlotGone) // the user moved on while the delete waited
                 } else {
-                    Admission.Admit(listed.map { it.slot }.filter { it != deleting }.minOrNull() ?: NONE_REMAIN)
+                    Admission.Admit(listed.map { it.profileIndex }.filter { it != deleting }.minOrNull() ?: NONE_REMAIN)
                 }
             row == null -> Admission.Reject(SelectRejection.SlotGone)
-            row.pinEnabled != request.pinEnabled || row.revision != request.rowRevision -> Admission.Reject(SelectRejection.RowChanged)
+            row != request.row -> Admission.Reject(SelectRejection.RowChanged)
             else -> Admission.Admit(request.slot)
         }
     }

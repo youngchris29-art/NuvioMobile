@@ -128,14 +128,12 @@ struct ContentView: View {
         autoEnterLatch.apply(.autoEnterRan)
         // Idempotent (the picker's own `onAppear` calls it too).
         profiles.start()
-        guard let profile = profiles.rememberedStartupProfile(alreadyFiredThisLaunch: consumed) else { return }
-        print("[ProfileSelect] auto-enter profile \(profile.profileIndex)")
+        guard let row = profiles.rememberedStartupProfile(alreadyFiredThisLaunch: consumed) else { return }
+        print("[ProfileSelect] auto-enter profile \(row.profile.profileIndex)")
         // Scope identity W2 (8.0.3): the same sequence as a picker tap; entered only once the
         // barrier opened on this profile.
-        // Review r5: auto-enter carries the remembered row and the token of the list it was read
-        // from (stamped by the account hook before the gate turned .main).
-        let listToken = (ProfileRepository.shared.state.value_ as? ProfileState)?.listToken
-        Task { await profiles.selectAndEnter(profile, displayedUnder: listToken, origin: .autoenter) { final in enterProfile(final) } }
+        // Review r6: the remembered row and its list's token come from one snapshot.
+        Task { await profiles.selectAndEnter(row, origin: .autoenter) { final in enterProfile(final) } }
     }
 
     /// The `enter` closure of `selectAndEnter` (synchronous on Main). `reseedNow()` before

@@ -7,7 +7,10 @@ import com.nuvio.app.core.i18n.resourceString
 import co.touchlab.kermit.Logger
 import com.nuvio.app.core.network.SupabaseProvider
 import com.nuvio.app.core.account.AccountDataCleanerProvider
+import com.nuvio.app.core.identity.AccountToken
 import com.nuvio.app.core.identity.IdentityBarrier
+import com.nuvio.app.core.identity.IdentityGate
+import com.nuvio.app.core.identity.Verdict
 import com.nuvio.app.core.identity.IdentityImmediate
 import com.nuvio.app.core.identity.TransitionKind
 import io.github.jan.supabase.auth.auth
@@ -179,6 +182,22 @@ object AuthRepository {
         driver.retryPendingPublish()
             .onFailure { e -> log.e(e) { "Identity recovery retry failed" } }
     }
+
+    /**
+     * Fork (scope identity W2, review r6 #1): an irreversible profile request bound to the account
+     * token it was made for. The token is checked and the request dispatched while the auth lane
+     * is held, so no session start, reset or account change can be processed in between; null when
+     * the token no longer holds (nothing sent).
+     *
+     * What this does NOT guarantee: the transport attaches whatever access token the Supabase auth
+     * plugin holds when the request is built (AuthenticatedSupabaseApi resolves it per request and
+     * offers no per-call override), and the library can replace its own session outside the lane
+     * (a foreign refresh landing in storage). Such a replacement is processed by the reducer only
+     * after this request, so a request can still leave with credentials the reducer has not yet
+     * seen. It never leaves for an account change or reset the app has already processed.
+     */
+    internal suspend fun <T> dispatchUnderSession(token: AccountToken?, site: String, request: suspend () -> T): T? =
+        driver.exclusive { if (IdentityGate.checkAccount(token, site) is Verdict.Commit) request() else null }
 
     fun clearError() {
         _error.value = null

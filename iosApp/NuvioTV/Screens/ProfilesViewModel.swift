@@ -8,7 +8,13 @@ import SharedCore
 /// (wired in Phase 0), so downstream data (watch progress, library, …) is scoped per profile.
 @MainActor
 final class ProfilesViewModel: ObservableObject {
-    @Published private(set) var profiles: [NuvioProfile] = []
+    /// Review r6: the one displayed snapshot (list + its account token), produced by Kotlin. Rows are
+    /// derived from it, so a row never exists without the token of the list it came from; every row
+    /// action takes a row.
+    @Published private(set) var snapshot: ProfileState?
+    var rows: [DisplayedProfile] { snapshot?.displayed ?? [] }
+    /// Display only (counts, focus seeding); actions never take a bare profile.
+    var profiles: [NuvioProfile] { rows.map(\.profile) }
     @Published private(set) var activeProfile: NuvioProfile?
     @Published private(set) var isBusy = false
     /// Cloud avatar catalog (empty in guest mode / offline — pickers hide themselves).
@@ -23,9 +29,6 @@ final class ProfilesViewModel: ObservableObject {
     /// FEAT-65: the shared `rememberLastProfileEnabled` flag ("Open Last Profile at Launch"),
     /// mirrored from the same `ProfileRepository.state` watcher as the profiles.
     @Published private(set) var rememberLastProfile = false
-    /// Review r5: the account token the displayed list belongs to (ProfileState.listToken), from the
-    /// same emission as `profiles`; every picker row's SelectRequest carries it.
-    @Published private(set) var listToken: AccountToken?
 
     private var watcher: FlowWatcher?
     private var avatarsWatcher: FlowWatcher?
@@ -47,8 +50,7 @@ final class ProfilesViewModel: ObservableObject {
             // Written only on change: ContentView observes this model at the app root, and the
             // periodic sync re-emits unchanged state. NuvioProfile is a Kotlin data class
             // (`isEqual` = structural), so `!=` compares contents.
-            if self.profiles != state.profiles { self.profiles = state.profiles }
-            if !IdentityValues.same(self.listToken, state.listToken) { self.listToken = state.listToken }
+            if !IdentityValues.same(self.snapshot, state) { self.snapshot = state }
             if self.activeProfile != state.activeProfile { self.activeProfile = state.activeProfile }
             if self.rememberLastProfile != state.rememberLastProfileEnabled {
                 self.rememberLastProfile = state.rememberLastProfileEnabled
@@ -83,24 +85,17 @@ final class ProfilesViewModel: ObservableObject {
     /// clears it in one `defer`, its last statement, after `enter` ran or the picker was chosen.
     /// Breadcrumbs bracket every Kotlin call (kept out of `#if DEBUG`: testers' console logs are
     /// the only diagnostic for a crash we cannot reproduce).
-    /// `displayedUnder`: the list token the row came from (review r5: produced by Kotlin with the
-    /// list, never read at tap time); the row's lock state and revision travel with it.
-    func selectAndEnter(_ profile: NuvioProfile, displayedUnder: AccountToken?, origin: SelectOrigin,
-                        enter: @escaping (IdentityState) -> Void) async {
-        print("[ProfileSelect] selecting profile \(profile.profileIndex)")
-        let entered = await Self.selectAndEnter(slot: profile.profileIndex, displayedUnder: displayedUnder, origin: origin,
-                                                pinEnabled: profile.pinEnabled, rowRevision: profile.updatedAt,
+    /// Review r6: the displayed row builds its own request (its list's token and the full row).
+    func selectAndEnter(_ row: DisplayedProfile, origin: SelectOrigin, enter: @escaping (IdentityState) -> Void) async {
+        print("[ProfileSelect] selecting profile \(row.profile.profileIndex)")
+        let entered = await Self.selectAndEnter(request: row.selectRequest(origin: origin),
                                                 identity: IdentityModel.shared, ports: selectPorts, enter: enter)
         print("[ProfileSelect] select finished — entered=\(entered)")
     }
 
     /// The sequence itself, testable with a fake barrier. Returns whether the profile was entered.
     @discardableResult
-    static func selectAndEnter(slot: Int32,
-                               displayedUnder: AccountToken?,
-                               origin: SelectOrigin = .pickertap,
-                               pinEnabled: Bool = false,
-                               rowRevision: String = "",
+    static func selectAndEnter(request: SelectRequest?,
                                identity: IdentityModel,
                                ports: ProfileSelectPorts,
                                enter: (IdentityState) -> Void) async -> Bool {
@@ -110,13 +105,13 @@ final class ProfilesViewModel: ObservableObject {
         identity.localSelectInFlight = true
         defer { identity.localSelectInFlight = false } // 4: the last statement, whatever happened
         // The tap binds to the account of the list the row was displayed from (nil: never enter).
-        let boundAccount = displayedUnder.map { $0.account.storageKey() ?? "none" }
+        let boundAccount = request.map { $0.displayedUnder.account.storageKey() ?? "none" }
         var binding = TapBindingRule.decide(bound: boundAccount, current: ports.currentState())
         for _ in 0..<40 where binding == .wait {
             try? await Task.sleep(nanoseconds: 50_000_000)
             binding = TapBindingRule.decide(bound: boundAccount, current: ports.currentState())
         }
-        guard binding == .proceed, let accountAtTap = ports.currentState()?.scope.account, let token = displayedUnder else {
+        guard binding == .proceed, let accountAtTap = ports.currentState()?.scope.account, let request else {
             print("[ProfileSelect] not entered: the tap's identity is not the open one (\(binding))")
             return false
         }
@@ -127,8 +122,7 @@ final class ProfilesViewModel: ObservableObject {
             result = nil
         } else {
             // Rule G: the barrier admits it against the current token and list (the guarantee).
-            result = try? await ports.select(request: SelectRequest(slot: slot, displayedUnder: token, origin: origin,
-                                                                     pinEnabled: pinEnabled, rowRevision: rowRevision))
+            result = try? await ports.select(request: request)
         }
         // 3. Branch on the result.
         guard let done = result as? TransitionResultDone else {
@@ -141,7 +135,7 @@ final class ProfilesViewModel: ObservableObject {
         }
         let final = done.final
         guard final.phase is IdentityPhaseOpen,
-              final.scope.slot == slot,
+              final.scope.slot == request.slot,
               IdentityValues.same(final.scope.account, accountAtTap),
               IdentityValues.same(final, ports.currentState()) else {
             print("[ProfileSelect] not entered: the identity moved on (\(final))")
@@ -163,17 +157,18 @@ final class ProfilesViewModel: ObservableObject {
     /// Reads the repository's state SYNCHRONOUSLY (call `start()` first so a guest's cached
     /// payload is loaded; a real account's cache is keyed to its user by `AuthViewModel`'s
     /// `ensureLoaded` before the gate turns `.main`). The rule is `ProfileAutoEnter.decision`.
-    func rememberedStartupProfile(alreadyFiredThisLaunch: Bool) -> NuvioProfile? {
+    /// Review r6: the remembered row and its token come from ONE snapshot (a DisplayedProfile).
+    func rememberedStartupProfile(alreadyFiredThisLaunch: Bool) -> DisplayedProfile? {
         guard let state = ProfileRepository.shared.state.value_ as? ProfileState else { return nil }
         let enabled = ProfileAutoEnter.debugEnabledOverride() ?? state.rememberLastProfileEnabled
-        let activeId = ProfileRepository.shared.activeProfileId
-        let active = state.profiles.first { $0.profileIndex == activeId }
+        let row = state.displayedRow(slot: ProfileRepository.shared.activeProfileId)
+        let active = row?.profile
         guard ProfileAutoEnter.decision(enabled: enabled,
                                         everSelected: state.hasEverSelectedProfile,
                                         activeProfileExists: active != nil,
                                         pinEnabled: active?.pinEnabled ?? false,
                                         alreadyFiredThisLaunch: alreadyFiredThisLaunch) else { return nil }
-        return active
+        return row
     }
 
     func createProfile(
@@ -183,8 +178,11 @@ final class ProfilesViewModel: ObservableObject {
         avatarUrl: String? = nil,
         completion: @escaping () -> Void
     ) {
+        // Review r6: created under the token of the list on screen (nothing displayed: nothing created).
+        guard let snapshot else { completion(); return }
         isBusy = true
         ProfileRepository.shared.createProfile(
+            list: snapshot,
             name: name,
             avatarColorHex: colorHex,
             avatarId: avatarId,
@@ -199,7 +197,7 @@ final class ProfilesViewModel: ObservableObject {
     }
 
     func updateProfile(
-        _ profile: NuvioProfile,
+        _ row: DisplayedProfile,
         name: String,
         colorHex: String,
         avatarId: String? = nil,
@@ -208,12 +206,12 @@ final class ProfilesViewModel: ObservableObject {
     ) {
         isBusy = true
         ProfileRepository.shared.updateProfile(
-            profileIndex: profile.profileIndex,
+            row: row,
             name: name,
             avatarColorHex: colorHex,
             avatarId: avatarId,
             avatarUrl: avatarUrl,
-            usesPrimaryAddons: profile.usesPrimaryAddons
+            usesPrimaryAddons: row.profile.usesPrimaryAddons
         ) { [weak self] _ in
             DispatchQueue.main.async {
                 self?.isBusy = false
@@ -225,28 +223,28 @@ final class ProfilesViewModel: ObservableObject {
     // MARK: - PIN (cloud accounts only; RPCs verify/set/clear server-side)
 
     /// Verifies a profile PIN. Falls back to the shared local cache when offline.
-    func verifyPin(_ profile: NuvioProfile, pin: String, completion: @escaping (PinVerifyResult?) -> Void) {
-        ProfileRepository.shared.verifyPin(profileIndex: profile.profileIndex, pin: pin) { result, _ in
+    func verifyPin(_ row: DisplayedProfile, pin: String, completion: @escaping (PinVerifyResult?) -> Void) {
+        ProfileRepository.shared.verifyPin(row: row, pin: pin) { result, _ in
             DispatchQueue.main.async { completion(result) }
         }
     }
 
     /// Sets (or changes, when `currentPin` is provided) a profile's 4-digit PIN.
-    func setPin(profileIndex: Int32, pin: String, currentPin: String?, completion: @escaping (PinVerifyResult?) -> Void) {
-        ProfileRepository.shared.setPin(profileIndex: profileIndex, pin: pin, currentPin: currentPin) { result, _ in
+    func setPin(_ row: DisplayedProfile, pin: String, currentPin: String?, completion: @escaping (PinVerifyResult?) -> Void) {
+        ProfileRepository.shared.setPin(row: row, pin: pin, currentPin: currentPin) { result, _ in
             DispatchQueue.main.async { completion(result) }
         }
     }
 
     /// Removes a profile's PIN lock (requires the current PIN).
-    func clearPin(profileIndex: Int32, currentPin: String?, completion: @escaping (PinVerifyResult?) -> Void) {
-        ProfileRepository.shared.clearPin(profileIndex: profileIndex, currentPin: currentPin) { result, _ in
+    func clearPin(_ row: DisplayedProfile, currentPin: String?, completion: @escaping (PinVerifyResult?) -> Void) {
+        ProfileRepository.shared.clearPin(row: row, currentPin: currentPin) { result, _ in
             DispatchQueue.main.async { completion(result) }
         }
     }
 
-    func deleteProfile(_ profile: NuvioProfile, completion: @escaping () -> Void = {}) {
-        ProfileRepository.shared.deleteProfile(profileIndex: profile.profileIndex) { _ in
+    func deleteProfile(_ row: DisplayedProfile, completion: @escaping () -> Void = {}) {
+        ProfileRepository.shared.deleteProfile(row: row) { _ in
             DispatchQueue.main.async { completion() }
         }
     }

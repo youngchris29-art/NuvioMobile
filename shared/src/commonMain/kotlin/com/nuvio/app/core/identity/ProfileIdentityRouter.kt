@@ -89,8 +89,7 @@ class CheckedFanOut(private val report: (name: String, bestEffort: Boolean, erro
 
 /** The barrier's profile mutations over the real ProfileRepository (installed by tvOS). */
 internal object ProfileRepositoryOps : IdentityProfileOps {
-    override fun listedRows(): List<ListedRow> =
-        ProfileRepository.state.value.profiles.map { ListedRow(it.profileIndex, it.pinEnabled, it.updatedAt) }
+    override fun listedRows(): List<NuvioProfile> = ProfileRepository.state.value.profiles
 
     override fun writeSelection(slot: Int) = ProfileRepository.writeSelection(slot)
 
@@ -120,10 +119,8 @@ internal object RealBarrierRouterPorts : BarrierRouterPorts {
     override fun launchSelect(slot: Int) {
         // Rule G (r5): origin Restore; the row and its list token as they are in memory now. A
         // list not stamped for the current account, or a changed row, is refused at admission.
-        val state = ProfileRepository.state.value
-        val token = state.listToken ?: return
-        val row = state.profiles.firstOrNull { it.profileIndex == slot } ?: return
-        scope.launch { IdentityBarrier.selectProfile(SelectRequest(slot, token, SelectOrigin.Restore, row.pinEnabled, row.updatedAt)) }
+        val request = ProfileRepository.state.value.displayedRow(slot)?.selectRequest(SelectOrigin.Restore) ?: return
+        scope.launch { IdentityBarrier.selectProfile(request) }
     }
 
     override fun requestSlotRemoved(slot: Int, token: AccountToken) = IdentityBarrier.requestSlotRemoved(slot, token)

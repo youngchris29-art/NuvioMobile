@@ -80,9 +80,10 @@ struct ProfileSelectionView: View {
                 // Max 6 profiles + Add tile fit on screen, so no ScrollView — a plain HStack
                 // centers the row in the middle of the screen (a ScrollView would pin it left).
                 HStack(alignment: .top, spacing: Theme.Spacing.xl) {
-                        ForEach(model.profiles, id: \.profileIndex) { profile in
+                        ForEach(model.rows, id: \.profile.profileIndex) { row in
+                            let profile = row.profile
                             Button {
-                                requirePin(for: profile, action: .select)
+                                requirePin(for: row, action: .select)
                             } label: {
                                 profileTile(name: profile.name, isPrimary: profile.profileIndex == 1) {
                                     ZStack(alignment: .bottomTrailing) {
@@ -112,11 +113,11 @@ struct ProfileSelectionView: View {
                             )
                             .contextMenu {
                                 Button {
-                                    requirePin(for: profile, action: .edit)
+                                    requirePin(for: row, action: .edit)
                                 } label: { Label("Edit Profile", systemImage: "pencil") }
                                 if model.profiles.count > 1 {
                                     Button(role: .destructive) {
-                                        requirePin(for: profile, action: .delete)
+                                        requirePin(for: row, action: .delete)
                                     } label: { Label("Delete Profile", systemImage: "trash") }
                                 }
                             }
@@ -124,7 +125,7 @@ struct ProfileSelectionView: View {
 
                         if model.profiles.count < model.maxProfiles {
                             Button {
-                                editing = ProfileEditTarget(profile: nil)
+                                editing = ProfileEditTarget(row: nil)
                             } label: {
                                 profileTile(name: String(localized: "Add Profile")) {
                                     ZStack {
@@ -169,14 +170,14 @@ struct ProfileSelectionView: View {
         }
         .fullScreenCover(item: $pinPrompt) { prompt in
             PinEntryView(
-                title: String(localized: "Enter PIN for \(prompt.profile.name)"),
+                title: String(localized: "Enter PIN for \(prompt.row.profile.name)"),
                 subtitle: prompt.action == .select ? nil : String(localized: "This profile is locked."),
                 onCancel: { pinPrompt = nil },
                 onSubmit: { pin, done in
-                    model.verifyPin(prompt.profile, pin: pin) { result in
+                    model.verifyPin(prompt.row, pin: pin) { result in
                         if result?.unlocked == true {
                             pinPrompt = nil
-                            perform(prompt.action, on: prompt.profile, displayedUnder: prompt.displayedUnder)
+                            perform(prompt.action, on: prompt.row)
                         } else {
                             done(pinErrorMessage(result))
                         }
@@ -190,34 +191,30 @@ struct ProfileSelectionView: View {
 
     private struct PinPrompt: Identifiable {
         enum Action { case select, edit, delete }
-        let profile: NuvioProfile
+        /// Review r6: the displayed row (with its list's token), carried through the PIN check.
+        let row: DisplayedProfile
         let action: Action
-        /// Rule G: the account token the picker showed (and PIN-checks) this profile under.
-        let displayedUnder: AccountToken?
-        var id: String { "\(profile.profileIndex)-\(action)" }
+        var id: String { "\(row.profile.profileIndex)-\(action)" }
     }
 
-    private func requirePin(for profile: NuvioProfile, action: PinPrompt.Action) {
-        // Review r5: the token of the list this row was rendered from (Kotlin stamps it with the list).
-        let shownUnder = model.listToken
-        if profile.pinEnabled {
-            pinPrompt = PinPrompt(profile: profile, action: action, displayedUnder: shownUnder)
+    private func requirePin(for row: DisplayedProfile, action: PinPrompt.Action) {
+        if row.profile.pinEnabled {
+            pinPrompt = PinPrompt(row: row, action: action)
         } else {
-            perform(action, on: profile, displayedUnder: shownUnder)
+            perform(action, on: row)
         }
     }
 
-    private func perform(_ action: PinPrompt.Action, on profile: NuvioProfile, displayedUnder: AccountToken?) {
+    private func perform(_ action: PinPrompt.Action, on row: DisplayedProfile) {
         switch action {
         case .select:
             guard !model.isSwitching else { return }
             let enter = onSelected
-            // No list token: the tap binds to nothing → picker.
-            Task { await model.selectAndEnter(profile, displayedUnder: displayedUnder, origin: .pickertap, enter: enter) }
+            Task { await model.selectAndEnter(row, origin: .pickertap, enter: enter) }
         case .edit:
-            editing = ProfileEditTarget(profile: profile)
+            editing = ProfileEditTarget(row: row)
         case .delete:
-            model.deleteProfile(profile)
+            model.deleteProfile(row)
         }
     }
 
@@ -280,7 +277,9 @@ func pinErrorMessage(_ result: PinVerifyResult?) -> String {
 
 /// Identifiable wrapper so add (nil) / edit (existing) can drive `.fullScreenCover(item:)`.
 struct ProfileEditTarget: Identifiable {
-    let profile: NuvioProfile?
+    /// Review r6: the displayed row being edited (nil: a new profile).
+    let row: DisplayedProfile?
+    var profile: NuvioProfile? { row?.profile }
     var id: Int { profile.map { Int($0.profileIndex) } ?? -1 }
 }
 
@@ -314,11 +313,14 @@ struct ProfileEditView: View {
         originalCustomAvatarUrl = target.profile?.avatarId == nil ? target.profile?.avatarUrl : nil
     }
 
-    /// Live copy of the profile being edited (PIN state refreshes after set/clear → pullProfiles).
-    private var liveProfile: NuvioProfile? {
+    /// Live row of the profile being edited (PIN state refreshes after set/clear → pullProfiles);
+    /// a row of the current snapshot, so it carries that snapshot's token.
+    private var liveRow: DisplayedProfile? {
         guard let index = target.profile?.profileIndex else { return nil }
-        return model.profiles.first { $0.profileIndex == index }
+        return model.rows.first { $0.profile.profileIndex == index }
     }
+
+    private var liveProfile: NuvioProfile? { liveRow?.profile }
 
     private var selectedCatalogItem: AvatarCatalogItem? {
         model.avatars.first { $0.id == avatarId }
@@ -484,9 +486,9 @@ struct ProfileEditView: View {
                     .accessibilityIdentifier("profileEdit.save")
                     .focusRow()
 
-                    if let profile = target.profile, model.profiles.count > 1 {
+                    if let row = target.row, model.profiles.count > 1 {
                         Button(role: .destructive) {
-                            model.deleteProfile(profile) { dismiss() }
+                            model.deleteProfile(row) { dismiss() }
                         } label: {
                             Label("Delete Profile", systemImage: "trash")
                                 .font(Theme.Font.body)
@@ -529,9 +531,9 @@ struct ProfileEditView: View {
                 subtitle: remove ? String(localized: "Confirm the PIN to remove the lock.") : String(localized: "Confirm the PIN before choosing a new one."),
                 onCancel: { pinFlow = nil },
                 onSubmit: { pin, done in
-                    guard let profile = liveProfile else { pinFlow = nil; return }
+                    guard let row = liveRow else { pinFlow = nil; return }
                     if remove {
-                        model.clearPin(profileIndex: profile.profileIndex, currentPin: pin) { result in
+                        model.clearPin(row, currentPin: pin) { result in
                             if result?.unlocked == true {
                                 pinFlow = nil
                             } else {
@@ -539,7 +541,7 @@ struct ProfileEditView: View {
                             }
                         }
                     } else {
-                        model.verifyPin(profile, pin: pin) { result in
+                        model.verifyPin(row, pin: pin) { result in
                             if result?.unlocked == true {
                                 pinFlow = .enterNew(current: pin)
                             } else {
@@ -555,8 +557,8 @@ struct ProfileEditView: View {
                 subtitle: String(localized: "This profile will require the PIN to open."),
                 onCancel: { pinFlow = nil },
                 onSubmit: { pin, done in
-                    guard let profile = liveProfile else { pinFlow = nil; return }
-                    model.setPin(profileIndex: profile.profileIndex, pin: pin, currentPin: current) { result in
+                    guard let row = liveRow else { pinFlow = nil; return }
+                    model.setPin(row, pin: pin, currentPin: current) { result in
                         if result?.unlocked == true {
                             pinFlow = nil
                         } else {
@@ -584,9 +586,9 @@ struct ProfileEditView: View {
             finalAvatarUrl = originalCustomAvatarUrl
         }
 
-        if let profile = target.profile {
+        if let row = liveRow ?? target.row {
             model.updateProfile(
-                profile,
+                row,
                 name: finalName,
                 colorHex: colorHex,
                 avatarId: avatarId,

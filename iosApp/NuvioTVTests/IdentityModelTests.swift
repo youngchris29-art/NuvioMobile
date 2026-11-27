@@ -203,7 +203,7 @@ final class SelectAndEnterSequenceTests: XCTestCase {
         var coverDuringEnter: Bool?
         var coverDuringSelect = false
         ports.duringSelect = { coverDuringSelect = self.cover.visible }
-        let entered = await ProfilesViewModel.selectAndEnter(slot: slot, displayedUnder: bound, identity: model, ports: ports) { _ in
+        let entered = await ProfilesViewModel.selectAndEnter(request: IdentityFixture.request(slot, bound), identity: model, ports: ports) { _ in
             coverDuringEnter = self.cover.visible
         }
         XCTAssertTrue(coverDuringSelect, "the cover shows at the tap")
@@ -295,7 +295,7 @@ final class SelectAndEnterSequenceTests: XCTestCase {
         }
         var selected = false
         ports.result = { selected = true; return TransitionResultRequested.shared }
-        let entered = await ProfilesViewModel.selectAndEnter(slot: 2, displayedUnder: IdentityFixture.token, identity: model, ports: ports) { _ in }
+        let entered = await ProfilesViewModel.selectAndEnter(request: IdentityFixture.request(2, IdentityFixture.token), identity: model, ports: ports) { _ in }
         XCTAssertFalse(entered)
         XCTAssertFalse(selected, "the barrier must not be asked to select in B")
         XCTAssertEqual(root.recoveries, 1)
@@ -315,7 +315,7 @@ final class SelectAndEnterSequenceTests: XCTestCase {
     func testUnboundTapNeverSelects() async {
         var selected = false
         ports.result = { selected = true; return TransitionResultRequested.shared }
-        let entered = await ProfilesViewModel.selectAndEnter(slot: 2, displayedUnder: nil, identity: model, ports: ports) { _ in }
+        let entered = await ProfilesViewModel.selectAndEnter(request: IdentityFixture.request(2, nil), identity: model, ports: ports) { _ in }
         XCTAssertFalse(entered)
         XCTAssertFalse(selected)
     }
@@ -337,7 +337,7 @@ final class SelectAndEnterSequenceTests: XCTestCase {
         ports.failBeforeBegin = true
         ports.result = { XCTFail("the barrier must not be called"); return TransitionResultRequested.shared }
         ports.duringSelect = {}
-        let entered = await ProfilesViewModel.selectAndEnter(slot: 2, displayedUnder: IdentityFixture.token, identity: model, ports: ports) { _ in }
+        let entered = await ProfilesViewModel.selectAndEnter(request: IdentityFixture.request(2, IdentityFixture.token), identity: model, ports: ports) { _ in }
         XCTAssertFalse(entered)
         XCTAssertEqual(root.recoveries, 1)
         XCTAssertFalse(cover.visible)

@@ -226,27 +226,48 @@ object ProfileRepository {
     suspend fun pushProfiles(
         profiles: List<ProfilePushPayload>,
         token: AccountToken? = IdentityGate.currentAccountToken(),
-    ) {
+    ) = pushProfilesBuilt(token) { profiles }
+
+    /**
+     * Fork (W2, 5.4; review r6 #1, #2): [build] derives the payload list from the CURRENT list.
+     * Guest: inside the commit section, so a concurrent edit or delete is never overwritten.
+     * Signed in: built just before the RPC, which is dispatched only while [token] holds and with
+     * the auth lane held (AuthRepository.dispatchUnderSession). null from [build]: nothing to push.
+     */
+    private suspend fun pushProfilesBuilt(token: AccountToken?, build: (List<NuvioProfile>) -> List<ProfilePushPayload>?) {
         if (AuthRepository.state.value.isAnonymous) {
-            // Fork (W2, 5.4): applied only for the account the edit was made under.
-            IdentityGate.commitAccount(token, "pushProfiles") { applyPayloadsLocally(profiles, token) }
+            val applied = IdentityGate.commitAccount(token, "pushProfiles") { build(_state.value.profiles)?.let { applyPayloadsLocally(it, token) } }
+            if (applied is CommitResult.Rejected) log.w { "Profile edit refused: the account changed (${applied.reason})" }
             return
         }
         val ticket = AuthRepository.sessionTicket()
         try {
-            if (IdentityGate.checkAccount(token, "pushProfiles") !is Verdict.Commit) return
-            val params = buildJsonObject {
-                put("p_client_max_profiles", MAX_PROFILES)
-                put("p_profiles", json.encodeToJsonElement(profiles))
-                putSyncOriginClientId()
+            val sent = AuthRepository.dispatchUnderSession(token, "pushProfiles") {
+                val payloads = build(_state.value.profiles) ?: return@dispatchUnderSession false
+                val params = buildJsonObject {
+                    put("p_client_max_profiles", MAX_PROFILES)
+                    put("p_profiles", json.encodeToJsonElement(payloads))
+                    putSyncOriginClientId()
+                }
+                SupabaseProvider.client.postgrest.rpc("sync_push_profiles", params)
+                true
             }
-            SupabaseProvider.client.postgrest.rpc("sync_push_profiles", params)
-            pullProfiles()
+            if (sent == true) pullProfiles()
         } catch (e: Throwable) {
             if (AuthRepository.reportSessionError(ticket, e, "Profile push")) return
             log.e(e) { "Failed to push profiles" }
         }
     }
+
+    private fun NuvioProfile.toPushPayload() = ProfilePushPayload(
+        profileIndex = profileIndex,
+        name = name,
+        avatarColorHex = avatarColorHex,
+        usesPrimaryAddons = usesPrimaryAddons,
+        usesPrimaryPlugins = usesPrimaryPlugins,
+        avatarId = avatarId,
+        avatarUrl = avatarUrl,
+    )
 
     suspend fun createProfile(
         name: String,
@@ -254,31 +275,41 @@ object ProfileRepository {
         avatarId: String? = null,
         avatarUrl: String? = null,
         usesPrimaryAddons: Boolean = false,
+    ) = createProfileUnder(IdentityGate.currentAccountToken(), name, avatarColorHex, avatarId, avatarUrl, usesPrimaryAddons)
+
+    /** Fork (W2 review r6): tvOS creates under the token of the list the picker displayed. */
+    suspend fun createProfile(
+        list: ProfileState,
+        name: String,
+        avatarColorHex: String,
+        avatarId: String? = null,
+        avatarUrl: String? = null,
+        usesPrimaryAddons: Boolean = false,
     ) {
-        val token = IdentityGate.currentAccountToken()
-        val existing = _state.value.profiles
-        val nextIndex = ((1..MAX_PROFILES).toSet() - existing.map { it.profileIndex }.toSet()).minOrNull() ?: return
+        val token = list.listToken ?: return
+        createProfileUnder(token, name, avatarColorHex, avatarId, avatarUrl, usesPrimaryAddons)
+    }
 
-        val allPayloads = existing.map { profile ->
-            ProfilePushPayload(
-                profileIndex = profile.profileIndex,
-                name = profile.name,
-                avatarColorHex = profile.avatarColorHex,
-                usesPrimaryAddons = profile.usesPrimaryAddons,
-                usesPrimaryPlugins = profile.usesPrimaryPlugins,
-                avatarId = profile.avatarId,
-                avatarUrl = profile.avatarUrl,
+    private suspend fun createProfileUnder(
+        token: AccountToken?,
+        name: String,
+        avatarColorHex: String,
+        avatarId: String?,
+        avatarUrl: String?,
+        usesPrimaryAddons: Boolean,
+    ) = pushProfilesBuilt(token) { existing ->
+        // r6 #2: the free slot and the list come from the current list (inside the commit for guests).
+        val nextIndex = ((1..MAX_PROFILES).toSet() - existing.map { it.profileIndex }.toSet()).minOrNull()
+        nextIndex?.let {
+            existing.map { profile -> profile.toPushPayload() } + ProfilePushPayload(
+                profileIndex = it,
+                name = name,
+                avatarColorHex = avatarColorHex,
+                usesPrimaryAddons = usesPrimaryAddons,
+                avatarId = avatarId,
+                avatarUrl = avatarUrl,
             )
-        } + ProfilePushPayload(
-            profileIndex = nextIndex,
-            name = name,
-            avatarColorHex = avatarColorHex,
-            usesPrimaryAddons = usesPrimaryAddons,
-            avatarId = avatarId,
-            avatarUrl = avatarUrl,
-        )
-
-        pushProfiles(allPayloads, token)
+        }
     }
 
     suspend fun updateProfile(
@@ -288,9 +319,32 @@ object ProfileRepository {
         avatarId: String? = null,
         avatarUrl: String? = null,
         usesPrimaryAddons: Boolean = false,
+    ) = updateProfileUnder(IdentityGate.currentAccountToken(), profileIndex, name, avatarColorHex, avatarId, avatarUrl, usesPrimaryAddons)
+
+    /** Fork (W2 review r6): tvOS edits the displayed row, under the token of the list it came from. */
+    suspend fun updateProfile(
+        row: DisplayedProfile,
+        name: String,
+        avatarColorHex: String,
+        avatarId: String? = null,
+        avatarUrl: String? = null,
+        usesPrimaryAddons: Boolean = false,
     ) {
-        val token = IdentityGate.currentAccountToken()
-        val allPayloads = _state.value.profiles.map { profile ->
+        val token = row.listToken ?: return
+        updateProfileUnder(token, row.profile.profileIndex, name, avatarColorHex, avatarId, avatarUrl, usesPrimaryAddons)
+    }
+
+    private suspend fun updateProfileUnder(
+        token: AccountToken?,
+        profileIndex: Int,
+        name: String,
+        avatarColorHex: String,
+        avatarId: String?,
+        avatarUrl: String?,
+        usesPrimaryAddons: Boolean,
+    ) = pushProfilesBuilt(token) { current ->
+        if (current.none { it.profileIndex == profileIndex }) return@pushProfilesBuilt null // deleted meanwhile
+        current.map { profile ->
             if (profile.profileIndex == profileIndex) {
                 ProfilePushPayload(
                     profileIndex = profileIndex,
@@ -301,23 +355,29 @@ object ProfileRepository {
                     avatarUrl = avatarUrl,
                 )
             } else {
-                ProfilePushPayload(
-                    profileIndex = profile.profileIndex,
-                    name = profile.name,
-                    avatarColorHex = profile.avatarColorHex,
-                    usesPrimaryAddons = profile.usesPrimaryAddons,
-                    usesPrimaryPlugins = profile.usesPrimaryPlugins,
-                    avatarId = profile.avatarId,
-                    avatarUrl = profile.avatarUrl,
-                )
+                profile.toPushPayload()
             }
         }
-
-        pushProfiles(allPayloads, token)
     }
 
-    suspend fun deleteProfile(profileIndex: Int) {
-        val token = IdentityGate.currentAccountToken()
+    suspend fun deleteProfile(profileIndex: Int) = deleteProfileUnder(profileIndex, IdentityGate.currentAccountToken())
+
+    /**
+     * Fork (W2 review r6 #1): tvOS deletes the displayed row, under the token of the list it came
+     * from (a row of A's list can never delete in B, however late the PIN check completes).
+     */
+    suspend fun deleteProfile(row: DisplayedProfile) = deleteProfileUnder(row.profile.profileIndex, row.listToken)
+
+    /** Tests only: replaces the delete RPC (r6 #1 binding tests). */
+    internal var deleteRpcForTest: (suspend (Int) -> Unit)? = null
+
+    /** Tests only: runs in a guest delete after the token check, before its commit section (r6 #2). */
+    internal var beforeGuestDeleteCommitForTest: () -> Unit = {}
+
+    /** Tests only: whether the session is a guest's, instead of AuthRepository.state (no auth in unit tests). */
+    internal var isGuestForTest: Boolean? = null
+
+    private suspend fun deleteProfileUnder(profileIndex: Int, token: AccountToken?) {
         // Fork (W2 review r5 #4): no delete without the account it is for. A window holds (or
         // recovery): refuse before any RPC, so a delete never succeeds remotely while its local
         // tracker cleanup is refused. The user retries from the picker.
@@ -326,10 +386,12 @@ object ProfileRepository {
             return
         }
         val router = ProfileIdentityRouterProvider.router
-        if (AuthRepository.state.value.isAnonymous) {
-            val remaining = _state.value.profiles.filter { it.profileIndex != profileIndex }
-            // Fork (W2, 5.3): the local filter and the PIN removal only for the account it was asked under.
+        if (isGuestForTest ?: AuthRepository.state.value.isAnonymous) {
+            beforeGuestDeleteCommitForTest()
+            // Fork (W2, 5.3; review r6 #2): the remaining list is computed from the CURRENT list
+            // inside the commit section, and that same result drives the cleanup.
             val filtered = IdentityGate.commitAccount(token, "guestDelete") {
+                val remaining = _state.value.profiles.filter { it.profileIndex != profileIndex }
                 ProfilePinCacheStorage.removePayload(profileIndex)
                 _state.value = _state.value.copy(
                     profiles = remaining,
@@ -344,23 +406,30 @@ object ProfileRepository {
                     activeProfileIndex = _state.value.activeProfile!!.profileIndex
                 }
                 persist()
+                remaining
             }
-            if (filtered is CommitResult.Rejected) return
-            router.afterProfileDeleted(profileIndex, remaining, token)
+            if (filtered is CommitResult.Committed) router.afterProfileDeleted(profileIndex, filtered.value, token)
             return
         }
         val ticket = AuthRepository.sessionTicket()
         try {
-            val params = buildJsonObject {
-                put("p_profile_id", profileIndex)
-                putSyncOriginClientId()
+            val sent = AuthRepository.dispatchUnderSession(token, "deleteProfile") {
+                val params = buildJsonObject {
+                    put("p_profile_id", profileIndex)
+                    putSyncOriginClientId()
+                }
+                deleteRpcForTest?.invoke(profileIndex) ?: SupabaseProvider.client.postgrest.rpc("sync_delete_profile_data", params)
+                true
             }
-            SupabaseProvider.client.postgrest.rpc("sync_delete_profile_data", params)
+            if (sent != true) {
+                log.w { "Profile delete $profileIndex refused: the account changed before the request" }
+                return
+            }
             // Only after the server delete succeeded: a failed RPC leaves the profile alive, and
             // wiping its local tracker credentials then would silently disconnect it. Fork (W2):
             // the router also moves the active profile when it was the one deleted (5.3).
             router.afterProfileDeleted(profileIndex, _state.value.profiles.filter { it.profileIndex != profileIndex }, token)
-            pullProfiles()
+            if (deleteRpcForTest == null) pullProfiles()
         } catch (e: Throwable) {
             if (AuthRepository.reportSessionError(ticket, e, "Profile delete")) return
             log.e(e) { "Failed to delete profile $profileIndex" }
@@ -390,7 +459,15 @@ object ProfileRepository {
         }
     }
 
-    suspend fun verifyPin(profileIndex: Int, pin: String): PinVerifyResult {
+    suspend fun verifyPin(profileIndex: Int, pin: String): PinVerifyResult = verifyPinUnder(profileIndex, pin, null)
+
+    /** Fork (W2 review r6 #1): the displayed row, verified only while the token of its list holds. */
+    suspend fun verifyPin(row: DisplayedProfile, pin: String): PinVerifyResult =
+        if (IdentityGate.checkAccount(row.listToken, "verifyPin") !is Verdict.Commit) PinVerifyResult(unlocked = false)
+        else verifyPinUnder(row.profile.profileIndex, pin, row.listToken)
+
+    /** [token] null: the legacy (composeApp) call, unbound; else the RPC runs under [dispatchUnderSession]. */
+    private suspend fun verifyPinUnder(profileIndex: Int, pin: String, token: AccountToken?): PinVerifyResult {
         if (AuthRepository.state.value !is AuthState.Authenticated) {
             return verifyPinLocally(profileIndex, pin)
         }
@@ -400,7 +477,8 @@ object ProfileRepository {
                 put("p_profile_id", profileIndex)
                 put("p_pin", pin)
             }
-            val result = SupabaseProvider.client.postgrest.rpc("verify_profile_pin", params)
+            val result = rpcBound(token, "verifyPin") { SupabaseProvider.client.postgrest.rpc("verify_profile_pin", params) }
+                ?: return PinVerifyResult(unlocked = false)
             result.decodeSingle<PinVerifyResult>().also { verifyResult ->
                 if (verifyResult.unlocked) {
                     // Upstream 5327166f: refresh the cached profile before remembering the PIN so
@@ -415,7 +493,13 @@ object ProfileRepository {
         }
     }
 
-    suspend fun setPin(profileIndex: Int, pin: String, currentPin: String? = null): PinVerifyResult {
+    suspend fun setPin(profileIndex: Int, pin: String, currentPin: String? = null): PinVerifyResult = setPinUnder(profileIndex, pin, currentPin, null)
+
+    /** Fork (W2 review r6 #1): the displayed row, under the token of its list. */
+    suspend fun setPin(row: DisplayedProfile, pin: String, currentPin: String? = null): PinVerifyResult =
+        if (row.listToken == null) PinVerifyResult(unlocked = false) else setPinUnder(row.profile.profileIndex, pin, currentPin, row.listToken)
+
+    private suspend fun setPinUnder(profileIndex: Int, pin: String, currentPin: String?, token: AccountToken?): PinVerifyResult {
         if (AuthRepository.state.value !is AuthState.Authenticated) {
             return PinVerifyResult(unlocked = false, message = resourceString("Connect to the internet to set a PIN.", StringKey.profile_pin_set_requires_internet))
         }
@@ -426,7 +510,8 @@ object ProfileRepository {
                 put("p_pin", pin)
                 currentPin?.let { put("p_current_pin", it) }
             }
-            SupabaseProvider.client.postgrest.rpc("set_profile_pin", params)
+            rpcBound(token, "setPin") { SupabaseProvider.client.postgrest.rpc("set_profile_pin", params) }
+                ?: return PinVerifyResult(unlocked = false)
             pullProfiles()
             rememberVerifiedPin(profileIndex = profileIndex, pin = pin)
             PinVerifyResult(unlocked = true)
@@ -437,7 +522,13 @@ object ProfileRepository {
         }
     }
 
-    suspend fun clearPin(profileIndex: Int, currentPin: String? = null): PinVerifyResult {
+    suspend fun clearPin(profileIndex: Int, currentPin: String? = null): PinVerifyResult = clearPinUnder(profileIndex, currentPin, null)
+
+    /** Fork (W2 review r6 #1): the displayed row, under the token of its list. */
+    suspend fun clearPin(row: DisplayedProfile, currentPin: String? = null): PinVerifyResult =
+        if (row.listToken == null) PinVerifyResult(unlocked = false) else clearPinUnder(row.profile.profileIndex, currentPin, row.listToken)
+
+    private suspend fun clearPinUnder(profileIndex: Int, currentPin: String?, token: AccountToken?): PinVerifyResult {
         if (AuthRepository.state.value !is AuthState.Authenticated) {
             return PinVerifyResult(unlocked = false, message = resourceString("Connect to the internet to remove the PIN lock.", StringKey.profile_pin_clear_requires_internet))
         }
@@ -447,7 +538,8 @@ object ProfileRepository {
                 put("p_profile_id", profileIndex)
                 currentPin?.let { put("p_current_pin", it) }
             }
-            SupabaseProvider.client.postgrest.rpc("clear_profile_pin", params)
+            rpcBound(token, "clearPin") { SupabaseProvider.client.postgrest.rpc("clear_profile_pin", params) }
+                ?: return PinVerifyResult(unlocked = false)
             pullProfiles()
             ProfilePinCacheStorage.removePayload(profileIndex)
             PinVerifyResult(unlocked = true)
@@ -481,6 +573,10 @@ object ProfileRepository {
             emptyList()
         }
     }
+
+    /** [token] null: unbound legacy call; else [call] only under the held session while [token] holds (null result: refused). */
+    private suspend fun <T> rpcBound(token: AccountToken?, site: String, call: suspend () -> T): T? =
+        if (token == null) call() else AuthRepository.dispatchUnderSession(token, site) { call() }
 
     private fun applyPayloadsLocally(payloads: List<ProfilePushPayload>, token: AccountToken?) {
         val authState = AuthRepository.state.value as? AuthState.Authenticated ?: return
@@ -613,6 +709,11 @@ object ProfileRepository {
                 ProfilePinCacheStorage.removePayload(profileIndex)
             }
         }
+    }
+
+    /** Tests only: puts a list (with its token) in memory. */
+    internal fun setStateForTest(state: ProfileState) {
+        _state.value = state
     }
 
     private fun persist() {

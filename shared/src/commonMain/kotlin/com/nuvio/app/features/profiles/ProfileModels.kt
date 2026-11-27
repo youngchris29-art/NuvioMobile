@@ -52,7 +52,34 @@ data class ProfileState(
      * its SelectRequest, so a row of A's list can never be admitted under B. Null: not stamped.
      */
     val listToken: com.nuvio.app.core.identity.AccountToken? = null,
-)
+) {
+    /**
+     * Fork (W2 review r6 #1/#4): the displayed snapshot's rows, each bound to this list's token.
+     * The only thing tvOS renders from and the only thing a row action takes; a row cannot exist
+     * without the token of the list it came from (the constructor is internal).
+     */
+    val displayed: List<DisplayedProfile> get() = profiles.map { DisplayedProfile(it, listToken) }
+
+    /** The displayed row of [slot] in this snapshot, if listed. */
+    fun displayedRow(slot: Int): DisplayedProfile? = profiles.firstOrNull { it.profileIndex == slot }?.let { DisplayedProfile(it, listToken) }
+}
+
+/**
+ * Fork (W2 review r6): a profile row as displayed, with the account token of the list it belongs to.
+ * Row identity at admission is the full row (every field, so an empty `updatedAt` cannot make two
+ * different rows look alike) plus that token.
+ */
+class DisplayedProfile internal constructor(
+    val profile: NuvioProfile,
+    val listToken: com.nuvio.app.core.identity.AccountToken?,
+) {
+    /** The select request this row makes, or null when its list carries no token (never admitted). */
+    fun selectRequest(origin: com.nuvio.app.core.identity.SelectOrigin): com.nuvio.app.core.identity.SelectRequest? =
+        listToken?.let { com.nuvio.app.core.identity.SelectRequest(profile.profileIndex, it, origin, profile) }
+
+    override fun equals(other: Any?): Boolean = other is DisplayedProfile && other.profile == profile && other.listToken == listToken
+    override fun hashCode(): Int = profile.hashCode() * 31 + (listToken?.hashCode() ?: 0)
+}
 
 @Serializable
 data class AvatarCatalogItem(

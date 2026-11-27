@@ -8,6 +8,11 @@ enum IdentityFixture {
     static let other: AccountKey = AccountKeyAccount(userId: "b")
     static let token = AccountToken(account: guest, authSerial: 1)
 
+    /// A request as a displayed row would build it (nil token: an unbound row, no request).
+    static func request(_ slot: Int32, _ token: AccountToken?) -> SelectRequest? {
+        token.map { SelectRequest(slot: slot, displayedUnder: $0, origin: .pickertap, row: nil) }
+    }
+
     static func state(account: AccountKey = guest,
                       slot: Int32 = 1,
                       epoch: Int64 = 1,

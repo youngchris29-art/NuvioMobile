@@ -68,7 +68,7 @@ class TransitionNotAwaited(kind: TransitionKind) :
  */
 internal interface IdentityProfileOps {
     /** The published profile list's rows (read inside the admission's commit section, rule G). */
-    fun listedRows(): List<ListedRow>
+    fun listedRows(): List<com.nuvio.app.features.profiles.NuvioProfile>
     /** The slot and active-profile state write; a single state write, legal inside a commit section. */
     fun writeSelection(slot: Int)
     /** Everything after the write (persist, the checked fan-out); throws if a must-succeed step failed. */
@@ -79,7 +79,7 @@ internal interface IdentityProfileOps {
 }
 
 private object UninstalledProfileOps : IdentityProfileOps {
-    override fun listedRows(): List<ListedRow> = error("IdentityBarrier.profileOps not installed")
+    override fun listedRows(): List<com.nuvio.app.features.profiles.NuvioProfile> = error("IdentityBarrier.profileOps not installed")
     override fun writeSelection(slot: Int) = error("IdentityBarrier.profileOps not installed")
     override fun fanOut(slot: Int) = error("IdentityBarrier.profileOps not installed")
     override fun applyActiveRemoved() = error("IdentityBarrier.profileOps not installed")
@@ -144,9 +144,9 @@ object IdentityBarrier {
     internal suspend fun selectProfile(slot: Int): TransitionResult {
         val (now, row) = IdentityLocks.withCommit {
             AccountToken(IdentityRuntime.snapshot().latestAccount, IdentityRuntime.authSerial()) to
-                profileOps.listedRows().firstOrNull { it.slot == slot }
+                profileOps.listedRows().firstOrNull { it.profileIndex == slot }
         }
-        return selectProfile(SelectRequest(slot, now, SelectOrigin.PickerTap, row?.pinEnabled ?: false, row?.revision ?: ""))
+        return selectProfile(SelectRequest(slot, now, SelectOrigin.PickerTap, row))
     }
 
     /** Rule G (31.1): admitted in one commit section of the apply against the current token and list. */

@@ -1,5 +1,6 @@
 package com.nuvio.app.core.identity
 
+import com.nuvio.app.features.profiles.NuvioProfile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -41,16 +42,17 @@ class SelectAdmissionTest {
                 total++
                 val slot = 2
                 val isDelete = origin == SelectOrigin.DeleteFallback
-                val row = ListedRow(2, pinEnabled = !rowSame, revision = if (rowSame) "r1" else "r2")
-                val listed = listOf(ListedRow(1, false, "a"), ListedRow(3, false, "c")) + (if (slotListed) listOf(row) else emptyList())
-                val request = SelectRequest(slot, shown, origin, pinEnabled = false, rowRevision = "r1")
+                val displayedRow = NuvioProfile(profileIndex = 2, name = "Two")
+                val row = if (rowSame) displayedRow else displayedRow.copy(pinEnabled = true)
+                val listed = listOf(NuvioProfile(profileIndex = 1), NuvioProfile(profileIndex = 3)) + (if (slotListed) listOf(row) else emptyList())
+                val request = SelectRequest(slot, shown, origin, displayedRow)
                 val deleting = if (isDelete) 1 else null
                 val activeSlot = if (deletingIsActive) 1 else 3
                 val verdict = SelectAdmission.decide(request, gated, current, listed, deleting, activeSlot)
                 val twin = when {
                     !isDelete && deletingIsActive -> SelectAdmission.decide(request, gated, current, listed, null, 3)
-                    !isDelete && !slotListed && !rowSame -> SelectAdmission.decide(request, gated, current, listed.filter { it.slot != 2 }, deleting, activeSlot)
-                    isDelete && !rowSame -> SelectAdmission.decide(request, gated, current, listed.map { if (it.slot == 2) ListedRow(2, false, "r1") else it }, deleting, activeSlot)
+                    !isDelete && !slotListed && !rowSame -> SelectAdmission.decide(request, gated, current, listed.filter { it.profileIndex != 2 }, deleting, activeSlot)
+                    isDelete && !rowSame -> SelectAdmission.decide(request, gated, current, listed.map { if (it.profileIndex == 2) displayedRow else it }, deleting, activeSlot)
                     else -> null
                 }
                 if (twin != null) {
@@ -63,7 +65,7 @@ class SelectAdmissionTest {
                     !gated -> Admission.Reject(SelectRejection.Phase)
                     current != shown -> Admission.Reject(SelectRejection.AccountChanged)
                     isDelete && !deletingIsActive -> Admission.Reject(SelectRejection.SlotGone)
-                    isDelete -> Admission.Admit(listed.map { it.slot }.filter { it != 1 }.min())
+                    isDelete -> Admission.Admit(listed.map { it.profileIndex }.filter { it != 1 }.min())
                     !slotListed -> Admission.Reject(SelectRejection.SlotGone)
                     !rowSame -> Admission.Reject(SelectRejection.RowChanged)
                     else -> Admission.Admit(slot)
@@ -79,7 +81,7 @@ class SelectAdmissionTest {
     fun deleteFallbackWithNothingLeftRemovesTheActiveProfile() {
         assertEquals(
             Admission.Admit(SelectAdmission.NONE_REMAIN),
-            SelectAdmission.decide(SelectRequest(0, shown, SelectOrigin.DeleteFallback), true, shown, listOf(ListedRow(1, false, "")), deleting = 1, activeSlot = 1),
+            SelectAdmission.decide(SelectRequest(0, shown, SelectOrigin.DeleteFallback), true, shown, listOf(NuvioProfile(profileIndex = 1)), deleting = 1, activeSlot = 1),
         )
     }
 }
@@ -121,7 +123,7 @@ class SelectAdmissionDriverTest {
         IdentityImmediate.serialChanging()
         IdentityImmediate.publishAuth(com.nuvio.app.core.auth.AuthState.Authenticated("user-b", null, isAnonymous = false)) {}
         IdentityImmediate.chainEnded() // B is open; slot 2 exists in B (PIN-protected, say)
-        ops.rowStamps = mapOf(2 to (true to "b2"))
+        ops.rowContent = mapOf(2 to NuvioProfile(profileIndex = 2, pinEnabled = true, updatedAt = "b2"))
         val result = assertIs<TransitionResult.Preempted>(IdentityBarrier.selectProfile(SelectRequest(2, listOfA, SelectOrigin.PickerTap)))
         assertEquals(SelectRejection.AccountChanged, result.rejection)
         assertEquals(emptyList(), log.all())
@@ -131,13 +133,24 @@ class SelectAdmissionDriverTest {
     @Test
     fun pinEnabledBetweenTapAndAdmission() = real {
         val shown = assertNotNullToken()
-        ops.rowStamps = mapOf(2 to (false to "r1"))
-        IdentityBarrier.beforeApplyLock = { ops.rowStamps = mapOf(2 to (true to "r2")) }
+        val displayed = NuvioProfile(profileIndex = 2, updatedAt = "r1")
+        ops.rowContent = mapOf(2 to displayed)
+        IdentityBarrier.beforeApplyLock = { ops.rowContent = mapOf(2 to displayed.copy(pinEnabled = true, updatedAt = "r2")) }
         val result = assertIs<TransitionResult.Preempted>(
-            IdentityBarrier.selectProfile(SelectRequest(2, shown, SelectOrigin.PickerTap, pinEnabled = false, rowRevision = "r1")),
+            IdentityBarrier.selectProfile(SelectRequest(2, shown, SelectOrigin.PickerTap, displayed)),
         )
         assertEquals(SelectRejection.RowChanged, result.rejection)
         assertEquals(emptyList(), log.all())
+    }
+
+    /** Review r6: row identity survives an empty `updatedAt` (the full row is compared). */
+    @Test
+    fun emptyRevisionStillDetectsAReplacedRow() = real {
+        val shown = assertNotNullToken()
+        val displayed = NuvioProfile(profileIndex = 2, name = "Old", updatedAt = "")
+        ops.rowContent = mapOf(2 to displayed.copy(name = "New")) // same slot, same (empty) revision, another row
+        val result = assertIs<TransitionResult.Preempted>(IdentityBarrier.selectProfile(SelectRequest(2, shown, SelectOrigin.PickerTap, displayed)))
+        assertEquals(SelectRejection.RowChanged, result.rejection)
     }
 
     /** B23 in one section: a relist cannot be published between the recheck and the write. */
