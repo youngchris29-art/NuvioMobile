@@ -369,12 +369,15 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
         PlayerStreamsRepository.clearAll()
         // W4: the shared source searches hold the old account's results (and debrid key hash).
         StreamSearchSessions.clear()
-        MetaDetailsRepository.clear()
+        // W3b review r1 #4 (same shape in the wipe): cleared on main and awaited, not queued.
+        MainThreadRunner.runAndWait { MetaDetailsRepository.clearOnMain() }
         SearchRepository.reset()
         SubtitleRepository.clear()
-        PlayerLaunchStore.clear()
-        StreamLaunchStore.clear()
-        StreamContextStore.clear()
+        MainThreadRunner.runAndWait {
+            PlayerLaunchStore.clear()
+            StreamLaunchStore.clear()
+            StreamContextStore.clear()
+        }
         // In-memory sync bookkeeping is account-scoped too: cascades into
         // ProviderCredentialSync.clearAccountState(), whose legacy-migration stash is keyed by
         // profile ID only — left alive, a stash staged before sign-out could seed the NEXT
@@ -560,12 +563,17 @@ internal object TvOsProfileLifecycleCoordinator : ProfileLifecycleCoordinator {
         step("streams") { StreamsRepository.clear() }
         step("playerStreams") { PlayerStreamsRepository.clearAll() }
         step("streamSearchSessions") { StreamSearchSessions.clear() }
-        step("metaDetails") { MetaDetailsRepository.clear() }
+        // Review r1 #4: main-confined state, cleared ON main and awaited (MainThreadRunner), so the
+        // step neither succeeds before the clear ran nor loses its failure. MetaDetailsRepository's
+        // own clear() only queues the work; the launch stores are plain maps the UI reads on main.
+        step("metaDetails") { MainThreadRunner.runAndWait { MetaDetailsRepository.clearOnMain() } }
         step("subtitles") { SubtitleRepository.clear() }
         step("launchStores") {
-            PlayerLaunchStore.clear()
-            StreamLaunchStore.clear()
-            StreamContextStore.clear()
+            MainThreadRunner.runAndWait {
+                PlayerLaunchStore.clear()
+                StreamLaunchStore.clear()
+                StreamContextStore.clear()
+            }
         }
         // Upstream 1854dfc3 (upstream fans this out from ProfileRepository; tvOS owns its fan-out
         // here). MUST be last: it re-baselines the settings/credential observers from the

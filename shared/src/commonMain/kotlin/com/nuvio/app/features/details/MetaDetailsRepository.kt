@@ -262,18 +262,25 @@ object MetaDetailsRepository {
      * generation-checked write.
      */
     fun clear() {
-        scope.launch(Dispatchers.Main.immediate) {
-            activeRequestKey = null
-            cacheGeneration++
-            cachedMetaByRequestKey.clear()
-            _uiState.value = MetaDetailsUiState()
-            // The add-on episode lists the trackers remap were built from these metas (titles
-            // follow the metadata language), so they go with them: after the clear, on the same
-            // hop, so a list fetched under the new generation can never read the old meta
-            // (Codex r4 #5). A list fetched under the old generation in the meantime is dropped
-            // by the generation change.
-            AddonEpisodeListService.invalidate()
-        }
+        scope.launch(Dispatchers.Main.immediate) { clearOnMain() }
+    }
+
+    /**
+     * Fork (scope identity W3b review r1 #4): the clear itself, for a caller already on the main
+     * thread. The tvOS profile fan-out runs it there and waits for it (MainThreadRunner), so the
+     * barrier never reopens on the previous profile's metadata and a failure is reported.
+     */
+    fun clearOnMain() {
+        activeRequestKey = null
+        cacheGeneration++
+        cachedMetaByRequestKey.clear()
+        _uiState.value = MetaDetailsUiState()
+        // The add-on episode lists the trackers remap were built from these metas (titles
+        // follow the metadata language), so they go with them: after the clear, on the same
+        // hop, so a list fetched under the new generation can never read the old meta
+        // (Codex r4 #5). A list fetched under the old generation in the meantime is dropped
+        // by the generation change.
+        AddonEpisodeListService.invalidate()
     }
 
     // Upstream ccc6b87d (beta.12 port): `cacheResult = false` lets BULK callers (badge
