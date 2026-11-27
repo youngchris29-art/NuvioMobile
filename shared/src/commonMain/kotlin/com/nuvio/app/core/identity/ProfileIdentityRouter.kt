@@ -37,13 +37,6 @@ interface ProfileIdentityRouter {
 
     /** A changing write of ProfileRepository.activeProfileIndex; false refuses it. */
     fun onSlotWrite(old: Int, new: Int): Boolean
-
-    /**
-     * W2 review r1 #1: the one source for "the profile slot work under [token] belongs to". The
-     * barrier keeps the token's slot current on tvOS; elsewhere no barrier moves it, so the
-     * default answers from the active profile.
-     */
-    fun slotOf(token: IdentityToken): Int
 }
 
 object ProfileIdentityRouterProvider {
@@ -68,8 +61,6 @@ internal object DefaultProfileIdentityRouter : ProfileIdentityRouter {
         ProfileRepository.removeDeletedProfileTrackerData(slot)
 
     override fun onSlotWrite(old: Int, new: Int): Boolean = true
-
-    override fun slotOf(token: IdentityToken): Int = ActiveProfileProvider.activeProfileId
 }
 
 /** A barrier profile apply whose must-succeed fan-out steps failed (8.0.2): W1 maps the throw to FailedApply. */
@@ -194,8 +185,6 @@ internal class BarrierProfileIdentityRouter(
         }
         log.i { "[Identity] active delete of slot $slot: ${result::class.simpleName}" }
     }
-
-    override fun slotOf(token: IdentityToken): Int = token.scope.slot
 
     override fun onSlotWrite(old: Int, new: Int): Boolean {
         if (IdentityLocks.applyDepth > 0) return true

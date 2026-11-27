@@ -142,57 +142,34 @@ class AccountChangeResetsAddonsTest {
     }
 }
 
-class AddonBootstrapAcrossTransitionTest {
-    private val log = EventLog()
-    private val paused = MutableStateFlow(false)
-    private val release = MutableStateFlow(false)
+/** r1 #1 stays closed by construction after the 31.6 revert: the bootstrap reads the active profile, not the identity's slot. */
+class AddonSlotFromActiveProfileTest {
+    private val original = com.nuvio.app.features.addons.AddonProfileProvider.context
 
     @BeforeTest fun setUp() {
-        installDriverFakes(log)
-        AddonRepository.clearLocalState()
-        var once = true
-        AddonRepository.afterLocalReadForTest = {
-            if (once) {
-                once = false
-                paused.value = true
-                spinUntil(5_000) { release.value }
-            }
+        resetIdentityForTest() // the identity's slot stays 1 (no barrier moves it on mobile)
+        com.nuvio.app.features.addons.AddonProfileProvider.context = object : com.nuvio.app.features.addons.AddonProfileContext {
+            override val activeProfileId: Int = 2
+            override val activeProfileIndex: Int? = 2
+            override val usesPrimaryAddons: Boolean = false
         }
+        AddonRepository.clearLocalState()
+        com.nuvio.app.features.addons.AddonStorage.saveInstalledAddonUrls(2, listOf("https://two.test/manifest.json"))
+        com.nuvio.app.features.addons.AddonStorage.saveAddonEnabledStates(2, mapOf("https://two.test/manifest.json" to false))
     }
 
     @AfterTest fun tearDown() {
-        AddonRepository.afterLocalReadForTest = {}
         AddonRepository.clearLocalState()
+        com.nuvio.app.features.addons.AddonStorage.saveInstalledAddonUrls(2, emptyList())
+        com.nuvio.app.features.addons.AddonStorage.saveAddonEnabledStates(2, emptyMap())
+        com.nuvio.app.features.addons.AddonProfileProvider.context = original
         resetIdentityForTest()
     }
 
-    private suspend fun pausedBootstrapAcross(transition: suspend () -> Unit) {
-        val bootstrap = CoroutineScope(Dispatchers.Default).launch { AddonRepository.initialize() }
-        eventually { paused.value }
-        transition()
-        release.value = true
-        bootstrap.join()
-        assertFalse(AddonRepository.initializedState.value, "a bootstrap begun under the old identity publishes nothing")
-        assertFalse(AddonRepository.uiState.value.isInitialized)
-
-        AddonRepository.initialize() // the next caller initializes under the current token
-        assertTrue(AddonRepository.initializedState.value)
-        assertTrue(AddonRepository.uiState.value.isInitialized)
-    }
-
     @Test
-    fun accountChangeDuringBootstrap() = real {
-        pausedBootstrapAcross {
-            IdentityImmediate.publishAuth(account("user-b")) {}
-            IdentityImmediate.chainEnded()
-            assertEquals(accountB, IdentityGate.state.value.scope.account)
-        }
-    }
-
-    @Test
-    fun profileSwitchDuringBootstrap() = real {
-        pausedBootstrapAcross {
-            assertIs<TransitionResult.Done>(IdentityBarrier.selectProfile(2))
-        }
+    fun initializeLoadsTheActiveProfilesList() {
+        AddonRepository.initialize()
+        assertEquals(1, IdentityGate.state.value.scope.slot)
+        assertEquals(listOf("https://two.test/manifest.json"), AddonRepository.uiState.value.addons.map { it.manifestUrl })
     }
 }
