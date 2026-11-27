@@ -69,6 +69,7 @@ private class FakeBackend : CloudLibraryRepository.Backend {
     /** Per-call listings (call i returns perCallListing[i]); else [listing]. */
     val perCallListing = mutableListOf<CloudLibraryUiState>()
     val started = MutableStateFlow(0)
+    var throwAll = false
 
     override suspend fun refresh(credentials: List<DebridServiceCredential>): CloudLibraryUiState {
         handed += credentials
@@ -76,6 +77,7 @@ private class FakeBackend : CloudLibraryRepository.Backend {
         started.update { it + 1 }
         entered.complete(Unit)
         perCall.getOrNull(index)?.await() ?: gate?.await()
+        if (throwAll) error("provider failed")
         return perCallListing.getOrNull(index) ?: listing
     }
 
@@ -260,6 +262,7 @@ class CloudPublishGateTest {
 
     @Test
     fun r1_aCancelledRefreshLeavesNoMarker() = real {
+        CloudLibraryRepository.setStateForTest(listingA, scopeA) // loaded: no initial-load retry (r3 #2)
         backend.gate = CompletableDeferred()
         CloudLibraryRepository.refresh()
         backend.entered.await()
@@ -335,6 +338,146 @@ class CloudPublishGateTest {
         delay(150)
         assertEquals(listing2.providers, state().providers, "the older result never overwrites the newer listing")
         assertFalse(state().isRefreshing)
+    }
+
+    // Review r3 #1: a superseded lookup never reports a premature miss.
+
+    private val listingWithFile = CloudLibraryUiState(isLoaded = true, providers = listOf(CloudLibraryProviderState(DebridProviders.Torbox, items = listOf(itemA))))
+
+    @Test
+    fun r3_supersededLookupAnswersFromTheNewerPublishedListing() = real {
+        val first = CompletableDeferred<Unit>()
+        val second = CompletableDeferred<Unit>()
+        backend.perCall += listOf(first, second)
+        backend.perCallListing += listOf(listingWithFile, listingWithFile)
+        val lookup = async { CloudLibraryRepository.findPlaybackTargetForProgressResult(itemA.stableKey, itemA.playbackVideoId(fileA)) }
+        eventually { backend.started.value == 1 }
+        CloudLibraryRepository.refresh() // supersedes the lookup's refresh
+        eventually { backend.started.value == 2 }
+        first.complete(Unit) // the lookup's fetch finishes first, while the newer one is pending
+        delay(150)
+        assertFalse(lookup.isCompleted, "it waits for the newer refresh instead of reporting a miss")
+        second.complete(Unit)
+        assertEquals(CloudLibraryPlaybackTargetLookupResult.Found(CloudLibraryPlaybackTarget(itemA, fileA)), lookup.await())
+    }
+
+    @Test
+    fun r3_supersededLookupPublishesItsOwnFetchWhenTheNewerIsAbandoned() = real {
+        val first = CompletableDeferred<Unit>()
+        val second = CompletableDeferred<Unit>()
+        backend.perCall += listOf(first, second)
+        backend.perCallListing += listOf(listingWithFile, CloudLibraryUiState(isLoaded = true))
+        val lookup = async { CloudLibraryRepository.findPlaybackTargetForProgressResult(itemA.stableKey, itemA.playbackVideoId(fileA)) }
+        eventually { backend.started.value == 1 }
+        val newer = async { CloudLibraryRepository.findPlaybackTargetForProgressResult("torbox:Torrent:other", "x") }
+        eventually { backend.started.value == 2 }
+        first.complete(Unit)
+        delay(150)
+        newer.cancel() // the newer refresh is abandoned
+        assertEquals(CloudLibraryPlaybackTargetLookupResult.Found(CloudLibraryPlaybackTarget(itemA, fileA)), lookup.await())
+        assertEquals(listingWithFile.providers, state().providers, "its own admitted fetch was published")
+        assertFalse(state().isRefreshing)
+    }
+
+    @Test
+    fun r3_theWaitIsBounded() = real {
+        CloudLibraryRepository.supersededLookupWaitMs = 200
+        val first = CompletableDeferred<Unit>()
+        backend.perCall += listOf(first, CompletableDeferred()) // the newer one never finishes
+        backend.perCallListing += listOf(listingWithFile)
+        val lookup = async { CloudLibraryRepository.findPlaybackTargetForProgressResult(itemA.stableKey, itemA.playbackVideoId(fileA)) }
+        eventually { backend.started.value == 1 }
+        CloudLibraryRepository.refresh()
+        eventually { backend.started.value == 2 }
+        first.complete(Unit)
+        assertEquals(CloudLibraryPlaybackTargetLookupResult.NotFound, lookup.await())
+    }
+
+    // Review r3 #2: an abandoned initial load is retried once when the gate reopens, never in a loop.
+
+    @Test
+    fun r3_abandonedInitialRefreshLoadsWhenTheGateReopens() = real {
+        backend.perCall += CompletableDeferred() // the initial refresh never answers
+        CloudLibraryRepository.ensureLoaded()
+        eventually { backend.started.value == 1 }
+        com.nuvio.app.core.identity.IdentityImmediate.serialChanging() // same account, new session: the gate closes
+        IdentityRuntime.authSerial = { 2 }
+        CloudLibraryRepository.cancelJobsForTest() // the drain cancels the refresh
+        eventually { !state().isRefreshing }
+        delay(200)
+        assertEquals(1, backend.started.value, "no retry while the gate is closed")
+        assertFalse(state().isLoaded)
+        com.nuvio.app.core.identity.IdentityImmediate.chainEnded() // Open again
+        eventually { state().isLoaded && backend.started.value == 2 }
+        assertEquals(listingA.providers, state().providers)
+    }
+
+    @Test
+    fun r3_noRetryStormWhenTheRetryIsAbandonedToo() = real {
+        backend.perCall += listOf(CompletableDeferred(), CompletableDeferred())
+        CloudLibraryRepository.ensureLoaded()
+        eventually { backend.started.value == 1 }
+        CloudLibraryRepository.cancelJobsForTest()
+        eventually { backend.started.value == 2 } // the one retry (the gate is open)
+        CloudLibraryRepository.cancelJobsForTest()
+        eventually { !state().isRefreshing }
+        delay(300)
+        assertEquals(2, backend.started.value, "no third attempt")
+        assertTrue(state().isLoaded, "the loaded-and-empty state: Refresh is shown, no spinner")
+    }
+
+    // The refresh matrix (r3): the cells no other test covers.
+
+    @Test
+    fun matrix_plainRefreshThatThrowsRetriesOnceThenShowsLoaded() = real {
+        backend.throwAll = true
+        CloudLibraryRepository.ensureLoaded()
+        eventually { backend.started.value == 2 && !state().isRefreshing && state().isLoaded }
+        delay(200)
+        assertEquals(2, backend.started.value, "one retry, no storm")
+        assertTrue(state().providers.isEmpty())
+    }
+
+    @Test
+    fun matrix_plainRefreshSupersededByALookupNeverOverwritesIt() = real {
+        val first = CompletableDeferred<Unit>()
+        val second = CompletableDeferred<Unit>()
+        backend.perCall += listOf(first, second)
+        backend.perCallListing += listOf(listing1, listingWithFile)
+        CloudLibraryRepository.refresh()
+        eventually { backend.started.value == 1 }
+        val lookup = async { CloudLibraryRepository.findPlaybackTargetForProgressResult(itemA.stableKey, itemA.playbackVideoId(fileA)) }
+        eventually { backend.started.value == 2 }
+        second.complete(Unit)
+        assertEquals(CloudLibraryPlaybackTargetLookupResult.Found(CloudLibraryPlaybackTarget(itemA, fileA)), lookup.await())
+        first.complete(Unit)
+        delay(150)
+        assertEquals(listingWithFile.providers, state().providers, "the superseded refresh wrote nothing")
+        assertFalse(state().isRefreshing)
+    }
+
+    @Test
+    fun matrix_clearDuringAPlainRefreshPublishesNothing() = real {
+        backend.gate = CompletableDeferred()
+        CloudLibraryRepository.refresh()
+        backend.entered.await()
+        CloudLibraryRepository.clear() // same identity (no switch): the marker is reset
+        backend.gate!!.complete(Unit)
+        delay(200)
+        assertEquals(CloudLibraryUiState(), state())
+        assertEquals(1, backend.started.value, "no retry after a clear (nothing is wanted)")
+    }
+
+    @Test
+    fun matrix_disabledDuringAPlainRefreshPublishesNothing() = real {
+        backend.gate = CompletableDeferred()
+        CloudLibraryRepository.refresh()
+        backend.entered.await()
+        settings.enabled[1] = false
+        CloudLibraryRepository.ensureLoaded() // writes the disabled state, resets the marker
+        backend.gate!!.complete(Unit)
+        delay(200)
+        assertEquals(CloudLibraryUiState(isLoaded = true, isEnabled = false), state())
     }
 
     // Review r1 #2: no provider call is made with credentials read after the identity moved.

@@ -5,6 +5,7 @@ import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import com.nuvio.app.core.identity.CommitKind
 import com.nuvio.app.core.identity.CommitResult
 import com.nuvio.app.core.identity.IdentityGate
+import com.nuvio.app.core.identity.IdentityPhase
 import com.nuvio.app.core.identity.IdentityScope
 import com.nuvio.app.core.identity.IdentityToken
 import com.nuvio.app.core.identity.IdentityWork
@@ -24,6 +25,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -115,6 +117,8 @@ class CloudLibraryStore(
 object CloudLibraryRepository {
     private val log = Logger.withTag("CloudLib")
     private val defaultScope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("CloudLibraryRepository"))
+    /** The initial-load retry (r3 #2) runs apart from the refresh jobs; clear() cancels it. */
+    private val retryScope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("CloudLibraryRetry"))
     /** Where refresh jobs run (tests use a paused dispatcher to cancel a job before its body). */
     internal var scope: CoroutineScope = defaultScope
     private val store = CloudLibraryStore(
@@ -145,6 +149,12 @@ object CloudLibraryRepository {
      */
     private val marker = CloudRefreshMarker()
     private val stateLock = kotlinx.atomicfu.locks.SynchronizedObject()
+
+    /** Review r3 #2: a listing was asked for (ensureLoaded/refresh) since the last clear. */
+    private var loadWanted = false
+    /** Review r3 #2: the one retry of an abandoned initial load was used (reset by a publish). */
+    private var initialRetryUsed = false
+    private var retryJob: kotlinx.coroutines.Job? = null
 
     /** The profile's Debrid settings, read on a call (a seam: tests flip them at the switch). */
     internal interface Settings {
@@ -280,11 +290,40 @@ object CloudLibraryRepository {
      * launch; takes only [stateLock], never the identity commit lock.
      */
     private fun abandonRefresh(owner: CloudRefreshMarker.Owner) {
-        kotlinx.atomicfu.locks.synchronized(stateLock) {
-            if (!marker.abandon(owner)) return@synchronized
+        val retry = kotlinx.atomicfu.locks.synchronized(stateLock) {
+            if (!marker.abandon(owner)) return@synchronized false
             _uiState.update { current ->
                 current.copy(isRefreshing = false, providers = current.providers.map { it.copy(isLoading = false) })
             }
+            // Review r3 #2: an abandoned INITIAL load of a listing someone asked for gets one
+            // retry; a second abandon in a row ends in the loaded-and-empty state (Refresh shown),
+            // never an endless spinner and never a loop.
+            if (_uiState.value.isLoaded || !loadWanted) return@synchronized false
+            if (!initialRetryUsed) {
+                initialRetryUsed = true
+                true
+            } else {
+                _uiState.update { it.copy(isLoaded = true) }
+                false
+            }
+        }
+        if (retry) scheduleInitialRetry()
+    }
+
+    /**
+     * Review r3 #2: waits for the identity gate's state flow to show Open again, then runs
+     * ensureLoaded() once, which captures the THEN-current token (never the abandoned one).
+     * Cancelled by clear() (a switch or a wipe); one at a time. Never takes a lock while waiting.
+     */
+    private fun scheduleInitialRetry() {
+        val job = retryScope.launch {
+            IdentityGate.state.first { it.phase is IdentityPhase.Open }
+            logSink("[CloudLib] initial load retry")
+            ensureLoaded()
+        }
+        kotlinx.atomicfu.locks.synchronized(stateLock) {
+            retryJob?.cancel()
+            retryJob = job
         }
     }
 
@@ -299,11 +338,19 @@ object CloudLibraryRepository {
         listing: CloudLibraryUiState,
     ): Boolean = kotlinx.atomicfu.locks.synchronized(stateLock) {
         if (!marker.publish(owner)) return@synchronized false
-        loadedConnectionKeys = keysOf(credentials)
-        listingScope = call.token.scope
-        _uiState.value = listing
+        writeListingLocked(call, credentials, listing)
         true
     }
+
+    private fun writeListingLocked(call: CloudCall, credentials: List<DebridServiceCredential>, listing: CloudLibraryUiState) {
+        loadedConnectionKeys = keysOf(credentials)
+        listingScope = call.token.scope
+        initialRetryUsed = false
+        _uiState.value = listing
+    }
+
+    /** Review r3 #1: how long a superseded lookup waits for the refresh that superseded it. */
+    internal var supersededLookupWaitMs: Long = 20_000L
 
     /**
      * DEBUG hold (9.1.3): with the knob set, waits that long NON-cancellably and then makes the
@@ -330,6 +377,7 @@ object CloudLibraryRepository {
 
     fun ensureLoaded() {
         val call = beginCall("cloudEnsureLoaded") ?: return
+        kotlinx.atomicfu.locks.synchronized(stateLock) { loadWanted = true }
         settings.load()
         if (!settings.enabled()) {
             publish(call, "cloudDisabled") { writeDisabled() }
@@ -346,6 +394,7 @@ object CloudLibraryRepository {
 
     fun refresh() {
         val call = beginCall("cloudRefresh") ?: return
+        kotlinx.atomicfu.locks.synchronized(stateLock) { loadWanted = true }
         refreshWith(call)
     }
 
@@ -505,6 +554,10 @@ object CloudLibraryRepository {
             loadedConnectionKeys = emptyList()
             listingScope = null
             marker.reset()
+            loadWanted = false
+            initialRetryUsed = false
+            retryJob?.cancel()
+            retryJob = null
             _uiState.value = CloudLibraryUiState()
         }
     }
@@ -537,25 +590,62 @@ object CloudLibraryRepository {
         try {
             beforeStoreCallForTest()
             val refreshed = backend.refresh(credentials)
-            return when (val r = debugHold(call, "cloudRefreshNow") {
+            val published = when (val r = debugHold(call, "cloudRefreshNow") {
                 publish(call, "cloudRefreshNow") {
                     if (publishListing(call, owner, credentials, refreshed)) {
-                        refreshed.findPlaybackTargetForProgress(contentId = contentId, videoId = videoId)
+                        refreshed.findPlaybackTargetForProgress(contentId = contentId, videoId = videoId)?.let { CloudLookupStep.Found(it) }
+                            ?: CloudLookupStep.NotFound
                     } else {
-                        // Superseded by a newer refresh: it wrote nothing, so it answers only from
-                        // the listing in memory (the one a resolve will act on), for this profile.
-                        kotlinx.atomicfu.locks.synchronized(stateLock) {
-                            if (listingScope != call.token.scope) null
-                            else _uiState.value.findPlaybackTargetForProgress(contentId = contentId, videoId = videoId)
-                        }
+                        null // superseded: decided below, after the newer refresh settled
                     }
                 }
             }) {
-                is CommitResult.Committed -> r.value?.let { CloudLookupStep.Found(it) } ?: CloudLookupStep.NotFound
-                is CommitResult.Rejected -> CloudLookupStep.Refused(CloudLookupStep.Stage.Commit)
+                is CommitResult.Committed -> r.value
+                is CommitResult.Rejected -> return CloudLookupStep.Refused(CloudLookupStep.Stage.Commit)
             }
+            return published ?: afterSuperseded(call, owner, credentials, refreshed, contentId, videoId)
         } finally {
             abandonRefresh(owner)
+        }
+    }
+
+    /**
+     * Review r3 #1: a lookup whose fetch was superseded never reports a premature miss. It waits
+     * (bounded, outside every lock) for the refresh that superseded it to settle, then, inside one
+     * admission of its own token:
+     * - a newer listing was published: it answers from that listing (published for this profile);
+     * - the newer refresh was abandoned and nothing newer published or started: its own admitted
+     *   fetch is published (a fresh owner, so a later refresh still wins) and it answers from it;
+     * - another refresh is in flight, the wait timed out, Cloud was cleared or disabled: NotFound.
+     * A target is only ever returned from a listing published for the call's profile.
+     */
+    private suspend fun afterSuperseded(
+        call: CloudCall,
+        owner: CloudRefreshMarker.Owner,
+        credentials: List<DebridServiceCredential>,
+        fetched: CloudLibraryUiState,
+        contentId: String,
+        videoId: String,
+    ): CloudLookupStep {
+        if (!marker.awaitIdle(supersededLookupWaitMs)) return CloudLookupStep.NotFound
+        return when (val r = publish(call, "cloudLookupAfterSuperseded") {
+            kotlinx.atomicfu.locks.synchronized(stateLock) {
+                when {
+                    marker.publishedSince(owner) ->
+                        if (listingScope != call.token.scope) null
+                        else _uiState.value.findPlaybackTargetForProgress(contentId = contentId, videoId = videoId)
+                    marker.isRefreshing || !_uiState.value.isEnabled -> null
+                    else -> {
+                        val fresh = marker.start()
+                        marker.publish(fresh)
+                        writeListingLocked(call, credentials, fetched)
+                        fetched.findPlaybackTargetForProgress(contentId = contentId, videoId = videoId)
+                    }
+                }
+            }
+        }) {
+            is CommitResult.Committed -> r.value?.let { CloudLookupStep.Found(it) } ?: CloudLookupStep.NotFound
+            is CommitResult.Rejected -> CloudLookupStep.Refused(CloudLookupStep.Stage.Commit)
         }
     }
 

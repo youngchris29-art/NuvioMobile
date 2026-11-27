@@ -79,7 +79,16 @@ final class CloudLibraryViewModel: ObservableObject {
     /// The listing's providers, plus a loading section for each configured provider the listing does
     /// not carry yet (W3b: the existing loading style until its listing is published).
     var providers: [CloudLibraryProviderState] {
-        let listed = state?.providers ?? []
+        Self.displayedProviders(listed: state?.providers ?? [], configured: configured, isLoaded: state?.isLoaded ?? false)
+    }
+
+    /// Review r3 #2: placeholders only while nothing is loaded. Once the repository reports loaded
+    /// (a listing, or the loaded-and-empty state after an abandoned load and its one retry), a
+    /// missing provider shows no spinner, so the screen never spins with nothing in flight. Pure.
+    nonisolated static func displayedProviders(listed: [CloudLibraryProviderState],
+                                               configured: [DebridProvider],
+                                               isLoaded: Bool) -> [CloudLibraryProviderState] {
+        guard !isLoaded else { return listed }
         let pending = configured
             .filter { provider in !listed.contains { $0.providerId == provider.id } }
             .map { CloudLibraryProviderState(provider: $0, isLoading: true, errorMessage: nil, items: []) }

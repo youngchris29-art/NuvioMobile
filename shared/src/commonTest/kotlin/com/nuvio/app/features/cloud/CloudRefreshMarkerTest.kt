@@ -105,4 +105,26 @@ class CloudRefreshMarkerTest {
         // a clear supersedes everyone.
         CloudRefreshMarker().run { val a = start(); reset(); assertFalse(publish(a)); assertFalse(isRefreshing) }
     }
+
+    /** Review r3 #1: what a superseded lookup reads after it waited. */
+    @Test
+    fun publishedSinceAndAwaitIdle() = kotlinx.coroutines.test.runTest {
+        CloudRefreshMarker().run {
+            val a = start(); val b = start()
+            assertFalse(publishedSince(a))
+            assertTrue(publish(b))
+            assertTrue(publishedSince(a), "a newer listing was published")
+            assertFalse(publishedSince(b))
+        }
+        CloudRefreshMarker().run {
+            val a = start(); val b = start()
+            assertTrue(abandon(b))
+            assertFalse(publishedSince(a), "the newer refresh was abandoned: nothing newer published")
+            assertTrue(awaitIdle(10))
+        }
+        CloudRefreshMarker().run {
+            start()
+            assertFalse(kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { awaitIdle(50) }, "bounded: still refreshing")
+        }
+    }
 }

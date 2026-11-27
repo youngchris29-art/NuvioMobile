@@ -22,4 +22,11 @@ final class CloudLibraryViewModelTests: XCTestCase {
         defer { model.stop() }
         XCTAssertFalse(model.hasConnectedProvider)
     }
+
+    /// Review r3 #2: no loading placeholder once the repository reports loaded.
+    func testPlaceholdersOnlyWhileNothingIsLoaded() {
+        let torbox = DebridProviders.shared.Torbox
+        XCTAssertEqual(CloudLibraryViewModel.displayedProviders(listed: [], configured: [torbox], isLoaded: false).map(\.isLoading), [true])
+        XCTAssertTrue(CloudLibraryViewModel.displayedProviders(listed: [], configured: [torbox], isLoaded: true).isEmpty)
+    }
 }
