@@ -318,6 +318,13 @@ object ProfileRepository {
 
     suspend fun deleteProfile(profileIndex: Int) {
         val token = IdentityGate.currentAccountToken()
+        // Fork (W2 review r5 #4): no delete without the account it is for. A window holds (or
+        // recovery): refuse before any RPC, so a delete never succeeds remotely while its local
+        // tracker cleanup is refused. The user retries from the picker.
+        if (token == null) {
+            log.w { "Profile delete $profileIndex refused: no account token (identity transition in progress)" }
+            return
+        }
         val router = ProfileIdentityRouterProvider.router
         if (AuthRepository.state.value.isAnonymous) {
             val remaining = _state.value.profiles.filter { it.profileIndex != profileIndex }
