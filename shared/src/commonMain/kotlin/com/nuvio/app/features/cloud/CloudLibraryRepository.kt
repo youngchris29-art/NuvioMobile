@@ -172,12 +172,20 @@ object CloudLibraryRepository {
     private var listingGeneration = -1L
 
     /**
+     * Last focused check #1/#2: the connection keys the current generation is for (null: not bound
+     * yet, after a clear or a disable). The listing and the trusted set belong to them, by value.
+     */
+    private var generationKeys: List<CloudConnectionKey>? = null
+
+    /**
      * Focused check #4: the targets a resolve may accept for ([trustedScope], [trustedGeneration]):
      * every item and file of every listing published in this generation plus every lookup target
      * found in it. It accumulates, so a row a newer listing dropped stays resolvable within the same
      * profile and settings; it is emptied when the generation bumps or the scope changes. Its size is
      * the union of one generation's listings (a listing is a few hundred items with a handful of
      * files each in practice: tens to hundreds of kilobytes). Under [stateLock].
+     * Logged residual (r2): it grows with distinct targets over a long session within one
+     * generation, and is only emptied by an invalidation (scope, keys, disable, clear).
      */
     private var trustedScope: IdentityScope? = null
     private var trustedGeneration = -1L
@@ -199,6 +207,23 @@ object CloudLibraryRepository {
         generation++
         trusted.clear()
         trustedScope = null
+    }
+
+    /**
+     * Last focused check #1/#2: the ONE place a key change advances the generation, under
+     * [stateLock]: to a new generation bound to [keys], once, by the first operation that sees them.
+     * The trusted set empties; a listing of an older generation still on screen is marked not
+     * loaded and a tick is emitted, so the observer reloads it when it is wanted.
+     */
+    private fun advanceToKeysLocked(keys: List<CloudConnectionKey>) {
+        if (generationKeys == keys) return
+        bumpGenerationLocked()
+        generationKeys = keys
+        val shown = _uiState.value
+        if (shown.isLoaded && shown.isEnabled && listingGeneration != generation) {
+            _uiState.value = shown.copy(isLoaded = false)
+            endedTicks.update { it + 1 } // dispatched to the observer (never collected inline)
+        }
     }
 
     private fun trustLocked(scope: IdentityScope, target: CloudLibraryPlaybackTarget) {
@@ -284,11 +309,15 @@ object CloudLibraryRepository {
     internal fun setStateForTest(state: CloudLibraryUiState, scope: IdentityScope? = null) {
         kotlinx.atomicfu.locks.synchronized(stateLock) {
             listingScope = scope
+            if (scope != null) advanceToKeysLocked(keysOf(settings.credentials())) // the listing is the current settings'
             listingGeneration = if (scope != null) generation else -1L
             if (scope != null) trustListingLocked(scope, state)
             _uiState.value = state
         }
     }
+
+    /** Tests only: the current generation. */
+    internal val generationForTest: Long get() = kotlinx.atomicfu.locks.synchronized(stateLock) { generation }
 
     /** Tests only: cancels the refresh jobs (what a drain does to a profile job). */
     internal fun cancelJobsForTest() {
@@ -341,7 +370,10 @@ object CloudLibraryRepository {
     private fun <T : Any> admitWork(call: CloudCall, site: String, block: () -> T?): Admitted<T>? {
         val credentials = call.credentials()
         val r = publish(call, site) {
-            kotlinx.atomicfu.locks.synchronized(stateLock) { block()?.let { generation to it } }
+            kotlinx.atomicfu.locks.synchronized(stateLock) {
+                advanceToKeysLocked(keysOf(credentials))
+                block()?.let { generation to it }
+            }
         }
         return when (r) {
             is CommitResult.Committed -> r.value?.let { (gen, value) -> Admitted(credentials, keysOf(credentials), gen, value) }
@@ -358,11 +390,15 @@ object CloudLibraryRepository {
     private fun <T> finalSection(admitted: Admitted<*>, block: () -> T): T? {
         val enabledNow = settings.enabled()
         val keysNow = keysOf(settings.credentials())
+        // Logged residual (r3): a setting changed right after this read is a check-to-use window,
+        // as at base; closing it would need settings writes to take part in this lock.
         return kotlinx.atomicfu.locks.synchronized(stateLock) {
             when {
+                // A newer generation exists: refused, nothing advanced (it was advanced by whoever saw it first).
                 admitted.generation != generation -> null
                 !enabledNow || keysNow != admitted.keys -> {
-                    bumpGenerationLocked()
+                    // This operation is the first to see the change (its generation is still current).
+                    advanceToKeysLocked(keysNow)
                     null
                 }
                 else -> block()
@@ -444,7 +480,9 @@ object CloudLibraryRepository {
         }
     }
 
-    private fun writeDisabled() = kotlinx.atomicfu.locks.synchronized(stateLock) {
+    private fun writeDisabled(requireWanted: Boolean = false) = kotlinx.atomicfu.locks.synchronized(stateLock) {
+        if (requireWanted && !wanted) return@synchronized // r1: the observer's write after a clear()
+        generationKeys = null
         loadedConnectionKeys = emptyList()
         listingScope = null
         listingGeneration = -1L
@@ -494,17 +532,15 @@ object CloudLibraryRepository {
     private fun ensureLoadedWith(call: CloudCall, auto: Boolean = false) {
         settings.load()
         if (!settings.enabled()) {
-            publish(call, "cloudDisabled") { writeDisabled() }
+            publish(call, "cloudDisabled") { writeDisabled(requireWanted = auto) }
             return
         }
         // Review r2: the marker, not the published flag, says whether a refresh is under way.
         val (current, refreshing) = kotlinx.atomicfu.locks.synchronized(stateLock) { _uiState.value to marker.isRefreshing }
         if (refreshing) return
         val connectedKeys = keysOf(call.credentials())
-        val keysChanged = kotlinx.atomicfu.locks.synchronized(stateLock) {
-            (current.isLoaded && connectedKeys != loadedConnectionKeys).also { if (it) bumpGenerationLocked() }
-        }
-        if (!current.isLoaded || keysChanged) {
+        // A key change is advanced by the refresh's start admission (advanceToKeysLocked).
+        if (!current.isLoaded || connectedKeys != loadedConnectionKeys) {
             refreshWith(call, requireWanted = auto)
         }
     }
@@ -588,6 +624,9 @@ object CloudLibraryRepository {
         when (val cached = publish(call, "cloudCachedFound") {
             // Review r1 #3: only a listing published for the call's profile answers from the cache.
             kotlinx.atomicfu.locks.synchronized(stateLock) {
+                // Last focused check #1: the call's keys must be the generation's; else the generation
+                // advances and the cached listing (of the old keys) does not answer: fresh fetch.
+                advanceToKeysLocked(keysOf(connectedCredentials))
                 // A listing of this generation: its items are already in the trusted set.
                 if (listingScope != call.token.scope || listingGeneration != generation) null
                 else _uiState.value.findPlaybackTargetForProgress(contentId = contentId, videoId = videoId)
@@ -679,6 +718,7 @@ object CloudLibraryRepository {
             listingScope = null
             listingGeneration = -1L
             bumpGenerationLocked()
+            generationKeys = null
             marker.reset()
             wanted = false
             _uiState.value = CloudLibraryUiState()

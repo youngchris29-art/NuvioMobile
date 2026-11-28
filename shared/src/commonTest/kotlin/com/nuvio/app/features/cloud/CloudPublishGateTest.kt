@@ -400,18 +400,18 @@ class CloudPublishGateTest {
         backend.perCallListing += listOf(listingWithFile)
         assertEquals(foundA, lookupA())
         settings.credentials[1] = emptyList() // Torbox disconnected on this profile
-        assertEquals(CloudLibraryPlaybackResult.MissingCredentials, CloudLibraryRepository.resolvePlayback(itemA, fileA))
-        assertEquals(emptyList(), backend.resolvedFiles, "the existing missing-credentials answer, no request")
+        assertEquals(CloudLibraryPlaybackResult.Failed(), CloudLibraryRepository.resolvePlayback(itemA, fileA))
+        assertEquals(emptyList(), backend.resolvedFiles, "the old key's target is not trusted under the new keys: no request")
     }
 
     @Test
-    fun r4_keyReplacedBetweenLookupAndResolveBehavesAsAtBase() = real {
+    fun r4_keyReplacedBetweenLookupAndResolveIsRefused() = real {
         backend.perCallListing += listOf(listingWithFile)
         assertEquals(foundA, lookupA())
-        val replaced = DebridServiceCredential(DebridProviders.Torbox, "new-key-of-a")
-        settings.credentials[1] = listOf(replaced) // same profile, new key: not an identity change
-        assertTrue(CloudLibraryRepository.resolvePlayback(itemA, fileA) is CloudLibraryPlaybackResult.Success)
-        assertEquals(listOf(replaced), backend.handed.last())
+        settings.credentials[1] = listOf(DebridServiceCredential(DebridProviders.Torbox, "new-key-of-a"))
+        // Last focused check #1: the target belongs to the old key's generation.
+        assertEquals(CloudLibraryPlaybackResult.Failed(), CloudLibraryRepository.resolvePlayback(itemA, fileA))
+        assertEquals(emptyList(), backend.resolvedFiles)
     }
 
     @Test
@@ -683,6 +683,71 @@ class CloudPublishGateTest {
         eventually { backend.started.value == 2 }
         assertEquals(listOf(itemA), state().items, "the old listing is still on screen while the new one loads")
         assertEquals(CloudLibraryPlaybackResult.Failed(), CloudLibraryRepository.resolvePlayback(itemA, fileA), "but no longer trusted")
+    }
+
+    // Last focused check: the generation is bound to its keys and advances once, at the first sight.
+
+    private val keyB = DebridServiceCredential(DebridProviders.Torbox, "key-b-same-profile")
+
+    @Test
+    fun fc2_keyReplacedAfterAStoredUrlNeverReturnsTheOldUrl() = real {
+        backend.perCallListing += listOf(listingWithFile, listingWithFile)
+        CloudLibraryRepository.refresh()
+        eventually { state() == listingWithFile }
+        assertTrue(CloudLibraryRepository.resolvePlayback(itemA, fileA) is CloudLibraryPlaybackResult.Success) // A's URL stored
+        assertTrue(state().items.single().files.single().playbackUrl != null)
+        settings.credentials[1] = listOf(keyB) // replaced, no ensureLoaded in between
+        assertEquals(foundA, lookupA(), "answered by a fresh fetch under B, not A's cached listing")
+        assertEquals(listOf(keyB), backend.handed.last())
+        assertEquals(CloudLibraryPlaybackResult.Success(url = "https://example.invalid/stream"), CloudLibraryRepository.resolvePlayback(itemA, fileA))
+        assertEquals(null, backend.resolvedFiles.last().playbackUrl, "B's target, never A's stored URL")
+        assertEquals(listOf(keyB), backend.handed.last())
+    }
+
+    @Test
+    fun fc2_anOldKeyOperationNeverDiscardsANewerKeysRefresh() = real {
+        backend.perCall += listOf(CompletableDeferred<Unit>().also { it.complete(Unit) }, CompletableDeferred(), CompletableDeferred())
+        backend.perCallListing += listOf(listingWithFile, listingWithFile, second)
+        CloudLibraryRepository.refresh()
+        eventually { state() == listingWithFile } // a listing on screen
+        val oldKeyLookup = async { CloudLibraryRepository.findPlaybackTargetForProgressResult("torbox:Torrent:missing", "x") }
+        eventually { backend.started.value == 2 } // in flight with key A
+        settings.credentials[1] = listOf(keyB)
+        val before = CloudLibraryRepository.generationForTest
+        CloudLibraryRepository.refresh() // admitted for B: advances
+        eventually { backend.started.value == 3 }
+        backend.perCall[1].complete(Unit) // the A-key lookup ends first
+        assertEquals(CloudLibraryPlaybackTargetLookupResult.NotFound, oldKeyLookup.await())
+        backend.perCall[2].complete(Unit)
+        eventually { state() == second }
+        assertEquals(before + 1, CloudLibraryRepository.generationForTest, "one advance for one key change")
+        val row = state().items.single()
+        assertTrue(CloudLibraryRepository.resolvePlayback(row, row.files.single()) is CloudLibraryPlaybackResult.Success)
+    }
+
+    @Test
+    fun fc2_anInvalidatedListingOnScreenReloadsWhenWanted() = real {
+        backend.perCallListing += listOf(listingWithFile, second)
+        CloudLibraryRepository.ensureLoaded()
+        eventually { state() == listingWithFile }
+        settings.credentials[1] = listOf(keyB)
+        assertEquals(CloudLibraryPlaybackResult.Failed(), CloudLibraryRepository.resolvePlayback(itemA, fileA)) // sees B first
+        eventually { state() == second } // the tick: the observer reloaded with B
+        assertEquals(listOf(keyB), backend.handed.last())
+    }
+
+    @Test
+    fun fc2_manyObserversOfOneKeyChangeAdvanceOnce() = real {
+        backend.perCallListing += listOf(listingWithFile, listingWithFile)
+        CloudLibraryRepository.refresh()
+        eventually { state() == listingWithFile }
+        val before = CloudLibraryRepository.generationForTest
+        settings.credentials[1] = listOf(keyB)
+        CloudLibraryRepository.resolvePlayback(itemA, fileA)
+        CloudLibraryRepository.resolvePlayback(itemA, fileA)
+        lookupA()
+        eventually { !state().isRefreshing }
+        assertEquals(before + 1, CloudLibraryRepository.generationForTest)
     }
 
     // The refresh matrix: lookup cells.
