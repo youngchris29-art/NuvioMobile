@@ -543,6 +543,148 @@ class CloudPublishGateTest {
         assertEquals(base, state())
     }
 
+    // Focused check: one generation, captured with the token and keys, checked first at the end.
+
+    private fun itemN(n: Int) = CloudLibraryItem(providerId = DebridProviders.TORBOX_ID, providerName = "Torbox", id = "n$n", type = CloudLibraryItemType.Torrent, name = "item $n", files = listOf(CloudLibraryFile(id = "f$n", name = "$n.mkv")))
+    private fun listingOf(vararg items: CloudLibraryItem) = CloudLibraryUiState(isLoaded = true, providers = listOf(CloudLibraryProviderState(DebridProviders.Torbox, items = items.toList())))
+
+    @Test
+    fun fc_keyReplacedDuringALookupPublishesAndReturnsNothing() = real {
+        backend.gate = CompletableDeferred()
+        backend.perCallListing += listOf(listingWithFile)
+        val lookup = async { lookupA() }
+        backend.entered.await()
+        settings.credentials[1] = listOf(DebridServiceCredential(DebridProviders.Torbox, "replaced-key")) // no repository call
+        backend.gate!!.complete(Unit)
+        assertEquals(CloudLibraryPlaybackTargetLookupResult.NotFound, lookup.await())
+        assertFalse(state().providers.any { it.items.isNotEmpty() }, "the old key's listing was not published")
+        assertEquals(CloudLibraryPlaybackResult.Failed(), CloudLibraryRepository.resolvePlayback(itemA, fileA), "nothing was trusted")
+    }
+
+    @Test
+    fun fc_keyDisconnectedDuringALookupPublishesAndReturnsNothing() = real {
+        backend.gate = CompletableDeferred()
+        backend.perCallListing += listOf(listingWithFile)
+        val lookup = async { lookupA() }
+        backend.entered.await()
+        settings.credentials[1] = emptyList()
+        backend.gate!!.complete(Unit)
+        assertEquals(CloudLibraryPlaybackTargetLookupResult.NotFound, lookup.await())
+        assertFalse(state().providers.any { it.items.isNotEmpty() })
+    }
+
+    @Test
+    fun fc_disabledDuringALookupPublishesAndReturnsNothing() = real {
+        backend.gate = CompletableDeferred()
+        backend.perCallListing += listOf(listingWithFile)
+        val lookup = async { lookupA() }
+        backend.entered.await()
+        settings.enabled[1] = false // no repository call
+        backend.gate!!.complete(Unit)
+        assertEquals(CloudLibraryPlaybackTargetLookupResult.NotFound, lookup.await())
+        assertFalse(state().providers.any { it.items.isNotEmpty() }, "no enabled listing left visible")
+    }
+
+    private val first = listingOf(itemN(1))
+    private val second = listingOf(itemN(2))
+
+    @Test
+    fun fc_keyReplacedDuringAPlainRefreshNeverPublishesTheOldKeysListing() = real {
+        backend.perCall += listOf(CompletableDeferred())
+        backend.perCallListing += listOf(first, second)
+        CloudLibraryRepository.refresh()
+        eventually { backend.started.value == 1 }
+        val replaced = DebridServiceCredential(DebridProviders.Torbox, "replaced-key")
+        settings.credentials[1] = listOf(replaced)
+        backend.perCall[0].complete(Unit)
+        eventually { state() == second } // the observer reloads with the new key
+        assertEquals(listOf(replaced), backend.handed[1])
+    }
+
+    @Test
+    fun fc_keyDisconnectedDuringAPlainRefreshNeverPublishesTheOldKeysListing() = real {
+        backend.perCall += listOf(CompletableDeferred())
+        backend.perCallListing += listOf(first, CloudLibraryUiState(isLoaded = true))
+        CloudLibraryRepository.refresh()
+        eventually { backend.started.value == 1 }
+        settings.credentials[1] = emptyList()
+        backend.perCall[0].complete(Unit)
+        eventually { !state().isRefreshing && backend.started.value == 2 }
+        delay(100)
+        assertNotEquals(first, state())
+    }
+
+    @Test
+    fun fc_disabledDuringAPlainRefreshNeverPublishesTheListing() = real {
+        backend.perCall += listOf(CompletableDeferred())
+        backend.perCallListing += listOf(first)
+        CloudLibraryRepository.refresh()
+        eventually { backend.started.value == 1 }
+        settings.enabled[1] = false
+        backend.perCall[0].complete(Unit)
+        eventually { state() == CloudLibraryUiState(isLoaded = true, isEnabled = false) } // the observer writes disabled
+        assertEquals(1, backend.started.value)
+    }
+
+    @Test
+    fun fc_sameIdentityClearDuringALookupRecordsAndReturnsNothing() = real {
+        backend.gate = CompletableDeferred()
+        backend.perCallListing += listOf(listingWithFile)
+        val lookup = async { lookupA() }
+        backend.entered.await()
+        CloudLibraryRepository.clear() // no identity change
+        backend.gate!!.complete(Unit)
+        assertEquals(CloudLibraryPlaybackTargetLookupResult.NotFound, lookup.await())
+        assertEquals(CloudLibraryUiState(), state())
+        assertEquals(CloudLibraryPlaybackResult.Failed(), CloudLibraryRepository.resolvePlayback(itemA, fileA))
+    }
+
+    @Test
+    fun fc_aLibraryRowDroppedByANewerListingStillResolves() = real {
+        backend.perCallListing += listOf(listingWithFile, second)
+        CloudLibraryRepository.refresh()
+        eventually { state() == listingWithFile }
+        val row = state().providers.single().items.single()
+        CloudLibraryRepository.refresh()
+        eventually { state() == second } // the row is gone from the listing
+        assertTrue(CloudLibraryRepository.resolvePlayback(row, row.files.single()) is CloudLibraryPlaybackResult.Success)
+    }
+
+    @Test
+    fun fc_aCachedLookupHitResolvesAfterTheListingWasReplaced() = real {
+        backend.perCallListing += listOf(listingWithFile, second)
+        CloudLibraryRepository.refresh()
+        eventually { state() == listingWithFile }
+        assertEquals(foundA, lookupA()) // a cached hit
+        CloudLibraryRepository.refresh()
+        eventually { state() == second }
+        assertTrue(CloudLibraryRepository.resolvePlayback(itemA, fileA) is CloudLibraryPlaybackResult.Success)
+    }
+
+    @Test
+    fun fc_manyLookupsNeverEvictTheFirstTarget() = real {
+        val items = (1..20).map { itemN(it) }
+        backend.perCallListing += items.map { listingOf(it) }
+        for (item in items) {
+            val file = item.files.single()
+            assertTrue(CloudLibraryRepository.findPlaybackTargetForProgressResult(item.stableKey, item.playbackVideoId(file)) is CloudLibraryPlaybackTargetLookupResult.Found)
+        }
+        assertTrue(CloudLibraryRepository.resolvePlayback(items.first(), items.first().files.single()) is CloudLibraryPlaybackResult.Success)
+    }
+
+    @Test
+    fun fc_aGenerationBumpEmptiesTheTrustedSet() = real {
+        backend.perCall += listOf(CompletableDeferred<Unit>().also { it.complete(Unit) }, CompletableDeferred())
+        backend.perCallListing += listOf(listingWithFile)
+        CloudLibraryRepository.ensureLoaded()
+        eventually { state() == listingWithFile }
+        settings.credentials[1] = listOf(DebridServiceCredential(DebridProviders.Torbox, "replaced-key"))
+        CloudLibraryRepository.ensureLoaded() // observes the key change: the generation bumps
+        eventually { backend.started.value == 2 }
+        assertEquals(listOf(itemA), state().items, "the old listing is still on screen while the new one loads")
+        assertEquals(CloudLibraryPlaybackResult.Failed(), CloudLibraryRepository.resolvePlayback(itemA, fileA), "but no longer trusted")
+    }
+
     // The refresh matrix: lookup cells.
 
     @Test
